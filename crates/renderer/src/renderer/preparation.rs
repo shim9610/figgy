@@ -124,7 +124,10 @@ impl PreparationFeature {
                 // a parallel series through the line module's parallel
                 // entries.
                 | DataRenderType::Ternary { .. }
-                | DataRenderType::Parallel { .. } => Self::Basic,
+                | DataRenderType::Parallel { .. }
+                // A monotonic envelope draws through the line pipeline
+                // (#271).
+                | DataRenderType::MonotonicLine(_) => Self::Basic,
                 // Drawn on the CPU and composited (#203, #234): no GPU
                 // pipeline.
                 DataRenderType::EnergyLevels(_) | DataRenderType::Feynman(_) => continue,

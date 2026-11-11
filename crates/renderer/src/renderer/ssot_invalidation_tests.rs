@@ -3238,3 +3238,173 @@ fn feynman_edits_refresh_first_frame_without_reupload() {
         assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
     }
 }
+
+/// A monotonic series (#271). Its line's colour, width (a thin one and a
+/// wide one: the columns kept beyond the plot's edges are fixed) and dash
+/// are style: each edit draws from the envelope the last full call built,
+/// without the source and without writing its columns again, and the first
+/// frame equals a fresh renderer's. The x range moves the x-to-pixel
+/// mapping: the chart's document editor refuses it and changes nothing,
+/// and the full call sets it. The channel names other samples of the same group's
+/// data, so it needs no source; a group without data draws nothing until
+/// its full call. The y range is not mapping. No frame ever fails for a
+/// missing source.
+#[test]
+fn monotonic_edits_refresh_first_frame_or_go_through_the_full_call() {
+    use crate::monotonic::{MappingChange, MonotonicSlices};
+    use crate::renderer::{MonotonicChartId, MonotonicRange};
+    // A monotonic chart beside the fixture's columns (#271).
+    let monotonic = |config: &Config| {
+        let (mut r, _) = fixture(config, true, false);
+        let id = r
+            .register_monotonic_chart(config.clone(), Vec::new())
+            .unwrap()
+            .0;
+        (r, id)
+    };
+    let edit = |r: &mut Renderer, id: ChartId, config: Config| {
+        r.monotonic_chart(MonotonicChartId(id))
+            .unwrap()
+            .edit_config(|editor| editor.assign(config))
+            .unwrap()
+    };
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline();
+    config.legend.visible = false;
+    config.bottom_x.min = 0.0;
+    config.bottom_x.max = 19_999.0;
+    config.bottom_x.major_spacing = 5_000.0;
+    let a: Vec<f64> = (0..20_000)
+        .map(|i| 0.5 + 0.4 * (i as f64 * 1e-3).sin())
+        .collect();
+    let b: Vec<f64> = a.iter().map(|v| 1.1 - v).collect();
+    let channels = [a.as_slice(), b.as_slice()];
+    let source = MonotonicSlices::new(0.0, 1.0, &channels);
+    // The full call, at the x range the chart's document has.
+    let supply = |r: &mut Renderer, id: ChartId, group: &str| {
+        let (min, max) = r.chart_config(id).unwrap().bottom_x.data_range();
+        r.set_monotonic(id, group, &source, MonotonicRange::X { min, max })
+            .unwrap();
+    };
+    let fresh_frame = |config: &Config, series: &SeriesConfig, group: &str| {
+        let (mut fresh, fresh_id) = monotonic(config);
+        fresh
+            .set_chart_series_unreported(fresh_id, vec![series.clone()])
+            .unwrap();
+        supply(&mut fresh, fresh_id, group);
+        frame(&mut fresh, fresh_id, true).0
+    };
+    let (mut r, id) = monotonic(&config);
+    let mut series = SeriesConfig::monotonic_line("s", "g", 0);
+    r.set_chart_series_unreported(id, vec![series.clone()])
+        .unwrap();
+    // No data yet: the series draws nothing, and the frame draws.
+    assert_eq!(
+        r.needs_source(id).unwrap()[0].change,
+        MappingChange::NotBuilt
+    );
+    let empty = frame(&mut r, id, true).0;
+    supply(&mut r, id, "g");
+    let mut previous = frame(&mut r, id, true).0;
+    assert_ne!(previous, empty, "the full call draws the series");
+    let epoch = r.pool.allocation_epoch("s.monotonic.x");
+
+    // Style: drawn from the envelope as it is.
+    let styles: [(&str, fn(&mut crate::data_config::DataLineStyleConfig)); 4] = [
+        ("colour", |line| {
+            line.line_color = Color::new(0.8, 0.1, 0.1, 1.0)
+        }),
+        ("width", |line| line.line_width = 3.0),
+        ("wide width", |line| line.line_width = 40.0),
+        ("dash", |line| {
+            line.line_style = crate::line::LineStylePreset::Dash;
+        }),
+    ];
+    for (name, apply) in styles {
+        let DataRenderType::MonotonicLine(monotonic) = &mut series.render_type else {
+            unreachable!()
+        };
+        apply(&mut monotonic.line);
+        r.set_chart_series_unreported(id, vec![series.clone()])
+            .unwrap();
+        assert!(r.needs_source(id).unwrap().is_empty(), "{name}");
+        let actual = frame(&mut r, id, true).0;
+        assert_eq!(actual, fresh_frame(&config, &series, "g"), "{name}");
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        assert_eq!(
+            r.pool.allocation_epoch("s.monotonic.x"),
+            epoch,
+            "{name}: no column written"
+        );
+        previous = actual;
+    }
+
+    // The channel reads the group's other samples: no source. A group
+    // without data draws nothing until its full call.
+    let DataRenderType::MonotonicLine(monotonic) = &mut series.render_type else {
+        unreachable!()
+    };
+    monotonic.channel = 1;
+    r.set_chart_series_unreported(id, vec![series.clone()])
+        .unwrap();
+    let actual = frame(&mut r, id, true).0;
+    assert_eq!(actual, fresh_frame(&config, &series, "g"), "channel");
+    assert_ne!(actual, previous, "channel: the edit must be visible");
+    let DataRenderType::MonotonicLine(monotonic) = &mut series.render_type else {
+        unreachable!()
+    };
+    monotonic.group = "h".into();
+    r.set_chart_series_unreported(id, vec![series.clone()])
+        .unwrap();
+    assert_eq!(r.needs_source(id).unwrap().len(), 1, "group");
+    assert_eq!(frame(&mut r, id, true).0, empty, "a group without data");
+    supply(&mut r, id, "h");
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        fresh_frame(&config, &series, "h"),
+        "group"
+    );
+
+    // The config: the x range is mapping, the y range is not.
+    let mut edited = r.chart_config(id).unwrap().clone();
+    edited.left_y.max = 1.4;
+    edit(&mut r, id, edited.clone()).unwrap();
+    assert!(r.needs_source(id).unwrap().is_empty(), "y range");
+    let ranged = frame(&mut r, id, true).0;
+    assert_eq!(ranged, fresh_frame(&edited, &series, "h"), "y range");
+    edited.bottom_x.max = 9_999.0;
+    assert_eq!(
+        edit(&mut r, id, edited.clone()),
+        Err(crate::RuleKind::MonotonicMappingEdit),
+        "the editor refuses an x range"
+    );
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        ranged,
+        "a refused range draws as before"
+    );
+    r.set_monotonic(
+        id,
+        "h",
+        &source,
+        MonotonicRange::X {
+            min: 0.0,
+            max: 9_999.0,
+        },
+    )
+    .unwrap();
+    let x = &r.chart_config(id).unwrap().bottom_x;
+    assert_eq!(
+        (x.min, x.max),
+        (0.0, 9_999.0),
+        "the full call sets the range"
+    );
+    let edited = r.chart_config(id).unwrap().clone();
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        fresh_frame(&edited, &series, "h"),
+        "x range"
+    );
+}

@@ -161,6 +161,14 @@ pub(in crate::renderer) fn series_references_column(series: &SeriesConfig, id: &
     found
 }
 
+/// Whether removing column `id` removes series `series` from its chart: a
+/// series that reads it, but for a monotonic series (#271), whose columns
+/// are its envelope, written and removed by the renderer alone. Without
+/// them it has no data and draws nothing until its group's next full call.
+pub(in crate::renderer) fn series_dropped_with_column(series: &SeriesConfig, id: &str) -> bool {
+    series.monotonic().is_none() && series_references_column(series, id)
+}
+
 pub(in crate::renderer) fn data_series_declarations_equal(
     left: &[SeriesConfig],
     right: &[SeriesConfig],
@@ -220,6 +228,7 @@ pub(in crate::renderer) fn try_insert_column_id(
 pub(in crate::renderer) fn prepare_chart_replacement_plan(
     chart_states: &HashMap<ChartId, ChartRenderState>,
     chart_order: &[ChartId],
+    monotonic_order: &[ChartId],
     visual_revision: RenderRevision,
     target_id: ChartId,
     config: Config,
@@ -230,13 +239,13 @@ pub(in crate::renderer) fn prepare_chart_replacement_plan(
         .get(&target_id)
         .ok_or(FiggyError::UnknownChart { id: target_id })?;
     let mut revisions = Vec::new();
-    revisions.try_reserve(chart_order.len()).map_err(|error| {
-        FiggyError::StateAllocationFailed {
+    revisions
+        .try_reserve(chart_order.len() + monotonic_order.len())
+        .map_err(|error| FiggyError::StateAllocationFailed {
             resource: "chart replacement revisions",
             reason: error.to_string(),
-        }
-    })?;
-    for id in chart_order {
+        })?;
+    for id in chart_order.iter().chain(monotonic_order) {
         let state = chart_states
             .get(id)
             .ok_or(FiggyError::UnknownChart { id: *id })?;

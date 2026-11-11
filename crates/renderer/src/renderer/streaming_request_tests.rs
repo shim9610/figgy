@@ -2575,6 +2575,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::EnergyLevels(_)
                     | DataRenderType::TriMesh(_)
                     | DataRenderType::Feynman(_)
+                    | DataRenderType::MonotonicLine(_)
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }

@@ -592,7 +592,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 
 | 분류 | 메서드와 동작 |
 |---|---|
-| 객체 수명 | `ready` Promise, `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` / `figgy-stream-progress` 이벤트, `free()`. 이벤트의 `detail`은 `figgy-ready`가 `{ chart, kernel }`, `figgy-select`가 `{ selected, x, y, originalEvent }`, `figgy-drag`가 `{ x, y, dx, dy }`, `figgy-release`가 `{ selected }`, `figgy-resize`가 `{ width, height, cssWidth, cssHeight, devicePixelRatio }`, `figgy-error`가 `{ error, operation?, recoverable? }`, `figgy-stream-progress`가 `{ executionId, revision, status, submittedPrimitives, totalPrimitives }`이다. 이미 완료된 스트림 화면을 다시 쓰는 `render_chart()`의 `figgy-stream-progress`에는 `status`, `submittedPrimitives`, `totalPrimitives`만 들어 있다. 첫 프레임과 준비 완료 알림 후 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보내며 준비 완료 상태는 유지한다. |
+| 객체 수명 | `ready` Promise, `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` / `figgy-plot-resize` / `figgy-stream-progress` 이벤트, `free()`. 이벤트의 `detail`은 `figgy-ready`가 `{ chart, kernel }`, `figgy-select`가 `{ selected, x, y, originalEvent }`, `figgy-drag`가 `{ x, y, dx, dy }`, `figgy-release`가 `{ selected }`, `figgy-resize`가 `{ width, height, cssWidth, cssHeight, devicePixelRatio }`(단조 시리즈가 있는 차트는 `monotonic: true`가 붙고, 캔버스는 호스트가 `resize_monotonic(sources)`를 부를 때까지 크기를 유지한다), `figgy-plot-resize`가 `{ plotArea, monotonic: true }`(단조 차트의 데이터 영역 크기 조정 몸짓이 제안한 플롯 사각형, 호스트가 `resize_monotonic(sources, plotArea)`로 적용한다), `figgy-error`가 `{ error, operation?, recoverable? }`, `figgy-stream-progress`가 `{ executionId, revision, status, submittedPrimitives, totalPrimitives }`이다. 이미 완료된 스트림 화면을 다시 쓰는 `render_chart()`의 `figgy-stream-progress`에는 `status`, `submittedPrimitives`, `totalPrimitives`만 들어 있다. 첫 프레임과 준비 완료 알림 후 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보내며 준비 완료 상태는 유지한다. |
 | 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 브라우저에서는 설치된 시스템 폰트를 찾지 않으므로 한글을 표시하려면 한글 폰트를 등록해야 한다. 수식은 내장 수식 글꼴로 그리므로 등록이 필요 없고, `rich_text_from_tex(tex, font_size, font, r, g, b, a)`가 TeX에서 `RichText` JSON을 만든다. |
 | 자동 배치 | `pkg/figgy.js`의 독립 함수 `autoLayout(configJson)`은 `layout::auto_layout`(#44)을 적용한 설정 JSON을 반환한다. 라벨·제목·범례·색상 막대가 겹치지 않도록 여백, 축 제목 오프셋, 라벨 형식을 정하며 차트는 바꾸지 않는다. `chart.set_config(autoLayout(chart.get_config()))`로 적용하고, 자동 맞춤이나 확대·축소 뒤에 다시 호출한다. |
 | 스타일 옵션 | 독립 함수 `draw_style_modes()`는 모드 이름의 JSON 배열을, `draw_style_param_specs(mode)`는 `{key, min, max, default, integer}`의 JSON 배열을 반환한다. UI 슬라이더를 만들 때 이 값을 사용한다. 최소·최대는 권장 범위이며 설정은 바깥 값도 허용하고 렌더러가 안전상 필요한 제한만 적용한다. 기본값은 모델의 `Default`와 같다. |
@@ -1051,6 +1051,86 @@ vertex along its spoke; they pick and drag as the bars' do.
 ```js
 chart.set_radar_document(JSON.stringify(radarDoc));
 await chart.first_frame_ready();
+```
+
+<a id="monotonic-lines"></a>
+
+### Monotonic-x lines
+
+A `MonotonicLine` series (#271) is one channel of a group of evenly spaced
+samples, `x = start + i × interval`, drawn through its M4 envelope. The
+samples stay in the host's typed arrays and are lent to each call; only the
+samples a call reads (the visible ones and one on each side, or the new
+ones) are copied into wasm memory, a bounded chunk at a time, and nothing is
+kept after the call.
+
+Monotonic series live only in a monotonic chart, as in the renderer: the
+kernel's general chart refuses them (`set_series` fails with
+`MonotonicGeneralChart`). `set_monotonic_document(config, series)` shows a
+monotonic chart instead (the kernel holds its handle;
+`clear_monotonic_document()` shows the general chart again). Its setters
+(`set_config`, `set_series`, `set_title`, `apply_theme`, the legend, axis,
+annotation and selection calls, decoration drags) edit its document through
+the monotonic chart's editor, which refuses a document that would move the
+x-to-pixel mapping (`MonotonicMappingEdit`); `auto_fit_all` and the streamed
+calls refuse a monotonic chart explicitly.
+
+| `FiggyChart` / `<figgy-chart>` | Takes |
+| --- | --- |
+| `set_monotonic_document(config, series)`, `clear_monotonic_document()` | Shows a monotonic chart (a document and series as `set_config` and `set_series` take them), or the general one again. |
+| `set_monotonic(group, start, interval, data, range, stride?, columns?)` | The full call with the group's whole source, its samples at `start + i × interval`: `data` is an `Array` of typed arrays, one per channel, or one interleaved typed array with `stride` values per frame and the frame `columns` its channels read (every column by default). `Float64Array`, `Float32Array`, `Int32Array`, `Int16Array`, `Uint16Array` or `Uint8Array`. `range` sets the x range, the only call that does: `[xMin, xMax]`, or `"autoscale"` to fit the x range to the samples' span and the y range to the values this call reduces (the general auto-fit refuses a chart with monotonic series). |
+| `append_monotonic(group, data, sliding, stride?, columns?)` | Only the new samples, in either layout; they continue the full call's grid. With `sliding` the window keeps its length and the x range moves by their span. |
+| `resize_monotonic(sources, plotArea?)` (element), `resize_monotonic(width, height, sources, plotArea)` (kernel) | The resize of a monotonic chart: the canvas to its measured size (the element) or to `width` × `height` device pixels, and the plot to `plotArea` (`{ x, y, width, height }` in document pixels, as `figgy-plot-resize` proposes it; omitted keeps the margins), each group whose series move to other device pixels reduced again from `sources`, `[{ group, start, interval, data, stride?, columns? }]`. Atomic: a refusal changes nothing. |
+| `take_plot_resize_request()` (kernel) | The plot rect the last plot-area resize gesture proposed, as JSON, once; the element emits it as `figgy-plot-resize`. |
+| `fit_layout(sources)` | Fits the layout to the labels and titles and applies it; it can move the plot's edges, so it takes the groups' sources as `resize_monotonic` does (`[]` without monotonic series). |
+| `monotonic_groups()` | The chart's monotonic group names, the groups the calls above take sources for. |
+| `needs_source()` | `[{ series_id, group, change }]`: the series whose group was never supplied, which draw nothing until `set_monotonic`. |
+| `export_png_monotonic(scale, sources)`, `export_svg_monotonic`, `export_pdf_monotonic` | An export at another scale than the screen's, with each group's source, as `resize_monotonic` takes them. |
+
+`set_monotonic` and `append_monotonic` return
+`{ len, truncated, dropped, x_range, pixel_offset }` (the raw kernel as a
+JSON string). Only the four calls that take the source move the x-to-pixel
+mapping (`set_monotonic`, `append_monotonic`, `resize_monotonic`,
+`fit_layout`). A setter that would move it (`set_config` with another x range,
+chart area or layout) is refused by the editor and changes nothing; the plain
+`resize` is the resize with no sources, refused with
+`MonotonicSourceRequired` when a group would move. The element therefore
+does not resize a monotonic chart by itself: when its box or the device
+pixel ratio changes, the canvas keeps its size and `figgy-resize` carries
+`monotonic: true`; the host answers with `resize_monotonic(sources)`. A
+plot-area resize gesture applies nothing while it drags: on release the
+element emits `figgy-plot-resize` with `{ plotArea, monotonic: true }`, and
+the host applies it with `resize_monotonic(sources, plotArea)`. Wheel and
+drag zoom are off for monotonic charts (the element has no x zoom or pan;
+`zoom_view` is the 3D camera's), a frame drag that would move the mapping
+leaves the chart as it is and does not hold the display, and `apply_theme`
+keeps the layout (`fit_layout(sources)` fits it). Every other setting works with no source:
+the legend, axis titles, ticks, tick labels, titles, colours, the line's
+width and style, annotations, the selection and decoration drags. A line
+width is a style edit: strokes wider than about 120 device pixels may miss
+ink at the plot's edges. Frames and picks never need the source.
+`pick_data` reports the logical sample index of a kept point,
+`selection_details()` its `x` and `y` from the envelope, and
+`step_selection(dx, dy)` walks the kept points.
+
+```js
+const series = [0, 1].map((c) => ({
+  series_id: `ch${c}`, x_column: `ch${c}.monotonic.x`, y_column: `ch${c}.monotonic.y`,
+  render_type: { MonotonicLine: { group: "daq", channel: c, line: lineStyle } },
+}));
+chart.set_monotonic_document(config, series);                     // a monotonic chart
+chart.set_monotonic("daq", 0, 1e-3, [ch0, ch1], "autoscale");    // per channel, fitted
+chart.append_monotonic("daq", frames, true, 3, [1, 2]);          // interleaved Int16Array
+chart.set_monotonic("daq", 0, 1e-3, [ch0, ch1], [0, 2]);         // a zoom is a full call
+const sources = [{ group: "daq", start: 0, interval: 1e-3, data: [ch0, ch1] }];
+chart.addEventListener("figgy-resize", (event) => {
+  if (event.detail.monotonic) chart.resize_monotonic(sources);
+});
+chart.addEventListener("figgy-plot-resize", (event) => {
+  chart.resize_monotonic(sources, event.detail.plotArea);
+});
+chart.fit_layout(sources);
+const png = await chart.export_png_monotonic(2, sources);
 ```
 
 <a id="bounded-chart-host"></a>

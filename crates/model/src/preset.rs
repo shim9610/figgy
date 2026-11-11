@@ -397,6 +397,10 @@ impl ColorCycle {
             DataRenderType::Parallel { line, .. } => {
                 line.line_color = c;
             }
+            // Each channel of a monotonic group joins the cycle (#271).
+            DataRenderType::MonotonicLine(series) => {
+                series.line.line_color = c;
+            }
         }
     }
 

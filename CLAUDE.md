@@ -58,6 +58,52 @@ break one of them, stop and ask instead of working around it.
     (text length, nesting depth, tick counts) are not covered by this rule,
     and a new one still needs the plan to name it (#107).
 
+## Monotonic-x line series: rules M1–M7
+
+A separate rule set for the monotonic-x line series (#271): a
+`DataRenderType::MonotonicLine` series fed through `MonotonicSource`. It
+applies to that source only; rules 1, 2, 5 and 8 keep governing every other
+series. `crates/model/MONOTONIC.md` describes the core and the renderer side.
+
+- **M1. Input.** Data enters only through `MonotonicSource`, which carries
+  the values, `start` and `interval`, lent to every call that reads it (the
+  monotonic chart's `set_monotonic`, `append_monotonic` with the new
+  samples, `resize`, `fit_layout`, an export at another scale) and never
+  retained. No call takes `start` or `interval` separately. No other
+  container, and no `ColumnSource` upload of the samples.
+- **M2. Reduction is appearance.** The renderer may reduce to M4 per pixel
+  column. M2 is stated at display resolution: after a full call or a
+  whole-column change each column covers the span drawing every segment
+  covers; while sliding by fractions of a column the image differs by less
+  than one pixel column, and the next full call realigns it exactly; a NaN
+  gap narrower than a column is drawn joined. A test compares the envelope
+  draw with the full draw at 1x and 2x.
+- **M3. Cache bound.** The CPU cache holds only the M4 envelope (4 values
+  per pixel column and channel, sized by the plot width and the channel
+  count, never by the data length) and the scalars it was built with. Never
+  a copy of the data.
+- **M4. Recompute.** The full call reduces from scratch every time. Only
+  `append_monotonic` merges new samples, and only a sliding append drops
+  columns from the front. The scale never changes inside an append. A chart
+  with monotonic series is a monotonic chart (`register_monotonic_chart`),
+  reached only through its `MonotonicChartId`: no general chart call takes
+  it, and the general calls refuse a monotonic line series. Only four calls
+  on its handle move the x-to-pixel mapping, each taking the source:
+  `set_monotonic` (the only x range or autoscale), `append_monotonic`,
+  `resize` (chart area, plot area, display; atomic) and `fit_layout`. Its
+  document editor (`MonotonicConfig`) has no mapping setter and refuses an
+  edit that would move it. The margin beyond the plot's edges is a fixed 64
+  pixel columns, so a stroke width is a style edit (strokes wider than about
+  120 device px may miss edge ink). Draws and picks never fail for a missing
+  source.
+- **M5. Not streaming.** This source does not use, extend or depend on the
+  streaming runtime (rule 8). A streamed source is not a `MonotonicSource`.
+- **M6. Interactions.** Rule 6 applies in full. Picks, the picked highlight
+  and `step_selection` work on the kept points and report logical sample
+  indices, without the source.
+- **M7. No count limits.** Rule 10 applies: no cap on samples, channels,
+  series, columns or stride.
+
 ## Before calling a change done
 
 Check the diff against the design rules item by item and report the result in

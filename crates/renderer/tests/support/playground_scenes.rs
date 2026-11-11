@@ -34,12 +34,14 @@ use renderer::data_config::{
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
+use renderer::monotonic::MonotonicSlices;
 use renderer::polar::{PolarInterpolation, PolarOptions};
+use renderer::renderer::MonotonicGroupRef;
 use renderer::text::RichText;
 use renderer::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, ArrowStyle, CellRef,
-    Chart, Color, ColorMap, ColumnSource, FiggyError, LayerRef, OverlayLayer, Renderer, ShapeStyle,
-    Subplot, default,
+    Chart, Color, ColorMap, ColumnSource, ExportSource, FiggyError, LayerRef, OverlayLayer,
+    Renderer, ShapeStyle, Subplot, default,
 };
 
 /// Logical size of every Cartesian document; the window fits it uniformly.
@@ -99,10 +101,13 @@ pub enum SceneKind {
     TriSurface,
     /// Raw channels printed in physical units (#273).
     AxisUnits,
+    /// Four channels of an evenly sampled recording as monotonic-x lines
+    /// (#271).
+    Monotonic,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 47] = [
+    pub const ALL: [SceneKind; 48] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -150,6 +155,7 @@ impl SceneKind {
         SceneKind::TriMesh,
         SceneKind::TriSurface,
         SceneKind::AxisUnits,
+        SceneKind::Monotonic,
     ];
 
     pub fn label(self) -> &'static str {
@@ -201,6 +207,7 @@ impl SceneKind {
             SceneKind::TriMesh => "Triangle mesh (flow past a cylinder)",
             SceneKind::TriSurface => "3D triangle mesh surface",
             SceneKind::AxisUnits => "Axis units (raw counts in volts)",
+            SceneKind::Monotonic => "Monotonic x (recorded channels)",
         }
     }
 
@@ -366,6 +373,14 @@ impl SceneKind {
                  area to orbit; pick a triangle on the surface or a contour on the \
                  floor and step with the arrows."
             }
+            SceneKind::Monotonic => {
+                "Four channels of a 10 kHz recording, 200 000 samples each, as \
+                 monotonic-x lines: the host lends the samples (x = start + i × \
+                 interval) and the renderer keeps the first, lowest, highest and \
+                 last sample of each pixel column. Zoom or resize and the series \
+                 asks for its samples again; pick a kept point and step with the \
+                 arrows."
+            }
             SceneKind::EnergyLevels => {
                 "A Grotrian diagram of He I from NIST ASD values: term columns \
                  grouped into singlets and triplets, the ground state below a \
@@ -444,6 +459,64 @@ impl SceneKind {
 pub struct CartesianScene {
     pub config: Config,
     pub series: Vec<SeriesConfig>,
+    /// The samples of the monotonic groups the scene's monotonic series read
+    /// (#271), which the host keeps and lends on every call: a draw at a
+    /// mapping the renderer has no envelope for takes them
+    /// ([`export_scene`]). Empty for every other scene.
+    pub monotonic: Vec<MonotonicData>,
+}
+
+/// One monotonic group of a scene (#271): `x = start + i × interval`, one
+/// `Vec` per channel, held by the host as a recorder would hold its buffer.
+pub struct MonotonicData {
+    pub group: String,
+    pub start: f64,
+    pub interval: f64,
+    pub channels: Vec<Vec<f64>>,
+}
+
+/// Run `export` on `chart` and `series`. A scene without monotonic groups
+/// is exported as the host-held chart (`ExportSource::chart`). A monotonic
+/// series draws only from an envelope the renderer built at the export's
+/// own mapping, from the samples the host lends for the call, so a scene
+/// with monotonic groups is registered as a monotonic chart for the call
+/// and exported with them (`ExportSource::Monotonic`), then removed (#271).
+pub fn export_scene<T>(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    monotonic: &[MonotonicData],
+    export: impl FnOnce(&mut Renderer, ExportSource<'_>) -> Result<T, FiggyError>,
+) -> Result<T, FiggyError> {
+    if monotonic.is_empty() {
+        return export(r, ExportSource::chart(chart, series));
+    }
+    let views: Vec<Vec<&[f64]>> = monotonic
+        .iter()
+        .map(|group| group.channels.iter().map(Vec::as_slice).collect())
+        .collect();
+    let slices: Vec<MonotonicSlices<'_, f64>> = monotonic
+        .iter()
+        .zip(&views)
+        .map(|(group, view)| MonotonicSlices::new(group.start, group.interval, view))
+        .collect();
+    let refs: Vec<MonotonicGroupRef<'_>> = monotonic
+        .iter()
+        .zip(&slices)
+        .map(|(group, source)| MonotonicGroupRef::new(&group.group, source))
+        .collect();
+    let id = r.register_monotonic_chart(chart.config().clone(), series.to_vec())?;
+    let result = export(
+        r,
+        ExportSource::Monotonic {
+            chart: id,
+            monotonic: &refs,
+        },
+    );
+    let removed = r.monotonic_chart(id).and_then(|chart| chart.remove());
+    let value = result?;
+    removed?;
+    Ok(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +708,7 @@ pub fn build(
         SceneKind::PolarHeatmap => polar_heatmap(r),
         SceneKind::Quiver3d => quiver_3d(r),
         SceneKind::ProbabilityPaper => probability_paper(r),
+        SceneKind::Monotonic => Ok(monotonic()),
         SceneKind::EnergyLevelsAr => grotrian_scene(grotrian_sets::argon()),
         SceneKind::EnergyLevelsCu => grotrian_scene(grotrian_sets::copper()),
         SceneKind::EnergyLevelsU => grotrian_scene(grotrian_sets::uranium()),
@@ -762,6 +836,7 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-2.2, 2.4);
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -870,6 +945,7 @@ fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.auto_fit_x_union(r.pool(), &["sc_x", "sc_cx"], 0.05)?;
     chart.auto_fit_y_union(r.pool(), &["sc_y", "sc_cy"], 0.1)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -908,9 +984,75 @@ fn stem(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(base_config("Impulse response", "n", "h[n]"));
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.08)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
+}
+
+/// Monotonic-x lines (#271): four channels of a recording sampled at
+/// 10 kHz for 20 s, `x = i × 1e-4`. Nothing is uploaded: the host keeps the
+/// samples ([`CartesianScene::monotonic`]) and lends them on every call,
+/// and the renderer keeps each series' first, lowest, highest and last
+/// sample per pixel column. The channels are offset by the host so they
+/// stack; the pressure channel draws a wider stroke.
+fn monotonic() -> CartesianScene {
+    const N: usize = 200_000;
+    const INTERVAL: f64 = 1e-4;
+    let tau = std::f64::consts::TAU;
+    let signal = |channel: usize, i: usize| {
+        let t = i as f64 * INTERVAL;
+        let jitter = noise(271 + channel as u64, i);
+        match channel {
+            // A 50 Hz vibration whose amplitude swells and fades: a full
+            // cycle in every pixel column, the densest envelope there is.
+            0 => 6.0 + (0.4 + 0.5 * (tau * 0.1 * t).sin().abs()) * (tau * 50.0 * t).sin(),
+            // A pressure ramp with a burst every 5 s.
+            1 => {
+                let burst = (-(t % 5.0 - 2.5).powi(2) * 40.0).exp();
+                3.0 + 0.08 * t + 1.2 * burst * (tau * 7.0 * t).sin() + 0.05 * jitter
+            }
+            // A slow strain drift under broadband noise.
+            2 => 0.5 * (tau * 0.3 * t).sin() + 0.25 * jitter,
+            // A 2 Hz trigger: a square wave of vertical edges.
+            _ => -3.0 + if (t * 2.0).fract() < 0.5 { 1.0 } else { 0.0 },
+        }
+    };
+    let channels: Vec<Vec<f64>> = (0..4)
+        .map(|channel| (0..N).map(|i| signal(channel, i)).collect())
+        .collect();
+    let looks = [
+        ("vibration", Color::from_rgb8(31, 119, 180), 1.0),
+        ("pressure", Color::from_rgb8(214, 39, 40), 2.5),
+        ("strain", Color::from_rgb8(44, 160, 44), 1.0),
+        ("trigger", Color::from_rgb8(90, 90, 90), 1.5),
+    ];
+    let series: Vec<SeriesConfig> = looks
+        .iter()
+        .enumerate()
+        .map(|(channel, (id, color, width))| {
+            SeriesConfig::monotonic_line(*id, "daq", channel)
+                .color(*color)
+                .width(*width)
+        })
+        .collect();
+    let mut chart = Chart::new(base_config(
+        "Recording (monotonic x)",
+        "time (s)",
+        "signal (V, offset)",
+    ));
+    chart.set_x_range(0.0, (N - 1) as f64 * INTERVAL);
+    chart.set_y_range(-3.5, 7.5);
+    CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+        monotonic: vec![MonotonicData {
+            group: "daq".into(),
+            start: 0.0,
+            interval: INTERVAL,
+            channels,
+        }],
+    }
 }
 
 /// Probability paper (#209): a normal panel and a Weibull subplot over a log
@@ -1044,6 +1186,7 @@ fn probability_paper(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         c.subplots[0].config.bottom_x.label_style.format = LabelFormat::Decimal;
     });
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series[..2]),
         series,
     })
@@ -1111,7 +1254,11 @@ fn lollipop(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         &with_legend(config, &series),
         &renderer::CpuTextMeasure::for_style(&renderer::config::DrawStyle::Precise),
     );
-    Ok(CartesianScene { config, series })
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
 }
 
 /// Two clouds on one colourbar. The left cloud is coloured by `depth` at a
@@ -1214,6 +1361,7 @@ fn value_maps(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.set_y_range(0.0, 10.0);
     chart.auto_fit_colorbar_union(r.pool(), &["vm_depth1", "vm_depth2"], 0.0)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -1257,6 +1405,7 @@ fn histogram(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         c.right_y.min = 0.0;
     });
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -1335,6 +1484,7 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }),
     )];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -1404,7 +1554,11 @@ fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ..PolarOptions::default()
     }));
     rebuild_legends(&mut config, &series);
-    Ok(CartesianScene { config, series })
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
 }
 
 fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
@@ -1550,6 +1704,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let speed_refs: Vec<&str> = s_ids.iter().map(String::as_str).collect();
     chart.auto_fit_colorbar_union(r.pool(), &speed_refs, 0.0)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -1640,6 +1795,7 @@ fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.set_y_range(-2.0, 2.0);
     chart.auto_fit_colorbar_union(r.pool(), &["sl_speed"], 0.0)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -1682,6 +1838,7 @@ fn log_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }),
     )];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -1758,6 +1915,7 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let config = with_legend(chart.config().clone(), &series);
     let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: renderer::layout::auto_layout(&config, &measure),
         series,
     })
@@ -1861,6 +2019,7 @@ fn long_labels(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     top.out_margin = 40.0;
 
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(config, &series),
         series,
     })
@@ -1943,6 +2102,7 @@ fn twin_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ),
     ];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -2031,6 +2191,7 @@ fn axis_units(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
         series,
+        monotonic: Vec::new(),
     })
 }
 
@@ -2156,6 +2317,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ),
     ];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -2283,6 +2445,7 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }),
     )];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(config, &series),
         series,
     })
@@ -2371,6 +2534,7 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         })
         .collect();
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config,
         series: traces,
     })
@@ -2548,6 +2712,7 @@ pub mod big_data {
         upload(r, points)?;
         let series = series(Mode::Line);
         Ok(CartesianScene {
+            monotonic: Vec::new(),
             config: chart_config(r, points, &series)?,
             series,
         })
@@ -2641,7 +2806,11 @@ fn categorical(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         config.left_y.min = min;
         config.left_y.max = max;
     }
-    Ok(CartesianScene { config, series })
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
 }
 
 /// The legacy box plot document of the box plot scene: responses by dose
@@ -2751,7 +2920,11 @@ fn box_plot(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             }
         }
     }
-    Ok(CartesianScene { config, series })
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
 }
 
 /// The radar scene's document: three releases over six categories on a
@@ -2806,7 +2979,11 @@ fn radar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             r.add_column(upload.column.clone(), &upload.values)?;
         }
     }
-    Ok(CartesianScene { config, series })
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3151,6 +3328,7 @@ fn violins(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -3218,6 +3396,7 @@ fn raincloud(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -3350,6 +3529,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     chart.auto_fit_colorbar_union(r.pool(), &["tn_hv"], 0.0)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -3479,6 +3659,7 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.auto_fit_colorbar_union(r.pool(), &column_ids, 0.0)?;
     chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -3609,6 +3790,7 @@ fn tri_mesh(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     chart.auto_fit_colorbar_union(r.pool(), &["tm_cp"], 0.0)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -3645,6 +3827,7 @@ fn tri_surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.auto_fit_colorbar_union(r.pool(), &["tm_cp"], 0.0)?;
     chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -3753,6 +3936,7 @@ fn quiver_3d(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.auto_fit_colorbar_union(r.pool(), &["q3_s"], 0.0)?;
     chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -3870,7 +4054,11 @@ fn waterfall(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         config.left_y.min = min;
         config.left_y.max = max;
     }
-    Ok(CartesianScene { config, series })
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
 }
 
 /// The candlestick scene: sixty days of synthetic prices on a time axis,
@@ -3939,6 +4127,7 @@ fn candles(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.03)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -4042,7 +4231,11 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     // End the date axis half a day after the last task, short of the next
     // weekly tick, so no tick label sits on the plot's right edge.
     config.bottom_x.max = T0 + 27.5 * DAY;
-    Ok(CartesianScene { config, series })
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
 }
 
 /// A hexbin (#134): the host bins samples of a bivariate normal into a
@@ -4127,6 +4320,7 @@ fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -4229,6 +4423,7 @@ fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }),
     )];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -4354,6 +4549,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ),
     ];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
     })
@@ -4454,6 +4650,7 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     );
     config.colorbar = Some(bar);
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: with_legend(config, &series),
         series,
     })
@@ -4578,6 +4775,7 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ),
     ];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })
@@ -4602,6 +4800,7 @@ fn grotrian_scene(
     })?;
     let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: renderer::layout::auto_layout(chart.config(), &measure),
         series,
     })
@@ -4774,6 +4973,7 @@ fn feynman(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.set_x_range(0.0, 2.2);
     chart.set_y_range(0.0, 2.1);
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series: vec![
             series("Higgs", higgs),
@@ -5084,6 +5284,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         render_type: DataRenderType::EnergyLevels(levels),
     };
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config,
         series: vec![data("he", series), data("he-fine", fine)],
     })
@@ -5204,6 +5405,7 @@ fn polar_heatmap(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }),
     )];
     Ok(CartesianScene {
+        monotonic: Vec::new(),
         config: chart.config().clone(),
         series,
     })

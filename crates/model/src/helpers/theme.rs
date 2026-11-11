@@ -746,6 +746,7 @@ impl Theme {
             // The line width is set above; a streamline's arrowheads keep
             // their size, which follows its spacing.
             DataRenderType::Streamlines { .. }
+            | DataRenderType::MonotonicLine(_)
             | DataRenderType::Parallel { .. }
             | DataRenderType::RgbImage { .. } => {}
         }

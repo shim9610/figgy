@@ -279,7 +279,7 @@ impl Config {
             })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), crate::RuleKind>;
-        let rules: [(&'static str, Rule); 13] = [
+        let rules: [(&'static str, Rule); 14] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
             ("range_bars", Config::validate_range_bars),
@@ -293,6 +293,7 @@ impl Config {
             ("hexagonal", Config::validate_hexagonal_series),
             ("rgb_image", Config::validate_rgb_image_series),
             ("line_offsets", Config::validate_line_offsets),
+            ("monotonic", Config::validate_monotonic_series),
         ];
         for (field, rule) in rules {
             if let Err(reason) = rule(self, series) {
@@ -390,6 +391,9 @@ impl Config {
             }
             DataRenderType::Feynman(_) => {
                 return Err(crate::RuleKind::PolarFeynman);
+            }
+            DataRenderType::MonotonicLine(_) => {
+                return Err(crate::RuleKind::PolarMonotonic);
             }
             DataRenderType::Ternary { .. } => {
                 return Err(crate::RuleKind::PolarTernary);

@@ -170,6 +170,12 @@ impl FiggyChart {
     /// union because their uploaded edge column already is their geometry.
     /// Series registration itself does not submit GPU work.
     pub async fn auto_fit_all(&mut self, padding: f64) -> Result<(), JsValue> {
+        // A monotonic chart is auto-scaled by its full call (#271).
+        if self.monotonic.is_some() {
+            return Err(js_err(
+                "a monotonic chart auto-scales with set_monotonic(..., \"autoscale\")",
+            ));
+        }
         if self.request_stream_auto_fit(padding)? {
             self.request_host_redraw();
             return Ok(());
@@ -250,8 +256,9 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
-                // A Feynman series maps no value (#234).
-                DataRenderType::Feynman(_) => {}
+                // A Feynman series maps no value (#234), nor does a
+                // monotonic one (#271).
+                DataRenderType::Feynman(_) | DataRenderType::MonotonicLine(_) => {}
                 // An energy-level series' mapped transition values are SSOT
                 // (#203): each finite one widens the extent.
                 DataRenderType::EnergyLevels(levels) => {
@@ -477,9 +484,7 @@ impl FiggyChart {
             return Err(js_err("unknown annotation"));
         }
         if index.is_some() && self.chart_selection()?.is_some() {
-            self.renderer
-                .set_chart_selection(self.chart_id, None)
-                .map_err(js_err)?;
+            self.set_chart_selection(None)?;
         }
         self.set_selected_annotation(index);
         Ok(())
@@ -752,7 +757,8 @@ impl FiggyChart {
     /// `subplots` names the subplots that take it too: `"all"`, `"none"`
     /// or a JSON array of indices. Ranges, text, annotations, the layer
     /// structure and the selection stay; an unknown name or a bad list
-    /// changes nothing.
+    /// changes nothing. A chart with monotonic series keeps its layout
+    /// (#271): `fit_layout`, which takes the groups' sources, fits it.
     pub fn apply_theme(&mut self, name: &str, subplots: &str) -> Result<(), JsValue> {
         let theme = theme_named(name)?;
         let indices: Vec<usize> = match subplots.trim() {
@@ -767,8 +773,15 @@ impl FiggyChart {
         let mut config = self.chart_config()?.clone();
         let mut series = self.chart_series()?.to_vec();
         theme.apply(&mut config, &mut series, scope);
-        let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
-        let config = renderer::layout::auto_layout(&config, &measure);
+        // A chart with monotonic series keeps its layout: the layout fit can
+        // move the plot's edges, so it is `fit_layout`, which takes the
+        // groups' sources (#271).
+        let config = if self.has_monotonic()? {
+            config
+        } else {
+            let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+            renderer::layout::auto_layout(&config, &measure)
+        };
         self.renderer
             .preflight_chart_styles(&series)
             .map_err(js_err)?;

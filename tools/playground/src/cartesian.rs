@@ -126,9 +126,12 @@ enum ViewTarget {
 
 pub struct CartesianHost {
     kind: SceneKind,
-    id: ChartId,
+    id: HostChart,
     initial: Config,
     initial_series: Vec<SeriesConfig>,
+    /// The samples of the scene's monotonic groups (#271), lent to the
+    /// calls that take them ([`Self::sync_monotonic`] and the exports).
+    monotonic: Vec<scenes::MonotonicData>,
     view: Option<ChartView>,
     /// The display chart the view draws, kept across frames so its raster
     /// stamp moves only when the display config or the selection changes.
@@ -168,12 +171,20 @@ pub struct CartesianHost {
 impl CartesianHost {
     pub fn new(r: &mut Renderer, kind: SceneKind) -> Result<Self, renderer::FiggyError> {
         let scene = scenes::build(r, kind, big_data::START_POINTS)?;
-        let id = r.register_chart(scene.config.clone(), scene.series.clone())?;
+        // A scene with monotonic groups is a monotonic chart (#271).
+        let id = if scene.monotonic.is_empty() {
+            HostChart::General(r.register_chart(scene.config.clone(), scene.series.clone())?)
+        } else {
+            HostChart::Monotonic(
+                r.register_monotonic_chart(scene.config.clone(), scene.series.clone())?,
+            )
+        };
         Ok(Self {
             kind,
             id,
             initial: scene.config,
             initial_series: scene.series,
+            monotonic: scene.monotonic,
             view: None,
             display_chart: None,
             styles: Vec::new(),
@@ -205,7 +216,7 @@ impl CartesianHost {
     pub fn remove(self, r: &mut Renderer) {
         drop(self.view);
         drop(self.styles);
-        if let Err(e) = r.remove_chart(self.id) {
+        if let Err(e) = self.id.remove(r) {
             eprintln!("[scene] remove chart: {e}");
         }
         if self.big.is_some() {
@@ -241,15 +252,15 @@ impl CartesianHost {
     }
 
     fn config(&self, r: &Renderer) -> Config {
-        r.chart_config(self.id).expect("registered chart").clone()
+        self.id.config(r).expect("registered chart").clone()
     }
 
     fn series(&self, r: &Renderer) -> Vec<SeriesConfig> {
-        r.chart_series(self.id).expect("registered chart").to_vec()
+        self.id.series(r).expect("registered chart").to_vec()
     }
 
     fn commit(&mut self, r: &mut Renderer, config: Config) -> bool {
-        match r.set_chart_config(self.id, config) {
+        match self.id.set_config(r, config) {
             Ok(()) => {
                 self.raster_dirty = true;
                 self.error = None;
@@ -265,20 +276,20 @@ impl CartesianHost {
     /// Replace the series, then recolour the legends to match.
     fn commit_series(&mut self, r: &mut Renderer, series: Vec<SeriesConfig>) {
         let previous = self.series(r);
-        if let Err(e) = r.set_chart_series(self.id, series.clone()) {
+        if let Err(e) = self.id.set_series(r, series.clone()) {
             self.error = Some(format!("series rejected: {e}"));
             return;
         }
         let mut config = self.config(r);
         scenes::rebuild_legends(&mut config, &series);
         if !self.commit(r, config) {
-            let _ = r.set_chart_series(self.id, previous);
+            let _ = self.id.set_series(r, previous);
         }
         self.styles_scale = None;
     }
 
     fn display(&self, r: &Renderer) -> Option<Display> {
-        let cfg = r.chart_config(self.id).ok()?;
+        let cfg = self.id.config(r).ok()?;
         let vp = self.viewport_px;
         if vp.width < 8 || vp.height < 8 {
             return None;
@@ -309,6 +320,51 @@ impl CartesianHost {
         })
     }
 
+    /// A monotonic series draws from an envelope the renderer built at the
+    /// mapping it is displayed at (#271). The registered chart's display
+    /// follows the viewport, which places the document as [`Self::display`]
+    /// does: a viewport resize is the resize call, which takes the scene's
+    /// samples, and a group never supplied gets its first full call here.
+    /// A monotonic scene is never held, and pans and zooms nothing: the x
+    /// range is the full call's.
+    fn sync_monotonic(&self, r: &mut Renderer) -> Result<(), renderer::FiggyError> {
+        let views: Vec<Vec<&[f64]>> = self
+            .monotonic
+            .iter()
+            .map(|group| group.channels.iter().map(Vec::as_slice).collect())
+            .collect();
+        let slices: Vec<renderer::MonotonicSlices<'_, f64>> = self
+            .monotonic
+            .iter()
+            .zip(&views)
+            .map(|(group, view)| renderer::MonotonicSlices::new(group.start, group.interval, view))
+            .collect();
+        let refs: Vec<renderer::renderer::MonotonicGroupRef<'_>> = self
+            .monotonic
+            .iter()
+            .zip(&slices)
+            .map(|(group, source)| renderer::renderer::MonotonicGroupRef::new(&group.group, source))
+            .collect();
+        let vp = self.viewport_px;
+        let area = self.config(r).chart_area.0;
+        let HostChart::Monotonic(id) = self.id else {
+            return Ok(());
+        };
+        // The first full call keeps the x range the scene's document sets.
+        let (min, max) = self.config(r).bottom_x.data_range();
+        r.monotonic_chart(id)?
+            .resize(area, None, Some((vp.width, vp.height)), &refs)?;
+        let needs = r.monotonic_needs_source(id)?;
+        let mut chart = r.monotonic_chart(id)?;
+        for (group, source) in self.monotonic.iter().zip(&slices) {
+            if needs.iter().any(|need| need.group == group.group) {
+                let range = renderer::renderer::MonotonicRange::X { min, max };
+                chart.set_monotonic(&group.group, source, range)?;
+            }
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Frame
     // ------------------------------------------------------------------
@@ -321,6 +377,11 @@ impl CartesianHost {
             self.commit(r, chart.config().clone());
         }
         let d = self.display(r)?;
+        if !self.monotonic.is_empty()
+            && let Err(e) = self.sync_monotonic(r)
+        {
+            self.error = Some(format!("monotonic: {e}"));
+        }
         let series = self.series(r);
         if self.styles_scale != Some(d.scale) {
             match series
@@ -472,10 +533,13 @@ impl CartesianHost {
             // The document fits the viewport again.
             changed |= self.hold.take().is_some();
         }
-        if pan_down && response.hovered() && (delta.x != 0.0 || delta.y != 0.0) {
+        // A monotonic scene's x range is the full call's (#271): no pan or
+        // zoom moves it.
+        let navigable = self.monotonic.is_empty();
+        if navigable && pan_down && response.hovered() && (delta.x != 0.0 || delta.y != 0.0) {
             changed |= self.pan(r, &d, delta.x * ppp, delta.y * ppp);
         }
-        if inside && scroll.y != 0.0 {
+        if navigable && inside && scroll.y != 0.0 {
             let factor = (-scroll.y as f64 * 0.0025).exp();
             let (zx, zy) = if mods.shift {
                 (true, false)
@@ -586,7 +650,7 @@ impl CartesianHost {
     /// A surface point in document pixels: the inverse of the display's
     /// scale and placement.
     fn document_point(&self, r: &Renderer, d: &Display, p: [f32; 2]) -> [f32; 2] {
-        let Ok(cfg) = r.chart_config(self.id) else {
+        let Ok(cfg) = self.id.config(r) else {
             return p;
         };
         let doc = cfg.document_area();
@@ -601,6 +665,11 @@ impl CartesianHost {
 
     /// Hold the display where it is while a subplot frame drags (#205).
     fn hold_display(&mut self, d: &Display) {
+        // A monotonic scene is never held (#271): the release would move
+        // the plot's device pixels without the scene's samples.
+        if !self.monotonic.is_empty() {
+            return;
+        }
         let at = d.config.chart_area.0;
         self.hold = Some((d.scale, [i64::from(at.x), i64::from(at.y)]));
     }
@@ -707,15 +776,18 @@ impl CartesianHost {
         p: [f32; 2],
         ppp: f32,
     ) -> Option<PickedData> {
-        let ticket = r.pick_chart_data(
-            self.id,
-            GpuPickRequest {
-                canvas_position_px: p,
-                display_panel_px: d.document,
-                display_scale: d.scale,
-                max_distance_px: 10.0 * ppp,
-            },
-        );
+        let request = GpuPickRequest {
+            canvas_position_px: p,
+            display_panel_px: d.document,
+            display_scale: d.scale,
+            max_distance_px: 10.0 * ppp,
+        };
+        let ticket = match self.id {
+            HostChart::General(id) => r.pick_chart_data(id, request),
+            HostChart::Monotonic(id) => r
+                .monotonic_chart(id)
+                .and_then(|mut chart| chart.pick_data(request)),
+        };
         match ticket {
             Ok(t) => match t.resolve_blocking() {
                 Ok(p) => p,
@@ -1374,27 +1446,33 @@ impl CartesianHost {
             let exported = if ui.button("Export document PNG").clicked() {
                 Some((
                     "png",
-                    r.export_png_blocking(
-                        renderer::ExportSource::chart(&chart, &series),
-                        renderer::ExportOptions::document(self.export_scale),
-                    ),
+                    scenes::export_scene(r, &chart, &series, &self.monotonic, |r, source| {
+                        r.export_png_blocking(
+                            source,
+                            renderer::ExportOptions::document(self.export_scale),
+                        )
+                    }),
                 ))
             } else if ui.button("Export document SVG").clicked() {
                 Some((
                     "svg",
-                    r.export_svg_blocking(
-                        renderer::ExportSource::chart(&chart, &series),
-                        renderer::ExportOptions::document(self.export_scale),
-                    )
+                    scenes::export_scene(r, &chart, &series, &self.monotonic, |r, source| {
+                        r.export_svg_blocking(
+                            source,
+                            renderer::ExportOptions::document(self.export_scale),
+                        )
+                    })
                     .map(String::into_bytes),
                 ))
             } else if ui.button("Export document PDF").clicked() {
                 Some((
                     "pdf",
-                    r.export_pdf_blocking(
-                        renderer::ExportSource::chart(&chart, &series),
-                        renderer::ExportOptions::document(self.export_scale),
-                    ),
+                    scenes::export_scene(r, &chart, &series, &self.monotonic, |r, source| {
+                        r.export_pdf_blocking(
+                            source,
+                            renderer::ExportOptions::document(self.export_scale),
+                        )
+                    }),
                 ))
             } else {
                 None
@@ -1461,7 +1539,7 @@ impl CartesianHost {
                     return;
                 };
                 let (config, series) = big.upload(r, current);
-                if let Err(e) = r.set_chart_series(self.id, series) {
+                if let Err(e) = self.id.set_series(r, series) {
                     self.error = Some(format!("series rejected: {e}"));
                 } else {
                     self.commit(r, config);
@@ -1774,6 +1852,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
             (true, true) => "triangle mesh+contour",
         },
         DataRenderType::Feynman(_) => "Feynman diagram",
+        DataRenderType::MonotonicLine(_) => "monotonic line",
     }
 }
 
@@ -2097,6 +2176,15 @@ fn series_controls(
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
         DataRenderType::Parallel { line, .. } => line_controls(ui, line),
+        // A monotonic line (#271) is linear without a fill: its colour,
+        // width and dash. A width that widens the columns its stroke
+        // reaches from asks for the samples again.
+        DataRenderType::MonotonicLine(monotonic) => {
+            let line = &mut monotonic.line;
+            color(ui, "line colour", &mut line.line_color);
+            slider(ui, "line width", &mut line.line_width, 0.5..=60.0);
+            choice(ui, "dash", &mut line.line_style, widgets::LINE_STYLES);
+        }
         // An energy-level series (#203): its strokes and arrows.
         DataRenderType::EnergyLevels(levels) => {
             color(ui, "level colour", &mut levels.style.level.color);
@@ -3048,29 +3136,49 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_radial()) {
         let scene = scenes::build(r, kind, big_data::START_POINTS).map_err(e)?;
         let chart = Chart::new(scene.config);
+        // A monotonic scene's series take its samples at the export's
+        // mapping (#271).
+        let export = |r: &mut Renderer,
+                      format: fn(
+            &mut Renderer,
+            renderer::ExportSource<'_>,
+            f32,
+        ) -> Result<Vec<u8>, renderer::FiggyError>,
+                      scale: f32| {
+            scenes::export_scene(r, &chart, &scene.series, &scene.monotonic, |r, source| {
+                format(r, source, scale)
+            })
+        };
         for scale in [1.0f32, 2.0] {
-            let png = r
-                .export_png_blocking(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .map_err(e)?;
+            let png = export(
+                r,
+                |r, source, scale| {
+                    r.export_png_blocking(source, renderer::ExportOptions::document(scale))
+                },
+                scale,
+            )
+            .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.png").to_lowercase());
             std::fs::write(&path, png).map_err(|e| e.to_string())?;
-            let svg = r
-                .export_svg_blocking(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .map_err(e)?;
+            let svg = export(
+                r,
+                |r, source, scale| {
+                    r.export_svg_blocking(source, renderer::ExportOptions::document(scale))
+                        .map(String::into_bytes)
+                },
+                scale,
+            )
+            .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.svg").to_lowercase());
             std::fs::write(&path, svg).map_err(|e| e.to_string())?;
-            let pdf = r
-                .export_pdf_blocking(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .map_err(e)?;
+            let pdf = export(
+                r,
+                |r, source, scale| {
+                    r.export_pdf_blocking(source, renderer::ExportOptions::document(scale))
+                },
+                scale,
+            )
+            .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.pdf").to_lowercase());
             std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
         }
@@ -3162,4 +3270,61 @@ fn moves_subplot_frame(element: Option<&renderer::layout::Element>) -> bool {
                 | renderer::layout::Element::SubplotFrameEdge(..)
         )
     )
+}
+
+/// The registered chart a host shows: a general one, or a monotonic one
+/// (#271), reached through its own handle. A monotonic chart's document is
+/// replaced through its editor, which refuses an edit that would move its
+/// x-to-pixel mapping.
+#[derive(Clone, Copy)]
+enum HostChart {
+    General(ChartId),
+    Monotonic(renderer::MonotonicChartId),
+}
+
+impl HostChart {
+    fn config<'r>(&self, r: &'r Renderer) -> Result<&'r Config, renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.chart_config(id),
+            Self::Monotonic(id) => r.monotonic_config(id),
+        }
+    }
+
+    fn series<'r>(&self, r: &'r Renderer) -> Result<&'r [SeriesConfig], renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.chart_series(id),
+            Self::Monotonic(id) => r.monotonic_series(id),
+        }
+    }
+
+    fn set_config(&self, r: &mut Renderer, config: Config) -> Result<(), renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.set_chart_config(id, config),
+            Self::Monotonic(id) => r
+                .monotonic_chart(id)?
+                .edit_config(|editor| editor.assign(config))?
+                .map_err(|kind| renderer::FiggyError::InvalidConfig {
+                    field: "config",
+                    kind,
+                }),
+        }
+    }
+
+    fn set_series(
+        &self,
+        r: &mut Renderer,
+        series: Vec<SeriesConfig>,
+    ) -> Result<(), renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.set_chart_series(id, series),
+            Self::Monotonic(id) => r.monotonic_chart(id)?.set_series(series),
+        }
+    }
+
+    fn remove(&self, r: &mut Renderer) -> Result<(), renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.remove_chart(id),
+            Self::Monotonic(id) => r.monotonic_chart(id)?.remove(),
+        }
+    }
 }

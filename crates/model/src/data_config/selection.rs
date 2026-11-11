@@ -34,7 +34,10 @@ impl DataRenderType {
             // Its triangles step by their own rule (#210).
             | DataRenderType::TriMesh(_)
             // Its vertices and propagators step by their own rule (#234).
-            | DataRenderType::Feynman(_) => false,
+            | DataRenderType::Feynman(_)
+            // Its kept points step through the renderer, which holds its
+            // envelope (#271).
+            | DataRenderType::MonotonicLine(_) => false,
         }
     }
 }

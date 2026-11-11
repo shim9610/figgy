@@ -416,6 +416,7 @@ fn prepare_demo_declarations(
                 DataRenderType::Feynman(diagram) => diagram.style.color,
                 DataRenderType::Streamlines { line, .. }
                 | DataRenderType::Parallel { line, .. } => line.line_color,
+                DataRenderType::MonotonicLine(series) => series.line.line_color,
                 DataRenderType::Ternary { scatter, line, .. } => scatter
                     .as_ref()
                     .map(|s| s.point_color)
@@ -1501,6 +1502,7 @@ mod web {
     pub(crate) use decorations::vertex_handle_index;
     pub(crate) use decorations::{annotation_kind_name, annotation_warnings_json};
     mod export;
+    mod monotonic;
     mod picking;
     mod streaming;
     pub use streaming::{AutoStreamingRangeRequestResult, AutoStreamingRequestResult};

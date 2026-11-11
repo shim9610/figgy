@@ -281,6 +281,19 @@ fn fitted_axis_range(
     (range.0.is_finite() && range.1.is_finite() && range.1 > range.0).then_some(range)
 }
 
+/// Fit one axis that has no partner, such as an overlay's y axis, to
+/// `ext` with the auto-fit rules ([`fitted_axis_range`], [`apply_axis_range`]).
+pub(crate) fn apply_axis_fit(
+    axis: &mut crate::config::AxisOptions,
+    ext: &FitExtent,
+    padding_ratio: f64,
+) {
+    if let Some((min, max)) = fitted_axis_range(axis, ext, padding_ratio) {
+        let scale = axis.scale.clone();
+        apply_axis_range(axis, min, max, &scale);
+    }
+}
+
 /// Apply GPU-reduced x/y fit bounds directly to an owned `Config`.
 ///
 /// This is allocation-free and infallible after extent validation, allowing

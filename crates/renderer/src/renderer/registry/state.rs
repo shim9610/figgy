@@ -464,7 +464,7 @@ impl ColumnRemovalPlan {
             if let Some(referencing) = update.referencing {
                 state
                     .series
-                    .retain(|series| !series_references_column(series, removed_column));
+                    .retain(|series| !series_dropped_with_column(series, removed_column));
                 *series_revision = referencing.series;
                 *data = referencing.data;
             }
@@ -492,7 +492,7 @@ pub(in crate::renderer) fn series_after_column_removal(
 ) -> Result<Vec<SeriesConfig>> {
     let retained = series
         .iter()
-        .filter(|series| !series_references_column(series, removed_column))
+        .filter(|series| !series_dropped_with_column(series, removed_column))
         .count();
     let mut candidate = Vec::new();
     candidate
@@ -504,7 +504,7 @@ pub(in crate::renderer) fn series_after_column_removal(
     candidate.extend(
         series
             .iter()
-            .filter(|series| !series_references_column(series, removed_column))
+            .filter(|series| !series_dropped_with_column(series, removed_column))
             .cloned(),
     );
     Ok(candidate)

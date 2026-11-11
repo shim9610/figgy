@@ -711,6 +711,75 @@ cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-ax
 cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 ```
 
+### Monotonic-x lines
+
+For fast, large, evenly spaced data (`x = start + i × interval`), such as a
+data acquisition stream, `SeriesConfig::monotonic_line(id, group, channel)`
+draws one channel of a group as a line through its **M4 envelope**: per
+pixel column the renderer keeps the first, lowest, highest and last samples
+on the CPU, so the GPU draws about `8 × plot width` rows per channel however
+many samples there are. The samples stay with the host: every call lends
+them through a `MonotonicSource` (`MonotonicSlices` for one slice per
+channel, `MonotonicInterleaved` for one sample-major buffer with a stride;
+`f64`, `f32`, `i32`, `i16`, `u16` or `u8`), and nothing is kept after it.
+
+```rust,ignore
+use renderer::renderer::{MonotonicGroupRef, MonotonicRange};
+use renderer::layout::Side;
+use renderer::{MonotonicAppend, MonotonicSlices, SeriesConfig};
+
+let series = vec![
+    SeriesConfig::monotonic_line("ch0", "daq", 0).label("channel 0"),
+    SeriesConfig::monotonic_line("ch1", "daq", 1).label("channel 1"),
+];
+// A chart with monotonic series is a monotonic chart, reached only through
+// its handle: no general chart call takes it.
+let id = renderer.register_monotonic_chart(chart.config().clone(), series)?;
+// The source carries the samples, start and interval. The full call reduces
+// them in full; `Autoscale` fits the x range to the samples and the y range
+// to what this reduction keeps, `X { min, max }` sets the x range.
+let channels = [ch0.as_slice(), ch1.as_slice()];
+let source = MonotonicSlices::new(0.0, 1e-3, &channels);
+let mut daq = renderer.monotonic_chart(id)?;
+daq.set_monotonic("daq", &source, MonotonicRange::Autoscale)?;
+// Then only the new samples (an append continues the full call's grid);
+// `sliding` keeps the window's length and moves the x range by their span.
+let fresh = [new0.as_slice(), new1.as_slice()];
+daq.append_monotonic("daq", &MonotonicSlices::new(0.0, 1e-3, &fresh), MonotonicAppend { sliding: true })?;
+// A zoom is a full call at the new range.
+daq.set_monotonic("daq", &source, MonotonicRange::X { min: 0.0, max: 2.0 })?;
+// A resize (the chart area, or the plot a plot-area resize proposes) and a
+// layout fit take the groups' sources too.
+let groups = [MonotonicGroupRef::new("daq", &source)];
+daq.resize(new_chart_area, None, Some((width, height)), &groups)?;
+daq.fit_layout(&groups)?;
+// Everything else edits the document through its editor, with no source.
+daq.edit_config(|config| {
+    config.chart_title().visible = true;
+    config.axis(Side::Left).title().visible = true;
+})?;
+```
+
+Only these four calls move the x-to-pixel mapping (the x range, the plot's
+width in device pixels, the x direction), and each takes the source. The
+general chart calls take a `ChartId`, which a monotonic chart never hands
+out, so they cannot reach it; `register_chart` and the series calls refuse a
+monotonic line series (`RuleKind::MonotonicGeneralChart`). The document
+editor (`MonotonicConfig`) edits the legend, titles, axis titles, ticks,
+tick labels and their format, colours, annotations, the selection and
+decoration drags, and has no setter for the x range, x scale or plot area;
+an edit that would move them is refused (`RuleKind::MonotonicMappingEdit`).
+A line width is a plain style edit (`set_series`): the envelope keeps a
+fixed 64 pixel columns beyond each plot edge, so strokes up to about 120
+device pixels wide draw their edges exactly, and a wider one may miss ink at
+the edges. Frames and picks never need the source.
+`renderer.monotonic_needs_source(id)` lists the series whose group was never
+supplied. `prepare_monotonic` draws `MonotonicChartDrawItem`s, and an export
+takes `ExportSource::Monotonic { chart: id, monotonic: &groups }` (`&[]` at
+the screen's scale).
+Picks report the logical sample index of a kept point. Log, probability and
+broken x axes are refused. See [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
+
 ### Box plots
 
 A `DataRenderType::BoxPlot` series draws precomputed quartiles, medians,
@@ -1519,6 +1588,65 @@ cargo run --locked -p figgy-renderer --example vector_field -- target/vector-fie
 cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
 cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 ```
+
+### 단조 x 선
+
+간격이 일정하고(`x = start + i × interval`) 빠르게 쌓이는 대용량 데이터(데이터 수집 장비의
+흐름 등)는 `SeriesConfig::monotonic_line(id, group, channel)`로 묶음의 채널 하나를 **M4
+엔벌로프**로 그린다. 렌더러는 픽셀 열마다 첫 샘플, 가장 낮은 샘플, 가장 높은 샘플, 마지막
+샘플만 CPU에 남기므로, 샘플이 몇 개든 GPU는 채널마다 `8 × 플롯 너비` 행 정도만 그린다.
+샘플은 호스트가 가진다. 호출마다 `MonotonicSource`로 빌려주며(채널별 슬라이스는
+`MonotonicSlices`, 간격을 둔 섞인 버퍼 하나는 `MonotonicInterleaved`, 원소 형식은 `f64`,
+`f32`, `i32`, `i16`, `u16`, `u8`), 호출이 끝나면 아무것도 남기지 않는다.
+
+```rust,ignore
+use renderer::renderer::{MonotonicGroupRef, MonotonicRange};
+use renderer::layout::Side;
+use renderer::{MonotonicAppend, MonotonicSlices, SeriesConfig};
+
+let series = vec![
+    SeriesConfig::monotonic_line("ch0", "daq", 0).label("channel 0"),
+    SeriesConfig::monotonic_line("ch1", "daq", 1).label("channel 1"),
+];
+// 단조 시리즈가 있는 차트는 단조 차트이며 그 핸들로만 닿는다. 일반 차트 호출은 받지 않는다.
+let id = renderer.register_monotonic_chart(chart.config().clone(), series)?;
+// 소스가 샘플과 start, interval을 담는다. 전체 호출은 전체를 축약한다. `Autoscale`은 x 범위를
+// 샘플에, y 범위를 이번 축약이 남긴 값에 맞추고, `X { min, max }`는 x 범위를 정한다.
+let channels = [ch0.as_slice(), ch1.as_slice()];
+let source = MonotonicSlices::new(0.0, 1e-3, &channels);
+let mut daq = renderer.monotonic_chart(id)?;
+daq.set_monotonic("daq", &source, MonotonicRange::Autoscale)?;
+// 그다음에는 새 샘플만 넘긴다(추가는 전체 호출의 격자를 이어 간다). `sliding`은 창 길이를
+// 유지하고 x 범위를 새 샘플만큼 옮긴다.
+let fresh = [new0.as_slice(), new1.as_slice()];
+daq.append_monotonic("daq", &MonotonicSlices::new(0.0, 1e-3, &fresh), MonotonicAppend { sliding: true })?;
+// 확대는 새 범위로 하는 전체 호출이다.
+daq.set_monotonic("daq", &source, MonotonicRange::X { min: 0.0, max: 2.0 })?;
+// 크기 조정(차트 영역, 또는 데이터 영역 크기 조정이 제안한 플롯)과 배치 맞춤도 소스를 받는다.
+let groups = [MonotonicGroupRef::new("daq", &source)];
+daq.resize(new_chart_area, None, Some((width, height)), &groups)?;
+daq.fit_layout(&groups)?;
+// 나머지는 소스 없이 편집기로 문서를 고친다.
+daq.edit_config(|config| {
+    config.chart_title().visible = true;
+    config.axis(Side::Left).title().visible = true;
+})?;
+```
+
+x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방향)을 옮기는 호출은 이 넷뿐이고
+모두 소스를 받는다. 일반 차트 호출은 `ChartId`를 받는데 단조 차트는 이를 내주지 않으므로 단조
+차트에 닿지 못한다. `register_chart`와 시리즈 호출은 단조 선 시리즈를 거부한다
+(`RuleKind::MonotonicGeneralChart`). 문서 편집기(`MonotonicConfig`)는 범례, 제목, 축 제목,
+눈금, 눈금 라벨과 형식, 색, 주석, 선택, 꾸밈 요소 끌기를 고치며 x 범위, x 스케일, 플롯 영역을
+쓰는 메서드는 없다. 이를 옮길 수정은 거부한다(`RuleKind::MonotonicMappingEdit`). 선 굵기는
+일반 스타일 수정이다(`set_series`). 엔벌로프는 플롯 가장자리마다 바깥으로 64픽셀 열을 고정으로
+두므로 장치 픽셀 약 120까지의 선은 가장자리를 정확히 그리고, 더 굵은 선은 가장자리 잉크를 놓칠
+수 있다. 프레임과 선택에는 소스가 필요 없다. `renderer.monotonic_needs_source(id)`는 묶음
+데이터를 한 번도 받지 않은 시리즈를 알려 준다. `prepare_monotonic`은
+`MonotonicChartDrawItem`을 그리고, 내보내기는
+`ExportSource::Monotonic { chart: id, monotonic: &groups }`를 받는다(화면 배율이면 `&[]`).
+선택 결과는 남긴 점의 논리 샘플 번호다. 로그·확률·끊긴 x 축은 거부한다.
+[MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md)를 참고한다.
 
 ### 박스플롯
 

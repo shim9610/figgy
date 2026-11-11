@@ -46,6 +46,7 @@ impl Renderer {
                 queue: &self.queue,
                 caps: &self.caps,
                 pool: &self.pool,
+                monotonic: &self.monotonic,
                 gpu_ledger: &self.gpu_ledger,
                 style_bgl: &self.style_bgl,
                 field_bgl: &self.field_bgl,
@@ -245,7 +246,7 @@ impl Renderer {
         self.reported(result)
     }
 
-    pub(super) fn prepare_registered_items_unreported(
+    pub(in crate::renderer) fn prepare_registered_items_unreported(
         &mut self,
         items: &mut [RegisteredChartDrawItem<'_>],
     ) -> Result<PreparedFrame> {

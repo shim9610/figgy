@@ -88,6 +88,10 @@ pub(super) struct PrepareContext<'a> {
     pub(super) queue: &'a wgpu::Queue,
     pub(super) caps: &'a RendererDeviceCaps,
     pub(super) pool: &'a ColumnPool,
+    /// The monotonic envelopes (#271): a monotonic series is drawn only
+    /// from an envelope built for its panel's mapping, and its selection
+    /// rows map through it.
+    pub(super) monotonic: &'a monotonic::MonotonicState,
     pub(super) gpu_ledger: &'a Arc<GpuLedger>,
     pub(super) style_bgl: &'a wgpu::BindGroupLayout,
     pub(super) field_bgl: &'a wgpu::BindGroupLayout,
@@ -155,6 +159,9 @@ impl PrepareContext<'_> {
             Some(expanded) => expanded.as_slice(),
             None => items,
         };
+        // A monotonic series is drawn only from an envelope built for its
+        // panel's x-to-pixel mapping (#271).
+        self.monotonic.check_panels(items)?;
         // One Vec of per-panel products for the whole frame; each phase below
         // fills its part in place.
         let mut panels = Vec::with_capacity(items.len());

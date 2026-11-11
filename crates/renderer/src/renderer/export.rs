@@ -229,12 +229,50 @@ pub enum ExportSource<'a> {
     /// A chart registered with [`Renderer::register_chart`]: its stored
     /// config and series, as they are serialized (not its display placement).
     Registered(ChartId),
+    /// A monotonic chart (#271), with the sources of its groups: an export
+    /// whose x-to-pixel mapping differs from the one the groups' envelopes
+    /// were built for (a 2x export, or a 1x export of a chart displayed at
+    /// another scale) reduces each group from its source at the export's
+    /// mapping, into envelopes that live for the export only. A series
+    /// whose envelope already matches is drawn from it (an export at the
+    /// screen's mapping takes `&[]`). Without its group's source here, such
+    /// a series fails the export with [`FiggyError::MonotonicSourceRequired`].
+    Monotonic {
+        chart: crate::renderer::MonotonicChartId,
+        monotonic: &'a [crate::renderer::MonotonicGroupRef<'a>],
+    },
 }
 
 impl<'a> ExportSource<'a> {
     /// [`Self::Chart`].
     pub fn chart(chart: &'a Chart, series: &'a [SeriesConfig]) -> Self {
         Self::Chart { chart, series }
+    }
+}
+
+/// `config` scaled by the (clamped) export `scale` and placed at the origin
+/// of the export target, as [`Renderer::prepare_export`] draws it: the
+/// whole document, or the parent's area alone for a panel export.
+pub(super) fn export_placed_config(config: &Config, scale: f32, scope: ExportScope) -> Config {
+    let orig = match scope {
+        ExportScope::Document => config.document_area(),
+        ExportScope::Panel => config.chart_area.0,
+    };
+    let target = Rect {
+        x: 0,
+        y: 0,
+        width: ((orig.width as f32) * scale).round().max(1.0) as u32,
+        height: ((orig.height as f32) * scale).round().max(1.0) as u32,
+    };
+    match scope {
+        ExportScope::Document => place_document(config, scale, target),
+        ExportScope::Panel => {
+            let mut panel = config.scaled(scale);
+            let parent = panel.chart_area.0;
+            panel.translate_areas(-i64::from(parent.x), -i64::from(parent.y));
+            panel.chart_area = crate::layout::ChartArea(target);
+            panel
+        }
     }
 }
 
@@ -420,6 +458,21 @@ impl Renderer {
                 )
                 .await
             }
+            ExportSource::Monotonic { chart, monotonic } => {
+                let (chart, series, transient) =
+                    self.registered_export_with(chart.0, monotonic, options.scale, options.scope)?;
+                let result = self
+                    .export_rgba_with_clear_scoped(
+                        &chart,
+                        &series,
+                        options.scale,
+                        options.clear,
+                        options.scope,
+                    )
+                    .await;
+                self.end_monotonic_export(&transient);
+                result
+            }
         }
     }
 
@@ -480,14 +533,26 @@ impl Renderer {
         options: ExportOptions,
     ) -> Result<RasterImage> {
         let (chart, series);
+        let mut transient = Vec::new();
         let (chart, series) = match source {
             ExportSource::Chart { chart, series } => (chart, series),
             ExportSource::Registered(id) => {
                 (chart, series) = self.registered_export_state(id)?;
                 (&chart, series.as_slice())
             }
+            ExportSource::Monotonic {
+                chart: id,
+                monotonic,
+            } => {
+                (chart, series, transient) =
+                    self.registered_export_with(id.0, monotonic, options.scale, options.scope)?;
+                (&chart, series.as_slice())
+            }
         };
-        self.export_begin(series)?;
+        if let Err(error) = self.export_begin(series) {
+            self.end_monotonic_export(&transient);
+            return Err(error);
+        }
         let device = self.device.clone();
         let result = native_export_scoped_blocking(
             &device,
@@ -500,7 +565,9 @@ impl Renderer {
             },
             std::convert::identity,
         );
-        self.export_end(result)
+        let result = self.export_end(result);
+        self.end_monotonic_export(&transient);
+        result
     }
 
     /// [`Self::export_png`], polling the device on this thread.
@@ -542,14 +609,30 @@ impl Renderer {
     ) -> Result<F::Output> {
         check_vector_scope(options)?;
         let (chart, series);
+        let mut transient = Vec::new();
         let (chart, series) = match source {
             ExportSource::Chart { chart, series } => (chart, series),
             ExportSource::Registered(id) => {
                 (chart, series) = self.registered_export_state(id)?;
                 (&chart, series.as_slice())
             }
+            ExportSource::Monotonic {
+                chart: id,
+                monotonic,
+            } => {
+                (chart, series, transient) = self.registered_export_with(
+                    id.0,
+                    monotonic,
+                    options.scale,
+                    ExportScope::Document,
+                )?;
+                (&chart, series.as_slice())
+            }
         };
-        self.export_begin(series)?;
+        if let Err(error) = self.export_begin(series) {
+            self.end_monotonic_export(&transient);
+            return Err(error);
+        }
         let device = self.device.clone();
         let result = native_export_scoped_blocking(
             &device,
@@ -565,7 +648,9 @@ impl Renderer {
             },
             std::convert::identity,
         );
-        self.export_end(result)
+        let result = self.export_end(result);
+        self.end_monotonic_export(&transient);
+        result
     }
 
     /// The checks every export makes before it renders.
@@ -604,12 +689,42 @@ impl Renderer {
                 self.export_vector_scoped::<F>(&chart, &series, options.scale, options.clear)
                     .await
             }
+            ExportSource::Monotonic { chart, monotonic } => {
+                let (chart, series, transient) = self.registered_export_with(
+                    chart.0,
+                    monotonic,
+                    options.scale,
+                    ExportScope::Document,
+                )?;
+                let result = self
+                    .export_vector_scoped::<F>(&chart, &series, options.scale, options.clear)
+                    .await;
+                self.end_monotonic_export(&transient);
+                result
+            }
         }
     }
 
     /// A registered chart's stored config, as a [`Chart`], and its series,
     /// for an export. Configuration only is copied (rule 2): the export
     /// prepares through `&mut self`, so it cannot borrow the registry.
+    /// [`Self::registered_export_state`] with the transient monotonic
+    /// envelopes `monotonic` builds at the export's own mapping (#271), and
+    /// the transient columns to remove once the export is done.
+    fn registered_export_with(
+        &mut self,
+        id: ChartId,
+        monotonic: &[crate::renderer::MonotonicGroupRef<'_>],
+        scale: f32,
+        scope: ExportScope,
+    ) -> Result<(Chart, Vec<SeriesConfig>, Vec<ColumnId>)> {
+        let (chart, mut series) = self.registered_export_state(id)?;
+        let scale = clamp_export_scale(scale);
+        let placed = export_placed_config(chart.config(), scale, scope);
+        let transient = self.begin_monotonic_export(id, &placed, &mut series, monotonic)?;
+        Ok((chart, series, transient))
+    }
+
     fn registered_export_state(&self, id: ChartId) -> Result<(Chart, Vec<SeriesConfig>)> {
         let state = self
             .chart_states
@@ -759,7 +874,7 @@ impl Renderer {
         let w = ((orig.width as f32) * scale).round().max(1.0) as u32;
         let h = ((orig.height as f32) * scale).round().max(1.0) as u32;
         validate_texture_extent(self.caps, "figgy export target dimension", w, h)?;
-        let export_format = wgpu::TextureFormat::Rgba8Unorm;
+        let export_format = EXPORT_FORMAT;
         let mut export_sample_count = preferred_msaa_sample_count(self.caps, export_format);
         validate_target_sample_count(self.caps, export_format, export_sample_count)?;
         let export_features = export_format.guaranteed_format_features(self.caps.features);
@@ -776,22 +891,7 @@ impl Renderer {
         // 1) Scaled config placed at the origin of a (0,0,w,h) target → temp
         // chart. Without subplots the chart area is the whole target. A panel
         // export places the parent's area at the origin.
-        let target = Rect {
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-        };
-        let scaled_config = match scope {
-            ExportScope::Document => place_document(chart.config(), scale, target),
-            ExportScope::Panel => {
-                let mut panel = chart.config().scaled(scale);
-                let parent = panel.chart_area.0;
-                panel.translate_areas(-i64::from(parent.x), -i64::from(parent.y));
-                panel.chart_area = crate::layout::ChartArea(target);
-                panel
-            }
-        };
+        let scaled_config = export_placed_config(chart.config(), scale, scope);
         let panel_rect = scaled_config.chart_area.0;
         let scaled_chart = Chart::new(scaled_config);
 
@@ -826,6 +926,9 @@ impl Renderer {
             group_sizes = vec![1];
         }
         let items = items.as_slice();
+        // A monotonic series is drawn only from an envelope built for the
+        // export's own mapping (#271).
+        self.monotonic.check_panels(items)?;
         // One Vec of per-panel products, filled phase by phase as in `prepare`.
         let mut panels = Vec::with_capacity(items.len());
         for item in items {
@@ -1192,7 +1295,7 @@ impl Renderer {
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.
-        let unpadded_bpr_u64 = u64::from(w) * 4;
+        let unpadded_bpr_u64 = u64::from(w) * EXPORT_TEXEL_BYTES;
         let align = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let padded_bpr_u64 = unpadded_bpr_u64.div_ceil(align) * align;
         if padded_bpr_u64 > u64::from(u32::MAX) {
@@ -1392,40 +1495,21 @@ impl ExportReadback {
     /// After the chunk's wait: write its rows into the image, un-
     /// premultiplied, and move to the next chunk.
     fn consume(&mut self, mut chunk: ExportChunk) -> Result<()> {
-        let w = self.size.0;
+        let w = self.size.0 as usize;
         let (y0, rows) = (self.y0, chunk.rows);
         let (unpadded_bpr, padded_bpr) = (self.unpadded_bpr, self.padded_bpr);
         let rgba = &mut self.rgba;
-        let bgra = false;
         chunk
             .readback
             .finish(|mapped| {
                 for local_y in 0..rows {
                     let src_off = (local_y * padded_bpr) as usize;
-                    let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
+                    let dst_off = (y0 + local_y) as usize * w * 4;
                     let row = &mapped[src_off..src_off + unpadded_bpr as usize];
-                    for i in 0..(w as usize) {
-                        let p = i * 4;
-                        let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
-                        let (r, g, b, a) = if bgra {
-                            (b2, b1, b0, b3)
-                        } else {
-                            (b0, b1, b2, b3)
-                        };
-                        let (or, og, ob) = if a == 0 || a == 255 {
-                            (r, g, b)
-                        } else {
-                            let a_f = a as f32 / 255.0;
-                            (
-                                ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                                ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                                ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                            )
-                        };
-                        rgba[dst_off + p] = or;
-                        rgba[dst_off + p + 1] = og;
-                        rgba[dst_off + p + 2] = ob;
-                        rgba[dst_off + p + 3] = a;
+                    let (texels, _) = row.as_chunks::<{ EXPORT_TEXEL_BYTES as usize }>();
+                    let (pixels, _) = rgba[dst_off..dst_off + w * 4].as_chunks_mut::<4>();
+                    for (pixel, texel) in pixels.iter_mut().zip(texels) {
+                        *pixel = straight_rgba8(texel);
                     }
                 }
             })
@@ -1466,4 +1550,54 @@ fn export_readback_error(error: ReadbackError) -> FiggyError {
         resource: "figgy export readback mapping",
         reason,
     }
+}
+
+/// The export target, resident and streamed alike: premultiplied half
+/// floats. Every primitive blends into it at half precision, and the image
+/// is quantized to 8 bits once, at readback ([`straight_rgba8`]). With an 8-bit target each blend rounded to 8 bits against
+/// whatever lay under it, and 8-bit premultiplied blending is not
+/// associative: the PNG export (grid, then each data primitive, then the
+/// decoration) and a vector file (the data alone on a transparent image,
+/// placed over the grid) drifted apart wherever many antialiased strokes
+/// stack, by about half a level per stacked partial-alpha fragment. In half
+/// floats the two orders agree within the final quantization.
+pub(crate) const EXPORT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Bytes of one [`EXPORT_FORMAT`] texel.
+pub(crate) const EXPORT_TEXEL_BYTES: u64 = 8;
+
+/// An IEEE 754 half as an `f32`.
+fn half_to_f32(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let mantissa = f32::from(bits & 0x3ff);
+    match exponent {
+        0 => sign * mantissa * (2.0f32).powi(-24),
+        31 => {
+            if mantissa == 0.0 {
+                sign * f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        _ => sign * (1.0 + mantissa / 1024.0) * (2.0f32).powi(exponent - 15),
+    }
+}
+
+/// One premultiplied half-float texel as straight-alpha RGBA8: divided by
+/// its exact alpha, then rounded once. A texel without alpha keeps its
+/// colour as the 8-bit target kept it.
+pub(crate) fn straight_rgba8(texel: &[u8; EXPORT_TEXEL_BYTES as usize]) -> [u8; 4] {
+    let half = |k: usize| half_to_f32(u16::from_le_bytes([texel[2 * k], texel[2 * k + 1]]));
+    let byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    let a = half(3).clamp(0.0, 1.0);
+    let alpha = byte(a);
+    let color = |k: usize| {
+        let premultiplied = half(k).max(0.0);
+        if alpha == 0 {
+            byte(premultiplied)
+        } else {
+            byte(premultiplied / a)
+        }
+    };
+    [color(0), color(1), color(2), alpha]
 }

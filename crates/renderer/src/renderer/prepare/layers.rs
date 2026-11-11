@@ -330,7 +330,15 @@ impl PrepareContext<'_> {
                 });
                 continue;
             }
-            let x_h = lookup(&cfg.x_column)?;
+            let x_h = match lookup(&cfg.x_column) {
+                // A monotonic series before its group's first full call has
+                // no envelope columns: it draws nothing (#271).
+                Err(FiggyError::UnknownColumn { .. }) if cfg.monotonic().is_some() => {
+                    out.push(data_render::SeriesLayers::empty());
+                    continue;
+                }
+                other => other?,
+            };
             // The height column of a scatter or line series on a 3D chart
             // (#132), and its camera group: the surface layout for the
             // precise entries, the combined value map and camera layout for

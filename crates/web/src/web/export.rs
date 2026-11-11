@@ -23,10 +23,11 @@ impl FiggyChart {
     /// Scale-product overflow or an atlas beyond the adapter texture limit
     /// rejects the export before contour GPU state changes.
     pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+        let source = self.export_source();
         let bytes = self
             .renderer
             .export_png(
-                renderer::ExportSource::Registered(self.chart_id),
+                source,
                 renderer::ExportOptions::document(scale).with_clear(self.clear_color),
             )
             .await
@@ -43,9 +44,10 @@ impl FiggyChart {
     /// streamed source is rejected; the `<figgy-chart>` facade rejects it
     /// before calling.
     pub async fn export_svg(&mut self, scale: f32) -> Result<String, JsValue> {
+        let source = self.export_source();
         self.renderer
             .export_svg(
-                renderer::ExportSource::Registered(self.chart_id),
+                source,
                 renderer::ExportOptions::document(scale).with_clear(self.clear_color),
             )
             .await
@@ -55,10 +57,11 @@ impl FiggyChart {
     /// [`Self::export_svg`] as one-page PDF bytes.
     /// JS: `const pdf = await chart.export_pdf(2.0);`
     pub async fn export_pdf(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+        let source = self.export_source();
         let bytes = self
             .renderer
             .export_pdf(
-                renderer::ExportSource::Registered(self.chart_id),
+                source,
                 renderer::ExportOptions::document(scale).with_clear(self.clear_color),
             )
             .await
@@ -73,6 +76,7 @@ impl FiggyChart {
         scale: f32,
         max_primitives_per_chunk: f64,
     ) -> Result<StreamingOperationHandle, JsValue> {
+        self.refuse_streaming()?;
         let max_chunk = js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
         let operation = self
             .renderer
@@ -101,5 +105,19 @@ impl FiggyChart {
             .map_err(js_err)?;
         let bytes = renderer::encode_png(&image).map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
+    }
+}
+
+impl FiggyChart {
+    /// The shown chart as an export source at the screen's mapping: a
+    /// monotonic chart with no sources lent (#271).
+    fn export_source(&self) -> renderer::ExportSource<'static> {
+        match self.monotonic {
+            Some(chart) => renderer::ExportSource::Monotonic {
+                chart,
+                monotonic: &[],
+            },
+            None => renderer::ExportSource::Registered(self.chart_id),
+        }
     }
 }

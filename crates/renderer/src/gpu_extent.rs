@@ -181,7 +181,9 @@ impl GpuSeriesFitMode {
             }
             // A radar series and streamlines fit as the line they draw (the
             // extent mode above answers them first).
-            DataRenderType::Radar { .. } | DataRenderType::Streamlines { .. } => return None,
+            DataRenderType::Radar { .. }
+            | DataRenderType::Streamlines { .. }
+            | DataRenderType::MonotonicLine(_) => return None,
             // A ternary chart's axes are the triangle, not a data extent.
             DataRenderType::Ternary { .. } => return None,
             // A parallel chart's axes are the categorical positions and the
@@ -250,7 +252,10 @@ impl GpuSeriesExtentMode {
             // streamlines are polylines whose NaN rows hold no extent.
             DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
             | DataRenderType::Radar { .. }
-            | DataRenderType::Streamlines { .. } => Some(Self::Line),
+            | DataRenderType::Streamlines { .. }
+            // A monotonic envelope fits as the line it draws: its kept
+            // points, the visible samples and one on each side (#271).
+            | DataRenderType::MonotonicLine(_) => Some(Self::Line),
             DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), errors: None, .. }) => {
                 Some(Self::Points)
             }

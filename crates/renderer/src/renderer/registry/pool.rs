@@ -179,7 +179,11 @@ impl Renderer {
                         .chart_states
                         .get(&chart_id)
                         .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-                    let plan = PickChartPlan::for_active_layer(&state.config, &state.series)?;
+                    let plan = PickChartPlan::for_active_layer_in(
+                        defragment.pool(),
+                        &state.config,
+                        &state.series,
+                    )?;
                     self.picker.prepare_active_pool_mutation(
                         defragment.pool(),
                         chart_id,
@@ -276,7 +280,11 @@ impl Renderer {
                             .chart_states
                             .get(&chart_id)
                             .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-                        let plan = PickChartPlan::for_active_layer(&state.config, &state.series)?;
+                        let plan = PickChartPlan::for_active_layer_in(
+                            relayout.pool(),
+                            &state.config,
+                            &state.series,
+                        )?;
                         self.picker.prepare_active_pool_mutation(
                             relayout.pool(),
                             chart_id,

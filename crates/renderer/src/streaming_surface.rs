@@ -37,6 +37,9 @@ fn validate_format(format: wgpu::TextureFormat, samples: u32) -> Result<(), Stre
             | wgpu::TextureFormat::Bgra8Unorm
             | wgpu::TextureFormat::Rgba8UnormSrgb
             | wgpu::TextureFormat::Bgra8UnormSrgb
+            // The export target (`EXPORT_FORMAT`): a streamed export
+            // blends as the resident export does.
+            | wgpu::TextureFormat::Rgba16Float
     ) || !matches!(samples, 1 | 4)
     {
         return Err(StreamSurfaceError::InvalidOptions);
@@ -50,9 +53,13 @@ impl StreamSurfaceSpec {
         if self.width == 0 || self.height == 0 {
             return Err(StreamSurfaceError::InvalidOptions);
         }
+        let texel_bytes = match self.format {
+            wgpu::TextureFormat::Rgba16Float => 8,
+            _ => 4,
+        };
         u64::from(self.width)
             .checked_mul(u64::from(self.height))
-            .and_then(|bytes| bytes.checked_mul(4))
+            .and_then(|bytes| bytes.checked_mul(texel_bytes))
             .and_then(|bytes| {
                 bytes.checked_mul(
                     u64::from(self.sample_count) * 2 + u64::from(self.sample_count > 1),
