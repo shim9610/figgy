@@ -172,6 +172,33 @@ pub enum FiggyError {
         reason: String,
     },
 
+    /// A monotonic chart's resize or layout fit (#271), or an export at
+    /// another scale, would move the x-to-pixel mapping of a monotonic
+    /// series without its group's source: `change` says how (the plot width
+    /// in device pixels, for one). The renderer keeps no copy of the
+    /// samples, so the call that moves it takes the source
+    /// (`MonotonicChart::resize`, `MonotonicChart::fit_layout`,
+    /// `ExportSource::Monotonic`). The refused call changes nothing. A frame
+    /// or a pick never fails with it.
+    MonotonicSourceRequired {
+        series_id: String,
+        change: crate::monotonic::MappingChange,
+    },
+
+    /// A monotonic call (#271) on group `group` was refused by the
+    /// envelope core: an invalid grid or mapping, an x axis that is not
+    /// linear and unbroken, an append before a full call or with another
+    /// channel count, or a slide over samples that were not kept.
+    Monotonic {
+        group: String,
+        error: crate::monotonic::MonotonicError,
+    },
+
+    /// No series of the chart names monotonic group `group` (#271).
+    UnknownMonotonicGroup {
+        group: String,
+    },
+
     /// An asynchronous GPU wait on a bundle built with
     /// `RendererDevice::blocking`: it has
     /// no poll thread to complete the wait. Use the `_blocking` call, or
@@ -260,6 +287,15 @@ impl std::fmt::Display for FiggyError {
             Self::PollThreadStartFailed { reason } => {
                 write!(f, "could not start the GPU poll thread: {reason}")
             }
+            Self::MonotonicSourceRequired { series_id, change } => write!(
+                f,
+                "monotonic series {series_id}: the call would move its x mapping ({change:?}); \
+                 the call takes the group's source"
+            ),
+            Self::Monotonic { group, error } => write!(f, "monotonic group {group}: {error}"),
+            Self::UnknownMonotonicGroup { group } => {
+                write!(f, "no series of the chart names monotonic group {group}")
+            }
             Self::AsyncWaitUnavailable => write!(
                 f,
                 "asynchronous GPU wait on a blocking-only device bundle (no poll thread)"
@@ -273,6 +309,7 @@ impl std::error::Error for FiggyError {
         match self {
             Self::Pool(e) => Some(e),
             Self::GpuPick(e) => Some(e),
+            Self::Monotonic { error, .. } => Some(error),
             _ => None,
         }
     }

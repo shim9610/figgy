@@ -230,6 +230,7 @@ impl From<WireRenderType> for DataRenderType {
             WireRenderType::EnergyLevels(levels) => DataRenderType::EnergyLevels(levels),
             WireRenderType::TriMesh(mesh) => DataRenderType::TriMesh(mesh),
             WireRenderType::Feynman(diagram) => DataRenderType::Feynman(diagram),
+            WireRenderType::MonotonicLine(series) => DataRenderType::MonotonicLine(series),
         }
     }
 }
@@ -444,6 +445,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
             DataRenderType::EnergyLevels(levels) => WireRenderType::EnergyLevels(levels),
             DataRenderType::TriMesh(mesh) => WireRenderType::TriMesh(mesh),
             DataRenderType::Feynman(diagram) => WireRenderType::Feynman(diagram),
+            DataRenderType::MonotonicLine(series) => WireRenderType::MonotonicLine(series),
         })
     }
 }
@@ -1032,4 +1034,5 @@ pub(crate) enum WireRenderType {
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
     TriMesh(crate::tri_mesh::TriMeshSeries),
     Feynman(crate::feynman::FeynmanSeries),
+    MonotonicLine(MonotonicLineSeries),
 }

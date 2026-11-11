@@ -113,6 +113,58 @@ approximate. In `StreamingStatus`, `status` reaches `StreamingState::Complete`
 with the final render, while `AllSubmitted` only means that every input primitive
 has been submitted; `auto_fit_pending` stays true until a requested fit is final.
 
+A monotonic-x line series (`DataRenderType::MonotonicLine`, #271) is fed by
+its own calls, never by `ColumnSource` uploads or streaming: a host lends a
+group's samples through a `MonotonicSource`, which carries the values, their
+`start` and `interval` (`MonotonicSlices::new(start, interval, channels)`,
+`MonotonicInterleaved::new(start, interval, values, stride, columns)`, or its
+own impl, such as a ring buffer lending two runs; elements `f64`, `f32`,
+`i32`, `i16`, `u16`, `u8`) on every call that reads it, and the
+renderer keeps only the M4 envelope, sized by the plot width and the
+channel count.
+
+A chart with monotonic series is a monotonic chart:
+`register_monotonic_chart(config, series) -> MonotonicChartId`. Only that
+handle reaches it; the general chart calls take a `ChartId`, which it never
+hands out (monotonic charts are not in `chart_order`), so no general call
+can change its config, view, display, fit or stream. A monotonic line series
+lives only there: `register_chart`, `set_chart_series`, `set_chart_state`
+and `begin_replace_chart_columns` refuse it with
+`FiggyError::InvalidSeriesConfig { kind: RuleKind::MonotonicGeneralChart, .. }`.
+`monotonic_chart(id) -> MonotonicChart` lends its calls:
+
+| `MonotonicChart::` | Contract |
+| --- | --- |
+| `set_monotonic(group, &source, range)` | The full call for every series naming `group`, at the mapping each is drawn at. Reads only the visible samples and one on each side. The only call that sets the x range: `MonotonicRange::X { min, max }` writes it to the x axis the series are drawn against (the rest of the axis stays; not finite and increasing: `FiggyError::InvalidConfig { kind: RuleKind::MonotonicRange, .. }`); `MonotonicRange::Autoscale` fits it to `start ..= start + (len - 1) × interval` and their y ranges (5 % padding) to the values the same reduction keeps. |
+| `append_monotonic(group, &new, MonotonicAppend { sliding })` | Only the new samples, compared with nothing; past the x range they are counted, not kept. They continue the full call's grid: `new`'s `start` and `interval` are not read. A slide moves the x range in the document by exactly the new samples' span and never reads old samples. |
+| `resize(chart_area, plot_area, surface, &[MonotonicGroupRef])` | The resize: the chart area, the plot (data area) a plot-area resize proposes (`None` keeps the margins), the display surface (`None`: no display). A group whose series move to other device pixels is reduced again from its source in the same call. Atomic: without a source a moved group needs, refused with `FiggyError::MonotonicSourceRequired`, and nothing changes; a plot rect the margins cannot place: `RuleKind::NoFeasibleLayout`. |
+| `fit_layout(&[MonotonicGroupRef])` | `layout::auto_layout`, measured with the chart's font, applied. It can move the plot's edges, so it takes the sources of the groups it moves, refused as `resize` is without them. |
+| `edit_config(\|editor\| ..) -> R` | Edits the document through a `MonotonicConfig` (read access to the whole `Config`; editors for the legend, titles, grid, annotations, selection, active layer, backgrounds, axes' titles, labels, ticks and lines, y ranges, overlays and subplots; `nudge` and `drag` for decorations; `assign` for a whole document). No setter writes the x range, x scale, breaks, direction or the chart or plot area; an edit that would move them (`same_mapping`) is refused with `FiggyError::InvalidConfig { kind: RuleKind::MonotonicMappingEdit, .. }` and changes nothing. |
+| `set_series(series)` | Replaces the series; a style or width edit needs no source. |
+| `step_selection(dx, dy)`, `set_selection(hit)` | The selection: a monotonic point steps over the kept points. |
+| `pick_data(request)`, `pick(request)`, `prepare_picking()` | GPU picks; a monotonic series reports the logical sample index of a kept point. |
+| `remove()` | Removes the chart, its envelopes and their columns. |
+
+Reads take `&Renderer`: `monotonic_config`, `monotonic_series`,
+`monotonic_needs_source` (the series whose group was never supplied,
+`MappingChange::NotBuilt`), `monotonic_kept_point`, `monotonic_selection`,
+`monotonic_display_config`, `monotonic_render_stamp` and
+`monotonic_series_draw_info`. `prepare_monotonic(&mut
+[MonotonicChartDrawItem])` (and `WindowedRenderer::draw_monotonic`) draws
+monotonic charts. `MonotonicGroupRef::new(group, &source)` lends a group's
+source to `resize`, `fit_layout` and an export at another scale,
+`ExportSource::Monotonic { chart, monotonic: &[MonotonicGroupRef] }` (`&[]`
+at the screen's mapping). The envelope keeps a fixed 64 pixel columns beyond
+each plot edge, so a line width is a style edit; strokes wider than about
+120 device pixels may miss ink at the plot's edges. Frames and picks never
+fail for a missing source.
+The core's refusals are `FiggyError::Monotonic { group, error }`, a group no
+series names `FiggyError::UnknownMonotonicGroup`. Picks report the logical
+sample index of a kept point. The series' `x_column` / `y_column` are the
+renderer-owned envelope columns: writing or removing them is
+`FiggyError::ReservedColumnId`. See
+[MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
+
 ## Direct SSOT edits and convenience helpers
 
 `Config` is the single source of truth (SSOT). For precise control, start from

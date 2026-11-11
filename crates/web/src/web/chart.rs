@@ -138,6 +138,9 @@ pub(super) async fn create_chart_kernel(
         value_label_pointer: false,
         display_held: false,
         feynman_pointer: None,
+        plot_resize: None,
+        plot_resize_request: None,
+        monotonic: None,
     };
 
     emit_init_progress(
@@ -266,25 +269,80 @@ pub struct FiggyChart {
     /// The current drag started on a part of a Feynman series
     /// (`press_feynman`, #234): the series and what `on_move` moves.
     pub(super) feynman_pointer: Option<(String, renderer::FeynmanHit)>,
+    /// The document a plot-area resize gesture proposes on a chart with
+    /// monotonic series (#271), built up move by move and never applied:
+    /// the resize takes the groups' sources, which the host passes.
+    pub(super) plot_resize: Option<renderer::Config>,
+    /// The plot rect the last such gesture proposed on release, until the
+    /// element reads it (`take_plot_resize_request`).
+    pub(super) plot_resize_request: Option<renderer::layout::Rect>,
+    /// The monotonic chart the kernel shows instead of its general one
+    /// (`set_monotonic_document`, #271), reached only through its handle.
+    pub(super) monotonic: Option<renderer::MonotonicChartId>,
 }
 
 impl FiggyChart {
     pub(super) fn chart_config(&self) -> Result<&renderer::Config, JsValue> {
-        self.renderer.chart_config(self.chart_id).map_err(js_err)
+        match self.monotonic {
+            Some(id) => self.renderer.monotonic_config(id),
+            None => self.renderer.chart_config(self.chart_id),
+        }
+        .map_err(js_err)
     }
 
     pub(super) fn chart_series(&self) -> Result<&[SeriesConfig], JsValue> {
-        self.renderer.chart_series(self.chart_id).map_err(js_err)
+        match self.monotonic {
+            Some(id) => self.renderer.monotonic_series(id),
+            None => self.renderer.chart_series(self.chart_id),
+        }
+        .map_err(js_err)
     }
 
     pub(super) fn chart_selection(&self) -> Result<Option<HitId>, JsValue> {
-        self.renderer.chart_selection(self.chart_id).map_err(js_err)
+        match self.monotonic {
+            Some(id) => self.renderer.monotonic_selection(id),
+            None => self.renderer.chart_selection(self.chart_id),
+        }
+        .map_err(js_err)
+    }
+
+    /// Selects a chart element of the chart the kernel shows.
+    pub(super) fn set_chart_selection(&mut self, selected: Option<HitId>) -> Result<(), JsValue> {
+        match self.monotonic {
+            Some(id) => self
+                .renderer
+                .monotonic_chart(id)
+                .and_then(|mut chart| chart.set_selection(selected)),
+            None => self.renderer.set_chart_selection(self.chart_id, selected),
+        }
+        .map_err(js_err)
+    }
+
+    /// The document as the shown chart stores it, through the general call
+    /// or a monotonic chart's editor (#271), which refuses a document that
+    /// would move its x-to-pixel mapping.
+    fn write_chart_config(&mut self, config: renderer::Config) -> Result<(), JsValue> {
+        match self.monotonic {
+            Some(id) => self
+                .renderer
+                .monotonic_chart(id)
+                .and_then(|mut chart| chart.edit_config(|editor| editor.assign(config)))
+                .map_err(js_err)?
+                .map_err(|kind| {
+                    js_err(renderer::FiggyError::InvalidConfig {
+                        field: "config",
+                        kind,
+                    })
+                }),
+            None => self
+                .renderer
+                .set_chart_config(self.chart_id, config)
+                .map_err(js_err),
+        }
     }
 
     pub(super) fn replace_chart_config(&mut self, config: renderer::Config) -> Result<(), JsValue> {
-        self.renderer
-            .set_chart_config(self.chart_id, config)
-            .map_err(js_err)?;
+        self.write_chart_config(config)?;
         self.sync_hitmap()?;
         Ok(())
     }
@@ -302,9 +360,28 @@ impl FiggyChart {
                 diagram.auto_layout().map_err(js_err)?;
             }
         }
-        self.renderer
-            .set_chart_state(self.chart_id, config, series)
-            .map_err(js_err)?;
+        match self.monotonic {
+            // The series first; a document the editor refuses puts them back.
+            Some(id) => {
+                let previous = self.chart_series()?.to_vec();
+                self.renderer
+                    .monotonic_chart(id)
+                    .and_then(|mut chart| chart.set_series(series))
+                    .map_err(js_err)?;
+                if let Err(error) = self.write_chart_config(config) {
+                    // The previous series were valid on this document.
+                    self.renderer
+                        .monotonic_chart(id)
+                        .and_then(|mut chart| chart.set_series(previous))
+                        .map_err(js_err)?;
+                    return Err(error);
+                }
+            }
+            None => self
+                .renderer
+                .set_chart_state(self.chart_id, config, series)
+                .map_err(js_err)?,
+        }
         self.sync_hitmap()?;
         Ok(())
     }
@@ -373,9 +450,19 @@ impl FiggyChart {
     pub(super) fn display_config(
         &self,
     ) -> Result<(std::borrow::Cow<'_, renderer::config::Config>, Rect, f32), JsValue> {
-        self.renderer
-            .chart_display_config(self.chart_id)
-            .map_err(js_err)
+        match self.monotonic {
+            Some(id) => self.renderer.monotonic_display_config(id),
+            None => self.renderer.chart_display_config(self.chart_id),
+        }
+        .map_err(js_err)
+    }
+
+    fn render_stamp(&self) -> Result<renderer::ChartRenderStamp, JsValue> {
+        match self.monotonic {
+            Some(id) => self.renderer.monotonic_render_stamp(id),
+            None => self.renderer.chart_render_stamp(self.chart_id),
+        }
+        .map_err(js_err)
     }
 
     pub(super) fn display_delta_to_document(
@@ -831,10 +918,11 @@ impl FiggyChart {
 
     /// Report the effective primitive/grid extent currently drawn.
     pub fn series_draw_info(&self, series_id: &str) -> Result<String, JsValue> {
-        let info = self
-            .renderer
-            .series_draw_info(self.chart_id, series_id)
-            .map_err(js_err)?;
+        let info = match self.monotonic {
+            Some(id) => self.renderer.monotonic_series_draw_info(id, series_id),
+            None => self.renderer.series_draw_info(self.chart_id, series_id),
+        }
+        .map_err(js_err)?;
         serde_json::to_string(&serde_json::json!({
             "drawn_count": info.drawn_count,
             "cols": info.cols,
@@ -1397,10 +1485,7 @@ impl FiggyChart {
         self.renderer
             .sync_external_invalidations()
             .map_err(js_err)?;
-        let current_stamp = self
-            .renderer
-            .chart_render_stamp(self.chart_id)
-            .map_err(js_err)?;
+        let current_stamp = self.render_stamp()?;
         let renderer_dirty = current_stamp.needs_draw_since(self.last_presented_stamp.as_ref());
         let raster_dirty = current_stamp.needs_raster_since(self.last_presented_stamp.as_ref());
         // The annotation layer has its own raster revision: an item edit
@@ -1432,10 +1517,7 @@ impl FiggyChart {
             .renderer
             .process_pending_maintenance()
             .map_err(js_err)?;
-        let current_stamp = self
-            .renderer
-            .chart_render_stamp(self.chart_id)
-            .map_err(js_err)?;
+        let current_stamp = self.render_stamp()?;
 
         // Browser resize is preview zoom, not a document mutation. The
         // stored chart remains the export SSoT; the live canvas renders a
@@ -1460,15 +1542,23 @@ impl FiggyChart {
         // The renderer draws the chart at the display placement set by
         // `set_chart_display`, skipping a series whose source is not
         // resident (#160).
-        self.renderer
-            .draw_registered(
+        match self.monotonic {
+            Some(chart) => self.renderer.draw_monotonic(
+                self.clear_color,
+                &mut [renderer::MonotonicChartDrawItem {
+                    chart,
+                    view: &mut self.view,
+                }],
+            ),
+            None => self.renderer.draw_registered(
                 self.clear_color,
                 &mut [RegisteredChartDrawItem {
                     chart_id: self.chart_id,
                     view: &mut self.view,
                 }],
-            )
-            .map_err(js_err)?;
+            ),
+        }
+        .map_err(js_err)?;
 
         // Only a successfully submitted/presented draw advances the
         // renderer-issued onscreen stamp. Any earlier failure leaves the
@@ -1497,10 +1587,16 @@ impl FiggyChart {
     /// document into this surface.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), JsValue> {
         let (w, h) = (width.max(1), height.max(1));
-        self.renderer.resize(w, h).map_err(js_err)?;
+        // A monotonic chart resizes through its resize call (#271): with no
+        // sources it is refused when a group's mapping would move
+        // (`resize_monotonic` takes them).
+        if self.monotonic.is_some() {
+            return self.resize_monotonic(w, h, js_sys::Array::new(), JsValue::UNDEFINED);
+        }
         self.renderer
             .set_chart_display(self.chart_id, Some((w, h)))
             .map_err(js_err)?;
+        self.renderer.resize(w, h).map_err(js_err)?;
         self.surface_size = (w, h);
         self.view_dirty = true;
         Ok(())

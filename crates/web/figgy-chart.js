@@ -1126,19 +1126,46 @@ export class FiggyChartElement extends HTMLElement {
     }
   }
 
-  #resizeCanvas(notifyKernel) {
+  #measureCanvas() {
     const rect = this.getBoundingClientRect();
     const cssWidth = Math.max(1, Math.round(rect.width || this.clientWidth || 1));
     const cssHeight = Math.max(1, Math.round(rect.height || this.clientHeight || 1));
     const dpr = window.devicePixelRatio || 1;
     const width = Math.max(1, Math.round(cssWidth * dpr));
     const height = Math.max(1, Math.round(cssHeight * dpr));
+    return { width, height, cssWidth, cssHeight, dpr };
+  }
+
+  // A chart with monotonic series (#271) resizes only with its groups'
+  // sources: the host answers `figgy-resize` with `resize_monotonic`.
+  #isMonotonic(kernel) {
+    return kernel !== null && kernel !== undefined &&
+      JSON.parse(kernel.monotonic_groups()).length > 0;
+  }
+
+  #resizeCanvas(notifyKernel) {
+    const { width, height, cssWidth, cssHeight, dpr } = this.#measureCanvas();
     this.#dpr = dpr;
 
     if (this.#canvas.width === width && this.#canvas.height === height) {
       return;
     }
 
+    if (notifyKernel && this.#kernel && !this.busy && this.#isMonotonic(this.#kernel)) {
+      dispatchFiggyEvent(this, "figgy-resize", {
+        width,
+        height,
+        cssWidth,
+        cssHeight,
+        devicePixelRatio: dpr,
+        monotonic: true,
+      });
+      return;
+    }
+
+    // The size the kernel's surface has, kept while a resize waits.
+    const previous = this.#pendingResize?.previous ??
+      { width: this.#canvas.width, height: this.#canvas.height };
     this.#canvas.width = width;
     this.#canvas.height = height;
     if (notifyKernel && this.#kernel) {
@@ -1147,6 +1174,7 @@ export class FiggyChartElement extends HTMLElement {
           token: this.#operationToken,
           width,
           height,
+          previous,
         };
       } else {
         this.#kernel.resize(width, height);
@@ -1204,9 +1232,22 @@ export class FiggyChartElement extends HTMLElement {
       kernel.on_release();
       this.#notifyStreamingMutation();
       dispatchFiggyEvent(this, "figgy-release", { selected: kernel.has_selection() });
+      this.#emitPlotResizeRequest(kernel);
     };
     this.#canvas.addEventListener("pointerup", release);
     this.#canvas.addEventListener("pointercancel", release);
+  }
+
+  // A plot-area resize gesture on a chart with monotonic series (#271)
+  // applies nothing: it proposes a plot rect, and the host applies it with
+  // `resize_monotonic(sources, plotArea)`.
+  #emitPlotResizeRequest(kernel) {
+    const request = kernel.take_plot_resize_request?.();
+    if (request === undefined || request === null) return;
+    dispatchFiggyEvent(this, "figgy-plot-resize", {
+      plotArea: JSON.parse(request),
+      monotonic: true,
+    });
   }
 
   #eventPoint(event) {
@@ -1323,6 +1364,24 @@ export class FiggyChartElement extends HTMLElement {
   async export_pdf(scale = 1.0) {
     if (this.#streamReplay) throw new Error("PDF export does not support streamed sources");
     return this.#runKernelOperation("export", (kernel) => kernel.export_pdf(scale));
+  }
+
+  // An export at another scale than the screen's maps a monotonic series'
+  // plot to other device pixels: these take each group's whole source,
+  // `[{ group, start, interval, data, stride?, columns? }]` (#271).
+  async export_png_monotonic(scale, sources) {
+    return this.#runKernelOperation(
+      "export", (kernel) => kernel.export_png_monotonic(scale, sources));
+  }
+
+  async export_svg_monotonic(scale, sources) {
+    return this.#runKernelOperation(
+      "export", (kernel) => kernel.export_svg_monotonic(scale, sources));
+  }
+
+  async export_pdf_monotonic(scale, sources) {
+    return this.#runKernelOperation(
+      "export", (kernel) => kernel.export_pdf_monotonic(scale, sources));
   }
 
   async #waitStreamOperation(token, pending, timeoutMs) {
@@ -1538,17 +1597,33 @@ export class FiggyChartElement extends HTMLElement {
         token.kernel.on_release();
         const selected = token.kernel.has_selection();
         dispatchFiggyEvent(this, "figgy-release", { selected });
+        this.#emitPlotResizeRequest(token.kernel);
       } catch (error) {
         cleanupError = error;
       }
     }
 
     if (this.#isCurrentOperation(token) && this.#pendingResize?.token === token) {
-      const { width, height } = this.#pendingResize;
+      const { width, height, previous } = this.#pendingResize;
       this.#pendingResize = null;
       try {
-        token.kernel.resize(width, height);
-        resized = true;
+        if (this.#isMonotonic(token.kernel)) {
+          // The canvas was resized while busy: it keeps the kernel's size
+          // until the host resizes the chart with its sources (#271).
+          this.#canvas.width = previous.width;
+          this.#canvas.height = previous.height;
+          dispatchFiggyEvent(this, "figgy-resize", {
+            width,
+            height,
+            cssWidth: this.#canvas.clientWidth,
+            cssHeight: this.#canvas.clientHeight,
+            devicePixelRatio: this.#dpr,
+            monotonic: true,
+          });
+        } else {
+          token.kernel.resize(width, height);
+          resized = true;
+        }
       } catch (error) {
         cleanupError ??= error;
       }
@@ -2287,6 +2362,49 @@ export class FiggyChartElement extends HTMLElement {
   series_draw_info(seriesId) {
     return JSON.parse(this.#kernelForCall().series_draw_info(seriesId));
   }
+  // Monotonic-x line series (#271): the group's samples as typed arrays,
+  // one per channel or one interleaved array with a stride, at
+  // `start + i * interval`. Four calls move a group's x-to-pixel mapping and
+  // each takes its source: `set_monotonic` (the only call that sets the x
+  // range: `[xMin, xMax]` or "autoscale"), `append_monotonic`,
+  // `resize_monotonic` and `fit_layout`. Every other setting needs no
+  // source. A canvas resize of a chart with monotonic series waits for the
+  // host: `figgy-resize` carries `monotonic: true` and the canvas keeps its
+  // size until `resize_monotonic(sources)`. `needs_source()` lists the
+  // series whose group was never supplied.
+  set_monotonic(group, start, interval, data, range, stride, columns) {
+    return JSON.parse(this.#mutateChart(
+      "set_monotonic", group, start, interval, data, range, stride,
+      columns === undefined ? undefined : Uint32Array.from(columns),
+    ));
+  }
+  append_monotonic(group, data, sliding = false, stride, columns) {
+    return JSON.parse(this.#mutateChart(
+      "append_monotonic", group, data, sliding, stride,
+      columns === undefined ? undefined : Uint32Array.from(columns),
+    ));
+  }
+  needs_source() { return JSON.parse(this.#kernelForCall().needs_source()); }
+  monotonic_groups() { return JSON.parse(this.#kernelForCall().monotonic_groups()); }
+  // A monotonic chart (#271): the only chart that holds monotonic series.
+  set_monotonic_document(config, series) {
+    return this.#mutateChart("set_monotonic_document",
+      typeof config === "string" ? config : JSON.stringify(config),
+      typeof series === "string" ? series : JSON.stringify(series));
+  }
+  clear_monotonic_document() { return this.#mutateChart("clear_monotonic_document"); }
+  // `sources`: `[{ group, start, interval, data, stride?, columns? }]`.
+  // `plotArea`: the rect a `figgy-plot-resize` event proposed, or undefined.
+  resize_monotonic(sources, plotArea) {
+    const size = this.#measureCanvas();
+    const kernel = this.#kernelForCall();
+    kernel.resize_monotonic(size.width, size.height, sources, plotArea);
+    this.#canvas.width = size.width;
+    this.#canvas.height = size.height;
+    this.#pendingResize = null;
+    this.#notifyStreamingMutation();
+  }
+  fit_layout(sources = []) { return this.#mutateChart("fit_layout", sources); }
   set_title(text) { return this.#mutateChart("set_title", text); }
   set_x_title(text) { return this.#mutateChart("set_x_title", text); }
   set_y_title(text) { return this.#mutateChart("set_y_title", text); }

@@ -84,6 +84,10 @@ pub(crate) const STREAMED_ENERGY_LEVELS_REASON: crate::RuleKind =
 /// 8, #234): it is DataLess, so no stream can feed it.
 pub(crate) const STREAMED_FEYNMAN_REASON: crate::RuleKind = crate::RuleKind::StreamedFeynman;
 
+/// Why a monotonic series in a streamed display is rejected (M5, #271): it
+/// does not use the streaming runtime; its own calls feed it.
+pub(crate) const STREAMED_MONOTONIC_REASON: crate::RuleKind = crate::RuleKind::StreamedMonotonic;
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => true,
@@ -103,7 +107,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => false,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => false,
     }
 }
 
@@ -892,6 +897,12 @@ fn stream_draw_phases(
         DataRenderType::Feynman(_) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
             kind: STREAMED_FEYNMAN_REASON.into(),
+        }
+        .into()),
+        // Nor to monotonic series (M5, #271): their own calls feed them.
+        DataRenderType::MonotonicLine(_) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: STREAMED_MONOTONIC_REASON.into(),
         }
         .into()),
         DataRenderType::Field(crate::data_config::FieldSeries {

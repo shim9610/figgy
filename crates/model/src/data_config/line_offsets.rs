@@ -94,6 +94,9 @@ impl DataRenderType {
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)
+            // A monotonic group's channels share its x grid, not offsets
+            // (#271).
+            | DataRenderType::MonotonicLine(_)
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }

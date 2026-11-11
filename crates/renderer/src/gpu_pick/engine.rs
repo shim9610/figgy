@@ -2151,6 +2151,7 @@ impl GpuPickEngine {
         self.bundle.queue.submit(std::iter::once(encoder.finish()));
 
         Ok(GpuPickTicket {
+            monotonic: Vec::new(),
             state: GpuPickTicketState::Pending {
                 readback: GpuReadback::map(
                     &self.bundle.device,
@@ -2186,6 +2187,10 @@ pub(super) enum GpuPickTicketState {
 /// Owned, detached asynchronous scalar readback.
 pub struct GpuPickTicket {
     pub(super) state: GpuPickTicketState,
+    /// The monotonic series of the pick (#271): the envelope each one's
+    /// columns were written from at submission, which maps a picked row
+    /// back to its logical sample index. Empty for every other chart.
+    pub(crate) monotonic: Vec<crate::renderer::MonotonicPickRows>,
 }
 
 pub(crate) struct GpuIndexedPick {
@@ -2193,6 +2198,9 @@ pub(crate) struct GpuIndexedPick {
     pub(crate) series_id: String,
     pub(crate) series_order: u32,
     pub(crate) point_index: u32,
+    /// A monotonic series' logical sample index for the picked row (#271);
+    /// `None` for every other series, whose index is `point_index`.
+    pub(crate) logical_index: Option<usize>,
     pub(crate) distance_px: f32,
 }
 
@@ -2201,7 +2209,7 @@ impl From<GpuIndexedPick> for PickedPoint {
         Self {
             source_id: picked.source_id,
             series_id: picked.series_id,
-            point_index: picked.point_index as usize,
+            point_index: picked.logical_index.unwrap_or(picked.point_index as usize),
             distance_px: picked.distance_px,
         }
     }
@@ -2211,6 +2219,7 @@ impl GpuPickTicket {
     pub(super) fn ready_none() -> Self {
         Self {
             state: GpuPickTicketState::ReadyNone,
+            monotonic: Vec::new(),
         }
     }
 
@@ -2316,11 +2325,25 @@ impl GpuPickTicket {
                 if !candidate.distance_px.is_finite() {
                     return Err(GpuPickError::InvalidGpuResult);
                 }
+                // A monotonic series' row maps back to the logical index of
+                // the kept point it was uploaded from (#271).
+                let logical_index = match self
+                    .monotonic
+                    .iter()
+                    .find(|rows| rows.series_id == identity.series_id)
+                {
+                    Some(rows) => match rows.logical(candidate.point_index as usize) {
+                        Some(index) => Some(index),
+                        None => return Ok(None),
+                    },
+                    None => None,
+                };
                 Ok(Some(GpuIndexedPick {
                     source_id: identity.source_id.clone(),
                     series_id: identity.series_id.clone(),
                     series_order: candidate.series_order,
                     point_index: candidate.point_index,
+                    logical_index,
                     distance_px: candidate.distance_px,
                 }))
             }

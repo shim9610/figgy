@@ -60,15 +60,14 @@ fn time(f: impl FnOnce()) -> f64 {
 
 fn full_seconds<T: MonotonicElement>(data: &[T], width: u32) -> f64 {
     let channels: &[&[T]] = &[data];
-    let source = MonotonicSlices::new(channels);
-    let group = MonotonicGroup::new(0.0, 1.0, &source);
+    let source = MonotonicSlices::new(0.0, 1.0, channels);
     let mapping = MonotonicMapping::linear(0.0, data.len() as f64, width);
     let mut envelope = MonotonicEnvelope::empty();
     median(
         (0..RUNS)
             .map(|_| {
                 time(|| {
-                    envelope.set_monotonic(&group, &mapping).unwrap();
+                    envelope.set_monotonic(&source, &mapping).unwrap();
                 })
             })
             .collect(),
@@ -112,9 +111,7 @@ fn scenario<'a, S: MonotonicSource + ?Sized + 'a>(
     for _ in 0..RUNS {
         let mapping = MonotonicMapping::linear(0.0, window as f64, 1000);
         let mut envelope = MonotonicEnvelope::empty();
-        envelope
-            .set_monotonic(&MonotonicGroup::new(0.0, 1.0, empty), &mapping)
-            .unwrap();
+        envelope.set_monotonic(empty, &mapping).unwrap();
         for (k, slot) in times.iter_mut().enumerate() {
             let new = source(k * step..(k + 1) * step);
             let sliding = (k + 1) * step > window;
@@ -167,8 +164,10 @@ fn bench_maintainer_scenario() {
     let ones: Vec<[&[f64]; 1]> = (0..=total / step)
         .map(|k| [&data[0][k * step..((k + 1) * step).min(total)]])
         .collect();
-    let one_sources: Vec<MonotonicSlices<'_, f64>> =
-        ones.iter().map(|v| MonotonicSlices::new(v)).collect();
+    let one_sources: Vec<MonotonicSlices<'_, f64>> = ones
+        .iter()
+        .map(|v| MonotonicSlices::new(0.0, 1.0, v))
+        .collect();
     print_scenario(
         "1 channel, f64",
         scenario(window, step, total, &one_sources[total / step], &|r| {
@@ -183,7 +182,7 @@ fn bench_maintainer_scenario() {
         .map(|k| {
             let from = (k * step).min(total) * channels;
             let to = ((k + 1) * step).min(total) * channels;
-            MonotonicInterleaved::new(&frames[from..to], channels, &columns).unwrap()
+            MonotonicInterleaved::new(0.0, 1.0, &frames[from..to], channels, &columns).unwrap()
         })
         .collect();
     print_scenario(
@@ -199,8 +198,10 @@ fn bench_maintainer_scenario() {
                 .collect()
         })
         .collect();
-    let sliced: Vec<MonotonicSlices<'_, f64>> =
-        views.iter().map(|v| MonotonicSlices::new(v)).collect();
+    let sliced: Vec<MonotonicSlices<'_, f64>> = views
+        .iter()
+        .map(|v| MonotonicSlices::new(0.0, 1.0, v))
+        .collect();
     print_scenario(
         "8 channels, f64, slices",
         scenario(window, step, total, &sliced[total / step], &|r| {
@@ -225,15 +226,13 @@ fn bench_append_at_ten_million() {
         let mapping = MonotonicMapping::linear(0.0, x_max, 1000);
         let before: &[&[f64]] = &[&data[..base]];
         let new: &[&[f64]] = &[&data[base..base + k]];
-        let before = MonotonicSlices::new(before);
-        let new = MonotonicSlices::new(new);
+        let before = MonotonicSlices::new(0.0, 1.0, before);
+        let new = MonotonicSlices::new(0.0, 1.0, new);
         let mut last = None;
         let times = (0..RUNS)
             .map(|_| {
                 let mut envelope = MonotonicEnvelope::empty();
-                envelope
-                    .set_monotonic(&MonotonicGroup::new(0.0, 1.0, &before), &mapping)
-                    .unwrap();
+                envelope.set_monotonic(&before, &mapping).unwrap();
                 time(|| {
                     last = Some(
                         envelope

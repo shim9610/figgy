@@ -20,6 +20,14 @@ pub trait MonotonicSource {
     /// The element type of every channel.
     type Element: MonotonicElement;
 
+    /// The x of sample 0: sample `i` is at `start + i × interval`. Read by
+    /// the full call; an append continues the grid of the full call and
+    /// reads neither this nor [`Self::interval`].
+    fn start(&self) -> f64;
+
+    /// The x distance between two samples, finite and positive.
+    fn interval(&self) -> f64;
+
     /// The number of samples every channel holds.
     fn len(&self) -> usize;
 
@@ -199,17 +207,32 @@ impl<'a, T: MonotonicElement> StridedChannel<'a, T> {
 /// [`MonotonicSource::truncated`].
 #[derive(Clone, Copy, Debug)]
 pub struct MonotonicSlices<'a, T> {
+    start: f64,
+    interval: f64,
     channels: &'a [&'a [T]],
 }
 
 impl<'a, T: MonotonicElement> MonotonicSlices<'a, T> {
-    pub fn new(channels: &'a [&'a [T]]) -> Self {
-        Self { channels }
+    /// Sample `i` of every channel is at `x = start + i × interval`.
+    pub fn new(start: f64, interval: f64, channels: &'a [&'a [T]]) -> Self {
+        Self {
+            start,
+            interval,
+            channels,
+        }
     }
 }
 
 impl<T: MonotonicElement> MonotonicSource for MonotonicSlices<'_, T> {
     type Element = T;
+
+    fn start(&self) -> f64 {
+        self.start
+    }
+
+    fn interval(&self) -> f64 {
+        self.interval
+    }
 
     fn len(&self) -> usize {
         self.channels.iter().map(|c| c.len()).min().unwrap_or(0)
@@ -242,14 +265,19 @@ impl<T: MonotonicElement> MonotonicSource for MonotonicSlices<'_, T> {
 /// until it is complete.
 #[derive(Clone, Copy, Debug)]
 pub struct MonotonicInterleaved<'a, T> {
+    start: f64,
+    interval: f64,
     values: &'a [T],
     stride: usize,
     columns: &'a [usize],
 }
 
 impl<'a, T: MonotonicElement> MonotonicInterleaved<'a, T> {
-    /// Fails for a zero stride or a column outside the frame.
+    /// Frame `i` is at `x = start + i × interval`. Fails for a zero stride
+    /// or a column outside the frame.
     pub fn new(
+        start: f64,
+        interval: f64,
         values: &'a [T],
         stride: usize,
         columns: &'a [usize],
@@ -261,6 +289,8 @@ impl<'a, T: MonotonicElement> MonotonicInterleaved<'a, T> {
             return Err(MonotonicError::InvalidColumn { column, stride });
         }
         Ok(Self {
+            start,
+            interval,
             values,
             stride,
             columns,
@@ -270,6 +300,14 @@ impl<'a, T: MonotonicElement> MonotonicInterleaved<'a, T> {
 
 impl<T: MonotonicElement> MonotonicSource for MonotonicInterleaved<'_, T> {
     type Element = T;
+
+    fn start(&self) -> f64 {
+        self.start
+    }
+
+    fn interval(&self) -> f64 {
+        self.interval
+    }
 
     fn len(&self) -> usize {
         self.values.len() / self.stride
@@ -296,21 +334,95 @@ impl<T: MonotonicElement> MonotonicSource for MonotonicInterleaved<'_, T> {
     }
 }
 
-/// A monotonic group for a full call: one x grid, `x = start + i * interval`
-/// for source sample `i`, shared by every channel of `source`.
-#[derive(Clone, Copy, Debug)]
-pub struct MonotonicGroup<'a, S: ?Sized> {
-    pub start: f64,
-    pub interval: f64,
-    pub source: &'a S,
+/// A borrowed source of element type `T` as [`MonotonicSourceRef`] holds
+/// it: `Sync` on native targets, so a call that borrows sources (an export)
+/// keeps its future `Send`; any source in a browser, which runs one thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub type DynMonotonicSource<'a, T> = dyn MonotonicSource<Element = T> + Sync + 'a;
+/// A borrowed source of element type `T` as [`MonotonicSourceRef`] holds
+/// it: `Sync` on native targets, so a call that borrows sources (an export)
+/// keeps its future `Send`; any source in a browser, which runs one thread.
+#[cfg(target_arch = "wasm32")]
+pub type DynMonotonicSource<'a, T> = dyn MonotonicSource<Element = T> + 'a;
+
+/// A [`MonotonicSource`] of any supported element type, borrowed for one
+/// call (#271): what a call that takes sources of several element types at
+/// once (an export) passes. It holds a reference, never the samples.
+#[derive(Clone, Copy)]
+pub enum MonotonicSourceRef<'a> {
+    F64(&'a DynMonotonicSource<'a, f64>),
+    F32(&'a DynMonotonicSource<'a, f32>),
+    I32(&'a DynMonotonicSource<'a, i32>),
+    I16(&'a DynMonotonicSource<'a, i16>),
+    U16(&'a DynMonotonicSource<'a, u16>),
+    U8(&'a DynMonotonicSource<'a, u8>),
 }
 
-impl<'a, S: MonotonicSource + ?Sized> MonotonicGroup<'a, S> {
-    pub fn new(start: f64, interval: f64, source: &'a S) -> Self {
-        Self {
-            start,
-            interval,
-            source,
+impl std::fmt::Debug for MonotonicSourceRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MonotonicSourceRef")
+            .field("len", &self.len())
+            .field("channels", &self.channel_count())
+            .finish()
+    }
+}
+
+/// Runs `$body` with `$source` bound to the typed source inside a
+/// [`MonotonicSourceRef`].
+macro_rules! with_monotonic_source {
+    ($r:expr, $source:ident => $body:expr) => {
+        match $r {
+            MonotonicSourceRef::F64($source) => $body,
+            MonotonicSourceRef::F32($source) => $body,
+            MonotonicSourceRef::I32($source) => $body,
+            MonotonicSourceRef::I16($source) => $body,
+            MonotonicSourceRef::U16($source) => $body,
+            MonotonicSourceRef::U8($source) => $body,
         }
+    };
+}
+pub(super) use with_monotonic_source;
+
+impl<'a> MonotonicSourceRef<'a> {
+    /// `source`, whatever its element type.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new<S: MonotonicSource + Sync + 'a>(source: &'a S) -> Self {
+        S::Element::erase(source)
+    }
+
+    /// `source`, whatever its element type.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new<S: MonotonicSource + 'a>(source: &'a S) -> Self {
+        S::Element::erase(source)
+    }
+
+    /// The x of sample 0.
+    pub fn start(&self) -> f64 {
+        with_monotonic_source!(*self, s => s.start())
+    }
+
+    /// The x distance between two samples.
+    pub fn interval(&self) -> f64 {
+        with_monotonic_source!(*self, s => s.interval())
+    }
+
+    /// The number of samples every channel holds.
+    pub fn len(&self) -> usize {
+        with_monotonic_source!(*self, s => s.len())
+    }
+
+    /// Whether the source holds no sample.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The number of channels.
+    pub fn channel_count(&self) -> usize {
+        with_monotonic_source!(*self, s => s.channel_count())
+    }
+
+    /// Whether the host's channels differ in length.
+    pub fn truncated(&self) -> bool {
+        with_monotonic_source!(*self, s => s.truncated())
     }
 }

@@ -11,8 +11,8 @@
 //!   [`MonotonicInterleaved`] are the built-in impls. Elements are `f64`,
 //!   `f32`, `i32`, `i16`, `u16` or `u8` ([`MonotonicElement`]). The source is
 //!   an argument to every call and is never retained.
-//! - **Calls.** [`MonotonicEnvelope::set_monotonic`] takes a
-//!   [`MonotonicGroup`] (source, `start`, `interval`) and reduces in full.
+//! - **Calls.** [`MonotonicEnvelope::set_monotonic`] takes the source,
+//!   which carries `start` and `interval`, and reduces in full.
 //!   [`MonotonicEnvelope::append_monotonic`] takes only new samples and
 //!   merges them; with [`MonotonicAppend::sliding`] the window moves by the
 //!   same count. No call but the full one reads earlier samples.
@@ -23,6 +23,7 @@
 //!
 //! See `MONOTONIC.md` in this crate for the rules (M1–M7).
 
+mod config;
 mod element;
 mod envelope;
 mod grid;
@@ -34,12 +35,14 @@ mod bench;
 #[cfg(test)]
 mod tests;
 
+pub use config::{MonotonicAxis, MonotonicConfig, same_mapping};
 pub use element::MonotonicElement;
 pub use envelope::{MonotonicAppend, MonotonicEnvelope, MonotonicUpdate, MonotonicView};
 pub use grid::{MonotonicGrid, VisibleSlice};
 pub use reduce::{CELL_POINTS, EnvelopeCell};
 pub use source::{
-    MonotonicGroup, MonotonicInterleaved, MonotonicRun, MonotonicSlices, MonotonicSource,
+    DynMonotonicSource, MonotonicInterleaved, MonotonicRun, MonotonicSlices, MonotonicSource,
+    MonotonicSourceRef,
 };
 
 use crate::config::AxisScale;
@@ -63,6 +66,12 @@ pub struct MonotonicMapping {
     pub x_breaks: BreakMap,
     /// Whether the x axis is inverted.
     pub x_inverted: bool,
+    /// Whole pixel columns kept beyond each edge of the plot, reduced like
+    /// the columns inside it: a stroke reaches into the plot from samples
+    /// up to its half width (and its antialiasing) outside it, so a renderer
+    /// keeps a fixed number of them, set when the envelope is built. Zero
+    /// keeps only the edge samples.
+    pub margin_px: u32,
 }
 
 impl MonotonicMapping {
@@ -75,6 +84,7 @@ impl MonotonicMapping {
             x_scale: AxisScale::Linear,
             x_breaks: BreakMap::IDENTITY,
             x_inverted: false,
+            margin_px: 0,
         }
     }
 
@@ -85,7 +95,8 @@ impl MonotonicMapping {
             || self.x_max.to_bits() != current.x_max.to_bits()
         {
             Some(MappingChange::XRange)
-        } else if self.plot_width_px != current.plot_width_px {
+        } else if self.plot_width_px != current.plot_width_px || self.margin_px != current.margin_px
+        {
             Some(MappingChange::PlotWidth)
         } else if self.x_scale != current.x_scale {
             Some(MappingChange::XScale)

@@ -473,6 +473,26 @@ impl SeriesConfig {
         )
     }
 
+    /// Channel `channel` of the monotonic group `group` (#271), drawn as a
+    /// line in the host default style. Its envelope columns are named after
+    /// the series ([`SeriesConfig::monotonic_column_ids`]); the renderer
+    /// writes them on every `set_monotonic` and `append_monotonic` call, so
+    /// nothing is uploaded under them by the host.
+    pub fn monotonic_line(id: impl Into<String>, group: impl Into<String>, channel: usize) -> Self {
+        let id = id.into();
+        let (x, y) = Self::monotonic_column_ids(&id);
+        Self::of_kind(
+            id,
+            x,
+            y,
+            DataRenderType::MonotonicLine(crate::data_config::MonotonicLineSeries {
+                group: group.into(),
+                channel,
+                line: DataLineStyleConfig::default(),
+            }),
+        )
+    }
+
     /// A Feynman diagram held in the document.
     pub fn feynman_diagram(id: impl Into<String>, diagram: crate::feynman::FeynmanSeries) -> Self {
         Self::of_kind(id, "", "", DataRenderType::Feynman(diagram))
@@ -541,6 +561,7 @@ impl SeriesConfig {
             DataRenderType::Streamlines { line, .. } | DataRenderType::Parallel { line, .. } => {
                 line.line_color = color;
             }
+            DataRenderType::MonotonicLine(series) => series.line.line_color = color,
             DataRenderType::RgbImage { .. }
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::Feynman(_) => {}
@@ -671,6 +692,7 @@ impl SeriesConfig {
             }
             | DataRenderType::Streamlines { line, .. }
             | DataRenderType::Parallel { line, .. } => visit(line),
+            DataRenderType::MonotonicLine(series) => visit(&mut series.line),
             DataRenderType::Field(FieldSeries {
                 contour: Some(contour),
                 ..

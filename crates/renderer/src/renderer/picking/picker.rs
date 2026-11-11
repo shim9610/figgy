@@ -262,7 +262,7 @@ impl RendererPicker {
         series: &[SeriesConfig],
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let bundle = self.ready_bundle()?;
-        let plan = PickChartPlan::for_active_layer(config, series)?;
+        let plan = PickChartPlan::for_active_layer_in(pool, config, series)?;
         if self.active.as_ref().is_some_and(|active| {
             active.chart_id == chart_id && active.descriptors == plan.descriptors
         }) {
@@ -313,7 +313,7 @@ impl RendererPicker {
                 return Ok(Some(PreparedActivePickerMutation::Clear(&mut self.active)));
             }
         }
-        let plan = PickChartPlan::for_active_layer(config, series)?;
+        let plan = PickChartPlan::for_active_layer_in(pool, config, series)?;
         self.prepare_active_plan(pool, chart_id, plan, &[], false)
     }
 

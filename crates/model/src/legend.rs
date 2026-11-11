@@ -409,6 +409,10 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         DataRenderType::Feynman(diagram) => {
             line_symbol(diagram.style.color, LineStylePreset::Solid, None)
         }
+        // A monotonic channel reads as its line (#271).
+        DataRenderType::MonotonicLine(series) => {
+            line_symbol(series.line.line_color, series.line.line_style, None)
+        }
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
         DataRenderType::Vector { style, .. } => vector_symbol(style.color),

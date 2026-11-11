@@ -14,7 +14,8 @@ impl Renderer {
         config: Config,
         series: Vec<SeriesConfig>,
     ) -> Result<()> {
-        let result = self.set_chart_state_unreported(id, config, series);
+        let result = refuse_monotonic_series(&series)
+            .and_then(|()| self.set_chart_state_unreported(id, config, series));
         self.reported(result)
     }
 
@@ -33,6 +34,31 @@ impl Renderer {
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         config.sync_subplot_links(Some(&state.config));
+        let touched = self.reconcile_monotonic(
+            id,
+            Some(&config),
+            Some(&series),
+            Placement::Current,
+            &mut lend_none,
+        )?;
+        let result = self.commit_chart_state(id, config, series);
+        if result.is_err() && touched {
+            self.forget_monotonic_chart(id);
+        }
+        result
+    }
+
+    /// The revisions and the write of a validated config and series.
+    fn commit_chart_state(
+        &mut self,
+        id: ChartId,
+        config: Config,
+        series: Vec<SeriesConfig>,
+    ) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
         let config_changed = state.config != config;
         let series_changed = state.series != series;
         let clear_selection =
@@ -136,6 +162,18 @@ impl Renderer {
         id: ChartId,
         surface: Option<(u32, u32)>,
     ) -> Result<()> {
+        self.set_chart_display_lent(id, surface, &mut lend_none)
+    }
+
+    /// [`Self::set_chart_display`] with the sources `lend` lends (#271): a
+    /// surface that changes the plot's width in device pixels rebuilds the
+    /// envelopes from them or is refused.
+    pub(in crate::renderer) fn set_chart_display_lent(
+        &mut self,
+        id: ChartId,
+        surface: Option<(u32, u32)>,
+        lend: &mut Lender<'_>,
+    ) -> Result<()> {
         let state = self
             .chart_states
             .get(&id)
@@ -143,6 +181,25 @@ impl Renderer {
         if state.display.as_ref().map(|display| display.surface) == surface {
             return Ok(());
         }
+        let touched =
+            self.reconcile_monotonic(id, None, None, Placement::Surface(surface), lend)?;
+        let result = self.commit_chart_display(id, surface);
+        if result.is_err() && touched {
+            self.forget_monotonic_chart(id);
+        }
+        result
+    }
+
+    /// The revisions and the write of a new display.
+    pub(in crate::renderer) fn commit_chart_display(
+        &mut self,
+        id: ChartId,
+        surface: Option<(u32, u32)>,
+    ) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
         let desired = state
             .revisions
             .desired
@@ -179,6 +236,27 @@ impl Renderer {
     }
 
     pub(super) fn hold_chart_display_unreported(&mut self, id: ChartId, hold: bool) -> Result<()> {
+        let unchanged = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?
+            .display
+            .as_ref()
+            .is_none_or(|display| display.hold.is_some() == hold);
+        if unchanged {
+            return Ok(());
+        }
+        let touched =
+            self.reconcile_monotonic(id, None, None, Placement::Hold(hold), &mut lend_none)?;
+        let result = self.commit_chart_hold(id, hold);
+        if result.is_err() && touched {
+            self.forget_monotonic_chart(id);
+        }
+        result
+    }
+
+    /// The revisions and the write of a hold or a release.
+    fn commit_chart_hold(&mut self, id: ChartId, hold: bool) -> Result<()> {
         let held = {
             let state = self
                 .chart_states
@@ -405,6 +483,26 @@ impl Renderer {
         view.apply_to(&mut prospective_config);
         prospective_config.sync_subplot_links(Some(&state.config));
         crate::chart::validate_renderer_config(&prospective_config)?;
+        let touched = self.reconcile_monotonic(
+            id,
+            Some(&prospective_config),
+            None,
+            Placement::Current,
+            &mut lend_none,
+        )?;
+        let result = self.commit_chart_view_state(id, prospective_config);
+        if result.is_err() && touched {
+            self.forget_monotonic_chart(id);
+        }
+        result
+    }
+
+    /// The revisions and the write of a validated view.
+    fn commit_chart_view_state(&mut self, id: ChartId, prospective_config: Config) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
         let ChartRevisions {
             desired,
             config,
@@ -507,20 +605,20 @@ impl Renderer {
         if generation == self.observed_font_generation {
             return Ok(false);
         }
-        if self.chart_order.is_empty() {
+        if self.chart_count() == 0 {
             self.observed_font_generation = generation;
             return Ok(false);
         }
 
         let visual = self.visual_revision.successor("renderer visual revision")?;
         let mut updates = Vec::new();
-        updates
-            .try_reserve(self.chart_order.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
+        updates.try_reserve(self.chart_count()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
                 resource: "font invalidation revisions",
                 reason: error.to_string(),
-            })?;
-        for id in &self.chart_order {
+            }
+        })?;
+        for id in self.every_chart() {
             let state = self
                 .chart_states
                 .get(id)

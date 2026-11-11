@@ -71,6 +71,13 @@ impl PrepareContext<'_> {
                 kind: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
             });
         }
+        // Nor to monotonic series (M5, #271): their own calls feed them.
+        if series.monotonic().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_MONOTONIC_REASON.into(),
+            });
+        }
         // Nor to Feynman series (rule 8, #234): they are DataLess.
         if series.feynman().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

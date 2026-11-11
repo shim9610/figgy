@@ -31,10 +31,14 @@ pub trait MonotonicElement: Copy + sealed::Sealed {
     fn gap_mark(self) -> Self;
     /// Joins two gap marks: a gap when either is one.
     fn mark_or(self, other: Self) -> Self;
+    /// `source` as a [`MonotonicSourceRef`](super::MonotonicSourceRef) of this element type.
+    fn erase<'a>(
+        source: &'a super::source::DynMonotonicSource<'a, Self>,
+    ) -> super::MonotonicSourceRef<'a>;
 }
 
 macro_rules! float_element {
-    ($($t:ty),*) => {$(
+    ($($t:ty => $variant:ident),*) => {$(
         impl sealed::Sealed for $t {}
         impl MonotonicElement for $t {
             #[inline(always)]
@@ -61,12 +65,17 @@ macro_rules! float_element {
             fn mark_or(self, other: Self) -> Self {
                 self + other
             }
+            fn erase<'a>(
+                source: &'a super::source::DynMonotonicSource<'a, Self>,
+            ) -> super::MonotonicSourceRef<'a> {
+                super::MonotonicSourceRef::$variant(source)
+            }
         }
     )*};
 }
 
 macro_rules! int_element {
-    ($($t:ty),*) => {$(
+    ($($t:ty => $variant:ident),*) => {$(
         impl sealed::Sealed for $t {}
         impl MonotonicElement for $t {
             #[inline(always)]
@@ -93,9 +102,14 @@ macro_rules! int_element {
             fn mark_or(self, _other: Self) -> Self {
                 0
             }
+            fn erase<'a>(
+                source: &'a super::source::DynMonotonicSource<'a, Self>,
+            ) -> super::MonotonicSourceRef<'a> {
+                super::MonotonicSourceRef::$variant(source)
+            }
         }
     )*};
 }
 
-float_element!(f64, f32);
-int_element!(i32, i16, u16, u8);
+float_element!(f64 => F64, f32 => F32);
+int_element!(i32 => I32, i16 => I16, u16 => U16, u8 => U8);

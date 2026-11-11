@@ -33,12 +33,16 @@ axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
 chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
 breaks' `sizing`, the energy-level `bands` and `band` style, a
-subplot's `marker`, the energy-level `wavelength_labels` and a text
-annotation's `align`) are additive.
+subplot's `marker`, the energy-level `wavelength_labels`, a text
+annotation's `align` and the `MonotonicLine` series kind) are additive.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
+
+- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271); on `feat/271-monotonic-line`, after 0.19).
+  - **The core** (`model::monotonic`): fast, large, evenly spaced data (`x = start + i × interval`) reduced on the CPU to its **M4** envelope per pixel column (first, lowest, highest and last sample; a column of at most 4 keeps them all). The host lends its samples through the `MonotonicSource` trait on every call, as contiguous runs (`MonotonicRun`; a ring buffer lends two); a source carries the values, their `start` and `interval` (sample `i` at `start + i × interval`), and no call takes those separately; `MonotonicSlices::new(start, interval, channels)` (one slice per channel) and `MonotonicInterleaved::new(start, interval, values, stride, columns)` (one sample-major buffer with a stride and the frame columns its channels read) are built in; elements are `f64`, `f32`, `i32`, `i16`, `u16` or `u8` (`MonotonicElement`, sealed), compared in their own type. `MonotonicEnvelope` is the cache: `set_monotonic(&source, &MonotonicMapping)` reduces in full on the source's grid, `append_monotonic(&new, MonotonicAppend { sliding })` merges only the new samples (continuing the full call's grid; it reads neither `start` nor `interval`) and, sliding, moves the window by exactly their span on the anchored column grid (`pixel_offset`), never reading old samples; `check_mapping` refuses another mapping with `MonotonicError::SourceRequired { change: MappingChange }`. `MonotonicSourceRef` erases the element type for calls that take several sources. `MonotonicConfig` (with `MonotonicAxis`) is a monotonic chart's document editor: everything but the x-to-pixel mapping, checked by `same_mapping`; new rules `MonotonicGeneralChart`, `MonotonicMappingEdit`, `MonotonicRange`. The envelope is sized by the plot width and the channel count, never by the sample count; a `MonotonicMapping` keeps `margin_px` whole columns beyond each edge of the plot, fixed when it is built. A NaN gap narrower than one column is drawn joined. Rules M1–M7 in `MONOTONIC.md`.
+  - **The series**: `DataRenderType::MonotonicLine(MonotonicLineSeries { group, channel, line })`, one channel of a group drawn as a line; its `x_column` and `y_column` name the renderer-owned envelope columns (the helper `SeriesConfig::monotonic_line(id, group, channel)` names them `<id>.monotonic.x` / `.y`; `SeriesConfig::monotonic_column_ids`). `Config::validate_monotonic_series` holds the rules: a named group, a linear unfilled line, two distinct envelope columns no other series reads, a linear, numeric, unbroken x axis on a rectangular 2D chart. New rules: `MonotonicGroupEmpty`, `MonotonicInterpolation`, `MonotonicFill`, `MonotonicColumns`, `MonotonicColumnsShared`, `MonotonicChartKind`, `MonotonicXAxis`, `PolarMonotonic`, `StreamedMonotonic`, `MonotonicChannel { channel, channels }`, `MonotonicColumnTaken { column }`. The legend shows its line; `ColorCycle` and the themes recolour and restyle it. The wire form `{"MonotonicLine": {..}}` is a new variant: older documents read and write as before. **Migration:** an exhaustive `match` on `DataRenderType` adds a `MonotonicLine` arm.
 
 - **Series constructors and modifiers** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `SeriesConfig` gains one constructor per chart family (`line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`, `mesh`, `energy_diagram`, `feynman_diagram`, and `of_kind`), each naming its columns and drawing with the host style defaults. Chainable modifiers set the common fields: `label`, `color`, `width`, `dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal` and `z`. `MatrixRef::columns_are_x`, `columns_are_y` and `with_layout` name a matrix. These are methods on the document types: the series stays the single source of truth.
 
@@ -1453,6 +1457,17 @@ annotation's `align`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271); on `feat/271-monotonic-line`, after 0.19).
+  - **A monotonic chart is its own registered chart** (`Renderer::register_monotonic_chart(config, series) -> MonotonicChartId`). Only that handle reaches it: the general chart calls take a `ChartId`, which a monotonic chart never hands out (monotonic charts are kept out of `chart_order`), so no general call (config, state, view, display, hold, auto-fit, streaming) can move its x-to-pixel mapping. A monotonic line series lives only in a monotonic chart: `register_chart`, `set_chart_series`, `set_chart_state` and `begin_replace_chart_columns` refuse it at registration (`RuleKind::MonotonicGeneralChart`). The handle wraps the registry's chart id, so a monotonic chart draws, picks and exports through the same paths as any chart.
+  - `Renderer::monotonic_chart(id) -> MonotonicChart` lends the chart's calls. Four move the mapping, and each takes the source: `set_monotonic(group, &source, range)` (the full call; `MonotonicRange::X { min, max }` writes the x range, the only call that does, `MonotonicRange::Autoscale` fits x to `start ..= start + (len - 1) × interval` and y, padded by 5 %, to the values the same reduction keeps), `append_monotonic(group, &new, MonotonicAppend { sliding })` (only the new samples; a slide writes the moved x range to the document), `resize(chart_area, plot_area, surface, &[MonotonicGroupRef])` (the chart area, the plot a plot-area resize proposes, the display surface; atomic: the display and the document are planned together, a refusal changes nothing, and a plot rect the margins cannot place is `RuleKind::NoFeasibleLayout`) and `fit_layout(&[MonotonicGroupRef])` (`layout::auto_layout` applied). Without a source a moved group needs, the resize and the fit are refused with `FiggyError::MonotonicSourceRequired { series_id, change }` before anything is written. The other calls need none: `edit_config`, `set_series`, `step_selection`, `set_selection`, `pick_data`, `pick`, `prepare_picking`, `remove`. Reads take `&Renderer`: `monotonic_config`, `monotonic_series`, `monotonic_needs_source`, `monotonic_kept_point`, `monotonic_selection`, `monotonic_display_config`, `monotonic_render_stamp`, `monotonic_series_draw_info`. `prepare_monotonic(&mut [MonotonicChartDrawItem])` and `WindowedRenderer::draw_monotonic` draw monotonic charts; `ExportSource::Monotonic { chart, monotonic: &[MonotonicGroupRef] }` exports one (`&[]` at the screen's mapping; at another scale each group is reduced from its source into envelopes that live for the export alone).
+  - **The document editor** (`MonotonicChart::edit_config(|editor| ..)`, over a `model::monotonic::MonotonicConfig`): read access to the whole `Config`, and editors for the legend, titles, grid, annotations, selection, active layer, backgrounds, axes (`MonotonicAxis`: title, labels and their format, ticks, line, a y axis' range), overlays and subplots; `nudge` and `drag` for decoration drags; `assign` for a whole document. No setter writes the x range, x scale, breaks, direction or the chart or plot area, and an edit that would move them (`model::monotonic::same_mapping`) is refused with `RuleKind::MonotonicMappingEdit` and changes nothing.
+  - The envelope is drawn by the existing line pipeline (no new shader, entry point or pipeline): 8 rows per pixel column, each point followed by a join marker that repeats it (a zero-length segment the stroke collapses) or is NaN (a break), so a picked row maps back to its logical sample index by arithmetic. x is `start + index × interval` in data units, so a slide by part of a column needs no special projection. The envelope keeps a fixed 64 whole pixel columns beyond each edge of the plot at the scale it is drawn at, set when it is built: a stroke width is a plain style edit, and strokes up to about 120 device pixels wide draw their edges as the full line's after a zoom; a wider one may miss ink at the plot's edges.
+  - Frames and picks never fail for a missing source; a series whose group was never supplied has no columns and draws nothing, and removing its envelope columns no longer removes the series from the document. The core's refusals are `FiggyError::Monotonic { group, error }`; a group no series names is `FiggyError::UnknownMonotonicGroup`; writing or removing an envelope column is `FiggyError::ReservedColumnId`.
+  - Every interaction: GPU picks on the drawn envelope report the logical index of a kept point, the picked highlight rings it, `step_selection` walks the kept points, the legend, decoration drags and a plot-area drag through the editor, a plot-area resize through `resize`, the annotation layer, PNG, SVG and PDF export at any scale, overlays and subplots. Streamed displays refuse the series (`StreamedMonotonic`, M5). `renderer::monotonic` re-exports the model's core; `MonotonicChartId`, `MonotonicChart`, `MonotonicChartDrawItem`, `MonotonicAppend`, `MonotonicSlices`, `MonotonicInterleaved`, `MonotonicSource`, `MonotonicSourceRef`, `MonotonicUpdate`, `MonotonicError`, `MappingChange` and `MonotonicLineSeries` are at the crate root; `renderer::renderer` holds `MonotonicGroupRef`, `MonotonicRange` and `MonotonicSourceNeed`.
+  - **Migration:** exhaustive matches on `FiggyError` add `MonotonicSourceRequired`, `Monotonic` and `UnknownMonotonicGroup`; on `ExportSource`, `Monotonic`.
+
+- **Exports blend in half floats** ([#271](https://github.com/shim9610/figgy/issues/271)). A PNG, SVG or PDF export, resident or streamed, now renders into an `Rgba16Float` target and is quantized to straight-alpha RGBA8 once, at readback; it rendered into `Rgba8Unorm`, rounding every blend. 8-bit premultiplied blending is not associative, so the PNG export (grid, each data primitive, decoration) and a vector file's data image (the data alone, placed over the grid) drifted apart where many antialiased strokes stack: on an ordinary dense line (the 100 000-point resident scene) 797 colour channels differed by more than 1/255 (worst 2.9/255), on a monotonic envelope with one 50 Hz cycle per pixel column 1926 (worst 2.8/255). In half floats the two agree within the final rounding (30 and 88 channels, worst 1.3/255). The streamed export takes the same target and readback, so a streamed and a resident export stay byte-identical. Exported pixels move by up to 2/255 where partial-alpha fragments stack; on-screen frames are unchanged.
 
 - **`prepare` redraws a stale raster itself; the chart holds its selection** ([#265](https://github.com/shim9610/figgy/issues/265)). Breaking.
   - `ChartDrawItem` is now `{ view: &mut ChartView, chart: &Chart, series }` (was `view: &ChartView, chart_config: &Config`), and `RegisteredChartDrawItem.view` is `&mut ChartView`. `Renderer::prepare`, `prepare_registered`, `paint`, and `WindowedRenderer::draw`, `draw_registered`, `first_frame_ready(_blocking)` and `warm_up(_blocking)` take `&mut [..]`.
@@ -3322,6 +3337,41 @@ annotation's `align`) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271); on `feat/271-monotonic-line`, after 0.19).
+  Monotonic series live only in a monotonic chart: the kernel's general
+  chart refuses them, and `FiggyChart.set_monotonic_document(config,
+  series)` shows a monotonic chart instead (`clear_monotonic_document()`
+  goes back). Its setters edit its document through the monotonic chart's
+  editor, which refuses a document that would move the x-to-pixel mapping;
+  `auto_fit_all` and the streamed calls refuse it explicitly.
+  `set_monotonic(group, start, interval, data, range, stride?, columns?)`
+  (`range`: `[xMin, xMax]` or `"autoscale"`, the only call that sets the x
+  range) and `append_monotonic(group, data, sliding, stride?, columns?)`
+  take a group's samples as an `Array` of typed arrays, one per channel, or
+  one interleaved typed array with a stride and the frame columns its
+  channels read: `Float64Array`, `Float32Array`, `Int32Array`,
+  `Int16Array`, `Uint16Array` or `Uint8Array`. Only the samples a call
+  reads are copied into wasm memory, a bounded chunk at a time.
+  `resize_monotonic(width, height, sources, plotArea)` (atomic) and
+  `fit_layout(sources)` take each group's source, `[{ group, start,
+  interval, data, stride?, columns? }]`; the plain `resize` is the resize
+  with no sources, refused with `MonotonicSourceRequired` when a group
+  would move. `<figgy-chart>` does not resize a monotonic chart by itself:
+  the canvas keeps its size and `figgy-resize` carries `monotonic: true`
+  until the host calls `resize_monotonic(sources)`. A plot-area resize
+  gesture applies nothing while it drags; on release the element emits
+  `figgy-plot-resize` with `{ plotArea, monotonic: true }` (the kernel's
+  `take_plot_resize_request()`), and the host applies it with
+  `resize_monotonic(sources, plotArea)`. A frame drag that would move the
+  mapping leaves the chart as it is and does not hold the display,
+  `apply_theme` keeps the layout of a monotonic chart, and there is no
+  wheel or drag zoom. `monotonic_groups()` names the groups;
+  `needs_source()` lists the series whose group was never supplied;
+  `export_png_monotonic(scale, sources)` and its SVG and PDF forms export
+  at another scale with each group's source. `selection_details()` reads a
+  monotonic point from the envelope and `step_selection` walks the kept
+  points. `<figgy-chart>` forwards all of them.
+
 - **Themes** ([#265](https://github.com/shim9610/figgy/issues/265)).
   `FiggyChart.apply_theme(name, subplots)` and `<figgy-chart>`'s
   `apply_theme(name, subplots = "all")` apply a built-in theme (`light`,
@@ -3768,6 +3818,51 @@ entries above describe the changes.
 
 ### Tests and guards
 
+- **Monotonic-x lines** ([#271](https://github.com/shim9610/figgy/issues/271)).
+  `tests/monotonic_render.rs` holds the pixel oracle (sparse views
+  byte-identical to the full line draw at 1x and 2x; dense and mixed views,
+  appends, slides and sub-pixel gaps within one pixel of it; appends and
+  whole-column slides byte-identical to a full call; every element type in
+  both layouts identical to its `f64` conversion), every mapping change
+  that takes the source, the changes that do not, the interactions, the
+  layers, the document round trip, column ownership and 300 channels; 40
+  and 60 px strokes at 1x and 2x (up to 120 device pixels) draw their edges
+  byte-identical to the full draw after a zoom
+  (`strokes_up_to_the_margin_limit_draw_their_edges_exactly`).
+  `autoscale_fits_x_to_the_grid_and_y_to_the_reduction` checks the fitted
+  ranges against the data, the image against a plain full call, an
+  and an overlay's own axis. Each of the four calls of the monotonic chart
+  handle that take the source is tested against a fresh full reduction
+  (`set_monotonic_sets_the_x_range`, the append and slide tests,
+  `resize_monotonic_reduces_the_moved_groups_again`,
+  `fit_layout_takes_the_source_when_it_moves_the_plot`), the plot-area
+  resize with and without the sources
+  (`a_plot_area_drag_keeps_the_envelope_and_a_resize_takes_the_source`), the
+  resize's atomicity when its second step would be refused
+  (`resize_monotonic_refuses_both_steps_or_applies_both`); the document
+  editor refuses every edit that would move the mapping (the x range, scale,
+  breaks and direction, the chart area, a layout or plot edge) with the
+  document, envelopes and image unchanged, and the general calls refuse a
+  monotonic line series (`only_the_monotonic_calls_move_the_mapping`); every
+  other
+  setting (legend, axis titles, ticks, tick labels, title, annotation,
+  selection, decoration drags, colour, width, dash) draws without a source
+  as a fresh full call does (`every_other_setting_draws_without_the_source`);
+  a sweep shows that draws and picks never fail for a missing source
+  (`draws_and_picks_never_need_the_source`).
+  `monotonic_edits_refresh_first_frame_or_go_through_the_full_call`
+  classifies the series' fields; `monotonic_browser.rs` and `figgy-chart.test.mjs` cover
+  the browser calls. The scene catalogue gains `SceneKind::Monotonic`
+  (four channels of 200 000 samples), so the decoration oracle, the vector
+  export sweeps and the `auto_layout` sweep cover the series; the scene
+  keeps its samples and the sweeps export it with them through
+  `ExportSource::Monotonic` (`export_scene`, which registers it as a
+  monotonic chart). The playground registers a monotonic scene as a
+  monotonic chart, follows its viewport with `MonotonicChart::resize` and
+  the scene's samples, gives a group never supplied its first full call,
+  never pans, zooms or holds it, and builds again: it had no arm for the new
+  series kind.
+
 - **The field contour and violin picks compile in a browser's software
   GPU.** Creating the `field contour data pick` and `violin data pick`
   pipelines grew Chromium's SwiftShader GPU process past 12 GB, so a
@@ -4120,6 +4215,12 @@ entries above describe the changes.
   oracle, the auto layout and vector export tests.
 
 ### Documentation
+
+- **Monotonic-x lines** ([#271](https://github.com/shim9610/figgy/issues/271)).
+  `crates/model/MONOTONIC.md` (English and Korean) describes the core, the
+  renderer side and the rules M1–M7, which `CLAUDE.md` holds as their own
+  section; `USAGE.md` (both languages), `API.md` and `WASM.md` gain the
+  calls.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
   `CONFIG.md` (in Korean) gains the streamline section next to the vector

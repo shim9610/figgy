@@ -107,7 +107,34 @@ pub(in crate::renderer) fn active_layer_pick_inputs(
     })
 }
 
+/// The series a pick plans: every series but a monotonic series before its
+/// group's first full call, which has no columns in `pool` and draws
+/// nothing (#271). Borrowed unless there is one to leave out.
+pub(in crate::renderer) fn pickable_series<'s>(
+    pool: &ColumnPool,
+    series: &'s [SeriesConfig],
+) -> std::borrow::Cow<'s, [SeriesConfig]> {
+    let drawn =
+        |item: &SeriesConfig| item.monotonic().is_none() || pool.slot(&item.x_column).is_some();
+    if series.iter().all(drawn) {
+        std::borrow::Cow::Borrowed(series)
+    } else {
+        std::borrow::Cow::Owned(series.iter().filter(|item| drawn(item)).cloned().collect())
+    }
+}
+
 impl PickChartPlan {
+    /// [`Self::for_active_layer`] of a chart whose columns are in `pool`:
+    /// a monotonic series before its group's first full call has none and
+    /// is not planned (#271).
+    pub(in crate::renderer) fn for_active_layer_in(
+        pool: &ColumnPool,
+        config: &Config,
+        series: &[SeriesConfig],
+    ) -> std::result::Result<Self, crate::gpu_pick::GpuPickError> {
+        Self::for_active_layer(config, &pickable_series(pool, series))
+    }
+
     /// The plan for the active layer of `config`; see
     /// [`active_layer_pick_inputs`].
     pub(in crate::renderer) fn for_active_layer(

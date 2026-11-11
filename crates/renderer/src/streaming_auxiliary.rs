@@ -1000,7 +1000,9 @@ impl Renderer {
             ((original.height as f32) * scale).round().max(1.0) as u32,
         );
         validate_texture_extent(self.caps, "stream export dimensions", size.0, size.1)?;
-        let format = wgpu::TextureFormat::Rgba8Unorm;
+        // The resident export's target, so a streamed export blends and
+        // rounds exactly as the resident export of the same document.
+        let format = crate::renderer::EXPORT_FORMAT;
         let sample_count = preferred_msaa_sample_count(self.caps, format);
         validate_target_sample_count(self.caps, format, sample_count)?;
         let mut config = document_config.scaled(scale);
@@ -1602,7 +1604,9 @@ impl Renderer {
 
     async fn read_stream_export_rgba(&mut self, target: &wgpu::Texture) -> Result<RasterImage> {
         let (width, height) = (target.width(), target.height());
-        let row = u64::from(width) * 4;
+        // The target's rows (half-float texels) and the image's (RGBA8).
+        let row = u64::from(width) * crate::renderer::EXPORT_TEXEL_BYTES;
+        let out_row = u64::from(width) * 4;
         let padded = row.div_ceil(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
             * u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let remaining = self
@@ -1632,12 +1636,12 @@ impl Renderer {
                 "stream export readback",
             )?,
         );
-        let len = row
+        let len = out_row
             .checked_mul(u64::from(height))
             .and_then(|bytes| usize::try_from(bytes).ok())
             .ok_or(FiggyError::GpuResourceLimit {
                 resource: "stream export output",
-                requested: row.saturating_mul(u64::from(height)),
+                requested: out_row.saturating_mul(u64::from(height)),
                 limit: usize::MAX as u64,
             })?;
         let mut rgba = Vec::new();
@@ -1701,17 +1705,13 @@ impl Renderer {
             })?;
             for local in 0..count {
                 let src = &mapped[(u64::from(local) * padded) as usize..][..row as usize];
-                let dst = &mut rgba[(u64::from(y + local) * row) as usize..][..row as usize];
-                dst.copy_from_slice(src);
-                for pixel in dst.chunks_exact_mut(4) {
-                    let alpha = pixel[3];
-                    if alpha != 0 && alpha != 255 {
-                        let alpha = f32::from(alpha) / 255.0;
-                        for channel in &mut pixel[..3] {
-                            *channel =
-                                (f32::from(*channel) / alpha).round().clamp(0.0, 255.0) as u8;
-                        }
-                    }
+                let dst =
+                    &mut rgba[(u64::from(y + local) * out_row) as usize..][..out_row as usize];
+                let (texels, _) =
+                    src.as_chunks::<{ crate::renderer::EXPORT_TEXEL_BYTES as usize }>();
+                let (pixels, _) = dst.as_chunks_mut::<4>();
+                for (pixel, texel) in pixels.iter_mut().zip(texels) {
+                    *pixel = crate::renderer::straight_rgba8(texel);
                 }
             }
             drop(mapped);

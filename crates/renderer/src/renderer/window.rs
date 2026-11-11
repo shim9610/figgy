@@ -173,6 +173,16 @@ impl<'w> WindowedRenderer<'w> {
         self.draw_prepared(clear, &prepared)
     }
 
+    /// [`Self::draw_registered`] for monotonic charts (#271).
+    pub fn draw_monotonic(
+        &mut self,
+        clear: crate::color::Color,
+        items: &mut [crate::renderer::MonotonicChartDrawItem<'_>],
+    ) -> Result<()> {
+        let prepared = self.inner.prepare_monotonic(items)?;
+        self.draw_prepared(clear, &prepared)
+    }
+
     /// Draw one frame using a prepared data token owned by the host.
     ///
     /// This still records the surface composition pass (grid, annotation

@@ -17,6 +17,7 @@ mod export;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use export::native_export_scoped;
 pub use export::*;
+pub(crate) use export::{EXPORT_FORMAT, EXPORT_TEXEL_BYTES, straight_rgba8};
 mod picking;
 pub use picking::*;
 mod device;
@@ -52,6 +53,12 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod monotonic;
+pub(crate) use monotonic::MonotonicPickRows;
+use monotonic::{Lender, Placement, lend_none};
+pub use monotonic::{MonotonicGroupRef, MonotonicRange, MonotonicSourceNeed};
+mod monotonic_chart;
+pub use monotonic_chart::{MonotonicChart, MonotonicChartDrawItem, MonotonicChartId};
 mod selection_prepare;
 mod surface_pick;
 
@@ -218,6 +225,11 @@ pub struct Renderer {
     stream_runtime: Option<streaming_runtime::StreamRuntime>,
     chart_states: HashMap<ChartId, ChartRenderState>,
     chart_order: Vec<ChartId>,
+    /// The monotonic charts (#271), registered by `register_monotonic_chart`
+    /// and kept out of [`Renderer::chart_order`], so no general call is
+    /// ever handed their ids. Internal passes over every chart walk both
+    /// lists ([`Renderer::every_chart`]).
+    monotonic_order: Vec<ChartId>,
     next_chart_id: u64,
     visual_revision: RenderRevision,
     renderer_identity: u64,
@@ -322,6 +334,10 @@ pub struct Renderer {
     /// Per-vector-series group-2 state, keyed by `series_id`. Rebuilt only
     /// when its [`VectorSignature`] changes, like `field_cache`.
     vector_cache: HashMap<String, VectorScratch>,
+    /// The envelopes of every monotonic group (#271) and the pool columns
+    /// its series draw from: CPU state sized by the plot width and the
+    /// channel count, never by the sample count (M3).
+    monotonic: monotonic::MonotonicState,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.

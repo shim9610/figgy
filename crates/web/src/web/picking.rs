@@ -25,6 +25,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         // A mesh is a field over triangles (#210): no markers.
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
+        // A monotonic series draws a line, no markers (#271).
+        | DataRenderType::MonotonicLine(_)
         | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
         | DataRenderType::Vector { .. } => None,
@@ -43,10 +45,21 @@ impl FiggyChart {
     /// JS: `chart.set_active_layer(JSON.stringify({ Overlay: 0 }))`
     pub fn set_active_layer(&mut self, json: &str) -> Result<String, JsValue> {
         let layer: renderer::LayerRef = serde_json::from_str(json).map_err(js_err)?;
-        let stored = self
-            .renderer
-            .set_active_layer(self.chart_id, layer)
-            .map_err(js_err)?;
+        let stored = match self.monotonic {
+            Some(id) => {
+                self.renderer
+                    .monotonic_chart(id)
+                    .and_then(|mut chart| {
+                        chart.edit_config(|editor| editor.set_active_layer(layer))
+                    })
+                    .map_err(js_err)?;
+                self.chart_config()?.active_layer()
+            }
+            None => self
+                .renderer
+                .set_active_layer(self.chart_id, layer)
+                .map_err(js_err)?,
+        };
         self.sync_hitmap()?;
         serde_json::to_string(&stored).map_err(js_err)
     }
@@ -55,7 +68,10 @@ impl FiggyChart {
     /// out-of-range fallback applied.
     /// JS: `JSON.parse(chart.active_layer())`
     pub fn active_layer(&self) -> Result<String, JsValue> {
-        let layer = self.renderer.active_layer(self.chart_id).map_err(js_err)?;
+        let layer = match self.monotonic {
+            Some(_) => self.chart_config()?.active_layer(),
+            None => self.renderer.active_layer(self.chart_id).map_err(js_err)?,
+        };
         serde_json::to_string(&layer).map_err(js_err)
     }
 
@@ -205,6 +221,17 @@ impl FiggyChart {
             .ok_or_else(|| js_err("selected series no longer exists"))?;
         let mut result = serde_json::json!({"identity": reference, "series_id": series.series_id});
         match &reference {
+            // A monotonic series' point is a kept point of its envelope
+            // (#271): its x and y are read from the envelope, not the GPU.
+            PickedDataRef::Point { point_index, .. } if series.monotonic().is_some() => {
+                let point = self
+                    .renderer
+                    .monotonic_kept_point(self.monotonic_id()?, &series.series_id, *point_index)
+                    .map_err(js_err)?;
+                result["index"] = serde_json::json!(point_index);
+                result["x"] = serde_json::json!(point.map(|(x, _)| x));
+                result["y"] = serde_json::json!(point.map(|(_, y)| y).filter(|y| y.is_finite()));
+            }
             // A box plot's raw point reports its category (its position
             // column's value there, and the category it names) and its
             // value, read back from the GPU columns the draw used.
@@ -848,30 +875,22 @@ impl FiggyChart {
         serde_json::to_string(&result).map_err(js_err)
     }
 
-    /// Move the resident typed data selection using source indices:
-    /// `Config::step_selection` over the chart's series and the registered
-    /// column lengths, then the moved config replaces the chart's.
+    /// Move the resident typed data selection using source indices
+    /// (`Renderer::step_chart_selection`): `Config::step_selection` over
+    /// the chart's series and the registered column lengths, and a
+    /// monotonic series' point over the points its envelope keeps (#271).
     pub fn step_selection(&mut self, dx: i32, dy: i32) -> Result<bool, JsValue> {
-        let mut cfg = self.chart_config()?.clone();
-        if !cfg
-            .step_selection(self.chart_series()?, dx, dy, |column| {
-                // A triangle index column's length is its index count, from
-                // its statistics (#210): the CPU never reads an index.
-                self.renderer
-                    .logical_column(column)
-                    .and_then(|column| usize::try_from(column.len()).ok())
-                    .or_else(|| {
-                        self.renderer
-                            .pool()
-                            .triangles(column)
-                            .map(|triangles| triangles.stats().triangles as usize * 3)
-                    })
-            })
-            .map_err(js_err)?
-        {
+        let stepped = match self.monotonic {
+            Some(id) => self
+                .renderer
+                .monotonic_chart(id)
+                .and_then(|mut chart| chart.step_selection(dx, dy)),
+            None => self.renderer.step_chart_selection(self.chart_id, dx, dy),
+        };
+        if !stepped.map_err(js_err)? {
             return Ok(false);
         }
-        self.replace_chart_config(cfg)?;
+        self.sync_hitmap()?;
         Ok(true)
     }
 
@@ -892,9 +911,69 @@ impl FiggyChart {
             .enable_gpu_picking_async()
             .await
             .map_err(js_err)?;
-        self.renderer
-            .prepare_gpu_picking_for_chart(self.chart_id)
-            .map_err(js_err)
+        match self.monotonic {
+            Some(id) => self
+                .renderer
+                .monotonic_chart(id)
+                .map_err(js_err)?
+                .prepare_picking()
+                .map_err(js_err),
+            None => self
+                .renderer
+                .prepare_gpu_picking_for_chart(self.chart_id)
+                .map_err(js_err),
+        }
+    }
+
+    /// Whether the shown chart draws from a stream: a monotonic chart
+    /// never does (#271).
+    fn shows_stream(&self) -> bool {
+        self.monotonic.is_none() && self.renderer.is_streaming_chart(self.chart_id)
+    }
+
+    /// The request of a pick at canvas pixel `at` on a monotonic chart, as
+    /// the window builds it for a general one: the document fitted to the
+    /// surface.
+    fn monotonic_pick_request(
+        &self,
+        id: renderer::MonotonicChartId,
+        at: [f32; 2],
+        max_distance_px: f32,
+    ) -> Result<renderer::GpuPickRequest, JsValue> {
+        let document = self
+            .renderer
+            .monotonic_config(id)
+            .map_err(js_err)?
+            .document_area();
+        let (display_scale, display_panel_px) =
+            renderer::fit_display_panel((document.width, document.height), self.surface_size);
+        Ok(renderer::GpuPickRequest {
+            canvas_position_px: at,
+            display_panel_px,
+            display_scale,
+            max_distance_px,
+        })
+    }
+
+    /// A typed data pick on the shown chart.
+    fn data_pick_ticket(
+        &mut self,
+        at: [f32; 2],
+        max_distance_px: f32,
+    ) -> Result<renderer::GpuDataPickTicket, JsValue> {
+        match self.monotonic {
+            Some(id) => {
+                let request = self.monotonic_pick_request(id, at, max_distance_px)?;
+                self.renderer
+                    .monotonic_chart(id)
+                    .and_then(|mut chart| chart.pick_data(request))
+                    .map_err(js_err)
+            }
+            None => self
+                .renderer
+                .pick_chart_data_at(self.chart_id, at, max_distance_px)
+                .map_err(js_err),
+        }
     }
 
     /// Compile the exact GPU picker and prepare it for the current chart.
@@ -924,7 +1003,7 @@ impl FiggyChart {
         y: f32,
         max_distance_px: f32,
     ) -> Result<JsValue, JsValue> {
-        if self.renderer.is_streaming_chart(self.chart_id) {
+        if self.shows_stream() {
             let Some(picked) = self
                 .renderer
                 .pick_chart_view_cache_at(self.chart_id, [x, y], max_distance_px)
@@ -949,10 +1028,7 @@ impl FiggyChart {
                     .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
         });
         if labelled {
-            let ticket = self
-                .renderer
-                .pick_chart_data_at(self.chart_id, [x, y], max_distance_px)
-                .map_err(js_err)?;
+            let ticket = self.data_pick_ticket([x, y], max_distance_px)?;
             match ticket.resolve().await.map_err(js_err)? {
                 Some(renderer::PickedData::ValueLabel {
                     source_id,
@@ -979,10 +1055,20 @@ impl FiggyChart {
                 _ => {}
             }
         }
-        let ticket = self
-            .renderer
-            .pick_chart_at(self.chart_id, [x, y], max_distance_px)
-            .map_err(js_err)?;
+        let ticket = match self.monotonic {
+            Some(id) => {
+                let request = self.monotonic_pick_request(id, [x, y], max_distance_px)?;
+                self.renderer
+                    .monotonic_chart(id)
+                    .map_err(js_err)?
+                    .pick(request)
+                    .map_err(js_err)?
+            }
+            None => self
+                .renderer
+                .pick_chart_at(self.chart_id, [x, y], max_distance_px)
+                .map_err(js_err)?,
+        };
         let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
             return Ok(JsValue::UNDEFINED);
         };
@@ -1024,9 +1110,7 @@ impl FiggyChart {
             part: None,
         };
         if self.chart_selection()?.is_some() {
-            self.renderer
-                .set_chart_selection(self.chart_id, None)
-                .map_err(js_err)?;
+            self.set_chart_selection(None)?;
         }
         self.set_selected_annotation(None);
         let mut config = self.chart_config()?.clone();
@@ -1120,9 +1204,7 @@ impl FiggyChart {
             _ => return Ok(false),
         };
         if self.chart_selection()?.is_some() {
-            self.renderer
-                .set_chart_selection(self.chart_id, None)
-                .map_err(js_err)?;
+            self.set_chart_selection(None)?;
         }
         self.set_selected_annotation(None);
         let mut config = self.chart_config()?.clone();
@@ -1202,9 +1284,7 @@ impl FiggyChart {
             part: Some(part),
         };
         if self.chart_selection()?.is_some() {
-            self.renderer
-                .set_chart_selection(self.chart_id, None)
-                .map_err(js_err)?;
+            self.set_chart_selection(None)?;
         }
         self.set_selected_annotation(None);
         let mut config = self.chart_config()?.clone();
@@ -1321,7 +1401,7 @@ impl FiggyChart {
         y: f32,
         max_distance_px: f32,
     ) -> Result<JsValue, JsValue> {
-        if self.renderer.is_streaming_chart(self.chart_id) {
+        if self.shows_stream() {
             let Some(picked) = self
                 .renderer
                 .pick_chart_view_cache_at(self.chart_id, [x, y], max_distance_px)
@@ -1340,10 +1420,7 @@ impl FiggyChart {
             return Ok(JsValue::from_str(&json));
         }
         self.prepare_gpu_picking().await?;
-        let ticket = self
-            .renderer
-            .pick_chart_data_at(self.chart_id, [x, y], max_distance_px)
-            .map_err(js_err)?;
+        let ticket = self.data_pick_ticket([x, y], max_distance_px)?;
         let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
             return Ok(JsValue::UNDEFINED);
         };
@@ -1373,12 +1450,14 @@ impl FiggyChart {
     /// are not part of the route.
     pub fn on_press(&mut self, x: f32, y: f32) -> Result<bool, JsValue> {
         self.value_label_pointer = false;
+        self.plot_resize = None;
         // Borrow the renderer field alone, so the pointer state below stays
         // assignable while the placed config is in use.
-        let (display_config, _, _) = self
-            .renderer
-            .chart_display_config(self.chart_id)
-            .map_err(js_err)?;
+        let (display_config, _, _) = match self.monotonic {
+            Some(id) => self.renderer.monotonic_display_config(id),
+            None => self.renderer.chart_display_config(self.chart_id),
+        }
+        .map_err(js_err)?;
         let routes_annotations = renderer::AnnotationMap::receives_pointer(
             display_config.active_layer(),
             &display_config.annotations,
@@ -1398,9 +1477,7 @@ impl FiggyChart {
                 .hit_test_active_layer(&display_config, &self.hitmap, [x, y])
         {
             if self.chart_selection()?.is_some() {
-                self.renderer
-                    .set_chart_selection(self.chart_id, None)
-                    .map_err(js_err)?;
+                self.set_chart_selection(None)?;
             }
             self.set_selected_annotation(Some(index));
             self.resizing = None;
@@ -1442,9 +1519,7 @@ impl FiggyChart {
                 .is_some_and(|el| el.as_draggable().is_some())
         });
         if new_sel != selected {
-            self.renderer
-                .set_chart_selection(self.chart_id, new_sel)
-                .map_err(js_err)?;
+            self.set_chart_selection(new_sel)?;
         }
         if new_sel.is_some() || routes_annotations {
             self.set_selected_annotation(None);
@@ -1506,10 +1581,25 @@ impl FiggyChart {
         if let Some(handle) = self.resizing {
             let at = self.drag_pointer;
             self.drag_pointer = [at[0] + dx, at[1] + dy];
-            if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
-                && rz.resize_from(&mut config, &measure, handle, at, dx, dy) == NudgeResult::Moved
+            let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable()) else {
+                return Ok(());
+            };
+            let plot_edge = |edge: &Option<renderer::layout::Element>| {
+                matches!(edge, Some(renderer::layout::Element::DataAreaEdge(_)))
+            };
+            let (horizontal, vertical) = rz.resize_targets(handle);
+            if (plot_edge(&horizontal) || plot_edge(&vertical)) && self.has_monotonic()? {
+                // A plot-area resize of a monotonic chart is a resize, which
+                // takes the groups' sources (#271): the gesture proposes the
+                // plot rect and the host applies it on release
+                // (`take_plot_resize_request`, `resize_monotonic`).
+                let mut proposed = self.plot_resize.take().unwrap_or(config);
+                let _ = rz.resize_from(&mut proposed, &measure, handle, at, dx, dy);
+                self.plot_resize = Some(proposed);
+            } else if rz.resize_from(&mut config, &measure, handle, at, dx, dy)
+                == NudgeResult::Moved
             {
-                self.replace_chart_config(config)?;
+                self.drag_chart_config(config)?;
             }
             return Ok(());
         }
@@ -1519,7 +1609,7 @@ impl FiggyChart {
             let at = self.drag_pointer;
             self.drag_pointer = [at[0] + dx, at[1] + dy];
             if drag.drag_from(&mut config, &measure, at, dx, dy) == NudgeResult::Moved {
-                self.replace_chart_config(config)?;
+                self.drag_chart_config(config)?;
             }
         }
         Ok(())
@@ -1529,6 +1619,14 @@ impl FiggyChart {
     /// display placement so a document a subplot drag grew fits the canvas
     /// again (#205).
     pub fn on_release(&mut self) -> Result<(), JsValue> {
+        if let Some(proposed) = self.plot_resize.take() {
+            let current = self.chart_config()?.data_area().ok().map(|area| area.0);
+            self.plot_resize_request = proposed
+                .data_area()
+                .ok()
+                .map(|area| area.0)
+                .filter(|&area| Some(area) != current);
+        }
         self.dragging = false;
         self.resizing = None;
         self.annotation_pointer = false;
@@ -1543,9 +1641,34 @@ impl FiggyChart {
         Ok(())
     }
 
-    /// Hold the display placement while a subplot frame drags (#205).
+    /// Applies the config a drag moved. On a monotonic chart (#271) a move
+    /// that would move its x-to-pixel mapping (a frame drag that changes the
+    /// document's size, say) is refused by its document editor, and the
+    /// drag keeps the chart as it is; a plot-area resize is proposed to the
+    /// host instead (`take_plot_resize_request`). Every other drag applies
+    /// as on any chart.
+    fn drag_chart_config(&mut self, config: renderer::Config) -> Result<(), JsValue> {
+        let Some(id) = self.monotonic else {
+            return self.replace_chart_config(config);
+        };
+        match self
+            .renderer
+            .monotonic_chart(id)
+            .and_then(|mut chart| chart.edit_config(|editor| editor.assign(config)))
+            .map_err(js_err)?
+        {
+            Ok(()) => self.sync_hitmap(),
+            // The drag would move the mapping: the chart stays as it is.
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// Hold the display placement while a subplot frame drags (#205). A
+    /// chart with monotonic series is never held (#271): the release would
+    /// fit the document to the canvas again and move a series' mapping
+    /// without its source.
     fn hold_display(&mut self) -> Result<(), JsValue> {
-        if !self.display_held {
+        if !self.display_held && !self.has_monotonic()? {
             self.renderer
                 .hold_chart_display(self.chart_id, true)
                 .map_err(js_err)?;

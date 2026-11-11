@@ -16,6 +16,7 @@ mod upsert;
 mod validate;
 mod view_state;
 
+pub(super) use charts::refuse_monotonic_series;
 pub(super) use column_checks::*;
 pub(super) use state::*;
 pub use upsert::*;

@@ -67,6 +67,51 @@ fn gappy(n: usize, seed: u64) -> Vec<f64> {
     data
 }
 
+/// `inner` with its samples at `x = start + i × interval`.
+struct At<'s, S: ?Sized> {
+    start: f64,
+    interval: f64,
+    inner: &'s S,
+}
+
+impl<'s, S: ?Sized> At<'s, S> {
+    fn new(start: f64, interval: f64, inner: &'s S) -> Self {
+        Self {
+            start,
+            interval,
+            inner,
+        }
+    }
+}
+
+impl<S: MonotonicSource + ?Sized> MonotonicSource for At<'_, S> {
+    type Element = S::Element;
+
+    fn start(&self) -> f64 {
+        self.start
+    }
+
+    fn interval(&self) -> f64 {
+        self.interval
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn channel_count(&self) -> usize {
+        self.inner.channel_count()
+    }
+
+    fn truncated(&self) -> bool {
+        self.inner.truncated()
+    }
+
+    fn lend(&self, range: Range<usize>, visit: &mut dyn FnMut(MonotonicRun<'_, S::Element>)) {
+        self.inner.lend(range, visit);
+    }
+}
+
 fn full<S: MonotonicSource + ?Sized>(
     start: f64,
     interval: f64,
@@ -75,7 +120,7 @@ fn full<S: MonotonicSource + ?Sized>(
 ) -> MonotonicEnvelope {
     let mut envelope = MonotonicEnvelope::empty();
     envelope
-        .set_monotonic(&MonotonicGroup::new(start, interval, source), mapping)
+        .set_monotonic(&At::new(start, interval, source), mapping)
         .expect("set");
     envelope
 }
@@ -251,7 +296,7 @@ fn check_oracle(envelope: &MonotonicEnvelope, channel: usize, value: &dyn Fn(usi
 
 /// One-channel `f64` slices.
 fn slices<'a>(channels: &'a [&'a [f64]]) -> MonotonicSlices<'a, f64> {
-    MonotonicSlices::new(channels)
+    MonotonicSlices::new(0.0, 1.0, channels)
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +313,14 @@ struct Ring<'a> {
 
 impl MonotonicSource for Ring<'_> {
     type Element = f64;
+
+    fn start(&self) -> f64 {
+        0.0
+    }
+
+    fn interval(&self) -> f64 {
+        1.0
+    }
 
     fn len(&self) -> usize {
         self.len
@@ -338,6 +391,14 @@ impl<'a, S: MonotonicSource + ?Sized> Counting<'a, S> {
 impl<S: MonotonicSource + ?Sized> MonotonicSource for Counting<'_, S> {
     type Element = S::Element;
 
+    fn start(&self) -> f64 {
+        self.inner.start()
+    }
+
+    fn interval(&self) -> f64 {
+        self.inner.interval()
+    }
+
     fn len(&self) -> usize {
         self.inner.len()
     }
@@ -377,7 +438,7 @@ fn with_source<R>(
     match layout {
         Layout::Slices => {
             let views: Vec<&[f64]> = data.iter().map(|d| &d[range.clone()]).collect();
-            f(&MonotonicSlices::new(&views))
+            f(&MonotonicSlices::new(0.0, 1.0, &views))
         }
         Layout::Interleaved => {
             let stride = data.len() + 1;
@@ -386,7 +447,10 @@ fn with_source<R>(
                 .flat_map(|i| std::iter::once(f64::NAN).chain(data.iter().map(move |d| d[i])))
                 .collect();
             let columns: Vec<usize> = (1..stride).collect();
-            f(&MonotonicInterleaved::new(&frames, stride, &columns).expect("interleaved"))
+            f(
+                &MonotonicInterleaved::new(0.0, 1.0, &frames, stride, &columns)
+                    .expect("interleaved"),
+            )
         }
         Layout::Ring => {
             let len = range.len();
@@ -466,6 +530,11 @@ impl MonotonicElement for Probe {
             value: self.value + other.value,
             ..self
         }
+    }
+    fn erase<'a>(
+        _source: &'a crate::monotonic::DynMonotonicSource<'a, Self>,
+    ) -> crate::monotonic::MonotonicSourceRef<'a> {
+        unimplemented!("a probe source is never erased")
     }
 }
 
@@ -691,7 +760,7 @@ fn check_type<T: MonotonicElement>(data: &[T], value: &dyn Fn(usize) -> f64) {
     let mapping = MonotonicMapping::linear(0.5, data.len() as f64 - 7.5, 61);
     let typed: &[&[T]] = &[data];
     let wide: &[&[f64]] = &[&converted];
-    let a = full(0.0, 1.0, &MonotonicSlices::new(typed), &mapping);
+    let a = full(0.0, 1.0, &MonotonicSlices::new(0.0, 1.0, typed), &mapping);
     let b = full(0.0, 1.0, &slices(wide), &mapping);
     assert_same(&a, &b);
     check_oracle(&a, 0, value);
@@ -774,12 +843,17 @@ fn interleaved_and_slices_give_identical_envelopes() {
     }));
     let columns = [2, 4, 1];
     let mapping = MonotonicMapping::linear(10.5, 2900.0, 113);
-    let interleaved = MonotonicInterleaved::new(&frames, stride, &columns).unwrap();
+    let interleaved = MonotonicInterleaved::new(0.0, 1.0, &frames, stride, &columns).unwrap();
     assert_eq!(interleaved.len(), n);
     let x = full(0.0, 1.0, &interleaved, &mapping);
     let (pa, pb, pc) = (probes(&a, 0..n), probes(&b, 0..n), probes(&c, 0..n));
     let channels: &[&[Probe]] = &[&pa, &pb, &pc];
-    let y = full(0.0, 1.0, &MonotonicSlices::new(channels), &mapping);
+    let y = full(
+        0.0,
+        1.0,
+        &MonotonicSlices::new(0.0, 1.0, channels),
+        &mapping,
+    );
     assert_same(&x, &y);
     check_oracle(&x, 0, &|i| a[i]);
     check_oracle(&x, 1, &|i| b[i]);
@@ -790,11 +864,11 @@ fn interleaved_and_slices_give_identical_envelopes() {
 fn interleaved_rejects_bad_columns() {
     let values = [0.0f64; 12];
     assert_eq!(
-        MonotonicInterleaved::new(&values, 0, &[]).err(),
+        MonotonicInterleaved::new(0.0, 1.0, &values, 0, &[]).err(),
         Some(MonotonicError::InvalidStride)
     );
     assert_eq!(
-        MonotonicInterleaved::new(&values, 3, &[0, 3]).err(),
+        MonotonicInterleaved::new(0.0, 1.0, &values, 3, &[0, 3]).err(),
         Some(MonotonicError::InvalidColumn {
             column: 3,
             stride: 3
@@ -867,7 +941,12 @@ fn a_full_call_reads_only_the_kept_columns_and_two_edges() {
     let input = probes(&data, lead..trail + 1);
     let channels: &[&[Probe]] = &[&input];
     reset_reads();
-    full(0.0, 1.0, &MonotonicSlices::new(channels), &mapping);
+    full(
+        0.0,
+        1.0,
+        &MonotonicSlices::new(0.0, 1.0, channels),
+        &mapping,
+    );
     assert_eq!(reads(), Some((lead, trail)));
     let frames: Vec<Probe> = input
         .iter()
@@ -883,7 +962,7 @@ fn a_full_call_reads_only_the_kept_columns_and_two_edges() {
     full(
         0.0,
         1.0,
-        &MonotonicInterleaved::new(&frames, 3, &[1]).unwrap(),
+        &MonotonicInterleaved::new(0.0, 1.0, &frames, 3, &[1]).unwrap(),
         &mapping,
     );
     assert_eq!(reads(), Some((lead, trail)));
@@ -899,7 +978,7 @@ fn an_append_reads_only_new_samples_up_to_the_trail_edge() {
     // the trail edge (the first of column 101, at 30_300) are read.
     let new = probes(&data[20_150..], 0..30_300 - 20_150 + 1);
     let channels: &[&[Probe]] = &[&new];
-    let source = MonotonicSlices::new(channels);
+    let source = MonotonicSlices::new(0.0, 1.0, channels);
     let counting = Counting::new(&source);
     reset_reads();
     let update = envelope
@@ -913,7 +992,7 @@ fn an_append_reads_only_new_samples_up_to_the_trail_edge() {
     let channels: &[&[Probe]] = &[&more];
     envelope
         .append_monotonic(
-            &MonotonicSlices::new(channels),
+            &MonotonicSlices::new(0.0, 1.0, channels),
             MonotonicAppend { sliding: false },
         )
         .unwrap();
@@ -930,7 +1009,7 @@ fn a_slide_reads_only_new_samples() {
     for k in [2000, 15, 4321, 10, 1] {
         let new = probes(&data[len..len + k], 0..k);
         let channels: &[&[Probe]] = &[&new];
-        let source = MonotonicSlices::new(channels);
+        let source = MonotonicSlices::new(0.0, 1.0, channels);
         let counting = Counting::new(&source);
         envelope
             .append_monotonic(&counting, MonotonicAppend { sliding: true })
@@ -990,7 +1069,7 @@ fn an_append_past_the_range_end_keeps_the_trail_edge() {
     let wider = MonotonicMapping::linear(0.0, 19_999.0, 100);
     assert!(envelope.check_mapping(&wider).is_err());
     envelope
-        .set_monotonic(&MonotonicGroup::new(0.0, 1.0, &slices(all)), &wider)
+        .set_monotonic(&At::new(0.0, 1.0, &slices(all)), &wider)
         .unwrap();
     assert_same(&envelope, &full(0.0, 1.0, &slices(all), &wider));
 }
@@ -1007,7 +1086,7 @@ fn append_errors() {
         Some(MonotonicError::NotBuilt)
     );
     envelope
-        .set_monotonic(&MonotonicGroup::new(0.0, 1.0, &slices(channels)), &mapping)
+        .set_monotonic(&At::new(0.0, 1.0, &slices(channels)), &mapping)
         .unwrap();
     let two: &[&[f64]] = &[&data, &data];
     assert_eq!(
@@ -1048,7 +1127,10 @@ fn slide_steps(
     let mut dropped = Vec::new();
     for &k in steps {
         let update = with_source(data, len..len + k, layout, |s| {
-            envelope.append_monotonic(s, MonotonicAppend { sliding: true })
+            envelope.append_monotonic(
+                &At::new(len as f64 * interval, interval, s),
+                MonotonicAppend { sliding: true },
+            )
         })
         .unwrap();
         len += k;
@@ -1235,7 +1317,7 @@ fn a_mapping_change_requires_the_source() {
     let data = walk(10_000, 101);
     let channels: &[&[f64]] = &[&data];
     let source = slices(channels);
-    let group = MonotonicGroup::new(0.0, 1.0, &source);
+    let group = At::new(0.0, 1.0, &source);
     let mapping = MonotonicMapping::linear(0.0, 9_000.0, 300);
     let mut envelope = MonotonicEnvelope::empty();
     assert_eq!(
@@ -1323,7 +1405,7 @@ fn a_mapping_change_requires_the_source() {
     let new: &[&[f64]] = &[&data[..100]];
     let small: &[&[f64]] = &[&data[..9_000]];
     envelope
-        .set_monotonic(&MonotonicGroup::new(0.0, 1.0, &slices(small)), &mapping)
+        .set_monotonic(&At::new(0.0, 1.0, &slices(small)), &mapping)
         .unwrap();
     let update = envelope
         .append_monotonic(&slices(new), MonotonicAppend { sliding: true })
@@ -1351,7 +1433,7 @@ fn invalid_grids_and_mappings_are_refused() {
         (0.0, f64::INFINITY),
     ] {
         assert!(matches!(
-            envelope.set_monotonic(&MonotonicGroup::new(start, interval, &source), &mapping),
+            envelope.set_monotonic(&At::new(start, interval, &source), &mapping),
             Err(MonotonicError::InvalidGrid { .. })
         ));
     }
@@ -1363,7 +1445,7 @@ fn invalid_grids_and_mappings_are_refused() {
     ] {
         assert!(matches!(
             envelope.set_monotonic(
-                &MonotonicGroup::new(0.0, 1.0, &source),
+                &At::new(0.0, 1.0, &source),
                 &MonotonicMapping::linear(x_min, x_max, width)
             ),
             Err(MonotonicError::InvalidMapping { .. })
@@ -1382,7 +1464,7 @@ fn mismatched_channels_take_their_common_extent() {
     let channels: &[&[f64]] = &[&a[..3000], &b[..2500]];
     let mut envelope = MonotonicEnvelope::empty();
     let update = envelope
-        .set_monotonic(&MonotonicGroup::new(0.0, 1.0, &slices(channels)), &mapping)
+        .set_monotonic(&At::new(0.0, 1.0, &slices(channels)), &mapping)
         .unwrap();
     assert!(update.truncated && envelope.truncated());
     assert_eq!(update.len, 2500);
@@ -1418,4 +1500,83 @@ fn a_thousand_channels_have_no_cap() {
         full(0.0, 1.0, s, &mapping)
     });
     assert_cells(&interleaved, &envelope);
+}
+
+/// A margin keeps whole columns beyond each plot edge, so a stroke that
+/// enters the plot from an off-plot sample is drawn from that sample. The
+/// plot's own columns, the view and the oracle are those of the same
+/// mapping without a margin, and a margin change needs the source.
+#[test]
+fn a_margin_keeps_columns_beyond_each_plot_edge() {
+    let n = 1400;
+    let data = walk(n, 77);
+    let channels: &[&[f64]] = &[&data];
+    let plain = MonotonicMapping::linear(0.0, 999.0, 100);
+    let mut margined = plain.clone();
+    margined.margin_px = 8;
+    let without = full(-200.0, 1.0, &slices(channels), &plain);
+    let with = full(-200.0, 1.0, &slices(channels), &margined);
+    let grid = with.grid().unwrap();
+    assert_eq!(
+        (grid.plot_width(), grid.margin(), grid.width()),
+        (100, 8, 116)
+    );
+    assert_eq!(with.slots(), without.slots() + 16);
+    assert_eq!(with.view(), without.view());
+    for c in 0..100 {
+        assert_eq!(
+            with.cell(0, c + 9).map(|cell| cell.index),
+            without.cell(0, c + 1).map(|cell| cell.index),
+            "plot column {c}"
+        );
+    }
+    // A sample half a margin left of the plot, and one right of it, sit in
+    // kept margin columns.
+    for x in [-40.0, 1040.0] {
+        let i = (x + 200.0) as usize;
+        let c = grid.column(i).expect("inside the margin");
+        assert!(c < 8 || c >= 108, "{x} in column {c}");
+        let cell = with.cell(0, c + 1).expect("kept");
+        assert!(
+            cell.index[..usize::from(cell.count)]
+                .iter()
+                .any(|&k| { grid.column(k) == Some(c) })
+        );
+    }
+    check_oracle(&with, 0, &|i| data[i]);
+    assert_eq!(plain.change_to(&margined), Some(MappingChange::PlotWidth));
+    assert_eq!(
+        with.check_mapping(&plain),
+        Err(MonotonicError::SourceRequired {
+            change: MappingChange::PlotWidth
+        })
+    );
+}
+
+/// The source carries its grid: a full call reads `start` and `interval`
+/// from it, and an append, which continues the group's grid, refuses
+/// another interval and does not read its start.
+#[test]
+fn the_source_carries_its_grid() {
+    let data = walk(2_000, 31);
+    let channels: &[&[f64]] = &[&data];
+    let mapping = MonotonicMapping::linear(10.0, 10.0 + 1_999.0 * 0.25, 200);
+    let mut envelope = MonotonicEnvelope::empty();
+    envelope
+        .set_monotonic(&MonotonicSlices::new(10.0, 0.25, &channels[..]), &mapping)
+        .expect("set");
+    let grid = envelope.grid().expect("grid");
+    assert_eq!((grid.start(), grid.interval()), (10.0, 0.25));
+    // An append continues the full call's grid: it reads neither the
+    // source's start nor its interval.
+    let more: &[&[f64]] = &[&data[..10]];
+    let update = envelope
+        .append_monotonic(
+            &MonotonicSlices::new(-1.0, 0.5, more),
+            MonotonicAppend { sliding: false },
+        )
+        .expect("an append continues the grid");
+    let grid = envelope.grid().expect("grid");
+    assert_eq!((grid.start(), grid.interval()), (10.0, 0.25));
+    assert_eq!(update.len, 2_010);
 }

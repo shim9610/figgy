@@ -10,7 +10,7 @@ use std::ops::Range;
 use super::element::MonotonicElement;
 use super::grid::{MonotonicGrid, VisibleSlice};
 use super::reduce::{BATCH, ColumnState, EnvelopeCell, extend, fill, finish, scan_frames};
-use super::source::{MonotonicGroup, MonotonicRun, MonotonicSource};
+use super::source::{MonotonicRun, MonotonicSource, MonotonicSourceRef, with_monotonic_source};
 use super::{MappingChange, MonotonicError, MonotonicMapping};
 
 /// The options of [`MonotonicEnvelope::append_monotonic`].
@@ -94,16 +94,35 @@ impl MonotonicEnvelope {
         }
     }
 
-    /// The full call: reduces `group` on `mapping` from scratch, every time.
+    /// The full call: reduces `source` (its samples, `start` and
+    /// `interval`) on `mapping` from scratch, every time.
     /// Reads the lead edge sample, the samples of columns `0..=width` and the
     /// trail edge sample, nothing else.
     pub fn set_monotonic<S: MonotonicSource + ?Sized>(
         &mut self,
-        group: &MonotonicGroup<'_, S>,
+        source: &S,
         mapping: &MonotonicMapping,
     ) -> Result<MonotonicUpdate, MonotonicError> {
-        let grid = MonotonicGrid::new(group.start, group.interval, mapping)?;
-        self.build_on(group.source, grid, mapping)
+        let grid = MonotonicGrid::new(source.start(), source.interval(), mapping)?;
+        self.build_on(source, grid, mapping)
+    }
+
+    /// [`Self::set_monotonic`] for a source of any element type.
+    pub fn set_monotonic_ref(
+        &mut self,
+        source: MonotonicSourceRef<'_>,
+        mapping: &MonotonicMapping,
+    ) -> Result<MonotonicUpdate, MonotonicError> {
+        with_monotonic_source!(source, s => self.set_monotonic(s, mapping))
+    }
+
+    /// [`Self::append_monotonic`] for a source of any element type.
+    pub fn append_monotonic_ref(
+        &mut self,
+        new: MonotonicSourceRef<'_>,
+        options: MonotonicAppend,
+    ) -> Result<MonotonicUpdate, MonotonicError> {
+        with_monotonic_source!(new, s => self.append_monotonic(s, options))
     }
 
     /// Reduces `source` in full on `grid` (which may be shifted), recording
@@ -137,7 +156,9 @@ impl MonotonicEnvelope {
     /// The append call: `new` holds only the new samples, every channel the
     /// same count, in either layout. Sample `j` of it is logical sample
     /// `len + j`, at `x = start + (len + j) * interval`, where `len` is the
-    /// envelope's own count. Nothing is compared and the scale never changes.
+    /// envelope's own count. Nothing is compared and the scale never changes:
+    /// the new samples continue the grid of the full call, so the source's
+    /// `start` and `interval` are not read.
     ///
     /// The new samples inside the kept columns are merged into the envelope
     /// (the last, partial column merges exactly without its old samples);
@@ -229,7 +250,7 @@ impl MonotonicEnvelope {
             return MonotonicView::Empty;
         };
         let slice = b.grid.visible(b.len, b.mapping.x_min, b.mapping.x_max);
-        if slice.samples() > b.grid.width().saturating_mul(4) {
+        if slice.samples() > b.grid.plot_width().saturating_mul(4) {
             MonotonicView::Dense(slice)
         } else {
             MonotonicView::Sparse(slice)

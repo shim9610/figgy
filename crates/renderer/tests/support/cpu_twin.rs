@@ -576,7 +576,10 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::EnergyLevels(_)
 
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        // A monotonic series' rows are its envelope, not its samples: its
+        // GPU pick is held to the paint by `monotonic_render` (#271).
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -600,7 +603,8 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::EnergyLevels(_)
 
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 

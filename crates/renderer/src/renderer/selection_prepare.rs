@@ -192,7 +192,12 @@ impl PrepareContext<'_> {
         let rt = &cfg.render_type;
         let primitives = effective_series_primitives(&chart_config.draw_style, rt);
         let (x_h, y_h, column_buffer) = (columns.x, columns.y, columns.buffer);
-        let point_visuals = point_selection_visuals(chart_config, cfg, columns.rows.refs);
+        let mut point_visuals = point_selection_visuals(chart_config, cfg, columns.rows.refs);
+        // A monotonic point is selected by its logical sample index and
+        // ringed at the row its kept point was uploaded to (#271).
+        if cfg.monotonic().is_some() {
+            self.monotonic.rows_of_visuals(cfg, &mut point_visuals);
+        }
         let typed_selections = chart_config
             .picked_data
             .as_ref()

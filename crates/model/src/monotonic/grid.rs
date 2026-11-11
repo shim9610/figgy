@@ -8,7 +8,10 @@ use crate::config::AxisScale;
 
 /// The column grid of an envelope: `x = start + i * interval`, and envelope
 /// column `c` holds the samples whose position
-/// `t = (x - x_min) / x_per_pixel - shift` lies in `[c, c + 1)`.
+/// `t = (x - x_min) / x_per_pixel + margin - shift` lies in `[c, c + 1)`.
+/// Envelope column `margin` is the plot's first pixel column: the grid
+/// spans `margin` whole columns beyond each edge of the plot
+/// ([`MonotonicMapping::margin_px`]).
 ///
 /// `x_min`, `x_max` and `x_per_pixel` are the anchor the full call built the
 /// grid on. A slide drops whole columns from the front (`shift` grows) and
@@ -22,7 +25,13 @@ pub struct MonotonicGrid {
     x_min: f64,
     x_max: f64,
     x_per_pixel: f64,
+    /// The envelope's columns: the plot's and the margin on each side.
     width: usize,
+    /// The columns beyond each edge of the plot.
+    margin: usize,
+    /// The x of envelope column 0's left edge: `x_min - margin ×
+    /// x_per_pixel`.
+    origin: f64,
     shift: usize,
 }
 
@@ -67,6 +76,7 @@ impl MonotonicGrid {
             x_min,
             x_max,
             plot_width_px,
+            margin_px,
             ..
         } = *mapping;
         let width = plot_width_px as usize;
@@ -87,6 +97,15 @@ impl MonotonicGrid {
         if mapping.x_scale != AxisScale::Linear || mapping.x_breaks.is_broken() {
             return Err(MonotonicError::UnsupportedXMapping);
         }
+        let margin = margin_px as usize;
+        let width = margin
+            .checked_mul(2)
+            .and_then(|both| both.checked_add(width))
+            .ok_or(MonotonicError::InvalidMapping {
+                x_min,
+                x_max,
+                plot_width_px,
+            })?;
         Ok(Self {
             start,
             interval,
@@ -94,6 +113,8 @@ impl MonotonicGrid {
             x_max,
             x_per_pixel,
             width,
+            margin,
+            origin: x_min - margin as f64 * x_per_pixel,
             shift: 0,
         })
     }
@@ -108,9 +129,21 @@ impl MonotonicGrid {
         self.interval
     }
 
-    /// The number of pixel columns of the plot.
+    /// The number of envelope columns: the plot's pixel columns and the
+    /// margin on each side.
     pub fn width(&self) -> usize {
         self.width
+    }
+
+    /// The number of pixel columns of the plot.
+    pub fn plot_width(&self) -> usize {
+        self.width - 2 * self.margin
+    }
+
+    /// The envelope columns beyond each edge of the plot: envelope column
+    /// `margin` is the plot's first pixel column.
+    pub fn margin(&self) -> usize {
+        self.margin
     }
 
     /// The x units one column spans.
@@ -139,7 +172,7 @@ impl MonotonicGrid {
     /// The position of sample `i` on the anchor, in columns.
     #[inline]
     fn anchored(&self, i: usize) -> f64 {
-        (self.x(i) - self.x_min) / self.x_per_pixel
+        (self.x(i) - self.origin) / self.x_per_pixel
     }
 
     /// The position of sample `i` in columns from the envelope's column 0.
@@ -157,7 +190,7 @@ impl MonotonicGrid {
 
     /// The column an x falls in, `None` left of column 0.
     pub fn column_of_x(&self, x: f64) -> Option<usize> {
-        let c = ((x - self.x_min) / self.x_per_pixel).floor() - self.shift as f64;
+        let c = ((x - self.origin) / self.x_per_pixel).floor() - self.shift as f64;
         (c >= 0.0).then_some(c as usize)
     }
 
@@ -191,7 +224,8 @@ impl MonotonicGrid {
     /// `position(i) >= c`), or `limit` when it is not below `limit`.
     pub fn column_start(&self, c: usize, limit: usize) -> usize {
         let edge = (self.shift as f64) + c as f64;
-        let estimate = ((self.x_min + edge * self.x_per_pixel - self.start) / self.interval).ceil();
+        let estimate =
+            ((self.origin + edge * self.x_per_pixel - self.start) / self.interval).ceil();
         self.first_where(limit, estimate, |i| self.anchored(i), |t| t >= edge)
     }
 

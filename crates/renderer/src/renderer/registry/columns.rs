@@ -17,13 +17,13 @@ impl Renderer {
         ids: impl Iterator<Item = &'i str> + Clone,
     ) -> Result<ColumnInvalidationPlan> {
         let mut charts = Vec::new();
-        charts
-            .try_reserve(self.chart_order.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
+        charts.try_reserve(self.chart_count()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
                 resource: "column invalidation revisions",
                 reason: error.to_string(),
-            })?;
-        for chart_id in &self.chart_order {
+            }
+        })?;
+        for chart_id in self.every_chart() {
             let state = self
                 .chart_states
                 .get(chart_id)
@@ -53,14 +53,14 @@ impl Renderer {
         config_override: Option<(ChartId, Config)>,
     ) -> Result<ColumnRemovalPlan> {
         let mut charts = Vec::new();
-        charts
-            .try_reserve(self.chart_order.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
+        charts.try_reserve(self.chart_count()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
                 resource: "column removal candidates",
                 reason: error.to_string(),
-            })?;
+            }
+        })?;
         let mut config_override = config_override;
-        for chart_id in &self.chart_order {
+        for chart_id in self.every_chart() {
             let state = self
                 .chart_states
                 .get(chart_id)
@@ -145,7 +145,9 @@ impl Renderer {
         if self.pool.slot(id).is_none() && !self.streaming_sources.contains_key(id) {
             return Ok(false);
         }
-        if self.pool.is_member_column(id) {
+        // A record's member and a monotonic envelope (#271) are the
+        // renderer's to remove.
+        if self.pool.is_member_column(id) || self.monotonic.owns_column(id) {
             return Err(FiggyError::ReservedColumnId { id: id.to_owned() });
         }
         if let Some((chart_id, config)) = config_override.as_ref() {
@@ -177,7 +179,8 @@ impl Renderer {
                         .transpose()?;
                     Some((
                         active.chart_id,
-                        PickChartPlan::for_active_layer(
+                        PickChartPlan::for_active_layer_in(
+                            &self.pool,
                             override_config.unwrap_or(&state.config),
                             candidate.as_deref().unwrap_or(&state.series),
                         )?,
@@ -310,6 +313,7 @@ impl Renderer {
             pool,
             chart_states,
             chart_order,
+            monotonic_order,
             visual_revision,
             pending_defrag,
             picker,
@@ -321,11 +325,13 @@ impl Renderer {
             pool_alloc_ctx(&*device, &*queue, &gpu_ledger),
         )?;
         let (config, series) = prepare_state(inner.pool())?;
+        super::charts::refuse_monotonic_series(&series)?;
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(inner.pool(), &config, &series)?;
         let chart_plan = prepare_chart_replacement_plan(
             chart_states,
             chart_order,
+            monotonic_order,
             *visual_revision,
             chart_id,
             config,
@@ -336,12 +342,16 @@ impl Renderer {
         let picker = match picker.active.as_ref().map(|active| active.chart_id) {
             Some(active_id) => {
                 let plan = if active_id == chart_id {
-                    PickChartPlan::for_active_layer(&chart_plan.config, &chart_plan.series)?
+                    PickChartPlan::for_active_layer_in(
+                        inner.pool(),
+                        &chart_plan.config,
+                        &chart_plan.series,
+                    )?
                 } else {
                     let state = chart_states
                         .get(&active_id)
                         .ok_or(FiggyError::UnknownChart { id: active_id })?;
-                    PickChartPlan::for_active_layer(&state.config, &state.series)?
+                    PickChartPlan::for_active_layer_in(inner.pool(), &state.config, &state.series)?
                 };
                 picker.prepare_active_pool_mutation(inner.pool(), active_id, plan, &ids)?
             }

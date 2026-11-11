@@ -175,6 +175,8 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             // Never streamed: a streamed mesh is rejected (#210).
             | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)
+            // Never streamed: its own calls feed it (#271).
+            | DataRenderType::MonotonicLine(_)
             // Never streamed either; its colours are its data.
             | DataRenderType::RgbImage { .. }
             | DataRenderType::Field(crate::data_config::FieldSeries { fill: None, .. }) => false,
@@ -414,8 +416,9 @@ impl Renderer {
             });
         }
         // A record's, ragged or triangle column's id, and its member columns,
-        // are not columns a host can insert or replace.
-        if self.pool.is_member_column(id) {
+        // are not columns a host can insert or replace; nor is a monotonic
+        // series' envelope column, which only its calls write (#271).
+        if self.pool.is_member_column(id) || self.monotonic.owns_column(id) {
             return Err(FiggyError::ReservedColumnId { id: id.to_owned() });
         }
         if self.pool.composite_kind(id).is_some() {

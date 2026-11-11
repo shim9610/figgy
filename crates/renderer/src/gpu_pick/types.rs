@@ -789,6 +789,7 @@ impl GpuStreamPick {
         );
         bundle.queue.submit([encoder.finish()]);
         Ok(GpuPickTicket {
+            monotonic: Vec::new(),
             state: GpuPickTicketState::Pending {
                 readback: GpuReadback::map(&bundle.device, &bundle.health, &readback, None),
                 identities: self.identities,

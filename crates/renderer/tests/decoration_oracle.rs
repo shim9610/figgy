@@ -1216,6 +1216,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Feynman => "Feynman",
         SceneKind::TriMesh => "TriMesh",
         SceneKind::TriSurface => "TriSurface",
+        SceneKind::Monotonic => "Monotonic",
     }
 }
 
@@ -1251,6 +1252,7 @@ fn sweep(sweep: Sweep) -> Report {
                 scenes::CartesianScene {
                     config: renderer::layout::auto_layout(&scene.config, &measure),
                     series: scene.series,
+                    monotonic: scene.monotonic,
                 }
             }
             Ok(scene) => scene,
@@ -1273,6 +1275,7 @@ fn sweep(sweep: Sweep) -> Report {
             scene_name(kind),
             &scene.config,
             &scene.series,
+            &scene.monotonic,
         );
     }
     report.line(format!(
@@ -1515,6 +1518,7 @@ fn cartesian_scene(
     scene: &'static str,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
 ) -> usize {
     let layers = layer_cases(config);
     let (palette_config, codes) = palette(config);
@@ -1541,7 +1545,15 @@ fn cartesian_scene(
         };
         report.time("Cartesian palette rasters", phase);
         let phase = Instant::now();
-        check_export(report, &document, r, &palette_config, series, &ink);
+        check_export(
+            report,
+            &document,
+            r,
+            &palette_config,
+            series,
+            monotonic,
+            &ink,
+        );
         report.time("Cartesian exports", phase);
         // Each element's bounds in the layer cases that register it.
         let mut registered: BTreeMap<String, Option<RectF>> = BTreeMap::new();
@@ -1600,8 +1612,9 @@ fn cartesian_scene(
             );
             report.time("Cartesian hit regions (I2)", phase);
             if layer == LayerRef::Annotations {
-                let geometry_items =
-                    check_annotations(report, &at, r, config, series, &cfg, &measured, &ink);
+                let geometry_items = check_annotations(
+                    report, &at, r, config, series, monotonic, &cfg, &measured, &ink,
+                );
                 for (item, bounds) in geometry_items {
                     geometry.insert((name.clone(), item), (bounds, 0));
                 }
@@ -2816,18 +2829,16 @@ fn check_export(
     r: &mut Renderer,
     palette_1x: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     ink: &SceneInk,
 ) {
     // The export takes the unscaled document and the scale.
     let mut doc = palette_1x.clone();
     doc.annotations.visible = false;
-    let image = match r
-        .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(doc), series),
-            renderer::ExportOptions::document(at.scale),
-        )
-        .block_on()
-    {
+    let image = match scenes::export_scene(r, &Chart::new(doc), series, monotonic, |r, source| {
+        r.export_rgba(source, renderer::ExportOptions::document(at.scale))
+            .block_on()
+    }) {
         Ok(image) => image,
         Err(e) => {
             report.check(at, "<export>", Inv::I7, false, || {
@@ -4298,6 +4309,7 @@ fn export_annotations(
     r: &mut Renderer,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     scale: f32,
     hidden: Option<usize>,
 ) -> Result<RasterImage, String> {
@@ -4313,11 +4325,10 @@ fn export_annotations(
         Some(i) => doc.annotations.items[i].visible = false,
         None => {}
     }
-    r.export_rgba(
-        renderer::ExportSource::chart(&Chart::new(doc), series),
-        renderer::ExportOptions::document(scale),
-    )
-    .block_on()
+    scenes::export_scene(r, &Chart::new(doc), series, monotonic, |r, source| {
+        r.export_rgba(source, renderer::ExportOptions::document(scale))
+            .block_on()
+    })
     .map_err(|e| e.to_string())
 }
 
@@ -4416,6 +4427,7 @@ fn check_annotations(
     r: &mut Renderer,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     cfg: &Config,
     decorations: &[Measured],
     palette_ink: &SceneInk,
@@ -4478,7 +4490,7 @@ fn check_annotations(
     let exports: Result<Vec<RasterImage>, String> = std::iter::once(None)
         .chain(std::iter::once(Some(usize::MAX)))
         .chain((0..items).map(Some))
-        .map(|hidden| export_annotations(r, config, series, at.scale, hidden))
+        .map(|hidden| export_annotations(r, config, series, monotonic, at.scale, hidden))
         .collect();
     let exports = match exports {
         Ok(e) => e,
@@ -4574,7 +4586,9 @@ fn check_annotations(
         annotation_highlights(report, at, r, cfg, &measured);
         report.time("annotation highlights (I3)", phase);
         let phase = Instant::now();
-        annotation_drags(report, at, r, config, series, cfg, map, &measured, &exports);
+        annotation_drags(
+            report, at, r, config, series, monotonic, cfg, map, &measured, &exports,
+        );
         report.time("annotation drags (I6)", phase);
     }
     measured
@@ -4782,6 +4796,7 @@ fn annotation_drags(
     r: &mut Renderer,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     cfg: &Config,
     map: &renderer::AnnotationMap,
     measured: &[Measured],
@@ -4854,8 +4869,8 @@ fn annotation_drags(
         });
         // Its new ink lies in its new region, and picks it where on top.
         let (Ok(all), Ok(without)) = (
-            export_annotations(r, &moved_1x, series, 1.0, None),
-            export_annotations(r, &moved_1x, series, 1.0, Some(index)),
+            export_annotations(r, &moved_1x, series, monotonic, 1.0, None),
+            export_annotations(r, &moved_1x, series, monotonic, 1.0, Some(index)),
         ) else {
             report.check(at, &m.name, Inv::I6, false, || "export failed".into());
             continue;

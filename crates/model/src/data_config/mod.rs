@@ -19,6 +19,7 @@ mod category_bars;
 mod field;
 mod histogram;
 mod line_offsets;
+mod monotonic_line;
 mod radar;
 mod range_bars;
 mod selection;
@@ -33,6 +34,7 @@ pub use category_bars::*;
 pub use field::*;
 pub use histogram::*;
 pub use line_offsets::*;
+pub use monotonic_line::*;
 pub use radar::*;
 pub use range_bars::*;
 pub use vector::*;
@@ -455,6 +457,12 @@ pub enum DataRenderType {
     /// CPU sink and composited after the GPU data. See [`crate::feynman`]
     /// and [`Config::validate_feynman`](crate::config::Config::validate_feynman).
     Feynman(crate::feynman::FeynmanSeries),
+    /// One channel of a monotonic group (#271): evenly spaced data the host
+    /// lends on every call, drawn as a line through its M4 envelope per
+    /// pixel column. `x_column` and `y_column` are the renderer-owned pool
+    /// columns of the drawn envelope. See [`MonotonicLineSeries`] and
+    /// [`crate::monotonic`].
+    MonotonicLine(MonotonicLineSeries),
 }
 
 /// A [`DataRenderType::Parallel`] series' fields, borrowed.
@@ -535,6 +543,8 @@ impl SeriesConfig {
             DataRenderType::Xy(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::Feynman(_)
+            // Its envelope columns are its x and y columns (#271).
+            | DataRenderType::MonotonicLine(_)
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::Radar { .. } => {}

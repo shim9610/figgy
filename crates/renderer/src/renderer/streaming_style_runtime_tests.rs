@@ -168,6 +168,7 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_)
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
@@ -1456,6 +1457,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::EnergyLevels(_)
                     | DataRenderType::TriMesh(_)
                     | DataRenderType::Feynman(_)
+                    | DataRenderType::MonotonicLine(_)
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }

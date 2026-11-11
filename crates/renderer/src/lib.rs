@@ -93,6 +93,11 @@ pub use ::model::chrome;
 /// The model's default builders, behind the `helpers` feature (#266).
 #[cfg(feature = "helpers")]
 pub use ::model::default;
+pub use ::model::monotonic;
+pub use ::model::monotonic::{
+    MappingChange, MonotonicAppend, MonotonicError, MonotonicInterleaved, MonotonicSlices,
+    MonotonicSource, MonotonicSourceRef, MonotonicUpdate,
+};
 /// Chart themes, behind the `helpers` feature (#265).
 #[cfg(feature = "helpers")]
 pub use ::model::theme;
@@ -120,8 +125,8 @@ pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterStyleConfig, ErrorBars, ErrorRef, FieldSeries, LineFill, LineInterpolation,
-    MAX_CONTOUR_LEVELS, RadarRef, RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef,
-    StreamlineArrows, XySeries,
+    MAX_CONTOUR_LEVELS, MonotonicLineSeries, RadarRef, RadarSeriesLabels, ScatterShape,
+    SeriesConfig, SeriesRef, StreamlineArrows, XySeries,
 };
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
@@ -152,12 +157,12 @@ pub use render_warning::{
 pub use renderer::{
     AxisViewState, ChartColumnsReplacement, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle,
     ChartView, ChartViewLayerStamps, ChartViewState, ExportOptions, ExportScope, ExportSource,
-    FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature,
-    PreparedFrame, PreparedPipelines, RasterImage, RegisteredChartDrawItem, RenderRevision,
-    Renderer, RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
-    StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer, clamp_export_scale,
-    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png, fit_display_panel,
-    place_document,
+    FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart, MonotonicChartDrawItem,
+    MonotonicChartId, PipelinePreparation, PreparationFeature, PreparedFrame, PreparedPipelines,
+    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
+    RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
+    StreamingSelectionTicket, WindowedRenderer, clamp_export_scale, display_config_for_surface,
+    dpi_to_scale, draw_style_supports, encode_png, fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
