@@ -115,9 +115,29 @@ impl PrepareContext<'_> {
                     }
                     None => None,
                 };
+                // A radar series' lane among the panel's labelled radar
+                // series, from their atlases' widest strings (#272).
+                let lanes = radar_label_lanes(
+                    chart_config,
+                    s.series_specs.iter().map(|spec| spec.config),
+                    cfg,
+                    |index, _| {
+                        Ok(products
+                            .contours
+                            .get(index)
+                            .and_then(|series| series.value_labels.as_ref())
+                            .map_or(0.0, |atlas| atlas.widest()))
+                    },
+                )?;
                 match (
                     data,
-                    self.value_label_data(chart_config, cfg, atlas, series.style.display_scale)?,
+                    self.value_label_data(
+                        chart_config,
+                        cfg,
+                        atlas,
+                        series.style.display_scale,
+                        &lanes,
+                    )?,
                     pipelines.bar_value_label.as_ref(),
                 ) {
                     (Some(data), Some(labels), Some(pipeline)) => {

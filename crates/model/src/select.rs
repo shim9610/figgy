@@ -46,6 +46,13 @@ pub const SELECTION_PADDING: f32 = 2.0;
 /// Least half width of the box a stroke is outlined and grabbed with where
 /// an element hits on its parts (see [`segment_grab_half_width`]).
 pub const STROKE_GRAB_HALF_WIDTH: f32 = 3.0;
+/// How far, px, a point may stand from an element's own geometry and still
+/// count as on it where [`HitMap::hit_test`] arbitrates (#272): one pixel,
+/// the reach of what is drawn past the geometry it is placed with (an
+/// antialiased edge, a border stroke straddling its box, glyph extents
+/// rounded to whole pixels). Within it two elements tie and the topmost
+/// wins, as before.
+pub const INK_FRINGE: f32 = 1.0;
 
 /// What a selection highlight outlines.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -174,6 +181,19 @@ pub trait Selectable<C: DragConfig = Config> {
         true
     }
 
+    /// Whether this element is a background area rather than a decoration
+    /// drawn over it: the data area (the plot-area drag and resize target),
+    /// a subplot's frame, a decoration map's plot region. Backgrounds are
+    /// registered first, under what they carry ([`HitMap`]), and take no
+    /// part in [`HitMap::hit_test`]'s arbitration (#272): one answers only
+    /// where no decoration registered above it holds the point, its
+    /// selection padding included, so a label's padding still grabs the
+    /// label over the plot; and it hides what is registered below it.
+    /// Every other element answers `false`.
+    fn is_background(&self) -> bool {
+        false
+    }
+
     /// Stable element name for hosts that key on identity rather than
     /// [`HitId`] (e.g. a wasm host exposing hit-testing as strings):
     /// `"data_area"`, `"axis_bottom"`, `"tick_labels_left"`,
@@ -200,6 +220,17 @@ pub trait SelectionGeometry<C: DragConfig = Config> {
     /// [`Selectable::outlines_parts`], the [`part_outline`] of one of its
     /// parts.
     fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool;
+
+    /// How far `(x, y)` stands from what the element draws, where the
+    /// element [`Self::contains`] the point; `None` where it does not
+    /// (#272). 0 where the point is on the element's own, unpadded
+    /// geometry: inside its bounds, or, for an element that
+    /// [`Selectable::outlines_parts`], on one of its parts
+    /// ([`part_ink_distance`]); otherwise the distance its selection
+    /// padding bridges to the nearest of them. [`HitMap::hit_test`]
+    /// arbitrates with it, so a click goes to the element the pointer is
+    /// visually on.
+    fn hit_distance(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> Option<f32>;
 
     /// The selection policy: a blue box [`SELECTION_PADDING`] px outside the
     /// bounds, stroked [`SELECTION_STROKE_WIDTH`] px in [`SELECTION_COLOR`],
@@ -338,6 +369,57 @@ fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
     part_outline(part).contains(x, y)
 }
 
+/// How far `(x, y)` stands from what `part` draws, without the selection
+/// padding (#272): 0 inside a text block, a rectangle, a triangle or a
+/// polygon, or on a stroke (within half its width of its line); otherwise
+/// the distance to it. A path is read as its extent, as its outline is.
+pub fn part_ink_distance(part: &DrawnPart, x: f32, y: f32) -> f32 {
+    match part {
+        &DrawnPart::Text(r) | &DrawnPart::Rect(r) => rect_distance(&r, x, y),
+        DrawnPart::Path { .. } => rect_distance(&part.extent(), x, y),
+        &DrawnPart::Segment { a, b, width } => {
+            (segment_distance(a, b, x, y) - width * 0.5).max(0.0)
+        }
+        DrawnPart::Triangle(t) => polygon_ink_distance(t, 0.0, x, y),
+        DrawnPart::Polygon { points, width } => polygon_ink_distance(points, *width, x, y),
+    }
+}
+
+/// How far `(x, y)` stands from the rectangle `r`: 0 inside it or on its
+/// edge.
+fn rect_distance(r: &RectF, x: f32, y: f32) -> f32 {
+    let dx = (r.x - x).max(x - (r.x + r.width)).max(0.0);
+    let dy = (r.y - y).max(y - (r.y + r.height)).max(0.0);
+    dx.hypot(dy)
+}
+
+/// How far `(x, y)` stands from the segment `a`..`b`.
+fn segment_distance(a: [f32; 2], b: [f32; 2], x: f32, y: f32) -> f32 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = if len2 > 0.0 {
+        (((x - a[0]) * d[0] + (y - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (x - (a[0] + t * d[0])).hypot(y - (a[1] + t * d[1]))
+}
+
+/// How far `(x, y)` stands from the closed polygon `c` bordered by a
+/// stroke `width` across: 0 inside it ([`polygon_contains`]) or on its
+/// border, otherwise the distance to its nearest edge less half the
+/// border.
+fn polygon_ink_distance(c: &[[f32; 2]], width: f32, x: f32, y: f32) -> f32 {
+    if polygon_contains(c, x, y) {
+        return 0.0;
+    }
+    let mut nearest = f32::INFINITY;
+    for i in 0..c.len() {
+        nearest = nearest.min(segment_distance(c[i], c[(i + 1) % c.len()], x, y));
+    }
+    (nearest - width * 0.5).max(0.0)
+}
+
 /// Half the width of the box a stroke `width` across is outlined and
 /// grabbed with: half the stroke plus [`SELECTION_PADDING`], at least
 /// [`STROKE_GRAB_HALF_WIDTH`].
@@ -448,17 +530,25 @@ impl<C: DragConfig, T: Selectable<C> + ?Sized> SelectionGeometry<C> for T {
     }
 
     fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        self.hit_distance(cfg, measure, x, y).is_some()
+    }
+
+    fn hit_distance(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> Option<f32> {
         if self.outlines_parts(cfg) {
-            let mut hit = false;
+            let (mut hit, mut nearest) = (false, f32::INFINITY);
             self.emit(
                 cfg,
                 measure,
-                &mut Parts(&mut |part| hit |= part_contains(&part, x, y)),
+                &mut Parts(&mut |part| {
+                    hit |= part_contains(&part, x, y);
+                    nearest = nearest.min(part_ink_distance(&part, x, y));
+                }),
             );
-            hit
+            hit.then_some(nearest)
         } else {
             self.bounds(cfg, measure)
-                .is_some_and(|b| b.expanded(SELECTION_PADDING).contains(x, y))
+                .filter(|b| b.expanded(SELECTION_PADDING).contains(x, y))
+                .map(|b| rect_distance(&b, x, y))
         }
     }
 
@@ -510,11 +600,13 @@ pub struct HitId(usize);
 
 /// Registry of selectable elements for one chart panel + point hit-testing.
 ///
-/// Hosts feed pointer events here: `hit_test` returns the topmost registered
-/// element under the point (later registrations win — register background
-/// elements like the data area first, small foreground elements like titles
-/// last). The model owns this because hit-testing is pure bounds geometry;
-/// the renderer only supplies the [`MeasureText`] implementation.
+/// Hosts feed pointer events here: `hit_test` returns the element under the
+/// point (later registrations win ties — register background elements like
+/// the data area first, small foreground elements like titles last). Where
+/// the selection padding of several elements reaches the point, the one the
+/// pointer is visually on wins ([`Self::hit_test`]). The model owns this
+/// because hit-testing is pure bounds geometry; the renderer only supplies
+/// the [`MeasureText`] implementation.
 pub struct HitMap<C: DragConfig = Config> {
     entries: Vec<Box<dyn Selectable<C> + Send + Sync>>,
 }
@@ -532,15 +624,57 @@ impl<C: DragConfig> HitMap<C> {
         HitId(self.entries.len() - 1)
     }
 
-    /// Topmost element containing `(x, y)` — entries are tested in reverse
-    /// registration order.
+    /// The element under `(x, y)`: the one the pointer is visually on
+    /// among the elements whose hit region ([`SelectionGeometry::contains`],
+    /// the selection padding included) holds the point (#272). Hit testing,
+    /// selection and the start of a drag all come through here, so they
+    /// share the decision.
+    ///
+    /// - An element whose own, unpadded geometry holds the point wins over
+    ///   one that reaches it only with its padding; among those that reach
+    ///   it only with their padding, the one whose geometry is nearest wins
+    ///   ([`SelectionGeometry::hit_distance`]). A point within
+    ///   [`INK_FRINGE`] (1 px) of an element's geometry counts as on it:
+    ///   its antialiased edge reaches that far.
+    /// - Ties keep the topmost: entries are tested in reverse registration
+    ///   order and a later one is taken only when it is strictly nearer.
+    /// - Backgrounds ([`Selectable::is_background`]: the data area, a
+    ///   subplot's frame) take no part: the first background that holds
+    ///   the point ends the search, answering only when no element above
+    ///   it does. So a label's padding still grabs the label over the plot,
+    ///   and what a background covers stays hidden under it.
+    ///
+    /// One pass that keeps only the best candidate: no list of candidates
+    /// is built.
     pub fn hit_test(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> Option<HitId> {
-        self.entries
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, el)| el.owns_point(cfg, x, y) && el.contains(cfg, measure, x, y))
-            .map(|(i, _)| HitId(i))
+        // The nearest element so far, topmost first: its index and how far
+        // the point stands from its own geometry.
+        let mut best: Option<(usize, f32)> = None;
+        for (i, el) in self.entries.iter().enumerate().rev() {
+            if !el.owns_point(cfg, x, y) {
+                continue;
+            }
+            if el.is_background() {
+                if el.contains(cfg, measure, x, y) {
+                    return Some(HitId(best.map_or(i, |(b, _)| b)));
+                }
+                continue;
+            }
+            let Some(distance) = el
+                .hit_distance(cfg, measure, x, y)
+                .map(|d| (d - INK_FRINGE).max(0.0))
+            else {
+                continue;
+            };
+            if best.is_none_or(|(_, nearest)| distance < nearest) {
+                best = Some((i, distance));
+            }
+            // On the element's own geometry: nothing below can be nearer.
+            if distance <= 0.0 {
+                break;
+            }
+        }
+        best.map(|(i, _)| HitId(i))
     }
 
     pub fn get(&self, id: HitId) -> Option<&(dyn Selectable<C> + Send + Sync)> {
@@ -869,6 +1003,10 @@ impl Selectable for SubplotElement {
     fn owns_point(&self, cfg: &Config, x: f32, y: f32) -> bool {
         !self.routed || cfg.subplot_at(x, y) == Some(self.subplot)
     }
+
+    fn is_background(&self) -> bool {
+        self.inner.is_background()
+    }
 }
 
 impl Draggable for SubplotElement {
@@ -994,6 +1132,12 @@ impl Selectable for SubplotFrameElement {
 
     fn owns_point(&self, cfg: &Config, x: f32, y: f32) -> bool {
         cfg.subplot_at(x, y) == Some(self.subplot)
+    }
+
+    /// The frame is selected by a press on the subplot's plot or anywhere
+    /// in it no decoration covers: a background.
+    fn is_background(&self) -> bool {
+        true
     }
 }
 
@@ -1314,7 +1458,8 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
     let slanted = crate::ternary::side_component(side).and_then(|k| {
         let offset = (to.offset_x, to.offset_y);
         if cfg.ternary().is_some() {
-            cfg.ternary_title_placement(k, offset, m)
+            let reach = crate::chrome::ternary_label_reach(cfg, k, measure);
+            cfg.ternary_title_placement(k, offset, m, reach)
         } else {
             let reach = crate::chrome::box3d_label_reach(cfg, k, measure);
             cfg.box_title_placement(k, offset, m, reach)
@@ -1325,14 +1470,30 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
     }
     let ternary = slanted;
     let placement = ternary.unwrap_or_else(|| {
-        axis_title_placement(
-            side.clone(),
-            &cfg.chart_area,
-            &da,
-            cfg.title_band(side),
-            (to.offset_x, to.offset_y),
-            m,
-        )
+        let at = |offset| {
+            axis_title_placement(
+                side.clone(),
+                &cfg.chart_area,
+                &da,
+                cfg.title_band(side),
+                offset,
+                m,
+            )
+        };
+        let mut placement = at((to.offset_x, to.offset_y));
+        // A polar chart's titles sit beside its disc, not at the band's
+        // edge (#272); the offsets move them from there.
+        if let Some((dx, dy)) = cfg
+            .polar()
+            .and_then(|_| crate::chrome::polar_title_shift(cfg, side, &at((0.0, 0.0)), m, measure))
+        {
+            placement.origin = (placement.origin.0 + dx, placement.origin.1 + dy);
+            placement.rotation_center = (
+                placement.rotation_center.0 + dx,
+                placement.rotation_center.1 + dy,
+            );
+        }
+        placement
     });
     sink.text(
         Slot::Above,
@@ -1593,6 +1754,10 @@ impl Selectable for ChartTitleElement {
 impl Selectable for DataAreaElement {
     fn element_id(&self) -> String {
         "data_area".to_string()
+    }
+
+    fn is_background(&self) -> bool {
+        true
     }
 
     fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
@@ -2586,6 +2751,137 @@ pub(crate) mod tests {
 
         // Far outside the chart → no hit.
         assert!(map.hit_test(&cfg, &FixedMeasure, 5000.0, 5000.0).is_none());
+    }
+
+    /// A label drawn as one box at `rect`, for the arbitration tests
+    /// (#272).
+    struct Label(RectF);
+
+    impl Selectable for Label {
+        fn emit(&self, _: &Config, _: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+            sink.rect(Slot::Above, self.0, None, None);
+            true
+        }
+    }
+
+    /// The element `map` names at `(x, y)`, by its index of registration.
+    fn hit_index(map: &HitMap, cfg: &Config, x: f32, y: f32) -> Option<usize> {
+        map.hit_test(cfg, &FixedMeasure, x, y).map(|id| id.0)
+    }
+
+    /// Two labels `gap` px apart, so their padded hit regions overlap where
+    /// the gap is under twice the padding: `a` spans x 0..10, `b` starts
+    /// `gap` px past it, and `b` is registered on top.
+    fn neighbours(gap: f32) -> (HitMap, RectF, RectF) {
+        let a = RectF {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        let b = RectF { x: 10.0 + gap, ..a };
+        let mut map = HitMap::new();
+        map.register(Label(a));
+        map.register(Label(b));
+        (map, a, b)
+    }
+
+    // #272: where kept labels' padded hit regions overlap, the click goes to
+    // the label the pointer is visually on. With the labels 1.5 px apart, a
+    // point on A's ink inside B's padding selects A though B is registered
+    // on top; B's ink is B's.
+    #[test]
+    fn a_point_on_a_labels_ink_selects_it_over_a_topmost_padding() {
+        let cfg = cfg_800x600();
+        let (map, a, b) = neighbours(1.5);
+        for x in [a.x + a.width - 0.2, a.x + a.width - 3.0] {
+            assert!(Label(b).contains(&cfg, &FixedMeasure, x, 5.0) == (x > b.x - 2.0));
+            assert_eq!(
+                Label(a).hit_distance(&cfg, &FixedMeasure, x, 5.0),
+                Some(0.0)
+            );
+            assert_eq!(hit_index(&map, &cfg, x, 5.0), Some(0), "{x}");
+        }
+        assert_eq!(hit_index(&map, &cfg, b.x + 0.2, 5.0), Some(1));
+    }
+
+    // In a gap only the two paddings reach, the nearer box wins: with the
+    // labels 3 px apart, 1.2 px from A (1.8 px from B) selects A and the
+    // mirror point B. A distance counts past the one-pixel ink fringe.
+    #[test]
+    fn a_point_only_in_both_paddings_selects_the_nearer_label() {
+        let cfg = cfg_800x600();
+        let (map, a, b) = neighbours(3.0);
+        let edge = a.x + a.width;
+        for (x, nearer) in [(edge + 1.2, 0), (edge + 1.8, 1)] {
+            assert!(!a.contains(x, 5.0) && !b.contains(x, 5.0));
+            assert!(Label(a).contains(&cfg, &FixedMeasure, x, 5.0));
+            assert!(Label(b).contains(&cfg, &FixedMeasure, x, 5.0));
+            assert_eq!(hit_index(&map, &cfg, x, 5.0), Some(nearer), "{x}");
+        }
+        // Where only one padding reaches, that label.
+        assert_eq!(hit_index(&map, &cfg, edge + 0.5, 5.0), Some(0));
+        assert_eq!(hit_index(&map, &cfg, b.x + b.width + 1.0, 5.0), Some(1));
+        // Distances are what the padding bridges; past it, no hit.
+        let d = Label(a).hit_distance(&cfg, &FixedMeasure, edge + 1.5, 5.0);
+        assert!(d.is_some_and(|d| (d - 1.5).abs() < 1e-6), "{d:?}");
+        assert_eq!(
+            Label(a).hit_distance(&cfg, &FixedMeasure, edge + 2.5, 5.0),
+            None
+        );
+    }
+
+    // Ties keep today's order, the topmost registration: equidistant from
+    // both boxes; within the one-pixel ink fringe of both (labels 1.5 px
+    // apart, 0.75 px from each); and on two labels' shared ink.
+    #[test]
+    fn ties_keep_the_topmost_label() {
+        let cfg = cfg_800x600();
+        let (map, a, _) = neighbours(3.0);
+        assert_eq!(hit_index(&map, &cfg, a.x + a.width + 1.5, 5.0), Some(1));
+        let (mut map, a, _) = neighbours(1.5);
+        assert_eq!(hit_index(&map, &cfg, a.x + a.width + 0.75, 5.0), Some(1));
+        // A third label on top of A: on their shared ink, the later wins.
+        map.register(Label(a));
+        assert_eq!(hit_index(&map, &cfg, 5.0, 5.0), Some(2));
+        assert_eq!(hit_index(&map, &cfg, a.x - 1.0, 5.0), Some(2));
+    }
+
+    // The data area takes no part: a label's padding over the plot still
+    // selects the label, as before, and the plot answers where no label
+    // reaches. A label below a subplot frame (a background) stays hidden
+    // under it.
+    #[test]
+    fn a_labels_padding_over_the_data_area_still_selects_the_label() {
+        let cfg = cfg_800x600();
+        let db = DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap();
+        let label = RectF {
+            x: db.x + 40.0,
+            y: db.y + 40.0,
+            width: 30.0,
+            height: 12.0,
+        };
+        let mut map = HitMap::new();
+        map.register(DataAreaElement);
+        map.register(Label(label));
+        assert!(DataAreaElement.is_background() && !Label(label).is_background());
+        // 1 px outside the label, inside the plot: on the plot's own area,
+        // but only the label's padding reaches it.
+        assert_eq!(
+            DataAreaElement.hit_distance(&cfg, &FixedMeasure, label.x - 1.0, label.y + 6.0),
+            Some(0.0)
+        );
+        assert_eq!(hit_index(&map, &cfg, label.x - 1.0, label.y + 6.0), Some(1));
+        assert_eq!(hit_index(&map, &cfg, label.x + 3.0, label.y + 6.0), Some(1));
+        assert_eq!(hit_index(&map, &cfg, label.x - 5.0, label.y + 6.0), Some(0));
+        // A background hides what is registered below it.
+        let mut covered = HitMap::new();
+        covered.register(Label(label));
+        covered.register(DataAreaElement);
+        assert_eq!(
+            hit_index(&covered, &cfg, label.x + 3.0, label.y + 6.0),
+            Some(1)
+        );
     }
 
     #[test]

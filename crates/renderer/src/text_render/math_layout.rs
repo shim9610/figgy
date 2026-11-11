@@ -1504,7 +1504,7 @@ impl Place {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CanvasSink, draw_rich_text, measure_rich_text, place_cell};
+    use super::super::{CanvasSink, LINE_SKIP_EM, draw_rich_text, measure_rich_text, place_cell};
     use super::*;
     use crate::raster::Canvas;
     use crate::text::{MathNode, MathSlot};
@@ -1789,6 +1789,47 @@ mod tests {
             FontPolicy::Standard,
         );
         sink.0
+    }
+
+    // #272: the limits of a display sum lie inside its line's measured
+    // box, and the next line keeps a gap below them: the line skip, not
+    // the nominal line height the sum's ink outgrows.
+    #[test]
+    fn display_limits_keep_a_gap_to_the_next_line() {
+        let size = 22.0;
+        let one = RichText::from_tex(r"$$\sum_{i=1}^{n} i$$", Color::BLACK, size, "").unwrap();
+        let two = RichText::from_tex(
+            concat!(r"$$\sum_{i=1}^{n} i$$ and", "\n", "next"),
+            Color::BLACK,
+            size,
+            "",
+        )
+        .unwrap();
+        for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
+            let m = measure_rich_text(&one, policy);
+            let (rgba, w, h, (_, oy)) = draw(&one, policy);
+            let (_, top, _, bottom) = ink_box(&rgba, w, h).unwrap();
+            // The limits are inside the measured box: the ink reaches its
+            // top (`n`) and its bottom (`i=1`), more than a nominal line.
+            assert!((top as f32 - (oy - m.ascent)).abs() <= 1.0, "{m:?}");
+            assert!(
+                ((bottom + 1) as f32 - (oy + m.descent)).abs() <= 1.0,
+                "{m:?}"
+            );
+            assert!(m.ascent + m.descent > size * 1.15);
+            // Two lines: the rows of ink below the sum's lower limit start
+            // a line skip further down.
+            let (rgba, w, h, (_, oy2)) = draw(&two, policy);
+            let limit_bottom = bottom as f32 - oy + oy2;
+            let next_top = (0..h)
+                .filter(|&y| y as f32 > limit_bottom)
+                .find(|&y| (0..w).any(|x| rgba[((y * w + x) * 4 + 3) as usize] > 0))
+                .expect("a second line");
+            let gap = next_top as f32 - limit_bottom - 1.0;
+            // Two pixels of slack: the second baseline snaps to the pixel
+            // grid and anti-aliasing reaches past the outline's bounds.
+            assert!(gap >= size * LINE_SKIP_EM - 2.0, "{policy:?}: gap {gap}");
+        }
     }
 
     // A display root takes the operator's display variant and its limits

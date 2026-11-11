@@ -366,11 +366,21 @@ impl Renderer {
             else {
                 continue;
             };
+            // A radar series' lane among the panel's, as the draw places
+            // it (#272).
+            let lanes = radar_label_lanes(&display_config, series.iter(), cfg, |_, s| {
+                Ok(self
+                    .preparation_parts()
+                    .1
+                    .ensure_value_label_scratch(&display_config, s)?
+                    .map_or(0.0, |atlas| atlas.widest()))
+            })?;
             let Some(labels) = self.preparation_parts().1.value_label_data(
                 &display_config,
                 cfg,
                 &atlas,
                 request.display_scale,
+                &lanes,
             )?
             else {
                 continue;

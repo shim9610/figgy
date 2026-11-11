@@ -7,14 +7,15 @@
 //
 // - a bar's label sits at its value end (`category_bar`'s `end_px`), outside
 //   or inside the bar as its placement says;
-// - a box's label sits past the top of the box: the farthest of its high
-//   whisker, its mean, its notch and its outliers (`box_stats`,
-//   `box_outlier_range`);
-// - a radar vertex's label sits outside the vertex along its spoke: the
-//   vertex is the pair `(category, value)` of the series' columns through
-//   the polar projection, read through the category bar group 3
-//   (`positions` the category column, `category_lanes[0]` the value
-//   column).
+// - a box's label sits beside its median line, past the side of its slot
+//   away from its group's centre (`box_stats`, `box_slot`); a violin
+//   without a box labels past the top of its curves;
+// - a radar vertex's label sits in its series' lane (#272): the first
+//   labelled radar series outside the vertex along its spoke, the others
+//   beside the vertex, clear of the ring and category labels. The vertex is
+//   the pair `(category, value)` of the series' columns through the polar
+//   projection, read through the category bar group 3 (`positions` the
+//   category column, `category_lanes[0]` the value column).
 //
 // The CPU bakes the strings (SSOT configuration, `labels.text`) into the
 // atlas with the one text stack and writes each label's content width,
@@ -23,13 +24,17 @@
 // label is computed or stored on the CPU from the data. The same placement feeds the
 // draw, the selection box (`vs_value_label_selection`) and the pick
 // (`pick_value_labels`), so a label is picked and outlined where it is
-// drawn. Labels never move each other.
+// drawn. Labels never move each other: a radar series' lane comes from its
+// rank and the widest label among the panel's (configuration), not from the
+// other series' values.
 
-/// CPU twin: `data_render/value_label.rs::ValueLabelParamsGpu` (96 B).
+/// CPU twin: `data_render/value_label.rs::ValueLabelParamsGpu` (128 B).
 struct ValueLabelParams {
     atlas: LabelParams,
     /// x = `VALUE_LABEL_KIND_*`, y = labels (one per category, any
-    /// number: the entries of `value_label_cells`), zw = 0.
+    /// number: the entries of `value_label_cells`); for a radar series z =
+    /// its rank among the panel's radar series that draw value labels and
+    /// w = their count (`RadarLabelLanes`), 0 and 1 otherwise.
     shape: vec4<u32>,
     /// x = the gap between the anchor and the label, y = the text
     /// baseline's height above the content's bottom edge, z = the font size,
@@ -40,6 +45,15 @@ struct ValueLabelParams {
     /// x = the selection box stroke width, y = its padding around the
     /// label's frame, both in render pixels; zw = 0.
     selection: vec4<f32>,
+    /// A radar series': x = the widest label of the panel's labelled radar
+    /// series and y = the gap between two lanes, in render pixels; zw =
+    /// the radius axis' ray, a unit vector y down.
+    radar: vec4<f32>,
+    /// A radar series': the box of the drawn ring labels in the ray's frame
+    /// from the polar centre, as fractions of the outer radius: (along min,
+    /// along max, across min, across max), across toward the ring labels'
+    /// side; empty (x > y) without ring labels.
+    ring: vec4<f32>,
 };
 
 const VALUE_LABEL_KIND_BARS: u32 = 0u;
@@ -259,43 +273,45 @@ fn value_label_across(y: f32, gap: f32, font: f32, size: vec2<f32>, side: f32) -
     return value_label_centre_y(select(y + gap + font, y - gap, side < 0.0), size);
 }
 
-/// A box's label: `gap` past the farthest of its high whisker, its mean,
-/// its notch and its outliers along the value axis, centred across the box;
-/// on the other side of that top when past it would cross the data area's
-/// edge.
+/// A box's label (#272): beside its median line, centred on the median
+/// along the value axis and `gap` past the side of the box's slot (its full
+/// width, before a violin narrows it), so it never reads as the value of an
+/// outlier or a whisker. The side is the one away from its group's centre:
+/// a box centred in its slot puts it right of a vertical box and above a
+/// horizontal one. When that side would cross the data area's edge it goes
+/// to the other side. A violin whose box is hidden labels `gap` past the
+/// farther end of its curves, centred across its slot.
 fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
     let s = box_stats(row);
     let style = box_body_style(category_geometry_style(), row);
     let horizontal = category_params.horizontal != 0u;
-    var place = box_layout(s, style);
-    // No top until the box or a violin curve gives one (an explicit flag,
-    // not a NaN constant: WGSL refuses a constant that evaluates to NaN).
+    let boxed = box_layout(s, style);
+    if (s.valid && boxed.valid) {
+        let slot = box_slot(s.position, s.q_low, style);
+        let median = box_along(s.position, s.median);
+        if (!slot.valid || !bar_finite(median)) {
+            return value_label_hidden();
+        }
+        var side = select(1.0, -1.0, horizontal);
+        if (abs(slot.offset) > 0.5) {
+            side = sign(slot.offset);
+        }
+        var centre = value_label_beside_box(slot, median, side, size, horizontal);
+        let dir = select(vec2<f32>(side, 0.0), vec2<f32>(0.0, side), horizontal);
+        if (value_label_crosses(centre, size, dir)) {
+            centre = value_label_beside_box(slot, median, -side, size, horizontal);
+        }
+        return value_label_box_at(row, centre, size);
+    }
+    // No box (a violin without one, or hidden): the category's slot, past
+    // the farther end of the curves. No top until a violin curve gives one
+    // (an explicit flag, not a NaN constant: WGSL refuses a constant that
+    // evaluates to NaN).
+    let position = category_pair(category_params.positions, row);
+    var place = boxed;
+    place.valid = false;
     var top = 0.0;
     var has_top = false;
-    var position = s.position;
-    if (s.valid && place.valid) {
-        // The top of the box: the smallest y down, or the largest x.
-        top = box_along(s.position, s.high);
-        has_top = true;
-        if (s.has_mean) {
-            top = value_label_farther(top, box_along(s.position, s.mean), horizontal);
-        }
-        if (s.has_ci) {
-            top = value_label_farther(top, box_along(s.position, s.ci_high), horizontal);
-        }
-        let range = box_outlier_range(row);
-        let values = box_lane(BOX_LANE_OUTLIER_VALUES);
-        for (var k = 0u; k < range.y; k = k + 1u) {
-            let v = category_pair(values, range.x + k);
-            if (category_finite(v)) {
-                top = value_label_farther(top, box_along(s.position, v), horizontal);
-            }
-        }
-    } else {
-        // No box (a violin without one, or hidden): the category's slot.
-        position = category_pair(category_params.positions, row);
-        place.valid = false;
-    }
     // Each violin curve's ends: its values ascend, so its first and last
     // values bound it.
     for (var h = 0u; h < 2u; h = h + 1u) {
@@ -334,17 +350,36 @@ fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
             value_label_centre_y(place.middle + font * VALUE_LABEL_CENTRE_BASELINE, size),
         );
         if (value_label_crosses(centre, size, vec2<f32>(1.0, 0.0))) {
-            // Before the top of the box instead.
+            // Before the top of the curves instead.
             centre.x = value_label_beside(top, gap, size.x, -1.0);
         }
     } else {
         centre = vec2<f32>(place.middle, value_label_across(top, gap, font, size, -1.0));
         if (value_label_crosses(centre, size, vec2<f32>(0.0, -1.0))) {
-            // Below the top of the box instead.
+            // Below the top of the curves instead.
             centre.y = value_label_across(top, gap, font, size, 1.0);
         }
     }
     return value_label_box_at(row, centre, size);
+}
+
+/// The centre of a box's label beside its median at pixel `median` along
+/// the value axis, `gap` past the side `side` of the box's `slot` (`-1` the
+/// left of a vertical box or the top of a horizontal one, `1` the other):
+/// beside a vertical box its text is centred on the median line, as a
+/// bar's inside label is on the bar's middle; over or under a horizontal
+/// box it is centred on the median and placed as a bar's outside label.
+fn value_label_beside_box(slot: BoxLayout, median: f32, side: f32, size: vec2<f32>, horizontal: bool) -> vec2<f32> {
+    let gap = value_label.metrics.x;
+    let font = value_label.metrics.z;
+    let edge = select(slot.cross0, slot.cross1, side > 0.0);
+    if (horizontal) {
+        return vec2<f32>(median, value_label_across(edge, gap, font, size, side));
+    }
+    return vec2<f32>(
+        value_label_beside(edge, gap, size.x, side),
+        value_label_centre_y(median + font * VALUE_LABEL_CENTRE_BASELINE, size),
+    );
 }
 
 /// Of two positions along the value axis, the one farther towards larger
@@ -356,9 +391,20 @@ fn value_label_farther(a: f32, b: f32, horizontal: bool) -> f32 {
     return select(min(a, b), max(a, b), horizontal);
 }
 
-/// A radar vertex's label: outside the vertex along its spoke, `gap` from
-/// it, as the former radar chart placed it; inward along the spoke when
-/// outward would cross the data area's edge.
+/// A radar vertex's label (#272). Each radar series of the panel that
+/// draws value labels takes its own lane by its rank (`shape.z`): the first
+/// goes outside the vertex along its spoke, `gap` from it, as the former
+/// radar chart placed it (inward along the spoke when outward would cross
+/// the data area's edge or the outer ring, where the category labels are);
+/// the others go beside the vertex, alternately on the side of the spoke
+/// away from the ring labels and on the other one, each lane past the
+/// first label's widest reach and past the lanes before it
+/// (`value_label_radar_beside`). Lanes are sized by the widest label of
+/// any labelled radar series, so labels of two series never meet on a
+/// spoke whatever their values. A label the lanes put on the ring labels
+/// (`value_label_meets_ring_labels`) moves to a lane of its own on the
+/// side away from them, past every other lane there. A lane beside the
+/// spoke stays inside the outer ring, moving inward along the spoke.
 fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
     if (row >= category_params.count) {
         return value_label_hidden();
@@ -377,14 +423,153 @@ fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
         return value_label_hidden();
     }
     let outward = normalize(spoke);
-    let gap = value_label.metrics.x;
-    let font = value_label.metrics.z;
-    var centre = value_label_on_spoke(vertex, outward, gap, font, size);
-    if (value_label_crosses(centre, size, outward)) {
-        // Inward along the spoke instead.
-        centre = value_label_on_spoke(vertex, -outward, gap, font, size);
+    var slot = value_label_radar_slot(value_label.shape.z);
+    var centre = value_label_radar_at(vertex, outward, slot, size);
+    if (slot <= 0 && value_label_meets_ring_labels(centre, size)) {
+        // Past the lanes on the side away from the ring labels: the first
+        // label in the first lane after them, the others in turn.
+        slot = i32(max(value_label.shape.w, 1u) / 2u) + 1 - slot;
+        centre = value_label_radar_at(vertex, outward, slot, size);
     }
     return value_label_box_at(row, centre, size);
+}
+
+/// The lane of the radar series of rank `rank`: 0 along the spoke, then 1,
+/// -1, 2, -2, ... beside it, positive on the side away from the ring
+/// labels (`value_label_radar_away`).
+fn value_label_radar_slot(rank: u32) -> i32 {
+    let m = i32((rank + 1u) / 2u);
+    return select(-m, m, (rank & 1u) == 1u);
+}
+
+/// The centre of a radar label of `size` at `vertex` in lane `slot` of the
+/// unit spoke direction `outward`.
+fn value_label_radar_at(vertex: vec2<f32>, outward: vec2<f32>, slot: i32, size: vec2<f32>) -> vec2<f32> {
+    let gap = value_label.metrics.x;
+    let font = value_label.metrics.z;
+    if (slot == 0) {
+        let centre = value_label_on_spoke(vertex, outward, gap, font, size);
+        if (value_label_crosses(centre, size, outward) || value_label_past_rim(centre, size)) {
+            // Inward along the spoke instead.
+            return value_label_on_spoke(vertex, -outward, gap, font, size);
+        }
+        return centre;
+    }
+    let side = value_label_radar_away(outward) * select(-1.0, 1.0, slot > 0);
+    let centre = value_label_radar_beside(vertex, outward, side, abs(slot), size);
+    return value_label_inside_rim(centre, size, outward);
+}
+
+/// The polar centre in chart-area render pixels, y down, as `polar_ndc`
+/// places it.
+fn value_label_polar_centre() -> vec2<f32> {
+    return category_px((transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0);
+}
+
+/// The unit vector across the spoke `u` (y down) on the side away from the
+/// ring labels, which sit counter-clockwise of the ray on screen: the
+/// counter-clockwise side for a spoke counter-clockwise of the ray (up to
+/// the opposite spoke), else the clockwise side.
+fn value_label_radar_away(u: vec2<f32>) -> vec2<f32> {
+    let ray = value_label.radar.zw;
+    // y down: a negative cross product is counter-clockwise on screen.
+    let turn = ray.x * u.y - ray.y * u.x;
+    let ccw = turn < -VALUE_LABEL_FLIP_EPSILON
+        || (abs(turn) <= VALUE_LABEL_FLIP_EPSILON && dot(ray, u) < 0.0);
+    return select(vec2<f32>(-u.y, u.x), vec2<f32>(u.y, -u.x), ccw);
+}
+
+/// Half the extent of a box of `size` across the unit direction `n`.
+fn value_label_half_across(n: vec2<f32>, size: vec2<f32>) -> f32 {
+    return abs(n.x) * size.x * 0.5 + abs(n.y) * size.y * 0.5;
+}
+
+/// The centre of a label of `size` beside `vertex` in lane `lane` (1, 2,
+/// ...) on the side `n` of the spoke `u`: centred on the vertex along the
+/// spoke, its near edge past how far a lane-0 label of any of the panel's
+/// labels reaches toward `n` (outward or inward, `value_label_on_spoke`)
+/// and the lanes before it, each the widest label wide, with the lane gap
+/// between them.
+fn value_label_radar_beside(vertex: vec2<f32>, u: vec2<f32>, n: vec2<f32>, lane: i32, size: vec2<f32>) -> vec2<f32> {
+    let font = value_label.metrics.z;
+    let widest = vec2<f32>(value_label.radar.x, size.y);
+    let lane_gap = value_label.radar.y;
+    // A lane-0 centre sits `d.x · (gap + w / 2)` across and `d.y · gap +
+    // drop` down from its vertex (d = ±u); across `n` that is
+    // `n.x d.x w / 2 + n.y drop` (n ⟂ d), its farthest for the widest label.
+    let drop = font * VALUE_LABEL_RADAR_BASELINE + value_label.metrics.y - size.y * 0.5;
+    let first = abs(n.x * u.x) * widest.x * 0.5 + n.y * drop + value_label_half_across(n, widest);
+    let lane_width = 2.0 * value_label_half_across(n, widest) + lane_gap;
+    let near = max(first, 0.0) + lane_gap + f32(lane - 1) * lane_width;
+    return vertex + n * (near + value_label_half_across(n, size));
+}
+
+/// Whether a box of `size` centred on `centre` reaches past the outer ring.
+fn value_label_past_rim(centre: vec2<f32>, size: vec2<f32>) -> bool {
+    let rim = transform.polar_extent.w;
+    let c = value_label_polar_centre();
+    let lo = centre - size * 0.5 - c;
+    let hi = centre + size * 0.5 - c;
+    let far = max(abs(lo), abs(hi));
+    return dot(far, far) > rim * rim;
+}
+
+/// `centre` moved inward along the unit spoke `u` until a box of `size`
+/// centred on it lies inside the outer ring: each corner's distance along
+/// the spoke at most what the ring leaves at its distance across.
+fn value_label_inside_rim(centre: vec2<f32>, size: vec2<f32>, u: vec2<f32>) -> vec2<f32> {
+    let rim = transform.polar_extent.w;
+    let c = value_label_polar_centre();
+    var travel = 0.0;
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let corner = vec2<f32>(select(-0.5, 0.5, (k & 1u) == 1u), select(-0.5, 0.5, k >= 2u));
+        let p = centre + corner * size - c;
+        let along = dot(p, u);
+        let across = max(dot(p, p) - along * along, 0.0);
+        travel = max(travel, along - sqrt(max(rim * rim - across, 0.0)));
+    }
+    return centre - u * travel;
+}
+
+/// Whether a box of `size` centred on `centre` comes within the lane gap
+/// of the drawn ring labels' box (`ValueLabelParams.ring`, in the ray's
+/// frame): the two boxes overlap across both of the ray's axes and both
+/// screen axes.
+fn value_label_meets_ring_labels(centre: vec2<f32>, size: vec2<f32>) -> bool {
+    let band = value_label.ring;
+    if (!(band.x <= band.y) || !(band.z <= band.w)) {
+        return false;
+    }
+    let rim = transform.polar_extent.w;
+    let pad = value_label.radar.y;
+    let ray = value_label.radar.zw;
+    let across = vec2<f32>(ray.y, -ray.x);
+    let c = value_label_polar_centre();
+    let a0 = band.x * rim - pad;
+    let a1 = band.y * rim + pad;
+    let b0 = band.z * rim - pad;
+    let b1 = band.w * rim + pad;
+    // The label against the band's axes.
+    let rel = centre - c;
+    let half_along = value_label_half_across(ray, size);
+    let half_across = value_label_half_across(across, size);
+    let along_at = dot(rel, ray);
+    let across_at = dot(rel, across);
+    if (along_at + half_along <= a0 || along_at - half_along >= a1
+        || across_at + half_across <= b0 || across_at - half_across >= b1) {
+        return false;
+    }
+    // The band against the screen axes.
+    var lo = vec2<f32>(1e30);
+    var hi = vec2<f32>(-1e30);
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let p = c + ray * select(a0, a1, (k & 1u) == 1u) + across * select(b0, b1, k >= 2u);
+        lo = min(lo, p);
+        hi = max(hi, p);
+    }
+    let box_lo = centre - size * 0.5;
+    let box_hi = centre + size * 0.5;
+    return all(box_lo < hi) && all(box_hi > lo);
 }
 
 /// The centre of a radar label `gap` from `vertex` along the unit spoke

@@ -1553,7 +1553,7 @@ style map (an empty one for a radar series), group 3 its category bar data
 
 | Binding | Contents |
 |---|---|
-| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 96 B) |
+| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 128 B) |
 | 5 | the atlas texture |
 | 6 | its filtering sampler |
 | 7 | `value_label_cells: array<vec4<f32>>`, read-only storage: one cell per label, sized by the series' labels (#107 R11) and written straight into its mapping at prepare (`data_render::value_label_cells`, `create_value_label_data`); the cell widths are the atlas bake's |
@@ -1566,9 +1566,11 @@ labels.
 | Member (binding 4, and binding 7's cells) | Meaning |
 |---|---|
 | `atlas` | the atlas geometry (§5.16) |
-| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; binding 7 holds that many cells |
+| `shape` | `(kind, labels, rank, count)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; binding 7 holds that many cells. For a radar series `rank` and `count` are its rank among the panel's radar series that draw value labels and their count (`RadarLabelLanes`, #272), `0` and `1` for the other kinds |
 | `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10, radar 9 logical px, at the render scale), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
 | `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
+| `radar` | a radar series' `(widest, lane gap, ray x, ray y)`: the widest label content of the panel's labelled radar series (their atlases' widest strings) and the gap between lanes (`RADAR_LANE_GAP`, 4 logical px), in render pixels, and the radius axis' ray, a unit vector y down |
+| `ring` | a radar series' box of the drawn ring (radius) labels in the ray's frame from the polar centre, as fractions of the outer radius: `(along min, along max, across min, across max)`, across toward the ring labels' side; empty (`x > y`) without ring labels |
 | `value_label_cells[i]` | `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down |
 
 `value_label_place(row)` is the content box of label `row` in chart-area
@@ -1583,15 +1585,36 @@ pick:
   bar (baseline `0.32` font sizes below the middle); `AUTO` is outside a
   grouped bar and inside a stack segment that fits it (`8` logical px
   narrower and `1.4` font sizes lower than the segment), else nothing;
-- a box's label: the baseline `gap` past the farthest of the high whisker,
-  the mean, the notch's upper bound and the box's outliers along the value
-  axis, centred across the box (`box_stats`, `box_layout`,
-  `box_outlier_range`);
-- a radar vertex's label: `gap` outside the vertex along its spoke (the
-  direction from the inner ring to the outer one through the vertex's
-  category), its centre `gap + width / 2` out across and its baseline
-  `gap` out plus `0.35` font sizes down, as the former radar chart placed
-  it.
+- a box's label (#272): beside its median line, `gap` past the side of
+  the box's slot (`box_slot`, its full width before a violin narrows it)
+  away from its group's centre, the right of a vertical box and above a
+  horizontal one when the box is centred in its slot; beside a vertical
+  box the text is centred on the median line (baseline `0.32` font sizes
+  below it), over or under a horizontal box it is centred on the median
+  and placed as a bar's outside label (`value_label_beside_box`). It never
+  sits at an outlier or a whisker end, whose value it would seem to name.
+  A violin whose box is hidden puts the baseline `gap` past the farther
+  end of its curves, centred across its slot;
+- a radar vertex's label (#272) sits in its series' lane, by its rank
+  among the panel's labelled radar series: rank 0 `gap` outside the vertex
+  along its spoke (the direction from the inner ring to the outer one
+  through the vertex's category), its centre `gap + width / 2` out across
+  and its baseline `gap` out plus `0.35` font sizes down, as the former
+  radar chart placed it, and inward along the spoke when outward would
+  cross the data area's edge or the outer ring (the category labels sit
+  past it); ranks 1, 2, 3, ... in lanes 1, -1, 2, ... beside the vertex,
+  centred on it along the spoke, lane 1 on the side away from the ring
+  labels (counter-clockwise of a spoke counter-clockwise of the ray, else
+  clockwise), each lane past the farthest a rank-0 label of the widest
+  label reaches toward it and past the lanes before it, each the widest
+  label wide with the lane gap between; a label beside the spoke moves
+  inward along it until it lies inside the outer ring. A label of rank 0
+  or a negative lane that comes within the lane gap of the ring labels'
+  box moves to a lane of its own on the side away from them, past the
+  others there. Lanes depend on configuration only (the ranks and the
+  widest string), so two series' labels never meet on a spoke whatever
+  their values; labels on different spokes near the centre can still
+  meet, a crowding the host resolves (fewer labels, shorter strings).
 
 The flip rule of every kind: a label placed outside its anchor (a bar's
 `OUTSIDE` label, or `AUTO` on a grouped bar; every box and radar label)
@@ -1599,8 +1622,8 @@ whose box, before the drag offset, would cross the data area's edge in the
 direction it was placed from the anchor goes to the other side of the
 anchor, as `AUTO` puts a stack's label inside its segment: inside the
 bar's end (the text top about `gap` inside a rising end, `gap` inside a
-horizontal one), on the other side of the box's top, or inward along the
-radar spoke (`-d`). The data area comes from the transform
+horizontal one), on the other side of the box (or of the curves' top),
+or inward along the radar spoke (`-d`). The data area comes from the transform
 (`value_label_data_area`: the data-to-panel affine over the chart area
 that `pixel_to_ndc` spans), so the rule reads only the uniform and the
 pool, and the pick sees it through the same `value_label_place`. What

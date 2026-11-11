@@ -483,6 +483,19 @@ impl RichText {
             align: TextAlign::Left,
         }
     }
+
+    /// A label as the convenience wrappers take it (`Chart::with_title`,
+    /// `SeriesConfig::label`, …): the segments of
+    /// [`rich_segments_from_label`] in `color`, `font_size` and `font`.
+    pub fn from_label(text: &str, color: Color, font_size: f32, font: impl Into<String>) -> Self {
+        Self {
+            segments: rich_segments_from_label(text),
+            color,
+            font_size,
+            font: font.into(),
+            align: TextAlign::Left,
+        }
+    }
 }
 
 /// Measured pixel extents of a laid-out `RichText`.
@@ -553,6 +566,30 @@ pub trait MeasureText {
 /// (`with_title`, …) construct plain titles through this.
 pub fn rich_segments_from_text(text: &str) -> Vec<RichSegment> {
     text.chars().map(rich_segment_from_char).collect()
+}
+
+/// The segments of a label given to a convenience wrapper as a string, the
+/// one conversion every wrapper shares (#272): `Chart::with_title`,
+/// `with_x_title`, `with_y_title`, `with_colorbar_title`,
+/// `with_legend_entry`, `with_legend_swatch`, `SeriesConfig::label`,
+/// `Annotation::text`, `AxisOptions::overlay_y`, `RadialChart::with_title`
+/// and the WASM text setters.
+///
+/// As in matplotlib, `$…$`, `\(…\)` and `$$…$$` spans are TeX
+/// ([`RichText::from_tex`]) and `\$` is a dollar sign. Text outside math
+/// maps Unicode super- and subscripts as [`rich_segments_from_text`] does,
+/// so a string without math gives the same segments. A string whose TeX
+/// does not parse is shown as it is written, with each `\$` as `$`: a label
+/// never fails. The SSOT types take no part in this; a host that builds a
+/// [`RichText`] directly chooses [`RichText::plain`] or
+/// [`RichText::from_tex`] itself.
+pub fn rich_segments_from_label(text: &str) -> Vec<RichSegment> {
+    tex::rich_segments_from_tex(text).unwrap_or_else(|_| {
+        text.char_indices()
+            .filter(|&(at, c)| !(c == '\\' && text[at + 1..].starts_with('$')))
+            .map(|(_, c)| rich_segment_from_char(c))
+            .collect()
+    })
 }
 
 fn rich_segment_from_char(c: char) -> RichSegment {
@@ -892,5 +929,79 @@ mod tests {
         }
         // Left never depends on the widths, even unusable ones.
         assert_eq!(TextAlign::Left.line_offset(f32::NAN, 1.0), 0.0);
+    }
+
+    /// The math nodes of `segments`, in order.
+    fn math_kinds(segments: &[RichSegment]) -> impl Iterator<Item = MathKind> + '_ {
+        segments.iter().filter_map(|s| s.math_node.map(|n| n.kind))
+    }
+
+    #[test]
+    fn a_label_without_math_is_plain_text() {
+        for text in ["", "Time (s)", "m² and H₂O", "C:\\path", "100 %", "a\nb"] {
+            assert_eq!(
+                rich_segments_from_label(text),
+                rich_segments_from_text(text)
+            );
+        }
+        let rt = RichText::from_label("Volt", Color::BLACK, 12.0, "serif");
+        assert_eq!(rt, RichText::plain("Volt", Color::BLACK, 12.0, "serif"));
+    }
+
+    #[test]
+    fn a_label_reads_dollar_spans_as_tex() {
+        let tex = tex::rich_segments_from_tex("$x^2$").unwrap();
+        assert_eq!(rich_segments_from_label("$x^2$"), tex);
+        assert!(matches!(
+            math_kinds(&tex).next(),
+            Some(MathKind::Math(MathStyle::Text))
+        ));
+        // Text around a span stays plain text.
+        let mixed = rich_segments_from_label("Time $t$ (s)");
+        assert_eq!(mixed, tex::rich_segments_from_tex("Time $t$ (s)").unwrap());
+        assert_eq!(&mixed[..5], &rich_segments_from_text("Time ")[..]);
+        assert!(mixed.ends_with(&rich_segments_from_text(" (s)")));
+        assert_eq!(math_kinds(&mixed).count(), 1);
+        // `\(…\)` is a text-style span and `$$…$$` a display-style one.
+        assert!(matches!(
+            math_kinds(&rich_segments_from_label(r"\(\alpha\)")).next(),
+            Some(MathKind::Math(MathStyle::Text))
+        ));
+        assert!(matches!(
+            math_kinds(&rich_segments_from_label(r"$$\sum_i x_i$$")).next(),
+            Some(MathKind::Math(MathStyle::Display))
+        ));
+    }
+
+    #[test]
+    fn an_escaped_dollar_is_a_dollar_sign() {
+        assert_eq!(
+            rich_segments_from_label(r"\$5"),
+            rich_segments_from_text("$5")
+        );
+        assert_eq!(
+            rich_segments_from_label(r"cost (\$) of $n$"),
+            tex::rich_segments_from_tex(r"cost (\$) of $n$").unwrap()
+        );
+    }
+
+    #[test]
+    fn a_label_whose_tex_does_not_parse_is_shown_as_written() {
+        assert_eq!(
+            rich_segments_from_label(r"$\frac{$"),
+            rich_segments_from_text(r"$\frac{$")
+        );
+        assert_eq!(
+            rich_segments_from_label("$5"),
+            rich_segments_from_text("$5")
+        );
+        // Its escapes still resolve.
+        assert_eq!(
+            rich_segments_from_label(r"\$5 or $\foo$"),
+            rich_segments_from_text(r"$5 or $\foo$")
+        );
+        let rt = RichText::from_label(r"$\frac{$", Color::BLACK, 12.0, "");
+        assert!(rt.within_limits());
+        assert_eq!(math_kinds(&rt.segments).count(), 0);
     }
 }

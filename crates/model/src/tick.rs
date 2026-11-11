@@ -7,7 +7,7 @@
 //! caller's target and also widens the range to whole steps, which is what
 //! the legacy document readers' fixed value axes and contour levels use.
 
-use crate::config::{AxisOptions, AxisScale, Config, LogTickPolicy};
+use crate::config::{AxisOptions, AxisScale, AxisUnit, Config, LogTickPolicy};
 use crate::layout::{guarded_log_range, guarded_probability_range};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -302,20 +302,36 @@ impl AxisOptions {
         }
     }
 
+    /// Set the range to `data_min..data_max` widened to whole steps, with
+    /// the spacing and minor count of [`Self::compute_nice_ticks`]. With a
+    /// [`Self::unit`] (#273) the steps are planned in shown units and the
+    /// widened range is mapped back to data units.
     pub fn auto_ticks(
         &mut self,
         data_min: f64,
         data_max: f64,
         target_count: usize,
     ) -> Result<(), TickError> {
-        let plan =
-            AxisOptions::compute_nice_ticks(self.scale.clone(), data_min, data_max, target_count)?;
-        self.min = plan.min;
-        self.max = plan.max;
-        self.major_spacing = plan.major_spacing;
-        self.minor_count = plan.minor_count;
+        let plan = shown_plan(self, data_min, data_max, target_count)?;
+        apply_plan(self, plan);
         Ok(())
     }
+}
+
+/// [`AxisOptions::compute_nice_ticks`] over the shown values of
+/// `data_min..data_max` (#273), with the widened range mapped back to data
+/// units and the spacing left in shown units, the units `major_spacing` is
+/// read in. Without a unit, the plan of the data range itself.
+fn shown_plan(
+    axis: &AxisOptions,
+    data_min: f64,
+    data_max: f64,
+    target_count: usize,
+) -> Result<TickPlan, TickError> {
+    let (min, max) = axis.shown_interval(data_min, data_max);
+    let plan = AxisOptions::compute_nice_ticks(axis.scale.clone(), min, max, target_count)?;
+    let (min, max) = axis.data_interval(plan.min, plan.max);
+    Ok(TickPlan { min, max, ..plan })
 }
 
 impl Config {
@@ -328,30 +344,10 @@ impl Config {
         target_count: usize,
     ) -> Result<(), TickError> {
         // Compute all plans first (transactional).
-        let plan_top = AxisOptions::compute_nice_ticks(
-            self.top_x.scale.clone(),
-            top_x.0,
-            top_x.1,
-            target_count,
-        )?;
-        let plan_bottom = AxisOptions::compute_nice_ticks(
-            self.bottom_x.scale.clone(),
-            bottom_x.0,
-            bottom_x.1,
-            target_count,
-        )?;
-        let plan_left = AxisOptions::compute_nice_ticks(
-            self.left_y.scale.clone(),
-            left_y.0,
-            left_y.1,
-            target_count,
-        )?;
-        let plan_right = AxisOptions::compute_nice_ticks(
-            self.right_y.scale.clone(),
-            right_y.0,
-            right_y.1,
-            target_count,
-        )?;
+        let plan_top = shown_plan(&self.top_x, top_x.0, top_x.1, target_count)?;
+        let plan_bottom = shown_plan(&self.bottom_x, bottom_x.0, bottom_x.1, target_count)?;
+        let plan_left = shown_plan(&self.left_y, left_y.0, left_y.1, target_count)?;
+        let plan_right = shown_plan(&self.right_y, right_y.0, right_y.1, target_count)?;
 
         // Commit.
         apply_plan(&mut self.top_x, plan_top);
@@ -431,47 +427,55 @@ fn spacing_advances(min: f64, max: f64, spacing: f64) -> bool {
 /// Range a tick walker may iterate: finite ends, positive span. NaN/±inf
 /// ends otherwise slip past plain `max <= min` comparisons and saturate the
 /// integer step bounds (`inf as i64` = i64::MAX, an unbounded walk).
+///
+/// The range is the one the ticks are planned over: the axis'
+/// [`AxisOptions::shown_range`], which is `min..max` without a unit (#273).
 pub fn walkable_range(axis: &AxisOptions) -> bool {
-    range_is_walkable(axis.min, axis.max)
+    let (min, max) = axis.shown_range();
+    range_is_walkable(min, max)
 }
 
 /// The axis range measured in `spacing` units, or `None` when the range is
 /// not walkable, the spacing is not finite and positive, or the count does
-/// not fit an `f64`.
+/// not fit an `f64`. Shown units: the [`AxisOptions::shown_range`] in a
+/// spacing read in shown units (#273).
 pub fn range_in_spacing_units(axis: &AxisOptions, spacing: f64) -> Option<f64> {
     if !walkable_range(axis) || !spacing.is_finite() || spacing <= 0.0 {
         return None;
     }
-    let span = axis.max - axis.min;
+    let (min, max) = axis.shown_range();
+    let span = max - min;
     let units = if span.is_finite() {
         span / spacing
     } else {
         // Divide before subtracting so `-MAX..MAX` can still be measured when
         // the requested spacing is large enough to make the walk bounded.
-        axis.max / spacing - axis.min / spacing
+        max / spacing - min / spacing
     };
     (units.is_finite() && units >= 0.0).then_some(units)
 }
 
 /// Whether one `spacing` moves either end of the axis range at `f64`
-/// precision.
+/// precision, in shown units ([`AxisOptions::shown_range`]).
 pub fn spacing_advances_range(axis: &AxisOptions, spacing: f64) -> bool {
-    spacing_advances(axis.min, axis.max, spacing)
+    let (min, max) = axis.shown_range();
+    spacing_advances(min, max, spacing)
 }
 
 /// The spacing the linear walkers fall back to: [`axis_major_spacing`] for
 /// the current range, or the span itself when that does not advance the
-/// range at `f64` precision.
+/// range at `f64` precision. Shown units ([`AxisOptions::shown_range`]).
 pub fn automatic_linear_spacing(axis: &AxisOptions) -> f64 {
     if !walkable_range(axis) {
         return 1.0;
     }
-    let span = axis.max - axis.min;
+    let (min, max) = axis.shown_range();
+    let span = max - min;
     let mut spacing = if span.is_finite() {
-        axis_major_spacing(&AxisScale::Linear, axis.min, axis.max)
+        axis_major_spacing(&AxisScale::Linear, min, max)
     } else {
-        let scale = axis.min.abs().max(axis.max.abs());
-        let normalized_span = axis.max / scale - axis.min / scale;
+        let scale = min.abs().max(max.abs());
+        let normalized_span = max / scale - min / scale;
         scale * (normalized_span / 8.0)
     };
     if !spacing.is_finite() || spacing <= 0.0 {
@@ -487,7 +491,8 @@ pub fn automatic_linear_spacing(axis: &AxisOptions) -> f64 {
     spacing
 }
 
-/// The major spacing the linear walkers actually walk. The SSoT accepts
+/// The major spacing the linear walkers actually walk, in shown units on an
+/// axis with a [`AxisOptions::unit`] (#273). The SSoT accepts
 /// whatever the host sends (a live spacing input passes through 0 mid-edit),
 /// so the guard lives here, in the one place shared by tick marks, grid
 /// lines, minors, and label decimals, which therefore can never disagree. A
@@ -525,6 +530,7 @@ fn spacing_for_pieces(axis: &AxisOptions, spacing: f64) -> f64 {
         return spacing;
     }
     let span = axis.max - axis.min;
+    // The pieces are cut in data units and walked in shown ones (#273).
     // Majors on absolute multiples of `step` inside `lo..=hi`.
     let majors = |lo: f64, hi: f64, step: f64| {
         let tolerance = 1e-9;
@@ -534,7 +540,7 @@ fn spacing_for_pieces(axis: &AxisOptions, spacing: f64) -> f64 {
     // after a zoom) holds no ticks and draws no length: it is not short.
     let short = |step: f64| {
         map.raw_pieces().any(|(a, b)| {
-            let (p, q) = (axis.min + a * span, axis.min + b * span);
+            let (p, q) = axis.shown_interval(axis.min + a * span, axis.min + b * span);
             (b - a).abs() > 1e-12 && majors(p.min(q), p.max(q), step) < 2.0
         })
     };
@@ -632,7 +638,9 @@ pub fn log_ladder(axis: &AxisOptions) -> LogLadder {
     match axis.log_ticks {
         LogTickPolicy::Decades => LogLadder::Decades(effective_log_decade_step(axis)),
         LogTickPolicy::Adaptive => {
-            let (min, max) = guarded_log_range(axis.min, axis.max);
+            // Decades of the shown value (#273).
+            let (min, max) = axis.shown_range();
+            let (min, max) = guarded_log_range(min, max);
             let step = axis_major_spacing(&AxisScale::Logarithmic, min, max);
             if step > 1.0 {
                 return LogLadder::Decades(step.min(f64::from(MAX_LOG_DECADE_STEP)) as i32);
@@ -640,7 +648,7 @@ pub fn log_ladder(axis: &AxisOptions) -> LogLadder {
             [LogLadder::Decades(1), LogLadder::OneTwoFive]
                 .into_iter()
                 .find(|ladder| {
-                    MajorTicks(log_major_walk(*ladder, min, max))
+                    MajorTicks(log_major_walk(*ladder, min, max), None)
                         .take(LOG_LADDER_MIN_MAJORS)
                         .count()
                         == LOG_LADDER_MIN_MAJORS
@@ -709,10 +717,18 @@ impl LinearGrid {
     /// is not finite is skipped, and one equal to the previous value (an
     /// index past 2^53) is yielded once.
     pub fn iter(&self) -> LinearGridIter {
+        self.walk(false)
+    }
+
+    /// [`Self::iter`], or the same pairs from the last index down when
+    /// `descending`: the walk of a shown range whose unit has a negative
+    /// scale, so the data values still come in increasing order (#273).
+    fn walk(&self, descending: bool) -> LinearGridIter {
         LinearGridIter {
             grid: *self,
             next_offset: Some(0),
             previous: None,
+            descending,
         }
     }
 }
@@ -723,6 +739,7 @@ pub struct LinearGridIter {
     grid: LinearGrid,
     next_offset: Option<usize>,
     previous: Option<f64>,
+    descending: bool,
 }
 
 impl Iterator for LinearGridIter {
@@ -733,8 +750,12 @@ impl Iterator for LinearGridIter {
             self.next_offset = offset
                 .checked_add(1)
                 .filter(|next| *next <= self.grid.max_intervals);
-            let index = self.grid.first + offset as f64;
-            if !index.is_finite() || index > self.grid.last {
+            let index = if self.descending {
+                self.grid.last - offset as f64
+            } else {
+                self.grid.first + offset as f64
+            };
+            if !index.is_finite() || index > self.grid.last || index < self.grid.first {
                 self.next_offset = None;
                 return None;
             }
@@ -1148,7 +1169,8 @@ enum MajorWalk {
 
 /// One piece of a broken linear axis whose pieces have scales of their own
 /// (#205): its value range, low then high, and the major spacing its ticks
-/// walk.
+/// walk. Shown units on an axis with a [`AxisOptions::unit`] (#273): the
+/// range is the piece's [`AxisOptions::shown_interval`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PieceTicks {
     pub low: f64,
@@ -1183,6 +1205,7 @@ pub fn piece_ticks(
     let mut count = 0;
     for (drawn, raw) in map.pieces().zip(map.raw_pieces()) {
         let (a, b) = (axis.min + raw.0 * span, axis.min + raw.1 * span);
+        let (a, b) = axis.shown_interval(a, b);
         let (low, high) = (a.min(b), a.max(b));
         if !(high > low) {
             continue;
@@ -1227,14 +1250,35 @@ fn log_major_walk(ladder: LogLadder, min: f64, max: f64) -> MajorWalk {
 }
 
 /// The major tick values of an axis, from [`major_ticks`].
+///
+/// The walk runs over the shown range of an axis with a unit (#273) and
+/// maps each tick back to its data position, `(shown - offset) / scale`.
 #[derive(Debug, Clone)]
-pub struct MajorTicks(MajorWalk);
+pub struct MajorTicks(MajorWalk, Option<AxisUnit>);
 
 impl Iterator for MajorTicks {
     type Item = f64;
 
     fn next(&mut self) -> Option<f64> {
-        match &mut self.0 {
+        loop {
+            let shown = self.0.next()?;
+            match self.1 {
+                None => return Some(shown),
+                Some(unit) => {
+                    let value = unit.value(shown);
+                    if value.is_finite() {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl MajorWalk {
+    /// The next value of the walk, in the units it walks.
+    fn next(&mut self) -> Option<f64> {
+        match self {
             MajorWalk::Empty => None,
             MajorWalk::Linear(grid) => grid.next().map(|(_, value)| value),
             MajorWalk::Pieces { grids, at } => loop {
@@ -1270,6 +1314,13 @@ impl Iterator for MajorTicks {
 /// [`MAX_LOG_DECADES`] decades: every `step`-th whole decade for
 /// [`LogLadder::Decades`] (the [`effective_log_decade_step`] under the
 /// default policy), the ladder's multiples of every decade otherwise.
+///
+/// With a [`AxisOptions::unit`] (#273) the linear and logarithmic walks run
+/// over the [`AxisOptions::shown_range`], `major_spacing` read in shown
+/// units, and each tick is yielded at its data position
+/// `(shown - offset) / scale`, still in increasing data order (a negative
+/// scale walks the shown grid downward). [`shown_tick_value`] gives back
+/// the walked shown value a label prints.
 pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
     if let Some(categories) = &axis.categories {
         // One tick per category: the walk is bounded by the category count,
@@ -1278,33 +1329,37 @@ pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
         return MajorTicks(
             LinearGrid::new(min, max, 1.0, categories.len())
                 .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter())),
+            None,
         );
     }
+    let unit = axis.effective_unit();
+    let descending = unit.is_some_and(|unit| unit.scale < 0.0);
     if let Some((pieces, count)) = piece_ticks(axis) {
         let mut grids: [Option<LinearGridIter>; crate::config::MAX_AXIS_BREAKS + 1] =
             [None, None, None, None];
-        for (slot, piece) in grids.iter_mut().zip(&pieces[..count]) {
-            *slot = LinearGrid::new(piece.low, piece.high, piece.spacing, MAX_MAJOR_INTERVALS)
-                .map(|grid| grid.iter());
+        for (k, piece) in pieces[..count].iter().enumerate() {
+            grids[piece_slot(k, count, descending)] =
+                LinearGrid::new(piece.low, piece.high, piece.spacing, MAX_MAJOR_INTERVALS)
+                    .map(|grid| grid.walk(descending));
         }
-        return MajorTicks(MajorWalk::Pieces { grids, at: 0 });
+        return MajorTicks(MajorWalk::Pieces { grids, at: 0 }, unit);
     }
-    MajorTicks(match axis.scale {
+    let walk = match axis.scale {
         AxisScale::Linear => {
             if !walkable_range(axis) {
                 MajorWalk::Empty
             } else {
-                LinearGrid::new(
-                    axis.min,
-                    axis.max,
-                    effective_major_spacing(axis),
-                    MAX_MAJOR_INTERVALS,
-                )
-                .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter()))
+                let (min, max) = axis.shown_range();
+                LinearGrid::new(min, max, effective_major_spacing(axis), MAX_MAJOR_INTERVALS)
+                    .map_or(MajorWalk::Empty, |grid| {
+                        MajorWalk::Linear(grid.walk(descending))
+                    })
             }
         }
         AxisScale::Logarithmic => {
-            let (min, max) = guarded_log_range(axis.min, axis.max);
+            // Decades of the shown value; a log unit's scale is positive.
+            let (min, max) = axis.shown_range();
+            let (min, max) = guarded_log_range(min, max);
             log_major_walk(log_ladder(axis), min, max)
         }
         AxisScale::Probability(_) => {
@@ -1317,6 +1372,72 @@ pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
                     .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter())),
             }
         }
+    };
+    MajorTicks(walk, unit)
+}
+
+/// The walk slot of piece `k` of `count` (in axis order): `k`, or from the
+/// last slot down when the shown walk descends (#273), so the data values
+/// still come in increasing order.
+fn piece_slot(k: usize, count: usize, descending: bool) -> usize {
+    if descending { count - 1 - k } else { k }
+}
+
+/// The value an axis prints for the major tick at data value `value`
+/// (#273): the walked shown value of [`major_ticks`], so a label reads
+/// `0.5`, not `0.49999999999999994`, after the round trip through the data
+/// position. Without a unit, `value` itself.
+///
+/// A linear tick is snapped to the multiple of the spacing it was walked
+/// at (each piece's own on a broken axis with scales of their own), a
+/// logarithmic one to its `m · 10^k`; a value that is not near one is
+/// `scale * value + offset` as it is.
+pub fn shown_tick_value(axis: &AxisOptions, value: f64) -> f64 {
+    let Some(unit) = axis.effective_unit() else {
+        return value;
+    };
+    let shown = unit.shown(value);
+    if !shown.is_finite() {
+        return shown;
+    }
+    match axis.scale {
+        AxisScale::Logarithmic => snap_log_multiple(shown).unwrap_or(shown),
+        _ => {
+            // `k · step` is the product the grid walks; `+ 0.0` keeps a
+            // zero tick from printing as `-0`.
+            let snap = |step: f64| {
+                let k = shown / step;
+                (step.is_finite() && step > 0.0 && (k - k.round()).abs() < 1e-6)
+                    .then(|| k.round() * step + 0.0)
+            };
+            match piece_ticks(axis) {
+                Some((pieces, count)) => pieces[..count].iter().find_map(|p| snap(p.spacing)),
+                None => snap(effective_major_spacing(axis)),
+            }
+            .unwrap_or(shown)
+        }
+    }
+}
+
+/// `m · 10^k` (`10^k` by `powf`, times `m` from 1 to 9, the product the
+/// log walkers write) within a relative 1e-9 of `value`, or `None`.
+fn snap_log_multiple(value: f64) -> Option<f64> {
+    if !(value.is_finite() && value > 0.0) {
+        return None;
+    }
+    let exponent = clamped_exponent(value.log10().floor());
+    [
+        exponent,
+        exponent.saturating_sub(1),
+        exponent.saturating_add(1),
+    ]
+    .into_iter()
+    .find_map(|exponent| {
+        let base = 10f64.powf(f64::from(exponent));
+        let multiple = (value / base).round();
+        let snapped = base * multiple;
+        ((1.0..=9.0).contains(&multiple) && (snapped - value).abs() <= 1e-9 * value)
+            .then_some(snapped)
     })
 }
 
@@ -1340,13 +1461,33 @@ enum MinorWalk {
 
 /// The minor tick values of an axis, from [`minor_ticks`].
 #[derive(Debug, Clone)]
-pub struct MinorTicks(MinorWalk);
+pub struct MinorTicks(MinorWalk, Option<AxisUnit>);
 
 impl Iterator for MinorTicks {
     type Item = f64;
 
     fn next(&mut self) -> Option<f64> {
-        match &mut self.0 {
+        // As [`MajorTicks`]: the walk is in shown units, the ticks at their
+        // data positions (#273).
+        loop {
+            let shown = self.0.next()?;
+            match self.1 {
+                None => return Some(shown),
+                Some(unit) => {
+                    let value = unit.value(shown);
+                    if value.is_finite() {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl MinorWalk {
+    /// The next value of the walk, in the units it walks.
+    fn next(&mut self) -> Option<f64> {
+        match self {
             MinorWalk::Empty => None,
             MinorWalk::Linear { grid, subdivisions } => loop {
                 let (index, value) = grid.next()?;
@@ -1390,8 +1531,10 @@ impl Iterator for MinorTicks {
 /// [`LogLadder::OneTwoFive`], none for [`LogLadder::AllMantissas`].
 pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
     if axis.minor_count == 0 || axis.categories.is_some() {
-        return MinorTicks(MinorWalk::Empty);
+        return MinorTicks(MinorWalk::Empty, None);
     }
+    let unit = axis.effective_unit();
+    let descending = unit.is_some_and(|unit| unit.scale < 0.0);
     if let Some((pieces, count)) = piece_ticks(axis) {
         let subdivisions = drawn_minor_count(axis) + 1;
         let max_intervals = MAX_MAJOR_INTERVALS
@@ -1399,22 +1542,25 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
             .saturating_add(1);
         let mut grids: [Option<LinearGridIter>; crate::config::MAX_AXIS_BREAKS + 1] =
             [None, None, None, None];
-        for (slot, piece) in grids.iter_mut().zip(&pieces[..count]) {
-            *slot = LinearGrid::new(
+        for (k, piece) in pieces[..count].iter().enumerate() {
+            grids[piece_slot(k, count, descending)] = LinearGrid::new(
                 piece.low,
                 piece.high,
                 piece.spacing / subdivisions as f64,
                 max_intervals,
             )
-            .map(|grid| grid.iter());
+            .map(|grid| grid.walk(descending));
         }
-        return MinorTicks(MinorWalk::Pieces {
-            grids,
-            at: 0,
-            subdivisions: subdivisions as f64,
-        });
+        return MinorTicks(
+            MinorWalk::Pieces {
+                grids,
+                at: 0,
+                subdivisions: subdivisions as f64,
+            },
+            unit,
+        );
     }
-    MinorTicks(match axis.scale {
+    let walk = match axis.scale {
         AxisScale::Linear => {
             if !walkable_range(axis) {
                 MinorWalk::Empty
@@ -1424,17 +1570,18 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
                 let max_intervals = MAX_MAJOR_INTERVALS
                     .saturating_mul(subdivisions)
                     .saturating_add(1);
-                LinearGrid::new(axis.min, axis.max, step, max_intervals).map_or(
-                    MinorWalk::Empty,
-                    |grid| MinorWalk::Linear {
-                        grid: grid.iter(),
+                let (min, max) = axis.shown_range();
+                LinearGrid::new(min, max, step, max_intervals).map_or(MinorWalk::Empty, |grid| {
+                    MinorWalk::Linear {
+                        grid: grid.walk(descending),
                         subdivisions: subdivisions as f64,
-                    },
-                )
+                    }
+                })
             }
         }
         AxisScale::Logarithmic => {
-            let (min, max) = guarded_log_range(axis.min, axis.max);
+            let (min, max) = axis.shown_range();
+            let (min, max) = guarded_log_range(min, max);
             match log_ladder(axis) {
                 LogLadder::Decades(_) => MinorWalk::Log(LogMinors::new(min, max)),
                 ladder => match LOG_MINOR_MULTIPLES & !ladder.multiples() {
@@ -1457,7 +1604,8 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
                 mask => MinorWalk::Probability(ProbabilityTicks::new(min, max, mask, false)),
             }
         }
-    })
+    };
+    MinorTicks(walk, unit)
 }
 
 // Invariant tests.
@@ -2243,7 +2391,7 @@ mod tests {
                             // A sparser ladder is kept only while the denser
                             // ones before it hold too few majors.
                             let count =
-                                |ladder| MajorTicks(log_major_walk(ladder, min, max)).count();
+                                |ladder| MajorTicks(log_major_walk(ladder, min, max), None).count();
                             assert!(count(LogLadder::Decades(1)) < LOG_LADDER_MIN_MAJORS);
                             if ladder == LogLadder::OneTwoFive {
                                 assert!(majors.len() >= LOG_LADDER_MIN_MAJORS, "{label}");

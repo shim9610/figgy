@@ -25,6 +25,7 @@ use renderer::{
     config::AxisScale,
     data_config::{MatrixRef, Shading, VectorColorMap, VectorPivot, VectorScale},
     layout::Side,
+    text::RichText,
 };
 use std::path::Path;
 use styled::{cartesian, colorbar, export, extent, rgb, rgba, save};
@@ -291,7 +292,8 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
         style.min_length_px = 2.0;
         style.color_map = Some(VectorColorMap::Grid(MatrixRef::columns_are_x(speed_ids)));
     });
-    let mut chart = gallery::chart("Gradient of a potential", "x", "y", (960, 640));
+    let title = r"Gradient of a potential $\varphi(x, y)$";
+    let mut chart = gallery::chart(title, "x", "y", (960, 640));
     chart.set_x_range(-3.0, 3.0);
     chart.set_y_range(-3.0, 3.0);
     let mut bar = renderer::default::default_colorbar_options();
@@ -303,6 +305,16 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.min = speed_min;
     bar.axis.max = speed_max;
     bar.axis.major_spacing = (speed_max - speed_min) / 5.0;
+    // The colourbar titled with the magnitude it maps, in TeX, in the axis
+    // titles' ink and size.
+    let axis_title = &chart.config().left_y.title_option.text;
+    bar.axis.title_option.visible = true;
+    bar.axis.title_option.text = RichText::from_tex(
+        r"$|\nabla\varphi|$",
+        axis_title.color,
+        axis_title.font_size,
+        "",
+    )?;
     chart.config_mut().colorbar = Some(bar);
     gallery::save(r, &mut chart, &[field, arrows], &out.join("gradient.png"))
 }

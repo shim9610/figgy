@@ -262,6 +262,18 @@ pub enum RuleKind {
     LogAxisBounds,
     /// probability axis bounds must lie strictly between 0 and 1
     ProbabilityAxisBounds,
+    /// an axis unit's scale must be finite and non-zero
+    AxisUnitScale,
+    /// an axis unit's offset must be finite
+    AxisUnitOffset,
+    /// a logarithmic axis takes a unit with offset 0 and a positive scale
+    AxisUnitLog,
+    /// a probability axis cannot have a unit
+    AxisUnitProbability,
+    /// an axis with timestamp labels cannot have a unit
+    AxisUnitTimestamp,
+    /// a categorical axis cannot have a unit
+    AxisUnitCategorical,
     /// series\_id must not be empty
     SeriesIdEmpty,
     /// series\_id must be unique within a chart
@@ -1266,6 +1278,12 @@ impl RuleKind {
             Self::AxisBoundsOrder => "AxisBoundsOrder",
             Self::LogAxisBounds => "LogAxisBounds",
             Self::ProbabilityAxisBounds => "ProbabilityAxisBounds",
+            Self::AxisUnitScale => "AxisUnitScale",
+            Self::AxisUnitOffset => "AxisUnitOffset",
+            Self::AxisUnitLog => "AxisUnitLog",
+            Self::AxisUnitProbability => "AxisUnitProbability",
+            Self::AxisUnitTimestamp => "AxisUnitTimestamp",
+            Self::AxisUnitCategorical => "AxisUnitCategorical",
             Self::SeriesIdEmpty => "SeriesIdEmpty",
             Self::SeriesIdDuplicate => "SeriesIdDuplicate",
             Self::PolarErrorBars => "PolarErrorBars",
@@ -1858,6 +1876,14 @@ impl std::fmt::Display for RuleKind {
             Self::ProbabilityAxisBounds => {
                 "probability axis bounds must lie strictly between 0 and 1"
             }
+            Self::AxisUnitScale => "an axis unit's scale must be finite and non-zero",
+            Self::AxisUnitOffset => "an axis unit's offset must be finite",
+            Self::AxisUnitLog => {
+                "a logarithmic axis takes a unit with offset 0 and a positive scale"
+            }
+            Self::AxisUnitProbability => "a probability axis cannot have a unit",
+            Self::AxisUnitTimestamp => "an axis with timestamp labels cannot have a unit",
+            Self::AxisUnitCategorical => "a categorical axis cannot have a unit",
             Self::SeriesIdEmpty => "series_id must not be empty",
             Self::SeriesIdDuplicate => "series_id must be unique within a chart",
             Self::PolarErrorBars => "error bars are not drawn on polar axes",
@@ -3222,6 +3248,30 @@ mod tests {
             (
                 RuleKind::ProbabilityAxisBounds,
                 "probability axis bounds must lie strictly between 0 and 1",
+            ),
+            (
+                RuleKind::AxisUnitScale,
+                "an axis unit's scale must be finite and non-zero",
+            ),
+            (
+                RuleKind::AxisUnitOffset,
+                "an axis unit's offset must be finite",
+            ),
+            (
+                RuleKind::AxisUnitLog,
+                "a logarithmic axis takes a unit with offset 0 and a positive scale",
+            ),
+            (
+                RuleKind::AxisUnitProbability,
+                "a probability axis cannot have a unit",
+            ),
+            (
+                RuleKind::AxisUnitTimestamp,
+                "an axis with timestamp labels cannot have a unit",
+            ),
+            (
+                RuleKind::AxisUnitCategorical,
+                "a categorical axis cannot have a unit",
             ),
             (RuleKind::SeriesIdEmpty, "series_id must not be empty"),
             (

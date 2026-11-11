@@ -396,16 +396,20 @@ impl SeriesConfig {
 }
 
 impl crate::radial::RadialChart {
-    /// The chart with a plain title in its own font, label colour and one
-    /// and a half times its label size. The radial chart takes no title
-    /// margin or offset, so this title has neither.
+    /// The chart with a title in its own font, label colour and one and a
+    /// half times its label size. `$…$`, `\(…\)` and `$$…$$` spans are TeX
+    /// and `\$` is a dollar sign ([`crate::text::rich_segments_from_label`]).
+    /// The radial chart takes no title margin or offset, so this title has
+    /// neither.
     pub fn with_title(mut self, text: &str) -> Self {
-        self.chart_title = Some(crate::config::ChartTitleOptions::from_legacy_plain(
-            text,
+        let mut title = crate::config::ChartTitleOptions::from_legacy_plain(
+            "",
             &self.font_family,
             self.font_size,
             self.label_color,
-        ));
+        );
+        title.text.segments = crate::text::rich_segments_from_label(text);
+        self.chart_title = Some(title);
         self
     }
 }

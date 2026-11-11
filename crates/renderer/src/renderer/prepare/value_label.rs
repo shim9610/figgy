@@ -122,6 +122,93 @@ pub(in crate::renderer) fn selected_value_label(
     })
 }
 
+/// Where series `cfg`'s value labels go among those of the panel `config`
+/// (#272): for a radar series, its rank among the panel's radar series in
+/// `series` that draw value labels and their count, the widest label of
+/// any of them (`widest`, given each one's index in `series`: its atlas'
+/// widest string), the radius axis' ray and the box of the drawn ring
+/// labels ([`ring_label_band`]); [`data_render::RadarLabelLanes::NONE`]
+/// for any other series. Each radar series takes its own lane beside its
+/// spoke, so labels of two series never meet whatever their values.
+pub(in crate::renderer) fn radar_label_lanes<'s>(
+    config: &Config,
+    series: impl IntoIterator<Item = &'s SeriesConfig>,
+    cfg: &SeriesConfig,
+    mut widest: impl FnMut(usize, &SeriesConfig) -> Result<f32>,
+) -> Result<data_render::RadarLabelLanes> {
+    let mut lanes = data_render::RadarLabelLanes::NONE;
+    let Some(polar) = config.polar().filter(|_| cfg.render_type.radar().is_some()) else {
+        return Ok(lanes);
+    };
+    lanes.count = 0;
+    for (index, s) in series.into_iter().enumerate() {
+        if s.render_type.radar().is_none() || !draws_value_labels(config, s) {
+            continue;
+        }
+        if s.series_id == cfg.series_id {
+            lanes.rank = lanes.count;
+        }
+        lanes.count += 1;
+        lanes.widest = lanes.widest.max(widest(index, s)?);
+    }
+    lanes.count = lanes.count.max(1);
+    lanes.ray = polar.ray_direction();
+    lanes.ring = ring_label_band(config);
+    Ok(lanes)
+}
+
+/// The box of the ring (radius) labels the polar panel `config` draws, in
+/// the frame of its ray from the centre as fractions of the outer radius
+/// (`RadarLabelLanes::ring`): the drawn boxes the chrome emits, so a moved,
+/// hidden or thinned label counts as drawn. Empty without ring labels.
+fn ring_label_band(config: &Config) -> [f32; 4] {
+    let empty = data_render::RadarLabelLanes::NONE.ring;
+    let (Some(polar), Some(geometry)) = (config.polar(), config.polar_geometry()) else {
+        return empty;
+    };
+    if !(geometry.radius > 0.0) {
+        return empty;
+    }
+    let [dx, dy] = polar.ray_direction();
+    let [sx, sy] = polar.ray_side();
+    let [cx, cy] = geometry.center;
+    let measure = crate::text_render::CpuTextMeasure::for_style(&config.draw_style);
+    let mut band = [
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    crate::select::emit_element(
+        config,
+        &crate::layout::Element::AxisLabel(crate::layout::Side::Left),
+        &measure,
+        &mut crate::sink::Parts(&mut |part| {
+            let r = part.extent();
+            for (x, y) in [
+                (r.x, r.y),
+                (r.x + r.width, r.y),
+                (r.x, r.y + r.height),
+                (r.x + r.width, r.y + r.height),
+            ] {
+                let along = (x - cx) * dx + (y - cy) * dy;
+                let across = (x - cx) * sx + (y - cy) * sy;
+                band = [
+                    band[0].min(along),
+                    band[1].max(along),
+                    band[2].min(across),
+                    band[3].max(across),
+                ];
+            }
+        }),
+    );
+    if band.iter().all(|v| v.is_finite()) {
+        band.map(|v| v / geometry.radius)
+    } else {
+        empty
+    }
+}
+
 /// Whether series `cfg` draws value labels under the panel `config`: the
 /// value-label step of its panel paints only then.
 pub(crate) fn draws_value_labels(config: &Config, cfg: &SeriesConfig) -> bool {
@@ -209,13 +296,16 @@ impl PrepareContext<'_> {
 
     /// Series `cfg`'s value label layer data in the panel `config` at
     /// `scale` render pixels per logical pixel: its label uniform, its
-    /// label cells (one per label, any number) and group 1 over `atlas`.
+    /// label cells (one per label, any number) and group 1 over `atlas`;
+    /// `lanes` places a radar series' labels among the panel's
+    /// ([`radar_label_lanes`]).
     pub(in crate::renderer) fn value_label_data(
         &self,
         config: &Config,
         cfg: &SeriesConfig,
         atlas: &data_render::ValueLabelAtlas,
         scale: f32,
+        lanes: &data_render::RadarLabelLanes,
     ) -> Result<Option<data_render::ValueLabelData>> {
         let selected = series_selected(config, cfg);
         let Some((kind, text)) = data_render::value_label_kind(&cfg.render_type, selected) else {
@@ -224,8 +314,14 @@ impl PrepareContext<'_> {
         let axis = value_label_axis(config, &cfg.render_type);
         let categories = value_label_categories(config, &cfg.render_type);
         let count = data_render::value_label_count(kind, text, categories);
-        let params =
-            data_render::value_label_params(kind, count, atlas, axis.label_style.font_size, scale);
+        let params = data_render::value_label_params(
+            kind,
+            count,
+            atlas,
+            axis.label_style.font_size,
+            scale,
+            lanes,
+        );
         data_render::create_value_label_data(
             self.device,
             self.gpu_ledger,

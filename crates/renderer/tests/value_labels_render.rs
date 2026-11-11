@@ -1,8 +1,7 @@
 //! End-to-end verification of the value labels of category bar, box plot
 //! and radar series through the public renderer API and the headless
 //! `export_rgba`, at 1x and 2x: where each label sits against the
-//! bar end, the top of the box or the radar vertex (the former charts'
-//! placement), that the drawn pixels are the SSOT string's own raster, that
+//! bar end, the box's median line or the radar vertex, that the drawn pixels are the SSOT string's own raster, that
 //! an empty string draws nothing, that a drag offset moves the label by
 //! itself, that the selected label's box is its frame, the labels of a
 //! subplot, and the typed pick of a label.
@@ -675,17 +674,24 @@ fn boxes(direction: CategoryBarDirection, text: &[&str]) -> SeriesConfig {
     }
 }
 
-/// A box's label sits `10` px past the top of the box, its high whisker or
-/// its highest outlier, centred across the box, at 1x and 2x, as the former
-/// box plot placed it.
+/// A box's label sits beside its median line (#272), `10` px past the side
+/// of the box, never at the box's outlier or whisker end whose value it
+/// would seem to name: right of a vertical box with its text centred on
+/// the median, above a horizontal box centred on the median, at 1x and 2x.
+/// In a group of two the labels go to the group's outer sides.
 #[test]
-fn box_labels_sit_past_the_top_of_the_box() {
+fn box_labels_sit_beside_the_median() {
     let mut r = renderer();
+    let medians = BOXES.map(|b| b[2]);
     for direction in [
         CategoryBarDirection::Vertical,
         CategoryBarDirection::Horizontal,
     ] {
-        let chart = box_chart(direction);
+        // Narrow boxes: every label has room on its own side, in its slot.
+        let mut chart = box_chart(direction);
+        if let Some(groups) = chart.config_mut().bar_groups.as_mut() {
+            groups.group_width = 0.2;
+        }
         let series = [boxes(direction, &["30", "45", "25"])];
         for scale in SCALES {
             let img = r
@@ -695,38 +701,107 @@ fn box_labels_sit_past_the_top_of_the_box() {
                 )
                 .block_on()
                 .unwrap();
-            for (k, top) in [(0usize, 85.0), (1, 70.0), (2, 45.0)] {
+            for (k, median) in medians.iter().enumerate() {
                 let case = format!("{direction:?} {scale}x box {k}");
                 let region = slot(&chart, direction, k, scale);
                 let body = bbox(&img, region, is_red).unwrap_or_else(|| panic!("{case}: no box"));
-                let ink =
-                    bbox(&img, region, is_label).unwrap_or_else(|| panic!("{case}: no label"));
-                let end = value_px(&chart, direction, top, scale);
+                let at = value_px(&chart, direction, *median, scale);
+                // Past the box's labelled side, around the median: right
+                // of a vertical box, above a horizontal one. The top box's
+                // label flips under it (`an_edge_box_label_flips_...`), into
+                // the slot below, away from the median there.
+                let reach = (40.0 * scale) as u32;
+                let near = |v: f32| ((v as u32).saturating_sub(reach), v as u32 + reach);
+                let side = match direction {
+                    CategoryBarDirection::Vertical => {
+                        let (y0, y1) = near(at);
+                        (body.2 + 1, y0, body.2 + 1 + 2 * reach, y1)
+                    }
+                    CategoryBarDirection::Horizontal => {
+                        let (x0, x1) = near(at);
+                        (x0, body.1.saturating_sub(reach), x1, body.1)
+                    }
+                };
+                let ink = bbox(&img, side, is_label).unwrap_or_else(|| panic!("{case}: no label"));
+                let gap = 10.0 * scale;
                 let slack = 2.0 * scale + 1.0;
                 let (cx, cy) = centre(ink);
-                let (bx, by) = centre(body);
                 match direction {
                     CategoryBarDirection::Vertical => {
-                        assert!((cx - bx).abs() <= slack, "{case}: label x {cx}, box {bx}");
-                        let baseline = end - 10.0 * scale;
                         assert!(
-                            (ink.3 as f32 + 1.0 - baseline).abs() <= slack,
-                            "{case}: ink bottom {} for a baseline at {baseline}",
-                            ink.3 + 1
+                            (ink.0 as f32 - (body.2 as f32 + 1.0 + gap)).abs() <= slack,
+                            "{case}: ink left {} for a box right edge at {}",
+                            ink.0,
+                            body.2 + 1
+                        );
+                        assert!(
+                            (cy - at).abs() <= slack,
+                            "{case}: label y {cy}, median {at}"
                         );
                     }
                     CategoryBarDirection::Horizontal => {
                         assert!(
-                            (cy - by).abs() <= slack + scale,
-                            "{case}: label y {cy}, box {by}"
+                            (cx - at).abs() <= slack,
+                            "{case}: label x {cx}, median {at}"
                         );
                         assert!(
-                            (ink.0 as f32 - (end + 10.0 * scale)).abs() <= slack,
-                            "{case}: ink left {} for a top at {end}",
-                            ink.0
+                            (ink.3 as f32 + 1.0 - (body.1 as f32 - gap)).abs() <= slack,
+                            "{case}: ink bottom {} for a box top at {}",
+                            ink.3 + 1,
+                            body.1
                         );
                     }
                 }
+            }
+        }
+        // Two boxes per category: the first one's label goes before it
+        // (left, or above), the second one's after it, away from the
+        // group's centre. The middle category keeps both off the data
+        // area's edges.
+        let chart = box_chart(direction);
+        let mut first = boxes(direction, &["", "30", ""]);
+        first.series_id = "box-a".into();
+        let mut second = boxes(direction, &["", "31", ""]);
+        second.series_id = "box-b".into();
+        if let DataRenderType::BoxPlot {
+            color,
+            style: _,
+            labels: _,
+            outliers: _,
+            overrides: _,
+            violin: _,
+            points: _,
+        } = &mut second.render_type
+        {
+            *color = BLUE;
+        }
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[first, second]),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        let region = slot(&chart, direction, 1, 1.0);
+        let red = bbox(&img, region, is_red).expect("the first box");
+        let blue = bbox(&img, region, is_blue).expect("the second box");
+        let everywhere = (0, 0, img.width, img.height);
+        let ink = bbox(&img, everywhere, is_label).expect("the labels");
+        let case = format!("{direction:?} group");
+        match direction {
+            CategoryBarDirection::Vertical => {
+                assert!(red.0 < blue.0, "{case}: series order");
+                assert!(ink.0 < red.0, "{case}: a label left of the left box");
+                assert!(ink.2 > blue.2, "{case}: a label right of the right box");
+            }
+            CategoryBarDirection::Horizontal => {
+                let (top, bottom) = if red.1 < blue.1 {
+                    (red, blue)
+                } else {
+                    (blue, red)
+                };
+                assert!(ink.1 < top.1, "{case}: a label above the upper box");
+                assert!(ink.3 > bottom.3, "{case}: a label below the lower box");
             }
         }
     }
@@ -1376,27 +1451,33 @@ fn an_edge_bar_label_flips_inside_its_end() {
     }
 }
 
-/// A box label that would cross the data area's edge past the top of its
-/// box goes to the other side of that top (below it, or left of it): fully
-/// drawn, inside the data area, `10` px from the top, picked there, at 1x
-/// and 2x. A box with room keeps its label past its top.
+/// A box label that would cross the data area's edge beside its box goes
+/// to the other side of the box (left of a vertical box, under a
+/// horizontal one): fully drawn, inside the data area, `10` px from the
+/// box, still on the median, picked there, at 1x and 2x (#272). A box with
+/// room keeps its label on its own side.
 #[test]
-fn an_edge_box_label_flips_below_its_top() {
+fn an_edge_box_label_flips_to_the_other_side() {
     let mut r = renderer();
+    let median = BOXES[2][2];
     for direction in [
         CategoryBarDirection::Vertical,
         CategoryBarDirection::Horizontal,
     ] {
-        let roomy = box_chart(direction);
-        // Box 0's top is its outlier at 85: a few pixels short of the edge.
-        let mut edge = box_chart(direction);
-        match direction {
-            CategoryBarDirection::Vertical => edge.set_y_range(0.0, 88.0),
-            CategoryBarDirection::Horizontal => edge.set_x_range(0.0, 88.0),
+        let mut roomy = box_chart(direction);
+        if let Some(groups) = roomy.config_mut().bar_groups.as_mut() {
+            groups.group_width = 0.2;
         }
-        let series = [boxes(direction, &["30", "45", "25"])];
+        // The last box (the rightmost, or the top one) nearly fills its
+        // slot: its side is a few pixels short of the data area's edge.
+        let mut edge = box_chart(direction);
+        if let Some(groups) = edge.config_mut().bar_groups.as_mut() {
+            groups.group_width = 0.95;
+        }
+        let series = [boxes(direction, &["", "", "25"])];
         for scale in SCALES {
             let case = format!("{direction:?} {scale}x");
+            let everywhere = |img: &RasterImage| (0, 0, img.width, img.height);
             let roomy_img = r
                 .export_rgba(
                     renderer::ExportSource::chart(&roomy, &series),
@@ -1404,8 +1485,8 @@ fn an_edge_box_label_flips_below_its_top() {
                 )
                 .block_on()
                 .unwrap();
-            let want = bbox(&roomy_img, slot(&roomy, direction, 0, scale), is_ink_core)
-                .expect("the label with room");
+            let want =
+                bbox(&roomy_img, everywhere(&roomy_img), is_ink_core).expect("the label with room");
             let img = r
                 .export_rgba(
                     renderer::ExportSource::chart(&edge, &series),
@@ -1413,7 +1494,7 @@ fn an_edge_box_label_flips_below_its_top() {
                 )
                 .block_on()
                 .unwrap();
-            let ink = bbox(&img, slot(&edge, direction, 0, scale), is_ink_core)
+            let ink = bbox(&img, everywhere(&img), is_ink_core)
                 .unwrap_or_else(|| panic!("{case}: no label"));
             assert_eq!(
                 (ink.2 - ink.0, ink.3 - ink.1),
@@ -1421,52 +1502,59 @@ fn an_edge_box_label_flips_below_its_top() {
                 "{case}: the flipped label is drawn whole"
             );
             assert_inside(ink, data_area_px(&edge, scale), &case);
-            let top = value_px(&edge, direction, 85.0, scale);
+            let body = bbox(&img, slot(&edge, direction, 2, scale), is_red).unwrap();
+            let at = value_px(&edge, direction, median, scale);
             let gap = 10.0 * scale;
             let slack = 2.0 * scale + 1.0;
+            let (cx, cy) = centre(ink);
             match direction {
-                CategoryBarDirection::Vertical => assert!(
-                    ink.1 as f32 >= top + gap - slack,
-                    "{case}: ink top {} for a box top at {top}",
-                    ink.1
-                ),
-                CategoryBarDirection::Horizontal => assert!(
-                    (ink.2 as f32 + 1.0 - (top - gap)).abs() <= slack,
-                    "{case}: ink right {} for a box top at {top}",
-                    ink.2 + 1
-                ),
+                CategoryBarDirection::Vertical => {
+                    assert!(
+                        (ink.2 as f32 + 1.0 - (body.0 as f32 - gap)).abs() <= slack,
+                        "{case}: ink right {} for a box left edge at {}",
+                        ink.2 + 1,
+                        body.0
+                    );
+                    assert!(
+                        (cy - at).abs() <= slack,
+                        "{case}: label y {cy}, median {at}"
+                    );
+                }
+                CategoryBarDirection::Horizontal => {
+                    assert!(
+                        ink.1 as f32 >= body.3 as f32 + 1.0 + gap - slack,
+                        "{case}: ink top {} for a box bottom at {}",
+                        ink.1,
+                        body.3 + 1
+                    );
+                    assert!(
+                        (cx - at).abs() <= slack,
+                        "{case}: label x {cx}, median {at}"
+                    );
+                }
             }
             assert_picks(
                 pick_at(&mut r, &edge, &series, &img, scale, centre(ink)),
                 "box",
-                0,
+                2,
                 &case,
             );
-            // Box 1 (top 70) has room: its label stays past its top.
-            let ink = bbox(&img, slot(&edge, direction, 1, scale), is_ink_core).unwrap();
-            let top = value_px(&edge, direction, 70.0, scale);
-            match direction {
-                CategoryBarDirection::Vertical => {
-                    assert!(ink.3 as f32 + 1.0 <= top, "{case}: box 1's label flipped")
-                }
-                CategoryBarDirection::Horizontal => {
-                    assert!(ink.0 as f32 >= top, "{case}: box 1's label flipped")
-                }
-            }
         }
     }
 }
 
-/// A radar label that would cross the data area's edge outward along its
-/// spoke goes inward along it instead: fully drawn, inside the data area,
-/// `9` px from the vertex with the former baseline drop, picked there, at
-/// 1x and 2x. The top and bottom vertices flip; the right one, with room,
-/// does not.
+/// A radar label that would cross the data area's edge or the outer ring
+/// (where the category labels sit, #272) outward along its spoke goes
+/// inward along it instead: fully drawn, inside the data area, `9` px from
+/// the vertex with the former baseline drop, picked there, at 1x and 2x.
+/// The top and bottom vertices flip; the right one, with room inside the
+/// ring, does not.
 #[test]
 fn an_edge_radar_label_flips_inward() {
     let mut r = renderer();
-    // The top and bottom vertices on the outer ring of a 0 to 0.7 axis.
-    const EDGE: [f64; 4] = [0.7, 0.5, 0.7, 0.4];
+    // The top and bottom vertices on the outer ring of a 0 to 0.7 axis; the
+    // right one at its middle, its label well inside the ring.
+    const EDGE: [f64; 4] = [0.7, 0.35, 0.7, 0.4];
     r.add_column("radar.edge", &col(EDGE.to_vec())).unwrap();
     let roomy = radar_chart();
     let mut edge = radar_chart();

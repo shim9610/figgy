@@ -430,6 +430,59 @@ fn the_edge_padding_grows_with_the_font() {
     assert!(paddings[0].0 < paddings[3].0, "{paddings:?}");
 }
 
+// An axis with a unit (#273) prints longer labels than its data values:
+// `auto_layout` measures the labels as drawn, so the y band grows to hold
+// `-40000` .. `40000` where the data reads `0.0` .. `1.0`, and the title
+// clears them at 1x and 2x.
+#[test]
+fn auto_layout_gives_converted_labels_their_room() {
+    let plain = titled_axes(12.0, 14.0);
+    let mut converted = plain.clone();
+    converted.left_y.unit = Some(renderer::config::AxisUnit::new(80_000.0, -40_000.0));
+    converted.left_y.major_spacing = 20_000.0;
+    assert_eq!(converted.validate_chart(), Ok(()));
+    let texts = |cfg: &Config| {
+        let mut out = Vec::new();
+        renderer::select::emit_element(
+            cfg,
+            &Element::AxisLabel(Side::Left),
+            &measure(cfg),
+            &mut Parts(&mut |part| {
+                if let renderer::layout::DrawnPart::Text(r) = part {
+                    out.push(r.width);
+                }
+            }),
+        );
+        out
+    };
+    let widest = |cfg: &Config| texts(cfg).into_iter().fold(0.0f32, f32::max);
+    assert!(widest(&converted) > widest(&plain) + 10.0);
+    let (plain_out, converted_out) = (laid_out(&plain), laid_out(&converted));
+    // The format stays: five digits are not long labels.
+    assert_eq!(
+        converted_out.left_y.label_style.format,
+        converted.left_y.label_style.format
+    );
+    assert!(
+        converted_out.left_y.out_margin
+            >= plain_out.left_y.out_margin + (widest(&converted) - widest(&plain)).floor(),
+        "{} against {}",
+        converted_out.left_y.out_margin,
+        plain_out.left_y.out_margin
+    );
+    let gap = f32::max(4.0, 0.5 * 12.0);
+    for (scale, doc) in [
+        (1.0, converted_out.clone()),
+        (2.0, converted_out.scaled(2.0)),
+    ] {
+        assert_eq!(title_overlaps(&doc), 0, "{scale}x");
+        let clearance = title_clearance(&doc, Side::Left);
+        assert!(clearance >= scale * gap - 1.0, "{scale}x: {clearance}");
+    }
+    // Laid out again, nothing changes.
+    assert_eq!(laid_out(&converted_out), converted_out);
+}
+
 // The user's case: `0.00300` labels under the Y title. After `auto_layout`
 // the Y labels print as powers of ten, the title sits beside them, and no
 // title touches its labels, at 1x and 2x.

@@ -394,7 +394,8 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
         bar.offset_x = -110.0;
         bar.axis.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
         bar.axis.title_option.visible = true;
-        bar.axis.title_option.text = RichText::plain("Energy (dB)", ink, 19.0, "");
+        // The spectral density S(f, θ) in TeX.
+        bar.axis.title_option.text = RichText::from_tex(r"$S(f, \theta)$ (dB)", ink, 19.0, "")?;
     }
     let image = export(r, &mut chart, &series, bg)?;
     save(&image, bg, &out.join("gallery-polar-heatmap.png"))

@@ -16,8 +16,9 @@
 //!   element's bounds inside the canvas.
 //! - **I2** every element's hit region is its drawn outline: every strong
 //!   ink pixel inside the region the selection outlines, the region near
-//!   the ink, `contains` agreeing with it, and the topmost region at every
-//!   ink pixel belonging to an element with ink there.
+//!   the ink, `contains` agreeing with it, and the element the hit test
+//!   names at every ink pixel, which arbitrates between overlapping padded
+//!   regions (#272), being one with ink there.
 //! - **I3** the drawn highlight is the model's selection box: the pixels it
 //!   changes lie on the box's outline and handles, and every edge is drawn.
 //! - **I4** no two decorations that must stay apart overlap: the pair
@@ -259,17 +260,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#38",
     },
     Exclusion {
-        scene: "EnergyLevels*",
-        layer: "*",
-        element: "axis_left",
-        inv: Inv::I2,
-        detail: "*hit another element that has no ink there ({\"axis_right\": 1})*",
-        reason: "a piece frame of the broken energy axis stands inside its piece (#249) and \
-                 ends a line width short of the right axis line, whose box takes the frame's \
-                 last pixel at 2x, as at the axis corners",
-        issue: "#38",
-    },
-    Exclusion {
         scene: "*",
         layer: "*",
         element: "*axis_*",
@@ -372,24 +362,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#47",
     },
     Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I2,
-        detail: "4 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 4})*",
-        reason: "the span's pixels under the arrow shaft's band past the tip",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_0: 4 of * ({\"annotation_3\": 4})*",
-        reason: "the span under the arrow shaft past the tip, as in I2",
-        issue: "#47",
-    },
-    Exclusion {
         scene: "Polar",
         layer: "base",
         element: "axis_left",
@@ -423,25 +395,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         element: "axis_title_left",
         inv: Inv::I6,
         detail: "after the drag, I2 of axis_title_left: box * px past the padding*",
-        reason: "the slanted title's turned box, as in I2",
-        issue: "#55",
-    },
-    Exclusion {
-        scene: "Ternary",
-        layer: "base",
-        element: "axis_title_right",
-        inv: Inv::I2,
-        detail: "box * is * px past the padding from the ink extent*",
-        reason: "a slanted title's box is the bounding box of its text box turned along the \
-                 edge; the turned corners hold no glyphs",
-        issue: "#55",
-    },
-    Exclusion {
-        scene: "Ternary",
-        layer: "base",
-        element: "axis_title_right",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of axis_title_right: box * px past the padding*",
         reason: "the slanted title's turned box, as in I2",
         issue: "#55",
     },
@@ -763,17 +716,6 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
                  instead of moving",
         issue: "#205",
     },
-    Exclusion {
-        scene: "LongLabels",
-        layer: "base",
-        element: "tick_labels_top",
-        inv: Inv::I2,
-        detail: "1 of * strong ink pixels hit another element that has no ink there ({\"tick_labels_left\": 1})*",
-        reason: "at 2x the first top label, centred on the data area's corner, and the top left \
-                 label are 2.5 px apart, under each other's padded box: labels at a corner run \
-                 along their axes, which auto_layout does not move (out of scope in the plan)",
-        issue: "#44",
-    },
     // The BoxPlot scene's rotated "Response" title, placed the edge
     // padding from the chart edge (#270): its box spans x 8.5..21.5 at
     // 1x and 17.5..42.5 at 2x (the 2x measure is 25 px, not 26). Looked at
@@ -813,24 +755,6 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         inv: Inv::I6,
         detail: "after the drag, I2 of annotation_3: 2 points of stroke outlines*",
         reason: "the arrow shaft past the tip, as in I2",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I2,
-        detail: "2 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 2})*",
-        reason: "the span's pixels under the arrow shaft's band past the tip",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_0: 2 of * ({\"annotation_3\": 2})*",
-        reason: "the span under the arrow shaft past the tip, as in I2",
         issue: "#47",
     },
 ];
@@ -1233,6 +1157,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Feynman => "Feynman",
         SceneKind::TriMesh => "TriMesh",
         SceneKind::TriSurface => "TriSurface",
+        SceneKind::AxisUnits => "AxisUnits",
     }
 }
 
@@ -2456,8 +2381,8 @@ fn box_misfit(outline: RectF, ink: RectF) -> f32 {
 /// the padding plus [`BOX_FIT`] of the ink extent, a stroke's band within
 /// its grab half width plus [`STROKE_FIT`] of ink); `contains` agrees with
 /// the region on capped edge-band samples; and at every strong ink pixel
-/// the topmost region in registration order belongs to an element that has
-/// ink there.
+/// the element the hit test names (`HitMap::hit_test`, which arbitrates
+/// between overlapping padded regions, #272) has ink there.
 #[allow(clippy::too_many_arguments)]
 fn check_i2<C: DragConfig>(
     report: &mut Report,
@@ -2553,25 +2478,38 @@ fn check_i2<C: DragConfig>(
                 check_parts_near_ink(report, at, &m.name, parts, code, ink);
             }
         }
-        // The topmost region at each strong pixel has ink there.
+        // The element the hit test names at each strong pixel has ink
+        // there (#272). Where no other region holds the pixel, or only
+        // backgrounds registered below the element, which take no part in
+        // the hit test's arbitration, that is the element itself; at the
+        // other pixels the product's `HitMap::hit_test` decides.
+        let background = |t: usize| map.get(measured[t].id).is_some_and(|e| e.is_background());
+        let own_background = background(index);
         let mut covered: Vec<(String, (f32, f32))> = Vec::new();
         for &i in &strong {
             let (x, y) = (i64::from(i) % ink.w as i64, i64::from(i) / ink.w as i64);
             if !mask.get(x, y) {
                 continue;
             }
-            for (t, (tm, tmask)) in measured.iter().zip(masks).enumerate().rev() {
-                if !tmask.get(x, y) {
-                    continue;
-                }
-                let has_ink = t == index
-                    || ink
-                        .code_of(&tm.name)
-                        .is_some_and(|c| ink.inked_near(c, x, y, TOPMOST_REACH));
-                if !has_ink {
-                    covered.push((tm.name.clone(), ink.point(x as usize, y as usize)));
-                }
-                break;
+            let contested = masks.iter().enumerate().any(|(t, tmask)| {
+                t != index && tmask.get(x, y) && (t > index || !(own_background || background(t)))
+            });
+            if !contested {
+                continue;
+            }
+            let (cx, cy) = ink.point(x as usize, y as usize);
+            let Some(t) = map
+                .hit_test(cfg, measure, cx, cy)
+                .and_then(|hit| measured.iter().position(|tm| tm.id == hit))
+            else {
+                continue;
+            };
+            let has_ink = t == index
+                || ink
+                    .code_of(&measured[t].name)
+                    .is_some_and(|c| ink.inked_near(c, x, y, TOPMOST_REACH));
+            if !has_ink {
+                covered.push((measured[t].name.clone(), (cx, cy)));
             }
         }
         report.check(at, &m.name, Inv::I2, covered.is_empty(), || {

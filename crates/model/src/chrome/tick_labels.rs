@@ -76,23 +76,8 @@ pub fn prune_numeric_labels(
     let labels: Vec<_> = majors
         .iter()
         .filter_map(|&value| {
-            let (text, metrics) = if matches!(ls.format, LabelFormat::Power) {
-                let text = format_tick_power(value, ls.significant_digits, ls);
-                let metrics = measure.measure_rich(&text);
-                (NumericTickText::Power(text), metrics)
-            } else {
-                let text = format_tick_value(
-                    value,
-                    &ls.format,
-                    ls.significant_digits,
-                    &axis.scale,
-                    effective_major_spacing(axis),
-                    axis.min,
-                    axis.max,
-                );
-                let metrics = measure.measure_plain(&text, &ls.label_font, ls.font_size);
-                (NumericTickText::Plain(text), metrics)
-            };
+            // The one numeric label text (shown units with a unit, #273).
+            let (text, metrics) = super::polar::tick_text(axis, value, measure);
             let position = position(value);
             let bounds = bounds(position, metrics);
             [bounds.x, bounds.y, bounds.width, bounds.height]
@@ -106,10 +91,14 @@ pub fn prune_numeric_labels(
                 })
         })
         .collect();
-    // The ladder the labels are demoted to; `None` keeps every label.
+    // The ladder the labels are demoted to; `None` keeps every label. The
+    // ladder is the printed value's (#273).
     let on_ladder = |label: &NumericTickLabel, mask: u16| {
-        crate::tick::ladder_multiple(label.value, &axis.scale)
-            .is_some_and(|multiple| mask & (1 << multiple) != 0)
+        crate::tick::ladder_multiple(
+            crate::tick::shown_tick_value(axis, label.value),
+            &axis.scale,
+        )
+        .is_some_and(|multiple| mask & (1 << multiple) != 0)
     };
     let kept = |ladder: Option<u16>, label: &NumericTickLabel| {
         ladder.is_none_or(|mask| on_ladder(label, mask))
@@ -160,9 +149,15 @@ pub fn prune_numeric_labels(
     })
     .flatten()
     .filter(|&(_, spacing)| spacing.is_finite() && spacing > 0.0);
+    // Steps of the shown grid the ticks were walked on (#273); a negative
+    // unit walks it downward.
+    let sign = axis
+        .effective_unit()
+        .map_or(1.0, |unit| unit.scale.signum());
     let grid_index = |index: usize, value: f64| {
         grid.and_then(|(first, spacing)| {
-            let k = (value - first) / spacing;
+            let shown = |v: f64| crate::tick::shown_tick_value(axis, v);
+            let k = sign * (shown(value) - shown(first)) / spacing;
             ((k - k.round()).abs() < 1e-6 && k >= -0.5).then(|| k.round() as usize)
         })
         .unwrap_or(index)

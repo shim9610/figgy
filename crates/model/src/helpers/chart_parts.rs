@@ -1,5 +1,6 @@
 //! Constructors for the parts a host adds to a chart (#265): a colour with
-//! another alpha, annotation items, a right-hand overlay axis and a subplot.
+//! another alpha, annotation items, a right-hand overlay axis, an axis
+//! unit (#273) and a subplot.
 //!
 //! Each builds the part's documented default and then assigns the fields it
 //! names, so a field added to a type later takes its default here too.
@@ -8,7 +9,7 @@ use crate::annotation::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, BoxStyle, NoteAlign,
 };
 use crate::color::Color;
-use crate::config::{AxisOptions, Config};
+use crate::config::{AxisOptions, AxisScale, AxisUnit, Config};
 use crate::layer::{CellRef, Subplot};
 use crate::line::LineStylePreset;
 use crate::text::RichText;
@@ -47,10 +48,12 @@ impl Annotation {
         })
     }
 
-    /// A plain text block in `color` at `size` logical pixels, its top-left
-    /// corner at `anchor`, without a box.
+    /// A text block in `color` at `size` logical pixels, its top-left
+    /// corner at `anchor`, without a box. `$…$`, `\(…\)` and `$$…$$` spans
+    /// are TeX and `\$` is a dollar sign
+    /// ([`crate::text::rich_segments_from_label`]).
     pub fn text(anchor: Anchor, text: &str, color: Color, size: f32) -> Self {
-        Self::text_rich(anchor, RichText::plain(text, color, size, ""))
+        Self::text_rich(anchor, RichText::from_label(text, color, size, ""))
     }
 
     /// A text block of styled or TeX text, its top-left corner at `anchor`,
@@ -114,14 +117,37 @@ impl Annotation {
 impl AxisOptions {
     /// The right-hand y axis of an overlay layer: the default y axis with
     /// `title` shown and the title and tick labels in `color`, the colour
-    /// of the series it scales.
+    /// of the series it scales. `$…$` spans in `title` are TeX
+    /// ([`crate::text::rich_segments_from_label`]).
     pub fn overlay_y(title: &str, color: Color) -> AxisOptions {
         let mut axis = crate::defaults::axis_options_y();
-        axis.title_option.text.segments = crate::text::rich_segments_from_text(title);
+        axis.title_option.text.segments = crate::text::rich_segments_from_label(title);
         axis.title_option.text.color = color;
         axis.title_option.visible = true;
         axis.label_style.color = color;
         axis
+    }
+
+    /// The axis printing its values as `scale * value + offset` (#273):
+    /// raw counts as volts (`unit(5.0 / 32768.0, 0.0)`), kelvin as degrees
+    /// Celsius (`unit(1.0, -273.15)`). The data, `min` and `max` stay in
+    /// data units ([`AxisOptions::unit`]).
+    ///
+    /// `major_spacing` is read in shown units, so on a linear or
+    /// logarithmic axis that takes the unit it is chosen again for the
+    /// shown range, as `Chart::set_x_range` chooses it; set it after this
+    /// call to keep another one. A unit the axis refuses
+    /// ([`AxisOptions::validate_unit`]) is stored as given, and the chart
+    /// that holds it is refused.
+    pub fn unit(mut self, scale: f64, offset: f64) -> AxisOptions {
+        self.unit = Some(AxisUnit::new(scale, offset));
+        if self.effective_unit().is_some()
+            && matches!(self.scale, AxisScale::Linear | AxisScale::Logarithmic)
+        {
+            let (min, max) = self.shown_range();
+            self.major_spacing = crate::tick::axis_major_spacing(&self.scale, min, max);
+        }
+        self
     }
 }
 

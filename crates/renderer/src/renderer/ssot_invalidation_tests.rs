@@ -176,12 +176,33 @@ fn edits() -> Vec<Edit> {
             edit!($axis.major_tick_length, 8.0, Packed);
             // Only the axis line moves; the data area does not.
             edit!($axis.cross_at, Some(0.5), Prefix);
+            // The unit (#273) changes what the axis prints and where its
+            // ticks fall, not the data: the axis raster is redone.
+            edit!(
+                $axis.unit,
+                Some(crate::config::AxisUnit::new(2.0, 1.0)),
+                Prefix
+            );
             // A linear axis ignores the log tick policy: the axis raster is
             // redone (its config changed) and draws the same pixels. The
             // log axes of `log_tick_edits` draw new ones.
             cases.push(Edit {
                 name: concat!(stringify!($axis), ".log_ticks"),
                 apply: |c| c.$axis.log_ticks = LogTickPolicy::Adaptive,
+                work: Work::Prefix,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::Unchanged,
+                streams: true,
+            });
+            // The tick label clearance (#272) is a label style edit: the
+            // axis raster is redone. No label of the baseline overlaps a
+            // label across or a break mark, so `Keep` draws the same
+            // pixels; `label_clearance_edits` drops one.
+            cases.push(Edit {
+                name: concat!(stringify!($axis), ".label_style.clearance"),
+                apply: |c| c.$axis.label_style.clearance = crate::config::LabelClearanceMode::Keep,
                 work: Work::Prefix,
                 differs: true,
                 raster: true,
@@ -731,6 +752,13 @@ fn colorbar_edits() -> Vec<Edit> {
     bar!(axis.title_option.offset_y, 4.0, Prefix, Any);
     // The baseline bar is linear, which ignores the log tick policy.
     bar!(axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
+    // The colour ramp stays on the data; the labels print the unit (#273).
+    bar!(
+        axis.unit,
+        Some(crate::config::AxisUnit::new(2.0, 1.0)),
+        Prefix,
+        Changed
+    );
     cases
 }
 
@@ -871,6 +899,101 @@ fn break_edits() -> Vec<Edit> {
         Work::Prefix,
         Pixels::Changed,
     );
+    cases
+}
+
+/// The baseline with a corner where the labels meet (#272): `0.00` on
+/// both axes at the bottom-left corner, in fonts large enough that the
+/// lowest y label overlaps the first x label, which `Auto` then drops.
+fn baseline_with_crowded_corner() -> Config {
+    let mut c = baseline();
+    for (a, font) in [(&mut c.bottom_x, 24.0), (&mut c.left_y, 40.0)] {
+        a.min = 0.0;
+        a.label_style.font_size = font;
+        a.label_style.format =
+            crate::format::LabelFormat::Plain(crate::format::PlainNumberFormat {
+                decimals: Some(2),
+                trim_zeros: false,
+            });
+    }
+    // The corner drops a label as drawn, and `Keep` draws it.
+    let left = |c: &Config| {
+        let mut n = 0;
+        crate::select::emit_element(
+            c,
+            &crate::layout::Element::AxisLabel(Side::Left),
+            &crate::CpuTextMeasure::for_style(&c.draw_style),
+            &mut crate::sink::Parts(&mut |_| n += 1),
+        );
+        n
+    };
+    let mut keep = c.clone();
+    keep.left_y.label_style.clearance = crate::config::LabelClearanceMode::Keep;
+    assert_eq!(left(&c) + 1, left(&keep), "the corner y label yields");
+    c
+}
+
+/// Tick label clearance edits (#272) on a corner where the labels overlap:
+/// a `Keep` y axis draws the corner label `Auto` dropped; the x axis does
+/// not yield there, so its `Keep` draws the same pixels. Either way the
+/// axis raster is redone and the data is untouched.
+fn label_clearance_edits() -> Vec<Edit> {
+    use crate::config::LabelClearanceMode::Keep;
+    let mut cases = Vec::new();
+    for (name, apply, pixels) in [
+        (
+            "left_y.label_style.clearance (crowded corner)",
+            (|c: &mut Config| c.left_y.label_style.clearance = Keep) as fn(&mut Config),
+            Pixels::Changed,
+        ),
+        (
+            "bottom_x.label_style.clearance (crowded corner)",
+            |c| c.bottom_x.label_style.clearance = Keep,
+            Pixels::Unchanged,
+        ),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Prefix,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels,
+            streams: true,
+        });
+    }
+    cases
+}
+
+/// A unit on a logarithmic axis (#273): its decades are re-planned on the
+/// shown value, an axis chrome edit like the tick policy.
+fn log_unit_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    for (name, apply) in [
+        (
+            "top_x.unit (log axis)",
+            (|c: &mut Config| c.top_x.unit = Some(crate::config::AxisUnit::new(1e3, 0.0)))
+                as fn(&mut Config),
+        ),
+        ("right_y.unit (log axis)", |c| {
+            c.right_y.unit = Some(crate::config::AxisUnit::new(1e3, 0.0))
+        }),
+        ("colorbar.axis.unit (log axis)", |c| {
+            c.colorbar.as_mut().unwrap().axis.unit = Some(crate::config::AxisUnit::new(1e3, 0.0))
+        }),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Prefix,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            streams: true,
+        });
+    }
     cases
 }
 
@@ -1135,6 +1258,12 @@ fn overlay_edits() -> Vec<Edit> {
     overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
     // The baseline overlay axis is linear, which ignores the policy.
     overlay!(y_axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
+    overlay!(
+        y_axis.unit,
+        Some(crate::config::AxisUnit::new(2.0, 1.0)),
+        Prefix,
+        Changed
+    );
     overlay!(y_axis.breaks, Some(cut(0.6, 1.2)), Packed, Changed);
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
@@ -1645,6 +1774,8 @@ fn matrix(resident: bool, cache: bool) {
         (baseline_with_annotations(), annotation_edits()),
         (baseline_with_categories(), category_edits()),
         (baseline_with_log_axes(), log_tick_edits()),
+        (baseline_with_log_axes(), log_unit_edits()),
+        (baseline_with_crowded_corner(), label_clearance_edits()),
         (baseline_with_breaks(), break_edits()),
         (in_unit_interval(baseline()), probability_edits()),
         (
@@ -1857,6 +1988,7 @@ fn config_fields_are_classified() {
         cross_at: _,   // axis!(...).cross_at: Prefix
         log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
         breaks: _, // breaks (None -> Some) + break_edits(): ranges/style/gap Packed, mark/frames Prefix
+        unit: _,   // axis!(...).unit + bar!/overlay! + log_unit_edits(): Prefix
     } = top_x;
     let LabelStyle {
         visible: _,
@@ -1868,6 +2000,7 @@ fn config_fields_are_classified() {
         label_offset_y: _,
         format: _,
         significant_digits: _,
+        clearance: _, // axis!(...).label_style.clearance + label_clearance_edits(): Prefix
     } = label_style;
     let AxisTitleOptions {
         text: _,

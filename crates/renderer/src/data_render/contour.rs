@@ -308,8 +308,14 @@ pub(crate) fn contour_label_texts(
         .filter(|spacing| spacing.is_finite() && *spacing > 0.0)
         .min_by(f64::total_cmp);
     let colorbar_axis = config.colorbar.as_ref().map(|bar| &bar.axis);
+    // The levels are data values: a colourbar unit's shown spacing (#273)
+    // is read back in data units.
     let spacing = level_spacing
-        .or_else(|| colorbar_axis.map(effective_major_spacing))
+        .or_else(|| {
+            colorbar_axis.map(|axis| {
+                effective_major_spacing(axis) / axis.effective_unit().map_or(1.0, |u| u.scale.abs())
+            })
+        })
         .unwrap_or_else(|| {
             finite_levels
                 .first()

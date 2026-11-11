@@ -38,19 +38,55 @@ pub(crate) const BAR_LABEL_GAP: f32 = 6.0;
 pub(crate) const BOX_LABEL_GAP: f32 = 10.0;
 /// Logical pixels between a radar vertex and its label along the spoke.
 pub(crate) const RADAR_LABEL_GAP: f32 = 9.0;
+/// Logical pixels between two lanes of radar value labels beside a spoke,
+/// and between a label and the ring labels' band (#272).
+pub(crate) const RADAR_LANE_GAP: f32 = 4.0;
+
+/// Where a radar series' value labels go among the panel's (#272): its
+/// rank among the panel's radar series that draw value labels and their
+/// count, the widest label of any of them, and the ring labels' band. A
+/// display parameter chosen from configuration (the SSOT strings' baked
+/// widths and the ring labels' drawn boxes), never from the data.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RadarLabelLanes {
+    pub rank: u32,
+    pub count: u32,
+    /// The widest content of any of their labels, in render pixels.
+    pub widest: f32,
+    /// The radius axis' ray, a unit vector y down.
+    pub ray: [f32; 2],
+    /// The box of the drawn ring (radius) labels in the ray's frame from the
+    /// polar centre, as fractions of the outer radius: `[along min, along
+    /// max, across min, across max]`, across toward the side the labels sit
+    /// on (`PolarOptions::ray_side`); empty (min above max) without ring
+    /// labels.
+    pub ring: [f32; 4],
+}
+
+impl RadarLabelLanes {
+    /// No lanes: one labelled series, no ring labels.
+    pub const NONE: Self = Self {
+        rank: 0,
+        count: 1,
+        widest: 0.0,
+        ray: [1.0, 0.0],
+        ring: [1.0, -1.0, 1.0, -1.0],
+    };
+}
 
 /// Everything the bar module's value label entries read besides the
 /// transform, the series' bar style map, its category bar group 3 and its
 /// label cells (one per label: content width, placement and drag offset,
 /// `value_label_cells`): the atlas geometry, the kind and the label
-/// count.
+/// count, and a radar series' lanes and ring label band.
 ///
-/// GPU twin: `value_label.wgsl::ValueLabelParams`, 96 B.
+/// GPU twin: `value_label.wgsl::ValueLabelParams`, 128 B.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ValueLabelParamsGpu {
     pub atlas: crate::gpu_contour::LabelParamsGpu,
-    /// `[kind, labels, 0, 0]`.
+    /// `[kind, labels, radar rank, radar count]` ([`RadarLabelLanes`]; 0
+    /// and 1 for the other kinds).
     pub shape: [u32; 4],
     /// `[gap px, baseline above the content bottom px, font px, scale]`.
     pub metrics: [f32; 4],
@@ -58,9 +94,14 @@ pub struct ValueLabelParamsGpu {
     pub selection_color: [f32; 4],
     /// `[stroke width px, padding px, 0, 0]`.
     pub selection: [f32; 4],
+    /// A radar series' `[widest label px, lane gap px, ray x, ray y]`
+    /// ([`RadarLabelLanes`]).
+    pub radar: [f32; 4],
+    /// A radar series' ring label band ([`RadarLabelLanes::ring`]).
+    pub ring: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 96);
+const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 128);
 
 /// One series' baked value label atlas on the GPU: the texture its labels
 /// sample, its cell geometry, and each string's measured cell width.
@@ -236,13 +277,16 @@ pub(crate) fn value_label_count(
 
 /// The value label uniform of one series: the atlas geometry, its kind and
 /// its label count ([`value_label_count`]) at `scale` render pixels per
-/// logical pixel. The labels' cells are [`value_label_cells`].
+/// logical pixel, and for a radar series its lanes among the panel's
+/// (`lanes`, [`RadarLabelLanes::NONE`] for the other kinds). The labels'
+/// cells are [`value_label_cells`].
 pub(crate) fn value_label_params(
     kind: u32,
     count: usize,
     atlas: &ValueLabelAtlas,
     font_px: f32,
     scale: f32,
+    lanes: &RadarLabelLanes,
 ) -> ValueLabelParamsGpu {
     let gap = match kind {
         VALUE_LABEL_KIND_BARS | VALUE_LABEL_KIND_RANGE => BAR_LABEL_GAP,
@@ -252,10 +296,31 @@ pub(crate) fn value_label_params(
     let (color, stroke, padding) = selection_policy(scale);
     ValueLabelParamsGpu {
         atlas: atlas.geometry,
-        shape: [kind, u32::try_from(count).unwrap_or(u32::MAX), 0, 0],
+        shape: [
+            kind,
+            u32::try_from(count).unwrap_or(u32::MAX),
+            lanes.rank,
+            lanes.count.max(1),
+        ],
         metrics: [gap * scale, atlas.baseline_px, font_px, scale],
         selection_color: color,
         selection: [stroke, padding, 0.0, 0.0],
+        radar: [
+            lanes.widest,
+            RADAR_LANE_GAP * scale,
+            lanes.ray[0],
+            lanes.ray[1],
+        ],
+        ring: lanes.ring,
+    }
+}
+
+impl ValueLabelAtlas {
+    /// The widest content of the atlas' strings, in render pixels.
+    pub(crate) fn widest(&self) -> f32 {
+        self.cells
+            .iter()
+            .fold(0.0, |widest, cell| widest.max(cell.width))
     }
 }
 

@@ -16,9 +16,10 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     let x: Vec<f64> = (0..18).map(|i| i as f64 * 0.5).collect();
     r.add_column("response-x", &x)?;
     let mut specs = Vec::new();
+    // Each curve named with its time constant τ = 1/speed, in TeX.
     for (name, label, color, speed) in [
-        ("a", "Fast response", blue, 0.65),
-        ("b", "Slow response", orange, 0.32),
+        ("a", r"Fast response, $\tau = 1.5$ s", blue, 0.65),
+        ("b", r"Slow response, $\tau = 3.1$ s", orange, 0.32),
     ] {
         let y: Vec<f64> = x
             .iter()
@@ -37,10 +38,11 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                 .error_bars(1.5, 7.0),
         );
     }
+    // The error bars are one standard deviation.
     let mut c = chart(
         "Response curves with uncertainty",
         "Time (s)",
-        "Response (%)",
+        r"Response $\pm 1\sigma$ (%)",
         (960, 600),
     )
     .with_legend_from(&specs);

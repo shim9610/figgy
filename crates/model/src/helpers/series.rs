@@ -483,10 +483,17 @@ impl SeriesConfig {
 
     // Modifiers.
 
-    /// The legend text, in the legend's own text look.
+    /// The legend text, in the legend's own text look. `$…$`, `\(…\)` and
+    /// `$$…$$` spans are TeX and `\$` is a dollar sign
+    /// ([`crate::text::rich_segments_from_label`]).
     pub fn label(mut self, text: &str) -> Self {
         let look = crate::defaults::legend().content;
-        self.label = Some(RichText::plain(text, look.color, look.font_size, look.font));
+        self.label = Some(RichText::from_label(
+            text,
+            look.color,
+            look.font_size,
+            look.font,
+        ));
         self
     }
 

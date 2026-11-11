@@ -1105,11 +1105,19 @@ fn block_width(line_metrics: &[TextMetrics]) -> f32 {
     line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
 }
 
+/// The least ink gap between two lines, in font sizes (#272): what a line
+/// taller than the nominal line height keeps from its neighbour, as TeX's
+/// `\lineskip` does, so a display formula's limits never touch the next
+/// line. Ordinary lines already keep about this much at the nominal height
+/// (a cap over a descender), so it moves only a taller line.
+const LINE_SKIP_EM: f32 = 0.2;
+
 /// Baseline-to-baseline advance between two lines. Ink envelopes alone make
 /// descender-less lines collapse together, so clamp to a nominal line height
-/// derived from the font size. Shared by draw + measure.
+/// derived from the font size; a line whose ink reaches past it keeps
+/// [`LINE_SKIP_EM`] clear of its neighbour. Shared by draw + measure.
 fn line_advance(prev: &TextMetrics, this: &TextMetrics, rt: &RichText) -> f32 {
-    (prev.descent + this.ascent).max(rt.font_size * 1.15)
+    (prev.descent + this.ascent + rt.font_size * LINE_SKIP_EM).max(rt.font_size * 1.15)
 }
 
 /// Where the glyphs and rules of a laid-out cell go. The canvas sink paints

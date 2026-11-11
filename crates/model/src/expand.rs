@@ -681,6 +681,8 @@ impl Config {
                 // The hidden left axis maps the overlay's range, cut by the
                 // overlay's own breaks (`hidden_axis` below).
                 breaks: _,
+                // The hidden left axis prints no labels.
+                unit: _,
             } = left_y;
             let mut left = hidden_axis(y_axis, crate::defaults::axis_options_y());
             left.out_margin = *out_margin;
@@ -935,6 +937,8 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         log_ticks: _,
         // A colourbar axis has no breaks (validation refuses them).
         breaks: _,
+        // The hidden colourbar prints no labels.
+        unit: _,
     } = axis;
     let mut hidden = crate::defaults::color_bar_options();
     hidden.visible = false;
@@ -981,6 +985,9 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         // The cut ranges are part of the mapping, so a linked axis maps
         // exactly like its target.
         breaks,
+        // The spacing is read in shown units (#273), so the unit travels
+        // with it and the linked axes print the same ticks.
+        unit,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -993,6 +1000,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.category_groups.clone_from(category_groups);
     to.category_window = *category_window;
     to.breaks.clone_from(breaks);
+    to.unit = *unit;
 }
 
 /// Whether an axis keeps its range, scale and direction: what decides which
@@ -1039,6 +1047,8 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             log_ticks: _,
             // The cut ranges are part of the mapping.
             breaks,
+            // Printing only; it travels with the spacing (see above).
+            unit: _,
         } = axis;
         (
             scale.clone(),
@@ -1090,6 +1100,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         log_ticks: _,
         // The cut ranges are part of the transform the hidden axis carries.
         breaks,
+        // A hidden axis prints no labels.
+        unit: _,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -1115,6 +1127,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         cross_at: _,
         log_ticks,
         breaks: _,
+        unit: _,
     } = template;
     let (min, max) = axis.data_range();
     AxisOptions {
@@ -1141,6 +1154,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         cross_at: None,
         log_ticks,
         breaks: breaks.clone(),
+        unit: None,
     }
     .with_hidden_text()
 }
@@ -1867,6 +1881,37 @@ mod tests {
         stale.subplots[1].config.bottom_x.max = 99.0;
         stale.sync_subplot_links(None);
         assert_eq!(stale.subplots[1].config.bottom_x.max, 24.0);
+    }
+
+    // An axis unit (#273) travels with the tick spacing it is read in: a
+    // link group prints its root's unit, an overlay panel prints its
+    // overlay axis' own, and the hidden axes of a panel print none.
+    #[test]
+    fn the_axis_unit_travels_with_the_tick_spacing() {
+        use crate::config::AxisUnit;
+        let volts = Some(AxisUnit::new(5.0 / 32768.0, 0.0));
+        let mut cfg = subplot_document();
+        cfg.bottom_x.unit = volts;
+        cfg.sync_subplot_links(None);
+        assert_eq!(cfg.subplots[1].config.bottom_x.unit, volts);
+        assert_eq!(cfg.subplot_config(1).unwrap().bottom_x.unit, volts);
+        assert_eq!(cfg.subplots[0].config.bottom_x.unit, None);
+        // A unit edit of a member alone is not a range edit: the member
+        // follows its root again.
+        let mut alone = cfg.clone();
+        alone.subplots[1].config.bottom_x.unit = None;
+        alone.sync_subplot_links(Some(&cfg));
+        assert_eq!(alone.subplots[1].config.bottom_x.unit, volts);
+
+        let mut layered = two_layer_config();
+        layered.overlays[0].y_axis.unit = volts;
+        layered.bottom_x.unit = volts;
+        let expansion = layered.expand().unwrap();
+        let panel = &expansion.panels[1].config;
+        assert_eq!(panel.right_y.unit, volts);
+        for hidden in [&panel.left_y, &panel.bottom_x, &panel.top_x] {
+            assert_eq!(hidden.unit, None);
+        }
     }
 
     // The log tick policy is tick spacing: a link group shares it like

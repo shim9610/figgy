@@ -19,14 +19,11 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    AxisTitleElement, Color, ColorMap, LegendElement, Material, Renderer, SelectionGeometry,
-    SeriesConfig,
+    Color, ColorMap, Material, Renderer, SeriesConfig,
     categorical::*,
-    config::{DrawStyle, LegendCorner, SketchOptions},
+    config::{DrawStyle, SketchOptions},
     data_config::{MatrixRef, ScatterShape, Shading},
-    layout::Side,
     radial::*,
-    text::RichSegment,
 };
 use std::path::Path;
 use styled::{SIZE, cartesian, export, rgb, save};
@@ -185,32 +182,24 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
     let value_axis = &mut cartesian.config_mut().bottom_x;
     value_axis.major_spacing = 20.;
     value_axis.label_style.format = format;
-    // The legend in one row: three spaces between entries instead of a line
-    // break.
+    // The legend as the design draws it: no box, a filled square for each
+    // part of the stacks, the entries close together in one row centred
+    // under the x title. The squares are the only fielded segments.
     let legend = &mut cartesian.config_mut().legend;
-    legend.corner = LegendCorner::BottomLeft;
-    legend.content.segments = std::mem::take(&mut legend.content.segments)
-        .into_iter()
-        .flat_map(|s| match s.text {
-            '\n' => std::iter::repeat_n(RichSegment::plain(' '), 3),
-            _ => std::iter::repeat_n(s, 1),
-        })
-        .collect();
-    // Laid out with the legend in the plot's corner, then moved under the x
-    // title, centred on the plot. The legend is the host's placement: the
-    // layout grows the bottom band to hold it.
-    cartesian.fit_layout();
-    let measure = renderer::CpuTextMeasure::for_style(&cartesian.config().draw_style);
-    let cfg = cartesian.config();
-    let title = AxisTitleElement { side: Side::Bottom }.bounds(cfg, &measure);
-    let boxed = LegendElement.bounds(cfg, &measure);
-    if let (Ok(plot), Some(title), Some(boxed)) = (cfg.data_area(), title, boxed) {
-        let offset_x = plot.x as f32 + (plot.width as f32 - boxed.width) * 0.5 - boxed.x;
-        let offset_y = title.y + title.height + 10. - boxed.y;
-        let legend = &mut cartesian.config_mut().legend;
-        legend.offset_x = offset_x.round();
-        legend.offset_y = offset_y.round();
+    legend.bg_color = Color::new(0., 0., 0., 0.);
+    legend.border_color = Color::new(0., 0., 0., 0.);
+    legend.padding = 4.;
+    let size = legend.content.font_size;
+    for mark in legend
+        .content
+        .segments
+        .iter_mut()
+        .filter(|s| s.field_em.is_some())
+    {
+        mark.field_em = Some(0.7);
+        mark.font_size = Some(size * 1.3);
     }
+    styled::legend_row_under_x_title(&mut cartesian, 0.4);
     let image = export(r, &mut cartesian, &specs, bg)?;
     save(&image, bg, &out.join("concept-revenue.png"))
 }

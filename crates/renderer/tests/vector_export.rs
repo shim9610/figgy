@@ -1235,3 +1235,72 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
         }
     }
 }
+
+// An axis with a unit (#273) exports what it draws: the SVG, the PDF and
+// the PNG at 1x and 2x of a chart whose axes print 16-bit ADC counts as
+// volts are those of the same chart with its range written in volts, and
+// differ from the counts printed as they are.
+#[test]
+fn an_axis_unit_exports_its_converted_labels() {
+    let gpu = gpu();
+    let mut r = renderer(&gpu);
+    let chart = |counts: bool, unit: bool| {
+        let mut config = renderer::default::default_config();
+        for axis in [&mut config.bottom_x, &mut config.left_y] {
+            axis.min = 0.0;
+            axis.max = if counts { 32768.0 } else { 5.0 };
+            axis.major_spacing = 1.0;
+            axis.minor_count = 4;
+            axis.unit = unit.then(|| renderer::config::AxisUnit::new(5.0 / 32768.0, 0.0));
+            axis.label_style.format = renderer::format::LabelFormat::Decimal;
+            axis.label_style.significant_digits = 1;
+        }
+        Chart::new(config)
+    };
+    let converted = chart(true, true);
+    let written_in_volts = chart(false, false);
+    let raw_counts = chart(true, false);
+    for scale in SCALES {
+        let options = renderer::ExportOptions::document(scale);
+        let svg = |r: &mut Renderer, chart: &Chart| {
+            r.export_svg(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+        };
+        let pdf = |r: &mut Renderer, chart: &Chart| {
+            r.export_pdf(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+        };
+        let png = |r: &mut Renderer, chart: &Chart| {
+            r.export_rgba(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+                .rgba
+        };
+        let text = svg(&mut r, &converted);
+        assert_eq!(text, svg(&mut r, &written_in_volts), "SVG at {scale}x");
+        assert_ne!(text, svg(&mut r, &raw_counts), "SVG at {scale}x");
+        assert_eq!(
+            pdf(&mut r, &converted),
+            pdf(&mut r, &written_in_volts),
+            "PDF at {scale}x"
+        );
+        let image = png(&mut r, &converted);
+        assert!(
+            image == png(&mut r, &written_in_volts),
+            "PNG at {scale}x differs"
+        );
+        assert!(image != png(&mut r, &raw_counts), "PNG at {scale}x");
+        // The parts the SVG was handed are the ones it reads back as.
+        let mut written = Vec::new();
+        written_document_parts(&converted, &[], scale, &mut |part| written.push(part)).unwrap();
+        assert_parts_match(
+            &svg_parts::read(&text).parts,
+            &written,
+            TOLERANCE,
+            0.0,
+            &format!("converted axes at {scale}x"),
+        );
+    }
+}

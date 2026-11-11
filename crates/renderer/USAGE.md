@@ -539,10 +539,29 @@ constructors too, and `Chart` takes them in a chain:
   `with_box` and `with_align`.
 - `AxisOptions::overlay_y(title, color)`: the right-hand axis of an overlay
   layer, titled and coloured like its series.
+- `AxisOptions::unit(scale, offset)`: the axis prints `scale * value +
+  offset` ([#273](https://github.com/shim9610/figgy/issues/273)); see
+  [Axis units](#axis-units).
 - `Subplot::new(config, &series_ids)`, then `with_link_x(cell)` and
   `with_link_y(cell)`.
 - `Chart::with_annotation`, `with_label_format` (both main axes),
-  `without_grid`, `with_colorbar_title`, `with_polar` and `with_subplot`.
+  `with_x_unit` and `with_y_unit` (the bottom and left axes' units, see
+  [Axis units](#axis-units)), `without_grid`, `with_colorbar_title`,
+  `with_polar` and `with_subplot`.
+- `Chart::with_label_clearance(mode)` sets `label_style.clearance` on every
+  axis ([#272](https://github.com/shim9610/figgy/issues/272)).
+  `LabelClearanceMode::Auto` (the default) drops a tick label where its box
+  comes within a small visual gap of the label of the axis across at a
+  corner or a slash of the axis' break mark, closer than the gap both
+  across and along the screen. The gap is 2 px in total between two labels
+  in the default 18 px tick label font; each box's half is read as that
+  share of its own font, so it is `(a + b) / 18` px between an `a` px and
+  a `b` px label and scales with the display or export. Boxes 1 px apart at
+  18 px count as overlapping; labels the gap apart or more stay, and an
+  axis keeps at least two. At a corner one axis yields (a y axis to the x axis, an x axis
+  only to a categorical y axis, a 3D chart's z axis to the floor's labels)
+  and its setting alone decides. `LabelClearanceMode::Keep` drops none. Set
+  one axis' `label_style.clearance` for that axis alone.
 - `Chart::placed(x, y, width, height)` puts the chart area at an offset and
   `with_area(..)` resizes a chart built from a document; `set_area(..)` moves
   an existing chart's area in place, as a window resize does;
@@ -559,6 +578,93 @@ let chart = Chart::sized(960, 600)
     .with_annotation(Annotation::reference_line(AnnotationAxis::Y, 0.0, Color::BLACK, 1.0))
     .with_annotation(Annotation::span(AnnotationAxis::X, 2.0, 3.5, red.with_alpha(0.15)))
     .without_grid();
+```
+
+### Axis units
+
+An axis can print its values in another unit while the data stays as the
+host registered it ([#273](https://github.com/shim9610/figgy/issues/273)):
+`AxisOptions::unit: Option<AxisUnit>` makes its tick labels read
+`scale * value + offset`. Raw 16-bit ADC counts print as volts, kelvin as
+degrees Celsius, seconds as milliseconds.
+
+- The ticks are planned in the shown units, so the labels are round numbers
+  after the conversion (`0, 1, 2 V`, not converted counts), and each tick
+  sits at its data position `(shown - offset) / scale`. `major_spacing` is
+  read in shown units.
+- `min`, `max`, the data, `breaks`, `cross_at`, annotations and picks stay
+  in data units.
+- The label format applies to the shown value. A logarithmic axis takes
+  only `offset = 0` and `scale > 0` and walks decades of the shown value.
+  A probability axis, an axis with `Timestamp` labels and a categorical
+  axis refuse a unit.
+- `AxisOptions::unit(scale, offset)` (`helpers`) sets the unit and chooses
+  the spacing for the shown range; for a main axis, set the field and
+  then the range, as `set_y_range` and the `auto_fit_*` family choose the
+  spacing of the shown range.
+- `Chart::with_x_unit(scale, offset)` and `Chart::with_y_unit(scale,
+  offset)` (`helpers`) do that for `bottom_x` and `left_y`: they set the
+  unit and choose the spacing for the shown range, before or after the
+  range. Like `with_label_format` they write those two axes alone, so
+  `top_x`, `right_y` and an overlay's axis can print a second unit. A unit
+  the axis refuses is stored as given, and `Config::validate_chart` names
+  it; nothing panics.
+
+```rust
+let mut chart = Chart::sized(960, 600);
+chart.set_x_range(250.0, 350.0);
+chart.set_y_range(0.0, 32768.0);
+let chart = chart
+    .with_x_unit(1.0, -273.15)                         // kelvin printed as °C
+    .with_y_unit(5.0 / 32768.0, 0.0);                  // counts printed as V
+```
+
+```rust
+use renderer::{Chart, color::Color, config::{AxisOptions, AxisUnit}};
+
+let mut chart = Chart::sized(960, 600)
+    .with_y_title("Voltage (V)")
+    .with_overlay(
+        AxisOptions::overlay_y("Temperature (°C)", Color::from_rgb8(176, 64, 32))
+            .unit(1.0, -273.15),                       // kelvin printed as °C
+        &["temperature"],
+    );
+chart.config_mut().left_y.unit = Some(AxisUnit::new(5.0 / 32768.0, 0.0)); // counts as V
+chart.set_y_range(0.0, 32768.0);                       // ticks at 0, 1, 2, 3, 4, 5 V
+```
+
+### Math in labels
+
+The convenience functions that take text as a `&str` read it the way
+matplotlib reads a label: `Chart::with_title`, `with_x_title`,
+`with_y_title`, `with_legend_entry`, `with_colorbar_title`,
+`with_legend_swatch`, `SeriesConfig::label`, `Annotation::text`,
+`AxisOptions::overlay_y`, `RadialChart::with_title`, and the browser text
+setters ([WASM.md](WASM.md#math-in-labels)).
+
+- `$…$` and `\(…\)` spans are TeX in text style, `$$…$$` spans in display
+  style. Text outside the spans is plain.
+- `\$` is a dollar sign: `r"Price (\$)"`.
+- Text whose TeX does not parse is shown as written, with each `\$` as
+  `$`; the wrapper never fails.
+
+All of them convert through one function,
+`text::rich_segments_from_label` (`RichText::from_label` for a whole
+`RichText`). The document types stay explicit: `RichText::plain` is plain
+text, and `RichText::from_tex` returns a `TexError` naming the bytes that do
+not parse.
+
+```rust
+use renderer::{Chart, SeriesConfig, color::Color, text::RichText};
+
+let fit = SeriesConfig::line("fit", "t", "fit").label(r"$\hat y \pm 1.96\sigma$");
+let chart = Chart::sized(960, 600)
+    .with_x_title("Time (s)")
+    .with_y_title(r"$\sin(2\pi f t)$")
+    .with_legend_from(&[fit]);
+
+// Low level: the document's own text, explicit and checked.
+let title = RichText::from_tex(r"$E = mc^2$", Color::BLACK, 18.0, "")?;
 ```
 
 ### Cartesian series, maps and layers
@@ -1278,9 +1384,20 @@ let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb
   `with_line_style`, `with_box`, `with_align`을 붙인다.
 - `AxisOptions::overlay_y(title, color)`: 오버레이 레이어의 오른쪽 축. 제목과 색을 그 축이 맡은
   시리즈에 맞춘다.
+- `AxisOptions::unit(scale, offset)`: 축이 `scale * value + offset`을 찍는다
+  ([#273](https://github.com/shim9610/figgy/issues/273)). 아래 [축 단위](#축-단위)를 참고한다.
 - `Subplot::new(config, &series_ids)`. 축을 이으려면 `with_link_x(cell)`, `with_link_y(cell)`를 붙인다.
-- `Chart::with_annotation`, `with_label_format`(두 주 축), `without_grid`, `with_colorbar_title`,
-  `with_polar`, `with_subplot`.
+- `Chart::with_annotation`, `with_label_format`(두 주 축), `with_x_unit`과 `with_y_unit`(아래쪽·왼쪽
+  축의 단위, [축 단위](#축-단위) 참고), `without_grid`, `with_colorbar_title`, `with_polar`,
+  `with_subplot`.
+- `Chart::with_label_clearance(mode)`는 모든 축의 `label_style.clearance`를 정한다
+  ([#272](https://github.com/shim9610/figgy/issues/272)). `LabelClearanceMode::Auto`(기본값)는
+  눈금 라벨 상자가 모서리에서 건너편 축의 라벨이나 그 축의 끊김 표시 사선과 가로·세로 모두 시각적 간격(기본 눈금 라벨 글꼴 18 px인 두 라벨 사이에서 합계 2 px. 각 상자가 자기 글꼴 크기에 비례한 절반씩을 맡으므로 `a` px 라벨과 `b` px 라벨 사이는 `(a + b) / 18` px이고, 화면·내보내기 배율에 맞춰 커진다)보다
+  가까워지면 그 라벨을 뺀다. 그래서 18 px에서 1 px 떨어진 상자는 빼고, 간격 이상 떨어져 따로 보이는
+  라벨은 그대로 두며, 축에는 라벨을 두 개 이상 남긴다. 모서리에서는 한 축만 비켜 주며(y축은
+  x축에, x축은 범주형 y축에만, 3D 차트의 z축은 바닥 축 라벨에) 그 축의 설정만 따른다.
+  `LabelClearanceMode::Keep`은 라벨을 하나도 빼지 않는다. 한 축만 바꾸려면 그 축의
+  `label_style.clearance`를 쓴다.
 - `Chart::placed(x, y, width, height)`는 차트 영역을 원하는 위치에 두고, `with_area(..)`는 문서로
   만든 차트의 크기를 바꾸며, `set_area(..)`는 창 크기가 바뀔 때처럼 이미 있는 차트의 영역을 그 자리에서
   옮긴다. `with_overlay(y_axis, &series_ids)`는 오버레이 레이어를 더하고,
@@ -1295,6 +1412,78 @@ let chart = Chart::sized(960, 600)
     .with_annotation(Annotation::reference_line(AnnotationAxis::Y, 0.0, Color::BLACK, 1.0))
     .with_annotation(Annotation::span(AnnotationAxis::X, 2.0, 3.5, red.with_alpha(0.15)))
     .without_grid();
+```
+
+### 축 단위
+
+데이터는 호스트가 등록한 그대로 두고 축이 값을 다른 단위로 찍게 할 수 있다
+([#273](https://github.com/shim9610/figgy/issues/273)). `AxisOptions::unit: Option<AxisUnit>`를
+정하면 눈금 라벨이 `scale * value + offset`을 찍는다. 16비트 ADC 원시 카운트를 볼트로, 켈빈을 섭씨로,
+초를 밀리초로 읽게 하는 데 쓴다.
+
+- 눈금은 표시 단위로 고르므로 변환한 뒤에도 라벨이 딱 떨어지는 수(`0, 1, 2 V`)이고, 각 눈금은 데이터
+  위치 `(shown - offset) / scale`에 놓인다. `major_spacing`은 표시 단위로 읽는다.
+- `min`, `max`, 데이터, `breaks`, `cross_at`, 주석, 피킹 결과는 데이터 단위 그대로다.
+- 라벨 형식은 표시 값에 적용한다. 로그축은 `offset = 0`, `scale > 0`만 받고 표시 값의 10배 간격에 눈금을
+  놓는다. 확률 축, `Timestamp` 라벨 축, 범주형 축은 단위를 거부한다.
+- `AxisOptions::unit(scale, offset)`(`helpers`)은 단위를 정하고 표시 범위에 맞는 간격을 고른다. 주 축은
+  필드를 정한 뒤 범위를 정한다. `set_y_range`와 `auto_fit_*` 계열이 표시 범위의 간격을 고른다.
+- `Chart::with_x_unit(scale, offset)`과 `Chart::with_y_unit(scale, offset)`(`helpers`)은 `bottom_x`와
+  `left_y`에 같은 일을 한다. 단위를 정하고 표시 범위에 맞는 간격을 고르므로 범위를 먼저 정해도 되고
+  나중에 정해도 된다. `with_label_format`처럼 이 두 축만 바꾸므로 `top_x`, `right_y`, 오버레이 축에는
+  다른 단위를 줄 수 있다. 축이 거부하는 단위는 그대로 저장되고 `Config::validate_chart`가 그 이유를
+  알려 준다. 어느 쪽도 패닉하지 않는다.
+
+```rust
+let mut chart = Chart::sized(960, 600);
+chart.set_x_range(250.0, 350.0);
+chart.set_y_range(0.0, 32768.0);
+let chart = chart
+    .with_x_unit(1.0, -273.15)                         // 켈빈을 섭씨로
+    .with_y_unit(5.0 / 32768.0, 0.0);                  // 카운트를 볼트로
+```
+
+```rust
+use renderer::{Chart, color::Color, config::{AxisOptions, AxisUnit}};
+
+let mut chart = Chart::sized(960, 600)
+    .with_y_title("Voltage (V)")
+    .with_overlay(
+        AxisOptions::overlay_y("Temperature (°C)", Color::from_rgb8(176, 64, 32))
+            .unit(1.0, -273.15),                       // 켈빈을 섭씨로
+        &["temperature"],
+    );
+chart.config_mut().left_y.unit = Some(AxisUnit::new(5.0 / 32768.0, 0.0)); // 카운트를 볼트로
+chart.set_y_range(0.0, 32768.0);                       // 0, 1, 2, 3, 4, 5 V에 눈금
+```
+
+### 라벨 속 수식
+
+텍스트를 `&str`로 받는 편의 함수는 matplotlib이 라벨을 읽듯 그 텍스트를 읽는다. `Chart::with_title`,
+`with_x_title`, `with_y_title`, `with_legend_entry`, `with_colorbar_title`, `with_legend_swatch`,
+`SeriesConfig::label`, `Annotation::text`, `AxisOptions::overlay_y`, `RadialChart::with_title`,
+그리고 브라우저의 텍스트 설정 함수([WASM.md](WASM.md#라벨-속-수식))가 여기에 해당한다.
+
+- `$…$`와 `\(…\)` 구간은 본문 스타일의 TeX, `$$…$$` 구간은 디스플레이 스타일의 TeX다. 구간 밖은
+  일반 텍스트다.
+- `\$`는 달러 기호다. 예: `r"Price (\$)"`.
+- TeX를 해석할 수 없는 텍스트는 쓴 그대로 보이고, `\$`만 `$`로 바뀐다. 편의 함수는 실패하지 않는다.
+
+모두 `text::rich_segments_from_label` 함수 하나로 변환한다(`RichText` 전체가 필요하면
+`RichText::from_label`). 문서 타입은 명시적으로 남는다. `RichText::plain`은 일반 텍스트이고,
+`RichText::from_tex`는 해석하지 못한 바이트 위치를 담은 `TexError`를 돌려준다.
+
+```rust
+use renderer::{Chart, SeriesConfig, color::Color, text::RichText};
+
+let fit = SeriesConfig::line("fit", "t", "fit").label(r"$\hat y \pm 1.96\sigma$");
+let chart = Chart::sized(960, 600)
+    .with_x_title("Time (s)")
+    .with_y_title(r"$\sin(2\pi f t)$")
+    .with_legend_from(&[fit]);
+
+// 저수준: 문서의 텍스트를 명시적으로, 검사하며 만든다.
+let title = RichText::from_tex(r"$E = mc^2$", Color::BLACK, 18.0, "")?;
 ```
 
 ### 직교 시리즈·매핑·레이어

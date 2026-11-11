@@ -302,6 +302,61 @@ pub struct LabelStyle {
     pub label_offset_y: f32,
     pub format: LabelFormat,
     pub significant_digits: u8,
+    /// Whether this axis' tick labels make way where they collide with the
+    /// labels of the axis across them at a corner or with a break mark's
+    /// slash (#272). [`LabelClearanceMode::Auto`] (the default, omitted
+    /// from JSON) drops a label whose box comes within a small visual gap
+    /// of the other box (2 px in total at the default 18 px tick label
+    /// font); [`LabelClearanceMode::Keep`] never drops one. A categorical axis never drops a label at a corner
+    /// in either mode.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "LabelClearanceMode::is_auto")
+    )]
+    pub clearance: LabelClearanceMode,
+}
+
+/// How an axis' tick labels make way where they collide with the labels of
+/// the axis across them or with a break mark ([`LabelStyle::clearance`],
+/// #272).
+///
+/// Where two axes meet, one of them yields: a y axis to the x axis, an x
+/// axis only to a categorical y axis
+/// ([`crate::chrome::yields_corner`]). The yielding axis' setting decides:
+/// `Auto` drops its labels whose box overlaps the other axis' label
+/// nearest the corner, `Keep` drops none.
+///
+/// Two boxes overlap here when they come within a small visual gap of each
+/// other, closer than it both across and along the screen: 2 px in total
+/// between two labels in the default 18 px tick label font, each box's half
+/// read as that share of its own font, so the gap between a label in an
+/// `a` px font and one in a `b` px font is `(a + b) / 18` px and it scales
+/// with the display or export scale. Boxes 1 px apart at 18 px overlap;
+/// boxes the gap apart or more do not, so labels that look separate stay.
+/// The other axis' setting does not matter there. A break mark is the axis' own, so its own setting
+/// decides there too. Which labels go is decided at rest (a drag moves the
+/// kept set as one), the same at every export scale, and never leaves an
+/// axis with fewer than two labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LabelClearanceMode {
+    /// Drop a label whose box comes within the visual gap (2 px in total
+    /// at the default 18 px tick label font) of the corner label of the
+    /// axis it yields to or of a break mark's slash. Labels the gap apart
+    /// or more stay.
+    #[default]
+    Auto,
+    /// Never drop a label for a corner or a break mark.
+    Keep,
+}
+
+impl LabelClearanceMode {
+    /// `true` for the default, `Auto`. Used to keep it out of serialized
+    /// JSON.
+    #[cfg(feature = "serde")]
+    fn is_auto(&self) -> bool {
+        *self == LabelClearanceMode::Auto
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -427,6 +482,62 @@ pub struct AxisOptions {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub breaks: Option<AxisBreaks>,
+
+    /// The unit the axis prints its values in (#273): a tick label reads
+    /// `shown = scale * value + offset`, so raw counts can read as volts or
+    /// kelvin as degrees Celsius without the host converting the data.
+    /// `None` (the default, omitted from JSON) prints the data values.
+    ///
+    /// Only what the axis prints changes. `min`, `max`, the data, `breaks`,
+    /// `cross_at`, annotations and picks stay in data units. The ticks are
+    /// planned in shown units over the shown range, so the labels are round
+    /// numbers after the conversion, and `major_spacing` is read in shown
+    /// units ([`AxisOptions::shown_range`], [`crate::tick::major_ticks`]);
+    /// each tick sits at `value = (shown - offset) / scale`. The range
+    /// helpers (`Chart::set_x_range`, the `auto_fit_*` family, a view state)
+    /// choose the spacing for the shown range. A linked subplot axis takes
+    /// its target's unit with its spacing.
+    ///
+    /// `scale` is finite and non-zero (a negative one prints values that
+    /// decrease along the axis) and `offset` finite. A logarithmic axis
+    /// takes `offset == 0` and `scale > 0`, and its ticks are decades of the
+    /// shown value. A probability axis, a categorical axis and an axis
+    /// with `LabelFormat::Timestamp` labels refuse a unit
+    /// ([`AxisOptions::validate_unit`]).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub unit: Option<AxisUnit>,
+}
+
+/// The affine unit an axis prints its values in ([`AxisOptions::unit`],
+/// #273): `shown = scale * value + offset`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AxisUnit {
+    /// Shown units per data unit: finite and non-zero, positive on a
+    /// logarithmic axis.
+    pub scale: f64,
+    /// The shown value of data value 0: finite, 0 on a logarithmic axis.
+    pub offset: f64,
+}
+
+impl AxisUnit {
+    /// The unit that prints `scale * value + offset`.
+    pub const fn new(scale: f64, offset: f64) -> Self {
+        Self { scale, offset }
+    }
+
+    /// The value printed for data value `value`: `scale * value + offset`.
+    pub fn shown(&self, value: f64) -> f64 {
+        self.scale * value + self.offset
+    }
+
+    /// The data value printed as `shown`: `(shown - offset) / scale`.
+    pub fn value(&self, shown: f64) -> f64 {
+        (shown - self.offset) / self.scale
+    }
 }
 
 /// One category of a categorical axis ([`AxisOptions::categories`]): a stable
@@ -571,6 +682,99 @@ impl AxisOptions {
             },
             None => (self.min, self.max),
         }
+    }
+
+    /// Why the axis does not print in its [`Self::unit`], or `None` when it
+    /// does or has none (#273). The one decision behind both
+    /// [`Self::validate_unit`] and [`Self::effective_unit`], so the tick
+    /// walk never uses a unit validation refuses.
+    pub fn unit_rejection(&self) -> Option<crate::RuleKind> {
+        let unit = self.unit?;
+        if self.categories.is_some() {
+            return Some(crate::RuleKind::AxisUnitCategorical);
+        }
+        if matches!(self.scale, AxisScale::Probability(_)) {
+            return Some(crate::RuleKind::AxisUnitProbability);
+        }
+        if matches!(self.label_style.format, LabelFormat::Timestamp(_)) {
+            return Some(crate::RuleKind::AxisUnitTimestamp);
+        }
+        if !unit.scale.is_finite() || unit.scale == 0.0 {
+            return Some(crate::RuleKind::AxisUnitScale);
+        }
+        if !unit.offset.is_finite() {
+            return Some(crate::RuleKind::AxisUnitOffset);
+        }
+        if matches!(self.scale, AxisScale::Logarithmic) && (unit.offset != 0.0 || unit.scale < 0.0)
+        {
+            return Some(crate::RuleKind::AxisUnitLog);
+        }
+        None
+    }
+
+    /// The rules [`Self::unit`] is held to (#273); an axis without a unit
+    /// always passes. A finite, non-zero scale and a finite offset; on a
+    /// logarithmic axis offset 0 and a positive scale; and no unit on a
+    /// categorical axis, a probability axis or an axis with timestamp
+    /// labels.
+    pub fn validate_unit(&self) -> Result<(), crate::RuleKind> {
+        self.unit_rejection().map_or(Ok(()), Err)
+    }
+
+    /// The unit the axis prints in: [`Self::unit`] when it passes
+    /// [`Self::validate_unit`], otherwise `None` (the data values are
+    /// printed).
+    pub fn effective_unit(&self) -> Option<AxisUnit> {
+        self.unit.filter(|_| self.unit_rejection().is_none())
+    }
+
+    /// The value the axis prints for data value `value`
+    /// ([`Self::effective_unit`]); `value` itself without a unit.
+    pub fn shown_value(&self, value: f64) -> f64 {
+        match self.effective_unit() {
+            Some(unit) => unit.shown(value),
+            None => value,
+        }
+    }
+
+    /// The data value the axis prints as `shown`; `shown` itself without a
+    /// unit.
+    pub fn data_value(&self, shown: f64) -> f64 {
+        match self.effective_unit() {
+            Some(unit) => unit.value(shown),
+            None => shown,
+        }
+    }
+
+    /// The shown values of the data interval `a..b`, low then high: the
+    /// interval the tick plan walks (#273). `(a, b)` as given without a
+    /// unit.
+    pub fn shown_interval(&self, a: f64, b: f64) -> (f64, f64) {
+        match self.effective_unit() {
+            Some(unit) => {
+                let (p, q) = (unit.shown(a), unit.shown(b));
+                if p <= q { (p, q) } else { (q, p) }
+            }
+            None => (a, b),
+        }
+    }
+
+    /// The data values of the shown interval `a..b`, low then high: the
+    /// inverse of [`Self::shown_interval`].
+    pub fn data_interval(&self, a: f64, b: f64) -> (f64, f64) {
+        match self.effective_unit() {
+            Some(unit) => {
+                let (p, q) = (unit.value(a), unit.value(b));
+                if p <= q { (p, q) } else { (q, p) }
+            }
+            None => (a, b),
+        }
+    }
+
+    /// The axis range `min..max` in shown units, low then high
+    /// ([`Self::shown_interval`]): `(min, max)` without a unit.
+    pub fn shown_range(&self) -> (f64, f64) {
+        self.shown_interval(self.min, self.max)
     }
 
     /// The rules [`Self::breaks`] is held to (#200); an axis without breaks
@@ -1701,6 +1905,8 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         log_ticks: _,
         // The gap and the mark are in pixels (#249).
         breaks,
+        // Shown units, not pixels.
+        unit: _,
     } = axis;
     if let Some(AxisBreaks {
         ranges: _,
@@ -1733,6 +1939,7 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         label_offset_y,
         format: _,
         significant_digits: _,
+        clearance: _,
     } = label_style;
     *font_size *= s;
     *label_offset_x *= s;
@@ -2985,5 +3192,370 @@ mod axis_break_config_tests {
             panic!("slash marks")
         };
         assert_eq!((*s2, *w2), (size * 2.0, width * 2.0));
+    }
+}
+
+#[cfg(test)]
+mod axis_unit_tests {
+    //! The unit an axis prints in (#273): ticks planned in shown units and
+    //! mapped back to their data positions, the labels that print them, the
+    //! rules and the serialized form.
+    use super::{AxisOptions, AxisScale, AxisUnit, Config};
+    use crate::format::LabelFormat;
+    use crate::layout::Side;
+    use crate::text::{MeasureText, RichText, TextExtents};
+    use crate::tick::{major_ticks, minor_ticks, shown_tick_value};
+
+    struct NoMeasure;
+    impl MeasureText for NoMeasure {
+        fn measure_rich(&self, _: &RichText) -> TextExtents {
+            TextExtents {
+                width: 0.0,
+                ascent: 0.0,
+                descent: 0.0,
+            }
+        }
+    }
+
+    fn linear(min: f64, max: f64, spacing: f64, unit: AxisUnit) -> AxisOptions {
+        let mut axis = crate::defaults::axis_options_y();
+        axis.min = min;
+        axis.max = max;
+        axis.major_spacing = spacing;
+        axis.unit = Some(unit);
+        axis.label_style.format = LabelFormat::Decimal;
+        axis.label_style.significant_digits = 1;
+        axis
+    }
+
+    /// The labels the axis draws, in data order, all of them kept (the
+    /// ticks are placed far apart).
+    fn labels(axis: &AxisOptions) -> Vec<String> {
+        let majors: Vec<f64> = major_ticks(axis).collect();
+        let span = axis.max - axis.min;
+        crate::chrome::visible_numeric_labels(axis, Side::Left, &NoMeasure, &majors, |v| {
+            (0.0, ((v - axis.min) / span * 10_000.0) as f32)
+        })
+        .into_iter()
+        .map(|label| match label.text {
+            crate::chrome::NumericTickText::Plain(text) => text,
+            crate::chrome::NumericTickText::Power(rich) => {
+                rich.segments.iter().map(|segment| segment.text).collect()
+            }
+        })
+        .collect()
+    }
+
+    /// Every major is the shown grid `shown` mapped back exactly, in
+    /// increasing data order, and prints its walked shown value.
+    fn assert_plan(axis: &AxisOptions, shown: &[f64]) {
+        let unit = axis.unit.unwrap();
+        let majors: Vec<f64> = major_ticks(axis).collect();
+        let mut expected: Vec<f64> = shown.iter().map(|&s| unit.value(s)).collect();
+        expected.sort_by(f64::total_cmp);
+        assert_eq!(
+            majors.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "{majors:?} != {expected:?}"
+        );
+        for &value in &majors {
+            let printed = shown_tick_value(axis, value);
+            assert!(
+                shown.iter().any(|s| s.to_bits() == printed.to_bits()),
+                "{value} prints {printed}, not one of {shown:?}"
+            );
+            assert_eq!(unit.value(printed).to_bits(), value.to_bits());
+        }
+    }
+
+    #[test]
+    fn counts_print_as_volts_on_round_steps() {
+        // A 16-bit ADC over 5 V: 32768 counts read 0 to 5 V.
+        let axis = linear(0.0, 32768.0, 0.5, AxisUnit::new(5.0 / 32768.0, 0.0));
+        assert_eq!(axis.shown_range(), (0.0, 5.0));
+        let shown: Vec<f64> = (0..=10).map(|k| f64::from(k) * 0.5).collect();
+        assert_plan(&axis, &shown);
+        assert_eq!(
+            labels(&axis),
+            [
+                "0", "0.5", "1.0", "1.5", "2.0", "2.5", "3.0", "3.5", "4.0", "4.5", "5.0"
+            ]
+        );
+        // The minors subdivide the shown spacing and leave the majors out.
+        let minors: Vec<f64> = minor_ticks(&axis).collect();
+        assert_eq!(minors.len(), 40);
+        for value in minors {
+            let k = (axis.shown_value(value) / 0.1).round();
+            assert_eq!(value, AxisUnit::new(5.0 / 32768.0, 0.0).value(k * 0.1));
+            assert_ne!(k.rem_euclid(5.0), 0.0);
+        }
+        // An unusable spacing falls back to the nice step of the shown range.
+        let mut fallback = axis.clone();
+        fallback.major_spacing = 0.0;
+        assert_eq!(crate::tick::effective_major_spacing(&fallback), 1.0);
+        assert_plan(&fallback, &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn kelvin_prints_as_celsius_and_fahrenheit() {
+        let celsius = linear(250.0, 400.0, 20.0, AxisUnit::new(1.0, -273.15));
+        let shown: Vec<f64> = (-1..=6).map(|k| f64::from(k) * 20.0).collect();
+        assert_plan(&celsius, &shown);
+        assert_eq!(
+            labels(&celsius),
+            ["-20", "0", "20", "40", "60", "80", "100", "120"]
+        );
+        // 1.8 and 459.67 are not exact in binary: the zero tick still
+        // prints `0`, not `-0` or `1e-14`.
+        let fahrenheit = linear(250.0, 400.0, 50.0, AxisUnit::new(1.8, -459.67));
+        let shown: Vec<f64> = (0..=5).map(|k| f64::from(k) * 50.0).collect();
+        assert_plan(&fahrenheit, &shown);
+        assert_eq!(labels(&fahrenheit), ["0", "50", "100", "150", "200", "250"]);
+    }
+
+    #[test]
+    fn a_negative_scale_prints_decreasing_values() {
+        let axis = linear(0.0, 10.0, 5.0, AxisUnit::new(-2.0, 0.0));
+        assert_eq!(axis.shown_range(), (-20.0, 0.0));
+        assert_plan(&axis, &[-20.0, -15.0, -10.0, -5.0, 0.0]);
+        assert_eq!(
+            major_ticks(&axis).collect::<Vec<_>>(),
+            [0.0, 2.5, 5.0, 7.5, 10.0]
+        );
+        assert_eq!(labels(&axis), ["0", "-5", "-10", "-15", "-20"]);
+        let minors: Vec<f64> = minor_ticks(&axis).collect();
+        assert!(minors.windows(2).all(|w| w[0] < w[1]), "{minors:?}");
+        assert_eq!(minors.len(), 16);
+    }
+
+    #[test]
+    fn a_log_axis_walks_decades_of_the_shown_value() {
+        let mut axis = crate::defaults::axis_options_y();
+        axis.scale = AxisScale::Logarithmic;
+        axis.min = 1.0;
+        axis.max = 1e6;
+        axis.major_spacing = 1.0;
+        axis.unit = Some(AxisUnit::new(1e-3, 0.0));
+        let shown: Vec<f64> = (-3..=3).map(|k| 10f64.powf(f64::from(k))).collect();
+        assert_plan(&axis, &shown);
+        // A scale that is not a power of ten: the data positions are not
+        // decades, the printed values are.
+        axis.unit = Some(AxisUnit::new(5.0 / 32768.0, 0.0));
+        let (low, high) = axis.shown_range();
+        let shown: Vec<f64> = (-3..=2).map(|k| 10f64.powf(f64::from(k))).collect();
+        assert!(low < shown[0] && *shown.last().unwrap() < high);
+        assert_plan(&axis, &shown);
+        // The 2..9 minors are multiples of the shown decades too.
+        for value in minor_ticks(&axis) {
+            let m = crate::tick::log_multiple(shown_tick_value(&axis, value));
+            assert!(m.is_some_and(|m| (2..=9).contains(&m)), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_broken_axis_walks_its_pieces_in_shown_units() {
+        for scale in [2.0, -2.0] {
+            for sizing in [super::PieceSizing::ByValue, super::PieceSizing::Equal] {
+                let mut axis = linear(0.0, 100.0, 20.0, AxisUnit::new(scale, 1.0));
+                axis.breaks = Some(super::AxisBreaks {
+                    ranges: vec![super::AxisBreak::new(40.0, 60.0)],
+                    sizing: sizing.clone(),
+                    ..crate::defaults::axis_breaks()
+                });
+                let majors: Vec<f64> = crate::chrome::major_tick_values_for_axis(
+                    &axis,
+                    Side::Left,
+                    &crate::layout::RectF {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 100.0,
+                        height: 400.0,
+                    },
+                    &NoMeasure,
+                )
+                .into_iter()
+                .collect();
+                assert!(majors.len() >= 4, "{majors:?}");
+                assert!(majors.windows(2).all(|w| w[0] < w[1]), "{majors:?}");
+                for value in majors {
+                    assert!(!(40.0 < value && value < 60.0), "{value} is in the cut");
+                    let printed = shown_tick_value(&axis, value);
+                    assert_eq!(printed, printed.round(), "{value} prints {printed}");
+                }
+            }
+        }
+    }
+
+    /// A unit of 1 and 0 walks the same ticks as no unit, bit for bit.
+    #[test]
+    fn the_identity_unit_walks_the_ticks_of_no_unit() {
+        let mut axis = crate::defaults::axis_options_y();
+        for (min, max, spacing) in [(0.0, 1.0, 0.2), (-3.7, 12.1, 2.0), (1e-9, 3e-9, 5e-10)] {
+            axis.min = min;
+            axis.max = max;
+            axis.major_spacing = spacing;
+            axis.unit = None;
+            let bare: Vec<u64> = major_ticks(&axis).map(f64::to_bits).collect();
+            let bare_minor: Vec<u64> = minor_ticks(&axis).map(f64::to_bits).collect();
+            axis.unit = Some(AxisUnit::new(1.0, 0.0));
+            assert_eq!(
+                major_ticks(&axis).map(f64::to_bits).collect::<Vec<_>>(),
+                bare
+            );
+            assert_eq!(
+                minor_ticks(&axis).map(f64::to_bits).collect::<Vec<_>>(),
+                bare_minor
+            );
+        }
+    }
+
+    /// `auto_ticks` widens the range to whole shown steps and keeps the
+    /// spacing in shown units.
+    #[test]
+    fn auto_ticks_plans_whole_shown_steps() {
+        let mut axis = linear(0.0, 1.0, 1.0, AxisUnit::new(5.0 / 32768.0, 0.0));
+        axis.auto_ticks(0.0, 30000.0, 5).unwrap();
+        let (low, high) = axis.shown_range();
+        let steps = |v: f64| v / axis.major_spacing;
+        assert!(axis.min <= 0.0 && axis.max >= 30000.0);
+        assert!((steps(low) - steps(low).round()).abs() < 1e-9, "{low}");
+        assert!((steps(high) - steps(high).round()).abs() < 1e-9, "{high}");
+        assert_eq!(axis.major_spacing, 1.0);
+    }
+
+    #[test]
+    fn a_unit_is_validated_on_its_axis() {
+        let mut config = crate::defaults::config();
+        config.left_y.min = 1.0;
+        config.left_y.max = 100.0;
+        config.left_y.unit = Some(AxisUnit::new(-2.0, 1.0));
+        assert_eq!(config.validate_chart(), Ok(()));
+        let refused = |edit: fn(&mut Config), field: &str, kind: crate::RuleKind| {
+            let mut config = config.clone();
+            edit(&mut config);
+            let error = config.validate_chart().unwrap_err();
+            assert_eq!((error.field, error.kind), (field, kind));
+        };
+        use crate::RuleKind as K;
+        refused(
+            |c| c.left_y.unit = Some(AxisUnit::new(0.0, 0.0)),
+            "left_y",
+            K::AxisUnitScale,
+        );
+        refused(
+            |c| c.left_y.unit = Some(AxisUnit::new(f64::INFINITY, 0.0)),
+            "left_y",
+            K::AxisUnitScale,
+        );
+        refused(
+            |c| c.left_y.unit = Some(AxisUnit::new(1.0, f64::NAN)),
+            "left_y",
+            K::AxisUnitOffset,
+        );
+        // A log axis takes a positive scale and no offset.
+        refused(
+            |c| {
+                c.left_y.scale = AxisScale::Logarithmic;
+                c.left_y.unit = Some(AxisUnit::new(2.0, 1.0));
+            },
+            "left_y",
+            K::AxisUnitLog,
+        );
+        refused(
+            |c| {
+                c.left_y.scale = AxisScale::Logarithmic;
+                c.left_y.unit = Some(AxisUnit::new(-2.0, 0.0));
+            },
+            "left_y",
+            K::AxisUnitLog,
+        );
+        refused(
+            |c| {
+                c.left_y.min = 0.1;
+                c.left_y.max = 0.9;
+                c.left_y.scale =
+                    AxisScale::Probability(crate::probability::ProbabilityScale::Normal);
+            },
+            "left_y",
+            K::AxisUnitProbability,
+        );
+        refused(
+            |c| {
+                use crate::format::*;
+                c.left_y.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
+                    unit: TimestampUnit::Seconds,
+                    timezone: TimestampZone::FixedOffsetMinutes(0),
+                    label: TimestampLabelMode::Pattern("%H:%M".into()),
+                    fractional: FractionalSecondDigits::Fixed(0),
+                    tick_policy: TimestampTickPolicy::NumericSpacing,
+                })
+            },
+            "left_y",
+            K::AxisUnitTimestamp,
+        );
+        refused(
+            |c| {
+                c.bottom_x.categories = Some(vec![super::Category::new("a", "A")]);
+                c.bottom_x.unit = Some(AxisUnit::new(2.0, 0.0));
+            },
+            "bottom_x",
+            K::AxisUnitCategorical,
+        );
+        // The overlay and colourbar axes are held to the same rules.
+        refused(
+            |c| {
+                let mut y = crate::defaults::axis_options_y();
+                y.unit = Some(AxisUnit::new(0.0, 0.0));
+                c.overlays.push(crate::layer::OverlayLayer {
+                    y_axis: y,
+                    series: Vec::new(),
+                    legend: None,
+                });
+            },
+            "overlays.y_axis",
+            K::AxisUnitScale,
+        );
+        refused(
+            |c| {
+                let mut bar = crate::defaults::color_bar_options();
+                bar.axis.unit = Some(AxisUnit::new(1.0, f64::INFINITY));
+                c.colorbar = Some(bar);
+            },
+            "colorbar.axis",
+            K::AxisUnitOffset,
+        );
+        // A refused unit is not walked: the ticks are the data's.
+        let mut log = config.left_y.clone();
+        log.scale = AxisScale::Logarithmic;
+        log.unit = Some(AxisUnit::new(2.0, 1.0));
+        assert_eq!(log.effective_unit(), None);
+        let walked: Vec<f64> = major_ticks(&log).collect();
+        log.unit = None;
+        assert_eq!(major_ticks(&log).collect::<Vec<_>>(), walked);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_unit_round_trips_and_is_omitted_when_absent() {
+        // An older document has no `unit` and re-serializes unchanged.
+        let text = serde_json::to_string(&crate::defaults::config()).unwrap();
+        assert!(!text.contains("\"unit\""), "{text}");
+        let old: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(old.left_y.unit, None);
+        assert_eq!(serde_json::to_string(&old).unwrap(), text);
+        // Set, it is written as its two numbers and reads back.
+        let mut config = crate::defaults::config();
+        config.left_y.unit = Some(AxisUnit::new(5.0 / 32768.0, 0.0));
+        config.bottom_x.unit = Some(AxisUnit::new(1.0, -273.15));
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            json["bottom_x"]["unit"],
+            serde_json::json!({ "scale": 1.0, "offset": -273.15 })
+        );
+        assert!(json["top_x"].get("unit").is_none());
+        let text = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, config);
+        assert_eq!(serde_json::to_string(&back).unwrap(), text);
     }
 }

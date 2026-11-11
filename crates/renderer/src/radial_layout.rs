@@ -831,6 +831,10 @@ impl Selectable<RadialChart> for RadialDecoration {
     fn as_resizable(&self) -> Option<&dyn Resizable<RadialChart>> {
         (self.id == DecorationId::DataArea).then_some(self)
     }
+    /// The plot region sits behind the title, legend and labels.
+    fn is_background(&self) -> bool {
+        self.id == DecorationId::DataArea
+    }
     fn element_id(&self) -> String {
         self.id.element_id()
     }

@@ -1565,7 +1565,7 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   area on its side: the end labels of the perpendicular axes (the top y
 ///   label in the top band, the last x label in the right band), and on
 ///   polar, ternary, 3D and parallel charts every label, and the axis titles
-///   a ternary or 3D chart places along its own edges, wherever they are
+///   a ternary, 3D or polar chart places itself, wherever they are
 ///   drawn. A band change that would leave no data area is not made.
 /// - **Title offsets.** A title that does not clear its labels by the
 ///   title gap, or leaves its band, gets the offset across the band
@@ -1627,8 +1627,8 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   fit, and a widening that would leave a cell no data area is not made.
 ///
 /// Not covered: overlay axes drawn over each other or over the parent's
-/// right axis (only `line_offset` separates them), polar angle labels
-/// against radius labels (the angle band is fixed by the font size), an
+/// right axis (only `line_offset` separates them; a polar chart's radius
+/// labels keep their gap from its angle labels by themselves, #272), an
 /// overlay axis' title against a legend right of the plot, and labels that
 /// collide with each other along an axis or at a corner.
 pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
@@ -1765,9 +1765,10 @@ fn switch_long_labels(
 }
 
 /// Whether the drawn panel `panel` places its axis titles along its own
-/// edges rather than in the bands: a ternary or 3D chart.
+/// edges rather than in the bands: a ternary or 3D chart, or a polar chart,
+/// whose titles sit beside its disc (#272).
 fn places_own_titles(panel: &Config) -> bool {
-    panel.ternary().is_some() || panel.view_3d().is_some()
+    panel.ternary().is_some() || panel.view_3d().is_some() || panel.polar().is_some()
 }
 
 /// Every label of the drawn panel `panel` an axis band may have to hold,

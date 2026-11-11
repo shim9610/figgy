@@ -370,11 +370,13 @@ fn a_headless_radial_renderer_draws_a_titled_chart() {
 }
 
 // The chart part builders write the document: annotations appended, the
-// tick label format on both value axes, every grid line off, the colour
+// tick label format on both value axes, every axis keeping its tick
+// labels, every grid line off, the colour
 // bar's title, polar coordinates and a subplot. The document validates and
 // draws.
 #[test]
 fn chart_part_builders_write_the_document() {
+    use renderer::config::LabelClearanceMode;
     use renderer::format::LabelFormat;
     use renderer::{Anchor, Annotation, AnnotationAxis, CellRef, PolarOptions, Subplot};
 
@@ -397,11 +399,21 @@ fn chart_part_builders_write_the_document() {
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
     // `set_x_range` / `set_y_range` choose a format, so the format follows.
-    let chart = chart.with_label_format(LabelFormat::Degrees);
+    let chart = chart
+        .with_label_format(LabelFormat::Degrees)
+        .with_label_clearance(LabelClearanceMode::Keep);
     let config = chart.config();
     assert_eq!(config.annotations.items.len(), 3);
     assert_eq!(config.bottom_x.label_style.format, LabelFormat::Degrees);
     assert_eq!(config.left_y.label_style.format, LabelFormat::Degrees);
+    for axis in [
+        &config.bottom_x,
+        &config.top_x,
+        &config.left_y,
+        &config.right_y,
+    ] {
+        assert_eq!(axis.label_style.clearance, LabelClearanceMode::Keep);
+    }
     let grid = &config.grid;
     assert!(!grid.show_major_x && !grid.show_major_y);
     assert!(!grid.show_minor_x && !grid.show_minor_y);
@@ -455,4 +467,120 @@ fn chart_part_builders_write_the_document() {
     assert_eq!(config.subplots[0].link_x, Some(CellRef::Parent));
     assert_eq!(config.overlays[0].y_axis.label_style.color, red);
     assert!(config.validate().is_ok(), "{:?}", config.validate());
+}
+
+// `with_x_unit` / `with_y_unit` (#273) print `bottom_x` and `left_y` in
+// another unit: the unit is stored, the major spacing is chosen for the
+// shown range, as `set_x_range` / `set_y_range` choose it, so the ticks
+// fall on round shown values; the paired axes keep theirs, as
+// `with_label_format` leaves them. A refused unit is kept for
+// `validate_chart` to name, without a panic.
+#[test]
+fn chart_unit_helpers_print_the_axes_in_shown_units() {
+    use renderer::RuleKind;
+    use renderer::config::{AxisScale, AxisUnit};
+    use renderer::tick::{axis_major_spacing, major_ticks, shown_tick_value};
+
+    let mut chart = Chart::sized(480, 320);
+    // ADC counts on x, kelvin on y.
+    chart.set_x_range(0.0, 32768.0);
+    chart.set_y_range(250.0, 350.0);
+    let (x_spacing, y_spacing) = (
+        chart.config().bottom_x.major_spacing,
+        chart.config().left_y.major_spacing,
+    );
+    let chart = chart
+        .with_x_unit(5.0 / 32768.0, 0.0)
+        .with_y_unit(1.0, -273.15);
+    let config = chart.config();
+    assert_eq!(
+        config.bottom_x.unit,
+        Some(AxisUnit::new(5.0 / 32768.0, 0.0))
+    );
+    assert_eq!(config.left_y.unit, Some(AxisUnit::new(1.0, -273.15)));
+    assert_eq!((config.top_x.unit, config.right_y.unit), (None, None));
+    // The data range stays in data units.
+    assert_eq!((config.bottom_x.min, config.bottom_x.max), (0.0, 32768.0));
+    assert_eq!((config.left_y.min, config.left_y.max), (250.0, 350.0));
+
+    // 0..5 V: one volt per major, where the counts had their own spacing.
+    assert_eq!(config.bottom_x.major_spacing, 1.0);
+    assert_ne!(x_spacing, 1.0);
+    let volts: Vec<f64> = major_ticks(&config.bottom_x)
+        .map(|v| shown_tick_value(&config.bottom_x, v))
+        .collect();
+    assert_eq!(volts, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    // -23.15..76.85 °C: the spacing of the shown range, every tick on a
+    // round shown value.
+    let celsius = &config.left_y;
+    let spacing = axis_major_spacing(&AxisScale::Linear, 250.0 - 273.15, 350.0 - 273.15);
+    assert_eq!(celsius.major_spacing, spacing);
+    let shown: Vec<f64> = major_ticks(celsius)
+        .map(|v| shown_tick_value(celsius, v))
+        .collect();
+    assert!(shown.len() >= 2, "{shown:?}");
+    for value in &shown {
+        let steps = value / spacing;
+        assert!((steps - steps.round()).abs() < 1e-9, "{value} on {spacing}");
+        assert!((-23.15..=76.85).contains(value), "{value}");
+    }
+    assert!(y_spacing > 0.0);
+    assert_eq!(config.validate_chart(), Ok(()));
+
+    // A later range keeps the unit and picks the spacing for its shown
+    // range, as the helper did.
+    let mut ranged = Chart::new(config.clone());
+    ranged.set_x_range(0.0, 65536.0);
+    assert_eq!(ranged.config().bottom_x.unit, config.bottom_x.unit);
+    assert_eq!(
+        ranged.config().bottom_x.major_spacing,
+        axis_major_spacing(&AxisScale::Linear, 0.0, 10.0)
+    );
+
+    // Drawn at 1x and 2x.
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    let x: Vec<f64> = (0..64).map(|i| f64::from(i) * 512.0).collect();
+    let y: Vec<f64> = (0..64).map(|i| 250.0 + f64::from(i) * 1.5).collect();
+    renderer.add_column("counts", &x).unwrap();
+    renderer.add_column("kelvin", &y).unwrap();
+    let series = [SeriesConfig::line("t", "counts", "kelvin")];
+    for scale in [1.0, 2.0] {
+        let png = renderer
+            .export_png_blocking(
+                ExportSource::Chart {
+                    chart: &chart,
+                    series: &series,
+                },
+                ExportOptions::document(scale),
+            )
+            .unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+    }
+
+    // A unit the axis refuses is stored as given and refused by
+    // validation; the spacing stays as the range chose it.
+    let base = || {
+        let mut base = Chart::sized(480, 320);
+        base.set_x_range(0.0, 32768.0);
+        base.set_y_range(250.0, 350.0);
+        base
+    };
+    let refused = base().with_x_unit(0.0, 1.0);
+    assert_eq!(
+        refused.config().bottom_x.unit,
+        Some(AxisUnit::new(0.0, 1.0))
+    );
+    assert_eq!(refused.config().bottom_x.major_spacing, x_spacing);
+    let error = refused.config().validate_chart().unwrap_err();
+    assert_eq!(
+        (error.field, error.kind),
+        ("bottom_x", RuleKind::AxisUnitScale)
+    );
+    let refused = base().with_y_unit(1.0, f64::NAN);
+    assert_eq!(refused.config().left_y.major_spacing, y_spacing);
+    let error = refused.config().validate_chart().unwrap_err();
+    assert_eq!(
+        (error.field, error.kind),
+        ("left_y", RuleKind::AxisUnitOffset)
+    );
 }

@@ -9,7 +9,7 @@
 //! Writes `math-gallery.png` (1200 × 1600), `math-gallery@2x.png`, and the
 //! sketch pair `math-gallery-sketch.png` and `math-gallery-sketch@2x.png`.
 use renderer::{
-    AxisPreset, Chart, Color, ExportOptions, ExportSource, Renderer,
+    AxisPreset, Chart, Color, ExportOptions, ExportSource, NoteAlign, Renderer,
     annotation::{Anchor, Annotation, AnnotationKind},
     config::DrawStyle,
     text::RichText,
@@ -106,21 +106,30 @@ fn gallery(sketch: bool) -> Result<Chart, Box<dyn Error>> {
         let (column, row) = ((k / rows) as f32, (k % rows) as f32);
         let x = 0.02 + column * 0.5;
         let y = 0.005 + row / rows as f32;
+        // Each formula stands on its source line: its measured box (a
+        // display operator's limits included) ends a fixed gap above it, so
+        // a tall formula grows upward, never into its source (#272).
         let formula = RichText::from_tex(tex, ink, 22.0, "")?;
-        cfg.annotations.items.push(text(formula, x, y));
+        cfg.annotations.items.push(text(
+            formula,
+            x,
+            y + 0.56 / rows as f32,
+            NoteAlign::BottomLeft,
+        ));
         let plain = RichText::plain(tex, source, 11.0, "");
         cfg.annotations
             .items
-            .push(text(plain, x, y + 0.68 / rows as f32));
+            .push(text(plain, x, y + 0.68 / rows as f32, NoteAlign::TopLeft));
     }
     Ok(chart)
 }
 
-fn text(text: RichText, x: f32, y: f32) -> Annotation {
+/// A text block whose point `align` sits at the plot ratio (`x`, `y`).
+fn text(text: RichText, x: f32, y: f32, align: NoteAlign) -> Annotation {
     Annotation::new(AnnotationKind::Text {
         anchor: Anchor::Ratio { x, y },
         text,
         box_style: None,
-        align: Default::default(),
+        align,
     })
 }

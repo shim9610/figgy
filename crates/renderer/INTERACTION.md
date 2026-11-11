@@ -22,6 +22,16 @@ recomputes hit regions or label positions.
 - Test the selected plot area's resize handles first (`hit_resize_handle`),
   then foreground decorations, then data, then `DataArea`. The plot area wins
   over data only while the host is in a plot-area edit mode.
+- Every `HitMap::hit_test` (Cartesian, radial, annotation layer) gives the
+  click to the element the pointer is visually on where padded hit regions
+  overlap ([#272](https://github.com/shim9610/figgy/issues/272)): an element
+  whose own, unpadded box holds the point wins over one that reaches it only
+  with its selection padding (a point within 1 px of the box, the reach of
+  its antialiased edge, counts as on it), among padding-only hits the
+  nearest box wins, and ties keep the topmost registration. Backgrounds (the plot area,
+  `DataArea`, and a subplot's frame) take no part, so a label's padding
+  still grabs the label over the plot. Hit testing, selection and the start
+  of a drag share this decision.
 - Coordinates and deltas are chart-local logical pixels. Convert the screen
   coordinates of a CSS-scaled canvas to the chart's logical size; never pass
   DPR-scaled framebuffer coordinates.
@@ -46,6 +56,12 @@ recomputes hit regions or label positions.
 - 그다음 제목·라벨·축·범례 같은 앞쪽 요소, 데이터, `DataArea` 순서로 호스트가 판정한다.
   `decorations().hit_test`는 데이터 위에서도 `DataArea`를 돌려주므로, 결과가 `DataArea`라면
   `frame.hit_test`로 데이터를 먼저 확인한다. 영역 편집 모드를 켰을 때만 영역을 데이터보다 우선한다.
+- 모든 `HitMap::hit_test`(Cartesian, 원형, 주석 레이어)는 여백을 더한 히트 영역이 겹치는 곳에서 포인터가
+  눈으로 보기에 올라가 있는 요소를 고른다([#272](https://github.com/shim9610/figgy/issues/272)). 여백
+  없는 자기 상자가 점을 담는 요소(안티앨리어싱 가장자리가 닿는 상자 1 px 안쪽까지 포함)가 선택 여백으로만 닿는 요소보다 우선하고, 여백으로만 닿는 요소끼리는
+  상자가 가장 가까운 요소가, 같으면 지금처럼 가장 나중에 등록한 요소가 이긴다. 그리기 영역(`DataArea`)과
+  서브플롯 틀 같은 배경은 이 판정에 끼지 않으므로 라벨의 여백은 그리기 영역 위에서도 라벨을 잡는다.
+  히트 테스트, 선택, 드래그 시작이 같은 판정을 쓴다.
 - 좌표와 이동량은 차트 내부의 논리 픽셀이다. CSS로 확대된 캔버스라면 화면 좌표를
   차트의 논리 크기로 변환한다. DPR을 곱한 framebuffer 좌표를 넘기지 않는다.
 

@@ -81,8 +81,10 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
             .collect();
         (upper, lower)
     };
-    let (up80, lo80) = band(28.);
-    let (up95, lo95) = band(52.);
+    // The forecast's standard deviation grows as 22·√(d − 26); the bands
+    // are its normal 80% and 95% intervals.
+    let (up80, lo80) = band(1.28 * 22.);
+    let (up95, lo95) = band(1.96 * 22.);
     for (id, data) in [
         ("day", day),
         ("history", history),
@@ -105,17 +107,19 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
             .fill_between(lower)
             .fill_color(Color::from_rgba(teal.r, teal.g, teal.b, alpha))
     };
+    // The labels in TeX: the observations y and the forecast ŷ with its
+    // intervals.
     let specs = [
         band("up95", "lo95", 0.14),
         edge("lo95"),
         band("up80", "lo80", 0.22),
         edge("lo80"),
         SeriesConfig::line("history", "day", "history")
-            .label("Actual")
+            .label(r"Actual $y_t$")
             .color(ink)
             .width(3.),
         SeriesConfig::line("forecast", "day", "forecast")
-            .label("Forecast, 80% and 95% bands")
+            .label(r"Forecast $\hat{y}_t \pm 1.28\,\sigma_t$ (80%) and $\pm 1.96\,\sigma_t$ (95%)")
             .color(teal)
             .width(3.)
             .dash(LineStylePreset::Dash),
