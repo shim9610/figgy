@@ -3794,6 +3794,20 @@
         "layout": 0
       },
       "kind": "compute",
+      "source": "17a390152d39cd8c"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {
+            "PICK_VARIANT": 1022.0
+          },
+          "entryPoint": "pick_exact_candidates"
+        },
+        "label": "figgy GPU pick exact candidate pipeline",
+        "layout": 0
+      },
+      "kind": "compute",
       "source": "49764b59f7137b0c"
     },
     {
@@ -3808,35 +3822,21 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "55cfcab456f197a8"
-    },
-    {
-      "descriptor": {
-        "compute": {
-          "constants": {
-            "PICK_VARIANT": 1022.0
-          },
-          "entryPoint": "pick_exact_candidates"
-        },
-        "label": "figgy GPU pick exact candidate pipeline",
-        "layout": 0
-      },
-      "kind": "compute",
-      "source": "743a3122ddd29995"
-    },
-    {
-      "descriptor": {
-        "compute": {
-          "constants": {
-            "PICK_VARIANT": 1022.0
-          },
-          "entryPoint": "pick_exact_candidates"
-        },
-        "label": "figgy GPU pick exact candidate pipeline",
-        "layout": 0
-      },
-      "kind": "compute",
       "source": "ac68cf747f92fb1e"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {
+            "PICK_VARIANT": 1022.0
+          },
+          "entryPoint": "pick_exact_candidates"
+        },
+        "label": "figgy GPU pick exact candidate pipeline",
+        "layout": 0
+      },
+      "kind": "compute",
+      "source": "da37ce36ce953d41"
     },
     {
       "descriptor": {
@@ -3872,7 +3872,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -3884,7 +3884,7 @@
         "layout": 7
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -3944,7 +3944,7 @@
         "layout": 7
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -3956,7 +3956,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -4160,7 +4160,7 @@
         "layout": 39
       },
       "kind": "compute",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -4328,7 +4328,7 @@
         "layout": 7
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -4340,7 +4340,7 @@
         "layout": 7
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -4352,7 +4352,7 @@
         "layout": 6
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -4364,7 +4364,7 @@
         "layout": 4
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -4376,7 +4376,7 @@
         "layout": 7
       },
       "kind": "compute",
-      "source": "acd01b71a6b8185b"
+      "source": "c87f6acd916c049f"
     },
     {
       "descriptor": {
@@ -5421,7 +5421,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -5684,7 +5684,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -5824,7 +5824,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -6535,7 +6535,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -6648,7 +6648,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -7497,7 +7497,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -7610,7 +7610,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -9509,7 +9509,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -9622,7 +9622,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -9735,7 +9735,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -9848,7 +9848,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -9983,7 +9983,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -10118,7 +10118,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -11591,7 +11591,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -11726,7 +11726,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -12494,7 +12494,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -12540,7 +12540,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -12586,7 +12586,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -12632,7 +12632,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -14335,7 +14335,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -14448,7 +14448,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -14838,7 +14838,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {
@@ -14884,7 +14884,7 @@
         }
       },
       "kind": "render",
-      "source": "70b4f908e1726d0a"
+      "source": "ca9191b400323fb4"
     },
     {
       "descriptor": {

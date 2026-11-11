@@ -34,7 +34,10 @@ fn step_piece_count(mode: u32) -> u32 {
 
 // Data-space (hi, lo) corners of piece `k` of the stepped segment a → b,
 // and the coordinate its two corners share: `STEP_AXIS_X` for a riser,
-// `STEP_AXIS_Y` for a run, `STEP_AXIS_NONE` for a linear segment or an arc.
+// `STEP_AXIS_Y` for a run, `STEP_AXIS_NONE` for a linear segment or an arc,
+// and `STEP_AXIS_POINT` for a piece whose two corners are one data point (a
+// repeated sample, such as a monotonic envelope's join rows, or a riser
+// between equal values).
 struct StepPiece {
     x0: vec2<f32>,
     y0: vec2<f32>,
@@ -46,6 +49,20 @@ struct StepPiece {
 const STEP_AXIS_NONE: u32 = 0u;
 const STEP_AXIS_X: u32 = 1u;
 const STEP_AXIS_Y: u32 = 2u;
+const STEP_AXIS_POINT: u32 = 3u;
+
+// `p`, marked `STEP_AXIS_POINT` when its corners are one data point. Its
+// length is zero by construction, not by comparing the two projections:
+// those need not round alike (#63), and an ulp apart, a few 1e-5 px at a
+// few hundred px from the centre and so above the strokes' 1e-6 px guard,
+// they gave the piece a direction and drew a stroke-wide square cap.
+fn step_piece_point(p: StepPiece) -> StepPiece {
+    var q = p;
+    if (all(p.x0 == p.x1) && all(p.y0 == p.y1)) {
+        q.axis = STEP_AXIS_POINT;
+    }
+    return q;
+}
 
 fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: u32, k: u32) -> StepPiece {
     var p: StepPiece;
@@ -64,7 +81,7 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
         p.y0 = mix(ya, yb, t0);
         p.x1 = mix(xa, xb, t1);
         p.y1 = mix(ya, yb, t1);
-        return p;
+        return step_piece_point(p);
     }
     let step = mode & LINE_STEP_MASK;
     if (step == LINE_STEP_PRE) {
@@ -92,7 +109,7 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
             p.axis = STEP_AXIS_Y;
         }
     }
-    return p;
+    return step_piece_point(p);
 }
 
 // The projected end `b` of piece `p` (NDC or pixels) given its projected
@@ -102,9 +119,13 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
 // shorter than a pixel, a riser between nearly equal values, one ulp across
 // tilts the stroke's square-capped quad by about a degree (#63); a vertex stage that
 // divides NDC into pixels copies it again after the division, which Metal may
-// also round differently for equal inputs. A polar chart maps
-// the data axes onto rings and spokes, so nothing is copied there.
+// also round differently for equal inputs. A point piece copies both
+// coordinates, in any projection. A polar chart maps
+// the data axes onto rings and spokes, so nothing else is copied there.
 fn step_piece_end(t: Transform, p: StepPiece, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    if (p.axis == STEP_AXIS_POINT) {
+        return a;
+    }
     if (t.polar_angle.x > 0.5) {
         return b;
     }
@@ -122,8 +143,11 @@ fn step_piece_end(t: Transform, p: StepPiece, a: vec2<f32>, b: vec2<f32>) -> vec
 // shared coordinate (`step_piece_end`) is not enough in Metal's vertex stage,
 // which can leave an ulp in the difference of the two equal coordinates;
 // divided by a riser's length of 1e-4 px it tilted the quad by a degree
-// (#63).
+// (#63). A point piece has no direction, so its quad collapses.
 fn step_piece_dir(t: Transform, p: StepPiece, dir: vec2<f32>) -> vec2<f32> {
+    if (p.axis == STEP_AXIS_POINT) {
+        return vec2<f32>(0.0, 0.0);
+    }
     if (t.polar_angle.x > 0.5) {
         return dir;
     }
