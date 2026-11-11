@@ -566,8 +566,18 @@ mod tests {
             spec.charged_bytes(),
             Err(StreamSurfaceError::InvalidOptions)
         ));
+        // The export target (`EXPORT_FORMAT`, #271) is accepted and charged
+        // at its 8-byte texel with the same attachment multiplier.
+        spec.width = 256;
+        spec.height = 16;
         spec.sample_count = 1;
         spec.format = wgpu::TextureFormat::Rgba16Float;
+        assert!(matches!(spec.charged_bytes(), Ok(n) if n == 256 * 16 * 8 * 2));
+        spec.sample_count = 4;
+        assert!(matches!(spec.charged_bytes(), Ok(n) if n == 256 * 16 * 8 * 9));
+        // A format outside the accepted set is still refused.
+        spec.sample_count = 1;
+        spec.format = wgpu::TextureFormat::Rgba32Float;
         assert!(matches!(
             spec.charged_bytes(),
             Err(StreamSurfaceError::InvalidOptions)
