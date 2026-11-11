@@ -162,7 +162,9 @@ impl PrepareContext<'_> {
         // A monotonic series is drawn only from an envelope built for its
         // panel's x-to-pixel mapping (#271).
         self.monotonic.check_panels(items)?;
-        let mut contour_spacings = Vec::with_capacity(items.len());
+        // One Vec of per-panel products for the whole frame; each phase below
+        // fills its part in place.
+        let mut panels = Vec::with_capacity(items.len());
         for item in items {
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
@@ -195,7 +197,7 @@ impl PrepareContext<'_> {
                     1.0,
                 )?);
             }
-            contour_spacings.push(per_series);
+            panels.push(PreparedPanelProducts::with_contour_spacings(per_series));
         }
         // The label draw's module and group-1 layout live on the renderer, and
         // the target pipeline is compiled from them — so they have to exist
@@ -246,17 +248,12 @@ impl PrepareContext<'_> {
         let mut grid_sources = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, 1.0)?;
         grid_sources.append(&mut self.ensure_vector_scratches(items, 1.0)?);
-        let (prepared_contours, mut contour_sources) =
-            self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
+        let mut contour_sources = self.ensure_contour_scratches(items, 1.0, &mut panels)?;
         grid_sources.append(&mut contour_sources);
         grid_sources.append(&mut self.ensure_mesh_scratches(items, 1.0)?);
-        let prepared_arcs = self.prepare_arc_items(items)?;
-        let (mut prepared, column_sources) = self.resolve_prepared_items(
-            items,
-            &prepared_arcs,
-            &prepared_contours,
-            &self.pipelines,
-        )?;
+        self.prepare_arc_items(items, &mut panels)?;
+        let (mut prepared, column_sources) =
+            self.resolve_prepared_items(items, &panels, &self.pipelines)?;
         if layered {
             lift_annotation_overlays(&mut prepared, &group_sizes);
         }
@@ -527,16 +524,17 @@ impl PrepareContext<'_> {
     pub(super) fn resolve_prepared_items(
         &self,
         items: &[PanelDraw<'_>],
-        prepared_arcs: &[PreparedArcItem],
-        prepared_contours: &[PreparedContourItem],
+        panels: &[PreparedPanelProducts],
         pipelines: &TargetPipelines,
     ) -> Result<(Vec<PreparedItem>, HashMap<ColumnId, u64>)> {
+        if items.len() != panels.len() {
+            return Err(FiggyError::internal("one prepared panel per draw item"));
+        }
         let mut prepared = Vec::with_capacity(items.len());
         let mut column_sources = HashMap::new();
 
-        for ((item, prepared_arc), prepared_contour) in
-            items.iter().zip(prepared_arcs).zip(prepared_contours)
-        {
+        for (item, panel) in items.iter().zip(panels) {
+            let (prepared_arc, prepared_contour) = (&panel.arc, &panel.contour);
             let styled = pipelines.style_set(&item.chart_config.draw_style);
             let products = PreparedSeriesProducts {
                 arcs: &prepared_arc.series,

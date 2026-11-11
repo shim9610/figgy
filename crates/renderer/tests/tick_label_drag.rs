@@ -85,6 +85,9 @@ impl Labels {
         assert_eq!(result, NudgeResult::Moved, "{self:?} by ({dx}, {dy})");
     }
 
+    /// Draw the set in a transparent colour: it keeps its place, so the
+    /// labels of the axes across it yield at the corners as they do when
+    /// it is drawn (#272), and only its own pixels go.
     fn hide(&self, cfg: &mut Config) {
         let ls = match self {
             Labels::Axis(Side::Top) => &mut cfg.top_x.label_style,
@@ -93,7 +96,7 @@ impl Labels {
             Labels::Axis(Side::Right) => &mut cfg.right_y.label_style,
             Labels::ColorBar => &mut cfg.colorbar.as_mut().unwrap().axis.label_style,
         };
-        ls.label_visible = false;
+        ls.color.a = 0.0;
     }
 }
 
@@ -550,6 +553,15 @@ fn an_adaptive_2e4_label_is_bounded_hit_and_dragged_with_its_side() {
             Side::Left => adaptive(&mut cfg.left_y),
             Side::Right => adaptive(&mut cfg.right_y),
         }
+        // The axes across show no labels, so the 1e4 label at the corner
+        // does not yield to theirs (#272) and the whole ladder is drawn.
+        let across = match side {
+            Side::Top | Side::Bottom => [&mut cfg.left_y, &mut cfg.right_y],
+            Side::Left | Side::Right => [&mut cfg.bottom_x, &mut cfg.top_x],
+        };
+        for axis in across {
+            axis.label_style.label_visible = false;
+        }
         let map = HitMap::standard_chart();
         let name = labels.name();
         let drawn = drawn_labels(&cfg, &map, &name);
@@ -654,4 +666,95 @@ fn adaptive_log_labels_on_overlay_axes_and_in_subplots() {
         texts(&drawn_labels(&unlinked, &map, "subplot_0:tick_labels_left")),
         ["10000"]
     );
+}
+
+/// 16-bit ADC counts printed as volts (#273): 0..32768 counts read 0..5 V,
+/// one volt per major, `Decimal` with one significant digit.
+fn volts(axis: &mut renderer::config::AxisOptions) {
+    axis.min = 0.0;
+    axis.max = 32768.0;
+    axis.unit = Some(renderer::config::AxisUnit::new(5.0 / 32768.0, 0.0));
+    axis.major_spacing = 1.0;
+    axis.label_style.format = renderer::format::LabelFormat::Decimal;
+    axis.label_style.significant_digits = 1;
+}
+
+// An axis with a unit (#273) draws its labels in shown units at 1x and 2x,
+// on every side and on the colourbar; the side's bounds are the drawn
+// labels, a click on one hits the side, and a drag moves the labels, the
+// bounds and the hit region together, as on any axis.
+#[test]
+fn labels_in_another_unit_are_drawn_bounded_hit_and_dragged() {
+    for (labels, colorbar) in cases() {
+        let mut cfg = bare_config(colorbar);
+        match &labels {
+            Labels::Axis(Side::Top) => volts(&mut cfg.top_x),
+            Labels::Axis(Side::Bottom) => volts(&mut cfg.bottom_x),
+            Labels::Axis(Side::Left) => volts(&mut cfg.left_y),
+            Labels::Axis(Side::Right) => volts(&mut cfg.right_y),
+            Labels::ColorBar => volts(&mut cfg.colorbar.as_mut().unwrap().axis),
+        }
+        // The axes across show no labels, so no label of this side yields
+        // at a corner (#272) and the whole set is drawn.
+        let across = match &labels {
+            Labels::Axis(Side::Top | Side::Bottom) => [&mut cfg.left_y, &mut cfg.right_y],
+            _ => [&mut cfg.bottom_x, &mut cfg.top_x],
+        };
+        for axis in across {
+            axis.label_style.label_visible = false;
+        }
+        assert_eq!(cfg.validate_chart(), Ok(()));
+        let map = HitMap::standard_chart();
+        let name = labels.name();
+        let drawn = drawn_labels(&cfg, &map, &name);
+        assert_eq!(texts(&drawn), ["0", "1", "2", "3", "4", "5"], "{labels:?}");
+        assert_eq!(
+            texts(&drawn_labels(&cfg.scaled(2.0), &map, &name)),
+            texts(&drawn),
+            "{labels:?} at 2x"
+        );
+        // The bounds are the ink of the converted labels, at 1x and 2x.
+        for (scale, cfg) in [("1x", cfg.clone()), ("2x", cfg.scaled(2.0))] {
+            let ink = label_ink(&cfg, &labels);
+            let b = on_canvas(bounds(&cfg, &labels), &cfg);
+            for (bound, inked) in [
+                (b.x, ink.x),
+                (b.y, ink.y),
+                (b.x + b.width, ink.x + ink.width),
+                (b.y + b.height, ink.y + ink.height),
+            ] {
+                assert!(
+                    (bound - inked).abs() <= 1.5,
+                    "{labels:?} ({scale}): bounds {b:?} against ink {ink:?}"
+                );
+            }
+        }
+        // The "1" label sits at its data position, 6553.6 counts.
+        let one = |cfg: &Config| {
+            drawn_labels(cfg, &map, &name)
+                .into_iter()
+                .find(|(text, _)| text == "1")
+                .map(|(_, rect)| rect)
+                .unwrap_or_else(|| panic!("{labels:?}: no 1 V label"))
+        };
+        let rect = one(&cfg);
+        let (cx, cy) = rect.center();
+        assert_eq!(hit(&cfg, cx, cy), Some(name.clone()), "{labels:?}");
+        let b = bounds(&cfg, &labels);
+        let ((ax, ay), (nx, ny)) = directions(&labels, &cfg);
+        for (dx, dy) in [(30.0 * ax, 30.0 * ay), (6.0 * nx, 6.0 * ny)] {
+            let mut moved = cfg.clone();
+            labels.drag(&mut moved, dx, dy);
+            let after = one(&moved);
+            assert!(
+                (after.x - rect.x - dx).abs() < 1e-3 && (after.y - rect.y - dy).abs() < 1e-3,
+                "{labels:?} by ({dx}, {dy}): {rect:?} -> {after:?}"
+            );
+            assert_eq!(texts(&drawn_labels(&moved, &map, &name)), texts(&drawn));
+            let moved_bounds = bounds(&moved, &labels);
+            assert_eq!((moved_bounds.x - b.x, moved_bounds.y - b.y), (dx, dy));
+            let (cx, cy) = after.center();
+            assert_eq!(hit(&moved, cx, cy), Some(name.clone()), "{labels:?}");
+        }
+    }
 }

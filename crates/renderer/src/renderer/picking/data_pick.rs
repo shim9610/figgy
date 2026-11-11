@@ -119,7 +119,14 @@ impl Renderer {
             let (_, preparation) = self.preparation_parts();
             let mut lookup = |id: &str| lookup(preparation.pool, id);
             return preparation
-                .radar_label_group(cfg, &pool_buffer, scale, &mut lookup)
+                .radar_label_columns(
+                    display_config,
+                    series.iter(),
+                    cfg,
+                    &pool_buffer,
+                    scale,
+                    &mut lookup,
+                )
                 .map(Some);
         }
         Ok(None)
@@ -366,13 +373,26 @@ impl Renderer {
             else {
                 continue;
             };
-            let Some(labels) = self.preparation_parts().1.value_label_data(
-                &display_config,
-                cfg,
-                &atlas,
-                request.display_scale,
-            )?
-            else {
+            // A radar series' labels are placed with those of its label
+            // group's members, as the draw places them (#272): their atlases
+            // are resolved first and stay resident through the frame batch.
+            let mut preparation = self.preparation_parts().1;
+            let labels = preparation.frame_batch(|preparation| {
+                if cfg.render_type.radar().is_some() {
+                    for (_, member) in radar_label_members(&display_config, series.iter()) {
+                        preparation.ensure_value_label_scratch(&display_config, member)?;
+                    }
+                }
+                preparation.value_label_data(
+                    &display_config,
+                    series.iter(),
+                    cfg,
+                    &atlas,
+                    request.display_scale,
+                    |_, member| Ok(preparation.resident_value_label_atlas(&display_config, member)),
+                )
+            })?;
+            let Some(labels) = labels else {
                 continue;
             };
             if labels.count == 0 {

@@ -301,28 +301,35 @@ impl FiggyChart {
 
     // ---- titles ----
 
-    /// Set plain title text and grow its band if needed. For a text-only
-    /// edit that keeps the exact margin, use `get_config` / `set_config`
-    /// and change only `chart_title.text`.
+    /// Set the title text and grow its band if needed. Like every text
+    /// setter (`set_x_title`, `set_y_title`, `set_colorbar_title`, and the
+    /// labels of `add_line_series` and `set_series_label`), it reads the
+    /// text as matplotlib reads a label: `$…$`, `\(…\)` and `$$…$$` spans
+    /// are TeX, `\$` is a dollar sign, and text whose TeX does not parse is
+    /// shown as written. For a text-only edit that keeps the exact margin,
+    /// use `get_config` / `set_config` and change only `chart_title.text`.
     pub fn set_title(&mut self, text: &str) -> Result<(), JsValue> {
         let mut config = self.chart_config()?.clone();
-        set_plain_chart_title(&mut config, text);
+        set_chart_title_label(&mut config, text);
         self.replace_chart_config(config)
     }
 
+    /// Set the bottom x axis title, a label with `$…$` spans as TeX.
     pub fn set_x_title(&mut self, text: &str) -> Result<(), JsValue> {
         let mut config = self.chart_config()?.clone();
-        config.bottom_x.title_option.text.segments = rich_segments_from_text(text);
+        config.bottom_x.title_option.text.segments = rich_segments_from_label(text);
         self.replace_chart_config(config)
     }
 
+    /// Set the left y axis title, a label with `$…$` spans as TeX.
     pub fn set_y_title(&mut self, text: &str) -> Result<(), JsValue> {
         let mut config = self.chart_config()?.clone();
-        config.left_y.title_option.text.segments = rich_segments_from_text(text);
+        config.left_y.title_option.text.segments = rich_segments_from_label(text);
         self.replace_chart_config(config)
     }
 
-    /// Set the colourbar title text and make it visible. An empty string
+    /// Set the colourbar title text, a label with `$…$` spans as TeX, and
+    /// make it visible. An empty string
     /// hides it. The full rich-text/title offsets remain available through
     /// `set_colorbar_axis` or the chart Config SSoT.
     pub fn set_colorbar_title(&mut self, text: &str) -> Result<(), JsValue> {
@@ -331,7 +338,7 @@ impl FiggyChart {
             .colorbar
             .as_mut()
             .ok_or_else(|| js_err("colorbar title needs Config.colorbar"))?;
-        bar.axis.title_option.text.segments = rich_segments_from_text(text);
+        bar.axis.title_option.text.segments = rich_segments_from_label(text);
         bar.axis.title_option.visible = !text.is_empty();
         self.replace_chart_config(config)
     }

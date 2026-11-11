@@ -31,7 +31,7 @@ use renderer::color::Color;
 use renderer::config::{AxisOptions, AxisScale, Config, GridOptions};
 use renderer::default;
 use renderer::demo;
-use renderer::layout::{ChartArea, Rect};
+use renderer::layout::Rect;
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, HitId, HitMap, MIN_EXPORT_SCALE,
@@ -226,7 +226,6 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     renderer.add_column("sine_x", &xs).expect("add x");
     renderer.add_column("sine_y", &ys).expect("add y");
     let mut config = dark_config();
-    config.chart_area = ChartArea(rect);
     // Chart 1: grid off.
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
@@ -240,12 +239,15 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
             .width(1.0),
     ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Sine (1 px line, no grid)")
         .with_x_title("x [rad]")
         .with_y_title("y")
         .with_legend_from(&series);
     chart.auto_fit_x(renderer.pool(), "sine_x", 0.02).unwrap();
     chart.auto_fit_y(renderer.pool(), "sine_y", 0.10).unwrap();
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     panel_entry(renderer, chart, view, series)
 }
@@ -258,7 +260,6 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     renderer.add_column("rc_discharge", &vs_discharge).unwrap();
 
     let mut config = dark_config();
-    config.chart_area = ChartArea(rect);
     config.grid.show_major_x = true;
     config.grid.show_major_y = true;
     config.grid.show_minor_x = false;
@@ -275,6 +276,7 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
             .width(2.0),
     ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("RC charge / discharge (2 px, major grid)")
         .with_x_title("t [s]")
         .with_y_title("V [V]")
@@ -284,6 +286,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
         .unwrap();
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     panel_entry(renderer, chart, view, series)
 }
@@ -293,7 +297,6 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     renderer.add_column("xs_e", &es).unwrap();
     renderer.add_column("xs_sigma", &sigmas).unwrap();
     let mut config = dark_config();
-    config.chart_area = ChartArea(rect);
     config.left_y.scale = AxisScale::Logarithmic;
     config.right_y.scale = AxisScale::Logarithmic;
     // Chart 3: major + minor grid, minor is dotted.
@@ -311,12 +314,15 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
             .width(3.5),
     ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Cross-section σ(E) — 3.5 px, log + minor grid")
         .with_x_title("E [keV]")
         .with_y_title("σ [barn]")
         .with_legend_from(&series);
     chart.auto_fit_x(renderer.pool(), "xs_e", 0.0).unwrap();
     chart.auto_fit_y(renderer.pool(), "xs_sigma", 0.10).unwrap();
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     panel_entry(renderer, chart, view, series)
 }
@@ -390,7 +396,10 @@ impl CallbackTrait for FiggyCallback {
         // raster when either changed, and writes the data→NDC transform
         // every frame.
         if panel.chart.config().chart_area.0 != self.panel_rect_px {
-            panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
+            let r = self.panel_rect_px;
+            panel.chart.set_area(r.x, r.y, r.width, r.height);
+            // Refit the margins to the labels at the new size.
+            panel.chart.fit_layout();
         }
         panel.chart.select(selected_id.as_deref());
 

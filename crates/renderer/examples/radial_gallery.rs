@@ -2,14 +2,10 @@
 //! `sunburst` builds `gallery-sunburst.png`: a flat sunburst, slices with
 //! `children` drawn as nested rings (source group, source, technology).
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
-use renderer::{
-    Color, ExportOptions, Material, RendererDevice,
-    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
-    radial::*,
-};
+use renderer::{Color, ExportOptions, Material, radial::*};
 use std::path::PathBuf;
 fn base() -> RadialChart {
-    let mut chart = RadialChart {
+    RadialChart {
         kind: RadialKind::Donut { inner_radius: 0.5 },
         labels: RadialLabels::Outside,
         label_format: RadialLabelFormat::NamePercent,
@@ -20,24 +16,23 @@ fn base() -> RadialChart {
             RadialSlice::new("Union", 12.0, Color::from_rgb8(255, 151, 62)),
             RadialSlice::new("Video", 8.0, Color::from_rgb8(48, 192, 230)),
         ],
+        style: RadialStyle {
+            material: Material::Matte,
+            // Match the approved oblique mockup; 0 degrees is straight overhead.
+            tilt_degrees: 55.0,
+            depth: 0.16,
+            inner_corner: 0.045,
+            outer_corner: 0.045,
+            bevel: 0.025,
+            gap_degrees: 1.4,
+            shadow: true,
+            roughness: 0.3,
+            texture_strength: 0.12,
+            ..Default::default()
+        },
         ..Default::default()
-    };
-    chart.set_title_text("Regional share");
-    chart.style = RadialStyle {
-        material: Material::Matte,
-        // Match the approved oblique mockup; 0 degrees is straight overhead.
-        tilt_degrees: 55.0,
-        depth: 0.16,
-        inner_corner: 0.045,
-        outer_corner: 0.045,
-        bevel: 0.025,
-        gap_degrees: 1.4,
-        shadow: true,
-        roughness: 0.3,
-        texture_strength: 0.12,
-        ..Default::default()
-    };
-    chart
+    }
+    .with_title("Regional share")
 }
 /// A flat sunburst: a year's electricity generation by source group at the
 /// centre, the sources around it and their technologies outside. Every node
@@ -50,7 +45,7 @@ fn sunburst() -> RadialChart {
             ..RadialSlice::new(label, value, Color::from_rgb8(rgb.0, rgb.1, rgb.2))
         };
     let leaf = |label: &str, value: f64, rgb: (u8, u8, u8)| node(label, value, rgb, vec![]);
-    let mut chart = RadialChart {
+    RadialChart {
         kind: RadialKind::Donut { inner_radius: 0.14 },
         labels: RadialLabels::Outside,
         label_format: RadialLabelFormat::NamePercent,
@@ -104,19 +99,18 @@ fn sunburst() -> RadialChart {
             ),
             leaf("Nuclear", 16.0, (128, 110, 196)),
         ],
+        // A sunburst draws flat: no tilt and no depth.
+        style: RadialStyle {
+            material: Material::Flat,
+            gap_degrees: 0.6,
+            inner_corner: 0.012,
+            outer_corner: 0.012,
+            gloss: 0.15,
+            ..Default::default()
+        },
         ..Default::default()
-    };
-    chart.set_title_text("Electricity generation / group, source, technology");
-    // A sunburst draws flat: no tilt and no depth.
-    chart.style = RadialStyle {
-        material: Material::Flat,
-        gap_degrees: 0.6,
-        inner_corner: 0.012,
-        outer_corner: 0.012,
-        gloss: 0.15,
-        ..Default::default()
-    };
-    chart
+    }
+    .with_title("Electricity generation / group, source, technology")
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -125,12 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| "target/radial-gallery".into());
     std::fs::create_dir_all(&directory)?;
-    let instance = create_instance();
-    let adapter = request_adapter_blocking(&instance)?;
-    eprintln!("adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_blocking(&adapter)?;
-    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
-    let mut renderer = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut renderer = RadialRenderer::headless_blocking()?;
     let mut cases = Vec::new();
     for (name, material) in [
         ("matte", Material::Matte),
@@ -144,8 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("hatch", Material::Hatch),
         ("pearl", Material::Pearl),
     ] {
-        let mut c = base();
-        c.set_title_text(&name.to_uppercase());
+        let mut c = base().with_title(&name.to_uppercase());
         c.style.material = material;
         if material == Material::Toon {
             c.style.outline.rim = true;
@@ -163,8 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         cases.push((name.to_owned(), c));
     }
-    let mut outlined = base();
-    outlined.set_title_text("Raised pie / visible rim and separators");
+    let mut outlined = base().with_title("Raised pie / visible rim and separators");
     outlined.kind = RadialKind::Pie;
     outlined.style.material = Material::Flat;
     outlined.style.depth = 0.3;
@@ -182,8 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     cases.push(("outlined-raised-pie".into(), outlined));
     for (name, amount) in [("corners-sharp", 0.0), ("corners-rounded", 0.12)] {
-        let mut c = base();
-        c.set_title_text(name);
+        let mut c = base().with_title(name);
         c.style.inner_corner = amount;
         c.style.outer_corner = amount;
         c.style.depth = 0.0;
@@ -191,8 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         c.style.shadow = false;
         cases.push((name.into(), c));
     }
-    let mut edited = base();
-    edited.set_title_text("Selected slice / individual edits");
+    let mut edited = base().with_title("Selected slice / individual edits");
     edited.interaction.selected = Some(RadialTarget::main(0));
     let style = RadialStyle {
         material: Material::Ceramic,
@@ -209,8 +194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     slice.label_format = Some(RadialLabelFormat::NameValuePercent);
     edited.value_suffix = " units".into();
     cases.push(("individual-edit".into(), edited));
-    let mut split = base();
-    split.set_title_text("Regional share / Video breakdown");
+    let mut split = base().with_title("Regional share / Video breakdown");
     split.labels = RadialLabels::Inside;
     split.label_format = RadialLabelFormat::Percent;
     split.split = Some(RadialSplit {
@@ -224,8 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cases.push(("pie-of-pie".into(), split));
     cases.push(("gallery-sunburst".into(), sunburst()));
     // Deterministic time samples: host calls the same model transition on pointer events.
-    let mut hover = base();
-    hover.set_title_text("Hover lift / Search");
+    let mut hover = base().with_title("Hover lift / Search");
     hover.style.material = Material::Ceramic;
     for frame in 0..20 {
         hover.interaction.animate_hover(
@@ -245,10 +228,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let path = directory.join(format!("{name}.png"));
         renderer.save_blocking(&chart, (900, 620), ExportOptions::document(1.0), &path)?;
         renderer.end_frame();
-        gpu.device().poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })?;
         eprintln!("{}", path.display());
     }
     Ok(())

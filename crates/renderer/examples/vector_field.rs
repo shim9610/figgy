@@ -23,27 +23,12 @@ use gallery::Result;
 use renderer::{
     Color, ColorMap, Renderer, SeriesConfig,
     config::AxisScale,
-    data_config::{
-        DataRenderType, FieldSeries, MatrixRef, Shading, VectorColorMap, VectorComponents,
-        VectorPivot, VectorScale, VectorStyle,
-    },
+    data_config::{MatrixRef, Shading, VectorColorMap, VectorPivot, VectorScale},
     layout::Side,
+    text::RichText,
 };
 use std::path::Path;
 use styled::{cartesian, colorbar, export, extent, rgb, rgba, save};
-
-/// A heatmap of the matrix `columns` with interpolated shading at `opacity`.
-fn smooth_field(id: &str, x: &str, y: &str, columns: Vec<String>, opacity: f32) -> SeriesConfig {
-    let mut field = SeriesConfig::heatmap(id, x, y, MatrixRef::columns_are_x(columns));
-    if let DataRenderType::Field(FieldSeries {
-        fill: Some(fill), ..
-    }) = &mut field.render_type
-    {
-        fill.shading = Shading::Interpolated;
-        fill.opacity = opacity;
-    }
-    field
-}
 
 // A sea breeze over a bay: wind speed as a smooth field, direction as arrows
 // on a coarser grid of the same coordinate space.
@@ -112,28 +97,23 @@ fn wind(r: &mut Renderer, out: &Path) -> Result {
         v_ids.push(vid);
     }
     let specs = [
-        smooth_field("speed", "wx", "wy", speed_ids, 1.),
-        SeriesConfig::of_kind(
+        SeriesConfig::heatmap("speed", "wx", "wy", MatrixRef::columns_are_x(speed_ids))
+            .shading(Shading::Interpolated),
+        SeriesConfig::vectors_grid(
             "wind",
             "ax",
             "ay",
-            DataRenderType::Vector {
-                components: VectorComponents::Grid {
-                    u: MatrixRef::columns_are_x(u_ids),
-                    v: MatrixRef::columns_are_x(v_ids),
-                },
-                style: VectorStyle {
-                    color: rgba(240, 246, 255, 0.9),
-                    width_px: 1.8,
-                    scale: VectorScale::Pixels { px_per_unit: 16. },
-                    pivot: VectorPivot::Middle,
-                    head_length_px: 7.,
-                    head_width_px: 6.,
-                    min_length_px: 3.,
-                    ..Default::default()
-                },
-            },
-        ),
+            MatrixRef::columns_are_x(u_ids),
+            MatrixRef::columns_are_x(v_ids),
+        )
+        .color(rgba(240, 246, 255, 0.9))
+        .width(1.8)
+        .pivot(VectorPivot::Middle)
+        .arrow_head(7., 6.)
+        .style_vectors(|style| {
+            style.scale = VectorScale::Pixels { px_per_unit: 16. };
+            style.min_length_px = 3.;
+        }),
     ];
     colorbar(
         chart.config_mut(),
@@ -153,7 +133,7 @@ fn wind(r: &mut Renderer, out: &Path) -> Result {
     );
     chart.config_mut().bottom_x.major_spacing = 2.;
     chart.config_mut().left_y.major_spacing = 2.;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-wind.png"))
 }
 
@@ -207,16 +187,15 @@ fn currents(r: &mut Renderer, out: &Path) -> Result {
     ] {
         r.add_column(id, &data)?;
     }
-    let mut current = SeriesConfig::vectors("current", "cx", "cy", "cu", "cv")
+    let specs = [SeriesConfig::vectors("current", "cx", "cy", "cu", "cv")
         .color(ink)
-        .width(2.2);
-    if let DataRenderType::Vector { style, .. } = &mut current.render_type {
-        style.pivot = VectorPivot::Middle;
-        (style.head_length_px, style.head_width_px) = (8., 7.);
-        style.color_map = Some(VectorColorMap::Column("cspeed".into()));
-        style.fit_scale(extent(&u), extent(&v), 44.);
-    }
-    let specs = [current];
+        .width(2.2)
+        .pivot(VectorPivot::Middle)
+        .arrow_head(8., 7.)
+        .style_vectors(|style| {
+            style.color_map = Some(VectorColorMap::Column("cspeed".into()));
+            style.fit_scale(extent(&u), extent(&v), 44.);
+        })];
     colorbar(
         chart.config_mut(),
         ColorMap::Custom {
@@ -234,7 +213,7 @@ fn currents(r: &mut Renderer, out: &Path) -> Result {
     );
     chart.config_mut().bottom_x.major_spacing = 2.;
     chart.config_mut().left_y.major_spacing = 1.;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-currents.png"))
 }
 
@@ -294,29 +273,27 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
             ids.push(id);
         }
     }
-    let field = smooth_field("potential", "gx", "gy", z_ids, 0.35);
-    let arrows = SeriesConfig::of_kind(
+    let field = SeriesConfig::heatmap("potential", "gx", "gy", MatrixRef::columns_are_x(z_ids))
+        .shading(Shading::Interpolated)
+        .opacity(0.35);
+    let arrows = SeriesConfig::vectors_grid(
         "gradient",
         "qx",
         "qy",
-        DataRenderType::Vector {
-            components: VectorComponents::Grid {
-                u: MatrixRef::columns_are_x(u_ids),
-                v: MatrixRef::columns_are_x(v_ids),
-            },
-            style: VectorStyle {
-                color: Color::BLACK,
-                width_px: 1.6,
-                scale: VectorScale::Data { factor: 0.35 },
-                pivot: VectorPivot::Tail,
-                head_length_px: 6.0,
-                head_width_px: 5.0,
-                min_length_px: 2.0,
-                color_map: Some(VectorColorMap::Grid(MatrixRef::columns_are_x(speed_ids))),
-            },
-        },
-    );
-    let mut chart = gallery::chart("Gradient of a potential", "x", "y", (960, 640));
+        MatrixRef::columns_are_x(u_ids),
+        MatrixRef::columns_are_x(v_ids),
+    )
+    .color(Color::BLACK)
+    .width(1.6)
+    .pivot(VectorPivot::Tail)
+    .arrow_head(6.0, 5.0)
+    .style_vectors(|style| {
+        style.scale = VectorScale::Data { factor: 0.35 };
+        style.min_length_px = 2.0;
+        style.color_map = Some(VectorColorMap::Grid(MatrixRef::columns_are_x(speed_ids)));
+    });
+    let title = r"Gradient of a potential $\varphi(x, y)$";
+    let mut chart = gallery::chart(title, "x", "y", (960, 640));
     chart.set_x_range(-3.0, 3.0);
     chart.set_y_range(-3.0, 3.0);
     let mut bar = renderer::default::default_colorbar_options();
@@ -328,8 +305,18 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.min = speed_min;
     bar.axis.max = speed_max;
     bar.axis.major_spacing = (speed_max - speed_min) / 5.0;
+    // The colourbar titled with the magnitude it maps, in TeX, in the axis
+    // titles' ink and size.
+    let axis_title = &chart.config().left_y.title_option.text;
+    bar.axis.title_option.visible = true;
+    bar.axis.title_option.text = RichText::from_tex(
+        r"$|\nabla\varphi|$",
+        axis_title.color,
+        axis_title.font_size,
+        "",
+    )?;
     chart.config_mut().colorbar = Some(bar);
-    gallery::save(r, &chart, &[field, arrows], &out.join("gradient.png"))
+    gallery::save(r, &mut chart, &[field, arrows], &out.join("gradient.png"))
 }
 
 fn main() -> Result {

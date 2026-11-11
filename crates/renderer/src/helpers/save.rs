@@ -170,6 +170,16 @@ impl Renderer {
     }
 }
 
+impl crate::RasterImage {
+    /// Encode the image as PNG ([`crate::encode_png`]) and write it to
+    /// `path`, for a host that checks the pixels before saving them.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_png(&self, path: impl AsRef<std::path::Path>) -> Result<(), SaveError> {
+        let bytes = crate::encode_png(self)?;
+        write(path.as_ref(), &bytes)
+    }
+}
+
 impl RadialRenderer {
     /// `chart` at `size` exported as `format`, in memory: the radial
     /// counterpart of [`Renderer::export_bytes`].

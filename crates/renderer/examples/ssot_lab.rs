@@ -29,7 +29,7 @@ use renderer::config::{
     SketchOptions,
 };
 use renderer::default;
-use renderer::layout::{ChartArea, Rect};
+use renderer::layout::Rect;
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, PreparedFrame, Renderer, RendererDevice,
@@ -237,7 +237,10 @@ impl CallbackTrait for LabCallback {
         // chart (here its area) changed, and writes the data→NDC transform
         // every frame.
         if panel.chart.config().chart_area.0 != self.panel_rect_px {
-            panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
+            let r = self.panel_rect_px;
+            panel.chart.set_area(r.x, r.y, r.width, r.height);
+            // Refit the margins to the labels at the new size.
+            panel.chart.fit_layout();
         }
 
         let prepared = {
@@ -387,26 +390,23 @@ impl LabApp {
                 .map_err(|e| format!("add_column {y_id} failed: {e}"))?;
         }
 
-        let placeholder = Rect {
-            x: 0,
-            y: 0,
-            width: 600,
-            height: 350,
-        };
         let mut panels = Vec::with_capacity(4);
         for i in 0..4 {
             let (draw_style, title, series) = panel_recipe(i);
             let mut config = dark_config();
-            config.chart_area = ChartArea(placeholder);
             config.draw_style = draw_style;
+            // A first-frame guess: prepare moves the chart to its egui rect.
             let mut chart = Chart::new(config)
+                .with_area(0, 0, 600, 350)
                 .with_title(title)
                 .with_x_title("x [rad]")
                 .with_y_title("y");
             chart.set_x_range(0.0, X_SPAN);
             let _ = chart.auto_fit_y(renderer.pool(), Y_IDS[i], 0.10);
+            // Fit the margins to the labels and titles.
+            chart.fit_layout();
             let view = renderer
-                .create_chart_view(&chart, placeholder)
+                .create_chart_view(&chart, chart.config().chart_area.0)
                 .map_err(|e| format!("create_chart_view failed: {e}"))?;
             let style = renderer.create_style_for_series(&series).unwrap();
             panels.push(PanelEntry {

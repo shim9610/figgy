@@ -21,19 +21,13 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::Result;
-use renderer::{Category, Chart, Color, LayerRef, Renderer, config::Config, encode_png, radar::*};
+use renderer::{Category, Chart, Color, LayerRef, Renderer, config::Config, radar::*};
 use std::path::Path;
 
 /// `document` as a polar chart of radar series, exported to `name.png`.
 fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -> Result {
     document.validate()?;
-    let (mut config, series, uploads) = Config::from_radar(document);
-    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-        x: 0,
-        y: 0,
-        width: 960,
-        height: 640,
-    });
+    let (config, series, uploads) = Config::from_radar(document);
     for upload in &uploads {
         r.remove_column(&upload.column)?;
         r.add_column(upload.column.clone(), &upload.values)?;
@@ -41,14 +35,13 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
     // The fixed `value_range` of a document is the radius axis; a document
     // without one fits the values' statistics from zero, as the former
     // chart did, and keeps its ring spacing.
-    let mut chart = Chart::new(config);
+    let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
     if document.value_range.is_none() {
         // The fit chooses a label format too; the document's ring labels
         // keep the reader's.
         let format = chart.config().left_y.label_style.format.clone();
         chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
-        let mut config = chart.config().clone();
-        let radius = &mut config.left_y;
+        let radius = &mut chart.config_mut().left_y;
         let min = radius.min.min(0.0);
         let max = radius.max;
         radius
@@ -58,8 +51,8 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
         if let Some(spacing) = document.ring_spacing {
             radius.major_spacing = spacing;
         }
-        chart = Chart::new(config);
     }
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &series),
         renderer::ExportOptions::panel(1.0),
@@ -72,7 +65,7 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
     if colored < 1000 {
         return Err("missing radar pixels".into());
     }
-    std::fs::write(directory.join(format!("{name}.png")), encode_png(&image)?)?;
+    image.save_png(directory.join(format!("{name}.png")))?;
     println!(
         "{name}: {}x{}, {colored} colored pixels",
         image.width, image.height

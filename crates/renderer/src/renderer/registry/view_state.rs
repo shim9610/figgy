@@ -66,6 +66,8 @@ impl AxisViewState {
             // A view moves the range; the cut ranges stay on the axis as
             // they are, like the tick policy (#200).
             breaks: _,
+            // What the axis prints, not how data maps (#273).
+            unit: _,
         } = axis;
         let (min, max) = match axis.categories {
             Some(_) => axis.data_range(),

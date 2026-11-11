@@ -99,7 +99,7 @@ impl Editor {
                 .expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
         )?;
-        let mut chart = RadialChart {
+        let chart = RadialChart {
             kind: RadialKind::Donut { inner_radius: 0.5 },
             slices: vec![
                 RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
@@ -108,10 +108,10 @@ impl Editor {
                 RadialSlice::new("Union", 12.0, Color::from_rgb8(255, 151, 62)),
                 RadialSlice::new("Video", 8.0, Color::from_rgb8(48, 192, 230)),
             ],
+            style: RadialStyle::three_dimensional(),
             ..Default::default()
-        };
-        chart.set_title_text("Select a slice to edit");
-        chart.style = RadialStyle::three_dimensional();
+        }
+        .with_title("Select a slice to edit");
         Ok(Self {
             state,
             renderer,

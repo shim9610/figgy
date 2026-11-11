@@ -29,16 +29,15 @@ mod styled;
 use gallery::Result;
 use renderer::{
     BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
-    RecordSource, Renderer, UploadValues, boxplot::*, config::Config, encode_png,
+    RecordSource, Renderer, UploadValues, boxplot::*, config::Config,
 };
 use renderer::{
     SeriesConfig,
-    config::{LegendCorner, append_legend_entry, scatter_shape_char},
+    config::LegendCorner,
     data_config::{
-        BarGroups, BoxPlotStyle, BoxPoints, BoxPointsStyle, CategoryBarDirection, DataRenderType,
-        ScatterShape, Violin, ViolinBody, ViolinHalf, ViolinStyle,
+        BarGroups, BoxPoints, BoxPointsStyle, CategoryBarDirection, Violin, ViolinBody, ViolinHalf,
+        ViolinStyle,
     },
-    text::RichSegment,
     theme::SubplotScope,
 };
 use std::path::Path;
@@ -57,13 +56,7 @@ fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Opt
 /// `name.png`.
 fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str) -> Result {
     document.validate()?;
-    let (mut config, series, uploads) = Config::from_boxplot(document);
-    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-        x: 0,
-        y: 0,
-        width: 960,
-        height: 640,
-    });
+    let (config, series, uploads) = Config::from_boxplot(document);
     for upload in &uploads {
         match &upload.values {
             UploadValues::BoxRecord(_) => {
@@ -97,13 +90,11 @@ fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str)
     }
     // The fixed `value_range` of the documents is the value axis; a
     // document without one fits the records' and outliers' statistics.
-    let chart = if document.value_range.is_some() {
-        Chart::new(config)
-    } else {
-        let mut chart = Chart::new(config);
+    let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
+    if document.value_range.is_none() {
         chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
-        chart
-    };
+    }
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &series),
         renderer::ExportOptions::panel(1.0),
@@ -116,7 +107,7 @@ fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str)
     if colored < 1000 {
         return Err("missing box plot pixels".into());
     }
-    std::fs::write(directory.join(format!("{name}.png")), encode_png(&image)?)?;
+    image.save_png(directory.join(format!("{name}.png")))?;
     println!(
         "{name}: {}x{}, {colored} colored pixels",
         image.width, image.height
@@ -223,7 +214,8 @@ fn upload_groups(r: &mut Renderer, id: &str, groups: &[Vec<f64>], grid: usize) -
 }
 
 /// The shared gallery chrome (`support/styled.rs`) scaled to 960 x 640:
-/// the scene's theme with smaller text, and narrower margins.
+/// the scene's theme with smaller text. The margins are fitted to the
+/// labels when the scene is exported.
 fn designed(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -> Chart {
     let mut chart = gallery::chart(title, x, y, SCENE);
     let config = chart.config_mut();
@@ -234,41 +226,14 @@ fn designed(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -
     theme.chrome.tick_label_size = 18.;
     theme.chrome.legend_size = 18.;
     theme.apply_chrome(config, SubplotScope::All);
-    config.chart_title.top_margin = 68.;
-    config.left_y.out_margin = 96.;
-    config.right_y.out_margin = 44.;
-    config.bottom_x.out_margin = 82.;
-    config.top_x.out_margin = 30.;
     config.legend.padding = 12.;
     chart
 }
 
-/// A legend row with a filled square swatch, the mark a box series uses.
-fn swatch(chart: &mut Chart, label: &str, color: Color) {
-    let legend = &mut chart.config_mut().legend;
-    let mark = RichSegment::fielded(
-        scatter_shape_char(&ScatterShape::SquareFilled),
-        2.0,
-        Some(color),
-    );
-    append_legend_entry(&mut legend.content, vec![mark], label);
-    legend.visible = true;
-}
-
 /// A box plot series at the positions `{id}.pos` over the host's record
 /// `{id}.record` with `violin` behind its boxes.
-fn violin_series(id: &str, color: Color, style: BoxPlotStyle, violin: Violin) -> SeriesConfig {
-    let mut series = SeriesConfig::box_plot(id, format!("{id}.pos"), format!("{id}.record"), color);
-    if let DataRenderType::BoxPlot {
-        style: box_style,
-        violin: body,
-        ..
-    } = &mut series.render_type
-    {
-        *box_style = style;
-        *body = Some(violin);
-    }
-    series
+fn violin_series(id: &str, color: Color, violin: Violin) -> SeriesConfig {
+    SeriesConfig::box_plot(id, format!("{id}.pos"), format!("{id}.record"), color).violin(violin)
 }
 
 /// A density half over `{id}.curve` and `{id}.density`, its widest point
@@ -292,7 +257,7 @@ fn half(id: &str, peak: f64, fill: Option<Color>, outline: Option<Color>) -> Vio
 
 fn save_scene(
     r: &mut Renderer,
-    chart: &Chart,
+    chart: &mut Chart,
     specs: &[SeriesConfig],
     bg: Color,
     path: &Path,
@@ -308,7 +273,7 @@ fn save_scene(
     if colored < 2000 {
         return Err(format!("{}: missing chart colours ({colored})", path.display()).into());
     }
-    std::fs::write(path, encode_png(&image)?)?;
+    image.save_png(path)?;
     println!("{}: {colored} colored pixels", path.display());
     Ok(())
 }
@@ -384,7 +349,6 @@ fn violins(r: &mut Renderer, out: &Path) -> Result {
     let mut split = violin_series(
         "rt",
         rested,
-        BoxPlotStyle::default(),
         Violin {
             body: ViolinBody::Split {
                 low: Some(half("rt-rested", peak, Some(rested), Some(outline))),
@@ -394,12 +358,13 @@ fn violins(r: &mut Renderer, out: &Path) -> Result {
         },
     );
     split.y_column.clear();
-    swatch(&mut chart, "Rested", rested);
-    swatch(&mut chart, "After 24 h awake", tired);
+    chart = chart
+        .with_legend_swatch("Rested", rested)
+        .with_legend_swatch("After 24 h awake", tired);
     chart.set_y_range(200., 1000.);
     chart.config_mut().left_y.major_spacing = 200.;
     chart.config_mut().left_y.auto_significant_digits();
-    save_scene(r, &chart, &[split], bg, &out.join("gallery-violin.png"))
+    save_scene(r, &mut chart, &[split], bg, &out.join("gallery-violin.png"))
 }
 
 // Rainclouds: door-to-door commute times by mode, each a half violin of the
@@ -468,20 +433,9 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     config.grid.show_major_x = true;
     config.grid.show_major_y = false;
     config.legend.visible = false;
-    let style = BoxPlotStyle {
-        caps: false,
-        show_outliers: false,
-        outline_color: ink,
-        median_color: ink,
-        median_width: 2.0,
-        whisker_color: ink,
-        whisker_width: 1.4,
-        ..BoxPlotStyle::default()
-    };
-    let mut cloud = violin_series(
+    let cloud = violin_series(
         "commute",
         modes[0].2,
-        style,
         Violin {
             body: ViolinBody::Split {
                 low: None,
@@ -490,12 +444,17 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
             },
             box_width: 0.1,
         },
-    );
-    if let DataRenderType::BoxPlot {
-        points, overrides, ..
-    } = &mut cloud.render_type
-    {
-        *overrides = Some(
+    )
+    .style_box_plot(|parts| {
+        let style = parts.style;
+        style.caps = false;
+        style.show_outliers = false;
+        style.outline_color = ink;
+        style.median_color = ink;
+        style.median_width = 2.0;
+        style.whisker_color = ink;
+        style.whisker_width = 1.4;
+        *parts.overrides = Some(
             modes
                 .iter()
                 .skip(1)
@@ -506,7 +465,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
                 })
                 .collect(),
         );
-        *points = Some(BoxPoints {
+        *parts.points = Some(BoxPoints {
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle {
@@ -517,11 +476,17 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
                 ..BoxPointsStyle::default()
             },
         });
-    }
+    });
     chart.set_x_range(0., 80.);
     chart.config_mut().bottom_x.major_spacing = 10.;
     chart.config_mut().bottom_x.auto_significant_digits();
-    save_scene(r, &chart, &[cloud], bg, &out.join("gallery-raincloud.png"))
+    save_scene(
+        r,
+        &mut chart,
+        &[cloud],
+        bg,
+        &out.join("gallery-raincloud.png"),
+    )
 }
 
 fn main() -> Result {

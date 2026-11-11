@@ -16,7 +16,7 @@ use renderer::color::Color;
 use renderer::config::{ConstellationOptions, DrawStyle};
 use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig};
 use renderer::default;
-use renderer::layout::{ChartArea, Rect};
+use renderer::layout::Rect;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, PreparedFrame, Renderer, RendererDevice, Series,
 };
@@ -108,13 +108,6 @@ fn build_state(
         .collect();
 
     let mut config = default::default_config();
-    let placeholder = Rect {
-        x: 0,
-        y: 0,
-        width: 800,
-        height: 600,
-    };
-    config.chart_area = ChartArea(placeholder);
     config.draw_style = DrawStyle::Constellation(ConstellationOptions::default());
     // Light chrome on the dark backdrop; no grid; no legend box.
     let chrome = Color::from_rgb8(186, 194, 210);
@@ -135,15 +128,19 @@ fn build_state(
     config.grid.show_minor_y = false;
     config.legend.visible = false;
 
+    // A first-frame guess: prepare moves the chart to its egui rect.
     let mut chart = Chart::new(config)
+        .with_area(0, 0, 800, 600)
         .with_title("Sparse constellation")
         .with_x_title("8 source points")
         .with_y_title("value");
     chart.set_x_range(-0.03, 1.03);
     chart.set_y_range(0.0, 100.0);
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
 
     let view = renderer
-        .create_chart_view(&chart, placeholder)
+        .create_chart_view(&chart, chart.config().chart_area.0)
         .map_err(|e| format!("create_chart_view failed: {e}"))?;
 
     Ok(FiggyState {
@@ -211,7 +208,10 @@ impl CallbackTrait for LabCallback {
         // A moved panel is a new chart area; prepare redraws the raster
         // there. The dirty bits only need resetting.
         if state.view.panel_rect() != self.panel_rect_px {
-            state.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
+            let r = self.panel_rect_px;
+            state.chart.set_area(r.x, r.y, r.width, r.height);
+            // Refit the margins to the labels at the new size.
+            state.chart.fit_layout();
         }
         let _ = state.chart.consume_data_dirty();
         let _ = state.chart.consume_raster_dirty();

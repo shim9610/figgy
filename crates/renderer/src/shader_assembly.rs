@@ -885,6 +885,8 @@ mod tests {
                     metrics,
                     selection_color,
                     selection,
+                    radar,
+                    ring,
                 }
             ),
             mirror!(

@@ -99,13 +99,15 @@ pub enum SceneKind {
     TriMesh,
     /// The same mesh as a surface in a 3D box (#210).
     TriSurface,
+    /// Raw channels printed in physical units (#273).
+    AxisUnits,
     /// Four channels of an evenly sampled recording as monotonic-x lines
     /// (#271).
     Monotonic,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 47] = [
+    pub const ALL: [SceneKind; 48] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -152,6 +154,7 @@ impl SceneKind {
         SceneKind::Feynman,
         SceneKind::TriMesh,
         SceneKind::TriSurface,
+        SceneKind::AxisUnits,
         SceneKind::Monotonic,
     ];
 
@@ -203,6 +206,7 @@ impl SceneKind {
             SceneKind::Feynman => "Feynman diagrams",
             SceneKind::TriMesh => "Triangle mesh (flow past a cylinder)",
             SceneKind::TriSurface => "3D triangle mesh surface",
+            SceneKind::AxisUnits => "Axis units (raw counts in volts)",
             SceneKind::Monotonic => "Monotonic x (recorded channels)",
         }
     }
@@ -433,6 +437,13 @@ impl SceneKind {
                  columns: the Rydberg members from n = 8 to the limit as one band \
                  per column, the low members labelled, crowds collapsed to brackets. \
                  Pick a level or a band; zoom into a column."
+            }
+            SceneKind::AxisUnits => {
+                "The host keeps the raw channels; the axes print them in physical \
+                 units (AxisOptions.unit): 16-bit ADC counts on Y as volts \
+                 (scale 5/32768), sample indices on X as milliseconds at 2 kHz, and \
+                 the overlay's kelvin as degrees Celsius (offset -273.15). The ticks \
+                 are round in the shown units. Pick a point: it reads in counts."
             }
         }
     }
@@ -702,6 +713,7 @@ pub fn build(
         SceneKind::EnergyLevelsCu => grotrian_scene(grotrian_sets::copper()),
         SceneKind::EnergyLevelsU => grotrian_scene(grotrian_sets::uranium()),
         SceneKind::EnergyLevelsArAll => grotrian_scene(grotrian_sets::argon_all()),
+        SceneKind::AxisUnits => axis_units(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -2093,6 +2105,93 @@ fn twin_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         monotonic: Vec::new(),
         config: with_legend(chart.config().clone(), &series),
         series,
+    })
+}
+
+/// Raw channels printed in physical units (#273): a 16-bit ADC channel in
+/// counts on `left_y` printed as volts, sample indices on `bottom_x`
+/// printed as milliseconds at 2 kHz, and an overlay temperature channel in
+/// kelvin printed as degrees Celsius. The columns stay raw; only the axes
+/// convert what they print.
+fn axis_units(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::AxisUnit;
+    let samples: Vec<f64> = (0..400).map(f64::from).collect();
+    upload(r, "au_sample", samples.clone())?;
+    upload(
+        r,
+        "au_counts",
+        samples
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                16384.0 + 12000.0 * (t * 0.045).sin() * (-t / 320.0).exp() + 300.0 * noise(31, i)
+            })
+            .collect(),
+    )?;
+    upload(
+        r,
+        "au_kelvin",
+        samples
+            .iter()
+            .enumerate()
+            .map(|(i, t)| 296.2 + 3.5 * t / 400.0 + 0.25 * noise(32, i))
+            .collect(),
+    )?;
+    let mut config = base_config("Raw channels in physical units", "Time (ms)", "Voltage (V)");
+    config.right_y.line_visible = false;
+    config.right_y.tick = renderer::config::TickVisibility::None;
+    // 2 kHz: half a millisecond per sample, on both x axes so their ticks
+    // agree.
+    for axis in [&mut config.bottom_x, &mut config.top_x] {
+        axis.unit = Some(AxisUnit::new(0.5, 0.0));
+    }
+    config.left_y.unit = Some(AxisUnit::new(5.0 / 32768.0, 0.0));
+    let rust = Color::from_rgb8(176, 64, 32);
+    let mut overlay = OverlayLayer {
+        series: vec!["temperature".into()],
+        ..Default::default()
+    };
+    overlay.y_axis.unit = Some(AxisUnit::new(1.0, -273.15));
+    overlay.y_axis.out_margin = 110.0;
+    overlay.y_axis.title_option.visible = true;
+    overlay.y_axis.title_option.text = RichText::plain("Temperature (°C)", rust, 18.0, "");
+    overlay.y_axis.label_style.color = rust;
+    overlay.y_axis.line_color = rust;
+    config.overlays.push(overlay);
+    // Away from the overlay axis band on the right.
+    config.legend.corner = renderer::config::LegendCorner::TopLeft;
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 399.0);
+    chart.set_y_range(0.0, 32768.0);
+    chart.auto_fit_overlay_y_union(r.pool(), 0, &["au_kelvin"], 0.1)?;
+    let series = vec![
+        series(
+            "voltage",
+            "au_sample",
+            "au_counts",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 1.5)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "temperature",
+            "au_sample",
+            "au_kelvin",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(rust, ScatterShape::Circle, 3.0)),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+        monotonic: Vec::new(),
     })
 }
 

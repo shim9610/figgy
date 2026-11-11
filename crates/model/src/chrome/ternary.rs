@@ -30,6 +30,39 @@ fn edge_point(g: &TernaryGeometry, k: usize, f: f32, offset: f32) -> (f32, f32) 
     )
 }
 
+/// How far the tick labels of edge `k` reach past the edge along its
+/// outward normal, as [`emit_ternary_labels`] places them: the line offset,
+/// the tick gap, the largest extent along the normal of a label of any
+/// major (the drawn labels are those), and the label offset along it.
+/// `None` when the labels are hidden or the chart is not ternary. The
+/// edge's title keeps the title gap past this (#272).
+pub(crate) fn ternary_label_reach(
+    config: &Config,
+    k: usize,
+    measure: &dyn MeasureText,
+) -> Option<f32> {
+    let g = config.ternary_geometry()?;
+    let axis = ternary_axis(config, k);
+    let ls = &axis.label_style;
+    if !ls.visible || !ls.label_visible {
+        return None;
+    }
+    let n = g.outward_normal(k);
+    let gap = super::polar::outward_tick(axis) + ls.font_size.max(0.0) / 3.0;
+    // Every major the axis walks, past the corner's 0 as the labels skip
+    // it, so the widest of them bounds the band without a list.
+    crate::tick::major_ticks(axis)
+        .filter(|value| fraction(axis, *value).is_some_and(|f| f > 1e-6))
+        .map(|value| {
+            let (_, m) = super::polar::tick_text(axis, value, measure);
+            n[0].abs() * m.width + n[1].abs() * (m.ascent + m.descent)
+        })
+        .fold(None, |widest: Option<f32>, extent| {
+            Some(widest.map_or(extent, |w| w.max(extent)))
+        })
+        .map(|widest| axis.line_offset + gap + widest + ls.label_offset_y.max(0.0))
+}
+
 /// The ternary grid below the data: for each component, a line of constant
 /// value at each tick of its axis, from edge to edge (minor ticks first, so
 /// major lines paint over them). The x family takes the grid's x styles, y

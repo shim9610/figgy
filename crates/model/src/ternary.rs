@@ -271,18 +271,27 @@ impl Config {
     /// Where the title of component `k`'s axis sits: centred past the
     /// edge's tick and label band along the outward normal, parallel to the
     /// edge and reading left to right, moved by the title offsets in screen
-    /// space. `None` when the chart is not ternary.
+    /// space. `label_reach` is how far the drawn tick labels reach along the
+    /// normal (the widest label's extent along it, as the chrome measures
+    /// it); the title keeps auto_layout's title gap past that (#270, #272),
+    /// half the label font and at least `LABEL_GAP`, so a wide label on a
+    /// slanted edge does not run into it. `None` when the chart is not
+    /// ternary.
     pub fn ternary_title_placement(
         &self,
         k: usize,
         offset: (f32, f32),
         extents: TextExtents,
+        label_reach: Option<f32>,
     ) -> Option<TitlePlacement> {
         let g = self.ternary_geometry()?;
-        let (labels, _) = edge_band(ternary_axis(self, k));
+        let axis = ternary_axis(self, k);
+        let (labels, _) = edge_band(axis);
+        let gap = crate::chrome::label_title_gap(axis.label_style.font_size);
+        let band = label_reach.map_or(labels, |reach| labels.max(reach + gap));
         let [a, b] = g.edge(k);
         let n = g.outward_normal(k);
-        let reach = labels + extents.height() * 0.5;
+        let reach = band + extents.height() * 0.5;
         let center = (
             (a[0] + b[0]) * 0.5 + n[0] * reach + offset.0,
             (a[1] + b[1]) * 0.5 + n[1] * reach + offset.1,
@@ -687,6 +696,87 @@ mod tests {
         assert_eq!(partial.color, crate::defaults::ternary_region_style().color);
     }
 
+    /// Each edge's title keeps auto_layout's title gap (#270) past the
+    /// farthest reach of its own tick labels along the edge's normal, so
+    /// the 50 at the middle of a slanted edge no longer touches it (#272).
+    #[test]
+    fn titles_keep_the_title_gap_past_their_labels() {
+        struct HalfEm;
+        impl crate::text::MeasureText for HalfEm {
+            fn measure_plain(&self, text: &str, _family: &str, size: f32) -> TextExtents {
+                TextExtents {
+                    width: text.chars().count() as f32 * size * 0.5,
+                    ascent: size * 0.8,
+                    descent: size * 0.2,
+                }
+            }
+            fn measure_rich(&self, text: &crate::text::RichText) -> TextExtents {
+                let size = text.font_size;
+                TextExtents {
+                    width: text.segments.len() as f32 * size * 0.5,
+                    ascent: size * 0.8,
+                    descent: size * 0.2,
+                }
+            }
+        }
+        let mut config = chart();
+        config.chart_area.0.width = 900;
+        config.chart_area.0.height = 800;
+        for (k, text) in ["Sand (%)", "Silt (%)", "Clay (%)"].into_iter().enumerate() {
+            let axis = match k {
+                0 => &mut config.bottom_x,
+                1 => &mut config.left_y,
+                _ => &mut config.right_y,
+            };
+            axis.major_spacing = 10.0;
+            axis.label_style.font_size = 16.0;
+            axis.label_style.visible = true;
+            axis.label_style.label_visible = true;
+            let title = &mut axis.title_option;
+            title.visible = true;
+            title.text = crate::text::RichText::plain(text, title.text.color, 18.0, "");
+        }
+        let g = config.ternary_geometry().unwrap();
+        for (k, side) in [Side::Bottom, Side::Left, Side::Right]
+            .into_iter()
+            .enumerate()
+        {
+            let n = g.outward_normal(k);
+            let [a, _] = g.edge(k);
+            // Along the normal from the edge.
+            let out = |p: (f32, f32)| (p.0 - a[0]) * n[0] + (p.1 - a[1]) * n[1];
+            let mut reach = f32::NEG_INFINITY;
+            crate::select::emit_element(
+                &config,
+                &crate::layout::Element::AxisLabel(side.clone()),
+                &HalfEm,
+                &mut crate::sink::Parts(&mut |part| {
+                    let r = part.extent();
+                    for corner in [
+                        (r.x, r.y),
+                        (r.x + r.width, r.y),
+                        (r.x, r.y + r.height),
+                        (r.x + r.width, r.y + r.height),
+                    ] {
+                        reach = reach.max(out(corner));
+                    }
+                }),
+            );
+            assert!(reach.is_finite(), "{k}: labels drawn");
+            let m = crate::text::MeasureText::measure_rich(
+                &HalfEm,
+                &ternary_axis(&config, k).title_option.text,
+            );
+            let reach_measured = crate::chrome::ternary_label_reach(&config, k, &HalfEm);
+            let title = config
+                .ternary_title_placement(k, (0.0, 0.0), m, reach_measured)
+                .unwrap();
+            let inner = out(title.rotation_center) - m.height() * 0.5;
+            let gap = crate::chrome::label_title_gap(16.0);
+            assert!(inner - reach >= gap - 1e-3, "{k}: {inner} past {reach}");
+        }
+    }
+
     #[test]
     fn titles_sit_past_each_edge_along_it() {
         let config = chart();
@@ -697,7 +787,9 @@ mod tests {
             descent: 3.0,
         };
         for k in 0..3 {
-            let p = config.ternary_title_placement(k, (0.0, 0.0), m).unwrap();
+            let p = config
+                .ternary_title_placement(k, (0.0, 0.0), m, None)
+                .unwrap();
             let [a, b] = g.edge(k);
             let n = g.outward_normal(k);
             let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
@@ -710,14 +802,18 @@ mod tests {
         }
         assert_eq!(
             config
-                .ternary_title_placement(0, (0.0, 0.0), m)
+                .ternary_title_placement(0, (0.0, 0.0), m, None)
                 .unwrap()
                 .rotation_degrees,
             0.0
         );
         // The offset moves the title in screen space.
-        let at = config.ternary_title_placement(1, (0.0, 0.0), m).unwrap();
-        let moved = config.ternary_title_placement(1, (5.0, -7.0), m).unwrap();
+        let at = config
+            .ternary_title_placement(1, (0.0, 0.0), m, None)
+            .unwrap();
+        let moved = config
+            .ternary_title_placement(1, (5.0, -7.0), m, None)
+            .unwrap();
         assert_eq!(
             moved.rotation_center,
             (at.rotation_center.0 + 5.0, at.rotation_center.1 - 7.0)

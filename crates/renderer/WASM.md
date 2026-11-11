@@ -458,6 +458,22 @@ chart.set_config(JSON.stringify(rangeConfig));
 
 범위와 그에 맞는 눈금·라벨 설정을 함께 계산하려면 `auto_fit_x`, `auto_fit_y`, `auto_fit_all`, `auto_fit_colorbar`를 사용한다. `auto_fit_all`은 활성 레이어의 축만 맞춘다(5절 `<figgy-chart>` 공개 API 표의 「범위 맞춤」 참고). `set_title`은 필요하면 제목 영역도 넓힌다. 기존 여백을 그대로 두려면 `chart_title.text`를 직접 편집한다. `set_x_title`과 `set_y_title`은 축 제목 텍스트만 바꾼다. 네이티브에서 같은 작업은 [direct SSOT edits and convenience helpers](API.md#direct-ssot-edits-and-convenience-helpers)를 참고한다.
 
+#### 라벨 속 수식
+
+텍스트 설정 함수(`set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`, `add_line_series`와
+`set_series_label`의 라벨, 이를 그대로 넘기는 `<figgy-chart>` 메서드)는 matplotlib이 라벨을 읽듯
+텍스트를 읽는다(#272). `$…$`와 `\(…\)` 구간은 본문 스타일, `$$…$$` 구간은 디스플레이 스타일의
+TeX이고, `\$`는 달러 기호다. TeX를 해석할 수 없는 텍스트는 쓴 그대로 보이며 오류를 던지지 않는다.
+JavaScript 문자열 리터럴에서는 백슬래시를 두 번 쓴다. 네이티브 편의 함수도 같은 함수
+(`text::rich_segments_from_label`)로 변환한다([USAGE.md](USAGE.md#라벨-속-수식)). `RichText` JSON 값
+(`set_config`, `add_annotation`, `add_corner_note`, `rich_text_from_tex`의 결과)은 받은 그대로 쓴다.
+
+```js
+chart.set_y_title("$\\sin(2\\pi f t)$");
+chart.set_series_label("fit", "$\\hat y \\pm 1.96\\sigma$");
+chart.set_x_title("Price (\\$)"); // 달러 기호
+```
+
 직접 넣은 설정도 일반 검증과 렌더링 안전 한도를 거친다. 눈금 설정을 그대로 두면 데이터 좌표에서의 의미는 유지되지만, 화면상 눈금 위치나 표시되는 라벨 수는 바뀔 수 있다. `set_config`는 교체되는 설정에 묶인 대기 중인 자동 맞춤 작업도 취소한다. 다시 맞춰야 할 때만 새로 요청한다.
 
 `Config`와 `Vec<SeriesConfig>`는 GPU 핸들이 없는 데이터 구조다. `model`의 `serde` 기능을 켜면 전체를 JSON으로 직렬화할 수 있다. 이 기능은 기본적으로 꺼져 있어 불필요한 의존성을 추가하지 않는다. 웹 래퍼의 `get_config` / `set_config` / `get_series` / `set_series`로 설정을 읽고 수정할 수 있다.
@@ -494,6 +510,24 @@ for (const axis of [cfg.left_y, cfg.right_y]) {
 chart.set_config(JSON.stringify(cfg));
 // 선택 지점의 주석 앵커도 확률로 돌아온다: {"Data":{"x":…,"y":0.97}}
 const anchor = JSON.parse(chart.pointer_to_anchor(x, y, "Data"));
+```
+
+눈금 라벨이 모서리에서 건너편 축의 라벨이나 축 끊김 표시와 부딪힐 때의 처리(#272)도 라벨 형식처럼 축의 `label_style.clearance`로 정한다. 기본값 `"Auto"`(JSON에서 생략)는 두 상자가 가로와 세로 모두 시각적 간격보다 가까우면 그 라벨을 뺀다. 이 간격은 기본 눈금 라벨 글꼴 18 px인 두 라벨 사이에서 합계 2 px이고, 각 상자가 자기 글꼴 크기에 비례한 절반씩을 맡으므로 `a` px 라벨과 `b` px 라벨 사이는 `(a + b) / 18` px이며 화면·내보내기 배율에 맞춰 커진다. 그래서 18 px에서 1 px 떨어진 상자는 빼고, 간격 이상 떨어져 따로 보이는 라벨은 그대로 둔다. 모서리에서는 한 축만 비켜 주며(y축은 x축에, x축은 범주형 y축에만, 3D 차트의 z축 `right_y`는 바닥 축 라벨에) 그 축의 설정만 따른다. `"Keep"`은 그 축의 라벨을 하나도 빼지 않는다.
+
+```js
+const cfg = JSON.parse(chart.get_config());
+cfg.left_y.label_style.clearance = "Keep";  // 모서리의 y 라벨도 남긴다
+chart.set_config(JSON.stringify(cfg));
+```
+
+축은 데이터를 그대로 둔 채 값을 다른 단위로 찍을 수 있다(#273). 축의 `unit`을 `{ "scale": s, "offset": o }`로 정하면 눈금 라벨이 `s * value + o`를 찍는다(키가 없으면 데이터 값). 라벨 설정처럼 `get_config` / `set_config`로 정하고, 색상 막대 축은 `set_colorbar_axis`로도 정한다. 눈금은 표시 단위로 고르므로 라벨이 딱 떨어지는 수이고, `major_spacing`은 표시 단위로 읽는다. `auto_fit_*`는 표시 범위에 맞는 간격을 고른다. `min`, `max`, 피킹 결과는 데이터 단위 그대로다. `set_config`는 0이거나 유한하지 않은 `scale`, 유한하지 않은 `offset`, `offset`이 있거나 `scale`이 음수인 로그축 단위, 확률 축·타임스탬프 라벨 축·범주형 축의 단위를 `code`(`AxisUnitScale`, `AxisUnitOffset`, `AxisUnitLog`, `AxisUnitProbability`, `AxisUnitTimestamp`, `AxisUnitCategorical`)와 함께 거부한다.
+
+```js
+const cfg = JSON.parse(chart.get_config());
+cfg.left_y.unit = { scale: 5 / 32768, offset: 0 };  // 16비트 ADC 카운트를 볼트로
+cfg.bottom_x.unit = { scale: 1, offset: -273.15 };  // 켈빈을 섭씨로
+chart.set_config(JSON.stringify(cfg));
+chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 간격
 ```
 
 `set_series(json)`는 `Vector` 시리즈를 두 형식으로 받는다. `components.Points`는 기준점과 인덱스가 맞는 `u` / `v` 컬럼을, `components.Grid`는 좌표 컬럼 위의 행렬 두 개를 사용한다. 색상 매핑을 쓰는 벡터 시리즈에는 `colorbar`가 필요하다. 선택한 화살표나 셀의 `selection_details`는 `u`, `v`를 돌려주고, 색상 매핑을 쓰면 `color_value`도 돌려준다. 3D 차트의 점 벡터(`z_column`과 `w`를 지정, #211)는 `z`와 `w`도 돌려준다. 자세한 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.
@@ -564,7 +598,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 스타일 옵션 | 독립 함수 `draw_style_modes()`는 모드 이름의 JSON 배열을, `draw_style_param_specs(mode)`는 `{key, min, max, default, integer}`의 JSON 배열을 반환한다. UI 슬라이더를 만들 때 이 값을 사용한다. 최소·최대는 권장 범위이며 설정은 바깥 값도 허용하고 렌더러가 안전상 필요한 제한만 적용한다. 기본값은 모델의 `Default`와 같다. |
 | 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. `register_record(id, fields)`와 `register_ragged(id, values, offsets)`는 레코드와 ragged 컬럼을, `register_triangles(id, Uint32Array)`는 삼각형 인덱스 컬럼을 등록하거나 교체한다. `remove_triangles(id)`는 삼각형 인덱스 컬럼을 제거한다. |
 | 시리즈 | `add_line_series(id, x, y, width, label)`은 추가 또는 교체, `remove_series(id)`는 제거다. |
-| 범례 | `set_series_label(id, label)`로 텍스트를 바꾼다. 줄바꿈과 유니코드 첨자를 지원하며 빈 문자열이면 해당 행을 지운다. `set_series` / `apply_color_cycle`은 인식 가능한 자동 기호만 갱신하고 사용자 텍스트는 보존한다. 전체 재생성은 `reset_legend_from_series_labels()`를 호출한다. 직접 편집할 때는 `legend.content`의 줄바꿈·탭·고정 너비 기호·구간별 색을 사용한다. 기호의 `field_em`은 2.0em이며 선은 `rule:true`, 점선 패턴은 `rule_dash`로 지정한다. `content.font` / `font_size`와 구간별 설정은 그리기 시 적용한다. |
+| 범례 | `set_series_label(id, label)`로 텍스트를 바꾼다. 줄바꿈, 유니코드 첨자와 `$…$` 수식(3.8절 「라벨 속 수식」)을 지원하며 빈 문자열이면 해당 행을 지운다. `set_series` / `apply_color_cycle`은 인식 가능한 자동 기호만 갱신하고 사용자 텍스트는 보존한다. 전체 재생성은 `reset_legend_from_series_labels()`를 호출한다. 직접 편집할 때는 `legend.content`의 줄바꿈·탭·고정 너비 기호·구간별 색을 사용한다. 기호의 `field_em`은 2.0em이며 선은 `rule:true`, 점선 패턴은 `rule_dash`로 지정한다. `content.font` / `font_size`와 구간별 설정은 그리기 시 적용한다. |
 | 위치 판정 | `hit_test(x, y)`는 요소 ID 또는 `null`을 반환한다. 데이터 영역·축·눈금 라벨·제목·색상 막대와 그 세부 요소를 구분한다. 선택 상태 자체는 바꾸지 않는다. 위치는 렌더러의 레이아웃에서 계산하므로 호스트가 별도로 상자를 관리할 필요가 없다. 등록 요소는 활성 레이어를 따른다. 오버레이가 활성이면 `overlay_<n>:axis_right`, `overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right`, `overlay_<n>:legend`가 답하고 기본 Y 축은 답하지 않는다. `"Annotations"`가 활성이고 주석 층이 보이면 그려진 주석 항목이 공유 요소 위에서 `annotation_<n>`으로 답하고, 다른 레이어에서는 클릭이 주석을 통과한다. 저수준 `FiggyChart.decoration_bounds(id)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 `annotation_<n>`도 받아 그 항목의 선택 상자를 돌려준다. 서브플롯(`{ "Subplot": i }`)이나 그 오버레이(`{ "SubplotOverlay": [i, j] }`)가 활성이면 그 서브플롯 차트의 요소가 `subplot_<i>:` 접두사를 붙인 id(`subplot_0:data_area`, `subplot_0:axis_left`, `subplot_0:overlay_0:axis_right` 등)로 답하고 부모 요소는 답하지 않는다. 드래그·리사이즈는 그 서브플롯의 `config`에 기록된다. `"Base"`가 활성이면 모든 서브플롯의 테두리(`subplot_<i>:frame`)와 그 서브플롯 자신의 장식 요소(`subplot_<i>:axis_left` 등, 플롯은 제외)도 부모 요소 위에 답한다(#205). 서브플롯의 플롯 안을 누르면 테두리가 답하고, 패널이 겹친 자리에서는 위에 그려진 패널이 포인터를 받는다(`Config::subplot_at`). |
 | 레이어 | `set_active_layer(json)`은 `"Base"`, `{ "Overlay": n }`, `"Annotations"`, `{ "Subplot": i }`, `{ "SubplotOverlay": [i, j] }` JSON으로 상호작용 대상 레이어를 정하고 히트 맵을 그 레이어로 다시 만든다. 레이어가 바뀌면 요소 선택과 주석 선택을 지운다(데이터 선택은 유지). 범위 밖 오버레이·서브플롯 인덱스와 서브플롯 인덱스가 범위 밖인 `SubplotOverlay`는 `"Base"`로, 서브플롯은 있지만 그 오버레이가 없는 `SubplotOverlay`는 해당 `{ "Subplot": i }`로 저장한다. `<figgy-chart>`의 `set_active_layer`는 저장된 레이어를, `active_layer()`는 현재 레이어를 파싱한 값(`"Base"`, `{ Overlay: 0 }` 등)으로 돌려준다. 저수준 `FiggyChart`의 두 메서드는 같은 값을 JSON 문자열로 돌려준다. 활성 레이어는 `auto_fit_all`이 맞출 축도 정한다(「범위 맞춤」 참고). `auto_fit_overlay_y(layer, col, pad)`는 `auto_fit_y`와 같은 규칙으로 오버레이 `layer`의 Y 축을 맞추며, 범위 밖 인덱스는 오류다. 저수준 `FiggyChart.auto_fit_subplot(i, "x" | "y", [cols], pad)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 서브플롯 축을 맞추며, 링크된 축이면 링크 묶음 전체가 움직인다. 범위 밖 서브플롯 인덱스나 `"x"` / `"y"`가 아닌 축 이름은 오류다. 오버레이와 서브플롯 자체(`overlays`, `subplots` 배열)는 `get_config` / `set_config`로 편집한다. 링크된 축을 바꾸면 같은 호출 안에서 묶음 전체가 움직인다. 그려지는 픽셀은 활성 레이어에 의존하지 않는다. |
 | 데이터 피킹 | `pick_point(x, y, max_distance_px)`는 `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`을 반환한다. 점은 스타일을 반영한 기호 크기, 선은 선분과의 거리로 판정하고 가까운 끝점을 고른다. 오차 막대 몸통·끝선은 대상이 아니다. 좌표는 반환된 인덱스로 원본 컬럼에서 조회한다. 값 라벨(범주형 막대·박스플롯·레이더)을 그리는 차트에서는 포인터 아래의 라벨이 점보다 먼저 답하며, 이때 `point_index`는 범주 행이고 `label_id`(`"series:<시리즈 ID>:label:<행>"`)가 붙는다. `pick_data`는 같은 라벨을 `{ kind: "value_label", series_id, category_index, label_id, distance_px }`로 돌려준다. |
@@ -579,7 +613,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 선택 표시 | `set_picked_data(json)`는 `DataSelectionsConfig` 또는 `null` JSON 문자열로 `Config.picked_data`만 교체한다. 점·막대·셀·등고선·값 라벨 선택이 모두 여기에 들어간다. `null`은 표시를 지운다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어와 서브플롯도 함께 그린다. |
-| 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. 색상 막대 제목에 빈 문자열을 주면 숨긴다. `set_title`은 헬퍼이므로 제목이 제목 영역보다 높으면 `chart_title.top_margin`을 함께 늘린다. 영역에 들어가는 제목은 여백을 바꾸지 않는다. |
+| 제목 | `set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`. `$…$` 구간은 수식이다(3.8절 「라벨 속 수식」). 색상 막대 제목에 빈 문자열을 주면 숨긴다. `set_title`은 헬퍼이므로 제목이 제목 영역보다 높으면 `chart_title.top_margin`을 함께 늘린다. 영역에 들어가는 제목은 여백을 바꾸지 않는다. |
 
 점별 스타일은 `set_series(json)` / `get_series()`로 설정하며 전용 WASM 메서드는 없다. 정밀 모드의 산점도는 `point_style_table` / `point_style_index_column` / `point_style_overrides`를, 오차 막대는 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`를 사용한다. 값 컬럼에 따른 점 색상·크기는 산점도의 `point_color_map` / `point_size_map`으로 지정하며, 색상 매핑에는 `colorbar`가 있어야 한다. 스케치·은하수·별자리 스타일은 이 매핑을 모두 무시한다.
 
@@ -1250,6 +1284,73 @@ the data selection; the frame and its label raster are reused. On `FiggyChart`
 the same route drives `hit_test`, `on_press` / `on_move` and
 `decoration_bounds`, as listed in the method table above. The index-based
 annotation methods keep working on every layer.
+
+### Math in labels
+
+The text setters (`set_title`, `set_x_title`, `set_y_title`,
+`set_colorbar_title`, the labels of `add_line_series` and
+`set_series_label`, and the `<figgy-chart>` methods that forward to them)
+read their text the way matplotlib reads a label (#272): `$…$` and `\(…\)`
+spans are TeX in text style, `$$…$$` spans in display style, and `\$` is a
+dollar sign. Text whose TeX does not parse is shown as written; the setter
+does not throw for it. In a JavaScript string literal the backslash is
+written twice. The native wrappers convert through the same function,
+`text::rich_segments_from_label` ([USAGE.md](USAGE.md#math-in-labels)). A
+`RichText` JSON value (`set_config`, `add_annotation`, `add_corner_note`, or
+what `rich_text_from_tex` returns) is taken as it is.
+
+```js
+chart.set_y_title("$\\sin(2\\pi f t)$");
+chart.set_series_label("fit", "$\\hat y \\pm 1.96\\sigma$");
+chart.set_x_title("Price (\\$)"); // a dollar sign
+```
+
+### Tick labels at corners and break marks
+
+Where two axes meet, and beside an axis' break mark, a tick label whose box
+comes within a small visual gap of the other axis' corner label or a
+slash is dropped (#272). The
+choice is each axis' `label_style.clearance`, set through `get_config` /
+`set_config` as its label format is: `"Auto"` (the default, absent from the
+JSON) drops the label where the two boxes come closer than the visual gap
+both across and along the screen (2 px in total between two labels in the
+default 18 px tick label font, each box's half read as that share of its own
+font, so `(a + b) / 18` px between an `a` px and a `b` px label and it
+scales with the display or export), so boxes 1 px apart at 18 px count;
+labels the gap apart or more stay. `"Keep"` drops none for that axis. At a corner one axis
+yields (a y axis to the x axis, an x axis only to a categorical y axis, a
+3D chart's z axis `right_y` to the floor's labels), and only its setting
+decides there.
+
+```js
+const cfg = JSON.parse(chart.get_config());
+cfg.left_y.label_style.clearance = "Keep"; // keep the corner y label too
+chart.set_config(JSON.stringify(cfg));
+```
+
+### Axis units
+
+An axis can print its values in another unit while the data stays raw
+(#273). An axis' `unit`, `{ "scale": s, "offset": o }` (absent by default),
+makes its tick labels read `s * value + o`. It is set through `get_config` /
+`set_config` as the label settings are, and on the colourbar axis through
+`set_colorbar_axis` too. The ticks are planned in the shown units, so the
+labels are round numbers, and `major_spacing` is read in shown units; the
+`auto_fit_*` methods choose it for the shown range. `min`, `max` and the
+picks stay in data units. `set_config` refuses a `scale` that is zero or
+not finite, an `offset` that is not finite, a log axis' unit with an offset
+or a negative scale, and a unit on a probability, timestamp or categorical
+axis, each with its `code` (`AxisUnitScale`, `AxisUnitOffset`,
+`AxisUnitLog`, `AxisUnitProbability`, `AxisUnitTimestamp`,
+`AxisUnitCategorical`).
+
+```js
+const cfg = JSON.parse(chart.get_config());
+cfg.left_y.unit = { scale: 5 / 32768, offset: 0 };  // 16-bit ADC counts as volts
+cfg.bottom_x.unit = { scale: 1, offset: -273.15 };  // kelvin as degrees Celsius
+chart.set_config(JSON.stringify(cfg));
+chart.auto_fit_y("adc", 0.05);                     // a spacing for the shown range
+```
 
 ### Cartesian selection helpers (`FiggyChart`)
 

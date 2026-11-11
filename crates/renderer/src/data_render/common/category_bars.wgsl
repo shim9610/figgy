@@ -68,7 +68,7 @@ const CATEGORY_EDGE_BOTTOM: u32 = 8u;
 /// The series' lane table, sized by what it holds (SHADER_COMMON.md §5.13):
 /// a category bar series' group value column lane bases in group order
 /// (entry `k` member `k`'s), a box plot's record and outlier lanes (§5.15),
-/// a radar series' value column (§5.17).
+/// the value columns of a radar series' label group in member order (§5.17).
 @group(3) @binding(10) var<storage, read> category_lanes: array<u32>;
 
 /// The `(hi, lo)` pair of row `row` in the column at lane `base`.

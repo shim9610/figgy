@@ -18,7 +18,6 @@ use gallery::Result;
 use renderer::{
     Anchor, Annotation, AnnotationKind, Color, Renderer, SeriesConfig,
     config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark},
-    data_config::{DataRenderType, XySeries},
     format::{LabelFormat, PlainNumberFormat},
     text::RichText,
 };
@@ -72,24 +71,19 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_column("gamma-energy", &energy)?;
     r.add_column("gamma-counts", &counts)?;
-    let mut trace = SeriesConfig::line("spectrum", "gamma-energy", "gamma-counts")
-        .color(cyan)
-        .width(2.5)
-        .fill_to(0.);
-    if let DataRenderType::Xy(XySeries {
-        line: Some(line), ..
-    }) = &mut trace.render_type
-    {
-        line.fill_color = Some(Color::from_rgba(cyan.r, cyan.g, cyan.b, 0.14));
-    }
-    let specs = [trace];
+    let specs = [
+        SeriesConfig::line("spectrum", "gamma-energy", "gamma-counts")
+            .color(cyan)
+            .width(2.5)
+            .fill_to(0.)
+            .fill_color(Color::from_rgba(cyan.r, cyan.g, cyan.b, 0.14)),
+    ];
     chart.config_mut().legend.visible = false;
     chart.set_x_range(500., 1450.);
     chart.set_y_range(0., 6000.);
     let config = chart.config_mut();
     config.bottom_x.major_spacing = 50.;
     config.left_y.major_spacing = 1000.;
-    config.left_y.out_margin = 140.;
     for axis in [&mut config.bottom_x, &mut config.left_y] {
         axis.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
     }
@@ -122,7 +116,7 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
         label(1140., 2120., "1173.2 keV", 18., ink),
         label(1300., 1880., "1332.5 keV", 18., ink),
     ];
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-broken-axes.png"))
 }
 

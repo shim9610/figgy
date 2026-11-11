@@ -23,24 +23,21 @@ pub fn theme() -> Theme {
     theme
 }
 
-/// A gallery chart of `size` in the gallery look, with its titles and the
-/// gallery's margins.
+/// A gallery chart of `size` in the gallery look, with its titles. The
+/// margins are fitted to the labels when the chart is saved.
 pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
     let mut chart = Chart::sized(size.0, size.1);
     theme().apply_chrome(chart.config_mut(), SubplotScope::All);
-    let cfg = chart.config_mut();
-    cfg.chart_title.top_margin = 48.0;
-    cfg.left_y.out_margin = 90.0;
-    cfg.bottom_x.out_margin = 70.0;
-    cfg.top_x.out_margin = 16.0;
-    cfg.right_y.out_margin = 24.0;
     chart
         .with_title(title)
         .with_x_title(x_title)
         .with_y_title(y_title)
 }
 
-pub fn save(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &Path) -> Result {
+/// Fit the chart's margins to its labels, render it on white and write it
+/// as a PNG after checking that it drew.
+pub fn save(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: &Path) -> Result {
+    chart.fit_layout();
     let img = r.export_rgba_blocking(
         renderer::ExportSource::chart(chart, series),
         renderer::ExportOptions::panel(1.0).with_clear(Color::WHITE),

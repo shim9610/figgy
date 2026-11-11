@@ -336,12 +336,13 @@ fn validate_column_batch(
     Ok(())
 }
 
-/// Replace the chart title with plain `text` and grow its band to hold it, as
-/// `Chart::with_title` does natively, so a multi-line title set from the
-/// browser is not clipped at the top of the chart.
+/// Replace the chart title with the label `text` (`$…$` spans are TeX,
+/// `renderer::text::rich_segments_from_label`) and grow its band to hold it,
+/// as `Chart::with_title` does natively, so a multi-line or math title set
+/// from the browser is not clipped at the top of the chart.
 #[cfg(any(target_arch = "wasm32", test))]
-fn set_plain_chart_title(config: &mut renderer::Config, text: &str) {
-    config.chart_title.text.segments = renderer::text::rich_segments_from_text(text);
+fn set_chart_title_label(config: &mut renderer::Config, text: &str) {
+    config.chart_title.text.segments = renderer::text::rich_segments_from_label(text);
     let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
     renderer::layout::fit_chart_title_margin(config, &measure);
 }
@@ -510,7 +511,7 @@ mod tests {
     use super::{
         ColumnRegistryAction, FrameDecision, consume_successful_frame, frame_decision,
         picked_data_json_string, picked_label_json_string, picked_point_json_string,
-        prepare_demo_declarations, set_plain_chart_title, validate_column_batch,
+        prepare_demo_declarations, set_chart_title_label, validate_column_batch,
         validate_column_data_len, validate_column_registry_action,
     };
 
@@ -618,19 +619,58 @@ mod tests {
     // default-size line keeps the default band, and a three-line title gets a
     // band at least as tall as its block, so its first line is not clipped.
     #[test]
-    fn set_plain_chart_title_grows_the_band_to_hold_a_multi_line_title() {
+    fn set_chart_title_label_grows_the_band_to_hold_a_multi_line_title() {
         use renderer::text_render::{FontPolicy, measure_rich_text};
 
         let default_band = renderer::default::default_config().chart_title.top_margin;
         let mut config = renderer::default::default_config();
-        set_plain_chart_title(&mut config, "figgy");
+        set_chart_title_label(&mut config, "figgy");
         assert_eq!(config.chart_title.top_margin, default_band);
 
-        set_plain_chart_title(&mut config, "first\nsecond\nthird");
+        set_chart_title_label(&mut config, "first\nsecond\nthird");
         let block = measure_rich_text(&config.chart_title.text, FontPolicy::Standard);
         assert!(block.height() > default_band);
         assert!(config.chart_title.top_margin >= block.height());
         assert!(config.data_area().is_ok());
+    }
+
+    // The text setters read their text as a label (#272): `$…$` spans are
+    // TeX, the same segments `RichText::from_tex` gives; a `\$` is a dollar
+    // sign; text whose TeX does not parse is shown as written. A math title
+    // taller than the band grows it as a multi-line one does.
+    #[test]
+    fn set_chart_title_label_reads_dollar_spans_as_tex() {
+        use renderer::text::rich_segments_from_text;
+        use renderer::text_render::{FontPolicy, measure_rich_text};
+
+        let mut config = renderer::default::default_config();
+        let tex = r"$\displaystyle \sum_{i=1}^{n} \frac{x_i^2}{\sigma^2}$";
+        set_chart_title_label(&mut config, tex);
+        assert_eq!(
+            config.chart_title.text.segments,
+            renderer::text::tex::rich_segments_from_tex(tex).unwrap()
+        );
+        assert!(
+            config
+                .chart_title
+                .text
+                .segments
+                .iter()
+                .any(|s| s.math_node.is_some())
+        );
+        let block = measure_rich_text(&config.chart_title.text, FontPolicy::Standard);
+        assert!(config.chart_title.top_margin >= block.height());
+
+        set_chart_title_label(&mut config, r"Price (\$)");
+        assert_eq!(
+            config.chart_title.text.segments,
+            rich_segments_from_text("Price ($)")
+        );
+        set_chart_title_label(&mut config, r"$\frac{$");
+        assert_eq!(
+            config.chart_title.text.segments,
+            rich_segments_from_text(r"$\frac{$")
+        );
     }
 
     // `get_config` / `set_config` and `get_series` / `set_series` are
@@ -683,6 +723,67 @@ mod tests {
         assert!(json.contains(r#""greek":false,"math":true}"#), "{json}");
         let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, series);
+    }
+
+    // An axis' tick label clearance (#272) is set from JavaScript as its
+    // label format is, through `get_config` / `set_config`:
+    // `label_style.clearance` is `"Keep"` when written, absent for the
+    // default `Auto`, and a document without it reads as `Auto`.
+    #[test]
+    fn config_json_carries_the_label_clearance_both_ways() {
+        use renderer::config::LabelClearanceMode;
+
+        let config = renderer::default::default_config();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("clearance"), "{json}");
+        let back: renderer::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.left_y.label_style.clearance, LabelClearanceMode::Auto);
+
+        let mut value = serde_json::to_value(&config).unwrap();
+        value["left_y"]["label_style"]["clearance"] = "Keep".into();
+        let edited: renderer::Config = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            edited.left_y.label_style.clearance,
+            LabelClearanceMode::Keep
+        );
+        assert_eq!(
+            edited.bottom_x.label_style.clearance,
+            LabelClearanceMode::Auto
+        );
+        assert_eq!(serde_json::to_value(&edited).unwrap(), value);
+        value["left_y"]["label_style"]["clearance"] = "Never".into();
+        assert!(serde_json::from_value::<renderer::Config>(value).is_err());
+    }
+
+    // An axis `unit` (#273) is absent by default, comes back from
+    // `set_config` as `{ "scale", "offset" }` unchanged, and a unit the axis
+    // refuses fails validation with its code.
+    #[test]
+    fn config_json_carries_the_axis_unit_both_ways() {
+        use renderer::config::AxisUnit;
+
+        let config = renderer::default::default_config();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("\"unit\""), "{json}");
+        let back: renderer::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.left_y.unit, None);
+
+        let mut value = serde_json::to_value(&config).unwrap();
+        value["left_y"]["unit"] = serde_json::json!({ "scale": 0.5, "offset": -273.15 });
+        let edited: renderer::Config = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(edited.left_y.unit, Some(AxisUnit::new(0.5, -273.15)));
+        assert_eq!(edited.bottom_x.unit, None);
+        assert_eq!(edited.validate_chart(), Ok(()));
+        assert_eq!(serde_json::to_value(&edited).unwrap(), value);
+
+        value["left_y"]["unit"] = serde_json::json!({ "scale": 0.0, "offset": 0.0 });
+        let refused: renderer::Config = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            refused.validate_chart().unwrap_err().kind.code(),
+            "AxisUnitScale"
+        );
+        value["left_y"]["unit"] = serde_json::json!({ "scale": 2.0 });
+        assert!(serde_json::from_value::<renderer::Config>(value).is_err());
     }
 
     // A stem (#206) reaches JavaScript through `get_series` and comes back
@@ -1362,7 +1463,7 @@ mod web {
 
     use renderer::layout::{ChartArea, NudgeResult, Rect};
     use renderer::line::LineStylePreset;
-    use renderer::text::{RichText, rich_segments_from_text};
+    use renderer::text::{RichText, rich_segments_from_label};
     use renderer::{
         Chart, ChartId, ChartRenderStamp, ChartView, Color, ColumnSource, CpuTextMeasure,
         DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HiLoColumnSource, HitId,
@@ -1382,7 +1483,7 @@ mod web {
     };
     use crate::{
         ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, PreparedDemoDeclarations,
-        consume_successful_frame, frame_decision, prepare_demo_declarations, set_plain_chart_title,
+        consume_successful_frame, frame_decision, prepare_demo_declarations, set_chart_title_label,
         validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 

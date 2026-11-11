@@ -3,7 +3,7 @@
 //! Do not replace Line with ScatterLine/LineScatterErrorbar: those add planets/jets.
 use renderer::config::{DrawStyle, LegendCorner, MilkywayOptions};
 use renderer::theme::{SubplotScope, Theme};
-use renderer::{Chart, Color, Renderer, SeriesConfig, encode_png};
+use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -37,13 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut chart = Chart::sized(1280, 1024);
     theme.apply_chrome(chart.config_mut(), SubplotScope::All);
     let cfg = chart.config_mut();
-    // The four style previews share these margins, so their plot areas
-    // line up in the row whatever face a draw style uses.
-    cfg.chart_title.top_margin = 60.0;
-    cfg.left_y.out_margin = 200.0;
-    cfg.bottom_x.out_margin = 145.0;
-    cfg.top_x.out_margin = 32.0;
-    cfg.right_y.out_margin = 64.0;
     // After the theme, which writes the draw style too.
     cfg.draw_style = DrawStyle::Milkyway(MilkywayOptions {
         star_density: 70.0,
@@ -99,13 +92,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_legend_from(&series);
     chart.set_x_range(-6.0, 126.0);
     chart.set_y_range(-0.05, 1.08);
+    // Fit the margins to the labels, titles and legend before export.
+    chart.fit_layout();
     let img = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &series),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &series),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let empty = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &[]),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &[]),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let changed = img
         .rgba
@@ -127,7 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "missing line-generated star field: {changed}"
     );
     assert!(img.rgba.chunks_exact(4).all(|p| p[3] == 255));
-    std::fs::write(&output, encode_png(&img)?)?;
+    img.save_png(&output)?;
     println!(
         "{}: 1280x1024, {changed} data-dependent pixels; two Line series",
         output.display()

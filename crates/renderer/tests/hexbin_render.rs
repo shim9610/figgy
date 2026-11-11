@@ -327,6 +327,90 @@ fn every_cell_is_painted_to_its_voronoi_edge() {
     );
 }
 
+/// A lattice that overhangs the axis ranges on every side is clipped to the
+/// data area like every other series (#272): at 1x and 2x, no cell paints
+/// a pixel outside the data area (but for the one pixel of coverage the GPU
+/// gives the scissor's edge, as for every series: `DATA_IMAGE_MARGIN` in
+/// `vector_export.rs`), and the cells cut by its edges are painted up to
+/// them. The colourbar is hidden so every painted pixel is a cell's.
+#[test]
+fn cells_past_the_axis_ranges_are_clipped_to_the_data_area() {
+    let mut r = renderer();
+    let ids = upload(&mut r, &MatrixOrientation::ColumnsAreX);
+    let mut chart = chart();
+    // The lattice spans x 1..5 and y 1..4.5 plus the hexagons' reach: the
+    // ranges cut through its outer cells on all four sides.
+    chart.set_x_range(1.5, 4.5);
+    chart.set_y_range(1.5, 4.0);
+    if let Some(bar) = chart.config_mut().colorbar.as_mut() {
+        bar.visible = false;
+    }
+    // No axis lines or ticks over the cells' edge pixels.
+    let config = chart.config_mut();
+    for axis in [
+        &mut config.bottom_x,
+        &mut config.top_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.line_visible = false;
+        axis.tick = renderer::config::TickVisibility::None;
+    }
+    let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
+    for scale in [1.0f64, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale as f32),
+            )
+            .block_on()
+            .unwrap();
+        save(&format!("hexbin-clipped-{scale}x"), &img);
+        let da = chart.config().data_area().expect("data area");
+        let (x0, y0) = (f64::from(da.x) * scale, f64::from(da.y) * scale);
+        let (x1, y1) = (
+            f64::from(da.x + da.width) * scale,
+            f64::from(da.y + da.height) * scale,
+        );
+        // A cell's colour: the ramp runs from pure red to pure green.
+        let cell = |p: [u8; 4]| p[3] > 40 && p[2] < 40 && (p[0] > 40 || p[1] > 40);
+        let mut outside = 0;
+        let mut inside = 0;
+        for y in 0..img.height {
+            for x in 0..img.width {
+                let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                let within = px > x0 - 1.0 && px < x1 + 1.0 && py > y0 - 1.0 && py < y1 + 1.0;
+                let painted = cell(pixel(&img, (f64::from(x), f64::from(y))));
+                if painted && !within {
+                    outside += 1;
+                }
+                if painted && within {
+                    inside += 1;
+                }
+            }
+        }
+        assert_eq!(outside, 0, "{scale}x: cell pixels outside the data area");
+        let area = (x1 - x0) * (y1 - y0);
+        assert!(
+            f64::from(inside) > 0.95 * area,
+            "{scale}x: the data area is covered by the cells ({inside} of {area})"
+        );
+        // The cut cells are painted up to the edges.
+        let inset = 1.5 * scale;
+        for (at, what) in [
+            ((x0 + inset, (y0 + y1) / 2.0), "left"),
+            ((x1 - inset, (y0 + y1) / 2.0), "right"),
+            (((x0 + x1) / 2.0, y0 + inset), "top"),
+            (((x0 + x1) / 2.0, y1 - inset), "bottom"),
+        ] {
+            assert!(
+                cell(pixel(&img, at)),
+                "{scale}x: the {what} edge is painted"
+            );
+        }
+    }
+}
+
 /// A lattice stretched along y (here 25 times the regular row pitch) with
 /// the y range stretched with it draws the same cells: the nearest centre is
 /// taken in the lattice's own metric, so the cells are stretched hexagons

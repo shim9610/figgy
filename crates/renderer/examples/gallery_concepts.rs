@@ -19,11 +19,10 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Color, ColorMap, Material, Renderer, RendererDevice, SeriesConfig,
+    Color, ColorMap, Material, Renderer, SeriesConfig,
     categorical::*,
     config::{DrawStyle, SketchOptions},
-    data_config::{DataRenderType, FieldFillConfig, MatrixRef, ScatterShape, Shading},
-    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
+    data_config::{MatrixRef, ScatterShape, Shading},
     radial::*,
 };
 use std::path::Path;
@@ -67,8 +66,8 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
                 .width(3.5),
         );
     }
-    let chart = chart.with_legend_from(&specs);
-    let image = export(r, &chart, &specs, bg)?;
+    let mut chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-observability.png"))
 }
 
@@ -112,8 +111,8 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
                 .marker(ScatterShape::CircleFilled, 7.),
         );
     }
-    let chart = chart.with_legend_from(&specs);
-    let image = export(r, &chart, &specs, bg)?;
+    let mut chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-editorial.png"))
 }
 
@@ -166,13 +165,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         },
         ..Default::default()
     };
-    let (mut config, specs, uploads) = renderer::config::Config::from_categorical(&chart);
-    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-        x: 0,
-        y: 0,
-        width: SIZE.0,
-        height: SIZE.1,
-    });
+    let (config, specs, uploads) = renderer::config::Config::from_categorical(&chart);
     // The positions, then the value columns as one batch.
     let (positions, values) = uploads.split_first().expect("the positions column");
     r.add_column(positions.column.clone(), &positions.values)?;
@@ -181,19 +174,40 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         .map(|u| (u.column.as_str(), &u.values as &dyn renderer::ColumnSource))
         .collect();
     r.add_columns(&columns)?;
-    let mut cartesian = renderer::Chart::new(config);
-    cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
-    let image = export(r, &cartesian, &specs, bg)?;
+    let mut cartesian = renderer::Chart::new(config).with_area(0, 0, SIZE.0, SIZE.1);
+    // The value axis runs 0 to 100 (the largest stack is 89) in steps of 20,
+    // printed in the document's integer format, which a range change resets.
+    let format = cartesian.config().bottom_x.label_style.format.clone();
+    cartesian.set_x_range(0., 100.);
+    let value_axis = &mut cartesian.config_mut().bottom_x;
+    value_axis.major_spacing = 20.;
+    value_axis.label_style.format = format;
+    // The legend as the design draws it: no box, a filled square for each
+    // part of the stacks, the entries close together in one row centred
+    // under the x title. The squares are the only fielded segments.
+    let legend = &mut cartesian.config_mut().legend;
+    legend.bg_color = Color::new(0., 0., 0., 0.);
+    legend.border_color = Color::new(0., 0., 0., 0.);
+    legend.padding = 4.;
+    let size = legend.content.font_size;
+    for mark in legend
+        .content
+        .segments
+        .iter_mut()
+        .filter(|s| s.field_em.is_some())
+    {
+        mark.field_em = Some(0.7);
+        mark.font_size = Some(size * 1.3);
+    }
+    styled::legend_row_under_x_title(&mut cartesian, 0.4);
+    let image = export(r, &mut cartesian, &specs, bg)?;
     save(&image, bg, &out.join("concept-revenue.png"))
 }
 
 // 4–5. The same named-value contract, with two very different material choices.
 fn radial_concepts(out: &Path) -> Result {
     // The radial renderer takes a device of its own making.
-    let adapter = request_adapter_blocking(&create_instance())?;
-    let (device, queue) = request_device_blocking(&adapter)?;
-    let gpu = RendererDevice::new(device, queue)?;
-    let mut r = RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut r = RadialRenderer::headless_blocking()?;
     let mut chart = RadialChart {
         slices: vec![
             RadialSlice::new("Design", 38., rgb(245, 103, 87)),
@@ -225,8 +239,8 @@ fn radial_concepts(out: &Path) -> Result {
             ..Default::default()
         },
         ..Default::default()
-    };
-    chart.set_title_text("Studio time / a creative week");
+    }
+    .with_title("Studio time / a creative week");
     chart.format_labels();
     let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
@@ -298,7 +312,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         columns.push(id);
     }
     let levels = (1..=17).map(|i| i as f64 * 0.1).collect();
-    let mut terrain = SeriesConfig::contours(
+    let terrain = SeriesConfig::contours(
         "terrain",
         "east",
         "north",
@@ -306,14 +320,10 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         levels,
     )
     .color(Color::from_rgba(0.92, 0.98, 0.8, 0.65))
-    .width(1.1);
+    .width(1.1)
     // The custom ramp under the isolines, interpolated between the cells.
-    if let DataRenderType::Field(field) = &mut terrain.render_type {
-        field.fill = Some(FieldFillConfig {
-            shading: Shading::Interpolated,
-            ..Default::default()
-        });
-    }
+    .filled()
+    .shading(Shading::Interpolated);
     let specs = [terrain];
     let mut bar = renderer::default::default_colorbar_options();
     // The gallery image was rendered with this gap.
@@ -334,7 +344,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.label_style.font_size = 18.;
     bar.axis.line_color = rgb(164, 185, 120);
     chart.config_mut().colorbar = Some(bar);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-terrain.png"))
 }
 

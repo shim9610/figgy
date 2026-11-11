@@ -24,14 +24,13 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Category, Chart, Color, Renderer, SeriesConfig,
-    config::{LegendCorner, append_legend_entry, scatter_shape_char},
+    Category, Renderer, SeriesConfig,
+    config::LegendCorner,
     data_config::{
         BarGroups, CategoryBarDirection, CategoryBarLabels, DataRenderType, RangeColor,
-        RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers, ScatterShape,
+        RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers,
     },
     format::{LabelFormat, TimestampLabelFormat, TimestampLabelMode},
-    text::RichSegment,
 };
 use std::path::Path;
 use styled::{cartesian, export, rgb, save};
@@ -47,18 +46,6 @@ fn noise(seed: u64, i: usize) -> f64 {
     x = x.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
     x ^= x >> 33;
     (x as f64 / u64::MAX as f64) * 2.0 - 1.0
-}
-
-/// A legend row with a filled square swatch, the mark a bar series uses.
-fn swatch(chart: &mut Chart, label: &str, color: Color) {
-    let legend = &mut chart.config_mut().legend;
-    let mark = RichSegment::fielded(
-        scatter_shape_char(&ScatterShape::SquareFilled),
-        2.0,
-        Some(color),
-    );
-    append_legend_entry(&mut legend.content, vec![mark], label);
-    legend.visible = true;
 }
 
 // A profit bridge: each step floats between the running total before and
@@ -151,13 +138,14 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
         labels.placement = CategoryBarLabels::Outside;
         labels.text = text;
     }
-    swatch(&mut chart, "Increase", up);
-    swatch(&mut chart, "Decrease", down);
-    swatch(&mut chart, "Total", total);
+    chart = chart
+        .with_legend_swatch("Increase", up)
+        .with_legend_swatch("Decrease", down)
+        .with_legend_swatch("Total", total);
     chart.set_y_range(0., 80.);
     chart.config_mut().left_y.major_spacing = 20.;
     chart.config_mut().left_y.auto_significant_digits();
-    let image = export(r, &chart, &[bars], bg)?;
+    let image = export(r, &mut chart, &[bars], bg)?;
     save(&image, bg, &out.join("gallery-waterfall.png"))
 }
 
@@ -254,15 +242,16 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
         label: TimestampLabelMode::Pattern("%m/%d".into()),
         ..TimestampLabelFormat::default()
     });
-    swatch(&mut chart, "Close above open", up);
-    swatch(&mut chart, "Close below open", down);
     let specs = [candles, trend];
-    chart = chart.with_legend_from(&specs);
+    chart = chart
+        .with_legend_swatch("Close above open", up)
+        .with_legend_swatch("Close below open", down)
+        .with_legend_from(&specs);
     chart.set_x_range(T0 - DAY, T0 + n as f64 * DAY);
     chart.set_y_range(95., 125.);
     chart.config_mut().left_y.major_spacing = 5.;
     chart.config_mut().left_y.auto_significant_digits();
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-candlestick.png"))
 }
 
@@ -362,10 +351,10 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         ..TimestampLabelFormat::default()
     });
     for (label, color) in states {
-        swatch(&mut chart, label, color);
+        chart = chart.with_legend_swatch(label, color);
     }
     chart.set_x_range(T0 - 2.0 * DAY, T0 + 66.0 * DAY);
-    let image = export(r, &chart, &[bars], bg)?;
+    let image = export(r, &mut chart, &[bars], bg)?;
     save(&image, bg, &out.join("gallery-gantt.png"))
 }
 

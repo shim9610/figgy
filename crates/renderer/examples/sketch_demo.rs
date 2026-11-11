@@ -5,11 +5,12 @@
 
 use renderer::color::Color;
 use renderer::config::{DrawStyle, LegendEntryKind, SketchOptions};
-use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig, XySeries};
+use renderer::data_config::{ScatterShape, SeriesConfig};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
+fn export(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: &str) {
+    chart.fit_layout();
     // Exported over white for viewing.
     let options = ExportOptions::panel(1.0).with_clear(Color::WHITE);
     r.save_blocking(ExportSource::chart(chart, series), options, path)
@@ -57,13 +58,13 @@ fn main() {
 
     export(
         &mut r,
-        &star_chart(DrawStyle::Precise),
+        &mut star_chart(DrawStyle::Precise),
         &star_series,
         "target/sketch_demo/precise.png",
     );
     export(
         &mut r,
-        &star_chart(DrawStyle::Sketch(SketchOptions {
+        &mut star_chart(DrawStyle::Sketch(SketchOptions {
             amplitude_px: 2.2,
             wavelength_px: 55.0,
             seed: 1,
@@ -96,18 +97,6 @@ fn main() {
 
     let blue = Color::from_rgb8(38, 104, 214);
     let green = Color::from_rgb8(44, 140, 80);
-    let mut meas = SeriesConfig::scatter("meas", "t", "yc")
-        .color(green)
-        .marker(ScatterShape::Diamond, 5.0)
-        .y_errors("err");
-    if let DataRenderType::Xy(XySeries {
-        errors: Some(errors),
-        ..
-    }) = &mut meas.render_type
-    {
-        errors.style.error_bar_width = 1.6;
-        errors.style.cap_width = 1.6;
-    }
     let tour_series = [
         SeriesConfig::scatter_line("wave", "t", "ya")
             .color(accent)
@@ -117,7 +106,12 @@ fn main() {
             .color(blue)
             .width(2.5)
             .dash(LineStylePreset::Dash),
-        meas,
+        SeriesConfig::scatter("meas", "t", "yc")
+            .color(green)
+            .marker(ScatterShape::Diamond, 5.0)
+            .y_errors("err")
+            // The default 6 px caps.
+            .error_bars(1.6, 6.0),
     ];
 
     let mut chart = Chart::sized(920, 600);
@@ -147,7 +141,7 @@ fn main() {
 
     export(
         &mut r,
-        &chart,
+        &mut chart,
         &tour_series,
         "target/sketch_demo/sketch_tour.png",
     );
