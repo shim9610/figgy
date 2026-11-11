@@ -25,6 +25,7 @@ pub(in crate::renderer) struct PreparedArcSeries {
     pub(in crate::renderer) arc: Option<PreparedArc>,
 }
 
+#[derive(Default)]
 pub(in crate::renderer) struct PreparedArcItem {
     pub(in crate::renderer) view_revision: u64,
     pub(in crate::renderer) series: Vec<PreparedArcSeries>,
@@ -48,8 +49,33 @@ pub(in crate::renderer) struct PreparedContourSeries {
     pub(in crate::renderer) energy_levels: Option<Arc<super::prepare::EnergyLevelRaster>>,
 }
 
+#[derive(Default)]
 pub(in crate::renderer) struct PreparedContourItem {
     pub(in crate::renderer) series: Vec<PreparedContourSeries>,
+}
+
+/// One panel's prepare-phase products, in draw-item order. A frame keeps
+/// them in one `Vec` that every phase fills in place: the contour label
+/// spacing preflight sets `contour_spacings`, `ensure_contour_scratches`
+/// sets `contour` and `prepare_arc_items` sets `arc`, and
+/// `resolve_prepared_items` reads them. Separate per-phase `Vec`s would each
+/// cost the frame another host allocation.
+pub(in crate::renderer) struct PreparedPanelProducts {
+    /// One effective contour label spacing per series, in series order.
+    pub(in crate::renderer) contour_spacings: Vec<Option<f32>>,
+    pub(in crate::renderer) contour: PreparedContourItem,
+    pub(in crate::renderer) arc: PreparedArcItem,
+}
+
+impl PreparedPanelProducts {
+    /// A panel whose contour and arc phases have not run yet.
+    pub(in crate::renderer) fn with_contour_spacings(contour_spacings: Vec<Option<f32>>) -> Self {
+        Self {
+            contour_spacings,
+            contour: PreparedContourItem::default(),
+            arc: PreparedArcItem::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

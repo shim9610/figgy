@@ -221,23 +221,20 @@ impl Renderer {
     pub(in crate::renderer) fn prepare_arc_items(
         &mut self,
         items: &[PanelDraw<'_>],
-    ) -> Result<Vec<PreparedArcItem>> {
-        self.preparation_parts().1.prepare_arc_items(items)
+        panels: &mut [PreparedPanelProducts],
+    ) -> Result<()> {
+        self.preparation_parts().1.prepare_arc_items(items, panels)
     }
 
     pub(in crate::renderer) fn resolve_prepared_items(
         &mut self,
         items: &[PanelDraw<'_>],
-        prepared_arcs: &[PreparedArcItem],
-        prepared_contours: &[PreparedContourItem],
+        panels: &[PreparedPanelProducts],
         pipelines: &TargetPipelines,
     ) -> Result<(Vec<PreparedItem>, HashMap<ColumnId, u64>)> {
-        self.preparation_parts().1.resolve_prepared_items(
-            items,
-            prepared_arcs,
-            prepared_contours,
-            pipelines,
-        )
+        self.preparation_parts()
+            .1
+            .resolve_prepared_items(items, panels, pipelines)
     }
 
     pub(in crate::renderer) fn paint_prepared_items<'a>(

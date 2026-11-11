@@ -232,10 +232,15 @@ fn host_bytes_do_not_scale_with_uploaded_data() {
 
 /// Allocations a warm prepare may make **per panel**.
 ///
-/// Measured 8–9 on llvmpipe. Figgy's own share is the two
-/// `Vec::with_capacity(items.len())` its two prepare phases build; the rest is
-/// wgpu's own bookkeeping inside `queue.write_buffer` for the transform
-/// uniform — label strings and pending-write vectors in wgpu-core.
+/// Measured 7 for one panel and 4 more per further panel on lavapipe.
+/// Figgy's own share is three `Vec`s per frame, whatever the panel count: the
+/// panel inputs `prepare` borrows, the per-panel products its phases fill in
+/// place, and the token's prepared items. The rest is wgpu's own bookkeeping
+/// inside `queue.write_buffer` for each panel's transform uniform: the
+/// staging buffer's label copied twice and an `Arc<Backtrace>` in
+/// gpu-allocator, and the barrier `Vec` in wgpu-core. A debug build run with
+/// `RUST_BACKTRACE` set costs 4 more per write, because wgpu-core's
+/// snatch-lock trace then captures a real backtrace.
 const MAX_PREPARE_ALLOCATIONS_PER_PANEL: u64 = 12;
 
 /// Measured 135 on llvmpipe: allocator bookkeeping for the relayout, not data.

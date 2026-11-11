@@ -826,7 +826,8 @@ impl Renderer {
             group_sizes = vec![1];
         }
         let items = items.as_slice();
-        let mut contour_spacings = Vec::with_capacity(items.len());
+        // One Vec of per-panel products, filled phase by phase as in `prepare`.
+        let mut panels = Vec::with_capacity(items.len());
         for item in items {
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
@@ -842,7 +843,7 @@ impl Renderer {
                     scale,
                 )?);
             }
-            contour_spacings.push(per_series);
+            panels.push(PreparedPanelProducts::with_contour_spacings(per_series));
         }
 
         // 3.5) Per-item prepare phase (transform uniform write + arc-prefix
@@ -947,16 +948,11 @@ impl Renderer {
         let _ = self.ensure_field_scratches(items)?;
         self.ensure_value_map_scratches(items, scale)?;
         let _ = self.ensure_vector_scratches(items, scale)?;
-        let (prepared_contours, _) =
-            self.ensure_contour_scratches(items, scale, &contour_spacings)?;
+        let _ = self.ensure_contour_scratches(items, scale, &mut panels)?;
         let _ = self.ensure_mesh_scratches(items, scale)?;
-        let prepared_arcs = self.prepare_arc_items(items)?;
-        let (mut prepared_items, _) = self.resolve_prepared_items(
-            items,
-            &prepared_arcs,
-            &prepared_contours,
-            &export_target_pipelines,
-        )?;
+        self.prepare_arc_items(items, &mut panels)?;
+        let (mut prepared_items, _) =
+            self.resolve_prepared_items(items, &panels, &export_target_pipelines)?;
         lift_annotation_overlays(&mut prepared_items, &group_sizes);
         self.attach_export_composites(
             items,
