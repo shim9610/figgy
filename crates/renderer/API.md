@@ -48,9 +48,10 @@ Tested revisions and results are in the
 | `Renderer` | `Config`, ordered `SeriesConfig`, registered numeric columns | `prepare` or `prepare_registered` |
 | `RadialRenderer` | `RadialChart`, slice values in the model | `prepare` |
 
-The radial chart is the DataLess chart: it carries every value in the chart
-model, up to fixed limits such as 64 slices. Its API is separate from `ColumnSource` and
-streaming, and it does not calculate raw-sample statistics. Limits, missing
+The radial chart is a DataLess chart: every value lives in the chart model
+instead of registered columns, up to fixed limits such as 64 slices. It takes
+no `ColumnSource` or streamed input, and its values are the slice values
+themselves, not statistics of raw samples. Limits, missing
 values, style inheritance and picking identities are documented in its module.
 Radial targets use group/index positions, so a host that reorders slices must
 update interaction targets too.
@@ -81,14 +82,12 @@ upload (category positions and one value column per series) borrowed from the
 document. Radar series reject streamed sources. See the
 [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md).
 
-`ColumnSource` uploads each value as one `f32`, stored as an `(f32, 0)` pair;
-`HiLoColumnSource` uploads `(hi, lo)` `f32` pairs that preserve sub-f32 deltas
-for large coordinates such as Unix timestamps. Upload with `Renderer::add_column`,
-`add_columns` or `upsert_column`, and with `add_hilo_column` or
-`upsert_hilo_column` for hi/lo sources. Native upload avoids an intermediate CPU
-conversion vector but still copies staging data to GPU storage. It is not a
-promise of zero driver copies. Use the hi/lo path explicitly when precision
-requires it.
+Every uploaded value takes two `f32`s on the GPU. An `f32` source is stored as
+`(value, 0)`; an `f64` source, through `ColumnSource` or `HiLoColumnSource`
+alike, is stored as its `(hi, lo)` split (about 48 bits), which preserves sub-f32 deltas for large coordinates such as Unix timestamps.
+Upload with `Renderer::add_column`, `add_columns` or `upsert_column`, and with
+`add_hilo_column` or `upsert_hilo_column` for hi/lo sources. A source is
+borrowed for the call only.
 
 A triangle mesh's triangles are a triangle index column:
 `Renderer::upsert_triangles(id, &TriangleSource { indices })` uploads three
@@ -119,9 +118,10 @@ group's samples through a `MonotonicSource`, which carries the values, their
 `start` and `interval` (`MonotonicSlices::new(start, interval, channels)`,
 `MonotonicInterleaved::new(start, interval, values, stride, columns)`, or its
 own impl, such as a ring buffer lending two runs; elements `f64`, `f32`,
-`i32`, `i16`, `u16`, `u8`) on every call that reads it, and the
-renderer keeps only the M4 envelope, sized by the plot width and the
-channel count.
+`i32`, `i16`, `u16`, `u8`) on every call that reads it. The source is not
+retained after the call: the renderer keeps an M4 envelope (the first, last,
+minimum and maximum sample of each pixel column), whose size depends on the
+plot width and the channel count, not on the number of samples.
 
 A chart with monotonic series is a monotonic chart:
 `register_monotonic_chart(config, series) -> MonotonicChartId`. Only that
@@ -135,11 +135,11 @@ and `begin_replace_chart_columns` refuse it with
 
 | `MonotonicChart::` | Contract |
 | --- | --- |
-| `set_monotonic(group, &source, range)` | The full call for every series naming `group`, at the mapping each is drawn at. Reads only the visible samples and one on each side. The only call that sets the x range: `MonotonicRange::X { min, max }` writes it to the x axis the series are drawn against (the rest of the axis stays; not finite and increasing: `FiggyError::InvalidConfig { kind: RuleKind::MonotonicRange, .. }`); `MonotonicRange::Autoscale` fits it to `start ..= start + (len - 1) × interval` and their y ranges (5 % padding) to the values the same reduction keeps. |
-| `append_monotonic(group, &new, MonotonicAppend { sliding })` | Only the new samples, compared with nothing; past the x range they are counted, not kept. They continue the full call's grid: `new`'s `start` and `interval` are not read. A slide moves the x range in the document by exactly the new samples' span and never reads old samples. |
+| `set_monotonic(group, &source, range)` | The full call: supplies the source of every series naming `group` and reduces it at the mapping each series is drawn at. Reads only the visible samples and one on each side. The only call that sets the x range: `MonotonicRange::X { min, max }` writes it to the x axis the series are drawn against (the rest of the axis stays; not finite and increasing: `FiggyError::InvalidConfig { kind: RuleKind::MonotonicRange, .. }`); `MonotonicRange::Autoscale` fits it to `start ..= start + (len - 1) × interval` and their y ranges (5 % padding) to the values the same reduction keeps. |
+| `append_monotonic(group, &new, MonotonicAppend { sliding })` | Takes only the new samples; samples past the x range are counted but not kept. They continue the full call's grid: `new`'s `start` and `interval` are not read. A slide moves the x range in the document by exactly the new samples' span and never reads old samples. |
 | `resize(chart_area, plot_area, surface, &[MonotonicGroupRef])` | The resize: the chart area, the plot (data area) a plot-area resize proposes (`None` keeps the margins), the display surface (`None`: no display). A group whose series move to other device pixels is reduced again from its source in the same call. Atomic: without a source a moved group needs, refused with `FiggyError::MonotonicSourceRequired`, and nothing changes; a plot rect the margins cannot place: `RuleKind::NoFeasibleLayout`. |
-| `fit_layout(&[MonotonicGroupRef])` | `layout::auto_layout`, measured with the chart's font, applied. It can move the plot's edges, so it takes the sources of the groups it moves, refused as `resize` is without them. |
-| `edit_config(\|editor\| ..) -> R` | Edits the document through a `MonotonicConfig` (read access to the whole `Config`; editors for the legend, titles, grid, annotations, selection, active layer, backgrounds, axes' titles, labels, ticks and lines, y ranges, overlays and subplots; `nudge` and `drag` for decorations; `assign` for a whole document). No setter writes the x range, x scale, breaks, direction or the chart or plot area; an edit that would move them (`same_mapping`) is refused with `FiggyError::InvalidConfig { kind: RuleKind::MonotonicMappingEdit, .. }` and changes nothing. |
+| `fit_layout(&[MonotonicGroupRef])` | Applies `layout::auto_layout`, measured with the chart's font. It can move the plot's edges, so it takes the sources of the groups it moves, refused as `resize` is without them. |
+| `edit_config(\|editor\| ..) -> R` | Edits the document through a `MonotonicConfig` (read access to the whole `Config`; editors for the legend, titles, grid, annotations, selection, active layer, backgrounds, axes' titles, labels, ticks and lines, y ranges, overlays and subplots; `nudge` and `drag` for decorations; `assign` for a whole document). No setter writes the x range, x scale, breaks, direction or the chart or plot area; an edit that would move them (`monotonic::same_mapping` is false) is refused with `FiggyError::InvalidConfig { kind: RuleKind::MonotonicMappingEdit, .. }` and changes nothing. |
 | `set_series(series)` | Replaces the series; a style or width edit needs no source. |
 | `step_selection(dx, dy)`, `set_selection(hit)` | The selection: a monotonic point steps over the kept points. |
 | `pick_data(request)`, `pick(request)`, `prepare_picking()` | GPU picks; a monotonic series reports the logical sample index of a kept point. |
@@ -158,8 +158,10 @@ at the screen's mapping). The envelope keeps a fixed 64 pixel columns beyond
 each plot edge, so a line width is a style edit; strokes wider than about
 120 device pixels may miss ink at the plot's edges. Frames and picks never
 fail for a missing source.
-The core's refusals are `FiggyError::Monotonic { group, error }`, a group no
-series names `FiggyError::UnknownMonotonicGroup`. Picks report the logical
+A call refused for a group (for example an invalid grid, an x axis that is not
+linear and unbroken, or an append before the first full call) returns
+`FiggyError::Monotonic { group, error }` with a `MonotonicError`; a group that
+no series names returns `FiggyError::UnknownMonotonicGroup`. Picks report the logical
 sample index of a kept point. The series' `x_column` / `y_column` are the
 renderer-owned envelope columns: writing or removing them is
 `FiggyError::ReservedColumnId`. See
@@ -182,10 +184,10 @@ field setters:
 | --- | --- |
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair, give the partner (`top_x`, `right_y`) the `scale` of the main axis (`bottom_x`, `left_y`), and choose each axis's major spacing, minor count, label format and precision from that scale, so a logarithmic `left_y` puts decades on both edges. The auto-fits and subplot setters do the same. A categorical partner keeps its scale, and on a 3D or ternary chart, where `right_y` is the z or c axis, the partner keeps its own scale and gets the ticks of it. A second value axis with its own scale is an overlay layer (`Config::overlays`); a view state applies each axis's scale as it carries it. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
-| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the slots it shows, and the full range clears it. |
+| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the categories it shows, and the full range clears it. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. `$…$` spans are TeX ([math in labels](USAGE.md#math-in-labels)). |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text, `$…$` spans as TeX; these helpers do not fit margins. |
-| `FeynmanSeries::auto_layout()` / `Renderer::auto_layout(chart, series_id)` | Write the automatic layout's place into the `at` of every vertex without one (#234), as an auto-fit writes a range into the config; the host reads it back through `chart_series`. Placed vertices are untouched. An error when the layout's solver stops converging or its working memory cannot be allocated. `drag_vertex` (`Renderer::drag_feynman` with `FeynmanHit::Vertex`) commits the layout on the first drag, `drag_bend` sets a line's `bend`, and `drag_label` moves a label's offset in logical pixels, the value-label drag. See [Feynman diagrams](FEYNMAN.md). |
+| `FeynmanSeries::auto_layout()` / `Renderer::auto_layout(chart, series_id)` | Write the automatic layout's place into the `at` of every vertex without one (#234), as an auto-fit writes a range into the config; the host reads it back through `chart_series`. Placed vertices are untouched. Returns an error when the layout's solver stops converging or its working memory cannot be allocated. `drag_vertex` (`Renderer::drag_feynman` with `FeynmanHit::Vertex`) commits the layout on the first drag, `drag_bend` sets a line's `bend`, and `drag_label` moves a label's offset in logical pixels, the value-label drag. See [Feynman diagrams](FEYNMAN.md). |
 | `layout::auto_layout(&config, &measure)` | Returns a copy of the config, the input untouched, whose `out_margin`s, axis title `offset_y`s, label formats, chart title band, legend corner and colourbar band are chosen so labels, titles, legend and colourbar do not overlap as `measure` (for example `CpuTextMeasure::for_style(&config.draw_style)`) lays them out. Every band is set to exactly what it holds, smaller or larger: the labels (with the category group headers and the end labels of the perpendicular axes that run past the plot), a title gap of half the labels' font (at least `LABEL_GAP`), the title and an edge padding of half the font of what sits at the band's edge (at least 8 px), or the padding alone on a side without text (half the axis' label font beside a drawn frame, 8 px where nothing is drawn); the chart title band is the title's line (its font's line ascent and descent, or its ink where that reaches further) with 0.3 em of its font (at least the padding) above and below, 0 without a title, and the titles of a grid row share one band and one baseline. A title that does not clear its labels gets the offset that puts it beside them, and a long `Decimal` or `Plain` axis becomes `Power`. Ranges, ticks, series and annotations are never written. Apply the result with `set_chart_config`; call it again after an auto-fit or a zoom. The browser wrapper's `autoLayout(configJson)` is the same call. |
 
 Fit padding is an explicit caller argument: `0.05` adds 5% on each side of a
@@ -290,13 +292,13 @@ never thinned. Upload
 the data of a categorical axis as category indices `0..n`. `min`, `max`,
 `major_spacing`, `minor_count` and `label_style.format` are ignored there;
 the `auto_fit_*` helpers leave the axis unchanged, and `set_x_range` /
-`set_y_range` and view states set its `category_window`, the slots it shows
-(#205). A categorical axis must be linear; `inverted` walks
-its categories from the far end (the first category at the top of a `left_y`),
-with at least one category and no upper count, whose ids are unique (every
-category draws its value labels); polar axes and the colourbar
-axis cannot be categorical yet, and streamed series are rejected on a chart
-with a categorical axis.
+`set_y_range` and view states set its `category_window`, the categories it
+shows (#205). A categorical axis must be linear and have at least one
+category, with unique ids; there is no upper limit on the count. `inverted`
+walks its categories from the far end (the first category at the top of a
+`left_y`). A polar chart's angle axis can be categorical (a radar chart), but
+its radius axis and the colourbar axis cannot, and streamed series are
+rejected on a chart with a categorical axis.
 
 Categorical bars are `DataRenderType::CategoryBars` series over the
 categorical axis of their direction (`bottom_x` for vertical bars, `left_y`
@@ -304,9 +306,10 @@ for horizontal ones), laid out by `Config.bar_groups` (grouped, stacked or
 percent, the group width and the gap). Each reads a positions column
 `0..n` and a values column of one value per category; NaN is a missing
 bar. `AxisOptions::cross_at` puts the category axis line at a value of the
-value axis. `auto_fit_layer_union` fits the value axis to what the bars
-draw; a stacked group's extent is measured by the pool when its value
-columns are uploaded together with `add_columns`. A bar is picked as
+value axis. `auto_fit_layer_union` fits the value axis from zero to the
+bars' values: a grouped series by its value range, a stacked group by the
+sum of each series' largest positive and most negative value (which can be
+wider than the tallest stack), and a percent group to 0–100. A bar is picked as
 `PickedData::HistogramBin` with the category row, and selected through
 `PickedDataRef::HistogramBin`. `Config::from_categorical` opens a legacy
 `CategoricalChart` document as such a chart; see the
@@ -317,17 +320,18 @@ axes and grouped `Config.bar_groups`. Each reads a positions column `0..n`, a
 record of box statistics (`Renderer::upsert_record` with the
 `BOX_PLOT_RECORD` schema: median, quartiles, whiskers and the optional mean,
 count and median CI, one row per category) and, optionally, a ragged column of
-outliers (`Renderer::upsert_ragged`, one group per category). The renderer
-does not compute statistics or check their order; the drawing clamps.
+outliers (`Renderer::upsert_ragged`, one group per category). The host
+computes the statistics; their order is not checked, and values out of order
+are drawn clamped.
 `auto_fit_layer_union` fits the value axis to the records' and outliers'
 statistics. Every part of a box (body, whiskers, caps, median, mean,
 outliers) picks the box as `PickedData::HistogramBin` with the category row.
 A box plot series can also draw violins from the host's density curves
 (`BoxPlot.violin`: one curve mirrored, or a curve per side) and its raw
-points jittered across the slot (`BoxPlot.points`, a raincloud with a
+points jittered across the category's width (`BoxPlot.points`, a raincloud with a
 one-sided violin); a violin answers its category as its box does, a raw
-point `PickedData::Point`. The renderer draws the density it is given and
-estimates nothing.
+point `PickedData::Point`. The host computes the density curves; they are
+drawn as given.
 `Config::from_boxplot` opens a legacy `BoxPlotChart` document as such a
 chart; see the
 [box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md).
@@ -335,17 +339,16 @@ chart; see the
 Range bars are `DataRenderType::RangeBars` series: a bar per row from a
 start to an end value at a position, with optional whiskers, direction,
 total or state colours, progress and connectors, over a categorical or a
-numeric (time) position axis. Every value is a host column; the renderer
-computes no total, change or duration. Every part of a bar picks it as
+numeric (time) position axis. Every value, including a total, change or
+duration, is a host column. Every part of a bar picks it as
 `PickedData::HistogramBin` with the row; see the
 [range bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RANGEBARS.md).
 
-Category bar, box plot, range bar and radar series draw value labels: the strings of
-`labels.text` (written into the series at edit time by `format_labels`,
-`format_box_plot_labels` or `format_radar_labels`; the renderer never
-formats a value), baked into a label atlas with the contour labels' text
-stack at the render scale and placed from the pool on every draw at the bar
-end, past the top of the box or outside the vertex, moved by
+Category bar, box plot, range bar and radar series draw value labels: the
+strings of `labels.text`, drawn as given. `format_labels`,
+`format_box_plot_labels` or `format_radar_labels` writes them into the
+series; call it again after editing the values or the format. A label sits
+at the bar end, past the top of the box or outside the vertex, moved by
 `labels.offsets`. A label is picked by `pick_chart_data` as
 `PickedData::ValueLabel` (series and category), selected through
 `PickedDataRef::ValueLabel` (its frame is outlined) and dragged with
@@ -539,8 +542,8 @@ host matches the rule it reacts to, for example
 `Err(FiggyError::InvalidSeriesConfig { kind: RuleKind::PolarImage, .. })`;
 rules that report ids, counts or lengths carry them as fields
 (`RuleKind::CategoryBarColumnLength { column, len, categories }`).
-`RuleKind`'s `Display` is the sentence the error printed before, byte for
-byte, and `RuleKind::code` is the variant's name, the stable string the
+`RuleKind`'s `Display` is the error's message sentence, and
+`RuleKind::code` is the variant's name, the stable string the
 browser product puts in a thrown error's `code`. A rule checked while JSON is
 deserialized surfaces as the deserializer's error, whose text is the same
 sentence followed by the position.
@@ -551,11 +554,11 @@ Construction and full Cartesian prewarming are separate operations:
 
 | Entry point | Work performed |
 | --- | --- |
-| `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. Optional resident data/style, arc/fit/contour-label and picking pipelines remain lazy. |
+| `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. The optional resident data and style, path-length (dash) scan, fit reduction, contour-label and picking pipelines are created on first use. |
 | Native `for_window_async` / `for_window_async_observed` | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
 | Browser `for_window_async` / `for_window_async_observed` | In addition to window setup, await temporary JavaScript warmup pipelines for the Cartesian render entries. Those temporary pipelines are discarded; they do not populate the renderer's retained optional caches. |
 | `for_window_minimal_async_observed` | Limit that browser render warmup to `PreparationFeature::Basic` entries. On native targets it has the same base initialization as the ordinary async constructor. It does not install a completed Basic preparation group. |
-| `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, arc scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
+| `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, path-length scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
 
 Normal preparation creates missing pipelines lazily. To move that work before
 first use, await `prewarm_all`, or compile and install the required detached
@@ -654,9 +657,9 @@ carry no compatibility promise. Moving to a new
 wgpu major changes public wgpu types such as the `RendererDevice` handles, so it
 ships in a new 0.x minor.
 
-figgy-renderer 0.18.1 / figgy-model 0.12.1 follow the crates.io releases
-0.16.1 / 0.10.0 (the first, 2026-10-13), 0.17.0 / 0.11.0 (2026-10-16) and
-0.18.0 / 0.12.0 (2026-10-20).
+The crates.io releases are figgy-renderer / figgy-model 0.16.1 / 0.10.0 (the
+first, 2026-10-13), 0.17.0 / 0.11.0 (2026-10-16), 0.18.0 / 0.12.0
+(2026-10-20) and 0.18.1 / 0.12.1 (2026-10-21).
 Published registry artifacts are immutable.
 
 Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
@@ -687,7 +690,7 @@ does not know and rejects enum variants it does not know.
 
 `Renderer::for_window_minimal_async_observed` limits temporary browser render
 warmup as described above. A host using detached preparation to gate first use
-must compile and install `PreparationFeature::Basic` (which also includes arc
+must compile and install `PreparationFeature::Basic` (which also includes path-length
 scans and fit reduction), plus the groups needed by its charts. Construction
 alone does not mark Basic ready.
 
@@ -712,18 +715,16 @@ ownership is not a frame-time guarantee.
 
 ## Line picking
 
-Line picking treats a midpoint difference within the projected coordinates' f32
-rounding uncertainty as a tie and chooses the earlier endpoint, on both CPU and
-GPU. Points outside that narrow interval still choose the nearer endpoint. This
-makes exact midpoint selection stable across native compiler backends.
-Interior line distance uses the perpendicular distance to the segment. Beyond an
-endpoint it uses distance to that endpoint. This avoids reconstructing a rounded
-closest point that can falsely reject an exact centerline hit at zero tolerance;
-it does not add a pick radius or turn finite segments into infinite lines.
+A line's distance to the pointer is the perpendicular distance to the nearest
+segment, or the distance to an endpoint beyond the segment's ends; a pointer on
+the centerline is a hit even at zero tolerance. The pick reports the nearer
+endpoint of that segment. When the two endpoints are equally near within f32
+rounding of the projected coordinates, it reports the earlier one, so a pick at
+the exact midpoint gives the same answer on every backend.
 
 ## Radial chart decoration interaction
 
-Radial frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a `HitMap<RadialChart>`, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a `HitMap<RadialChart>` covering the title, the plot area and the slice labels (an outside label together with its leader line), each exactly where it is drawn. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, saving edits in the chart model and host integration.
 
 ## Pointer position in drags
 
@@ -732,11 +733,11 @@ Every drag takes a `&dyn MeasureText` (the renderer's `CpuTextMeasure::for_style
 ## Annotation layer
 
 Every chart family carries `annotations: AnnotationLayer` (reference lines,
-spans, text boxes, arrows). Cartesian views rasterize it into two more
-`ChartView` textures: `refresh_axis*` redoes them with the axis raster and
-`Renderer::refresh_annotations(view, chart, panel_rect, selected)` redoes them
-alone when `ChartRenderStamp::needs_annotation_raster_since` or the annotation
-selection changed; `ChartView::annotation_map()` is the layer's hit map. The
+spans, text boxes, arrows). A Cartesian `ChartView` draws it with its axes:
+`refresh_axis*` redraws it together with the axes, and
+`Renderer::refresh_annotations(view, chart, panel_rect, selected)` redraws it
+alone, which a host does when `ChartRenderStamp::needs_annotation_raster_since`
+reports a change or the annotation selection changed; `ChartView::annotation_map()` is the layer's hit map. The
 radial renderer returns the layer as `prepare_annotations(chart, size, scale)` →
 `Arc<BoundedAnnotationFrame>`, drawn after the frame with `draw_overlay` (the
 radial chart has no value axes, so it draws no span below the slices). Items

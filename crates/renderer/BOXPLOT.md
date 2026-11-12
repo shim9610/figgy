@@ -26,8 +26,7 @@ The record schema `BOX_PLOT_RECORD` has the fields `median`, `q1`, `q3`,
 `whisker_low`, `whisker_high` (required) and `mean`, `sample_count`,
 `ci_low`, `ci_high` (optional). A missing box is a row of NaN; a NaN optional
 field leaves that mark out. Unlike a category bar, the roles do not swap with
-the direction: the series names its record in the value column slot either
-way.
+the direction: the series names its record in `y_column` either way.
 
 ```rust,no_run
 use renderer::{
@@ -88,41 +87,40 @@ chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
 ```
 
 `Renderer::upsert_record` and `upsert_ragged` replace a source of the same id
-in place; `remove_record` and `remove_ragged` delete one. The record and the
-ragged column live in the GPU column pool; `record_stats` and `ragged_stats`
-report their scalar statistics.
+in place; `remove_record` and `remove_ragged` delete one. `record_stats` and
+`ragged_stats` report their statistics.
 
-A ragged column has no value cap below the `u32` index space: the pool
-stores its offsets as `u32` indices. An offset is the integer its source
-writes, and `Column<f64>` writes a value as f32, exact to 2^24, so a host
-with more outliers than that writes its offsets through a `ColumnSource`
-that writes the `(hi, lo)` split (`renderer::data::split_f64_to_f32_pair`),
-as `Config::from_boxplot`'s uploads and the WASM `register_ragged` do.
+A ragged column can hold as many values as `u32` offsets can index.
+`Column<f64>` writes each value as an `f32`, which is exact only up to 2^24,
+so a host with more outliers than that in one ragged column writes its
+offsets through a `ColumnSource` that writes the `(hi, lo)` pair of
+`renderer::data::split_f64_to_f32_pair`. The uploads of
+`Config::from_boxplot` and the WASM `register_ragged` already do.
 
 ## Box groups and layout
 
 The `BoxPlot` series of one layer form its box group. They stand side by side
-in each category slot in series order, laid out by `Config.bar_groups`:
+within each category's band in series order, laid out by `Config.bar_groups`:
 
 | `BarGroups` field | For box plots |
 |---|---|
 | `mode` | must be `Grouped`; stacking is not a box-plot operation |
 | `direction` | `Vertical` (categories on `bottom_x`) or `Horizontal` (categories on `left_y`) |
-| `group_width` | the slot share the group covers, 0.1–0.95 |
+| `group_width` | the share of the category's band the group covers, 0.1–0.95 |
 | `bar_gap` | the gap between the boxes of a group, logical px 0–24 |
 
 `Config::validate_box_plots` (applied by the renderer) requires the
-categorical axis of the direction and a linear value axis, and allows any
-number of box plot series per layer and of boxes. A layer draws either category bars
+categorical axis of the direction and a linear value axis. There is no limit
+on the number of box plot series per layer or of boxes. A layer draws either category bars
 or box plots, not both. Horizontal box groups stand on the base panel only;
 polar charts reject box plots.
 
 ## Statistics and clamping
 
-The renderer does not sort samples, compute quartiles or infer the whisker
-policy; whether the whiskers are the extremes, the last points inside 1.5 IQR
-fences or something else is the host's choice. It also does not check the
-order of a record it cannot read on the CPU. The drawing clamps instead:
+The renderer draws the statistics it is given: it does not compute quartiles
+or choose a whisker rule. Whether the whiskers are the extremes, the last
+points inside 1.5 IQR fences or something else is the host's choice. A record
+whose values are out of order is not rejected; it is drawn clamped:
 
 - the body spans `min(q1, q3)` to `max(q1, q3)`;
 - the median is clamped into the body;
@@ -188,29 +186,29 @@ overrides.push(individual);
 A box plot series can draw a **violin** behind its boxes (`violin:
 Option<Violin>`) and its **raw points** beside them (`points:
 Option<BoxPoints>`): violin plots, split violins and rainclouds. The host
-computes the density (a KDE evaluated on its own grid, the way matplotlib
-evaluates 100 points and R's `density` 512) and uploads it; the renderer
-draws the curve it is given and estimates nothing.
+computes the density (for example a KDE evaluated on its own grid: matplotlib
+uses 100 points and R's `density` 512) and uploads it; the renderer draws
+that curve as given.
 
 | Field | Holds |
 |---|---|
 | `Violin.body` | `ViolinBody::Symmetric(half)`: one curve mirrored about the category position, one scale and one style; or `ViolinBody::Split { low, high }`: a curve per side, at least one (`low` left of a vertical violin, below a horizontal one) |
-| `Violin.box_width` | the box's share of the slot, `0..=1`, centred on the member's middle (default 0.25); 0 hides the box |
+| `Violin.box_width` | the box's share of the series' band, `0..=1`, centred on it (default 0.25); 0 hides the box |
 | `ViolinHalf.curve` | a ragged column, one group per category: the positions along the value axis the density was evaluated at, ascending within a group |
 | `ViolinHalf.density` | a plain column index-aligned with the curve's values: the density at each position, drawn as the half width |
-| `ViolinHalf.density_scale` | the density drawn at the full half slot; `fit_density_scale(max)` sets it from the density column's maximum |
+| `ViolinHalf.density_scale` | the density drawn at the full half band; `fit_density_scale(max)` sets it from the density column's maximum |
 | `ViolinHalf.style` | `ViolinStyle`: the fill (`None` takes the series colour), the outline, its width and colour |
 | `BoxPoints.positions`, `.values` | two plain columns: each point's category position (the index `x_column` uses) and its value |
-| `BoxPoints.style` | `BoxPointsStyle`: colour, size (1–24 px), circle or square, filled, `jitter` (0–1 of the half slot, either way) and `offset` (−1–1 of the half slot, negative on the low side) |
+| `BoxPoints.style` | `BoxPointsStyle`: colour, size (1–24 px), circle or square, filled, `jitter` (0–1 of the half band, either way) and `offset` (−1–1 of the half band, negative on the low side) |
 
 A violin without boxes leaves `y_column` empty: no record is read and no
 box is drawn. A raincloud is a split violin with one half and the points on
 the other side (a negative `offset` with only `high`). A box override's
-colour and outline restyle its category's violin too. The jitter is a hash
-of each point's index, computed in the shader on every draw and pick: a
-point never moves while the chart is panned, resized or exported, and there
-is no jitter column. A curve that does not ascend draws its segments as
-given and picks undefined; a NaN value or density breaks the body there.
+colour and outline restyle its category's violin too. The jitter is derived
+from each point's index, so a point keeps its place when the chart is
+panned, resized or exported, and there is no jitter column to upload. A
+curve that does not ascend draws its segments as given, and picking on it
+is undefined; a NaN value or density breaks the body there.
 
 ```rust
 use renderer::data_config::{
@@ -242,10 +240,9 @@ let points = BoxPoints {
 # let _ = (violin, points);
 ```
 
-Any number of curve points, categories and raw points can be drawn, within
-the column pool and `u32` indices. The violin is drawn one instance per
-curve segment, so a long curve costs only its own segments, and the cost
-grows with the data. On a software Vulkan adapter (lavapipe), picking among
+There is no limit on curve points, categories or raw points beyond `u32`
+indices and device memory. Drawing cost grows with the number of curve
+segments and points. On a software Vulkan adapter (lavapipe), picking among
 600 violins of 4 096 curve points takes about 4 ms, and a raw point among
 3 000 000 about 70 ms.
 
@@ -261,14 +258,14 @@ highest of its high whisker, mean, notch and outliers, and of its violin's
 curves), centred across the box, in the value axis' tick label face, unless the placement (or the box's
 override) is `None`; a label that would cross the data area's edge sits on
 the other side of that top instead. An empty string draws nothing and labels
-never displace each other. A label is a typed pick target (`PickedData::ValueLabel`), its
+never displace each other. A label is picked as `PickedData::ValueLabel`, its
 selection box is its frame, and a drag writes `labels.offsets` (logical
 pixels, one per category); see Value labels in the
 [interaction guide](INTERACTION.md).
 
 ## Value axis
 
-`Chart::auto_fit_layer_union` fits the value axis to the pool's statistics of
+`Chart::auto_fit_layer_union` fits the value axis to the range of
 every value field of the records (whiskers, quartiles, median, mean and CI;
 not `sample_count`), of the outlier columns, of the violin curves and of the
 raw points' values, so toggling `show_mean` or
@@ -290,15 +287,14 @@ the box group (the boxes, never their outliers), and `selection_details()`
 reports the box's category and the statistics read back from its record.
 
 A violin answers its category as a box does (`PickedData::HistogramBin`):
-inside its fill or on its outline, measured as the draw measures them; its
-highlight outlines the selected category's violin under the box's ring. A
+inside its fill or on its outline; its highlight outlines the selected category's violin under the box's ring. A
 split violin's pick also names the half under the cursor (`half:
 Some(ViolinSide::Low | High)`, a symmetric one's `None`), and selecting a
 half (`PickedDataRef::HistogramBin { half: Some(..), .. }`) outlines that
 half alone. Inside the box, which is painted over the violin, the pick
 answers the box (`half: None`). A
-raw point answers `PickedData::Point` with its row, placed by the function
-its draw uses, and its highlight rings it; `step_selection` walks the points
+raw point answers `PickedData::Point` with its row where it is drawn, and its
+highlight rings it; `step_selection` walks the points
 (`dx`) and the box plot series with points (`dy`), and `selection_details()`
 reports a point's `position`, `value` and category.
 
@@ -359,7 +355,7 @@ if document.value_range.is_none() {
 
 `Config::from_boxplot` moves the categories to the categorical axis of the
 direction (`bottom_x` for vertical boxes, `left_y` for horizontal ones,
-top-down as before), `direction`, `group_width` and `box_gap` to a grouped
+listed top to bottom), `direction`, `group_width` and `box_gap` to a grouped
 `Config.bar_groups`, and each document series to a `BoxPlot` series reading
 `boxplot.positions`, its record `boxplot.record.<series id>` and, when any of
 its boxes has an outlier, `boxplot.outliers.<series id>`. The series takes its
@@ -380,7 +376,7 @@ endpoints**. `mean`, `sample_count`, `median_ci` and `outliers` are optional.
 whisker_high`, all finite; outliers finite and strictly outside the whiskers;
 a CI that contains the median (it may extend beyond the body); an explicit CI
 for every box of a notched series; positive counts. `None` is a missing box
-that leaves its group slot empty. Limits: at least one category and one
+that leaves its place in the group empty. Limits: at least one category and one
 series; the number of series, categories, boxes and outliers has no cap.
 
 ## Examples and tests
@@ -413,13 +409,13 @@ document in `FiggyChart`.
 박스플롯은 집계한 통계값을 받는다. 문서에서는 `BoxSummary::new(수염 하한, Q1, 중앙값, Q3,
 수염 상한)`으로 만들고, 평균·표본 수·이상치·중앙값 신뢰구간은 필요할 때 추가한다.
 수염이 최솟값/최댓값인지, 1.5 IQR 안의 관측값인지 등은 호스트에서 결정한다.
-렌더러는 원본 표본으로 통계를 계산하거나 수염 규칙을 추측하지 않는다. 레코드의 순서도 검사하지 않고
-그릴 때 맞춘다. 상자는 Q1·Q3 중 작은 값부터 큰 값까지, 중앙값은 상자 안으로, 수염은 상자 바깥으로
+렌더러는 받은 통계를 그대로 그리며 사분위수를 계산하거나 수염 규칙을 정하지 않는다. 값의 순서가
+맞지 않는 레코드도 거부하지 않고 그릴 때 맞춘다. 상자는 Q1·Q3 중 작은 값부터 큰 값까지, 중앙값은 상자 안으로, 수염은 상자 바깥으로
 그리며 신뢰구간 양 끝이 모두 있을 때만 노치를 그린다. 필수 값이 없는 행은 그리지 않는다.
-문서의 `validate`는 예전처럼 순서를 검사한다.
+문서의 `validate`는 값의 순서를 검사한다.
 
-노치를 켜려면 `median_ci`를 넣어야 한다. 신뢰구간이 상자 밖으로 나와도 잘라서
-통계적 의미를 바꾸지 않는다. Q1과 Q3가 같으면 채운 상자는 없지만 중앙값과 수염 등은
+노치를 켜려면 `median_ci`를 넣어야 한다. 신뢰구간이 상자 밖으로 나와도 자르지 않으므로
+통계적 의미가 바뀌지 않는다. Q1과 Q3가 같으면 채운 상자는 없지만 중앙값과 수염 등은
 설정에 따라 표시한다. `None`은 누락값이며, 그 범주·시리즈의 자리는 그대로 둔다.
 
 가로형은 `Config.bar_groups`의 `direction = Horizontal`, 그룹형은 한 레이어에 박스플롯 시리즈를 여러 개

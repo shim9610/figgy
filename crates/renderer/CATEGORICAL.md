@@ -31,7 +31,7 @@ chart.validate()?;
 - `Grouped`는 나란히 그린다. 시리즈가 하나면 단일 막대다. 누락되어도 다른 막대의 자리는 이동하지 않는다.
 - `Stacked`는 양수를 위쪽/오른쪽으로, 음수를 아래쪽/왼쪽으로 각각 0부터 쌓는다.
 - `PercentStacked`는 범주별 양수 합계를 100%로 환산한다. 음수는 거절한다. 합계 0은 빈 막대이며
-  퍼센트 표기는 `—`다. 원본 값은 바꾸지 않는다. 큰 값도 정규화한 뒤 합산해 합계 오버플로를 피한다.
+  퍼센트 표기는 `—`다. 원본 값은 바꾸지 않는다. 값이 아주 커도 합계가 넘치지 않는다.
 - 일반 누적에서 합계가 유한한 숫자 범위를 벗어나면 거절한다. NaN·무한대는 모든 모드에서 거절한다.
 - `Percent` 표기는 같은 범주의 시리즈 합계가 기준이다. 음수가 섞인 범주는 `—`로 표시한다.
 - 값 축은 선형 축이다. `Chart::auto_fit_layer_union`이 0과 막대가 그리는 범위에 맞춘다.
@@ -39,7 +39,7 @@ chart.validate()?;
   맞춘다. 시리즈의 극값이 서로 다른 범주에 있으면 실제 누적보다 넓은 상한이 된다. 컬럼을 한 번에
   올리든 따로 올리든 결과는 같다. 100% 누적은 `0..100`에 맞춘다.
 - 호스트가 직접 올린 컬럼도 같은 규칙을 따른다. `PercentStacked` 묶음의 값 컬럼에 음수가 있으면
-  (컬럼 풀의 최솟값이 0보다 작으면) 그리기와 선택 단계에서 해당 시리즈와 모드를 밝힌
+  (값 컬럼의 최솟값이 0보다 작으면) 그리기와 선택 단계에서 해당 시리즈와 모드를 밝힌
   `InvalidSeriesConfig`로 거절한다. `Stacked`와 `Grouped`는 음수를 그린다.
 
 선택과 개별 스타일은 ID를 참조하므로 이름을 바꿔도 같은 항목을 가리킨다. 항목을 삭제하면
@@ -79,14 +79,14 @@ chart.selected = Some(target);
 
 | 옵션 | 기본값 | 범위·동작 |
 |---|---|---|
-| `material` | `Flat` | Any [`Material`](RADIAL.md#materials) except Toon and Pearl; a bar is shaded like a flat pie top |
+| `material` | `Flat` | `Toon`·`Pearl`을 뺀 모든 [`Material`](RADIAL.md#materials). 막대는 평면 파이 윗면처럼 음영을 받는다 |
 | `corner_radius` | 5 | 논리 픽셀 0~32. 막대 두께·길이의 절반 이내로 제한 |
 | `outline` | false | 외곽선 켜기 |
 | `outline_width` | 1 | 논리 픽셀 0~8. 도형 안쪽으로 그림 |
 | `outline_color` | RGB(40,55,75) | RGBA 각 성분 0~1, 알파 허용 |
 | `texture_strength` | 0.2 | 0~1, 0이면 무늬 끄기 |
 | `texture_scale` | 1 | 0.1~8, 높일수록 무늬가 촘촘함 |
-| `gloss` | 0.45 | 0~1; the sheen of SatinMetal and BrushedMetal (no visible effect on an Enamel bar, see [materials](RADIAL.md#materials)) |
+| `gloss` | 0.45 | 0~1. `SatinMetal`·`BrushedMetal`의 광택이며 `Enamel` 막대에서는 눈에 띄는 효과가 없다([재질](RADIAL.md#materials) 참고) |
 | `emphasis_brightness` | 0.08 | 0~0.5, 호버·선택 시 밝기 증가 |
 | `group_width` | 0.7 | 범주 칸에서 막대가 차지하는 비율, 0.1~0.95 |
 | `bar_gap` | 3 | 묶음 내 막대 사이 논리 픽셀, 0~24 |
@@ -94,7 +94,7 @@ chart.selected = Some(target);
 
 묶음 막대는 0 반대편 끝만 둥글게 만든다. 누적 막대는 양수·음수 스택 각각의 마지막
 0이 아닌 조각 끝만 둥글게 만들고 내부 경계는 반듯하게 유지한다. 원본 값과 막대의 끝 위치는
-재질·외곽선·호버에 따라 바뀌지 않는다. 질감은 셰이더가 생성하며 외부 텍스처 파일을 요구하지 않는다.
+재질·외곽선·호버에 따라 바뀌지 않는다. 질감에 외부 텍스처 파일은 필요 없다.
 범주 색을 비교하기 위한 2D 표현이며 원형 차트의 입체 카메라·돌출 효과는 적용하지 않는다.
 
 ## 표기와 글꼴
@@ -148,7 +148,7 @@ chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
 `left_y`)으로, `mode`·`direction`·`group_width`·`bar_gap`을 `Config.bar_groups`로, 시리즈를
 `CategoryBars` 시리즈로 옮긴다. 값 축·범주 축 제목, 격자, 범례, 글꼴, 글자 색, 차트 제목, 주석 층,
 활성 레이어, 선택, 장식 위치도 직교 좌표 설정으로 옮긴다. 가로 문서의 범주 축은 뒤집어
-(`inverted`) 첫 범주가 예전처럼 맨 위에 오고, `Y` 축 주석도 같은 범주에 놓인다. 호버 상태, 배경색,
+(`inverted`) 문서에서처럼 첫 범주가 맨 위에 오고, `Y` 축 주석도 같은 범주에 놓인다. 호버 상태, 배경색,
 명시한 `decorations.data_area`, 값 라벨 위치는 옮기지 않는다. 범주 축의 축선은 값 축의 0에
 놓인다(`AxisOptions::cross_at`).
 

@@ -6,10 +6,9 @@ image.
 [`readme_gallery.rs`](examples/readme_gallery.rs) runs twelve examples with
 one shared device: `error_bars`, `histogram`, `heatmap_contours`,
 `animated_lines`, and the 0.19 scenes `ternary`, `surface_3d`, `trimesh`,
-`parallel`, `range_bars`, `stem`, `broken_axes` and `feynman`. They use the native `Renderer` with an offscreen RGBA target, upload columns through
-the resident pool, and export through `export_rgba` and
-`encode_png`. No browser or window is needed. Axes, text, grid and legends follow
-the same CPU-raster/GPU-compositing path as other figgy charts.
+`parallel`, `range_bars`, `stem`, `broken_axes` and `feynman`. They use the
+native `Renderer`, upload their columns, and export with
+`export_rgba` and `encode_png`. No browser or window is needed.
 
 All data is synthetic. These images demonstrate plotting features, not measured
 scientific results. The error bars are deliberately chosen widths, not confidence
@@ -175,8 +174,9 @@ This writes 19 static PNGs and the frames `wave/000.png` … `wave/047.png` and
 - `gallery-trimesh.png`, `gallery-trisurf.png` and `gallery-parallel.png`;
 - `gallery-waterfall.png`, `gallery-candlestick.png` and `gallery-gantt.png`;
 - `gallery-stem.png`, `gallery-lollipop.png`, `gallery-broken-axes.png` and
-  `gallery-feynman.png`. The
-optional second argument selects 2–240 frames; the default is 48. Phases cover
+  `gallery-feynman.png`.
+
+The optional second argument selects 2–240 frames; the default is 48. Phases cover
 one period without repeating the endpoint. The example uses fixed axis ranges so
 the animation does not rescale each frame.
 
@@ -249,14 +249,13 @@ page. The case outputs of `radial_gallery`, `categorical_gallery`,
 `boxplot_gallery`, `radar_gallery` and `polar_plot` are renamed, for example
 `target/radial-gallery/ceramic.png` → `assets/gallery-donut.png`; the feature
 examples and `gallery_concepts` already write their final names. The
-radial example uses `RadialRenderer`; its small-data model does not use the
-Cartesian column pool. `categorical_gallery`, `boxplot_gallery` and
+radial example draws with `RadialRenderer`. `categorical_gallery`, `boxplot_gallery` and
 `radar_gallery` open their documents with `Config::from_categorical`,
 `Config::from_boxplot` and `Config::from_radar` and draw them with the
 Cartesian `Renderer`, value labels included (the documents' `labels`
 settings, written into `labels.text` by the readers). `categorical_gallery`
-leaves 12 % of the value range past the bars for outside labels, as the
-former chart did. `boxplot_gallery` labels every box with its median; the
+leaves 12 % of the value range past the bars for outside labels.
+`boxplot_gallery` labels every box with its median; the
 label past the highest outlier, which would cross the top of the data area,
 sits below that outlier instead.
 
@@ -283,8 +282,8 @@ cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/m
 
 [`milkyway_line_preview.rs`](examples/milkyway_line_preview.rs) exports a
 1280 × 1024 PNG containing two synthetic growth curves, each declared as
-`DataRenderType::Line`. The line pipeline generates the stars and nebula along
-arc length. There are no scatter planets or errorbar jets in this preview.
+`DataRenderType::Line`. The stars and nebula are spread along each line's
+length. There are no scatter planets or errorbar jets in this preview.
 The example also compares against an empty chart to verify visible data pixels.
 
 The selected parameters are explicit in the example: `star_density = 70`,
@@ -313,7 +312,7 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 
 ## 한국어 사용법
 
-이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 GPU 풀에 데이터를 올리고, 데이터와 축·눈금·텍스트를 합성해 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
+이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 컬럼을 등록하고 데이터와 축·눈금·텍스트를 그려 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
 
 - **정지 이미지 19종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선, 그리고 육각 빈, 컬러 이미지, 삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 평행 좌표, 폭포·캔들스틱·간트, 줄기·롤리팝, 축 끊기, 파인만 도표 장면이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.

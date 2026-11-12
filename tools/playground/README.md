@@ -6,9 +6,9 @@ workspace member, not a renderer feature, and not part of any published package.
 
 The scene catalogue (the synthetic data and the starting model of every scene)
 is `crates/renderer/tests/support/playground_scenes.rs`, which the playground
-includes with `#[path]`. The renderer's decoration oracle
-(`crates/renderer/tests/decoration_oracle.rs`) sweeps the same file, so a
-scene added there is checked in CI without a test of its own.
+includes with `#[path]`. The renderer's decoration tests
+(`crates/renderer/tests/decoration_oracle.rs`) run over every scene in that
+file, so a scene added there is checked in CI without a test of its own.
 
 winit owns the window and the event loop. The app owns the wgpu surface, and
 egui (`egui-winit` + `egui-wgpu`, no eframe) draws the controls on top.
@@ -190,7 +190,7 @@ on the data area orbits the camera.
   its domain, pixel range and area/radius scale. Contour labels can toggle the
   background box, font size, digits and level 0.
 - **Picking**: each pick lists the point's coordinates and, for a mapped
-  series, the colour and size values read back from the GPU column.
+  series, the colour and size values from its value columns.
 - **Annotations**: show or hide the layer, add vertical and horizontal
   reference lines, spans, text boxes and arrows, and edit or delete the
   selected item.

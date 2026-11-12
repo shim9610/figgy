@@ -13,10 +13,10 @@ that shape:
 
 The host supplies every value as a column: the running totals of a
 waterfall, the prices of a candle, the bounds of an interval, a state index
-and a progress fraction. The renderer draws them and computes no running
-total, change, duration or statistic. It compares the two given ends of a
-bar to pick the up or down colour, maps a state index to a style, places the bar in its slot and
-shades the finished part of a bar. Streamed sources are rejected.
+and a progress fraction. The renderer draws them as given: it does not
+compute running totals, changes, durations or statistics. It only compares a
+bar's two ends to choose the up or down colour, maps a state index to a
+style and shades the finished part of a bar. Streamed sources are rejected.
 
 ## Series
 
@@ -37,9 +37,9 @@ series:
 
 Every column holds one value per row of the positions; a column of another
 length is an error naming it. A row with a NaN position, start or end, or
-with equal ends, draws no bar and none of its parts. Any number of rows,
-series, states and labels can be drawn, within the column pool and `u32`
-indices. The cost grows with the rows: on a software Vulkan adapter
+with equal ends, draws no bar and none of its parts. There is no limit on
+rows, series, states or labels beyond `u32` indices and device memory. The
+cost grows with the rows: on a software Vulkan adapter
 (lavapipe), picking among 100,000 rows takes about 10 ms and exporting them
 on a 7600 px wide panel about 1.8 s.
 
@@ -105,9 +105,8 @@ let waterfall = SeriesConfig {
 ## Interaction
 
 Every part of a bar picks it: the body, the whisker and the connector each
-answer `PickedData::HistogramBin` with the series and the row, from the
-same functions the draw builds them with, so a bar is picked where it is
-painted. The picked bar's highlight rings its body. `step_selection` moves
+answer `PickedData::HistogramBin` with the series and the row, so a bar is
+picked where it is painted. The picked bar's highlight rings its body. `step_selection` moves
 a bar along its rows by the delta of the pointer axis its position axis
 runs along (`dx` for vertical bars, `dy` for horizontal ones) and across
 the range bar series of its layer by the other; the rows are bounded by
@@ -125,5 +124,8 @@ and serialize with every unset option omitted.
 
 ## Examples
 
-The playground's Waterfall, Candlesticks and Gantt scenes
-(`crates/renderer/tests/support/playground_scenes.rs`) build each chart.
+[range_bars.rs](examples/range_bars.rs) draws a waterfall, a candlestick
+chart and a Gantt chart (`gallery-waterfall.png`, `gallery-candlestick.png`,
+`gallery-gantt.png`). The playground's *Waterfall (range bars)*,
+*Candlesticks (range bars)* and *Gantt (range bars)* scenes build each chart
+interactively.
