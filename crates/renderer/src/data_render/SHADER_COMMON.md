@@ -44,7 +44,7 @@ To change shared shader code:
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl`, `errorbar_segment.wgsl` and `category_jitter.wgsl`) and the pick marker modules |
 | `category_jitter.wgsl` (§5.20) | bar (the box group's slot layout and raw point placement), the pick marker modules |
-| `line_step.wgsl` | line, line_arc, the pick line modules |
+| `line_step.wgsl` (§5.6 step pieces) | line, line_arc, the pick line modules |
 | `arc_walk.wgsl` (§5.6 arc slots) | line, the path vector module (draw only: the pick walks a segment's arc through `pick_arc`) |
 | `path_arrow.wgsl` (§5.3 path form) | the path vector module, the pick line modules |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
@@ -798,6 +798,56 @@ corners, `arc_end + half_w` at the B-side ones). A sketch stroke subdivides
 each piece into `SKETCH_SUBDIV` spans whose knots are displaced along the
 normal by `sketch_line_offset_from` at their arc position, and the fragment
 evaluates the same rectangle in the undisplaced `(along, side)` frame.
+
+**Step pieces.** The pieces are the fragment
+[`data_render/common/line_step.wgsl`](common/line_step.wgsl), spliced into
+the line, line_arc and pick line modules, so all of them split a segment the
+same way:
+
+```wgsl
+struct StepPiece { x0: vec2<f32>, y0: vec2<f32>, x1: vec2<f32>, y1: vec2<f32>, axis: u32 };
+const STEP_AXIS_NONE: u32 = 0u;  const STEP_AXIS_X: u32 = 1u;
+const STEP_AXIS_Y: u32 = 2u;     const STEP_AXIS_POINT: u32 = 3u;
+fn step_piece_count(mode: u32) -> u32
+fn step_piece(xa, ya, xb, yb: vec2<f32>, mode: u32, k: u32) -> StepPiece
+fn step_piece_end(t: Transform, p: StepPiece, a: vec2<f32>, b: vec2<f32>) -> vec2<f32>
+fn step_piece_dir(t: Transform, p: StepPiece, dir: vec2<f32>) -> vec2<f32>
+fn step_piece_len_px(t: Transform, p: StepPiece) -> f32
+```
+
+- `step_piece` is piece `k` of segment `a → b` under the mode word (bits
+  0-1 the step mode, bits 4 and up the polar arc pieces; `step_piece_count`
+  is how many). Its corners are `(hi, lo)` pairs in data space, so every
+  reader projects the same points.
+- `axis` names the coordinate the piece's two corners share in data space:
+  `STEP_AXIS_X` for a riser (equal x), `STEP_AXIS_Y` for a run (equal y),
+  `STEP_AXIS_NONE` for a linear segment or a polar arc piece. A piece whose
+  two corners are one data point (a repeated sample, such as the join rows
+  of a monotonic line's envelope, or a riser between equal values) is
+  `STEP_AXIS_POINT` (#277), decided by comparing the data-space corners,
+  never the two projections.
+- `step_piece_end(t, p, a, b)` is the projected end given the projected
+  start `a`: a riser copies `a.x` into `b`, a run copies `a.y`, so the shared
+  coordinate is not projected twice (#63: Metal may contract one evaluation
+  and not the other, and an ulp across a piece far shorter than a pixel
+  tilted the square-capped quad by about a degree). A vertex stage that
+  divides NDC into pixels calls it again after the division. A
+  `STEP_AXIS_POINT` piece returns `a`, in any projection. On a polar chart
+  (`polar_angle.x > 0.5`) nothing else is copied: the data axes map onto
+  rings and spokes.
+- `step_piece_dir(t, p, dir)` is the piece's unit direction in pixels,
+  exactly along its axis: a riser keeps only the sign of `dir.y`, a run only
+  the sign of `dir.x`, since copying the shared coordinate can still leave
+  an ulp in the difference in Metal's vertex stage (#63). A
+  `STEP_AXIS_POINT` piece returns zero, so its quad collapses on every
+  backend instead of drawing a stroke-wide square cap.
+- The ternary entry (`vs_ternary`) and the 3D entry (`line_3d_vertex`) take
+  the linear piece and reset `axis` to `STEP_AXIS_NONE`: their third
+  component (`c` or the height) places the ends too, so equal x and y are
+  not one point there.
+
+CPU twin: `line_step::line_pieces` (test support) gives the same corners; it
+has no `axis`.
 
 **Arc pairs.** The prefix holds each point's cumulative arc as a 64-bit
 fixed-point integer of `ARC_UNITS_PER_PX` (65536) units per pixel, stored as

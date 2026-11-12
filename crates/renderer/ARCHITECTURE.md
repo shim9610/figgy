@@ -27,6 +27,7 @@ JavaScript API for every renderer. [Browser product scope](https://github.com/sh
 
 - **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit allocation. A removal schedules a ping-pong defragmentation that runs when the host calls `process_pending_maintenance()` (or `defragment()`); under `DefragPolicy::OnAllocFailure` an upload that hits `OutOfSpace` also defragments once and retries. The default policy is `Manual`. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`). Per-point data enters the pool in four kinds, all through `ColumnSource`: columns, records (a box plot's fields), ragged columns (variable-length groups with `u32` offsets) and triangle index columns (#210: three `u32` vertex indices per triangle, checked and summarised in the upload's write observer). Records, ragged and triangle columns own internal member columns and are resident only.
 - **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the [web streaming contract](WASM.md#exact-streaming-en).
+- **Monotonic-x lines (opt-in)**: a `MonotonicLine` series in a monotonic chart (`register_monotonic_chart`) draws evenly spaced samples the host lends through a `MonotonicSource` on each call, reduced on the CPU to an M4 envelope per pixel column and drawn by the line pipeline; see [Monotonic-x lines](#monotonic-x-lines-m4-envelope) and [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
 - **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. A layered document draws the grid and data of every panel before the decoration of any panel, so on every layer the decoration is above the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at `scale` 0.25 and up (24 DPI and up; `clamp_export_scale` raises smaller values, and the scaled target must fit the device texture limit, else `GpuResourceLimit`) → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
@@ -84,8 +85,8 @@ The table summarizes contracts by topic, rather than numbered areas in the image
 | **Frame invalidation** | A persistent host compares renderer-issued desired/raster revisions with its last successfully presented stamp. Raster or viewport changes require a raster refresh; host-only redraw state can require drawing without changing chart state. The browser's clean rAF skips surface acquisition and drawing, while required maintenance/completion processing can continue. Failed presentation must not advance the last-presented stamp. |
 | **Prepare and record** | `prepare(&mut self)` resolves draw inputs and captures GPU handles, shared charges and validation stamps in `PreparedFrame`. `paint_prepared(&self)` validates that token before recording. It rejects changed views, captured columns, layouts, target pipelines or registered chart revisions. Once commands are recorded, the host must submit them before conflicting mutations; a token cannot inspect an external command buffer's later submission order. |
 | **GPU-derived data** | Arc-prefix scans, picking and exact primitive extents use GPU columns. Arc scan splits long series into bounded chunks linked by a carry chain, so dispatch limits do not cap series length. Picking and fitting return compact results instead of a CPU copy of all points. Immutable derived GPU results can be shared by cache entries and prepared tokens; cache eviction alone need not release the last owner. |
-| **Screen and export** | Compose grid → annotation underlay → data → decoration → annotation overlay. Export prepares a scaled chart/view/style and offscreen target, then reads back padded row chunks and converts premultiplied RGBA to straight alpha. Row chunking bounds the readback buffer; the target, final RGBA image and PNG output still need their own memory. Resident export uses GPU columns, while streamed export replays original ranges. |
-| **Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation. Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
+| **Screen and export** | Compose grid → annotation underlay → data → decoration → annotation overlay. Export prepares a scaled chart/view/style and an offscreen half-float target (`EXPORT_FORMAT`, `Rgba16Float`), then reads back padded row chunks and quantizes the premultiplied half floats once to straight-alpha RGBA8. Row chunking bounds the readback buffer; the target, final RGBA image and PNG output still need their own memory. Resident export uses GPU columns, while streamed export replays original ranges. |
+| **Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation; the monotonic-x line is a separate source with its own rules (below). Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
 | **Accounting and retirement** | A GPU resource's shared charge survives as long as a Figgy owner retains it. After the last owner drops, retired bytes remain counted until an appropriate submission boundary and queue completion. `end_gpu_frame()` follows submission/discard of earlier commands; native hosts must service completions. The ledger describes tracked requested bytes, with the style-texture exceptions described below, rather than physical VRAM usage. |
 
 ### Resident column upload
@@ -508,6 +509,47 @@ A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide
 - Pick: on a flat chart a one-workgroup compute scan over every triangle (`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) answers the triangle under the cursor, or a contour over it; on a 3D chart the 1×1 ID pass writes kind 2 for the surface and the floor-contour word for its levels. Both read the draw's own group 2 snapshot.
 - The CPU keeps only the pool's scalar statistics of the index column (count, smallest and largest index); registration checks the largest index against the vertex count. Streamed sources are refused (rule 8).
 
+### Monotonic-x lines (M4 envelope)
+
+A `MonotonicLine` series ([#271](https://github.com/shim9610/figgy/issues/271),
+[guide](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md)) draws one channel of a group of evenly
+spaced samples, `x = start + i × interval`. It has its own input and its own
+rules (M1 to M7 in the repository's `CLAUDE.md`); every other series keeps
+the column contract above.
+- Input: the host lends a `MonotonicSource` (`MonotonicSlices`,
+  `MonotonicInterleaved` or its own implementation: the values, `start` and
+  `interval`) to each call that reads it. No call retains it, and the
+  samples never enter the column pool through `ColumnSource`.
+- Reduction: the CPU reduces the visible window to an M4 envelope per pixel
+  column, the first, lowest, highest and last sample
+  (`model::monotonic::MonotonicEnvelope`, `crates/model/src/monotonic/`).
+  The envelope also keeps a fixed margin of 64 pixel columns beyond each
+  edge of the plot (`MARGIN_PX`), so strokes up to about 120 device pixels
+  wide draw their edges as a full draw does; a stroke width stays a style
+  edit. The envelope is sized by the plot width and the channel count,
+  never by the sample count. The renderer keeps one per group and per
+  x-to-pixel mapping its series are drawn at (`src/renderer/monotonic.rs`).
+- Draw: each series' envelope is uploaded to two renderer-owned pool
+  columns (`<id>.monotonic.x`, `<id>.monotonic.y`, which a host cannot write)
+  and drawn by the existing line pipeline: no new shader, entry point or
+  pipeline. A slot takes 8 rows, each kept point followed by a join row that
+  repeats it or is NaN; a repeated point is a piece `common/line_step.wgsl`
+  marks `STEP_AXIS_POINT`, so it collapses on every backend
+  (SHADER_COMMON §5.6).
+- Handle: `Renderer::register_monotonic_chart` returns a `MonotonicChartId`,
+  and `Renderer::monotonic_chart` lends its `MonotonicChart`. The general
+  chart calls take a `ChartId`, which a monotonic chart never hands out, so
+  none can reach it. Four calls move the x-to-pixel mapping, and each takes
+  the source: `set_monotonic` (the full call, the only x range or
+  autoscale), `append_monotonic` (only the new samples; a sliding append
+  drops columns from the front), `resize` (chart area, plot area and
+  display, atomically) and `fit_layout`. The document editor
+  (`MonotonicConfig`) refuses an edit that would move the mapping.
+- Frames and picks never need the source; a pick reports the logical sample
+  index of a kept point. An export at another mapping takes the sources
+  (`ExportSource::Monotonic`) and reduces each group into columns that live
+  for that export only. A streamed display refuses the series.
+
 ### Export pipeline
 
 ![Requested-resolution offscreen export, resident or replayed streaming input, row readback and PNG encoding](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/png-export-en.png)
@@ -520,7 +562,9 @@ export_rgba(chart, &[SeriesConfig], scale).await:
     temp ChartView (scaled axis textures)
     temp ChartStyles ← create_style_for_series_scaled(cfg, scale) per cfg
         ↓
-    offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear)
+    offscreen wgpu::Texture (EXPORT_FORMAT = Rgba16Float, COPY_SRC,
+                             transparent clear; the resident and the
+                             streamed export alike)
     paint(items) — same compositing order (grid → annotation underlay → data
                    → decoration → annotation overlay)
         ↓
@@ -531,8 +575,9 @@ export_rgba(chart, &[SeriesConfig], scale).await:
     map_async; the wait is the driver's: awaited (the bundle's poll thread
     on native, the browser on wasm) or blocking (the caller polls)
         ↓
-    premul→straight α conversion, padding rows removed (no channel swap —
-    the target is RGBA already)
+    straight_rgba8 per texel: premultiplied half floats divided by their
+    alpha and quantized to straight-alpha RGBA8 once; padding rows removed
+    (no channel swap — the target is RGBA already)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API return
         ↓
@@ -540,6 +585,19 @@ export_rgba(chart, &[SeriesConfig], scale).await:
         ↓
     Caller decides: std::fs::write / clipboard / network / ...
 ```
+
+The export target is `EXPORT_FORMAT`, premultiplied `Rgba16Float`
+(`src/renderer/export.rs`, #271), on the resident and the streamed export
+path alike, so a streamed export blends and rounds as the resident export
+of the same document. Every primitive blends at half precision, and the
+image is quantized to 8 bits once, at readback (`straight_rgba8`: divided by
+the texel's alpha, then rounded). With an 8-bit target each blend rounded
+against whatever lay under it, and 8-bit premultiplied blending is not
+associative: the PNG export (grid, then each data primitive, then the
+decoration) and a vector file's data image (the data alone on a transparent
+image, placed over the grid) drifted apart where many antialiased strokes
+stack. In half floats the two orders agree within the final quantization.
+The on-screen path is unchanged: it draws into the host's surface format.
 
 `export_rgba` follows the same pipeline for a layered document:
 the one temporary `ChartView` holds a panel per layer, `Config::expand()` turns
@@ -619,6 +677,7 @@ lines, split connectors and annotation overlay through the same sink
 
 - **상주 GPU 컬럼 풀**: 여러 컬럼이 하나의 GPU 버퍼를 공유하며, 충분한 크기의 첫 빈 공간에 할당한다. 컬럼을 제거하면 두 버퍼를 번갈아 쓰는 재배치를 예약하고, 호스트가 `process_pending_maintenance()`나 `defragment()`를 호출할 때 실행한다. `DefragPolicy::OnAllocFailure`를 지정하면 공간이 부족한 업로드도 한 번 재배치한 뒤 다시 시도한다. 기본 정책은 `Manual`이다. `HiLoColumnSource`로 올린 값은 두 f32의 hi/lo 쌍으로 저장하므로 큰 타임스탬프에서도 작은 값 차이를 보존한다. 업로드할 때 최소·최대·최소 양수 값을 저장해 자동 범위 맞춤에 사용한다. 점선의 누적 경로 길이처럼 점마다 필요한 값은 GPU 스캔 연산(`line_arc.wgsl`)으로 계산한다.
 - **비상주 렌더링**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 등고선, 은하수 모드의 선, 극좌표 차트, 선 채우기와 계단 보간, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어나 서브플롯이 있는 문서는 스트리밍 원본을 명시적인 오류로 거부한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다.
+- **단조 x 선(선택)**: 단조 차트(`register_monotonic_chart`)의 `MonotonicLine` 시리즈는 호스트가 호출마다 `MonotonicSource`로 빌려주는 간격이 일정한 샘플을 CPU에서 픽셀 열마다 M4 엔벌로프로 줄여 선 파이프라인으로 그린다. [단조 x 선](#단조-x-선m4-엔벌로프)과 [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md)를 참고한다.
 - **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 레이어가 있는 문서는 모든 패널의 격자와 데이터를 먼저 그리고 그다음 모든 패널의 장식을 그리므로, 어느 레이어에서든 장식이 데이터 위에 놓인다. 축 이미지는 기본적으로 `Grid`와 `Decoration` 레이어로 나눈다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
 - **원본 데이터 보존**: 렌더러와 웹 래퍼는 모델의 설정을 따르며 원본 좌표, 데이터 출처, 축과 데이터의 대응 관계를 임의로 바꾸지 않는다. 화면 밖 자르기, 로그축에서 0 이하 값 제외, NaN 제외, 안티앨리어싱은 표시 과정에만 적용한다.
 - **창 없이 PNG 출력**: 배율 0.25 이상(24 DPI 이상)으로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 0.25보다 작은 배율은 `clamp_export_scale`이 0.25로 올리고, 상한은 없다. 배율을 적용한 렌더 타깃은 장치의 텍스처 크기 한도 안에 들어와야 하며, 넘으면 `GpuResourceLimit` 오류가 난다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
@@ -652,8 +711,8 @@ lines, split connectors and annotation overlay through the same sink
 | **프레임 갱신 판단** | 렌더러가 발급한 desired/raster 리비전과 마지막 표시 성공 기록을 비교한다. 래스터 설정이나 표시 영역이 바뀌면 축 이미지를 갱신한다. 배경색 같은 호스트 상태는 차트 설정을 바꾸지 않고 다시 그릴 수 있다. 웹에서는 변경이 없는 프레임의 surface 획득과 그리기를 생략하되 필요한 정리·완료 처리는 계속한다. 표시가 실패하면 마지막 성공 기록을 갱신하지 않는다. |
 | **준비와 명령 기록** | `prepare(&mut self)`가 입력을 확정하고 GPU 핸들·공유 할당 정보·검증용 상태를 `PreparedFrame`에 담는다. `paint_prepared(&self)`는 기록 전에 이를 검증한다. 뷰, 참조 컬럼, 풀 배치, 출력 파이프라인 또는 등록 차트 리비전이 바뀌면 거부한다. 호스트는 이 변경 전에 기존 명령을 제출해야 한다. 토큰은 외부 명령 버퍼의 제출 순서까지 검사하지 않는다. |
 | **GPU 파생 데이터** | 누적 경로 길이, 피킹, 실제 도형의 범위는 GPU 컬럼에서 계산한다. 경로 길이 스캔은 긴 시리즈를 제한된 크기의 청크로 나누고 누계를 다음 청크로 넘기므로 디스패치 한도가 시리즈 길이를 제한하지 않는다. 피킹과 범위 계산은 전체 점을 CPU로 복사하지 않고 작은 결과만 반환한다. 캐시와 프레임 토큰이 같은 계산 결과를 공유할 수 있으므로 캐시에서 지워도 자원이 바로 해제되지는 않을 수 있다. |
-| **화면 표시와 이미지 출력** | 격자·주석 아래층·데이터·장식·주석 위층 순서로 합성한다. 출력할 때는 배율을 적용한 차트·뷰·스타일과 화면 밖 렌더 타깃을 준비한다. 정렬용 여백이 있는 행을 청크 단위로 읽어 오고, 알파가 미리 곱해진 RGBA를 일반 RGBA로 바꾼다. 청크 처리는 읽기 버퍼의 크기를 제한하지만 렌더 타깃·최종 RGBA·PNG의 메모리까지 없애지는 않는다. 상주 출력은 GPU 컬럼을, 스트리밍 출력은 다시 공급받은 원본 구간을 사용한다. |
-| **원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
+| **화면 표시와 이미지 출력** | 격자·주석 아래층·데이터·장식·주석 위층 순서로 합성한다. 출력할 때는 배율을 적용한 차트·뷰·스타일과 화면 밖 half float 렌더 타깃(`EXPORT_FORMAT`, `Rgba16Float`)을 준비한다. 정렬용 여백이 있는 행을 청크 단위로 읽어 오고, 알파가 미리 곱해진 half float를 한 번만 양자화해 straight 알파 RGBA8로 바꾼다. 청크 처리는 읽기 버퍼의 크기를 제한하지만 렌더 타깃·최종 RGBA·PNG의 메모리까지 없애지는 않는다. 상주 출력은 GPU 컬럼을, 스트리밍 출력은 다시 공급받은 원본 구간을 사용한다. |
+| **원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 단조 x 선은 자체 규칙을 따르는 별도 소스다(아래). 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
 | **메모리 집계와 회수** | figgy에서 자원을 참조하는 동안 공유 할당 정보도 유지한다. 마지막 참조가 해제돼도 회수 대기 바이트는 제출 경계를 알리고 GPU 큐의 작업이 끝날 때까지 집계한다. 호스트는 기존 명령을 제출하거나 폐기한 뒤 `end_gpu_frame()`을 호출해야 하며, 네이티브에서는 완료 콜백도 처리해야 한다. 아래에 설명한 스타일 텍스처 등은 집계에서 제외되며 보고값은 실제 VRAM 측정값이 아니다. |
 
 ### 상주 컬럼 업로드
@@ -891,6 +950,38 @@ redraw_pending = false;
 - 피킹: 평면 차트에서는 워크그룹 하나짜리 계산 셰이더가 모든 삼각형을 훑어(`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) 커서 아래의 삼각형이나 그 위의 등고선을 답한다. 3D 차트에서는 1×1 ID 패스가 표면에 종류 2를, 바닥 등고선에 등고선 단어를 쓴다. 둘 다 그리기와 같은 그룹 2 스냅샷을 읽는다.
 - CPU는 인덱스 컬럼의 스칼라 통계(개수, 가장 작은 인덱스와 가장 큰 인덱스)만 갖는다. 등록할 때 가장 큰 인덱스를 정점 개수와 비교한다. 스트리밍 계열은 거부한다(규칙 8).
 
+### 단조 x 선(M4 엔벌로프)
+
+`MonotonicLine` 시리즈([#271](https://github.com/shim9610/figgy/issues/271),
+[가이드](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md))는 간격이 일정한 샘플 묶음(`x = start + i × interval`)의 채널
+하나를 그린다. 입력과 규칙이 따로 있으며(저장소 `CLAUDE.md`의 M1~M7), 다른 시리즈는 모두 위의
+컬럼 계약을 그대로 따른다.
+- 입력: 호스트는 `MonotonicSource`(`MonotonicSlices`, `MonotonicInterleaved` 또는 직접 만든
+  구현. 값, `start`, `interval`을 담는다)를 그 소스를 읽는 호출마다 빌려준다. 어떤 호출도 소스를
+  보관하지 않으며, 샘플은 `ColumnSource`로 컬럼 풀에 들어가지 않는다.
+- 축소: CPU가 보이는 구간을 픽셀 열마다 M4 엔벌로프(첫 샘플, 가장 낮은 샘플, 가장 높은 샘플,
+  마지막 샘플)로 줄인다(`model::monotonic::MonotonicEnvelope`, `crates/model/src/monotonic/`).
+  엔벌로프는 플롯 양쪽 바깥으로 64픽셀 열의 고정 여백(`MARGIN_PX`)도 함께 두므로, 장치 픽셀로
+  약 120픽셀 굵기까지의 선은 전체를 그릴 때와 같은 가장자리를 그리고 선 굵기 변경은 스타일
+  편집으로 남는다. 엔벌로프 크기는 플롯 너비와 채널 수로 정해지며 샘플 수와 무관하다. 렌더러는
+  묶음마다, 그리고 그 시리즈를 그리는 x-픽셀 매핑마다 엔벌로프를 하나씩 둔다
+  (`src/renderer/monotonic.rs`).
+- 그리기: 시리즈마다 엔벌로프를 렌더러가 소유한 풀 컬럼 두 개(`<id>.monotonic.x`,
+  `<id>.monotonic.y`, 호스트는 쓸 수 없다)에 올리고 기존 선 파이프라인으로 그린다. 새 셰이더,
+  진입점, 파이프라인은 없다. 슬롯마다 8행을 쓰며, 남긴 점 뒤에 그 점을 반복하거나 NaN인 이음
+  행이 붙는다. 반복한 점은 `common/line_step.wgsl`이 `STEP_AXIS_POINT`로 표시하는 조각이므로
+  모든 백엔드에서 사라진다(SHADER_COMMON §5.6).
+- 핸들: `Renderer::register_monotonic_chart`가 `MonotonicChartId`를 돌려주고,
+  `Renderer::monotonic_chart`가 그 차트의 `MonotonicChart`를 빌려준다. 일반 차트 호출은
+  `ChartId`를 받는데 단조 차트는 `ChartId`를 내주지 않으므로 어떤 일반 호출도 닿지 못한다.
+  x-픽셀 매핑을 옮기는 호출은 넷이며 모두 소스를 받는다. `set_monotonic`(전체 호출이며 x 범위나
+  자동 맞춤을 정하는 유일한 호출), `append_monotonic`(새 샘플만 받는다. 밀어내기 추가는 앞쪽
+  열을 버린다), `resize`(차트 영역, 플롯 영역, 표시를 한꺼번에), `fit_layout`이다. 문서
+  편집기(`MonotonicConfig`)는 매핑을 옮기는 편집을 거부한다.
+- 프레임과 피킹에는 소스가 필요 없고, 피킹은 남긴 점의 논리 샘플 번호를 돌려준다. 다른 매핑으로
+  출력할 때는 소스를 받아(`ExportSource::Monotonic`) 묶음마다 그 출력에만 쓰는 컬럼으로 다시
+  줄인다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
+
 <a id="export-파이프라인"></a>
 
 ### 이미지 출력 과정
@@ -905,7 +996,8 @@ export_rgba(chart, &[SeriesConfig], scale).await:
     임시 ChartView (확대한 축 텍스처)
     임시 ChartStyle ← cfg마다 create_style_for_series_scaled(cfg, scale)
         ↓
-    화면 밖 wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, 투명 배경으로 초기화)
+    화면 밖 wgpu::Texture (EXPORT_FORMAT = Rgba16Float, COPY_SRC, 투명 배경으로
+                          초기화. 상주 출력과 스트리밍 출력이 같다)
     paint(items) — 화면과 같은 합성 순서 (grid → 주석 underlay → data
                    → decoration → 주석 overlay)
         ↓
@@ -913,10 +1005,12 @@ export_rgba(chart, &[SeriesConfig], scale).await:
     높이는 장치의 최대 버퍼 크기에 맞춰 조절하므로 읽기 버퍼가 이미지 전체
     크기일 필요가 없다. 렌더 타깃은 장치의 텍스처 크기 한도 안이어야 한다)
         ↓
-    map_async (네이티브는 Wait로 바로 폴링, wasm은 브라우저에 양보하며 await)
+    map_async. 기다리는 방식은 호출자가 고른다: await(네이티브는 번들의 폴링
+    스레드, wasm은 브라우저가 진행) 또는 블로킹(호출자가 폴링)
         ↓
-    premul→straight α 변환, 패딩 행 제거 (대상이 이미 RGBA이므로 채널 순서는
-    바꾸지 않음)
+    텍셀마다 straight_rgba8: 알파를 미리 곱한 half float를 알파로 나눈 뒤
+    straight 알파 RGBA8로 한 번만 양자화, 패딩 행 제거 (대상이 이미 RGBA이므로
+    채널 순서는 바꾸지 않음)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API 반환
     (export_rgba: 레이어마다 한 패널을 같은 텍스처에 합성. 모든 패널의 격자·데이터를
@@ -928,6 +1022,17 @@ export_rgba(chart, &[SeriesConfig], scale).await:
         ↓
     호출자가 std::fs::write / clipboard / 네트워크 등 자유 처리
 ```
+
+출력 렌더 타깃은 알파를 미리 곱한 `Rgba16Float`인 `EXPORT_FORMAT`이다
+(`src/renderer/export.rs`, #271). 상주 출력과 스트리밍 출력이 같은 형식을 쓰므로, 스트리밍
+출력도 같은 문서의 상주 출력과 똑같이 블렌딩하고 반올림한다. 모든 도형을 half 정밀도로
+블렌딩하고, 이미지는 읽어 올 때 한 번만 8비트로 양자화한다(`straight_rgba8`: 텍셀의 알파로
+나눈 뒤 반올림). 8비트 타깃에서는 블렌딩할 때마다 아래 픽셀과 함께 8비트로 반올림했는데,
+8비트 premultiplied 블렌딩은 결합 법칙이 성립하지 않는다. 그래서 안티앨리어싱된 선이 많이
+겹치는 곳에서 PNG 출력(격자, 데이터 도형 하나하나, 장식 순서)과 벡터 파일의 데이터
+이미지(투명 이미지에 데이터만 그려 격자 위에 놓는다)가 서로 어긋났다. half float에서는 두
+순서의 결과가 마지막 양자화 범위 안에서 일치한다. 화면 표시 경로는 바뀌지 않았으며 호스트
+surface 형식에 그린다.
 
 이 과정은 두 함수로 나뉜다. `prepare_export`는 출력 한 번에 한 번 실행되며 검사, 배율을 적용해 배치한 문서, 뷰·스타일·파이프라인, 패널별 그리기 준비를 만든다. `paint_export(frame, panels, chrome, clear, steps)`는 패널 구간 하나를 렌더 타깃에 그리고 행 청크 단위로 읽어 온다. `steps`(`DataSteps`)는 패널마다 데이터 슬롯의 어느 단계를 그릴지 고른다. 단계는 GPU 채움·본체·선택 강조, DataLess 시리즈의 CPU 래스터, GPU 값 라벨 순서다. PNG 출력은 모든 패널을 장식과 함께 모든 단계로 그린다.
 
