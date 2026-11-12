@@ -98,15 +98,14 @@ impl Renderer {
     /// retroactively bound the pool's initial capacity: that slab is created
     /// during construction from the `pool_capacity_bytes` the host itself
     /// passed, before any budget exists. A pool growth that would cross the
-    /// ceiling is refused as `AllocError::ResourceLimit` — the same failure the
-    /// pool already reports for a device ceiling, so no host learns a new error
-    /// shape.
+    /// ceiling is refused as `AllocError::ResourceLimit`, the same failure the
+    /// pool reports for a device ceiling.
     ///
     /// **Returns** the current tracked total when the new ceiling is below it,
-    /// `None` when the total fits or the budget is disabled. The policy is applied either way: a
-    /// host that lowers it deliberately, intending to release something next,
-    /// gets what it asked for. But it learns at the call rather than at
-    /// whatever growth fails later — the reason this returns anything at all.
+    /// `None` when the total fits or the budget is disabled. The budget is
+    /// applied either way, so a host can lower it before releasing
+    /// resources; the returned total tells it at the call, rather than at a
+    /// later failed growth, that the ceiling is already exceeded.
     #[must_use = "a returned total means the new ceiling is already exceeded"]
     pub fn set_memory_budget(&mut self, budget: Option<u64>) -> Option<u64> {
         self.gpu_ledger.set_budget(budget);

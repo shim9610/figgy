@@ -16,7 +16,7 @@
 //! - [`Transition`]: one row of a lines file the host chose to draw, as an
 //!   arrow between its two levels. Only listed transitions are drawn.
 //!
-//! The host computes every value the reader reads as data (rule 1): the
+//! The host computes every value the reader reads as data: the
 //! g-weighted centroid of a fine-structure multiplet is a level row of role
 //! [`LevelRole::Centroid`], written by the host; the energy unit is whatever
 //! the host stored, named by the axis title. The renderer computes only
@@ -24,9 +24,9 @@
 //! time, never stored.
 //!
 //! The series is drawn through the CPU sink, as annotations and chrome are,
-//! and the GPU only composites the raster (approved on #203). The SVG and
-//! PDF export write the same emit as vector parts (#234). It has no count
-//! limit: every list is drawn to its end (rule 10).
+//! and the GPU only composites the raster. The SVG and PDF export write the
+//! same emit as vector parts (#234). It has no count limit: every list is
+//! drawn to its end.
 //!
 //! [`DataRenderType::EnergyLevels`]: crate::data_config::DataRenderType::EnergyLevels
 
@@ -323,7 +323,7 @@ pub struct Transition {
     /// column the host chose (`obs_wl`, `ritz_wl`, in air or vacuum). The
     /// renderer formats it for a drawn label
     /// ([`EnergyLevelStyle::wavelength_labels`]) and never converts or
-    /// chooses it (rule 1).
+    /// chooses it.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -427,7 +427,7 @@ pub struct EnergyLevelStyle {
 
 /// How a transition's `wavelength` is written as its drawn label (#258).
 /// The renderer formats the host's value for display and nothing else: it
-/// converts no unit and chooses between no values (rule 1).
+/// converts no unit and chooses between no values.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WavelengthLabels {
@@ -681,7 +681,7 @@ impl EnergyLevelSeries {
     /// component names a centroid row; text fields are one line of at most
     /// [`MAX_ENERGY_LEVEL_FIELD_CHARS`] characters and labels are valid rich
     /// text; offsets and styles are in range. A series with a `source`
-    /// holds no records. No list has a count limit (rule 10).
+    /// holds no records. No list has a count limit.
     pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.style.validate()?;
         if self.source.is_some() {
@@ -740,7 +740,7 @@ impl EnergyLevelSeries {
     }
 
     /// The level with id `id`. A linear scan over the SSOT: no index is
-    /// kept (rule 3).
+    /// kept.
     pub fn level(&self, id: &str) -> Option<&EnergyLevel> {
         self.levels.iter().find(|level| level.id == id)
     }
@@ -792,7 +792,7 @@ impl EnergyLevelSeries {
 
     /// The lowest and highest energy the series draws in `view`: its drawn
     /// levels and its limits. `None` when it draws none. A display
-    /// parameter for an axis fit (rule 1), read from the SSOT.
+    /// parameter for an axis fit, read from the SSOT.
     pub fn energy_extent(&self, view: LevelView) -> Option<(f64, f64)> {
         let drawn = self
             .levels
@@ -810,13 +810,11 @@ impl EnergyLevelSeries {
     }
 
     /// The continuum annotations of the series' ionization limits, for the
-    /// document's annotation layer (the maintainer's choice on #203: the
-    /// continuum is drawn by annotations; the limit lines and their labels
-    /// are the series' own): per limit, a [`AnnotationKind::Span`] on Y from
-    /// the limit up to `top`, filled with `fill`. Its id is
-    /// `{series_id}/limit/{limit id}/continuum`, so
-    /// [`Self::write_continuum`] replaces it on a later call. The list is
-    /// the helper's output (rule 3).
+    /// document's annotation layer (the continuum is drawn by annotations;
+    /// the limit lines and their labels are the series' own): per limit, a
+    /// [`AnnotationKind::Span`] on Y from the limit up to `top`, filled with
+    /// `fill`. Its id is `{series_id}/limit/{limit id}/continuum`, so
+    /// [`Self::write_continuum`] replaces it on a later call.
     pub fn continuum_annotations(&self, series_id: &str, top: f64, fill: Color) -> Vec<Annotation> {
         self.limits
             .iter()
@@ -1335,7 +1333,7 @@ impl crate::config::Config {
     /// [`crate::layer::Subplot::marker`] (#205), which is placed on every
     /// draw and follows the inset. Ids are `inset/{subplot}/window`,
     /// `…/link0` and `…/link1`. `None` for a subplot that is not an inset
-    /// of this chart. The list is the helper's output (rule 3).
+    /// of this chart.
     pub fn inset_marker(
         &self,
         subplot: usize,

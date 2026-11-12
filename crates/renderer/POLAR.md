@@ -164,7 +164,7 @@ category.
 
 [Category bar series](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)
 (`DataRenderType::CategoryBars`) on a polar chart with a categorical angle
-axis are a rose (#133): each bar is the wedge of its category's angular
+axis are a rose: each bar is the wedge of its category's angular
 slot between the stack's start and end radii, the value read on the
 radius axis (`left_y`, linear) as `polar_ndc` places it, from the inner
 ring (`inner_radius_fraction`) to the ring; an inverted radius axis grows
@@ -186,7 +186,7 @@ rose: sixteen directions, three stacked speed bands.
 ### Heatmaps and contours
 
 A field series (`DataRenderType::Field`: `"Heatmap"`, `"Contour"` and
-`"HeatmapContour"`) on a polar chart draws in (angle, radius) (#208).
+`"HeatmapContour"`) on a polar chart draws in (angle, radius).
 `x_column` holds the angle coordinates and `y_column` the radius
 coordinates; `GridLayout::Edges` and `Centers` and both
 `MatrixOrientation`s work as on a rectangular chart.
@@ -206,12 +206,11 @@ coordinates; `GridLayout::Edges` and `Centers` and both
 - Seam: an interpolated full circle leaves a wedge between its last and
   first angle samples. Close it by naming the first constituent column again
   at the end of `MatrixRef.columns` and appending `first + turn` to the angle
-  column; the pool column is read twice, nothing is copied.
+  column; the pool column is read twice and takes no extra memory.
 - Contours: each fragment's distance to a level is the Euclidean pixel
   distance to the drawn isoline, found by foot-point iteration on the field
   through the polar placement, so a ring and a spoke keep one width and one
-  antialiased edge from a few pixels off the centre to the ring (tested
-  against `|ρ − r|` and `ρ · |sin Δθ|`). Labels are placed by the same GPU anchor search, whose Newton steps
+  antialiased edge from a few pixels off the centre to the ring. Labels are placed by the same GPU anchor search, whose Newton steps
   run in (angle, radius); each label turns with its isoline's screen
   tangent, and the line leaves its gap under it.
 - Pick and selection: a cell answers `PickedData::MatrixCell` (`x_index`
@@ -238,7 +237,7 @@ over 180 azimuths and 60 range gates with labelled 30 and 45 dBZ contours.
 
 The GPU pick path (`pick_chart`, `pick_chart_data`) projects through the same
 mapping as the shaders, so markers, chords and arc pieces are picked where they
-are drawn; the CPU twin in the renderer's test support pins the two together. A marker outside the sector is not
+are drawn. A marker outside the sector is not
 picked; a line's pieces are pickable where they draw. Hover, click selection
 and the browser wrapper's `FiggyChart.step_selection` work as on a
 rectangular chart.
@@ -293,7 +292,10 @@ cargo test --locked -p figgy-renderer --test polar_heatmap_render
 (clockwise from the top, arc segments, markers), a dashed spiral from 24
 sparse samples with arc interpolation, a half-circle sector in radians
 with a hole in the middle, and an antenna's gain as a heatmap over azimuth
-and frequency with labelled contours. The "Polar (angle, radius)" scene of the
+and frequency with labelled contours. It also writes two 1200 × 800 feature
+scenes: `gallery-polar-heatmap.png`, a directional wave spectrum as annular
+cells with labelled energy contours, and `gallery-rose.png`, a wind rose of
+category bars stacked by speed band. The "Polar (angle, radius)" scene of the
 [playground](https://github.com/shim9610/figgy/blob/master/tools/playground/README.md)
 draws an antenna-like pattern and a three-leaf rose interactively
 (`cargo run --manifest-path tools/playground/Cargo.toml`).
@@ -371,7 +373,7 @@ draws an antenna-like pattern and a three-leaf rose interactively
 #### 로즈(극좌표 막대)
 
 범주형 각도 축을 가진 극좌표 차트의 [범주 막대 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)
-(`DataRenderType::CategoryBars`)는 로즈다(#133). 막대 하나는 자기 범주의 각도 칸 안에서 누적
+(`DataRenderType::CategoryBars`)는 로즈다. 막대 하나는 자기 범주의 각도 칸 안에서 누적
 시작 반지름과 끝 반지름 사이의 쐐기이며, 값은 반지름 축(`left_y`, 선형)에서 `polar_ndc`가 놓는
 자리로 읽는다. 안쪽 고리(`inner_radius_fraction`)에서 바깥 고리까지 자라고, 반지름 축을 뒤집으면
 안쪽으로 자란다. `Config::bar_groups`의 뜻은 그대로다. `Grouped`는 칸의 가운데 `group_width`
@@ -386,7 +388,7 @@ draws an antenna-like pattern and a three-leaf rose interactively
 #### 히트맵과 등고선
 
 극좌표 차트의 필드 시리즈(`DataRenderType::Field`: `"Heatmap"`, `"Contour"`, `"HeatmapContour"`)는
-(각도, 반지름)으로 그린다(#208). `x_column`은 각도 좌표, `y_column`은 반지름 좌표이며
+(각도, 반지름)으로 그린다. `x_column`은 각도 좌표, `y_column`은 반지름 좌표이며
 `GridLayout::Edges`·`Centers`와 두 `MatrixOrientation`은 직교 차트와 같다.
 
 - 셀 하나는 두 각도 경계와 두 반지름 경계 사이의 고리 부채꼴이다. `Shading::Flat`은 셀마다 한 색,
@@ -399,10 +401,10 @@ draws an antenna-like pattern and a three-leaf rose interactively
   픽셀을 정확히 피킹한다.
 - 이음매: 보간한 전체 원은 마지막 각도 표본과 첫 각도 표본 사이에 쐐기 모양 틈을 남긴다.
   `MatrixRef.columns` 끝에 첫 구성 컬럼을 한 번 더 적고 각도 컬럼에 `첫 값 + 한 바퀴`를 붙이면
-  닫힌다. 풀의 컬럼을 두 번 읽을 뿐 복사하지 않는다.
+  닫힌다. 풀의 컬럼을 두 번 읽으므로 메모리가 더 들지 않는다.
 - 등고선: 프래그먼트에서 레벨까지의 거리는 그려진 등치선까지의 유클리드 픽셀 거리다. 극좌표 배치를
   거친 필드에서 발 점 반복으로 구한다. 그래서 고리와 스포크가 중심 근처 몇 픽셀부터 바깥 고리까지
-  같은 굵기와 같은 안티에일리어싱 가장자리를 지킨다(`|ρ − r|`, `ρ · |sin Δθ|`와 비교해 시험한다). 라벨은 같은 GPU 앵커 탐색이 놓으며 뉴턴 단계를 (각도, 반지름)에서
+  같은 굵기와 같은 안티에일리어싱 가장자리를 지킨다. 라벨은 같은 GPU 앵커 탐색이 놓으며 뉴턴 단계를 (각도, 반지름)에서
   밟는다. 라벨은 등치선의 화면 접선을 따라 돌고, 선은 라벨 밑에 틈을 남긴다.
 - 피킹과 선택: 셀은 `PickedData::MatrixCell`(`x_index`는 각도 셀, `y_index`는 반지름 셀),
   등고선은 `PickedData::ContourLevel`로 답한다. 직교 차트와 같다. 선택한 셀의 외곽선은 고리 부채꼴
@@ -422,7 +424,7 @@ draws an antenna-like pattern and a three-leaf rose interactively
 ### 피킹과 선택
 
 GPU 피킹(`pick_chart`, `pick_chart_data`)은 셰이더와 같은 매핑으로 투영한다. 그래서 마커·현·호 조각을
-화면에 그려진 자리에서 고르고, 렌더러 테스트 지원의 CPU 트윈이 둘이 같음을 고정한다. 섹터 밖 마커는 고르지 않고, 선 조각은
+화면에 그려진 자리에서 고른다. 섹터 밖 마커는 고르지 않고, 선 조각은
 그려진 곳에서 고를 수 있다. 호버·클릭 선택과 브라우저 래퍼의 `FiggyChart.step_selection`은 직교
 차트와 같다.
 
@@ -464,7 +466,9 @@ cargo test --locked -p figgy-renderer --test polar_heatmap_render
 
 `polar_plot`은 PNG 다섯 장을 만든다. 안테나 패턴, 나침반(위에서 시계 방향, 호 세그먼트, 마커),
 드문 표본 24개로 그린 점선 나선(호 보간), 가운데 구멍이 있는 라디안 반원 섹터, 방위와 주파수에 걸친
-안테나 이득 히트맵과 라벨 붙은 등고선이다.
+안테나 이득 히트맵과 라벨 붙은 등고선이다. 1200 × 800 기능 장면 두 장도 만든다.
+`gallery-polar-heatmap.png`는 방향별 파랑 스펙트럼을 고리 조각 셀과 라벨 붙은 에너지 등고선으로,
+`gallery-rose.png`는 풍속 구간별로 쌓은 범주 막대로 그린 바람 장미다.
 [플레이그라운드](https://github.com/shim9610/figgy/blob/master/tools/playground/README.md)의
 "Polar (angle, radius)" 장면은 안테나 모양 패턴과 세 잎 장미 곡선을 상호작용으로 보여준다
 (`cargo run --manifest-path tools/playground/Cargo.toml`).

@@ -11,7 +11,7 @@
 //! host reads the SSOT back. Until then the series is drawn at the layout's
 //! positions, computed at raster time and not stored.
 //!
-//! The renderer computes appearance only (rule 1): the placement of the
+//! The renderer computes appearance only: the placement of the
 //! unplaced vertices, pixel positions, the stroke geometry (a wave's or a
 //! coil's phase, fitted so that whole periods span each propagator), the
 //! fan of parallel propagators, the arrowheads along the drawn path and the
@@ -20,7 +20,7 @@
 //!
 //! The series is drawn through the CPU sink, as the energy-level series
 //! (#203) is, and the vector export writes the same emit as vector parts.
-//! It has no count limit: every list is drawn to its end (rule 10).
+//! It has no count limit: every list is drawn to its end.
 //!
 //! [`DataRenderType::Feynman`]: crate::data_config::DataRenderType::Feynman
 
@@ -1067,7 +1067,7 @@ impl FeynmanSeries {
     /// Ids are unique per list; every propagator names vertices of the
     /// series; positions are finite; bends lie in `-170..=170` degrees;
     /// labels are valid rich text within the per-string limit; offsets and
-    /// the style are in range. No list has a count limit (rule 10). Works
+    /// the style are in range. No list has a count limit. Works
     /// in one transient list of `V + E` rows.
     pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.style.validate()?;
@@ -1143,7 +1143,7 @@ impl FeynmanSeries {
     }
 
     /// The row of the vertex with id `id`. A linear scan over the SSOT: no
-    /// index is kept (rule 3).
+    /// index is kept.
     pub fn vertex_row(&self, id: &str) -> Option<usize> {
         self.vertices.iter().position(|v| v.id == id)
     }
@@ -1270,7 +1270,7 @@ impl FeynmanSeries {
 
     /// The bounding box of every vertex position, `[[x0, y0], [x1, y1]]`,
     /// or `None` without vertices: what an axis fit reads (a display
-    /// parameter, rule 1). Allocates nothing when every vertex is placed.
+    /// parameter). Allocates nothing when every vertex is placed.
     pub fn extent(&self) -> Result<Option<[[f64; 2]; 2]>, crate::RuleKind> {
         if self.has_unplaced() {
             Ok(bounding_box(self.positions()?.into_iter()))

@@ -471,10 +471,10 @@ impl crate::config::Config {
     ///
     /// Every `bar_groups` (the chart's and each subplot's) passes
     /// [`BarGroups::validate`]. The [`DataRenderType::CategoryBars`] series
-    /// of one layer are its bar group: any number of them (#107), each
+    /// of one layer are its bar group: any number of them, each
     /// with its own value column, drawn against a categorical axis
     /// (`bottom_x` for vertical bars, `left_y` for horizontal ones) and a
-    /// linear numeric value axis, with no cap on the number of bars (#107),
+    /// linear numeric value axis, with any number of bars,
     /// and each series passes [`validate_category_bar_series`] against the
     /// axis' categories. Horizontal bars cannot sit on an overlay layer,
     /// whose own axis is a value axis on y. On a polar chart the bars are

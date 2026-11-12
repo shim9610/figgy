@@ -57,7 +57,7 @@ in each example.
 | `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
 | `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | Voltage on the left axis with a light fill, current on an overlay layer's right axis |
 | `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
-| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | Probability paper (#209): tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
+| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | Probability paper: tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
 
 `twin_axes` and `small_multiples` export with
 `export_rgba`: the panel export draws the base panel
@@ -70,7 +70,7 @@ inside a subplot.
 
 ## Charts new in 0.19
 
-Each 0.19 chart kind has a designed scene drawn by its example (#250), with the shared chrome of the feature scenes. The examples compute every value they draw (rule 1): bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
+Each 0.19 chart kind has a designed scene drawn by its example, with the shared chrome of the feature scenes. The examples compute every value they draw: bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
 
 | Output | Example and function | Scene |
 |---|---|---|
@@ -131,7 +131,7 @@ category bars of `revenue` included; the radial charts use their model's `backgr
 ## Math in text
 
 [`math_gallery.rs`](examples/math_gallery.rs) writes every construction of the
-math layout (#45) as annotation texts of an empty 1200 × 1600 chart, each formula
+math layout as annotation texts of an empty 1200 × 1600 chart, each formula
 with its TeX source beneath it in plain text: fractions and nested fractions,
 binomials, radicals with and without an index, big operators with side limits
 and with `\limits`, integrals, operator names, `\left`/`\middle`/`\right` and
@@ -219,7 +219,7 @@ chosen for the README and says nothing about rendering throughput. If a differen
 frame count was requested, change `-frames:v` to match; duration is count / 12.
 
 To refresh the README, inspect the PNGs and the decoded animation frames, then
-copy those four static PNGs and the two `gallery-*.gif` files into
+copy the 19 static PNGs and the two `gallery-*.gif` files into
 [`assets/`](https://github.com/shim9610/figgy/tree/master/crates/renderer/assets). Keep the numbered intermediate frames outside source control.
 The source example is the authority for formulas, styles and export settings.
 
@@ -315,7 +315,7 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 
 이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 GPU 풀에 데이터를 올리고, 데이터와 축·눈금·텍스트를 합성해 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
 
-- **정지 이미지 4종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
+- **정지 이미지 19종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선, 그리고 육각 빈, 컬러 이미지, 삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 평행 좌표, 폭포·캔들스틱·간트, 줄기·롤리팝, 축 끊기, 파인만 도표 장면이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
 - **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 19개와 애니메이션 프레임 96개를 만든다. 오차 막대, 히스토그램, 등고선, 애니메이션 예제와 0.19 장면 예제 8개(삼각 좌표, 3D 곡면, 삼각 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표)를 장치 하나로 실행한다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
 - **재생 설정**: GIF 하나당 48프레임을 초당 12프레임으로 약 4초마다 반복한다. GIF는 색을 팔레트로 줄이므로 픽셀 검사는 원본 PNG로 한다. GIF의 재생 속도는 렌더링 성능을 나타내지 않는다.

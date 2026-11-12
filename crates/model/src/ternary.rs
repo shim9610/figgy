@@ -4,10 +4,9 @@
 //! data area and places each sample of a [`DataRenderType::Ternary`] series
 //! by its three components: `(x·L + y·T + c·R) / (x + y + c)`, the
 //! triangle's corners weighted by the component columns. The host supplies
-//! the three columns unnormalized; normalizing only to place a sample is
-//! appearance (`CLAUDE.md` rule 1), computed in the vertex stage on every
-//! draw and never stored. Hover, selection and the reported values are the
-//! original components.
+//! the three columns unnormalized; the normalization only places a
+//! sample, computed in the vertex stage on every draw and never stored.
+//! Hover, selection and the reported values are the original components.
 //!
 //! The convention is fixed: `x_column` is read on `bottom_x`, whose 100 %
 //! corner is the bottom-left (L); `y_column` on `left_y`, the top (T);

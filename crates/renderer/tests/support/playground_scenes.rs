@@ -377,9 +377,10 @@ impl SceneKind {
                 "Four channels of a 10 kHz recording, 200 000 samples each, as \
                  monotonic-x lines: the host lends the samples (x = start + i × \
                  interval) and the renderer keeps the first, lowest, highest and \
-                 last sample of each pixel column. Zoom or resize and the series \
-                 asks for its samples again; pick a kept point and step with the \
-                 arrows."
+                 last sample of each pixel column. The x range is the document's \
+                 (no wheel zoom or pan); resize the window and the series is \
+                 reduced again from its samples. Pick a kept point and step with \
+                 the arrows."
             }
             SceneKind::EnergyLevels => {
                 "A Grotrian diagram of He I from NIST ASD values: term columns \

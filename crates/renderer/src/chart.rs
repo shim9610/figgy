@@ -1089,7 +1089,7 @@ impl Chart {
     }
 
     /// Fit the chart's z axis to a prepared extent. The colourbar owns the
-    /// z scale, so a chart without one is intentionally left unchanged.
+    /// z scale, so a chart without one is left unchanged.
     /// A successful fit also chooses colourbar ticks and label formatting.
     /// To preserve them, directly edit only `colorbar.axis.min` / `max`.
     pub fn auto_fit_colorbar_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
@@ -1350,7 +1350,7 @@ impl Chart {
     /// axis's range to the union of the cached statistics of the column
     /// every parallel series names for it, padded by `padding_ratio` (a
     /// logarithmic axis from the columns' smallest positive value): a
-    /// display parameter from column statistics (rule 1), nothing read back.
+    /// display parameter from column statistics, nothing read back.
     /// An axis no series names, or whose columns' extent is degenerate, is
     /// left as it is; a flat chart is left as it is.
     pub fn auto_fit_parallel_axes(
@@ -1393,7 +1393,7 @@ impl Chart {
     /// On a 3D chart (`Config.view_3d`), fit the z axis (`right_y`) to the
     /// union of the height columns' cached statistics of the layer's
     /// heatmaps and contours and of the `z_column` of its scatter and line
-    /// series (#132). A display parameter from column statistics (rule 1):
+    /// series (#132). A display parameter from column statistics:
     /// nothing is read back. A flat chart is left as it is.
     pub fn auto_fit_view_3d_z(
         &mut self,

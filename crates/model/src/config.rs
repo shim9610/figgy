@@ -838,7 +838,7 @@ impl AxisOptions {
     }
 
     /// The rules a categorical axis is held to; a numeric axis always passes.
-    /// At least one category, with no upper count (#107), ids non-empty and
+    /// At least one category, with no upper count, ids non-empty and
     /// unique, ids and labels single-line and at most
     /// [`MAX_CATEGORY_TEXT_CHARS`] characters, and a linear scale. An
     /// inverted categorical axis is valid.
@@ -1055,10 +1055,9 @@ pub enum DrawStyle {
 
 /// A renderer-independent reference to one selected data primitive.
 ///
-/// These records deliberately carry provenance only. Coordinates, bin edges,
-/// matrix values, and contour values remain in the caller's registered source
-/// columns / series configuration; the renderer never creates a CPU shadow of
-/// GPU-owned data just to remember a selection.
+/// These records carry provenance only. Coordinates, bin edges, matrix
+/// values, and contour values remain in the caller's registered source
+/// columns / series configuration; read them from there.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "snake_case"))]
@@ -1323,7 +1322,7 @@ pub enum BarAlign {
 /// point and vector colour maps), the way [`AxisOptions::auto_ticks`] fills in
 /// spacing, but nothing else stores a z range.
 ///
-/// Consequences worth stating, because they are decisions and not accidents:
+/// Consequences:
 ///
 /// - A `Heatmap` / `Contour` / `HeatmapContour` series, a series whose
 ///   scatter style sets `point_color_map` and a vector series whose style
@@ -1333,8 +1332,8 @@ pub enum BarAlign {
 /// - To hide the bar, set `visible: false`. The options stay, those series
 ///   still render, and the band is given back to the data area.
 /// - There is therefore **one z scale per chart**. Every heatmap, contour and
-///   colour-mapped scatter or vector series in one chart shares it; two
-///   colourbars with different scales is out of scope.
+///   colour-mapped scatter or vector series in one chart shares it; a chart
+///   cannot have two colourbars with different scales.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ColorBarOptions {
@@ -1588,10 +1587,12 @@ impl Config {
         c
     }
 
-    /// Every field of the chart is named below, so a new one is a decision
-    /// here: scaled when it is a pixel dimension, written as `name: _` when
-    /// it is a data value, a colour, an enum or a fraction.
+    /// [`Self::scaled`] in place: every pixel dimension is multiplied by
+    /// `s`; data values, colours, enums and fractions are left as they are.
     pub fn scale_in_place(&mut self, s: f32) {
+        // Every field of the chart is named below, so a new one is a decision
+        // here: scaled when it is a pixel dimension, written as `name: _` when
+        // it is a data value, a colour, an enum or a fraction.
         let Config {
             chart_area,
             top_x,

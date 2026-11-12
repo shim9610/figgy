@@ -10,7 +10,7 @@
 [빠른 시작](#빠른-시작) · [문서](#문서) · [English](README.md)
 
 이 문서는 한국어 안내 페이지입니다. 갤러리 이미지, 차트 종류 표, 예제 실행 명령 전체는
-[영문 README](README.md)에 있고 새 기능이 생기면 그곳만 갱신합니다.
+[영문 README](README.md)에 있습니다.
 
 - [갤러리](README.md#gallery): 차트마다 그 그림을 그리는 예제 파일로 연결됩니다.
 - [차트 종류](README.md#chart-types): 차트별 입력 데이터와 안내 문서.
@@ -26,7 +26,6 @@
 ```toml
 [dependencies]
 renderer = { package = "figgy-renderer", version = "0.18.1" }
-wgpu = "30"
 ```
 
 `version` 줄은 [crates.io](https://crates.io/crates/figgy-renderer)에서 figgy-renderer 0.18.1과
@@ -41,12 +40,13 @@ figgy-model 0.12.1을 설치합니다. 로컬에 받은 저장소를 쓰려면 r
 
 예제의 흐름은 다음과 같습니다.
 
-1. GPU 장치와 `Renderer`를 만듭니다.
+1. `Renderer::headless_blocking()`으로 GPU 장치와 `Renderer`를 만듭니다.
 2. `x`와 `y` 컬럼을 등록합니다.
-3. 차트 제목·축 범위와 선 스타일을 설정합니다.
-4. 이미지를 출력하고 PNG 바이트를 파일에 씁니다.
+3. 차트 제목·축 범위와 선 스타일을 설정합니다. y축 제목의 `$…$`는 수식으로 그려집니다.
+4. `save_blocking`으로 저장합니다. 파일 확장자(`.png`, `.svg`, `.pdf`)가 형식을 정합니다.
 
-렌더러는 픽셀이나 PNG 바이트를 반환합니다. 저장 위치는 애플리케이션이 정합니다.
+픽셀이나 PNG 바이트가 필요하면 `export_rgba_blocking`이나 `export_png_blocking`을 씁니다.
+자기 창에 figgy를 넣는 애플리케이션은 `wgpu = "30"` 의존성을 추가하고 `RendererDevice`로 장치를 공유합니다.
 실제 데이터를 쓰려면 예제의 벡터를 바꾸거나
 [`ColumnSource`](crates/renderer/USAGE.md#columnsource--데이터-어댑터-트레이트)를 구현하면 됩니다.
 

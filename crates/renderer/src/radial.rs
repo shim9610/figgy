@@ -541,7 +541,7 @@ struct RadialVectorFrame {
 }
 
 /// Shares the host device/queue. Owns one pipeline and at most one cached frame.
-/// Kept separate from the large numeric-data/Cartesian renderer deliberately.
+/// Separate from the numeric-data/Cartesian renderer.
 pub struct RadialRenderer {
     gpu: RendererDevice,
     format: wgpu::TextureFormat,

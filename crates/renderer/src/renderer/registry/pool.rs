@@ -342,7 +342,7 @@ impl Renderer {
     /// Let uploads that do not fit enlarge the pool, or keep the fixed-capacity
     /// behavior.
     ///
-    /// `GrowthPolicy::OnAllocFailure` is the default (#107): an upload that
+    /// `GrowthPolicy::OnAllocFailure` is the default: an upload that
     /// does not fit relayouts the pool into a larger buffer first, which
     /// invalidates every live [`ColumnHandle`] and `PreparedFrame` exactly as a
     /// defragmentation does. Growth is bounded only by the device ceiling and

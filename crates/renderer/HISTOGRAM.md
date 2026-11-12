@@ -91,12 +91,9 @@ The example uploads the data once and reuses those columns for both directions.
 
 ## Verification
 
-`histogram_render` tests the horizontal endpoints, logarithmic count axis at
-1×/1.5×/2×, signed values, unequal bins, zero values, per-bin width/color and
-selection outline, alongside the existing vertical and subpixel-envelope cases.
-The renderer SSOT test changes vertical → horizontal → vertical after painting,
-compares each first updated frame with a fresh renderer, checks that the column
-pool is unchanged, and checks style reuse for an identical repeated update.
+The histogram tests cover both orientations, a logarithmic count axis,
+signed and zero values, unequal bins, per-bin overrides, the selection
+outline and switching an existing chart between orientations:
 
 ```bash
 cargo test --locked -p figgy-renderer --test histogram_render

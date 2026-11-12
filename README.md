@@ -158,7 +158,7 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Area fills and step lines | A line's `fill` (to a baseline or another series) and `interpolation` | [Area fill and step lines](crates/renderer/CONFIG.md#area-fill-and-step-lines) · [area_step.rs](crates/renderer/examples/area_step.rs) |
 | Monotonic-x lines (large, evenly spaced signals) | Samples at `start + i × interval`, lent on every call through a `MonotonicSource` and never kept; each pixel column is reduced to its first, lowest, highest and last sample on the CPU (`MonotonicLine` series in a chart from `Renderer::register_monotonic_chart`; `set_monotonic`, `append_monotonic`) | [Monotonic-x lines](crates/renderer/USAGE.md#monotonic-x-lines) · [MONOTONIC.md](crates/model/MONOTONIC.md) |
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
-| Stems and lollipops | An `XySeries` with markers and a `stem` (#206): one stroke per point from a baseline, along y for an impulse response, along x for a ranked lollipop | [Stems](crates/renderer/CONFIG.md#stems) |
+| Stems and lollipops | An `XySeries` with markers and a `stem`: one stroke per point from a baseline, along y for an impulse response, along x for a ranked lollipop | [Stems](crates/renderer/CONFIG.md#stems) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
 | Heatmaps and contours | X and Y coordinate columns and one z column per grid row or column (`MatrixRef`) | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
 | Hexbins | Host-binned counts on a `Hexagonal` grid of flat-topped hexagons (`MatrixRef.grid_layout`) | [Hexagonal grids](crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |

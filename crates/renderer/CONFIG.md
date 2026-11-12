@@ -60,7 +60,7 @@ pub struct Config {
 | `line_offset` | f32 | Detached-axis offset: shifts the axis chrome (line/ticks/labels) perpendicular to itself while the data area stays put. Layout-neutral; the drag system's axis movement lands here |
 | `major_tick_length / minor_tick_length` | f32 | Tick mark length (px) |
 | `categories` | `Option<Vec<Category>>` | A categorical axis (see the [API guide](API.md)). A category's `rich_label: Option<RichText>` (#203) is drawn and measured in place of its plain `label`, for scripts and TeX math such as a term symbol `$^3\mathrm{P}^o$`. Crowded labels are staggered over rows instead of thinned ([#205](https://github.com/shim9610/figgy/issues/205)): as many rows as the label stride would have thinned them by, each row one label extent (plus a quarter em) further from the axis, so every category keeps its name |
-| `category_window` | `Option<[f64; 2]>` | The slots a categorical axis shows ([#205](https://github.com/shim9610/figgy/issues/205)): `[from, to]` in category coordinates, where category `i` is centred at `i` and its slot runs `i - 0.5..i + 0.5`. `None` (default, omitted from JSON) shows every slot, `-0.5..n - 0.5`. Ignored on a numeric axis, where `min` / `max` are the range. The helpers that move a view (`Chart::set_x_range` / `set_y_range`, the subplot and overlay setters, a view state, zoom and pan) set it, and the full range clears it; the `auto_fit_*` family leaves a categorical axis as before. Ticks, labels, grid, data, picks and annotations follow it through `AxisOptions::data_range`; labels and group headers are drawn for the slots inside it |
+| `category_window` | `Option<[f64; 2]>` | The slots a categorical axis shows ([#205](https://github.com/shim9610/figgy/issues/205)): `[from, to]` in category coordinates, where category `i` is centred at `i` and its slot runs `i - 0.5..i + 0.5`. `None` (default, omitted from JSON) shows every slot, `-0.5..n - 0.5`. Ignored on a numeric axis, where `min` / `max` are the range. The helpers that move a view (`Chart::set_x_range` / `set_y_range`, the subplot and overlay setters, a view state, zoom and pan) set it, and the full range clears it; the `auto_fit_*` family leaves a categorical axis unchanged. Ticks, labels, grid, data, picks and annotations follow it through `AxisOptions::data_range`; labels and group headers are drawn for the slots inside it |
 | `category_groups` | `Option<CategoryGroups>` | Group headers over runs of a categorical `top_x` or `bottom_x` ([#203](https://github.com/shim9610/figgy/issues/203)): `CategoryGroups { groups: Vec<CategoryGroup { label: RichText, first, last, bracket }>, offset: [f32; 2] }`. Each header is centred past the tick labels (below the outermost staggered row, #205) under (over, on a top axis) the run from category `first` to `last`, with a bracket along the run when `bracket`; runs are in axis order and do not overlap, with no count limit. The headers are one element (`Element::CategoryGroupLabel`), dragged into `offset`. Refused on a numeric axis and on the y axes |
 | `cross_at` | `Option<f64>` | Where the axis line crosses the perpendicular axis, as a value of that axis (`left_y` for the top and bottom axes, `bottom_x` for the left and right ones), clamped to the plot. Only the line and its hit region move; ticks, labels and the title stay at the plot edge. Must be finite; ignored on polar charts. `None` (default, omitted from JSON) keeps the line on its edge |
 | `log_ticks` | `LogTickPolicy` | Which major ticks a logarithmic axis draws ([#42](https://github.com/shim9610/figgy/issues/42)). `Decades` (default, omitted from JSON) draws every `major_spacing`-th decade, as every log axis did before the field existed. `Adaptive` ignores `major_spacing` and plans the majors from the range alone (`tick::log_ladder`): every n-th decade over more than six decades (`n` is `tick::axis_major_spacing`), otherwise the first of whole decades, 1, 2 and 5 × 10^k, and 1 to 9 × 10^k that puts at least `tick::LOG_LADDER_MIN_MAJORS` (4) majors inside the range, or 1 to 9 × 10^k when none does. The minors are the multiples 2 to 9 that are not majors. When the labels crowd, they are demoted 1..9 → 1, 2, 5 → decades while at least two remain, then thinned to every 2nd, 5th, 10th… label; ticks and grid lines stay. No `LogDecadeStepAdjusted` warning is raised for it. Ignored on linear and categorical axes. The range helpers and a view state keep it, so a zoom re-plans the ticks; a subplot link copies it with the tick spacing |
@@ -77,7 +77,7 @@ Ranges cut out of a value axis ([#200](https://github.com/shim9610/figgy/issues/
 | `style` | `AxisBreakStyle` | `Continuous` (default): one axis, linear within each piece; a line crossing a gap is the straight segment between its two drawn points, hidden inside the gap. `Panels`: each piece is a linear axis of its own; a line crossing a gap is drawn in each piece at its own slope and clipped at the piece's edge. Markers, bars and cells look the same in both |
 | `gap_px` | f32 | Width of each gap in logical pixels, `0..=MAX_AXIS_BREAK_GAP_PX` (200); default 8 ([#249](https://github.com/shim9610/figgy/issues/249)). Pixels, so the x and y gaps of a chart are the same width; `Config::scaled` scales it, so a 2x export is the 1x layout doubled. Placing a value takes the axis' drawn length (`BreakMap::of(axis, len)`, `layout::axis_fraction(value, axis, len)`: the data area's width for x, its height for y) |
 | `mark` | `BreakMark` | `Slash { size, color, width }` (default: 6 px, 1 px, `color: None`) draws a slash pair at each gap on the axis line, in `color` or, when it is `None` (omitted from JSON), the axis line's colour; `None` draws none. The marks are part of the axis element. The size and width scale with the export scale |
-| `frame_each_panel` | bool | Default `true`, in both styles: each piece draws its own frame along the gaps, a line across the plot at each gap edge in the axis line's style, so the pieces read as separate panels. The frames are part of the axis element: they move with `line_offset`, and the axis is then hit on its drawn parts rather than its box. Each frame is snapped to whole logical pixels and then scaled (#205), so it is one crisp row at 1x and a 2x export is the 1x frame doubled; the renderer passes the display or export scale into the chrome emit for it (`emit_chart_chrome`'s `scale`). When both axes are broken and frame their pieces, each frame stops at the other axis' gap, so the gaps meet as a cross (#249). Each frame stands inside its own piece at the piece's pixel edge, so the clear space between two frames is the gap's width; the axis line's pieces and slashes end on that pixel edge, a tick at a piece's end stands on the frame row, and a grid line on a gap edge stays inside its piece. `false` leaves only the marks |
+| `frame_each_panel` | bool | Default `true`, in both styles: each piece draws its own frame along the gaps, a line across the plot at each gap edge in the axis line's style, so the pieces read as separate panels. The frames are part of the axis element: they move with `line_offset`, and the axis is then hit on its drawn parts rather than its box. Each frame is snapped to whole logical pixels and then scaled (#205), so it is one crisp row at 1x and a 2x export is the 1x frame doubled. When both axes are broken and frame their pieces, each frame stops at the other axis' gap, so the gaps meet as a cross (#249). Each frame stands inside its own piece at the piece's pixel edge, so the clear space between two frames is the gap's width; the axis line's pieces and slashes end on that pixel edge, a tick at a piece's end stands on the frame row, and a grid line on a gap edge stays inside its piece. `false` leaves only the marks |
 | `sizing` | `PieceSizing` | How the pieces share the axis length, the gaps aside ([#205](https://github.com/shim9610/figgy/issues/205)). `ByValue` (default, omitted from JSON): in proportion to their spans, one scale for the whole axis. `Equal`: every piece the same length. `Weights(Vec<f32>)`: in proportion to one positive weight per piece, in axis order, one more weight than cut ranges. With `Equal` or `Weights` each piece has a scale of its own, so a short span (a ground state, an ionization limit) gets room to read; a line crossing a gap is still the straight segment between its drawn points, and the vector and line-pick derivatives take the scale at the point they measure (`BreakMap::scale_at`). Each such piece walks its own tick spacing (`tick::piece_ticks`): the axis' `major_spacing` when it places between half and twice the piece's share of the axis' target majors in it, otherwise the nice step for the piece's own span and share, at least two majors. Only a `Continuous` axis takes them: a `Panels` axis with any sizing but `ByValue` is refused |
 
 Nothing is drawn inside a gap: data, its picked highlight and value labels, grid lines, spans and reference lines are drawn per piece. No tick or tick label falls inside a cut. On a linear axis the major spacing steps down the 1, 2, 5 × 10^k ladder while some piece would hold fewer than two majors (`tick::effective_major_spacing`), so a short piece keeps at least two round ticks; crowded labels are thinned on the unbroken tick grid, so each piece keeps round values. A view whose end falls inside a cut leaves no zero-span piece: the empty piece is skipped (#205). With `Equal` or `Weights` sizing each piece walks its own spacing instead (`tick::piece_ticks`, above). A pick whose cursor is in a gap answers nothing; under `Panels` a pick in a piece answers what that piece draws. A data anchor or reference line inside a cut is skipped as `OutOfRange`; a span with an end inside a cut keeps its visible part. Streamed sources are refused (`STREAMED_BREAK_REASON`), and a hexagonal grid is refused on a `Continuous` broken axis (its lattice would not be uniform). Line offset members carry their owner's cuts shifted with their range.
@@ -377,10 +377,10 @@ at the category's position, each with its own range
 [`Parallel`](#parallel-coordinates) series draws one polyline per row across
 the axes, each value placed on its axis at
 `(v − min) / (max − min)` (in `log10` on a logarithmic axis, flipped when
-inverted): the normalization only places the value (rule 1), as the
-ternary placement does, computed on every draw and never stored. The
-categorical `bottom_x` names the axes (its labels, drag and title as
-today); `left_y` spans the normalized band and is read, not drawn.
+inverted); the normalization only places the value, as the ternary
+placement does, and the columns keep their values. The
+categorical `bottom_x` names the axes (its labels, drag and title work as
+on any categorical axis); `left_y` spans the normalized band and is read, not drawn.
 
 Each axis draws its own line, major and minor ticks and tick labels in
 `left_y`'s style over its own range; the tick labels are their own element
@@ -507,8 +507,8 @@ overlay panel keeps the parent's X range for its transform but draws no X axis,
 grid, title or colourbar, carries the overlay's range on a hidden left axis and
 draws the overlay's `y_axis` on the right. Every panel's margins are lifted to
 the group's, so `data_area()` is the same rectangle for all of them and for
-the parent; `Expansion { panels, data_area }` returns them. Expansion is pure,
-copies configuration only and never serializes the panels. A data-area edge
+the parent; `Expansion { panels, data_area }` returns them. Expansion is pure
+and never serializes the panels. A data-area edge
 drag or `fit_to_data_area` writes the group band through the parent's
 `right_y.out_margin` and pulls every overlay band inside it. `Config::scaled`
 scales the overlay axes and legends like the parent's. The parent's own
@@ -708,7 +708,7 @@ Consequences:
 | `bar_gap` | f32 | Logical pixels between grouped bars, `0..=24` (default 3) |
 
 The `CategoryBars` series of one layer (the base chart, an overlay, a
-subplot) form its bar group, any number of series and of bars (#107). A subplot reads
+subplot) form its bar group, any number of series and of bars. A subplot reads
 its own `bar_groups`; an overlay its chart's. The `BoxPlot` series of a layer
 form its box group the same way (any number of series and of boxes); their mode
 must be `Grouped` and `bar_gap` is the gap between boxes, and the
@@ -732,9 +732,9 @@ The members are series of the chart's base layer or of its overlays; a
 member an overlay scales moves on that overlay's Y axis. A subplot has its
 own `line_offsets` in its `config`. `Config::line_offset_of(id)` returns a
 member's shift as `[dx, dy]`. The registry rejects an unknown or duplicate
-id, a member of another kind, a non-finite step, a polar chart, more than 32
-members, a member another chart draws, a `ToSeries` fill between a member and
-another series, and a streamed (nonresident) member (`FiggyError`; rule 8).
+id, a member of another kind, a non-finite step, a polar chart, a member
+another chart draws, a `ToSeries` fill between a member and another series,
+and a streamed (nonresident) member (`FiggyError`).
 `Config::scaled` keeps the steps, which are data units.
 
 `Config::expand()` draws each member as an internal panel of its own, after
@@ -749,7 +749,8 @@ later member is drawn over an earlier one, its fill included. A member panel
 is not a layer: `panel_layers()` reports its owner's layer for it,
 `panel_member(index)` names the member a panel draws and
 `panel_of_series(id)` the panel of a series. Each member panel costs the
-textures of an overlay, so a document with more traces uses two charts.
+textures of an overlay; a member whose textures cannot be allocated fails
+with the GPU allocation error.
 `Chart::auto_fit_layer_union` fits the base range from every member's
 extents plus its shift. See the [interaction guide](INTERACTION.md#offset-spectra)
 for picks, selection and export.
@@ -770,11 +771,11 @@ An energy-level (Grotrian) diagram ([#203](https://github.com/shim9610/figgy/iss
 | `show` | `LevelView` | `Main` draws levels and centroids; `Components` draws levels and fine-structure components, the resolved view an inset magnifies |
 | `source` | `Option<String>` | Draw another energy-level series' records (an inset's view of the main series); such a series holds none of its own |
 
-**Wavelength labels (#258).** `style.wavelength_labels` set, every transition with a `wavelength` and no host `label` gets a drawn label, written from the value: `format: PlainNumberFormat` (fixed `decimals`, at most 17, or the automatic form, and `trim_zeros`), then ` {unit}` when the labels' own `unit: Option<String>` is set and not empty (the host's text, such as `nm`, `Å` or `nm (air)`, one line of at most 160 characters; `None`, omitted, writes the number alone), in the font, size and colour of `text: RichText` (whose characters are not drawn). The labels own their unit; to show the unit once instead, leave it unset and add a corner note (`AnnotationLayer::add_corner_note`, a `Text` item that owns its text). A host `label` wins, so a document that writes its labels draws as before. A formatted label is placed, drawn, picked (`ValueLabel` with `part: Transition`), dragged by `label_offset`, highlighted and exported as a host label is: one helper, `Transition::drawn_label`, decides which label a transition draws. The renderer formats the given value only: it converts no unit and chooses between no values.
+**Wavelength labels (#258).** `style.wavelength_labels` set, every transition with a `wavelength` and no host `label` gets a drawn label, written from the value: `format: PlainNumberFormat` (fixed `decimals`, at most 17, or the automatic form, and `trim_zeros`), then ` {unit}` when the labels' own `unit: Option<String>` is set and not empty (the host's text, such as `nm`, `Å` or `nm (air)`, one line of at most 160 characters; `None`, omitted, writes the number alone), in the font, size and colour of `text: RichText` (whose characters are not drawn). The labels own their unit; to show the unit once instead, leave it unset and add a corner note (`AnnotationLayer::add_corner_note`, a `Text` item that owns its text). A host `label` wins over the formatted one. A formatted label is placed, drawn, picked (`ValueLabel` with `part: Transition`), dragged by `label_offset`, highlighted and exported as a host label is: one helper, `Transition::drawn_label`, decides which label a transition draws. The label shows the given `wavelength` as formatted; no unit conversion is applied.
 
-There is no count limit on any list. The chart needs a categorical `bottom_x` on a rectangular chart. The series is drawn through the CPU sink and composited after the GPU data; a pick answers a level as a `HistogramBin`, a transition as a `Point` and a label as a `ValueLabel` with its `part`; `step_selection` walks the rows the view draws. `write_continuum` writes the continuum spans above the limits into the annotation layer; an inset's window and connectors are its subplot's `marker` ([`Subplot`](#subplot-configsubplots), #205), placed on every draw (`Config::inset_marker`, which writes them as static annotations, is superseded by it). An inset is a subplot inside the parent's data area, usually with `plot_background`: it is painted over the parent as one unit, it takes the pointer there on every layer, and on the base layer its frame (`subplot_<n>:frame`) is selected by a press on its plot and drags and resizes anywhere, inside the parent or out of it (#205). A streamed display refuses the series.
+There is no count limit on any list. The chart needs a categorical `bottom_x` on a rectangular chart. The series is drawn through the CPU sink and composited after the GPU data; a pick answers a level as a `HistogramBin`, a transition as a `Point` and a label as a `ValueLabel` with its `part`; `step_selection` walks the rows the view draws. `write_continuum` writes the continuum spans above the limits into the annotation layer; an inset's window and connectors are its subplot's `marker` ([`Subplot`](#subplot-configsubplots), #205), placed on every draw; use it rather than `Config::inset_marker`, which writes them as static annotations. An inset is a subplot inside the parent's data area, usually with `plot_background`: it is painted over the parent as one unit, it takes the pointer there on every layer, and on the base layer its frame (`subplot_<n>:frame`) is selected by a press on its plot and drags and resizes anywhere, inside the parent or out of it (#205). A streamed display refuses the series.
 
-**Placement (#205).** The layout is computed once per raster and pick, from the SSOT and the panel. Level labels stack per lane (the gap they are drawn in), a moved label joined to its stroke by a leader line; a column whose labels would leave the plot draws them on the other side; a level outside the plot draws no label. A run of four or more labels in one lane whose strokes lie closer than half a label apart collapses: its first and last labels stay, joined by a bracket, and the labels between are not drawn. A stack that would move one of its labels more than one and a half label heights from its own stroke is a crowd, not a cluster: its dense runs (three or more strokes closer than a label apart) collapse the same way and the rest is stacked again, until every stack keeps its labels near their strokes; a crowd without such a run collapses whole, and a bracket whose end a later collapse hid gives way to the larger one. Arrows meeting one end of a level spread across its slot, ordered by where their other ends lie. Each wavelength label takes the first spot along its arrow, right or left, clear of strokes, level labels, other arrows and earlier labels, or the spot of least overlap. None of this produces a value: it only decides where the given records are drawn.
+**Placement (#205).** The layout is computed once per raster and pick, from the SSOT and the panel. Level labels stack per lane (the gap they are drawn in), a moved label joined to its stroke by a leader line; a column whose labels would leave the plot draws them on the other side; a level outside the plot draws no label. A run of four or more labels in one lane whose strokes lie closer than half a label apart collapses: its first and last labels stay, joined by a bracket, and the labels between are not drawn. A stack that would move one of its labels more than one and a half label heights from its own stroke is a crowd, not a cluster: its dense runs (three or more strokes closer than a label apart) collapse the same way and the rest is stacked again, until every stack keeps its labels near their strokes; a crowd without such a run collapses whole, and a bracket whose end a later collapse hid gives way to the larger one. Arrows meeting one end of a level spread across its slot, ordered by where their other ends lie. Each wavelength label takes the first spot along its arrow, right or left, clear of strokes, level labels, other arrows and earlier labels, or the spot of least overlap.
 
 <a id="feynman"></a>
 
@@ -865,8 +866,7 @@ draws through the precise mapped scatter path, like a series with a style table.
   never inferred from the column — `PointSizeMap::fit_domain(min, max)` writes it
   from statistics the host already has, the way `auto_ticks` writes tick spacing —
   so appending a point never resizes the others. `PointSizeMap::radius_px(value)`
-  is the formula; the draw shader and the GPU picker compute the same radius,
-  and the renderer's test-support CPU twin checks both against it.
+  is the formula; the draw shader and the GPU picker compute the same radius.
 - Precedence per channel is sparse override > value map > style table slot >
   series base. Shape still comes from the table, overrides or base, so a
   categorical shape column combines with a continuous colour column. An override
@@ -942,9 +942,8 @@ components require GPU-resident columns. Stylized draw styles (Sketch,
 Milkyway, Constellation) draw no vectors (`draw_style_supports` returns
 `false`). The legend symbol is a rule with an arrowhead in the series colour.
 
-The shader is assembled from fragments (Cartesian projection, input form, arrow
-glyph, entry; [src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md)
-§5.3) and reads the component columns from the column pool on every draw.
+The component columns are read from the column pool on every draw, so an
+upserted component column moves the arrows on the next draw.
 `crates/renderer/examples/vector_field.rs` shows both forms.
 
 <a id="vector-fields-in-3d"></a>
@@ -973,7 +972,7 @@ and the colour column.
 - `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)` writes the
   scale so the longest vector the bounds allow, `hypot(max |u|, max |v|,
   max |w|)`, is `target` long. Colouring by speed takes a magnitude column the
-  host uploads (rule 1).
+  host uploads.
 - The z fit adds `[z_min + f·w_min, z_max + f·w_max]` for a `Data` arrow,
   from column statistics.
 - Pick, the anchor ring, `step_selection` and `selection_details` (adding
@@ -1078,9 +1077,9 @@ bars, its line and its markers. This is a stem plot (an impulse response
   polar axes"), 3D charts ("stems draw flat: not on a 3D chart") and
   streamed sources (`STREAMED_STEM_REASON`).
 - Cost: every row draws a stem, and the pick scans every row, as for error
-  bars. `tests/stem_render.rs` measures 1,000,001 rows: about 1.2 s to draw
-  and 4.7 s to pick the last row on lavapipe (a CPU rasterizer). There is no
-  cap: the budget is the host's.
+  bars. 1,000,001 rows take about 1.2 s to draw and 4.7 s to pick the last
+  row on lavapipe (a CPU rasterizer). Every row is drawn, so the host budgets
+  the row count.
 
 #### Histogram bars
 
@@ -1123,7 +1122,7 @@ is reported.
 draws a `Heatmap` as `n` columns by `m` rows of flat-topped hexagons: the cell
 of column `c`, row `r` is centred at `(x[c], y[r] + (c mod 2) · py / 2)`, the
 odd columns raised by half the row pitch `py = y[1] − y[0]`. The host bins
-its samples (the renderer never bins, rule 1) and registers the counts as the
+its samples (the renderer never bins) and registers the counts as the
 grid's constituent columns, one per lattice column under `ColumnsAreX` (per
 row under `ColumnsAreY`), exactly as a `Centers` heatmap. The hexagons are
 regular when the column pitch `px = x[1] − x[0]` is `√3 / 2` of the row
@@ -1160,7 +1159,7 @@ orientation and grid layout: `Edges`, `Centers` or, shaded `Flat`, a
 its three channel values mapped linearly from `range` to 0..1 and clamped
 (`[0, 1]` by default, `[0, 255]` for bytes), at `opacity`. The host supplies
 the channels as it supplies any grid; the renderer maps them and derives
-nothing (rule 1), so a histogram equalization, a gamma or a false colour is
+nothing, so a histogram equalization, a gamma or a false colour is
 the host's. No colourbar is read or required: the colours are the data.
 `Flat` paints each cell its colour, `Interpolated` blends each channel
 bilinearly between the sample points; a cell with a non-finite value in any
@@ -1178,9 +1177,8 @@ channels have the same number of columns, orientation and grid layout,
 (streamed sources are rejected).
 
 <!-- contour-contract: scope=config-en max-levels=1024 -->
-`ContourConfig.levels` is always an explicit list in data units (there is no
-"auto" variant — a level set inferred at draw time is a value the config does not
-contain). Its accepted length is `0..=1024`; 1025 or more is an error, and no
+`ContourConfig.levels` is always an explicit list in data units; there is no
+"auto" variant. Its accepted length is `0..=1024`; 1025 or more is an error, and no
 level is silently truncated. On a cache miss the renderer keeps the original
 list and declaration order, while building a lookup copy from consecutive
 32-level blocks sorted by value. Each fragment searches at most 32 blocks and
@@ -1241,7 +1239,7 @@ filtered like the glyphs inside it rather than rasterized as the quad edge.
 surface })` ([#210](https://github.com/shim9610/figgy/issues/210)) draws a
 field over triangles the host gives: the mesh of a finite element or finite
 volume solver, or scattered measurements the host triangulated. The renderer
-never triangulates (rule 1).
+never triangulates.
 
 - `x_column` / `y_column` are the vertex coordinates, one row per vertex; on
   a 3D chart `z_column` is the vertex height on `right_y`.
@@ -1259,9 +1257,8 @@ The rules (`TriMeshSeries::validate` and
 - the triangle, value, x and y columns are named;
 - a fill, contour lines or both, and a surface look only with a fill;
 - vertex values are shaded `Interpolated` (linearly across each triangle)
-  and face values `Flat`. A flat colour from vertex values would be a mean
-  the colourbar shows, and interpolating face values needs values at the
-  vertices: both are host work;
+  and face values `Flat`. For the other shading, the host computes values
+  at the other location (a mean per face, or values at the vertices);
 - contour lines need vertex values (a field constant on each triangle has
   cell boundaries, not isolines) and carry no labels;
 - the surface look takes no `color_matrix`: the values colour the mesh;
@@ -1298,9 +1295,9 @@ vertex count (the shortest of `x_column`, `y_column` and, for vertex values,
 the value column), a face value column shorter than the triangles, a
 triangle id that is not a resident triangle index column, and a missing
 colourbar; a column shortened later is drawn to what remains and
-`series_draw_info` reports `truncated`. Streamed displays refuse the kind
-(rule 8). Nothing caps the triangle count: a million triangles draw (about
-0.9 s for a 1x export on lavapipe).
+`series_draw_info` reports `truncated`. Streamed displays refuse the kind.
+Any number of triangles is drawn: a million triangles take about 0.9 s for a
+1x export on lavapipe.
 
 On a 3D chart (`view_3d`) the mesh draws as a surface over its triangles
 (a trisurf, [SURFACE.md](SURFACE.md)): the series names its height column
@@ -1325,15 +1322,15 @@ registered column per axis, in the axes' order (`x_column` and `y_column`
 are its first two, so every reader of a series' coordinate columns sees
 registered columns), and row `r` is the polyline through
 `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, each value
-placed on its own axis's range (the normalization is appearance, rule 1:
-hover, selection and the reported values are the original columns). A row
+placed on its own axis's range (hover, selection and the reported values
+are the original column values). A row
 with a non-finite value breaks at that axis: the two segments touching it
 are not drawn. The rows drawn are the shortest column's (and the colour
 column's), as a line's `min(x, y)` is, reported through `series_draw_info`
 as `rows · (axes − 1)` segments.
 
-`line` is the rows' colour and width: solid (a dash along a polyline of
-independent segments is a later decision), linear and unfilled. With
+`line` is the rows' colour and width: solid (no dash pattern), linear and
+unfilled. With
 `color_column`, each row takes the colour of that column's value through
 `Config.colorbar` (its range, scale, colormap and `nan_color`), as a
 colour-mapped marker does; without, every row is `line.line_color`. The
@@ -1349,11 +1346,7 @@ axis) and, mapped, `color_value`. Each axis's tick labels drag into its
 drag and resize as on any rectangular chart. Polar, ternary and 3D charts
 and streamed sources are rejected.
 
-The rows draw through the line module's parallel entries: no vertex slot,
-one quad per segment instance, the ends read from the column pool through
-the series' axis lane table and placed by its axis range table
-([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md)
-§5.23), so the axis count is unbounded and nothing per row is stored.
+There is no limit on the number of axes or rows.
 
 #### Draw info, fitting and series styles
 
@@ -1467,7 +1460,7 @@ pub struct Config {
 | `breaks` | `Option<AxisBreaks>` | 축에서 잘라낼 구간([#200](https://github.com/shim9610/figgy/issues/200)). 자세한 내용은 아래 [`AxisBreaks`](#axisbreaks-ko)를 참고한다. `None`(기본값, JSON에서 생략)이면 축을 자르지 않는다. 직교 차트의 `bottom_x`, `left_y`, 오버레이의 `y_axis`에만 지정할 수 있다. `top_x`와 `right_y`는 그릴 때 짝이 되는 축의 구간을 자기 범위의 같은 비율 위치로 옮겨 쓴다(`layout::mirrored_breaks`). 색상 막대 축과 극좌표·삼각좌표·3D·평행 좌표 차트는 이 값을 거부한다. 범위를 바꾸는 편의 함수와 뷰 상태 적용은 이 값을 유지하고, 연결된 서브플롯 축은 범위와 함께 복사한다 |
 | `unit` | `Option<AxisUnit>` | 축이 값을 찍는 단위([#273](https://github.com/shim9610/figgy/issues/273)). `AxisUnit { scale, offset }`이면 눈금 라벨이 `scale * value + offset`을 찍으므로, 데이터는 그대로 두고 16비트 ADC 카운트를 볼트(`scale = 5/32768`)로, 켈빈을 섭씨(`offset = -273.15`)로 읽게 한다. `min`, `max`, `breaks`, `cross_at`, 주석, 피킹 결과는 데이터 단위 그대로다. 눈금은 표시 단위로 `[scale·min + offset, scale·max + offset]`(`AxisOptions::shown_range`) 위에서 고르므로 변환한 뒤에도 라벨이 딱 떨어지는 수(`0, 0.5, 1.0 V`)이고, 각 눈금은 `(shown − offset) / scale` 위치에 놓인다. `scale`이 음수이면 축을 따라 값이 줄어든다. `major_spacing`은 표시 단위로 읽으며, 범위 편의 함수, `auto_ticks`, 뷰 상태 적용은 표시 범위에 맞게 이 값을 고른다. 라벨 형식은 표시 값에 적용하고, 로그축은 표시 값의 10배 간격에 눈금을 놓는다. `scale`은 유한하고 0이 아니어야 하며 `offset`은 유한해야 한다. 로그축은 `offset = 0`, `scale > 0`만 받고, 확률 축, `Timestamp` 라벨 축, 범주형 축은 단위를 거부한다(`RuleKind::AxisUnit*`). 서브플롯 연결은 눈금 간격과 함께 이 값을 복사한다. `None`(기본값, JSON에서 생략)이면 데이터 값을 찍는다. `AxisOptions::unit(scale, offset)`(`helpers`)으로 정할 수 있다 |
 | `category_groups` | `Option<CategoryGroups>` | 범주형 `top_x`·`bottom_x`의 이웃한 범주 묶음 위에 다는 그룹 머리글([#203](https://github.com/shim9610/figgy/issues/203)). `CategoryGroups { groups: Vec<CategoryGroup { label: RichText, first, last, bracket }>, offset: [f32; 2] }` 형태다. 머리글은 눈금 라벨 바깥(라벨이 여러 줄로 엇갈려 있으면 가장 바깥 줄 너머, #205), `first`부터 `last`까지 범주의 가운데에 놓이고, `bracket`이면 묶음을 따라 괄호선을 긋는다. 묶음은 축 순서대로 겹치지 않아야 하며 개수 상한은 없다. 머리글 전체가 요소 하나(`Element::CategoryGroupLabel`)이고 드래그하면 `offset`에 기록된다. 수치 축과 y축에는 지정할 수 없다. 범주의 `rich_label: Option<RichText>`는 일반 `label` 대신 그려지고 측정되며, 항 기호 `$^3\mathrm{P}^o$` 같은 첨자와 TeX 수식을 쓸 수 있다 |
-| `category_window` | `Option<[f64; 2]>` | 범주형 축이 보여 주는 칸의 범위([#205](https://github.com/shim9610/figgy/issues/205)). 범주 좌표의 `[from, to]`이며, 범주 `i`는 `i`에 중심을 두고 그 칸은 `i - 0.5..i + 0.5`다. `None`(기본값, JSON에서 생략)이면 모든 칸(`-0.5..n - 0.5`)을 보여 준다. 수치 축에서는 무시하며 그때는 `min` / `max`가 범위다. 뷰를 움직이는 도우미(`Chart::set_x_range` / `set_y_range`, 서브플롯·오버레이 setter, 뷰 상태, 확대·이동)가 이 값을 쓰고 전체 범위는 지운다. `auto_fit_*` 계열은 범주형 축을 전처럼 그대로 둔다. 눈금·라벨·격자·데이터·피킹·주석은 `AxisOptions::data_range`를 통해 이 범위를 따르고, 라벨과 그룹 머리글은 범위 안의 칸에만 그린다. 라벨이 겹치는 범주형 축은 라벨을 숨기지 않고 여러 줄로 엇갈려 그린다(#205) |
+| `category_window` | `Option<[f64; 2]>` | 범주형 축이 보여 주는 칸의 범위([#205](https://github.com/shim9610/figgy/issues/205)). 범주 좌표의 `[from, to]`이며, 범주 `i`는 `i`에 중심을 두고 그 칸은 `i - 0.5..i + 0.5`다. `None`(기본값, JSON에서 생략)이면 모든 칸(`-0.5..n - 0.5`)을 보여 준다. 수치 축에서는 무시하며 그때는 `min` / `max`가 범위다. 뷰를 움직이는 도우미(`Chart::set_x_range` / `set_y_range`, 서브플롯·오버레이 setter, 뷰 상태, 확대·이동)가 이 값을 쓰고 전체 범위는 지운다. `auto_fit_*` 계열은 범주형 축을 바꾸지 않는다. 눈금·라벨·격자·데이터·피킹·주석은 `AxisOptions::data_range`를 통해 이 범위를 따르고, 라벨과 그룹 머리글은 범위 안의 칸에만 그린다. 라벨이 겹치는 범주형 축은 라벨을 숨기지 않고 여러 줄로 엇갈려 그린다(#205) |
 
 <a id="axisbreaks-ko"></a>
 ### `AxisBreaks`
@@ -1479,7 +1472,7 @@ pub struct Config {
 | `style` | `AxisBreakStyle` | `Continuous`(기본값)는 하나의 축으로 그리며 조각 안에서는 선형이다. 빈칸을 지나는 선은 양쪽에 그려진 두 점을 잇는 직선이고 빈칸 안에서는 가려진다. `Panels`는 조각마다 독립된 선형 축으로 그린다. 빈칸을 지나는 선은 각 조각에서 그 조각의 기울기로 그리고 조각 경계에서 자른다. 점 기호·막대·셀은 두 방식에서 똑같이 보인다 |
 | `gap_px` | f32 | 빈칸 하나의 폭. 논리 픽셀 단위이며 `0..=MAX_AXIS_BREAK_GAP_PX`(200), 기본값 8이다([#249](https://github.com/shim9610/figgy/issues/249)). 픽셀 단위라서 한 차트의 가로 빈칸과 세로 빈칸이 같은 폭으로 그려진다. `Config::scaled`가 이 값도 키우므로 2배 내보내기는 1배 배치를 그대로 두 배로 키운 것이다. 값의 위치를 구할 때는 축이 그려지는 길이가 필요하다(`BreakMap::of(axis, len)`, `layout::axis_fraction(value, axis, len)`. x축은 데이터 영역의 너비, y축은 높이) |
 | `mark` | `BreakMark` | `Slash { size, color, width }`(기본값: 6 px, 1 px, `color: None`)는 축선의 빈칸 양쪽에 빗금 한 쌍을 그린다. 색은 `color`를 쓰고, `None`(JSON에서 생략)이면 축선 색을 쓴다. `BreakMark::None`은 빗금을 그리지 않는다. 빗금은 축 요소의 일부다. 크기와 두께는 내보내기 배율을 따른다 |
-| `frame_each_panel` | bool | 기본값 `true`이며 두 방식 모두에 적용된다. 각 조각이 빈칸 쪽에도 자기 테두리를 그린다. 빈칸 양쪽 경계마다 플롯을 가로지르는 선을 축선 스타일로 그려서 조각들이 서로 다른 칸으로 보이게 한다. 테두리는 논리 픽셀 단위로 맞춘 뒤 배율을 곱해 그리므로(#205) 1배에서 한 줄로 선명하고 2배 내보내기는 1배 테두리를 그대로 두 배로 키운 것이다. 렌더러가 이를 위해 표시·내보내기 배율을 크롬 emit에 넘긴다(`emit_chart_chrome`의 `scale`). 테두리는 축 요소의 일부라서 `line_offset`을 따라 움직이고, 이때 축은 상자가 아니라 그려진 선 위에서만 선택된다. 두 축이 모두 잘리고 둘 다 조각 테두리를 그리면, 각 테두리는 다른 축의 빈칸에서 끊겨 두 빈칸이 십자 모양으로 만난다(#249). 테두리는 조각의 픽셀 경계에서 자기 조각 안쪽에 그리므로, 두 테두리 사이의 빈 폭이 빈칸 폭과 같다. 축선 조각과 빗금도 같은 픽셀 경계에서 끝나고, 조각 끝 값의 눈금은 그 조각의 테두리 줄에 놓이며, 빈칸 경계에 걸친 격자선도 자기 조각 안에 그린다. `false`이면 빗금만 남는다 |
+| `frame_each_panel` | bool | 기본값 `true`이며 두 방식 모두에 적용된다. 각 조각이 빈칸 쪽에도 자기 테두리를 그린다. 빈칸 양쪽 경계마다 플롯을 가로지르는 선을 축선 스타일로 그려서 조각들이 서로 다른 칸으로 보이게 한다. 테두리는 논리 픽셀 단위로 맞춘 뒤 배율을 곱해 그리므로(#205) 1배에서 한 줄로 선명하고 2배 내보내기는 1배 테두리를 그대로 두 배로 키운 것이다. 테두리는 축 요소의 일부라서 `line_offset`을 따라 움직이고, 이때 축은 상자가 아니라 그려진 선 위에서만 선택된다. 두 축이 모두 잘리고 둘 다 조각 테두리를 그리면, 각 테두리는 다른 축의 빈칸에서 끊겨 두 빈칸이 십자 모양으로 만난다(#249). 테두리는 조각의 픽셀 경계에서 자기 조각 안쪽에 그리므로, 두 테두리 사이의 빈 폭이 빈칸 폭과 같다. 축선 조각과 빗금도 같은 픽셀 경계에서 끝나고, 조각 끝 값의 눈금은 그 조각의 테두리 줄에 놓이며, 빈칸 경계에 걸친 격자선도 자기 조각 안에 그린다. `false`이면 빗금만 남는다 |
 | `sizing` | `PieceSizing` | 빈칸을 뺀 축 길이를 조각들이 나누는 방식([#205](https://github.com/shim9610/figgy/issues/205)). `ByValue`(기본값, JSON에서 생략)는 각 조각의 폭에 비례해 나누며 축 전체가 한 배율이다. `Equal`은 모든 조각을 같은 길이로, `Weights(Vec<f32>)`는 축 순서대로 조각마다 하나씩 준 양수 가중치(잘라낸 구간 수보다 하나 많다)에 비례해 나눈다. `Equal`과 `Weights`에서는 조각마다 배율이 따로라서 짧은 구간(바닥 상태, 이온화 한계)도 읽을 만한 자리를 얻는다. 빈칸을 지나는 선은 여전히 양쪽에 그려진 두 점을 잇는 직선이고, 벡터와 선 피킹의 미분은 측정하는 지점의 배율(`BreakMap::scale_at`)을 쓴다. 그런 조각은 각자 자기 눈금 간격을 걷는다(`tick::piece_ticks`). 축의 `major_spacing`이 그 조각 안에 목표 주 눈금 수(축 목표에서 조각이 차지하는 몫)의 절반에서 두 배 사이를 놓으면 그대로 쓰고, 아니면 조각 자신의 폭과 몫에 맞는 보기 좋은 간격을 쓰며 주 눈금은 최소 둘이다. `Continuous` 축에만 쓸 수 있고, `Panels` 축에 `ByValue`가 아닌 값을 주면 거부한다 |
 
 빈칸 안에는 아무것도 그리지 않는다. 데이터와 선택 강조, 값 라벨, 격자선, 구간(span)과 기준선 주석은 조각마다 그린다. 잘라낸 구간 안에는 눈금과 눈금 라벨을 두지 않는다. 선형축에서는 주 눈금이 2개 미만인 조각이 있으면 간격을 1·2·5 × 10^k 단계로 한 단계씩 줄인다(`tick::effective_major_spacing`). 뷰의 끝이 잘라낸 구간 안에 떨어져 폭이 0인 조각이 생기면 그 조각은 건너뛴다(#205). `Equal`·`Weights`에서는 조각마다 자기 간격을 걷는다(`tick::piece_ticks`, 위 참고). 그래서 짧은 조각에도 깔끔한 값의 주 눈금이 2개 이상 남는다. 라벨이 겹칠 때는 자르기 전 눈금 격자를 기준으로 줄이므로 조각마다 깔끔한 값이 남는다. 빈칸 안을 가리킨 피킹은 아무것도 반환하지 않고, `Panels`에서 조각 안을 가리킨 피킹은 그 조각에 그려진 것을 반환한다. 잘라낸 구간 안의 데이터 앵커와 기준선은 `OutOfRange`로 건너뛰고, 한쪽 끝이 구간 안에 있는 span은 보이는 부분만 그린다. 스트리밍 소스는 거부하고(`STREAMED_BREAK_REASON`), `Continuous`로 끊긴 축의 육각 격자도 격자가 균일하지 않게 되므로 거부한다. 라인 오프셋 멤버는 범위를 옮긴 만큼 소유 축의 구간도 함께 옮겨 쓴다.
@@ -1791,7 +1784,7 @@ pub struct Config {
 | `bar_gap` | f32 | 묶음 안 막대 사이의 논리 픽셀, `0..=24`(기본 3) |
 
 한 레이어(기본 차트, 오버레이, 서브플롯)의 `CategoryBars` 시리즈가 그 레이어의 묶음이며 시리즈 수와
-막대 수에는 상한이 없다(#107). 서브플롯은 자기 `bar_groups`를, 오버레이는 부모 차트의 것을 쓴다.
+막대 수에는 상한이 없다. 서브플롯은 자기 `bar_groups`를, 오버레이는 부모 차트의 것을 쓴다.
 `BoxPlot` 시리즈도 같은 방식으로 레이어의 상자 묶음(시리즈 수와 상자 수 상한 없음)을 이루며 `mode`는
 `Grouped`여야 하고 `bar_gap`은 상자 사이 간격이다. 한 레이어에는 범주형 막대와 박스플롯 중 하나만 둔다.
 
@@ -1812,7 +1805,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 `Config::line_offset_of(id)`는 구성원이 밀린 양을 `[dx, dy]`로 돌려준다. 레지스트리는 모르는 id나
 중복 id, 다른 종류의 구성원, 유한하지 않은 간격, 극좌표 차트, 다른 차트가
 그리는 구성원, 구성원과 다른 시리즈를 잇는 `ToSeries` 채우기, 스트리밍(비상주) 구성원을
-`FiggyError`로 거부한다(규칙 8). 간격은 데이터 단위이므로 `Config::scaled`는 그대로 둔다.
+`FiggyError`로 거부한다. 간격은 데이터 단위이므로 `Config::scaled`는 그대로 둔다.
 
 `Config::expand()`는 구성원마다 내부 패널을 하나씩 오버레이 패널 뒤에 만든다. 그 구성원을
 스케일하는 레이어의 패널을 복사해 `bottom_x`를 `-k * step_x`만큼, 변환이 읽는 Y 축을
@@ -1823,7 +1816,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 채우기까지 앞 구성원 위에 그린다. 구성원 패널은 레이어가 아니다. `panel_layers()`는 구성원 패널에
 대해 그 주인 레이어를 답하고, `panel_member(index)`는 패널이 그리는 구성원을,
 `panel_of_series(id)`는 시리즈를 그리는 패널을 알려 준다. 구성원 패널 하나는 오버레이 하나만큼
-텍스처를 쓰므로 곡선이 더 많으면 차트 둘로 나눈다. `Chart::auto_fit_layer_union`은 모든 구성원의
+텍스처를 쓰며, 텍스처를 할당할 수 없는 구성원은 GPU 할당 오류로 실패한다. `Chart::auto_fit_layer_union`은 모든 구성원의
 범위에 밀린 양을 더해 기본 범위를 맞춘다. 선택, 히트 테스트와 출력은
 [상호작용 가이드(영문)](INTERACTION.md#offset-spectra)에 있다.
 
@@ -1843,11 +1836,11 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `show` | `LevelView` | `Main`은 준위와 중심값을, `Components`는 준위와 미세 구조 성분을 그린다. 인셋은 `Components`로 확대해 보여 준다 |
 | `source` | `Option<String>` | 다른 에너지 준위 시리즈의 레코드를 그린다(인셋이 본 시리즈를 보여 줄 때). 이때 자기 레코드는 비워 둔다 |
 
-**파장 라벨(#258).** `style.wavelength_labels`를 지정하면 `wavelength`가 있고 호스트 `label`이 없는 전이마다 그 값으로 라벨을 써서 그린다. `format: PlainNumberFormat`(고정 소수 자릿수 `decimals`는 17 이하, 또는 자동 형식, 그리고 `trim_zeros`)으로 숫자를 쓰고, 라벨 설정의 `unit: Option<String>`이 비어 있지 않으면 ` {단위}`를 붙인다. 단위는 호스트가 적은 그대로(`nm`, `Å`, `nm (air)` 등, 160자 이하의 한 줄)이며 `None`(생략)이면 숫자만 쓴다. 글꼴·크기·색은 `text: RichText`에서 가져오며 `text`의 글자는 그리지 않는다. 단위는 라벨 설정이 직접 가진다. 단위를 한 번만 보이고 싶으면 비워 두고 모서리 메모(`AnnotationLayer::add_corner_note`, 자기 글을 가진 `Text` 항목)를 추가한다. 호스트 `label`이 있으면 그 라벨이 우선하므로 라벨을 직접 쓴 문서는 전과 똑같이 그려진다. 서식 라벨은 호스트 라벨과 똑같이 배치되고, 그려지고, 피킹되고(`part: Transition`인 `ValueLabel`), `label_offset`으로 드래그되고, 강조되고, 내보내진다. 전이가 어느 라벨을 그릴지는 `Transition::drawn_label` 하나가 정한다. 렌더러는 받은 값을 서식대로 쓰기만 하며 단위를 바꾸거나 값을 고르지 않는다.
+**파장 라벨(#258).** `style.wavelength_labels`를 지정하면 `wavelength`가 있고 호스트 `label`이 없는 전이마다 그 값으로 라벨을 써서 그린다. `format: PlainNumberFormat`(고정 소수 자릿수 `decimals`는 17 이하, 또는 자동 형식, 그리고 `trim_zeros`)으로 숫자를 쓰고, 라벨 설정의 `unit: Option<String>`이 비어 있지 않으면 ` {단위}`를 붙인다. 단위는 호스트가 적은 그대로(`nm`, `Å`, `nm (air)` 등, 160자 이하의 한 줄)이며 `None`(생략)이면 숫자만 쓴다. 글꼴·크기·색은 `text: RichText`에서 가져오며 `text`의 글자는 그리지 않는다. 단위는 라벨 설정이 직접 가진다. 단위를 한 번만 보이고 싶으면 비워 두고 모서리 메모(`AnnotationLayer::add_corner_note`, 자기 글을 가진 `Text` 항목)를 추가한다. 호스트 `label`이 있으면 그 라벨이 서식 라벨보다 우선한다. 서식 라벨은 호스트 라벨과 똑같이 배치되고, 그려지고, 피킹되고(`part: Transition`인 `ValueLabel`), `label_offset`으로 드래그되고, 강조되고, 내보내진다. 전이가 어느 라벨을 그릴지는 `Transition::drawn_label` 하나가 정한다. 라벨은 주어진 `wavelength`를 서식대로 보여 주며 단위를 변환하지 않는다.
 
-어떤 목록에도 개수 상한이 없다. 직교 차트이고 `bottom_x`가 범주형이어야 한다. 이 시리즈는 CPU 싱크로 그려 GPU 데이터 위에 합성한다. 픽은 준위를 `HistogramBin`, 전이를 `Point`, 라벨을 `part`가 붙은 `ValueLabel`로 돌려주고, `step_selection`은 뷰가 그리는 행을 따라 움직인다. `write_continuum`은 이온화 한계 위의 연속 영역을 주석 레이어에 쓴다. 인셋의 확대 창과 연결선은 그 서브플롯의 `marker`([`Subplot`](#subplot-configsubplots-1), #205)이며 그릴 때마다 다시 놓인다(이를 고정 주석으로 쓰는 `Config::inset_marker`는 그 자리를 넘겼다). 인셋은 부모 데이터 영역 안에 놓인 서브플롯이고 보통 `plot_background`를 지정한다. 인셋은 부모 위에 한 덩어리로 그려지고 어느 레이어에서든 그 안의 포인터를 받으며, 기본 레이어에서는 그 테두리(`subplot_<n>:frame`)를 플롯을 눌러 선택해 부모 안이든 밖이든 어디로든 끌고 크기를 바꿀 수 있다(#205). 스트리밍 디스플레이는 이 시리즈를 거부한다.
+어떤 목록에도 개수 상한이 없다. 직교 차트이고 `bottom_x`가 범주형이어야 한다. 이 시리즈는 CPU 싱크로 그려 GPU 데이터 위에 합성한다. 픽은 준위를 `HistogramBin`, 전이를 `Point`, 라벨을 `part`가 붙은 `ValueLabel`로 돌려주고, `step_selection`은 뷰가 그리는 행을 따라 움직인다. `write_continuum`은 이온화 한계 위의 연속 영역을 주석 레이어에 쓴다. 인셋의 확대 창과 연결선은 그 서브플롯의 `marker`([`Subplot`](#subplot-configsubplots-1), #205)이며 그릴 때마다 다시 놓인다. 이를 고정 주석으로 쓰는 `Config::inset_marker` 대신 이것을 쓴다. 인셋은 부모 데이터 영역 안에 놓인 서브플롯이고 보통 `plot_background`를 지정한다. 인셋은 부모 위에 한 덩어리로 그려지고 어느 레이어에서든 그 안의 포인터를 받으며, 기본 레이어에서는 그 테두리(`subplot_<n>:frame`)를 플롯을 눌러 선택해 부모 안이든 밖이든 어디로든 끌고 크기를 바꿀 수 있다(#205). 스트리밍 디스플레이는 이 시리즈를 거부한다.
 
-**배치(#205).** 배치는 래스터와 피킹마다 한 번, SSOT와 패널에서 계산한다. 준위 라벨은 레인(라벨이 그려지는 틈)마다 쌓이고, 옮겨진 라벨은 안내선으로 자기 선과 이어진다. 라벨이 플롯 밖으로 나갈 열은 반대쪽에 라벨을 그리고, 플롯 밖의 준위는 라벨을 그리지 않는다. 한 레인에서 선 사이가 라벨 절반보다 가까운 라벨이 넷 이상 이어지면 첫 라벨과 끝 라벨만 남겨 괄호로 잇고 사이 라벨은 그리지 않는다. 라벨 하나를 자기 선에서 라벨 높이의 1.5배 넘게 밀어내야 하는 스택은 무리다. 그 안의 촘촘한 구간(선 사이가 라벨 하나보다 가까운 셋 이상)을 같은 방식으로 접고 나머지를 다시 쌓아, 모든 스택이 라벨을 자기 선 가까이에 두게 한다. 그런 구간이 없는 무리는 통째로 접고, 나중 접기에 끝이 가려진 괄호는 더 큰 괄호에 자리를 내준다. 한 준위의 같은 끝에서 만나는 화살표는 반대편 끝의 위치 순서로 칸 안에 벌려 놓는다. 파장 라벨은 자기 화살표를 따라 오른쪽이든 왼쪽이든 선·준위 라벨·다른 화살표·앞선 라벨과 겹치지 않는 첫 자리를, 없으면 가장 적게 겹치는 자리를 잡는다. 여기서 값이 만들어지는 일은 없다. 주어진 레코드를 어디에 그릴지만 정한다.
+**배치(#205).** 배치는 래스터와 피킹마다 한 번, SSOT와 패널에서 계산한다. 준위 라벨은 레인(라벨이 그려지는 틈)마다 쌓이고, 옮겨진 라벨은 안내선으로 자기 선과 이어진다. 라벨이 플롯 밖으로 나갈 열은 반대쪽에 라벨을 그리고, 플롯 밖의 준위는 라벨을 그리지 않는다. 한 레인에서 선 사이가 라벨 절반보다 가까운 라벨이 넷 이상 이어지면 첫 라벨과 끝 라벨만 남겨 괄호로 잇고 사이 라벨은 그리지 않는다. 라벨 하나를 자기 선에서 라벨 높이의 1.5배 넘게 밀어내야 하는 스택은 무리다. 그 안의 촘촘한 구간(선 사이가 라벨 하나보다 가까운 셋 이상)을 같은 방식으로 접고 나머지를 다시 쌓아, 모든 스택이 라벨을 자기 선 가까이에 두게 한다. 그런 구간이 없는 무리는 통째로 접고, 나중 접기에 끝이 가려진 괄호는 더 큰 괄호에 자리를 내준다. 한 준위의 같은 끝에서 만나는 화살표는 반대편 끝의 위치 순서로 칸 안에 벌려 놓는다. 파장 라벨은 자기 화살표를 따라 오른쪽이든 왼쪽이든 선·준위 라벨·다른 화살표·앞선 라벨과 겹치지 않는 첫 자리를, 없으면 가장 적게 겹치는 자리를 잡는다.
 
 <a id="feynman-ko"></a>
 
@@ -1916,7 +1909,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 마커를 그리는 모든 `DataRenderType`은 일반 값 컬럼 두 개를 점에 대응시킬 수 있다. 두 필드는 모두 선택 사항이며 생략하면 JSON에서 빠지므로, 두 필드가 없는 문서는 읽고 다시 써도 바이트 단위로 같다. 둘 중 하나라도 지정한 시리즈는 스타일 표를 쓴 시리즈처럼 정밀 매핑 산점도 경로로 그린다.
 
 - `point_color_map: Option<PointColorMap { column }>`은 `column`의 값으로 점마다 색을 정한다. 히트맵 셀과 똑같이 `Config.colorbar`를 거치므로 범위·스케일·색상표·`nan_color`는 색상 막대가 정하고 차트의 Z 스케일은 하나로 유지된다. 색상 막대가 없으면 임의의 범위를 쓰지 않고 시리즈를 거부한다. 유한하지 않은 값과 로그 색상 막대의 0 이하 값은 `nan_color`로 그린다. `Chart::auto_fit_colorbar_union(pool, ids, padding)`은 넘겨받은 컬럼 ID로 공유 범위를 맞추며 행렬 컬럼과 색 매핑 컬럼을 구분하지 않는다. 웹 `auto_fit_colorbar`는 차트의 행렬 컬럼, 점 색 매핑 컬럼, 벡터 색 매핑 컬럼을 모두 모아 맞춘다.
-- `point_size_map: Option<PointSizeMap { column, domain_min, domain_max, min_px, max_px, scale }>`은 `domain_min..domain_max`를 마커 반지름 `min_px..max_px`에 대응시킨다. 단위는 `point_size`와 같은 논리 픽셀이며 출력 배율도 똑같이 적용된다. 범위는 유한하고 `domain_min < domain_max`여야 하며, `min_px`와 `max_px`는 유한한 0 이상의 값이고 `min_px <= max_px`여야 한다. `scale`은 `SizeScale::Area`(기본값. 값이 마커 넓이에 비례하며 버블 크기를 읽는 일반적인 방식) 또는 `Radius`다. 범위 밖 값은 양 끝으로 고정하고, 유한하지 않은 값은 점을 숨기며 피킹에서도 뺀다. 범위는 컬럼에서 추측하지 않는다. `PointSizeMap::fit_domain(min, max)`는 `auto_ticks`가 눈금 간격을 쓰듯 호스트가 이미 가진 통계로 범위만 쓰므로, 점을 추가해도 다른 점의 크기가 바뀌지 않는다. 반지름 공식은 `PointSizeMap::radius_px(value)`이며 그리기 셰이더와 GPU 피커가 같은 값을 계산한다. 렌더러 테스트용 CPU 트윈이 두 셰이더를 이 공식과 비교한다.
+- `point_size_map: Option<PointSizeMap { column, domain_min, domain_max, min_px, max_px, scale }>`은 `domain_min..domain_max`를 마커 반지름 `min_px..max_px`에 대응시킨다. 단위는 `point_size`와 같은 논리 픽셀이며 출력 배율도 똑같이 적용된다. 범위는 유한하고 `domain_min < domain_max`여야 하며, `min_px`와 `max_px`는 유한한 0 이상의 값이고 `min_px <= max_px`여야 한다. `scale`은 `SizeScale::Area`(기본값. 값이 마커 넓이에 비례하며 버블 크기를 읽는 일반적인 방식) 또는 `Radius`다. 범위 밖 값은 양 끝으로 고정하고, 유한하지 않은 값은 점을 숨기며 피킹에서도 뺀다. 범위는 컬럼에서 추측하지 않는다. `PointSizeMap::fit_domain(min, max)`는 `auto_ticks`가 눈금 간격을 쓰듯 호스트가 이미 가진 통계로 범위만 쓰므로, 점을 추가해도 다른 점의 크기가 바뀌지 않는다. 반지름 공식은 `PointSizeMap::radius_px(value)`이며 그리기 셰이더와 GPU 피커가 같은 값을 계산한다.
 - 채널별 우선순위는 개별 설정 > 값 매핑 > 스타일 표 슬롯 > 시리즈 기본값이다. 모양은 계속 표·개별 설정·기본값에서 정하므로 범주형 모양 컬럼과 연속 색 컬럼을 함께 쓸 수 있다. `point_size`를 지정한 개별 설정은 숨겨진 점을 다시 보이게 한다.
 - 값 컬럼은 시리즈의 x/y 컬럼과 인덱스가 맞아야 하고 모든 점을 덮어야 하며, 더 짧으면 준비 단계에서 오류가 난다. 다른 시리즈 컬럼과 똑같이 다루므로 컬럼을 지우면 시리즈가 무효가 되고, 피킹(`Renderer::pick_chart`, 웹 `pick_point`), 선택 테두리, 웹 `selection_details`(`color_value` / `size_value`), PNG 출력이 모두 매핑된 색과 반지름을 따른다. 매핑에는 GPU 상주 컬럼이 필요하므로 스트리밍 소스는 거부한다. Sketch·Milkyway·Constellation 스타일은 스타일 표와 마찬가지로 매핑을 무시한다.
 
@@ -1941,7 +1934,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 상호작용은 성분 형식을 따른다. 점 벡터는 마커처럼 기준점에서 피킹하며, 반지름은 머리와 몸통 중 넓은 쪽의 절반이다. 선택 테두리, 웹 `step_selection`과 `selection_details`(`u`, `v`, `color_value`), PNG 출력도 같은 기준을 쓴다. 격자 벡터는 히트맵 셀처럼 `u` 격자의 셀 단위로 피킹하고 강조한다. 자동 범위 맞춤(`begin_series_fit_extent`, 웹 범위 요청)은 기준점과 데이터 배율 점 벡터의 끝점을 포함하며, 격자 벡터의 데이터 배율 끝점은 포함하지 않는다. 성분에는 GPU 상주 컬럼이 필요하므로 스트리밍 소스는 거부한다. Sketch·Milkyway·Constellation 스타일은 벡터를 그리지 않는다(`draw_style_supports`가 `false`를 돌려준다). 범례 기호는 시리즈 색의 화살표 머리가 달린 선이다.
 
-셰이더는 직교 투영, 입력 형식, 화살표 글리프, 진입점 조각을 조립해 만들며([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md) §5.3), 그릴 때마다 컬럼 풀에서 성분 컬럼을 읽는다. [examples/vector_field.rs](examples/vector_field.rs)에 두 형식의 예제가 있다.
+성분 컬럼은 그릴 때마다 컬럼 풀에서 읽으므로, 성분 컬럼을 갱신하면 다음 그리기부터 화살표에 반영된다. [examples/vector_field.rs](examples/vector_field.rs)에 두 형식의 예제가 있다.
 
 <a id="3d-벡터장"></a>
 
@@ -1953,7 +1946,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 - `Data { factor }`는 축마다 데이터 단위로 끝점을 `anchor + factor · (u, v, w)`에 두고 카메라로 투영하므로 화살표가 원근에 따라 짧아진다. 기준점이나 끝점이 상자를 벗어나면 그리지 않는다.
 - `Pixels { px_per_unit }`은 기준점에서 화면 평면 안의 길이다. 화면 평면에 놓인 화살표는 `px_per_unit · |(u, v, w)|` 논리 픽셀이고, 나머지는 카메라에 따라 짧아진다.
 - 피벗은 투영한 축을 따라 옮긴다. 정사영에서는 정확하고 원근 투영에서는 1픽셀 미만의 근사다.
-- `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)`은 범위로 가능한 가장 긴 벡터 `hypot(max |u|, max |v|, max |w|)`가 `target` 길이가 되도록 배율을 쓴다. 속력으로 칠하려면 호스트가 크기 컬럼을 올린다(규칙 1).
+- `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)`은 범위로 가능한 가장 긴 벡터 `hypot(max |u|, max |v|, max |w|)`가 `target` 길이가 되도록 배율을 쓴다. 속력으로 칠하려면 호스트가 크기 컬럼을 올린다.
 - z 축 맞춤은 `Data` 화살표에 대해 컬럼 통계로 `[z_min + f·w_min, z_max + f·w_max]`를 더한다.
 - 피킹, 기준점 테두리, `step_selection`, `selection_details`(`z`, `w` 추가)는 3D 마커와 같다. 스트리밍 소스는 거부한다.
 
@@ -1969,13 +1962,11 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 머리의 위치와 방향은 데이터 좌표에서 계산한다. 선형축에서는 그린 선분 위에 정확히 놓이며, 로그축에서는 화면 현과 1픽셀 미만으로 어긋난다. 피킹도 같은 계산을 따른다. 선과 머리는 선 시리즈처럼 피킹하고 선택한다. 머리를 눌러도 그 머리가 놓인 선분의 가까운 끝점을 돌려주며, `step_selection`은 NaN 구분 행을 포함한 꼭짓점을 차례로 옮긴다. 정밀 스타일에서만 그리고, 극좌표 차트와 스트리밍 소스는 오류로 거부한다. 범례 기호는 머리가 있으면 선 색의 화살표, 없으면 선이다.
 
-선은 선 셰이더로, 색을 입힌 선은 값 컬럼을 정점 슬롯 6/7에 묶는 `vs_main_mapped` / `fs_main_mapped`로 그린다. 머리는 벡터 셰이더의 경로 입력(`VectorInput::Path`)이 호 길이 스캔의 슬롯마다 그리며, 개수는 GPU가 정하는 간접 그리기다([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md) §5.3, §5.6). 머리 위치, 방향, 색은 그릴 때마다 계산하고 따로 저장하지 않는다.
-
 <a id="평행-좌표"></a>
 
 #### 평행 좌표
 
-`DataRenderType::Parallel { columns, line, color_column }`([#141](https://github.com/shim9610/figgy/issues/141))은 `Config.parallel`이 있는 차트에서 다변량 표를 평행 좌표로 그린다. `Config.parallel`은 `ParallelOptions { axes }`이며 `bottom_x`의 범주마다 축 하나(`ParallelAxis { min, max, inverted, scale, label_offset }`)를 그 범주 자리에 세로로 세운다. `columns`는 축 순서대로 등록된 컬럼 하나씩이고(`x_column`·`y_column`은 그 첫 둘), 행 `r`은 축마다 `(v_i − min_i) / (max_i − min_i)`(로그 축은 `log10`, `inverted`면 뒤집음)에 놓인 점을 잇는 꺾은선이다. 정규화는 값을 축 위에 놓기 위한 외관일 뿐(규칙 1)이며 그릴 때마다 계산하고 저장하지 않는다. 호버·선택·보고 값은 원래 컬럼이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. 그리는 행 수는 가장 짧은 컬럼(색 컬럼 포함)이 정한다.
+`DataRenderType::Parallel { columns, line, color_column }`([#141](https://github.com/shim9610/figgy/issues/141))은 `Config.parallel`이 있는 차트에서 다변량 표를 평행 좌표로 그린다. `Config.parallel`은 `ParallelOptions { axes }`이며 `bottom_x`의 범주마다 축 하나(`ParallelAxis { min, max, inverted, scale, label_offset }`)를 그 범주 자리에 세로로 세운다. `columns`는 축 순서대로 등록된 컬럼 하나씩이고(`x_column`·`y_column`은 그 첫 둘), 행 `r`은 축마다 `(v_i − min_i) / (max_i − min_i)`(로그 축은 `log10`, `inverted`면 뒤집음)에 놓인 점을 잇는 꺾은선이다. 정규화는 값을 축 위에 놓기만 하며 컬럼 값은 바뀌지 않는다. 호버·선택·보고 값은 원래 컬럼 값이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. 그리는 행 수는 가장 짧은 컬럼(색 컬럼 포함)이 정한다.
 
 - `line`은 행의 색과 굵기다. 실선·직선·채움 없음이어야 한다.
 - `color_column`이 있으면 행마다 그 컬럼 값을 `Config.colorbar`의 색으로 입힌다(색상 막대가 없으면 거부). 없으면 모든 행이 `line.line_color`다.
@@ -1983,7 +1974,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 규칙(`Config::validate_parallel`, 그릴 때 `InvalidConfig { field: "parallel" }`): 축 둘 이상, 축마다 유한하고 `min < max`인 범위(로그면 양수), `bottom_x`는 축 수만큼의 범주, `left_y`는 선형 `0..1`에 뒤집지 않음, 극좌표·삼각·3D가 아님, `overlays`·`line_offsets` 없음, `Precise` 스타일, 서브플롯 축 링크 없음. `Config::validate_parallel_series`(등록 시 `InvalidSeriesConfig`): 평행 좌표 차트는 `Parallel` 시리즈만 그리고 `Parallel` 시리즈는 평행 좌표 차트가 필요하며 축마다 컬럼 하나를 댄다. 스트리밍 소스는 거부한다. 축 맞춤은 `Chart::auto_fit_parallel_axes`(평행 좌표 차트의 `auto_fit_layer_union`)가 컬럼 통계로 축마다 범위를 쓰며, 차트 자체의 축은 건드리지 않는다.
 
-피킹은 가장 가까운 세그먼트의 행을 `PickedData::Point { point_index }`로 답하고, 선택한 행은 선택 색과 굵기로 모든 행 위에 다시 그린다. `step_selection`은 행을 옮기고, 선택한 행의 `selection_details()`는 축마다의 `values`와 매핑된 `color_value`를 보고한다. 행은 선 셰이더의 평행 좌표 엔트리로 그린다. 정점 슬롯 없이 세그먼트 인스턴스마다 사각형 하나를, 끝점은 컬럼 풀에서 축 레인 표와 축 범위 표로 읽어 놓는다([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md) §5.23). 축 수에 상한이 없고 행마다 저장하는 것이 없다.
+피킹은 가장 가까운 세그먼트의 행을 `PickedData::Point { point_index }`로 답하고, 선택한 행은 선택 색과 굵기로 모든 행 위에 다시 그린다. `step_selection`은 행을 옮기고, 선택한 행의 `selection_details()`는 축마다의 `values`와 매핑된 `color_value`를 보고한다. 축 수와 행 수에는 상한이 없다.
 
 <a id="면-채움과-계단선"></a>
 
@@ -2045,9 +2036,9 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
   3D 차트("stems draw flat: not on a 3D chart"), 스트리밍 소스
   (`STREAMED_STEM_REASON`).
 - 비용: 모든 행이 스템을 그리고, 오차막대처럼 픽은 모든 행을 훑습니다.
-  `tests/stem_render.rs`가 1,000,001행을 측정합니다. lavapipe(CPU
-  래스터라이저)에서 그리기 약 1.2초, 마지막 행 픽 약 4.7초입니다. 상한은
-  없으며 예산은 호스트가 정합니다.
+  lavapipe(CPU 래스터라이저)에서 1,000,001행을 그리는 데 약 1.2초, 마지막
+  행을 픽하는 데 약 4.7초가 걸립니다. 모든 행을 그리므로 행 수의 예산은
+  호스트가 정합니다.
 
 #### 히스토그램 막대
 
@@ -2084,7 +2075,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 #### 삼각 메시
 
-`DataRenderType::TriMesh(TriMeshSeries { triangles, values, fill, contour, surface })`([#210](https://github.com/shim9610/figgy/issues/210))는 호스트가 준 삼각형 위에 필드를 그린다. 유한요소·유한체적 해석기의 메시나, 호스트가 삼각분할한 흩어진 측정점이 대상이다. 렌더러는 삼각분할을 하지 않는다(규칙 1).
+`DataRenderType::TriMesh(TriMeshSeries { triangles, values, fill, contour, surface })`([#210](https://github.com/shim9610/figgy/issues/210))는 호스트가 준 삼각형 위에 필드를 그린다. 유한요소·유한체적 해석기의 메시나, 호스트가 삼각분할한 흩어진 측정점이 대상이다. 렌더러는 삼각분할을 하지 않는다.
 
 - `x_column` / `y_column`은 꼭짓점 좌표로, 한 행이 꼭짓점 하나다. 3D 차트에서는 `z_column`이 `right_y`의 꼭짓점 높이다.
 - `triangles`는 삼각형 인덱스 열(`Renderer::upsert_triangles`)의 ID다. 삼각형마다 꼭짓점 행 번호 세 개를 삼각형 순서대로 담는다.
@@ -2095,7 +2086,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 - 삼각형 열, 값 열, x·y 열의 ID가 있어야 한다.
 - 채우기, 등고선 또는 둘 다를 그리며, 표면 모양은 채우기가 있을 때만 쓴다.
-- 꼭짓점 값은 `Interpolated`(삼각형 안에서 선형 보간), 삼각형 값은 `Flat`으로 칠한다. 꼭짓점 값으로 삼각형 하나의 색을 정하면 색상 막대에 평균값이 나타나고, 삼각형 값을 보간하려면 꼭짓점 값이 필요하다. 둘 다 호스트가 계산할 일이다.
+- 꼭짓점 값은 `Interpolated`(삼각형 안에서 선형 보간), 삼각형 값은 `Flat`으로 칠한다. 다른 방식으로 칠하려면 호스트가 다른 위치의 값(삼각형마다 평균, 또는 꼭짓점 값)을 계산해 올린다.
 - 등고선에는 꼭짓점 값이 필요하다. 삼각형마다 일정한 필드에는 등값선이 아니라 셀 경계만 있기 때문이다. 등고선 라벨은 지원하지 않는다.
 - 표면 모양에는 `color_matrix`를 쓰지 않는다. 메시의 색은 값 열이 정한다.
 - 극좌표, 삼원, 평행 좌표 차트에는 그리지 않는다. 3D 차트에서는 `z_column`이 있어야 하고 채우기가 띠(`Bands`)가 아닌 연속이어야 한다.
@@ -2104,7 +2095,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 피킹. 타입 데이터 피킹은 `PickedData::MeshTriangle`로 삼각형과 커서에 가장 가까운 꼭짓점(`vertex_index`)을 답한다. `vertex_index`는 마우스를 올렸을 때의 답일 뿐 선택에는 저장하지 않는다. 삼각형 안에서는 거리 0으로, 바깥에서는 출력 픽셀 1개 이내에서만, 그리고 채우기가 실제로 칠한 곳에서만 답한다. 삼각형이 겹치면 나중 삼각형이 답한다. 피킹 거리 안의 등고선이 먼저 답하며, `PickedData::ContourLevel`의 `x_index`가 그 삼각형이다. 선택 강조는 삼각형 안쪽 가장자리에 `outline_width_px` 두께의 외곽선을 그리거나, 선택된 레벨을 `contour_width_extra_px`만큼 굵게 다시 그린다. 피킹은 GPU에서 모든 삼각형을 훑으며, lavapipe에서 삼각형 백만 개를 약 50ms에 피킹한다.
 
-그리기. 삼각형 하나가 인스턴스 하나다. 정점 단계는 꼭짓점 세 개를 축(로그·확률·끊김 축 포함)을 거쳐 배치하고, 가장 짧은 꼭짓점 열을 넘는 꼭짓점을 가리키거나 축이 배치할 수 없는 꼭짓점이 있는 삼각형은 그리지 않는다. 꼭짓점 값은 화면 공간에서 무게중심 좌표로 섞는다. 그래서 로그 축에서는 히트맵 보간처럼 축 `t` 공간에서 섞인다. 유한하지 않은 꼭짓점 값이 있으면 그 삼각형을 `nan_color`로 칠한다. `Bands`는 값이 닿은 레벨의 띠 색으로 칠한다. 등고선은 삼각형마다 선형 보간 함수의 등값선이며, 선까지의 거리는 `|f − L| / |∇f|`이고 레벨 검색은 히트맵과 같다. 기울기가 0인 평탄한 삼각형에는 선을 그리지 않는다. 자동 범위 맞춤은 등록된 모든 꼭짓점의 좌표를 포함한다. 등록할 때 꼭짓점 수(`x_column`, `y_column`, 꼭짓점 값이면 값 열 중 가장 짧은 길이)를 넘는 인덱스, 삼각형 수보다 짧은 삼각형 값 열, 상주 삼각형 인덱스 열이 아닌 ID, 색상 막대가 없는 경우를 거부한다. 나중에 열이 짧아지면 남은 만큼 그리고 `series_draw_info`가 `truncated`로 알린다. 스트리밍 표시는 이 종류를 거부한다(규칙 8). 삼각형 수에는 상한이 없으며 삼각형 백만 개를 그린다(lavapipe에서 1x 내보내기 약 0.9초).
+그리기. 삼각형 하나가 인스턴스 하나다. 정점 단계는 꼭짓점 세 개를 축(로그·확률·끊김 축 포함)을 거쳐 배치하고, 가장 짧은 꼭짓점 열을 넘는 꼭짓점을 가리키거나 축이 배치할 수 없는 꼭짓점이 있는 삼각형은 그리지 않는다. 꼭짓점 값은 화면 공간에서 무게중심 좌표로 섞는다. 그래서 로그 축에서는 히트맵 보간처럼 축 `t` 공간에서 섞인다. 유한하지 않은 꼭짓점 값이 있으면 그 삼각형을 `nan_color`로 칠한다. `Bands`는 값이 닿은 레벨의 띠 색으로 칠한다. 등고선은 삼각형마다 선형 보간 함수의 등값선이며, 선까지의 거리는 `|f − L| / |∇f|`이고 레벨 검색은 히트맵과 같다. 기울기가 0인 평탄한 삼각형에는 선을 그리지 않는다. 자동 범위 맞춤은 등록된 모든 꼭짓점의 좌표를 포함한다. 등록할 때 꼭짓점 수(`x_column`, `y_column`, 꼭짓점 값이면 값 열 중 가장 짧은 길이)를 넘는 인덱스, 삼각형 수보다 짧은 삼각형 값 열, 상주 삼각형 인덱스 열이 아닌 ID, 색상 막대가 없는 경우를 거부한다. 나중에 열이 짧아지면 남은 만큼 그리고 `series_draw_info`가 `truncated`로 알린다. 스트리밍 표시는 이 종류를 거부한다. 삼각형 수에는 상한이 없다. lavapipe에서 삼각형 백만 개의 1x 내보내기에 약 0.9초가 걸린다.
 
 3D 차트(`view_3d`)에서는 메시를 삼각형 위의 표면(trisurf, [SURFACE.md](SURFACE.md))으로 그린다. 시리즈는 `z_column`에 높이 열을 적고, 꼭짓점마다 x·y·높이를 카메라로 투영해 놓으며, 채우기는 값으로 삼각형을 칠하고, `surface`가 겉모습을 정한다(조명 재질은 삼각형 자체의 법선으로 음영을 넣는다). 등고선은 상자 바닥에 그린다. ID 피킹은 픽셀이 보여 주는 삼각형과 그 가장 가까운 꼭짓점을 답하고, 선택된 삼각형은 표면 위에 외곽선과 밝아진 색으로 강조되며, z 범위 맞춤은 높이 열을 덮는다. 높이 열을 넘는 꼭짓점을 가리키는 삼각형은 등록 때 거부하고, 나중에 열이 짧아지면 그리지 않는다.
 

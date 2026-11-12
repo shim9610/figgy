@@ -65,7 +65,7 @@ ray-march from the frame's sector buffer. Inside the column-based
 `Renderer`, the energy-level series (#203) is a DataLess series kind: its SSOT
 records are placed by the model, rastered on the CPU through the canvas sink at
 prepare, cached in the scratch map and composited in the data slot after the GPU
-data (an approved exception to computing appearance in the shader); it is
+data (an exception to computing appearance in the shader); it is
 picked on the CPU over the same placement. The Feynman series (#234) is
 another: its topology is SSOT, its unplaced vertices are placed by a
 deterministic layout at raster time and committed into the SSOT only by an
@@ -86,7 +86,7 @@ The table summarizes contracts by topic, rather than numbered areas in the image
 | **Prepare and record** | `prepare(&mut self)` resolves draw inputs and captures GPU handles, shared charges and validation stamps in `PreparedFrame`. `paint_prepared(&self)` validates that token before recording. It rejects changed views, captured columns, layouts, target pipelines or registered chart revisions. Once commands are recorded, the host must submit them before conflicting mutations; a token cannot inspect an external command buffer's later submission order. |
 | **GPU-derived data** | Arc-prefix scans, picking and exact primitive extents use GPU columns. Arc scan splits long series into bounded chunks linked by a carry chain, so dispatch limits do not cap series length. Picking and fitting return compact results instead of a CPU copy of all points. Immutable derived GPU results can be shared by cache entries and prepared tokens; cache eviction alone need not release the last owner. |
 | **Screen and export** | Compose grid → annotation underlay → data → decoration → annotation overlay. Export prepares a scaled chart/view/style and an offscreen half-float target (`EXPORT_FORMAT`, `Rgba16Float`), then reads back padded row chunks and quantizes the premultiplied half floats once to straight-alpha RGBA8. Row chunking bounds the readback buffer; the target, final RGBA image and PNG output still need their own memory. Resident export uses GPU columns, while streamed export replays original ranges. |
-| **Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation; the monotonic-x line is a separate source with its own rules (below). Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
+| **Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation; the monotonic-x line is a separate source with its own contract (below). Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
 | **Accounting and retirement** | A GPU resource's shared charge survives as long as a Figgy owner retains it. After the last owner drops, retired bytes remain counted until an appropriate submission boundary and queue completion. `end_gpu_frame()` follows submission/discard of earlier commands; native hosts must service completions. The ledger describes tracked requested bytes, with the style-texture exceptions described below, rather than physical VRAM usage. |
 
 ### Resident column upload
@@ -499,23 +499,23 @@ When `AxisOptions.scale = Probability(_)` ([#209](https://github.com/shim9610/fi
 - CPU: `scatter_transform_from_config` writes `F⁻¹` of the guarded range (`guarded_probability_range`, f64) into `data_min` / `data_max` and the scale's code into `scale_prob`; `scale_log` stays 0.
 - GPU: `common/probability.wgsl` places each sample at `F⁻¹(p)` in f32 from its `(hi, lo)` pair (SHADER_COMMON §5.24). Values at or past 0 or 1 have no position: markers and line segments touching them are omitted, as non-positive samples on a log axis; an area or stem baseline there is clamped to the axis end on its side.
 - Auto-fit keeps both ends inside `(0, 1)`: an end at 0 or 1 takes the mirror of the other, and the padding is in `F⁻¹` units.
-- Streamed series are refused (rule 8).
+- Streamed series are refused with an explicit error.
 
 ### Triangle meshes on the GPU
 
 A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide](TRIMESH.md)) reads four pool columns: x, y, the values and a triangle index column (three `u32` lanes per triangle, SHADER_COMMON §5.14).
-- Group 2 is the field's layout reinterpreted under `FIELD_FLAG_MESH` (SHADER_COMMON §5.25): the grid table holds the value column, the index column and, on a 3D chart, the height column; the cache, the signature and the eviction are the field's, so no new cache.
+- Group 2 is the field's layout reinterpreted under `FIELD_FLAG_MESH` (SHADER_COMMON §5.25): the grid table holds the value column, the index column and, on a 3D chart, the height column; the cache, the signature and the eviction are the field's.
 - Draw: one instance per triangle, three vertices, no vertex buffer (`TRI_MESH_SHADER`). The vertex stage reads the triangle's indices and vertices, drops a triangle with an index past the drawn count or an unplaceable vertex, and the fragment blends the values barycentrically; contour lines are the level set of each triangle's linear interpolant. On a 3D chart `TRI_SURFACE_SHADER` places the vertices through the camera, and the floor contours are the mesh module's floor entries.
 - Pick: on a flat chart a one-workgroup compute scan over every triangle (`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) answers the triangle under the cursor, or a contour over it; on a 3D chart the 1×1 ID pass writes kind 2 for the surface and the floor-contour word for its levels. Both read the draw's own group 2 snapshot.
-- The CPU keeps only the pool's scalar statistics of the index column (count, smallest and largest index); registration checks the largest index against the vertex count. Streamed sources are refused (rule 8).
+- The CPU keeps only the pool's scalar statistics of the index column (count, smallest and largest index); registration checks the largest index against the vertex count. Streamed sources are refused with an explicit error.
 
 ### Monotonic-x lines (M4 envelope)
 
 A `MonotonicLine` series ([#271](https://github.com/shim9610/figgy/issues/271),
 [guide](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md)) draws one channel of a group of evenly
 spaced samples, `x = start + i × interval`. It has its own input and its own
-rules (M1 to M7 in the repository's `CLAUDE.md`); every other series keeps
-the column contract above.
+contract (M1 to M7 in the guide); every other series keeps the column
+contract above.
 - Input: the host lends a `MonotonicSource` (`MonotonicSlices`,
   `MonotonicInterleaved` or its own implementation: the values, `start` and
   `interval`) to each call that reads it. No call retains it, and the
@@ -531,8 +531,7 @@ the column contract above.
   x-to-pixel mapping its series are drawn at (`src/renderer/monotonic.rs`).
 - Draw: each series' envelope is uploaded to two renderer-owned pool
   columns (`<id>.monotonic.x`, `<id>.monotonic.y`, which a host cannot write)
-  and drawn by the existing line pipeline: no new shader, entry point or
-  pipeline. A slot takes 8 rows, each kept point followed by a join row that
+  and drawn by the existing line pipeline. A slot takes 8 rows, each kept point followed by a join row that
   repeats it or is NaN; a repeated point is a piece `common/line_step.wgsl`
   marks `STEP_AXIS_POINT`, so it collapses on every backend
   (SHADER_COMMON §5.6).
@@ -591,13 +590,13 @@ The export target is `EXPORT_FORMAT`, premultiplied `Rgba16Float`
 path alike, so a streamed export blends and rounds as the resident export
 of the same document. Every primitive blends at half precision, and the
 image is quantized to 8 bits once, at readback (`straight_rgba8`: divided by
-the texel's alpha, then rounded). With an 8-bit target each blend rounded
-against whatever lay under it, and 8-bit premultiplied blending is not
+the texel's alpha, then rounded). With an 8-bit target each blend would
+round against whatever lies under it, and 8-bit premultiplied blending is not
 associative: the PNG export (grid, then each data primitive, then the
 decoration) and a vector file's data image (the data alone on a transparent
-image, placed over the grid) drifted apart where many antialiased strokes
+image, placed over the grid) would drift apart where many antialiased strokes
 stack. In half floats the two orders agree within the final quantization.
-The on-screen path is unchanged: it draws into the host's surface format.
+The on-screen path draws into the host's surface format.
 
 `export_rgba` follows the same pipeline for a layered document:
 the one temporary `ChartView` holds a panel per layer, `Config::expand()` turns
@@ -669,7 +668,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ---
 
-아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대·박스플롯과 레이더 차트(극좌표 레이더 시리즈)도 직교 좌표 `Renderer`가 그리며, 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 리더는 다음 마일스톤에서 제거된다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 직교 좌표 `Renderer` 안에서는 에너지 준위 시리즈(#203)가 DataLess 시리즈 종류다. 모델이 SSOT 레코드를 배치하고, prepare 단계에서 캔버스 싱크로 CPU 래스터를 만들어 스크래치 캐시에 두며, 데이터 슬롯에서 GPU 데이터 위에 합성한다(셰이더에서 겉모양을 계산한다는 규칙의 승인된 예외). 픽도 같은 배치로 CPU에서 한다. 파인만 시리즈(#234)도 DataLess 시리즈다. 위상이 SSOT에 있고, 위치가 없는 꼭짓점은 래스터할 때 결정적인 자동 배치로 놓으며, 명시적인 `auto_layout` 호출이나 첫 드래그 때만 그 위치를 SSOT에 기록한다(자동 맞춤과 같은 방식). 호·물결선·코일은 3차 곡선 경로(`Sink::path`)로 모든 싱크에 전달된다. 벡터 출력은 두 DataLess 종류를 앞뒤 GPU 단계 사이에 벡터로 기록한다. 부모 데이터 영역 안에 놓인 서브플롯(인셋)은 다른 모든 패널 다음에 합성한다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 모든 렌더러가 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓴다. 컬럼 풀·자동 범위 맞춤 작업·스트리밍은 사용하지 않는다. 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 자세한 내용은 [RADIAL.md](RADIAL.md)와 [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
+아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대·박스플롯과 레이더 차트(극좌표 레이더 시리즈)도 직교 좌표 `Renderer`가 그리며, 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 리더는 다음 마일스톤에서 제거된다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 직교 좌표 `Renderer` 안에서는 에너지 준위 시리즈(#203)가 DataLess 시리즈 종류다. 모델이 SSOT 레코드를 배치하고, prepare 단계에서 캔버스 싱크로 CPU 래스터를 만들어 스크래치 캐시에 두며, 데이터 슬롯에서 GPU 데이터 위에 합성한다(셰이더에서 겉모양을 계산한다는 규칙의 예외). 픽도 같은 배치로 CPU에서 한다. 파인만 시리즈(#234)도 DataLess 시리즈다. 위상이 SSOT에 있고, 위치가 없는 꼭짓점은 래스터할 때 결정적인 자동 배치로 놓으며, 명시적인 `auto_layout` 호출이나 첫 드래그 때만 그 위치를 SSOT에 기록한다(자동 맞춤과 같은 방식). 호·물결선·코일은 3차 곡선 경로(`Sink::path`)로 모든 싱크에 전달된다. 벡터 출력은 두 DataLess 종류를 앞뒤 GPU 단계 사이에 벡터로 기록한다. 부모 데이터 영역 안에 놓인 서브플롯(인셋)은 다른 모든 패널 다음에 합성한다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 모든 렌더러가 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓴다. 컬럼 풀·자동 범위 맞춤 작업·스트리밍은 사용하지 않는다. 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 자세한 내용은 [RADIAL.md](RADIAL.md)와 [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
 아래의 브라우저 수명 주기 설명은 브라우저용 제품인 `crates/web` 래퍼의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저용 제품 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
 
@@ -712,7 +711,7 @@ lines, split connectors and annotation overlay through the same sink
 | **준비와 명령 기록** | `prepare(&mut self)`가 입력을 확정하고 GPU 핸들·공유 할당 정보·검증용 상태를 `PreparedFrame`에 담는다. `paint_prepared(&self)`는 기록 전에 이를 검증한다. 뷰, 참조 컬럼, 풀 배치, 출력 파이프라인 또는 등록 차트 리비전이 바뀌면 거부한다. 호스트는 이 변경 전에 기존 명령을 제출해야 한다. 토큰은 외부 명령 버퍼의 제출 순서까지 검사하지 않는다. |
 | **GPU 파생 데이터** | 누적 경로 길이, 피킹, 실제 도형의 범위는 GPU 컬럼에서 계산한다. 경로 길이 스캔은 긴 시리즈를 제한된 크기의 청크로 나누고 누계를 다음 청크로 넘기므로 디스패치 한도가 시리즈 길이를 제한하지 않는다. 피킹과 범위 계산은 전체 점을 CPU로 복사하지 않고 작은 결과만 반환한다. 캐시와 프레임 토큰이 같은 계산 결과를 공유할 수 있으므로 캐시에서 지워도 자원이 바로 해제되지는 않을 수 있다. |
 | **화면 표시와 이미지 출력** | 격자·주석 아래층·데이터·장식·주석 위층 순서로 합성한다. 출력할 때는 배율을 적용한 차트·뷰·스타일과 화면 밖 half float 렌더 타깃(`EXPORT_FORMAT`, `Rgba16Float`)을 준비한다. 정렬용 여백이 있는 행을 청크 단위로 읽어 오고, 알파가 미리 곱해진 half float를 한 번만 양자화해 straight 알파 RGBA8로 바꾼다. 청크 처리는 읽기 버퍼의 크기를 제한하지만 렌더 타깃·최종 RGBA·PNG의 메모리까지 없애지는 않는다. 상주 출력은 GPU 컬럼을, 스트리밍 출력은 다시 공급받은 원본 구간을 사용한다. |
-| **원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 단조 x 선은 자체 규칙을 따르는 별도 소스다(아래). 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
+| **원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 단조 x 선은 자체 계약을 따르는 별도 소스다(아래). 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
 | **메모리 집계와 회수** | figgy에서 자원을 참조하는 동안 공유 할당 정보도 유지한다. 마지막 참조가 해제돼도 회수 대기 바이트는 제출 경계를 알리고 GPU 큐의 작업이 끝날 때까지 집계한다. 호스트는 기존 명령을 제출하거나 폐기한 뒤 `end_gpu_frame()`을 호출해야 하며, 네이티브에서는 완료 콜백도 처리해야 한다. 아래에 설명한 스타일 텍스처 등은 집계에서 제외되며 보고값은 실제 VRAM 측정값이 아니다. |
 
 ### 상주 컬럼 업로드
@@ -940,21 +939,21 @@ redraw_pending = false;
 - CPU의 `scatter_transform_from_config`가 보정된 범위(`guarded_probability_range`, f64)의 `F⁻¹`를 `data_min`·`data_max`에 쓰고 척도 코드를 `scale_prob`에 쓴다. `scale_log`는 0이다.
 - GPU에서는 `common/probability.wgsl`이 각 표본을 `(hi, lo)` 쌍에서 f32로 `F⁻¹(p)`에 놓는다(SHADER_COMMON §5.24). 0이나 1, 또는 그 바깥의 값은 위치가 없다. 그런 점과 그 점에 닿는 선분은 로그축의 0 이하 표본처럼 생략하고, 면적이나 줄기의 기준선은 그쪽 축 끝에 고정한다.
 - 자동 범위 맞춤은 두 끝을 `(0, 1)` 안에 둔다. 0이나 1인 끝은 다른 끝의 대칭을 쓰고, 여백은 `F⁻¹` 단위로 둔다.
-- 스트리밍 계열은 거부한다(규칙 8).
+- 스트리밍 계열은 명시적인 오류로 거부한다.
 
 ### GPU의 삼각 메시 처리
 
 `TriMesh` 시리즈([#210](https://github.com/shim9610/figgy/issues/210), [가이드](TRIMESH.md))는 풀의 컬럼 네 개를 읽는다. x, y, 값, 그리고 삼각형 인덱스 컬럼이다(삼각형마다 `u32` 레인 세 개, SHADER_COMMON §5.14).
-- 그룹 2는 필드의 레이아웃을 `FIELD_FLAG_MESH`로 다시 해석한다(SHADER_COMMON §5.25). 격자 표에는 값 컬럼, 인덱스 컬럼, 3D 차트에서는 높이 컬럼이 들어간다. 캐시와 서명, 축출은 필드의 것을 그대로 쓰므로 새 캐시는 없다.
+- 그룹 2는 필드의 레이아웃을 `FIELD_FLAG_MESH`로 다시 해석한다(SHADER_COMMON §5.25). 격자 표에는 값 컬럼, 인덱스 컬럼, 3D 차트에서는 높이 컬럼이 들어간다. 캐시와 서명, 축출은 필드의 것을 그대로 쓴다.
 - 그리기: 삼각형마다 인스턴스 하나, 정점 셋이며 정점 버퍼는 없다(`TRI_MESH_SHADER`). 정점 단계가 삼각형의 인덱스와 정점을 읽고, 그리는 개수를 넘는 인덱스나 놓을 수 없는 정점이 있는 삼각형은 버린다. 조각 단계는 값을 무게중심 좌표로 섞고, 등고선은 삼각형마다 선형 보간의 등위선이다. 3D 차트에서는 `TRI_SURFACE_SHADER`가 정점을 카메라로 놓고, 바닥 등고선은 메시 모듈의 바닥 진입점이 그린다.
 - 피킹: 평면 차트에서는 워크그룹 하나짜리 계산 셰이더가 모든 삼각형을 훑어(`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) 커서 아래의 삼각형이나 그 위의 등고선을 답한다. 3D 차트에서는 1×1 ID 패스가 표면에 종류 2를, 바닥 등고선에 등고선 단어를 쓴다. 둘 다 그리기와 같은 그룹 2 스냅샷을 읽는다.
-- CPU는 인덱스 컬럼의 스칼라 통계(개수, 가장 작은 인덱스와 가장 큰 인덱스)만 갖는다. 등록할 때 가장 큰 인덱스를 정점 개수와 비교한다. 스트리밍 계열은 거부한다(규칙 8).
+- CPU는 인덱스 컬럼의 스칼라 통계(개수, 가장 작은 인덱스와 가장 큰 인덱스)만 갖는다. 등록할 때 가장 큰 인덱스를 정점 개수와 비교한다. 스트리밍 계열은 명시적인 오류로 거부한다.
 
 ### 단조 x 선(M4 엔벌로프)
 
 `MonotonicLine` 시리즈([#271](https://github.com/shim9610/figgy/issues/271),
 [가이드](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md))는 간격이 일정한 샘플 묶음(`x = start + i × interval`)의 채널
-하나를 그린다. 입력과 규칙이 따로 있으며(저장소 `CLAUDE.md`의 M1~M7), 다른 시리즈는 모두 위의
+하나를 그린다. 입력과 계약이 따로 있으며(가이드의 M1~M7), 다른 시리즈는 모두 위의
 컬럼 계약을 그대로 따른다.
 - 입력: 호스트는 `MonotonicSource`(`MonotonicSlices`, `MonotonicInterleaved` 또는 직접 만든
   구현. 값, `start`, `interval`을 담는다)를 그 소스를 읽는 호출마다 빌려준다. 어떤 호출도 소스를
@@ -967,8 +966,7 @@ redraw_pending = false;
   묶음마다, 그리고 그 시리즈를 그리는 x-픽셀 매핑마다 엔벌로프를 하나씩 둔다
   (`src/renderer/monotonic.rs`).
 - 그리기: 시리즈마다 엔벌로프를 렌더러가 소유한 풀 컬럼 두 개(`<id>.monotonic.x`,
-  `<id>.monotonic.y`, 호스트는 쓸 수 없다)에 올리고 기존 선 파이프라인으로 그린다. 새 셰이더,
-  진입점, 파이프라인은 없다. 슬롯마다 8행을 쓰며, 남긴 점 뒤에 그 점을 반복하거나 NaN인 이음
+  `<id>.monotonic.y`, 호스트는 쓸 수 없다)에 올리고 기존 선 파이프라인으로 그린다. 슬롯마다 8행을 쓰며, 남긴 점 뒤에 그 점을 반복하거나 NaN인 이음
   행이 붙는다. 반복한 점은 `common/line_step.wgsl`이 `STEP_AXIS_POINT`로 표시하는 조각이므로
   모든 백엔드에서 사라진다(SHADER_COMMON §5.6).
 - 핸들: `Renderer::register_monotonic_chart`가 `MonotonicChartId`를 돌려주고,
@@ -1027,12 +1025,12 @@ export_rgba(chart, &[SeriesConfig], scale).await:
 (`src/renderer/export.rs`, #271). 상주 출력과 스트리밍 출력이 같은 형식을 쓰므로, 스트리밍
 출력도 같은 문서의 상주 출력과 똑같이 블렌딩하고 반올림한다. 모든 도형을 half 정밀도로
 블렌딩하고, 이미지는 읽어 올 때 한 번만 8비트로 양자화한다(`straight_rgba8`: 텍셀의 알파로
-나눈 뒤 반올림). 8비트 타깃에서는 블렌딩할 때마다 아래 픽셀과 함께 8비트로 반올림했는데,
+나눈 뒤 반올림). 8비트 타깃이라면 블렌딩할 때마다 아래 픽셀과 함께 8비트로 반올림하는데,
 8비트 premultiplied 블렌딩은 결합 법칙이 성립하지 않는다. 그래서 안티앨리어싱된 선이 많이
 겹치는 곳에서 PNG 출력(격자, 데이터 도형 하나하나, 장식 순서)과 벡터 파일의 데이터
-이미지(투명 이미지에 데이터만 그려 격자 위에 놓는다)가 서로 어긋났다. half float에서는 두
-순서의 결과가 마지막 양자화 범위 안에서 일치한다. 화면 표시 경로는 바뀌지 않았으며 호스트
-surface 형식에 그린다.
+이미지(투명 이미지에 데이터만 그려 격자 위에 놓는다)가 서로 어긋난다. half float에서는 두
+순서의 결과가 마지막 양자화 범위 안에서 일치한다. 화면 표시 경로는 호스트 surface 형식에
+그린다.
 
 이 과정은 두 함수로 나뉜다. `prepare_export`는 출력 한 번에 한 번 실행되며 검사, 배율을 적용해 배치한 문서, 뷰·스타일·파이프라인, 패널별 그리기 준비를 만든다. `paint_export(frame, panels, chrome, clear, steps)`는 패널 구간 하나를 렌더 타깃에 그리고 행 청크 단위로 읽어 온다. `steps`(`DataSteps`)는 패널마다 데이터 슬롯의 어느 단계를 그릴지 고른다. 단계는 GPU 채움·본체·선택 강조, DataLess 시리즈의 CPU 래스터, GPU 값 라벨 순서다. PNG 출력은 모든 패널을 장식과 함께 모든 단계로 그린다.
 

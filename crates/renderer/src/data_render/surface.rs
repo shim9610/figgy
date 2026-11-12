@@ -78,7 +78,7 @@ fn adapter_now(
 
 /// Open a logical device and its queue with the adapter's supported limits,
 /// so the largest column the pool can hold is the hardware's, not the WebGPU
-/// baseline's 128 MiB binding (#107).
+/// baseline's 128 MiB binding.
 pub async fn request_device_async(
     adapter: &wgpu::Adapter,
 ) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {

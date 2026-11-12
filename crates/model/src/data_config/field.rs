@@ -187,7 +187,7 @@ pub const MAX_CONTOUR_LEVELS: usize = 1024;
 /// ([`ContourLabelConfig::anchors`]). A longer list is rejected by
 /// [`ContourLabelConfig::validate`] rather than truncated. Automatic
 /// placement keeps at most this many labels too: both share the renderer's
-/// label buffer. A configuration-list limit, not a data count (#107).
+/// label buffer.
 pub const MAX_CONTOUR_LABEL_ANCHORS: usize = 1024;
 
 // `ContourLabelConfig::TOO_MANY_ANCHORS_REASON` names the number.

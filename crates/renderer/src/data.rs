@@ -99,7 +99,7 @@ impl<'a> ColumnPairWriter<'a> {
         }
     }
 
-    /// Write one f64 value as its `(hi, lo)` split (about 48 bits, #107).
+    /// Write one f64 value as its `(hi, lo)` split (about 48 bits).
     /// The statistics record the value itself, so a host's `0.3` stays `0.3`
     /// rather than the few-ulp-off sum of its split; a value the GPU reads
     /// as zero (below f32 range) or as infinite (past it) is recorded as

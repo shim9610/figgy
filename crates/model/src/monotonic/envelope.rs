@@ -69,7 +69,7 @@ struct Built {
 
 /// The CPU cache of one monotonic group: the M4 accumulator of every column
 /// of every channel and the scalars it was built with. Never a copy of the
-/// data (M3): its one buffer holds `channels × (width + 3)` column states,
+/// data: its one buffer holds `channels × (width + 3)` column states,
 /// sized by the plot width and the channel count, never by the sample count.
 ///
 /// Per channel, the slots are: the lead edge sample (the last sample left of

@@ -59,7 +59,7 @@ recomputes hit regions or label positions.
 - 모든 `HitMap::hit_test`(Cartesian, 원형, 주석 레이어)는 여백을 더한 히트 영역이 겹치는 곳에서 포인터가
   눈으로 보기에 올라가 있는 요소를 고른다([#272](https://github.com/shim9610/figgy/issues/272)). 여백
   없는 자기 상자가 점을 담는 요소(안티앨리어싱 가장자리가 닿는 상자 1 px 안쪽까지 포함)가 선택 여백으로만 닿는 요소보다 우선하고, 여백으로만 닿는 요소끼리는
-  상자가 가장 가까운 요소가, 같으면 지금처럼 가장 나중에 등록한 요소가 이긴다. 그리기 영역(`DataArea`)과
+  상자가 가장 가까운 요소가, 같으면 가장 나중에 등록한 요소가 이긴다. 그리기 영역(`DataArea`)과
   서브플롯 틀 같은 배경은 이 판정에 끼지 않으므로 라벨의 여백은 그리기 영역 위에서도 라벨을 잡는다.
   히트 테스트, 선택, 드래그 시작이 같은 판정을 쓴다.
 - 좌표와 이동량은 차트 내부의 논리 픽셀이다. CSS로 확대된 캔버스라면 화면 좌표를
@@ -278,9 +278,8 @@ staggers its labels over rows ([#205](https://github.com/shim9610/figgy/issues/2
 - **Drag.** A drag writes the label's offset through
   `SeriesConfig::drag_value_label(index, categories, dx, dy)` (logical-pixel
   deltas; the first drag fills `labels.offsets` with one zero offset per
-  category); the next frame draws the label there. The placement is the
-  GPU's, so the only bound on a drag is `MAX_VALUE_LABEL_OFFSET` (4096 px)
-  along either axis. The CPU hit map (`hit_test`, `on_press`) does not hold
+  category); the next frame draws the label there. A drag is bounded only
+  by `MAX_VALUE_LABEL_OFFSET` (4096 px) along either axis. The CPU hit map (`hit_test`, `on_press`) does not hold
   labels: their positions come from the pool. A WASM host presses a label by
   the id a pick reported, `"series:<series_id>:label:<index>"`
   (`value_label_id` / `parse_value_label_id`):
@@ -473,8 +472,8 @@ and only `chart_title` is written. A legacy categorical, box plot or radar
 document's title (its `chart_title`, or its plain `title` in its font) is read
 into the `Config`'s chart title.
 
-The existing `DecorationId::ChartTitle` and `decorations.offsets` remain the only
-position authority. Do not add a second host-side title offset or HTML overlay.
+`DecorationId::ChartTitle` and `decorations.offsets` are the title's only
+position authority; a host keeps no title offset or HTML overlay of its own.
 Renderer layout, label raster cache keys, hit/selection bounds and PNG export use
 the same rich text metrics, including per-segment styles and output scale.
 Hidden titles are not registered in the hit map. Automatic plot space accounts
@@ -621,7 +620,7 @@ from its series. Series of a subplot count only where an axis is linked (see
 
 **Export.** `export_rgba` / `export_png`
 (and their `_with_clear` and blocking native variants) render the whole group
-into one image; the existing panel exports (`ExportScope::Panel`) stay and render the
+into one image; the panel exports (`ExportScope::Panel`) render the
 base panel only. For a document without overlays both produce byte-identical
 images. The WASM `export_png` exports the document.
 
@@ -743,7 +742,7 @@ surface and returns the rect where the parent's area lands;
 (`fit_display_panel` of the document area), or the held placement while a
 subplot frame drags (above). A base-layer pick (`pick_chart`,
 `pick_chart_data`) whose cursor lies in a subplot's frame runs on that
-subplot, as if it were the active layer (`Config::subplot_at`, #205); on any
+subplot, as if it were the active layer (`Config::subplot_at`); on any
 other active layer the host has chosen the layer itself. The document export renders the
 union; the panel export (`ExportScope::Panel`) keeps the parent's area. The document's one annotation
 layer stays in the parent's area: it is drawn there only, anchored in the
@@ -752,7 +751,7 @@ parent's axes, and its items answer the pointer route
 a subplot active the route reaches the subplot's own elements.
 `ChartView::render_warnings` tags a subplot's warnings
 `WarningAxis::Subplot { index, axis }` (`subplots[i].config.<axis>`). A
-subplot's `marker` (`InsetMarker`, #205) is emitted into the parent's
+subplot's `marker` (`InsetMarker`) is emitted into the parent's
 annotation layer on every draw, under the insets: the window the inset
 magnifies, clipped to the parent's plot, and connectors to the inset's plot;
 it is not selectable.
@@ -772,8 +771,8 @@ different X column and a twin Y axis inside a subplot. See
 `Config::line_offsets` stacks line series as offset spectra (see
 [`LineOffsets`](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#lineoffsets-configline_offsets)):
 member `k` is drawn shifted by `k * step_y` along y and `k * step_x` along x.
-The host uploads the curves as they are; the shift is a display parameter,
-and nothing per point is shifted or stored on the CPU. `Config::expand()`
+The host uploads the curves as they are, and the renderer applies the
+shift as it draws. `Config::expand()`
 draws each member as an internal panel of its own after the overlay panels,
 the panel of the layer that scales it with its ranges moved and every axis
 element hidden, so lines, fills, markers, error bars, dashes and the picked
@@ -986,7 +985,7 @@ let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
 The Cartesian call order is the usual one plus the annotation branch:
 `refresh_axis*` when the raster stamp changed (it carries the annotations
 along), else `refresh_annotations` when the annotation stamp or the selection
-changed, then `prepare` / `paint`. the panel export (`ExportScope::Panel`) rasterizes the layer at the
+changed, then `prepare` / `paint`. The panel export (`ExportScope::Panel`) rasterizes the layer at the
 export scale from the same scaled config as the axes, so 1× and 2× exports use
 the metrics of their hit maps.
 
@@ -1019,9 +1018,9 @@ between the images of the GPU data under it and the value labels over it
 the panels' `Below` parts and data first, then their `Above` parts, with the
 annotation overlay above the parent area's decorations.
 
-The export reads the document and caches nothing, so hover, click selection,
-`step_selection`, drag, resize and SSOT invalidation do not apply to the
-file: edit the model, then export again. No selection box is drawn, as in the
+The exported file is a static snapshot: it has no hover, selection or drag,
+and the export reads the document and caches nothing, so edit the model,
+then export again. No selection box is drawn, as in the
 Cartesian PNG export; the radial export also draws none (its PNG draws the
 selected decoration's box) and draws every inside label above every slice.
 A chart with a streamed source is rejected.

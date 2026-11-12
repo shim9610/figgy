@@ -13,10 +13,9 @@ that shape:
 
 The host supplies every value as a column: the running totals of a
 waterfall, the prices of a candle, the bounds of an interval, a state index
-and a progress fraction. The renderer draws them; it computes no running
-total, change, duration or statistic. It decides only how the given values
-look: it compares the two given ends of a bar to pick the up or down
-colour, maps a state index to a style, places the bar in its slot and
+and a progress fraction. The renderer draws them and computes no running
+total, change, duration or statistic. It compares the two given ends of a
+bar to pick the up or down colour, maps a state index to a style, places the bar in its slot and
 shades the finished part of a bar. Streamed sources are rejected.
 
 ## Series
@@ -38,13 +37,11 @@ series:
 
 Every column holds one value per row of the positions; a column of another
 length is an error naming it. A row with a NaN position, start or end, or
-with equal ends, draws no bar and none of its parts. There is no limit on
-rows, series, states or labels beyond the column pool and `u32`. The cost
-grows with the rows and is the host's to budget: on the software Vulkan
-adapter the tests run on, picking among 100,000 rows takes about 10 ms and
-exporting them on a 7600 px wide panel about 1.8 s
-(`three_thousand_rows_draw_pick_and_highlight` in
-`tests/range_bars_render.rs` prints both).
+with equal ends, draws no bar and none of its parts. Any number of rows,
+series, states and labels can be drawn, within the column pool and `u32`
+indices. The cost grows with the rows: on a software Vulkan adapter
+(lavapipe), picking among 100,000 rows takes about 10 ms and exporting them
+on a 7600 px wide panel about 1.8 s.
 
 ## Layout and axes
 
@@ -129,5 +126,4 @@ and serialize with every unset option omitted.
 ## Examples
 
 The playground's Waterfall, Candlesticks and Gantt scenes
-(`crates/renderer/tests/support/playground_scenes.rs`) build each chart;
-the decoration oracle sweeps them like every other scene.
+(`crates/renderer/tests/support/playground_scenes.rs`) build each chart.

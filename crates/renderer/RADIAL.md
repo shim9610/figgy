@@ -118,18 +118,16 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
   알려 준다.
 - 라벨의 백분율은 부모 값 대비 자기 몫이다(가운데 고리는 전체 합 대비). `format_labels()`가
   모든 고리의 `text`를 쓴다.
-- `Outside` 라벨은 가장 바깥 고리에만 놓인다(기존의 좌우 쌓기, 바깥 반지름의 1.015 지점에서
+- `Outside` 라벨은 가장 바깥 고리에만 놓인다(파이와 같은 좌우 쌓기, 바깥 반지름의 1.015 지점에서
   연결선 시작). 안쪽 고리의 `Outside`는 자기 띠 안에 내부 라벨로 그린다. 내부 라벨은 띠의 가운데
   반지름에 놓이고 띠의 두께와 호 길이에 맞춰 줄어든다.
 - 평면에서만 그린다. 차트 스타일이나 노드 스타일의 `tilt_degrees`·`depth`가 0이 아니면
   거부한다(`"a sunburst draws flat: no tilt or depth"`). `split`과 함께 쓸 수 없다
   (`"a sunburst has no detail circle"`).
-- 한계([#140](https://github.com/shim9610/figgy/issues/140)에서 승인): 고리는 최대 8개
-  (`MAX_SUNBURST_DEPTH`), 고리 하나의 노드는 최대 64개(`MAX_RADIAL_SLICES`, 외부 라벨 쌓기
-  배열의 크기). 그 밖의 거부 사유: `"a node's children sum to at most its value"`,
+- 한계: 고리는 최대 8개(`MAX_SUNBURST_DEPTH`), 고리 하나의 노드는 최대 64개
+  (`MAX_RADIAL_SLICES`)다. 그 밖의 거부 사유: `"a node's children sum to at most its value"`,
   `"a sunburst has at most 8 rings"`, `"a sunburst ring has at most 64 nodes"`.
-- 셰이더는 바뀌지 않았다. 고리의 섹터는 기존 `Sector`에 바깥 반지름과 안쪽 비율을 넣은 것이며,
-  피킹·강조·호버·재질(고리마다 다른 결) 모두 조각과 같다.
+- 피킹·강조·호버·재질(고리마다 다른 결)은 모두 조각과 같다.
 
 ```rust
 use renderer::radial::*;

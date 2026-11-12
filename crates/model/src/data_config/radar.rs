@@ -288,7 +288,7 @@ impl crate::config::Config {
     /// categorical, with chord segments
     /// ([`PolarInterpolation::Chord`](crate::polar::PolarInterpolation)):
     /// a polygon's edges are straight. Any number of radar series share
-    /// one chart (#107), and each passes [`validate_radar_series`] against
+    /// one chart, and each passes [`validate_radar_series`] against
     /// the angle axis' categories. Whether a column holds one value per
     /// category is data: the renderer checks it against the pool when it
     /// prepares.
