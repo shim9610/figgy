@@ -156,6 +156,7 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 |---|---|---|
 | Lines and scatter | `f64` columns through `ColumnSource` | [Usage](crates/renderer/USAGE.md) · [Series schema](crates/renderer/CONFIG.md#data_config--declarative-series-schema-the-active-api) |
 | Area fills and step lines | A line's `fill` (to a baseline or another series) and `interpolation` | [Area fill and step lines](crates/renderer/CONFIG.md#area-fill-and-step-lines) · [area_step.rs](crates/renderer/examples/area_step.rs) |
+| Monotonic-x lines (large, evenly spaced signals) | Samples at `start + i × interval`, lent on every call through a `MonotonicSource` and never kept; each pixel column is reduced to its first, lowest, highest and last sample on the CPU (`MonotonicLine` series in a chart from `Renderer::register_monotonic_chart`; `set_monotonic`, `append_monotonic`) | [Monotonic-x lines](crates/renderer/USAGE.md#monotonic-x-lines) · [MONOTONIC.md](crates/model/MONOTONIC.md) |
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
 | Stems and lollipops | An `XySeries` with markers and a `stem` (#206): one stroke per point from a baseline, along y for an impulse response, along x for a ranked lollipop | [Stems](crates/renderer/CONFIG.md#stems) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
@@ -385,7 +386,7 @@ part of the `figgy-renderer` crate or the browser product.
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
 | Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
-| Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) |
+| Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams · monotonic-x lines | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) · [Monotonic-x lines](crates/model/MONOTONIC.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
 | Source versions and migration notes | [Changelog](CHANGELOG.md) |

@@ -145,7 +145,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"Streamlines"` `"RgbImage"` `"Parallel"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"BoxPlot"` `"RangeBars"` `"Radar"` `"Ternary"` `"Streamlines"` `"RgbImage"` `"Parallel"` `"EnergyLevels"` `"TriMesh"` `"Feynman"` `"MonotonicLine"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
 | `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
@@ -1538,6 +1538,63 @@ the series names its vertex heights in `"z_column"` (rejected when absent),
 box floor. A pick answers the triangle the pixel shows, or a floor contour,
 and the picked triangle's `selection_details()` also carries `z` (the three
 vertex heights).
+
+<a id="monotonicline-render_type"></a>
+
+## `MonotonicLine` render_type
+
+A monotonic-x line series ([#271](https://github.com/shim9610/figgy/issues/271))
+draws one channel of a group of evenly spaced samples,
+`x = start + i × interval`, through its M4 envelope: per pixel column the
+first, lowest, highest and last sample. `group` names the group whose
+source the monotonic calls supply, `channel` (`0`-based) the channel of that
+source the series draws, and `line` is the line style
+(`DataLineStyleConfig`). The samples are never in the document and never
+registered as columns: the host lends them to `set_monotonic` and
+`append_monotonic` (and to `resize_monotonic`, `fit_layout` and the
+`export_*_monotonic` calls) as typed arrays; see
+[Monotonic-x lines](../renderer/WASM.md#monotonic-lines) in the WASM guide.
+`x_column` / `y_column` are the two pool columns the renderer keeps the
+drawn envelope in, `<series_id>.monotonic.x` and `<series_id>.monotonic.y`
+by convention (`SeriesConfig::monotonic_line`): the renderer writes them,
+a host cannot write or remove them, and no other series may read them.
+
+```json
+{
+  "series_id": "ch0",
+  "label": null,
+  "x_column": "ch0.monotonic.x",
+  "y_column": "ch0.monotonic.y",
+  "render_type": {
+    "MonotonicLine": {
+      "group": "daq",
+      "channel": 0,
+      "line": {
+        "line_style": "Solid",
+        "line_color": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 },
+        "line_width": 2.0
+      }
+    }
+  }
+}
+```
+
+The line is linear (`interpolation` omitted or `"Linear"`) with no `fill`,
+and `group` is not empty. The chart's x axis must be linear, numeric and
+unbroken on a rectangular 2D chart: a logarithmic, probability,
+categorical or broken x axis, and polar, ternary, parallel and 3D charts,
+are refused (`Config::validate_monotonic_series`). Monotonic series live
+only in a monotonic chart (`set_monotonic_document(config, series)`); the
+general chart's `set_series` refuses them (`MonotonicGeneralChart`), and a
+streamed display refuses them too. A document without a monotonic series
+reads and writes as before.
+
+`pick_data(x, y, d)` answers a kept point of the envelope as a `"point"`
+whose `point_index` is the logical sample index (sample `i` of the group);
+`set_picked_data` stores the same `{ "kind": "point", "series_id",
+"point_index" }` ref. `selection_details()` reports `index`, `x` and `y`,
+read from the envelope, and `step_selection(dx, dy)` walks the kept points.
+A sample the envelope does not keep has no highlight.
 
 <a id="radar-render_type"></a>
 

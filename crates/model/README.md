@@ -60,6 +60,7 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | Cartesian axes, ticks, legends and styles | `Config`, `default::default_config`, `SeriesConfig` |
 | Numeric input columns | `Column` |
 | Triangle meshes over host-given triangles | `data_config::DataRenderType::TriMesh`, `tri_mesh::TriMeshSeries`, `MeshValues`, `MeshValueLocation`; the triangle index column itself is a renderer pool column (`Renderer::upsert_triangles`) |
+| Large, evenly spaced signals drawn as lines (monotonic x) | `data_config::DataRenderType::MonotonicLine`, `MonotonicLineSeries`, `SeriesConfig::monotonic_line`; the CPU core in `monotonic`: `MonotonicSource` (`MonotonicSlices`, `MonotonicInterleaved`), the per-pixel-column M4 `MonotonicEnvelope` and the document editor `MonotonicConfig`; see [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md) |
 | Pie/donut slice values and presentation | `RadialChart`, `RadialSlice` |
 | Category/series bars | `data_config::DataRenderType::CategoryBars` over a categorical axis (`AxisOptions::categories`), `Config.bar_groups`; legacy documents: `CategoricalChart`, read by `Config::from_categorical` (`bounded_sources`) |
 | Supplied statistical summaries | `data_config::DataRenderType::BoxPlot` over a categorical axis, reading a record and a ragged outlier column, `BoxPlotSeriesLabels`, `format_box_plot_labels`; legacy documents: `BoxPlotChart`, `BoxPlotSeries`, read by `Config::from_boxplot` (`bounded_sources`) |
@@ -74,7 +75,8 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 ## Chart classes
 
 A chart's per-element data enters in one of two ways, and that decides its
-class.
+class. The monotonic-x line, last below, is the one series kind with an
+input of its own.
 
 - **DataLess charts** are defined by their SSOT alone. They have no
   `ColumnSource`, no column in the renderer's pool and no streaming, by
@@ -105,6 +107,12 @@ class.
   axis) are series kinds like lines, markers and fields, and so is a
   triangle mesh (`TriMesh`, whose triangles are a triangle index column of
   the pool and whose values a column per vertex or per triangle).
+- **Monotonic-x lines** (`DataRenderType::MonotonicLine`, #271) take their
+  samples neither from the SSOT nor through `ColumnSource`: the host lends a
+  `MonotonicSource` to each call that reads it, and the renderer keeps only
+  the M4 envelope `monotonic::MonotonicEnvelope` reduces it to, in two pool
+  columns it owns. Their own rules (M1 to M7) are in
+  [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
 
 ### Document readers
 
