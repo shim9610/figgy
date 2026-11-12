@@ -90,8 +90,7 @@ sample index, so a pick maps back to the host's data.
   samples. The two extremes are always joined, so the column covers the span
   its drawn samples cover. A gap narrower than one column that separates two
   runs inside that column is therefore drawn joined: it is not resolvable at
-  display resolution, so this is the correct image (the maintainer's
-  decision, #271). A gap at least one column wide breaks the line, and
+  display resolution. A gap at least one column wide breaks the line, and
   zooming in until a gap spans a column shows it.
 
 The polyline the envelope implies works as follows. Inside a cell, point
@@ -135,8 +134,8 @@ reduction, as long as the plot width does not change.
   window on the left are dropped. The last kept point of the columns that
   left becomes the lead edge sample, and the new samples merge at the back
   on the same grid. The fraction of a column the range has moved past the
-  grid is reported as `pixel_offset` (in `0..1`), so phase 2 offsets the
-  projection by it. A slide never reads old samples and never falls back to
+  grid is reported as `pixel_offset` (in `0..1`), and the renderer offsets
+  the projection by it. A slide never reads old samples and never falls back to
   a full reduction. Old samples that were counted but not kept, more than one
   past the kept columns, would have to come into view; then the slide is
   refused with `MonotonicError::SlidePastKept`.
@@ -165,14 +164,13 @@ vectorizes, without a SIMD crate. A contiguous run is scanned once, in
 blocks with independent lane accumulators; only the block that holds the
 lowest (or highest) value is scanned again for its position. An interleaved
 run is walked frame by frame, a batch of channels at a time, so each
-frame's cache line is read once per batch. The batch is a loop width, not a
-limit.
+frame's cache line is read once per batch.
 
 ## In the renderer
 
-The renderer side (`figgy-renderer`, `renderer::monotonic.rs`) keeps every
-rule above and adds the document, the monotonic chart handle, the GPU draw
-and the interactions.
+The renderer side (`figgy-renderer`, `renderer::monotonic.rs`) builds on
+the core above and adds the document, the monotonic chart handle, the GPU
+draw and the interactions.
 
 ### The document
 
@@ -276,7 +274,7 @@ on the source's grid (with the tick plan, as an auto-fit fits an axis), and
 their y ranges, padded by 5 % of the span on each side, to the lowest and
 highest value each series' envelope keeps in the plot. Those values come
 from the reduction the same call makes, which keeps every column's
-extremes, so no other pass reads the data (a display parameter, rule 1). A
+extremes, so no other pass reads the data. A
 base series fits the panel's `left_y` (with its partner), an overlay series
 its overlay's own axis, a subplot series its subplot's axes (x through the
 root of its link chain). An extent without width (one sample, a constant
@@ -288,7 +286,7 @@ so it cannot reach a monotonic chart.
 Each series' envelope is two pool columns, uploaded through the renderer's
 column upsert (`ColumnSource` writing straight into mapped staging), and
 drawn by the existing line pipeline (`line_columnar.wgsl`, the `common/`
-stroke fragments): no new shader, entry point or pipeline. A slot takes 8
+stroke fragments). A slot takes 8
 rows: each of its 4 points followed by a join marker that repeats the point
 where the line goes on and is NaN where it breaks. A repeated point is a
 zero-length segment the stroke collapses; a NaN row masks the segments
@@ -303,12 +301,8 @@ whole pixel columns beyond each edge at the scale it is drawn at
 (`MARGIN_PX`), the columns a stroke reaches into the plot from. **The
 limit:** strokes up to about 120 device pixels wide (a width times the
 display or export scale) draw their edges as a full draw does; a wider one
-may miss ink at the plot's edges. The margin is a display parameter (rule
-1), not a count of data, and no style edit changes it, so a width change
-needs no source. A monotonic line has no markers.
-(`strokes_up_to_the_margin_limit_draw_their_edges_exactly`: 40 and 60 px
-strokes at 1x and 2x, up to 120 device pixels, are the full draw's byte for
-byte after a zoom.)
+may miss ink at the plot's edges. No style edit changes the margin, so a
+width change needs no source. A monotonic line has no markers.
 
 ### Pixels (M2 at display resolution)
 
@@ -353,14 +347,10 @@ a chart drawing the same samples as an ordinary line:
   which takes the sources.
 - **Exports**: PNG, SVG and PDF at any scale, with the sources when the
   mapping differs.
-- **The scene catalogue**: `SceneKind::Monotonic` in
+- **The playground**: `SceneKind::Monotonic` in
   `tests/support/playground_scenes.rs` (four channels of 200 000 samples)
-  runs in the decoration oracle, the vector export sweeps and the
-  `auto_layout` sweep. The scene keeps its samples
-  (`CartesianScene::monotonic`) and the sweeps export it through
-  `export_scene`, which registers the document as a monotonic chart for
-  the call and hands the samples to `ExportSource::Monotonic`. The
-  playground registers a monotonic scene as a monotonic chart, follows its
+  is a worked example. The scene keeps its samples
+  (`CartesianScene::monotonic`). The playground registers a monotonic scene as a monotonic chart, follows its
   viewport with `MonotonicChart::resize` and the scene's samples, gives a
   group never supplied its first full call, edits its document through the
   editor, and neither pans, zooms nor holds it.
@@ -376,17 +366,16 @@ channel or one interleaved array with a stride (`set_monotonic`,
 wheel and drag zoom are off, and a plot-area resize gesture proposes a rect
 the host applies; see `WASM.md`.
 
-## Rules for this source (M1–M7)
+## Guarantees (M1–M7)
 
-A separate rule set for monotonic line series only. Rules 1, 2, 5 and 8 of
-the repository's `CLAUDE.md` keep governing every other series.
+The contract of monotonic line series, referred to above as M1–M7.
 
 - **M1. Input.** Data enters only through `MonotonicSource`, which carries
   the values, `start` and `interval`, passed to every call that reads it. No
-  call takes `start` or `interval` separately. No other container, and no
-  `ColumnSource` upload.
-- **M2. Reduction is appearance.** The renderer may reduce to M4 per pixel
-  column. M2 is stated at display resolution: after a full call or a
+  call takes `start` or `interval` separately. The samples are never
+  uploaded through `ColumnSource`.
+- **M2. Reduction.** The renderer reduces to M4 per pixel column, with this
+  guarantee at display resolution: after a full call or a
   whole-column change, each column covers the span drawing every segment
   covers (a sparse view keeps every sample and draws the same image); while
   sliding by fractions of a column, it differs by less than one pixel
@@ -403,14 +392,15 @@ the repository's `CLAUDE.md` keep governing every other series.
   (`set_monotonic`, `append_monotonic`, `resize`, `fit_layout`); no general
   chart call can reach a monotonic chart, and its document editor refuses
   an edit that would move it.
-- **M5. Not streaming.** This source does not use, extend or depend on the
-  streaming runtime, which stays as it is.
-- **M6. Interactions.** Rule 6 applies in full. Hover, click selection,
+- **M5. Not streaming.** This source does not use or depend on the
+  streaming runtime; a monotonic series in a streamed display is refused.
+- **M6. Interactions.** Every interaction of a line series is supported
+  (see [Interactions](#interactions-m6)). Hover, click selection,
   `step_selection` and the picked highlight report the logical sample index
   of a kept point, without the source: a pick the kept point at the nearer
   end of the drawn segment under the pointer, as a line's pick does.
-- **M7. No count limits.** Rule 10 applies: no cap on samples, channels,
-  columns or stride.
+- **M7. No count limits.** Any number of samples, channels and columns,
+  and any stride, can be used.
 
 ## 한국어
 
@@ -484,8 +474,8 @@ the repository's `CLAUDE.md` keep governing every other series.
   이어지므로, 열은 자기 샘플만으로 축약된다.
 - 첫 샘플이나 마지막 샘플은 끊김 없이 이어진 구간 안에서만 극값과 잇는다. 두 극값은 항상
   이어서, 그려지는 샘플이 덮는 범위를 열 전체가 덮게 한다. 그래서 한 열 안에서 두 구간을
-  가르는, 열보다 좁은 끊김은 이어서 그린다. 화면 해상도로는 구분할 수 없는 끊김이므로 이것이
-  맞는 그림이다(관리자 결정, #271). 한 열 이상 넓은 끊김은 선을 끊으며, 끊김이 한 열을 차지할
+  가르는, 열보다 좁은 끊김은 이어서 그린다. 화면 해상도로는 구분할 수 없는 끊김이다. 한 열
+  이상 넓은 끊김은 선을 끊으며, 끊김이 한 열을 차지할
   때까지 확대하면 보인다.
 
 엔벌로프가 나타내는 꺾은선은 다음과 같다. 셀 안에서는 `links`의 비트 `k`가 켜진 곳에서
@@ -516,7 +506,7 @@ the repository's `CLAUDE.md` keep governing every other series.
   `new.len() × interval`만큼 옮긴다. 열은 전체 호출이 만든 격자에 고정된 채 다시 나누지
   않는다. 창 왼쪽으로 완전히 벗어난 열은 버리고, 그 열들의 마지막 점이 왼쪽 경계 샘플이
   된다. 새 샘플은 같은 격자의 뒤쪽에 합친다. 범위가 격자보다 앞서 나간 열의 소수 부분은
-  `pixel_offset`(`0..1`)으로 알려 주며, 2단계는 그만큼 투영을 옮겨 그린다. 밀어내기는 예전
+  `pixel_offset`(`0..1`)으로 알려 주며, 렌더러는 그만큼 투영을 옮겨 그린다. 밀어내기는 예전
   샘플을 읽지 않고 전체 축약으로 돌아가지도 않는다. 다만 세기만 하고 남기지 않은 예전
   샘플(남긴 열 너머 두 번째 샘플부터)이 화면에 들어와야 하면 `MonotonicError::SlidePastKept`로
   거부한다.
@@ -537,12 +527,11 @@ the repository's `CLAUDE.md` keep governing every other series.
 축약은 CPU에서 하며, 컴파일러가 벡터화하는 청크 반복문으로 작성했다. SIMD 크레이트는 쓰지
 않는다. 연속 구간은 독립 누산기를 둔 블록 단위로 한 번 훑고, 가장 낮은 값(또는 가장 높은
 값)이 든 블록만 다시 훑어 위치를 찾는다. 섞인 버퍼 구간은 채널 묶음 단위로 프레임을 차례로
-읽으므로, 묶음마다 프레임의 캐시 줄을 한 번만 읽는다. 묶음 크기는 반복 폭일 뿐 제한이
-아니다.
+읽으므로, 묶음마다 프레임의 캐시 줄을 한 번만 읽는다.
 
 ### 렌더러에서
 
-렌더러(`figgy-renderer`의 `renderer::monotonic.rs`)는 위 규칙을 모두 지키고 문서, 단조 차트
+렌더러(`figgy-renderer`의 `renderer::monotonic.rs`)는 위 코어를 바탕으로 문서, 단조 차트
 핸들, GPU 그리기, 상호작용을 더한다.
 
 #### 문서
@@ -631,7 +620,7 @@ MonotonicRange::Autoscale)`은 묶음의 시리즈가 그려지는 축의 x 범�
 `start ..= start + (len - 1) × interval`에 맞추고(자동 맞춤처럼 눈금 계획도 함께 맞춘다), y
 범위를 각 시리즈의 엔벌로프가 플롯 안에 남긴 가장 낮은 값과 가장 높은 값에 맞춘 뒤 양쪽에 폭의
 5 %씩 여유를 둔다. 이 값은 같은 호출의 축약에서 나온다. 축약은 열마다 극값을 남기므로 데이터를
-다시 읽지 않는다(표시 값, 규칙 1). 기본 레이어 시리즈는 패널의 `left_y`(짝 축 포함)를, 오버레이
+다시 읽지 않는다. 기본 레이어 시리즈는 패널의 `left_y`(짝 축 포함)를, 오버레이
 시리즈는 오버레이 자신의 축을, 서브플롯 시리즈는 서브플롯의 축(x는 연결의 맨 처음 축)을 맞춘다.
 폭이 없는 범위(샘플 하나, 일정한 채널)는 축을 그대로 둔다. 일반 자동 맞춤은 `ChartId`를 받으므로
 단조 차트에 닿지 못한다.
@@ -640,7 +629,7 @@ MonotonicRange::Autoscale)`은 묶음의 시리즈가 그려지는 축의 x 범�
 
 시리즈의 엔벌로프는 풀 컬럼 두 개이며, 렌더러의 컬럼 upsert로 올린다(`ColumnSource`가 매핑된
 스테이징에 바로 쓴다). 그리기는 기존 선 파이프라인(`line_columnar.wgsl`과 `common/`의 선
-조각)이 맡는다. 새 셰이더, 진입점, 파이프라인은 없다. 슬롯마다 8행을 쓴다. 점 4개 각각 뒤에
+조각)이 맡는다. 슬롯마다 8행을 쓴다. 점 4개 각각 뒤에
 이음 표시가 붙는데, 선이 이어지면 점을 한 번 더 쓰고 끊기면 NaN을 쓴다. 같은 점이 두 번이면
 길이가 0인 선분이 되어 아무것도 그리지 않고, NaN 행은 다른 선과 마찬가지로 닿는 선분을
 가린다. 그래서 행 번호에서 슬롯과 점을 계산으로 찾는다(`row / 8`, `(row % 8) / 2`). 선택된
@@ -650,10 +639,8 @@ MonotonicRange::Autoscale)`은 묶음의 시리즈가 그려지는 축의 x 범�
 정도는 길이가 0이거나 가려진 행이다. 엔벌로프는 그리는 배율에서 양쪽 바깥으로 64픽셀 열을
 고정 여백으로 더 둔다(`MARGIN_PX`). 선이 플롯 안으로 들어오는 바깥 열이다. **한계:** 장치
 픽셀로 약 120픽셀(선 굵기에 표시 배율이나 내보내기 배율을 곱한 값)까지의 선은 가장자리를 전체
-그리기와 똑같이 그린다. 더 굵은 선은 플롯 가장자리의 잉크를 놓칠 수 있다. 이 여백은 데이터 개수가
-아닌 표시 값(규칙 1)이고 어떤 스타일 수정도 바꾸지 않으므로, 선 굵기를 바꿔도 소스가 필요 없다.
-단조 선에는 마커가 없다(`strokes_up_to_the_margin_limit_draw_their_edges_exactly`: 40, 60픽셀 선을
-1배와 2배로, 즉 장치 픽셀 120까지 확대한 뒤 전체 그리기와 바이트까지 같다).
+그리기와 똑같이 그린다. 더 굵은 선은 플롯 가장자리의 잉크를 놓칠 수 있다. 어떤 스타일 수정도
+이 여백을 바꾸지 않으므로, 선 굵기를 바꿔도 소스가 필요 없다. 단조 선에는 마커가 없다.
 
 #### 픽셀(화면 해상도의 M2)
 
@@ -689,11 +676,9 @@ MonotonicRange::Autoscale)`은 묶음의 시리즈가 그려지는 축의 x 범�
   `nudge`와 `drag`로 한다. 데이터 영역 크기 조정은 크기 조정(`MonotonicChart::resize`에 플롯
   사각형을 넘김)이므로 소스를 받는다.
 - **내보내기**: PNG, SVG, PDF를 어떤 배율로도 내보내며, 매핑이 다르면 소스를 함께 넘긴다.
-- **장면 목록**: `tests/support/playground_scenes.rs`의 `SceneKind::Monotonic`(채널 넷, 각
-  200 000개 샘플)은 데코레이션 오라클, 벡터 내보내기 점검, `auto_layout` 점검에서 모두 돈다.
-  장면은 샘플을 직접 들고 있고(`CartesianScene::monotonic`), 점검은 `export_scene`으로
-  내보낸다. 이 함수는 그 호출 동안 문서를 단조 차트로 등록하고 샘플을
-  `ExportSource::Monotonic`에 넘긴다. 플레이그라운드는 단조 장면을 단조 차트로 등록하고, 장면의
+- **플레이그라운드**: `tests/support/playground_scenes.rs`의 `SceneKind::Monotonic`(채널 넷, 각
+  200 000개 샘플)이 사용 예다. 장면은 샘플을 직접 들고 있다(`CartesianScene::monotonic`).
+  플레이그라운드는 단조 장면을 단조 차트로 등록하고, 장면의
   샘플과 함께 `MonotonicChart::resize`로 화면 크기를 따라가며, 데이터를 한 번도 받지 않은 묶음에
   처음 전체 호출을 하고, 문서는 편집기로 고치며, 이동·확대·고정하지 않는다.
 - **스트리밍과 무관**(M5): 스트리밍 표시에 든 단조 시리즈는 거부한다(`StreamedMonotonic`).
@@ -705,15 +690,14 @@ MonotonicRange::Autoscale)`은 묶음의 시리즈가 그려지는 축의 x 범�
 `export_png_monotonic`과 SVG·PDF 형태). 휠과 끌기 확대는 쓰지 않고, 데이터 영역 크기 조정
 몸짓은 호스트가 적용할 사각형을 제안한다. `WASM.md`를 참고한다.
 
-### 이 소스의 규칙(M1–M7)
+### 보장(M1–M7)
 
-단조 선 시리즈에만 적용하는 별도 규칙이다. 저장소 `CLAUDE.md`의 규칙 1, 2, 5, 8은 다른
-시리즈에 그대로 적용된다.
+단조 선 시리즈가 지키는 약속이며, 위에서 M1–M7로 가리킨다.
 
 - **M1. 입력.** 데이터는 값과 `start`, `interval`을 함께 담은 `MonotonicSource`로만
   들어오며, 데이터를 읽는 호출마다 넘긴다. `start`나 `interval`을 따로 받는 호출은 없다.
-  다른 컨테이너나 `ColumnSource` 업로드를 쓰지 않는다.
-- **M2. 축약은 외형이다.** 렌더러는 픽셀 열마다 M4로 줄여도 된다. M2는 화면 해상도 기준이다.
+  샘플은 `ColumnSource`로 올리지 않는다.
+- **M2. 축약.** 렌더러는 픽셀 열마다 M4로 줄이며, 화면 해상도 기준으로 다음을 보장한다.
   전체 호출 뒤나 열 단위 변경 뒤에는 열마다 모든 선분을 그릴 때와 같은 범위를 덮는다(희소한
   보기는 샘플을 모두 남겨 같은 그림을 그린다). 열보다 작게 밀어내는 동안에는 고정 격자와
   오프셋 때문에 픽셀 한 열 미만만큼 다를 수 있으며, 다음 전체 호출이 정확히 다시 맞춘다. 열보다
@@ -725,9 +709,9 @@ MonotonicRange::Autoscale)`은 묶음의 시리즈가 그려지는 축의 x 범�
   차트 핸들에서 소스를 받는 호출 넷(`set_monotonic`, `append_monotonic`, `resize`,
   `fit_layout`)만 옮긴다. 일반 차트 호출은 단조 차트에 닿지 못하고, 문서 편집기는 매핑을 옮길
   수정을 거부한다.
-- **M5. 스트리밍과 무관.** 이 소스는 기존 스트리밍 런타임을 쓰지도, 늘리지도, 의존하지도
-  않는다.
-- **M6. 상호작용.** 규칙 6을 모두 지킨다. 마우스 올림, 클릭 선택, `step_selection`, 선택
+- **M5. 스트리밍과 무관.** 이 소스는 스트리밍 런타임을 쓰지도, 의존하지도 않으며, 스트리밍
+  표시에 든 단조 시리즈는 거부한다.
+- **M6. 상호작용.** 선 시리즈의 상호작용을 모두 지원한다([상호작용](#상호작용m6) 참고). 마우스 올림, 클릭 선택, `step_selection`, 선택
   강조는 남긴 점의 논리 샘플 번호를 소스 없이 알려 준다. 선택은 다른 선과 마찬가지로 포인터
   아래 그려진 선분에서 가까운 쪽 끝의 남긴 점이다.
-- **M7. 개수 제한 없음.** 규칙 10을 지킨다. 샘플, 채널, 열, 간격 수에 상한을 두지 않는다.
+- **M7. 개수 제한 없음.** 샘플, 채널, 열 수와 간격(stride)에 상한이 없다.

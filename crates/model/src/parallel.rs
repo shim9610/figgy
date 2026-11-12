@@ -6,11 +6,11 @@
 //! row `r` of its columns as the polyline through
 //! `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis: the
 //! categorical `bottom_x` places the axes and names them, `left_y` spans
-//! the normalized band `0..1` the values are placed on. Normalizing a
-//! value only to place it on its axis is appearance (`CLAUDE.md` rule 1,
-//! as the ternary normalization), computed in the vertex stage on every
-//! draw and never stored; hover, selection and the reported values are the
-//! original columns. A row with a non-finite value breaks at that axis.
+//! the normalized band `0..1` the values are placed on. The normalization
+//! only places a value on its axis: it is computed in the vertex stage on
+//! every draw and never stored, and hover, selection and the reported
+//! values are the original columns. A row with a non-finite value breaks
+//! at that axis.
 //!
 //! The axis names, their drag and the title stay the categorical axis's;
 //! each parallel axis's tick labels are their own element

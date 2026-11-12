@@ -80,7 +80,7 @@ A radar series is held to these rules (`Config::validate_radar` and
   axis is categorical (any number of categories, each with its value
   label), with chord segments
   (`PolarInterpolation::Chord`): a polygon's edges are straight.
-- Any number of radar series share one chart (#107).
+- Any number of radar series share one chart.
 - Its colour has channels in `0..=1`, its style passes
   `RadarSeriesStyle::validate`, and `labels.text` is empty or one one-line
   string of at most 160 characters per category.
@@ -157,15 +157,15 @@ face: always with `Values`, and with `Emphasized` only while the series has a
 selected vertex or label. An empty string draws nothing. A label that would
 cross the outer ring or the data area's edge outward goes inward along its
 spoke instead. Only labels that would touch move, and only next to their own
-vertex ([#272](https://github.com/shim9610/figgy/issues/272)): of two
+vertex: of two
 series' labels on one spoke, the larger value's stays outside its vertex
 and the smaller value's goes inside its own, toward the centre; equal or
 nearly equal values that would still touch split, one to each side of the
 spoke at the vertices' radius; a label that would touch the ring labels
 goes inside or beside its vertex. More series on a spoke are placed the
 same way from the outermost vertex inward, each clear of the two placed
-before it. The placement reads the other labelled series' values at the
-spoke on every draw and stores nothing; a label is never farther from its
+before it. The placement is worked out on every draw from the other
+labelled series' values at the spoke; a label is never farther from its
 vertex than its gap past the marker. A label is a typed pick target
 (`PickedData::ValueLabel`), its selection box is its frame, and a drag writes
 `labels.offsets` (logical pixels, one per category); see Value labels in the
@@ -263,7 +263,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 (`left_y`) 값이며 빠진 값은 NaN으로 둔다. 두 열 모두 범주 수만큼 값이 있어야 하고, 렌더러가
 준비 단계에서 풀의 길이로 확인한다. 레이더 시리즈는 각도 축이 범주형(범주 수 상한 없음)이고 보간이
 `PolarInterpolation::Chord`인 극좌표 차트(부모 차트나 서브플롯 자신의 차트)에서만 그리며, 한
-차트에 둘 수 있는 시리즈 수에는 상한이 없다(#107). 정밀(precise) 스타일에서만 그리고, 스타일 모드에서는
+차트에 둘 수 있는 시리즈 수에는 상한이 없다. 정밀(precise) 스타일에서만 그리고, 스타일 모드에서는
 `draw_style_supports`가 `false`를 돌려준다.
 
 범주 `i`는 `PolarOptions::zero_angle_degrees`에서 `clockwise` 방향으로 한 바퀴의 `i / n`, 또는
@@ -299,12 +299,12 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 바큇살 바깥쪽, 표식에서 `max(4, 0.25 em)` 떨어진 곳에 반지름 축 눈금 라벨 글꼴로 그린다.
 `Values`는 항상, `Emphasized`는 시리즈에 선택한 꼭짓점이나 라벨이 있을 때만 그린다. 빈 문자열은
 그리지 않는다. 바깥쪽 라벨이 바깥 고리나 데이터 영역 가장자리를 넘으면 바큇살 안쪽에 그린다.
-서로 닿는 라벨만 자기 꼭짓점 곁에서 자리를 옮긴다([#272](https://github.com/shim9610/figgy/issues/272)).
+서로 닿는 라벨만 자기 꼭짓점 곁에서 자리를 옮긴다.
 한 바큇살에서 두 시리즈의 라벨이 닿으면 값이 큰 쪽은 꼭짓점 바깥에 그대로 두고, 작은 쪽은 자기
 꼭짓점 안쪽(중심 쪽)으로 옮긴다. 값이 같거나 거의 같아 그래도 닿으면 꼭짓점 높이에서 바큇살 양옆으로
 하나씩 나눈다. 고리 라벨에 닿는 라벨은 꼭짓점 안쪽이나 옆으로 간다. 시리즈가 더 많으면 가장 바깥
 꼭짓점부터 안쪽으로 같은 방식으로 놓고, 각 라벨은 바로 앞에 놓은 두 라벨을 피한다. 배치는 그릴
-때마다 같은 바큇살에 있는 다른 시리즈의 값을 읽고, 아무것도 저장하지 않는다. 라벨은 `PickedData::ValueLabel`로 고를 수 있고, 선택 상자는 라벨의
+때마다 같은 바큇살에 있는 다른 시리즈의 값으로 다시 정한다. 라벨은 `PickedData::ValueLabel`로 고를 수 있고, 선택 상자는 라벨의
 테두리이며, 끌면 `labels.offsets`(범주마다 하나, 논리 픽셀)에 기록한다.
 
 제목, 범례, 범주 라벨(각도 축 눈금 라벨, 스포크를 따라 이동), 고리 라벨과 반지름 선(중심을
@@ -317,8 +317,8 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 
 `Config::from_radar(&RadarChart)`는 극좌표 `Config`, 문서 시리즈마다 하나인 `Radar` 시리즈,
 업로드 목록을 돌려준다. 업로드는 범주 번호 열(`radar.positions`)이 먼저이고 그다음 시리즈마다
-값 열(`radar.values.<시리즈 id>`)이 하나씩이며, 문서의 값을 빌려 그대로 올리므로 복사하지
-않는다. `style.start_angle_degrees`(y가 아래로 커지는 화면 각도)는 부호를 바꿔
+값 열(`radar.values.<시리즈 id>`)이 하나씩이며, 문서의 값을 빌려 그대로 올린다.
+`style.start_angle_degrees`(y가 아래로 커지는 화면 각도)는 부호를 바꿔
 `zero_angle_degrees`와 고리 라벨 선의 각도가 되고, `clockwise`와 `grid_shape`는 극좌표 옵션으로
 옮긴다. `value_range`는 반지름 축 범위, `ring_spacing`은 눈금 간격이 된다. `value_range`가
 없으면 범위는 호스트가 맞추며, 브라우저 래퍼와 갤러리는 음수 값이 없으면 0부터 맞춘다. `grid`는

@@ -30,8 +30,8 @@ use super::*;
 pub struct LineOffsets {
     /// The member series ids in stacking order: member `k` is shifted by
     /// `k` steps. Line kinds only (`Line`, `ScatterLine` and the
-    /// `LineScatterErrorbar*` kinds), each id once, with no cap on the
-    /// number of members (#107): each is drawn as an internal panel of its
+    /// `LineScatterErrorbar*` kinds), each id once, with any number of
+    /// members: each is drawn as an internal panel of its
     /// own (`Config::expand`) with the textures of an overlay layer, and a
     /// member whose textures cannot be allocated fails with the GPU
     /// allocation error.

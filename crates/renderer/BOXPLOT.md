@@ -89,8 +89,8 @@ chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
 
 `Renderer::upsert_record` and `upsert_ragged` replace a source of the same id
 in place; `remove_record` and `remove_ragged` delete one. The record and the
-ragged column live in the GPU column pool only; the CPU keeps their scalar
-statistics (`record_stats`, `ragged_stats`) and nothing per box.
+ragged column live in the GPU column pool; `record_stats` and `ragged_stats`
+report their scalar statistics.
 
 A ragged column has no value cap below the `u32` index space: the pool
 stores its offsets as `u32` indices. An offset is the integer its source
@@ -113,7 +113,7 @@ in each category slot in series order, laid out by `Config.bar_groups`:
 
 `Config::validate_box_plots` (applied by the renderer) requires the
 categorical axis of the direction and a linear value axis, and allows any
-number of box plot series per layer and of boxes (#107). A layer draws either category bars
+number of box plot series per layer and of boxes. A layer draws either category bars
 or box plots, not both. Horizontal box groups stand on the base panel only;
 polar charts reject box plots.
 
@@ -242,21 +242,18 @@ let points = BoxPoints {
 # let _ = (violin, points);
 ```
 
-There is no limit on curve points, categories or raw points beyond the
-column pool and `u32`. The violin is drawn one instance per curve segment,
-so a long curve costs only its own segments; the cost grows with the data
-and is the host's to budget. On the software Vulkan adapter the tests run
-on, picking among 600 violins of 4 096 curve points takes about 4 ms, and
-a raw point among 3 000 000 about 70 ms
-(`long_curves_many_categories_and_a_million_points_draw_and_pick` in
-`tests/violin_render.rs` prints both).
+Any number of curve points, categories and raw points can be drawn, within
+the column pool and `u32` indices. The violin is drawn one instance per
+curve segment, so a long curve costs only its own segments, and the cost
+grows with the data. On a software Vulkan adapter (lavapipe), picking among
+600 violins of 4 096 curve points takes about 4 ms, and a raw point among
+3 000 000 about 70 ms.
 
 ## Value labels
 
 `labels: BoxPlotSeriesLabels` holds the placement (`None`, `Median`,
 `MedianAndCount`), the decimals (0–6), the suffix and `text`, the drawn string
-of every box in category order. The renderer never writes `text`: the median
-and the count are per-box data the configuration does not hold. A host that
+of every box in category order. The renderer does not write `text`. A host that
 uploads its own records writes it, for example with `format_box_plot_labels`
 from the statistics it holds; `Config::from_boxplot` writes it from the
 document. The renderer draws each string `10` px past the top of its box (the
@@ -327,7 +324,7 @@ let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&docu
 config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
     x: 0, y: 0, width: 960, height: 640,
 });
-// The uploads borrow the document's summaries; nothing is copied.
+// The uploads borrow the document's summaries.
 for upload in &uploads {
     match &upload.values {
         UploadValues::BoxRecord(_) => {
@@ -396,7 +393,10 @@ cargo test --locked -p figgy-renderer --features serde --test box_plot_render --
 
 The gallery writes five 960 × 640 PNGs (matte, satin, horizontal, grouped
 notch and mean with a selected box) from synthetic documents opened through
-the reader. The playground's Cartesian `BoxPlot` scene edits the series
+the reader, and two designed scenes built from box plot series directly:
+`gallery-violin.png` (split violins, two conditions per category) and
+`gallery-raincloud.png` (horizontal rainclouds: a half violin above a narrow
+box, the raw samples jittered below it). The playground's Cartesian `BoxPlot` scene edits the series
 style. The browser test `crates/web/tests/boxplot_document_browser.rs` opens a
 document in `FiggyChart`.
 
@@ -437,7 +437,7 @@ document in `FiggyChart`.
 `labels.text`에 두며, 렌더러는 상자 꼭대기(높은 수염·평균·노치·이상치 중 가장 높은 곳)에서 10px 위에
 그린다. 데이터 영역 가장자리를 넘으면 꼭대기 아래에 그린다. 라벨은 `PickedData::ValueLabel`로 고르고 드래그하면
 `labels.offsets`에 기록된다.
-시리즈·범주·상자·이상치 수에는 상한이 없다(#107).
+시리즈·범주·상자·이상치 수에는 상한이 없다.
 
 ## 제목·축·라벨·범례 선택과 이동
 

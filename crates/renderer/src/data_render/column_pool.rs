@@ -119,10 +119,10 @@ pub struct ColumnSlot {
     /// log-axis auto-fit lower bound when the data contains zeros or
     /// negatives. `None` when no positive value exists.
     ///
-    /// Scalar stats like this are the ONLY per-value information retained on
-    /// the CPU. The pool deliberately keeps no copy of the data itself —
-    /// per-point geometry (dashed-line arc length) is computed on the GPU
-    /// (`line_arc.wgsl`). Do not reintroduce CPU shadows.
+    /// Scalar stats like this are the only per-value information retained on
+    /// the CPU. The pool keeps no CPU copy of the data itself; per-point
+    /// geometry (dashed-line arc length) is computed on the GPU
+    /// (`line_arc.wgsl`).
     pub min_positive: Option<f64>,
     /// The values' uniform step, measured while they were written
     /// (`data::UniformStep`, #134): `Some` when the column holds at least
@@ -540,7 +540,7 @@ pub struct ColumnPool {
     /// Whether to auto-defrag on alloc failure. Default `Manual`.
     pub defrag_policy: DefragPolicy,
     /// Whether an upload that does not fit may enlarge the pool.
-    /// Default `OnAllocFailure`: the pool grows to the device's limit (#107).
+    /// Default `OnAllocFailure`: the pool grows to the device's limit.
     pub growth_policy: GrowthPolicy,
 }
 

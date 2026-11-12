@@ -403,9 +403,8 @@ is a host that calls it once after `queue.submit`.
 ### GPU results: awaited, blocking or checked
 
 A pick, an extent, a radial pick, an export and `wait_submitted_work` read a
-GPU result back. Each can be waited for in three ways, with the same result
-(#160): preparing and submitting the work, and decoding its result, are
-written once, and only the wait differs.
+GPU result back. Each can be waited for in three ways with the same result;
+only the wait differs.
 
 | Wait | Calls | Where it waits |
 |---|---|---|
@@ -420,7 +419,7 @@ host that makes blocking calls only builds the bundle with
 `RendererDevice::blocking`, which starts no thread; an awaited wait on it
 fails with `FiggyError::AsyncWaitUnavailable` instead of never completing.
 A ticket on a streamed series resolves by `resolve` only
-(`GpuPickError::Streamed`, rule 8).
+(`GpuPickError::Streamed`).
 
 In an immediate-mode UI a hover pick fits `try_resolve`: submit the pick on
 a pointer move, keep the ticket next to the panel, and check it each frame.
@@ -448,8 +447,8 @@ queue, and render-pass types cannot be shared across major versions.
 With the `helpers` feature (on by default), each chart family has a
 constructor on `SeriesConfig` that names its columns and draws with the
 host style defaults. Chainable modifiers set the common fields; any other
-field is set on the returned series directly. Both are plain values in the
-document: nothing is stored besides the series.
+field is set on the returned series directly. The result is a plain
+`SeriesConfig` value.
 
 ```rust
 use renderer::{ScatterShape, SeriesConfig, color::Color, line::LineStylePreset};
@@ -952,7 +951,7 @@ scale, such as `2.0`. The image is the chart area times `scale` on a fully
 transparent background. The `_with_clear_async` variants take a background
 colour as a fourth argument, for example
 `export_png(&chart, &series_configs, scale, Color::WHITE)`.
-the panel export (`ExportScope::Panel`) draws the base chart area only. For a chart with `overlays` or
+The panel export (`ExportScope::Panel`) draws the base chart area only. For a chart with `overlays` or
 `subplots`, `export_png` / `export_rgba`
 (and their `_with_clear` and blocking variants) take the same arguments and
 draw every layer and subplot into one image covering all chart areas.
@@ -1320,7 +1319,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 호스트는 한 프레임의 명령 버퍼를 모두 GPU 큐에 제출한 뒤 `renderer.end_gpu_frame()`을 한 번 호출한다. egui처럼 콜백 실행을 관리하는 호스트에서는 이전 프레임의 제출이 끝났음을 확인한 뒤 다음 프레임의 첫 prepare 직전에 호출해도 된다. 패널마다 호출하면 아직 제출하지 않은 다른 패널의 자원을 너무 일찍 회수 대상으로 넘길 수 있다.
 
-`WindowedRenderer::draw*`나 패널 내보내기(the panel export (`ExportScope::Panel`))처럼 렌더러가 직접 제출하는 경로에서는 이 처리를 내부에서 수행한다. 외부 렌더 패스 기록과 이 경로를 함께 쓴다면 미리 기록해 둔 명령 버퍼를 먼저 모두 제출해야 한다. 렌더러는 wgpu 명령 버퍼의 내부 참조를 볼 수 없으므로 호스트가 아직 제출하지 않은 자원만 따로 골라 보호할 수 없다.
+`WindowedRenderer::draw*`나 패널 내보내기(`ExportScope::Panel`)처럼 렌더러가 직접 제출하는 경로에서는 이 처리를 내부에서 수행한다. 외부 렌더 패스 기록과 이 경로를 함께 쓴다면 미리 기록해 둔 명령 버퍼를 먼저 모두 제출해야 한다. 렌더러는 wgpu 명령 버퍼의 내부 참조를 볼 수 없으므로 호스트가 아직 제출하지 않은 자원만 따로 골라 보호할 수 없다.
 
 `paint_prepared`는 같은 토큰으로 여러 패스에 호출할 수 있다. `PreparedFrame`이 그리기에 필요한 입력을 보관하므로 paint 단계에서 `items`를 다시 만들거나 전달하지 않는다. 준비 후 관련 렌더러 자원이 바뀌면 아무 명령도 기록하지 않고 `FiggyError::StalePreparedFrame`을 반환한다. 다음 프레임에서 다시 `prepare`하면 된다.
 
@@ -1333,8 +1332,7 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 ### GPU 결과: 비동기, 동기, 확인
 
 픽, extent, 원형 차트 픽, 내보내기와 `wait_submitted_work`는 GPU 결과를 읽어 온다.
-세 가지 방법으로 기다릴 수 있고 결과는 같다(#160). 작업 준비와 제출, 결과 해석은 한
-벌이고 기다리는 방법만 다르다.
+세 가지 방법으로 기다릴 수 있고 결과는 같다. 기다리는 방법만 다르다.
 
 | 대기 | 호출 | 기다리는 곳 |
 |---|---|---|
@@ -1347,7 +1345,7 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 없으면 스레드는 잠들고, 소유자가 모두 사라지면 끝난다. 동기 함수만 쓰는 호스트는
 `RendererDevice::blocking`으로 스레드 없는 묶음을 만든다. 이 묶음에서 비동기 대기를
 부르면 끝나지 않는 대신 `FiggyError::AsyncWaitUnavailable`을 돌려준다. 스트리밍
-시리즈의 티켓은 `resolve`로만 읽는다(`GpuPickError::Streamed`, 규칙 8).
+시리즈의 티켓은 `resolve`로만 읽는다(`GpuPickError::Streamed`).
 
 즉시 모드 UI의 호버 픽에는 `try_resolve`가 맞는다. 포인터가 움직일 때 픽을 제출하고,
 티켓을 패널 상태에 두었다가 매 프레임 확인한다. 막히는 스레드도 없고 티켓에 잠금도
@@ -1371,8 +1369,7 @@ if let Some(ticket) = pending.take() {
 
 `helpers` 기능(기본으로 켜져 있다)을 쓰면 차트 종류마다 `SeriesConfig`에 생성 함수가 있다. 생성
 함수는 컬럼을 지정하고 호스트용 기본 스타일로 그린다. 이어 붙이는 수정 메서드로 공통 필드를 바꾸고,
-그 밖의 필드는 돌려받은 시리즈에서 직접 고친다. 둘 다 문서 안의 값일 뿐이며 시리즈 말고는 따로
-저장하는 것이 없다.
+그 밖의 필드는 돌려받은 시리즈에서 직접 고친다. 결과는 평범한 `SeriesConfig` 값이다.
 
 ```rust
 use renderer::{ScatterShape, SeriesConfig, color::Color, line::LineStylePreset};
@@ -1779,7 +1776,7 @@ chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // 레이아
 ```rust
 let bytes = renderer
     .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
-    .await?);
+    .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // 클립보드나 네트워크로 보내도 된다.
 
 // RGBA만 필요하면:
@@ -1794,7 +1791,7 @@ let img = renderer
 `std::slice::from_ref(&cfg)`), `scale`은 `2.0` 같은 출력 배율이다. 결과 이미지는 차트 영역에
 `scale`을 곱한 크기이며 배경은 완전히 투명하다. `_with_clear_async` 버전은 네 번째 인자로 배경색을
 받는다. 예: `export_png(&chart, &series_configs, scale, Color::WHITE)`.
-the panel export (`ExportScope::Panel`)는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
+패널 내보내기(`ExportScope::Panel`)는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
 `export_png` / `export_rgba`에 `ExportScope::Document`를 주어
 레이어와 서브플롯을 이미지 한 장에 모두 그린다. 이 이미지는 모든 차트 영역을 합친 크기다.
 `scale`의 최솟값은 `renderer::MIN_EXPORT_SCALE`(0.25)이고 NaN이나 0 이하의 값은 0.25로 바꾼다. 상한은 없다. 배율을 적용한 이미지가 장치의 텍스처 크기 한도(`max_texture_dimension_2d`, 보통 한 변 8192 또는 16384픽셀) 안에 들어와야 하며, 넘으면 메모리를 잡기 전에 `FiggyError::GpuResourceLimit` 오류를 돌려준다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.

@@ -41,7 +41,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 
 ### Model (`figgy-model` 0.13.0)
 
-- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271); on `feat/271-monotonic-line`, after 0.19).
+- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271)).
   - **The core** (`model::monotonic`): fast, large, evenly spaced data (`x = start + i × interval`) reduced on the CPU to its **M4** envelope per pixel column (first, lowest, highest and last sample; a column of at most 4 keeps them all). The host lends its samples through the `MonotonicSource` trait on every call, as contiguous runs (`MonotonicRun`; a ring buffer lends two); a source carries the values, their `start` and `interval` (sample `i` at `start + i × interval`), and no call takes those separately; `MonotonicSlices::new(start, interval, channels)` (one slice per channel) and `MonotonicInterleaved::new(start, interval, values, stride, columns)` (one sample-major buffer with a stride and the frame columns its channels read) are built in; elements are `f64`, `f32`, `i32`, `i16`, `u16` or `u8` (`MonotonicElement`, sealed), compared in their own type. `MonotonicEnvelope` is the cache: `set_monotonic(&source, &MonotonicMapping)` reduces in full on the source's grid, `append_monotonic(&new, MonotonicAppend { sliding })` merges only the new samples (continuing the full call's grid; it reads neither `start` nor `interval`) and, sliding, moves the window by exactly their span on the anchored column grid (`pixel_offset`), never reading old samples; `check_mapping` refuses another mapping with `MonotonicError::SourceRequired { change: MappingChange }`. `MonotonicSourceRef` erases the element type for calls that take several sources. `MonotonicConfig` (with `MonotonicAxis`) is a monotonic chart's document editor: everything but the x-to-pixel mapping, checked by `same_mapping`; new rules `MonotonicGeneralChart`, `MonotonicMappingEdit`, `MonotonicRange`. The envelope is sized by the plot width and the channel count, never by the sample count; a `MonotonicMapping` keeps `margin_px` whole columns beyond each edge of the plot, fixed when it is built. A NaN gap narrower than one column is drawn joined. Rules M1–M7 in `MONOTONIC.md`.
   - **The series**: `DataRenderType::MonotonicLine(MonotonicLineSeries { group, channel, line })`, one channel of a group drawn as a line; its `x_column` and `y_column` name the renderer-owned envelope columns (the helper `SeriesConfig::monotonic_line(id, group, channel)` names them `<id>.monotonic.x` / `.y`; `SeriesConfig::monotonic_column_ids`). `Config::validate_monotonic_series` holds the rules: a named group, a linear unfilled line, two distinct envelope columns no other series reads, a linear, numeric, unbroken x axis on a rectangular 2D chart. New rules: `MonotonicGroupEmpty`, `MonotonicInterpolation`, `MonotonicFill`, `MonotonicColumns`, `MonotonicColumnsShared`, `MonotonicChartKind`, `MonotonicXAxis`, `PolarMonotonic`, `StreamedMonotonic`, `MonotonicChannel { channel, channels }`, `MonotonicColumnTaken { column }`. The legend shows its line; `ColorCycle` and the themes recolour and restyle it. The wire form `{"MonotonicLine": {..}}` is a new variant: older documents read and write as before. **Migration:** an exhaustive `match` on `DataRenderType` adds a `MonotonicLine` arm.
 
@@ -64,7 +64,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 - **Host defaults for the series styles and the chart frame** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `Default` now covers `Config`, `ChartTitleOptions`, `AxisTitleOptions`, `GridOptions`, `ColorBarOptions`, `Legend` and `ChartArea` (each the value `default` builds), and the series styles a document always spells out: `Stem`, `DataScatterStyleConfig`, `DataErrorBarStyleConfig`, `DataBarStyleConfig`, `VectorStyle`, `FieldFillConfig`, `ContourLabelConfig`, `RangeConnector` and `SurfaceWireframe`. Strokes take the black, 1 px ink of the line default; bars fill with the first colour of the balanced palette. `AxisOptions` and `LabelStyle` have none, since their default differs by axis. Product code cannot read them (#266).
 
 - **One source per document default; `Default` for hosts only** ([#266](https://github.com/shim9610/figgy/issues/266)).
-  - **One source, one folder.** Every serialized type with a default now spells it once, in the crate-private `defaults/` folder (one file per area: frame, series, annotations, chart families, science, text): the value a field takes when a document omits it. This covers the 46 hand-written `impl Default`, the 55 `#[derive(Default)]`, the `default` module's values (`Config`, the axis, title, label, legend, grid and colour bar options, `ChartArea`) and the ten field defaults that serde read from functions scattered over the model. `#[serde(default)]` reads them through `default = "crate::defaults::name"`. `Violin::DEFAULT_BOX_WIDTH` keeps its value, now read from there. Documents parse and serialize exactly as before.
+  - **One source, one folder.** Every serialized type with a default now spells it once, in the crate-private `defaults/` folder (one file per area: frame, series, annotations, chart families, science, text): the value a field takes when a document omits it. This covers every hand-written `impl Default` and `#[derive(Default)]`, the `default` module's values (`Config`, the axis, title, label, legend, grid and colour bar options, `ChartArea`) and the field defaults that serde read from functions scattered over the model. `#[serde(default)]` reads them through `default = "crate::defaults::name"`. `Violin::DEFAULT_BOX_WIDTH` keeps its value, now read from there. Documents parse and serialize exactly as before.
   - **New `helpers` feature (on by default).** Host conveniences live in the `helpers/` folder behind it: `impl Default` on those types and the `default` module (now `figgy_model::helpers::default`, still reachable as `figgy_model::default`). The model's and the renderer's own code, their unit tests included, cannot fall back on a default: `ci/verify.py static` builds both libraries and their unit tests without it.
   - **Named functions in place of defaults.**
     - `AnnotationLayer::empty()` and `DataSelectionsConfig::empty()` mean "nothing".
@@ -111,8 +111,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   height, a lone label by two and a half), wherever it overlaps least
   inside the plot, with a leader line when it moved. A label the host
   dragged keeps its place. In the bundled He, Ar, Cu, U and every-level Ar
-  scenes no level label overlaps any more (26 overlaps before in Ar, Cu and
-  U, 29 in every-level Ar). No API or serialized field changes.
+  scenes no level label overlaps. No API or serialized field changes.
 - **Break gaps in pixels; two broken axes meet as a cross** ([#249](https://github.com/shim9610/figgy/issues/249)).
   `AxisBreaks.gap` (a fraction of the axis length) is replaced by
   `gap_px: f32`, the gap's width in logical pixels (default 8, at most
@@ -186,13 +185,14 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   degrees, each on its own arc, however many. The picked part is drawn in
   `style.picked` (`color`, `width_extra_px`), a picked label boxed.
   `drag_vertex` (which commits the layout on the first drag), `drag_bend`
-  and `drag_label` (by list and row, D7) edit it;
+  and `drag_label` (by list and row) edit it;
   `Config::validate_feynman` holds a series to a rectangular chart with a
   numeric `bottom_x`. Vertex and propagator ids are held to be unique. `PickedDataRef` gains `FeynmanVertex`,
   `FeynmanPropagator` and `FeynmanLabel` (serde kinds `feynman_vertex`,
   `feynman_propagator`, `feynman_label`), stepped by `step_selection` over
   the rows and the Feynman series. `SeriesConfig::is_dataless` names the
-  energy-level and Feynman kinds. No count limit. Migration: an exhaustive
+  energy-level and Feynman kinds. A diagram may have any number of vertices
+  and propagators. Migration: an exhaustive
   match on `DataRenderType` or `PickedDataRef` adds the new arms.
 - **A hidden axis preset** ([#234](https://github.com/shim9610/figgy/issues/234)).
   `AxisPreset::Hidden` switches off every axis line, tick and tick label
@@ -524,7 +524,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `group_len()`, `node_count()` and `node_span()` are new. The rules
   (`validate`): a flat chart, no `split`, children summing to at most the
   parent, at most `MAX_SUNBURST_DEPTH` (8) rings of at most
-  `MAX_RADIAL_SLICES` (64) nodes, the limits approved on #140. Additive on
+  `MAX_RADIAL_SLICES` (64) nodes. Additive on
   the wire; a `RadialSlice` literal adds `children`.
 - **Colour images (imshow)**
   ([#139](https://github.com/shim9610/figgy/issues/139), #58).
@@ -550,8 +550,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   Additive on the wire (`"Hexagonal"`); an exhaustive `GridLayout` match
   adds the arm.
 - **No count caps on column-backed series**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R1, R2, R3, R4,
-  R10).
+  ([#107](https://github.com/shim9610/figgy/issues/107)).
   A series backed by `ColumnSource` has no count limit; the only failure
   left is allocation when its columns are registered.
   `AxisOptions::validate_categories` takes any nonzero number of
@@ -584,7 +583,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   "a categorical axis needs at least one category".
 
 - **Violins and rainclouds** ([#53](https://github.com/shim9610/figgy/issues/53),
-  #58 item 23). `DataRenderType::BoxPlot` gains `violin: Option<Violin>`
+  #58). `DataRenderType::BoxPlot` gains `violin: Option<Violin>`
   and `points: Option<BoxPoints>`. A `Violin` is
   `ViolinBody::Symmetric(ViolinHalf)` (one curve mirrored) or
   `ViolinBody::Split { low, high }` (a curve per side, at least one), with
@@ -599,13 +598,13 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   the shares, sizes and widths in range, the scales finite and positive and
   the column ids distinct. `step_selection` walks a box plot's raw points
   by row, bounded by the shorter point column. `BoxPlotRef` gains
-  `ragged_columns`, `plain_columns` and `draws_boxes`. The renderer
-  computes no density; there is no limit on curve points, categories or
-  raw points. Both fields are omitted from a document when unset. Code that
+  `ragged_columns`, `plain_columns` and `draws_boxes`. The host
+  supplies the density curve; any number of curve points, categories and
+  raw points is drawn. Both fields are omitted from a document when unset. Code that
   builds `DataRenderType::BoxPlot` by struct literal adds `violin: None,
   points: None` (`BoxPlot` is unreleased).
 - **A picked split violin names its half**
-  ([#53](https://github.com/shim9610/figgy/issues/53) D1).
+  ([#53](https://github.com/shim9610/figgy/issues/53)).
   `PickedDataRef::HistogramBin` and the renderer's
   `PickedData::HistogramBin` gain `half: Option<ViolinSide>`: `Some(Low)`
   or `Some(High)` for a split violin's half under the cursor, `None` for
@@ -670,7 +669,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `None`. Migration: a `Ternary { .. }` literal adds `region: None`, and a
   pattern that names every field adds `region` or `..`.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55),
-  #58 item 24). `Config.ternary: Option<TernaryOptions>` turns a chart into
+  #58). `Config.ternary: Option<TernaryOptions>` turns a chart into
   a triangle, and `DataRenderType::Ternary { c_column, scatter, line }`
   draws samples of three components named by `x_column`, `y_column` and
   `c_column`, unnormalized. The convention is fixed: x on `bottom_x` with
@@ -691,7 +690,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   literal adds `ternary: None`; an exhaustive `DataRenderType` match adds a
   `Ternary` arm.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
-  [#52](https://github.com/shim9610/figgy/issues/52), #58 item 23).
+  [#52](https://github.com/shim9610/figgy/issues/52), #58).
   `DataRenderType::RangeBars` draws a bar from a start to an end value at a
   position: waterfalls, candlesticks, state timelines and Gantt charts and
   floating ranges in one kind. `x_column` holds the positions, `y_column`
@@ -709,8 +708,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   rows and the range series of a layer. Every option is omitted from a
   document when unset. Labels reuse `CategoryBarSeriesLabels`, one host
   string per row.
-- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
-  item 22b). `DataRenderType::Streamlines { line, arrows, color_map }`
+- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58). `DataRenderType::Streamlines { line, arrows, color_map }`
   declares host-integrated field lines: every streamline of the series in
   its `x_column` / `y_column`, one after another, separated by a NaN row.
   `arrows: Option<StreamlineArrows { spacing_px, head_length_px,
@@ -726,7 +724,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   the line colour; `ColorCycle` recolours the line. Migration: an exhaustive
   `match` on `DataRenderType` needs a `Streamlines` arm.
 - **`layout::auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44),
-  #58 item 18). `auto_layout(&cfg, &measure) -> Config` returns the SSOT with
+  #58). `auto_layout(&cfg, &measure) -> Config` returns the SSOT with
   axis bands, axis title offsets and tick-label formats chosen so its tick
   labels, axis titles, chart title, legend and colourbar do not overlap, as
   `measure` lays them out (the labels the renderer draws, after pruning). It
@@ -781,15 +779,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `TextExtents`.
 - **One placement per element, interchangeable sinks**
   ([#38](https://github.com/shim9610/figgy/issues/38),
-  [#46](https://github.com/shim9610/figgy/issues/46) item 12). Every chart
+  [#46](https://github.com/shim9610/figgy/issues/46)). Every chart
   element has one placement function, its `emit`, which hands the parts it
   draws to a `Sink` (`model::sink`): the renderer's canvas sink paints them,
   the model's sinks answer bounds, hit tests and selection boxes from the
-  same parts, and drag containment reads the same parts. There is no second
-  placement left for the 15 cases the inventory listed; the ones that needed
-  a shader change are done by the renderer entries below (histogram
-  selection outline, contour label box, radial inside-label lift, pick slot
-  keys, the picker's projection), and no `TODO(#38)` is left. The renderer
+  same parts, and drag containment reads the same parts. The renderer
   and browser sides are under [Renderer](#unreleased-renderer) and
   [Browser product](#unreleased-web). Migration:
   - `Selectable` requires `emit(&self, cfg, measure, sink) -> bool` instead of
@@ -829,12 +823,12 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     part's outline (`select::part_outline`, the one shape of the hit test,
     the canvas highlight and a host's outline): a text block or rectangle as
     its box grown by 2 px, a stroke as the box `max(width / 2 + 2, 3)` px
-    either side of its line and 2 px beyond its ends (the plan said
-    `max(width / 2, 3)`; the polar ray is grabbed within 3 px, was 4), an
+    either side of its line and 2 px beyond its ends (the polar ray
+    is grabbed within 3 px, was 4), an
     arrow head as its triangle grown 2 px outward. A text annotation is one
     box.
   - A layered document expands its base panel (`select::on_drawn_panel`,
-    the renderer's own expansion, SSOT configuration) for every placement
+    the renderer's own expansion) for every placement
     the model runs for a hit test or a drag step; a single-layer document
     copies nothing.
   - Removed: `LineInterpolation::piece_count`,
@@ -868,7 +862,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `model::text::CharSet` (`renderer::text::CharSet`), and
   `CharSet::glyph_char` gives the character a set draws.
 - **Math nodes and `RichText::from_tex`**
-  ([#45](https://github.com/shim9610/figgy/issues/45), #58 item 19). A
+  ([#45](https://github.com/shim9610/figgy/issues/45), #58). A
   formula is a tree over the flat segment list, encoded by two additive
   `RichSegment` fields: `math_node: Option<MathNode { id, kind }>` on a
   segment that governs a layout and `math_parent: Option<MathSlot { id,
@@ -921,7 +915,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   radar rings, the box plot and categorical value ticks and the contour
   levels of `ContourConfig::nice_levels` now share one spacing rule and
   one walk in `model::tick` (`renderer::tick`)
-  ([#58](https://github.com/shim9610/figgy/issues/58) item 14). New public
+  ([#58](https://github.com/shim9610/figgy/issues/58)). New public
   items: `AXIS_LINEAR_TARGET` (10), `AXIS_LOG_TARGET` (7), `LooseRange`,
   `nice_linear_step`, `nice_log_step`, `axis_major_spacing`, the walkers
   `LinearGrid`, `LogDecades`, `LogMinors`, `major_ticks`, `minor_ticks` and
@@ -1000,22 +994,22 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   or serialized field changes.
 
 - **The bounded group, classified per chart**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13, 13a to 13i).
+  ([#40](https://github.com/shim9610/figgy/issues/40)).
   The four charts the 0.12 releases grouped as "bounded" are classified on
   their own. The radial chart is the DataLess chart, defined by its SSOT
   alone. Category bars and box plots are Cartesian series kinds and radar
   series a polar one, their per-point data entering through `ColumnSource`.
   `CategoricalChart`, `BoxPlotChart` and `RadarChart` stay only as
   deprecated readers of the documents of releases up to 0.12. Released
-  fixtures written by model 0.12.1 pin every document (13a). Every migration
-  of the item is under
+  fixtures written by model 0.12.1 pin every document. Every migration
+  is under
   [Migrating from the bounded group](#unreleased-bounded-migration).
   - **The radial chart is the DataLess chart**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The model
+    ([#40](https://github.com/shim9610/figgy/issues/40)). The model
     documents two chart classes: a DataLess chart is defined by its SSOT alone,
     with no `ColumnSource`, no column pool and no streaming, and the radial
     chart is its only member; the series kinds of `Config` are the
-    column-backed class. No new type.
+    column-backed class.
   - **Radial label strings in the SSOT.** `RadialSlice` gains `text:
     Option<String>` (additive, omitted when absent): the drawn label, at most
     two lines joined by `'\n'`, each at most 400 characters without control
@@ -1045,16 +1039,15 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     `RadialChart::step_selection(backwards)` is the radial step of the web
     wrapper's `step_selection`, moved into the model since it edits only the
     SSOT; the wrapper calls it and its behaviour is unchanged.
-  - **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13c). `AxisOptions` gains `categories: Option<Vec<Category>>`; a
+  - **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)). `AxisOptions` gains `categories: Option<Vec<Category>>`; a
     categorical axis with `n` categories maps the data range `[-0.5, n - 0.5]`
     with category `i` at `i`, a major tick at every category, no minors and
     `categories[i].label` as tick text, thinned by the numeric labels' stride
     rule when they crowd. `min`, `max`, `major_spacing`, `minor_count` and the
     label format are ignored on it. New items: `AxisOptions::category_count`,
     `data_range` (what the tick walks, `axis_fraction`, the annotation space and
-    the overlay and subplot expansion read) and `validate_categories` (1 to 64
-    categories, unique non-empty single-line ids, single-line labels of at most
+    the overlay and subplot expansion read) and `validate_categories` (at least one
+    category, unique non-empty single-line ids, single-line labels of at most
     80 characters, `MAX_CATEGORY_TEXT_CHARS`, a linear scale; an inverted
     categorical axis walks its categories from the far end, the ticks, labels,
     grid, data and picks following the same `axis_fraction`);
@@ -1068,7 +1061,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     integer-aligned is anchored by the same code; an integer data area gives the
     same endpoints bit for bit.
   - **Categorical bars are a Cartesian series kind**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `DataRenderType::CategoryBars { color, style, labels, label_format,
     overrides }` draws one bar per category of the chart's categorical axis
     (`bottom_x` for vertical bars, `left_y` for horizontal ones): the positions
@@ -1084,12 +1077,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     and `text`, one drawn string per category), `CategoryBarsRef` /
     `DataRenderType::category_bars`, `SeriesConfig::category_bar_columns`,
     `validate_category_bar_series`, `Config::validate_category_bars` (a
-    categorical axis in the bar direction, a linear value axis, at most
-    `MAX_BAR_SERIES` series per group and `MAX_CATEGORY_BARS` bars, distinct
+    categorical axis in the bar direction, a linear value axis, distinct
     value columns, no polar chart, horizontal groups on the base panel only),
     `Config::bar_groups_of` and `format_labels`, which writes `labels.text` from
     the host's values at edit time. The renderer draws the text it is given and
-    never formats a value (value labels, #40 item 13h, below). `AxisOptions`
+    never formats a value (value labels, below). `AxisOptions`
     gains `cross_at: Option<f64>`: the value of the perpendicular axis the axis
     line crosses at (`layout::axis_cross`; `axis_anchor(side, plot, cross)`
     takes it); only the line moves, the labels and the title stay at the plot
@@ -1098,7 +1090,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     its default; model 0.12.1 and older documents parse and re-serialize byte
     for byte.
   - **The categorical chart is a document reader**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `CategoricalChart` stays the serialized document of releases up to 0.12;
     `Config::from_categorical(&chart) -> (Config, Vec<SeriesConfig>,
     Vec<SeriesUpload<'_>>)` (`model::bounded_sources`) turns it into a
@@ -1117,7 +1109,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     `CategoricalChart::label_text` (a bar's geometry is the shader's, its
     label `format_labels`').
   - **Box plots are a Cartesian series kind**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `DataRenderType::BoxPlot { color, style, labels, outliers, overrides }`
     draws one box per category of the chart's categorical axis (`bottom_x` for
     vertical boxes, `left_y` for horizontal ones) with its median, whiskers and
@@ -1137,17 +1129,16 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     / `DataRenderType::box_plot`, `SeriesConfig::box_plot_columns`,
     `BoxPlotStyle::validate`, `validate_box_plot_series`,
     `Config::validate_box_plots` (a categorical axis in the box direction, a
-    linear value axis, at most 16 box plot series per layer and 512 boxes, a
-    grouped mode, one kind per layer: a layer draws either category bars or box
+    linear value axis, a grouped mode, one kind per layer: a layer draws either category bars or box
     plots, no horizontal boxes on an overlay, no polar chart) and
     `format_box_plot_labels`, which writes `labels.text` from the host's medians
     and counts at edit time: the renderer has no per-box statistics to write it
     from, so a host that uploads its own records writes it. The renderer draws
-    the text it is given (value labels, #40 item 13h, below). Every new key is
+    the text it is given (value labels, below). Every new key is
     additive and omitted at its default; model 0.12.1 and older documents parse
     and re-serialize byte for byte.
   - **The box plot is a document reader**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `BoxPlotChart` stays the serialized document of releases up to 0.12 and
     keeps its `validate` (ordered statistics, outliers outside the whiskers, a
     CI around the median, the limits). `Config::from_boxplot(&chart) -> (Config,
@@ -1169,7 +1160,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     `decorations.data_area` and the data label offsets are not carried. Removed:
     `BoxPlotChart::label_text` (a box's label is `format_box_plot_labels`').
   - **Categorical angle axis and polygon grid**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A polar
+    ([#40](https://github.com/shim9610/figgy/issues/40)). A polar
     chart's angle axis (`bottom_x`) may now be categorical
     (`AxisOptions::categories`), which `Config::validate_polar` rejected before:
     category `i` of `n` sits at `i / n` of the turn (or of `sector`) from
@@ -1184,7 +1175,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     { field: "polar" }` otherwise). The key is additive and omitted at its
     default.
   - **Radar is a polar series kind**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `DataRenderType::Radar { color, style, labels }` draws a closed outline
     through one value per category of a polar chart's categorical angle axis:
     `x_column` the positions column `0..n`, `y_column` the values. The closing
@@ -1198,13 +1189,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     string per category, at most `MAX_RADAR_LABEL_CHARS` each), `RadarRef` /
     `DataRenderType::radar` (with the line and marker styles the series draws
     with), `validate_radar_series`, `Config::validate_radar` (a polar chart with
-    a categorical angle axis and `Chord` interpolation, at most 16 radar series
-    per layer) and `format_radar_labels`, which writes `labels.text` at edit
-    time. The renderer draws the text it is given (value labels, #40 item 13h,
-    below). Every new key is additive and omitted at its default; model 0.12.1
+    a categorical angle axis and `Chord` interpolation) and `format_radar_labels`, which writes `labels.text` at edit
+    time. The renderer draws the text it is given (value labels, below). Every new key is additive and omitted at its default; model 0.12.1
     and older documents parse and re-serialize byte for byte.
   - **The radar chart is a document reader**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). `RadarChart`
+    ([#40](https://github.com/shim9610/figgy/issues/40)). `RadarChart`
     stays the serialized document of releases up to 0.12 and keeps its
     `validate`. `Config::from_radar(&chart) -> (Config, Vec<SeriesConfig>,
     Vec<SeriesUpload<'_>>)` (`model::bounded_sources`) turns it into a polar
@@ -1227,7 +1216,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     decoration selection are not carried. Removed: `RadarChart::label_text` (a
     vertex's label is `format_radar_labels`').
   - **Value label offsets, the label hit id and the label selection**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). The value
+    ([#40](https://github.com/shim9610/figgy/issues/40)). The value
     labels of `CategoryBars`, `BoxPlot` and `Radar` series are drawn (see
     [Renderer](#unreleased-renderer)); their strings stay `labels.text`, written
     at edit time. `CategoryBarSeriesLabels`, `BoxPlotSeriesLabels` and
@@ -1244,7 +1233,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     hosts. `PickedDataRef::ValueLabel { source_id, series_id, category_index }`
     is a selected label (`{"kind":"value_label", …}` in `picked_data`). The
     readers carry a legacy document's `DataLabel` offsets into `labels.offsets`.
-  - **Readers deprecated, their dead helpers removed** (13i).
+  - **Readers deprecated, their dead helpers removed**.
     `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
     `#[deprecated(since = "0.13.0")]`, each message naming its reader
     (`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`);
@@ -1261,7 +1250,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     (documents carry them), `BoundedTitleOptions` (the documents'
     `chart_title`) and the `bounded_title` and `bounded_sources` modules. The
     model README names the two chart classes and the readers.
-  - **Cartesian selection stepping in the model** (13i).
+  - **Cartesian selection stepping in the model**.
     `Config::step_selection(series, dx, dy, column_len) -> Result<bool,
     &'static str>` is the web wrapper's Cartesian `step_selection` moved into
     the model, with the same order and clamp rule: a point along its series
@@ -1275,7 +1264,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     them.
 - **Adaptive log-axis ticks**
   ([#42](https://github.com/shim9610/figgy/issues/42),
-  [#58](https://github.com/shim9610/figgy/issues/58) item 20).
+  [#58](https://github.com/shim9610/figgy/issues/58)).
   `AxisOptions::log_ticks: LogTickPolicy` decides a logarithmic axis'
   majors. `Decades`, the default, is the walk every log axis took before:
   every `major_spacing`-th decade. `Adaptive` ignores `major_spacing` and
@@ -1300,7 +1289,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   names `log_ticks` (`LogTickPolicy::Decades` keeps the former ticks).
 - **Offset spectra: `Config::line_offsets`**
   ([#50](https://github.com/shim9610/figgy/issues/50),
-  [#58](https://github.com/shim9610/figgy/issues/58) item 22a). The
+  [#58](https://github.com/shim9610/figgy/issues/58)). The
   additive `line_offsets: Option<LineOffsets { series, step_y, step_x }>`
   draws line series stacked: member `k` (stacking order) shifted by
   `k * step_y` and `k * step_x`, in data units or decades on a logarithmic
@@ -1310,7 +1299,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `Config::validate_line_offsets(series)` reject non-finite steps, unknown or
   duplicate ids, non-line members (`Line`, `ScatterLine` and
   `LineScatterErrorbar*` are accepted), members another chart draws, polar
-  charts, more than `MAX_OFFSET_LINES` (32) members and a `ToSeries` fill
+  charts and a `ToSeries` fill
   across members. `Config::expand` appends one panel per member after the
   overlay panels (the panel of the layer that scales it with `bottom_x` and
   the transform's `left_y` moved by the shift, every axis element hidden,
@@ -1376,8 +1365,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   lists (`Transition`: lower and upper level ids, a label, a colour value,
   a slot offset and the NIST line fields) are SSOT configuration, with
   `style`, `show` (`LevelView::Main` or `Components`) and an optional
-  `source` naming the series whose records a view draws. No list has a
-  count limit. `Config::validate_energy_levels` (in `validate_series`)
+  `source` naming the series whose records a view draws. Each list may
+  hold any number of entries. `Config::validate_energy_levels` (in `validate_series`)
   needs a categorical `bottom_x` on a rectangular chart and refuses
   columns and a self source. `LevelPlacement` places and emits every part
   through the `Sink` (strokes, limit lines, arrows, labels) and picks over
@@ -1491,7 +1480,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   three) and by `dy` across the mesh series. The legend mark and the colour
   cycle treat a mesh as a field. `Config::drawn_z_column` names a mesh's
   `z_column` on a 3D panel, as it names a scatter, line or point vector
-  series' (the trisurf, #210 step 5), so `step_selection` and the renderer
+  series' (the trisurf), so `step_selection` and the renderer
   bound the draw by the height column too. Migration: an exhaustive `match`
   on `DataRenderType` adds `TriMesh(_)`, one on `PickedDataRef` adds
   `MeshTriangle { .. }`.
@@ -1500,17 +1489,17 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
-- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271); on `feat/271-monotonic-line`, after 0.19).
+- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271)).
   - **A monotonic chart is its own registered chart** (`Renderer::register_monotonic_chart(config, series) -> MonotonicChartId`). Only that handle reaches it: the general chart calls take a `ChartId`, which a monotonic chart never hands out (monotonic charts are kept out of `chart_order`), so no general call (config, state, view, display, hold, auto-fit, streaming) can move its x-to-pixel mapping. A monotonic line series lives only in a monotonic chart: `register_chart`, `set_chart_series`, `set_chart_state` and `begin_replace_chart_columns` refuse it at registration (`RuleKind::MonotonicGeneralChart`). The handle wraps the registry's chart id, so a monotonic chart draws, picks and exports through the same paths as any chart.
   - `Renderer::monotonic_chart(id) -> MonotonicChart` lends the chart's calls. Four move the mapping, and each takes the source: `set_monotonic(group, &source, range)` (the full call; `MonotonicRange::X { min, max }` writes the x range, the only call that does, `MonotonicRange::Autoscale` fits x to `start ..= start + (len - 1) × interval` and y, padded by 5 %, to the values the same reduction keeps), `append_monotonic(group, &new, MonotonicAppend { sliding })` (only the new samples; a slide writes the moved x range to the document), `resize(chart_area, plot_area, surface, &[MonotonicGroupRef])` (the chart area, the plot a plot-area resize proposes, the display surface; atomic: the display and the document are planned together, a refusal changes nothing, and a plot rect the margins cannot place is `RuleKind::NoFeasibleLayout`) and `fit_layout(&[MonotonicGroupRef])` (`layout::auto_layout` applied). Without a source a moved group needs, the resize and the fit are refused with `FiggyError::MonotonicSourceRequired { series_id, change }` before anything is written. The other calls need none: `edit_config`, `set_series`, `step_selection`, `set_selection`, `pick_data`, `pick`, `prepare_picking`, `remove`. Reads take `&Renderer`: `monotonic_config`, `monotonic_series`, `monotonic_needs_source`, `monotonic_kept_point`, `monotonic_selection`, `monotonic_display_config`, `monotonic_render_stamp`, `monotonic_series_draw_info`. `prepare_monotonic(&mut [MonotonicChartDrawItem])` and `WindowedRenderer::draw_monotonic` draw monotonic charts; `ExportSource::Monotonic { chart, monotonic: &[MonotonicGroupRef] }` exports one (`&[]` at the screen's mapping; at another scale each group is reduced from its source into envelopes that live for the export alone).
   - **The document editor** (`MonotonicChart::edit_config(|editor| ..)`, over a `model::monotonic::MonotonicConfig`): read access to the whole `Config`, and editors for the legend, titles, grid, annotations, selection, active layer, backgrounds, axes (`MonotonicAxis`: title, labels and their format, ticks, line, a y axis' range), overlays and subplots; `nudge` and `drag` for decoration drags; `assign` for a whole document. No setter writes the x range, x scale, breaks, direction or the chart or plot area, and an edit that would move them (`model::monotonic::same_mapping`) is refused with `RuleKind::MonotonicMappingEdit` and changes nothing.
-  - The envelope is drawn by the existing line pipeline (no new shader, entry point or pipeline): 8 rows per pixel column, each point followed by a join marker that repeats it (a zero-length segment the stroke collapses) or is NaN (a break), so a picked row maps back to its logical sample index by arithmetic. x is `start + index × interval` in data units, so a slide by part of a column needs no special projection. The envelope keeps a fixed 64 whole pixel columns beyond each edge of the plot at the scale it is drawn at, set when it is built: a stroke width is a plain style edit, and strokes up to about 120 device pixels wide draw their edges as the full line's after a zoom; a wider one may miss ink at the plot's edges.
+  - The envelope is drawn by the existing line pipeline: 8 rows per pixel column, each point followed by a join marker that repeats it (a zero-length segment the stroke collapses) or is NaN (a break), so a picked row maps back to its logical sample index by arithmetic. x is `start + index × interval` in data units, so a slide by part of a column needs no special projection. The envelope keeps a fixed 64 whole pixel columns beyond each edge of the plot at the scale it is drawn at, set when it is built: a stroke width is a plain style edit, and strokes up to about 120 device pixels wide draw their edges as the full line's after a zoom; a wider one may miss ink at the plot's edges.
   - Frames and picks never fail for a missing source; a series whose group was never supplied has no columns and draws nothing, and removing its envelope columns no longer removes the series from the document. The core's refusals are `FiggyError::Monotonic { group, error }`; a group no series names is `FiggyError::UnknownMonotonicGroup`; writing or removing an envelope column is `FiggyError::ReservedColumnId`.
   - Every interaction: GPU picks on the drawn envelope report the logical index of a kept point, the picked highlight rings it, `step_selection` walks the kept points, the legend, decoration drags and a plot-area drag through the editor, a plot-area resize through `resize`, the annotation layer, PNG, SVG and PDF export at any scale, overlays and subplots. Streamed displays refuse the series (`StreamedMonotonic`, M5). `renderer::monotonic` re-exports the model's core; `MonotonicChartId`, `MonotonicChart`, `MonotonicChartDrawItem`, `MonotonicAppend`, `MonotonicSlices`, `MonotonicInterleaved`, `MonotonicSource`, `MonotonicSourceRef`, `MonotonicUpdate`, `MonotonicError`, `MappingChange` and `MonotonicLineSeries` are at the crate root; `renderer::renderer` holds `MonotonicGroupRef`, `MonotonicRange` and `MonotonicSourceNeed`.
   - **Migration:** exhaustive matches on `FiggyError` add `MonotonicSourceRequired`, `Monotonic` and `UnknownMonotonicGroup`; on `ExportSource`, `Monotonic`.
 
-- **Exports blend in half floats** ([#271](https://github.com/shim9610/figgy/issues/271)). A PNG, SVG or PDF export, resident or streamed, now renders into an `Rgba16Float` target and is quantized to straight-alpha RGBA8 once, at readback; it rendered into `Rgba8Unorm`, rounding every blend. 8-bit premultiplied blending is not associative, so the PNG export (grid, each data primitive, decoration) and a vector file's data image (the data alone, placed over the grid) drifted apart where many antialiased strokes stack: on an ordinary dense line (the 100 000-point resident scene) 797 colour channels differed by more than 1/255 (worst 2.9/255), on a monotonic envelope with one 50 Hz cycle per pixel column 1926 (worst 2.8/255). In half floats the two agree within the final rounding (30 and 88 channels, worst 1.3/255). The streamed export takes the same target and readback, so a streamed and a resident export stay byte-identical. Exported pixels move by up to 2/255 where partial-alpha fragments stack; on-screen frames are unchanged.
-- **A line segment between two equal points draws nothing on every backend** ([#271](https://github.com/shim9610/figgy/issues/271)). The stroke stage collapsed a segment only when its two projected ends were within 1e-6 px. Metal can round two projections of the same point an ulp apart, which is a few 1e-5 px at a few hundred pixels from the centre, so a repeated sample, or a step riser between equal values, could draw a stroke-wide square cap there. A piece whose two corners are one data point is now marked `STEP_AXIS_POINT` (`common/line_step.wgsl`). Its end copies its start and its direction is zero, so its length is exactly zero on every backend. This extends the #63 copy of the shared coordinate, and it applies to the line, sketch, ribbon and star entries, the arc scan and the GPU line pick. Ternary and 3D lines keep the old check, because their third component also places the ends. A monotonic envelope's join rows are such repeated points.
+- **Exports blend in half floats** ([#271](https://github.com/shim9610/figgy/issues/271)). A PNG, SVG or PDF export, resident or streamed, now renders into an `Rgba16Float` target and is quantized to straight-alpha RGBA8 once, at readback; it rendered into `Rgba8Unorm`, rounding every blend. 8-bit premultiplied blending is not associative, so the PNG export (grid, each data primitive, decoration) and a vector file's data image (the data alone, placed over the grid) drifted apart by up to about 3/255 where many antialiased strokes stack, as on a dense line or a monotonic envelope. In half floats the two agree within the final rounding (at most about 1.3/255). The streamed export takes the same target and readback, so a streamed and a resident export stay byte-identical. Exported pixels move by up to 2/255 where partial-alpha fragments stack; on-screen frames are unchanged.
+- **A line segment between two equal points draws nothing on every backend** ([#271](https://github.com/shim9610/figgy/issues/271)). The stroke stage collapsed a segment only when its two projected ends were within 1e-6 px. Metal can round two projections of the same point an ulp apart, which is a few 1e-5 px at a few hundred pixels from the centre, so a repeated sample, or a step riser between equal values, could draw a stroke-wide square cap there. A piece whose two corners are one data point is now marked `STEP_AXIS_POINT` (`common/line_step.wgsl`). Its end copies its start and its direction is zero, so its length is exactly zero on every backend. It applies to the line, sketch, ribbon and star entries, the arc scan and the GPU line pick. Ternary and 3D lines keep the old check, because their third component also places the ends. A monotonic envelope's join rows are such repeated points.
 
 - **`prepare` redraws a stale raster itself; the chart holds its selection** ([#265](https://github.com/shim9610/figgy/issues/265)). Breaking.
   - `ChartDrawItem` is now `{ view: &mut ChartView, chart: &Chart, series }` (was `view: &ChartView, chart_config: &Config`), and `RegisteredChartDrawItem.view` is `&mut ChartView`. `Renderer::prepare`, `prepare_registered`, `paint`, and `WindowedRenderer::draw`, `draw_registered`, `first_frame_ready(_blocking)` and `warm_up(_blocking)` take `&mut [..]`.
@@ -1523,17 +1512,17 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 
 - **Chart placement, overlays, swatches, a headless radial renderer and a PNG save** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Chart::placed(x, y, width, height)` and `with_area(..)` (resize a chart built from a document), `set_area(..)` (move an existing chart's area in place, as on a window resize), `with_overlay(y_axis, &series_ids)`, `with_legend_swatch(label, color)` for a legend entry that is not a series, `RadialRenderer::headless` / `headless_blocking`, and `RasterImage::save_png(path)` for a host that checks pixels before writing them.
 
-- **The examples use the helpers** ([#265](https://github.com/shim9610/figgy/issues/265)). The headless examples make their renderer with `Renderer::headless_blocking`, pass plain `Vec`s to `add_column`, build series with the `SeriesConfig` constructors and modifiers, take legends from their series (`with_legend_from`) and save with `save_blocking` where they need no image check. The gallery look and the designed scenes' chrome are themes (`examples/support/gallery.rs`, `support/styled.rs`). The examples shrink from 15,116 to 13,683 lines; the quick start (`examples/line.rs` and the README) from 85 to 30. Gallery images change only where a legend symbol now shows its series' own mark, where an axis title takes the gallery theme's ink, and where the dark style previews take the dark theme's chrome. `winit_simple` and `constellation_lab` leave the raster redraw to `prepare` and set the selection on the chart.
+- **The examples use the helpers** ([#265](https://github.com/shim9610/figgy/issues/265)). The headless examples make their renderer with `Renderer::headless_blocking`, pass plain `Vec`s to `add_column`, build series with the `SeriesConfig` constructors and modifiers, take legends from their series (`with_legend_from`) and save with `save_blocking` where they need no image check. The gallery look and the designed scenes' chrome are themes (`examples/support/gallery.rs`, `support/styled.rs`). The quick start (`examples/line.rs` and the README) is 30 lines. Gallery images change only where a legend symbol now shows its series' own mark, where an axis title takes the gallery theme's ink, and where the dark style previews take the dark theme's chrome. `winit_simple` and `constellation_lab` leave the raster redraw to `prepare` and set the selection on the chart.
 
 - **Chart themes** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `renderer::theme` re-exports the model's themes, `Chart::apply_theme(&theme, &mut series, SubplotScope)` applies one to the chart and its series and refits the layout to the new text sizes, and `Chart::with_theme(&theme)` applies the chrome alone and fits.
 
 - **Math in the text wrappers** ([#272](https://github.com/shim9610/figgy/issues/272)). Breaking. `Chart::with_title`, `with_x_title`, `with_y_title`, `with_legend_entry`, and with the `helpers` feature `with_colorbar_title` and `with_legend_swatch`, read their text through `text::rich_segments_from_label`: `with_y_title(r"$\sin(2\pi f t)$")` draws a formula, and a title's band and `fit_layout` measure it as drawn. `with_legend_from` carries each series' label as it is, math included. The examples that built TeX segments by hand (`line`, `error_bars`, `area_step`, `vector_field`) use the wrappers, and `examples/support/gallery.rs` drops its `tex_label`. **Migration:** a `$` in a string passed to these wrappers (and to `SeriesConfig::label`, `Annotation::text`, `AxisOptions::overlay_y`, `RadialChart::with_title` and the browser text setters) now opens math; write `\$` (in Rust, `r"Price (\$)"` or `"Price (\\$)"`) for a dollar sign. A lone `$` with no closing one still shows as written, since its TeX does not parse. Text set on the document directly (`RichText::plain`, a JSON `RichText`) is unchanged.
 
-- **Axis units** ([#273](https://github.com/shim9610/figgy/issues/273)). The renderer draws, hits, selects, lays out and exports the tick labels of an axis with a `unit` in its shown units (see the model entry); the data, the column pool and the picks are untouched. `Chart::set_x_range`, `set_y_range`, the `auto_fit_*` family and a view state choose `major_spacing` for the shown range of an axis with a unit. A contour label still prints its level in data units. A unit edit is an axis chrome edit: the axis raster is redone and the data is not touched. The renderer formats no cursor or hover readout of an axis value; the playground's hover readout prints the shown values, and its Chart section has a scale and offset per axis pair. With the `helpers` feature, `Chart::with_x_unit(scale, offset)` and `with_y_unit(scale, offset)` set the unit of `bottom_x` / `left_y` (the paired `top_x` / `right_y` keep theirs, as with `with_label_format`) and choose the spacing for the shown range as the range setters do; a unit the axis refuses is stored for `Config::validate_chart` to name, with no panic. The test catalogue gains the `AxisUnits` scene (counts printed as volts, samples as milliseconds, an overlay's kelvin as °C), which the decoration oracle, the auto layout sweep and the vector export sweep cover.
+- **Axis units** ([#273](https://github.com/shim9610/figgy/issues/273)). The renderer draws, hits, selects, lays out and exports the tick labels of an axis with a `unit` in its shown units (see the model entry); the data, the column pool and the picks are untouched. `Chart::set_x_range`, `set_y_range`, the `auto_fit_*` family and a view state choose `major_spacing` for the shown range of an axis with a unit. A contour label still prints its level in data units. A unit edit is an axis chrome edit: the axis raster is redone and the data is not touched. The renderer formats no cursor or hover readout of an axis value; the playground's hover readout prints the shown values, and its Chart section has a scale and offset per axis pair. With the `helpers` feature, `Chart::with_x_unit(scale, offset)` and `with_y_unit(scale, offset)` set the unit of `bottom_x` / `left_y` (the paired `top_x` / `right_y` keep theirs, as with `with_label_format`) and choose the spacing for the shown range as the range setters do; a unit the axis refuses is stored for `Config::validate_chart` to name, with no panic. The scene catalogue gains the `AxisUnits` scene (counts printed as volts, samples as milliseconds, an overlay's kelvin as °C).
 
 - **Tick label clearance** ([#272](https://github.com/shim9610/figgy/issues/272)). The renderer draws, hits, selects and lays out the tick labels the model keeps at axis corners and break marks (see the model entry). With the `helpers` feature, `Chart::with_label_clearance(LabelClearanceMode)` sets `label_style.clearance` on every axis (`bottom_x`, `top_x`, `left_y`, `right_y`, which is a 3D chart's z axis). A clearance edit is a label style edit: the axis raster is redone and the data is not touched. The playground's Chart section has "keep X labels" and "keep Y labels".
 
-- **Radar value labels stay next to their vertices** ([#272](https://github.com/shim9610/figgy/issues/272)). A radar value label sits outside its vertex along the spoke, `max(4, 0.25 em)` past the marker (was 9 px from the vertex), and still flips inward at the outer ring or the data area's edge. Only labels that would touch move, and only next to their own vertex: of two labelled series on one spoke, the larger value's label stays outside and the smaller value's goes inside its own vertex; equal or nearly equal values that would still touch split to the two sides of the spoke at the vertices' radius; a label that would touch the ring labels goes inside or beside its vertex. More series on a spoke are placed the same way from the outermost vertex inward. The shader reads the other labelled series' values at the spoke on every draw (SHADER_COMMON.md §5.17); nothing is stored, and there is no cap on the series. Drawing, picking and the selection box share the placement.
+- **Radar value labels stay next to their vertices** ([#272](https://github.com/shim9610/figgy/issues/272)). A radar value label sits outside its vertex along the spoke, `max(4, 0.25 em)` past the marker (was 9 px from the vertex), and still flips inward at the outer ring or the data area's edge. Only labels that would touch move, and only next to their own vertex: of two labelled series on one spoke, the larger value's label stays outside and the smaller value's goes inside its own vertex; equal or nearly equal values that would still touch split to the two sides of the spoke at the vertices' radius; a label that would touch the ring labels goes inside or beside its vertex. More series on a spoke are placed the same way from the outermost vertex inward. The shader reads the other labelled series' values at the spoke on every draw (SHADER_COMMON.md §5.17), for any number of series. Drawing, picking and the selection box share the placement.
 
 - **Chart conveniences** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Chart::sized(width, height)` (the documented default look with that chart area), `with_legend_from(&series)` (one entry per labelled series, its symbol from the series through `legend::series_symbol_segments`, so a colour is written once) and `fit_layout()` (`layout::auto_layout` with the chart's own font measure).
 
@@ -1584,7 +1573,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   columns, streamed sources, GPU index spaces, colourbars, line fills, the
   radial chart) are variants of the same enum, so a host matches one type.
   `RadialError::Invalid` carries a `RuleKind`. Every message reads as
-  before, byte for byte; a test pins each unit variant's sentence. Migration:
+  before, byte for byte. Migration:
   replace `InvalidSeriesConfig { reason, .. }` with
   `InvalidSeriesConfig { kind, .. }` and compare `kind` with a variant (or
   call `kind.to_string()` for the text); code that built these errors builds
@@ -1612,7 +1601,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   DataLess series, which also lets `auto_fit_all` run on a chart with an
   energy-level series. A 5,000-rung ladder (10,004 vertices, 15,002
   propagators) lays out in about 0.5 s and draws at 1x in about 0.8 s in
-  the debug test profile; nothing is capped.
+  the debug test profile.
 - **DataLess series are vector content in SVG and PDF** ([#234](https://github.com/shim9610/figgy/issues/234)).
   An energy-level series is written as vector parts from the emit its
   raster uses (levels, limits, transitions, arrowheads, labels and the
@@ -1627,7 +1616,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   they held its pixels; a reader of the file that expected one data image
   per panel group finds one per run.
 - **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
-  A fourth pool source kind, for the coming triangle mesh series:
+  A fourth pool source kind, for triangle mesh series:
   `Renderer::upsert_triangles(id, &TriangleSource { indices })` and
   `remove_triangles(id)` (also on `ColumnPool`, with `triangles(id)` and
   `triangle_stats(id)`). Three vertex indices per triangle upload as one
@@ -1657,10 +1646,10 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   vertex columns; `series_draw_info` counts the triangles and reports a
   column shortened after registration. A streamed display refuses the kind
   ("triangle mesh series require GPU-resident columns; streamed sources are
-  not supported", rule 8). The model's `TriMesh` series kind and `MeshTriangle` selection are
+  not supported"). The model's `TriMesh` series kind and `MeshTriangle` selection are
   re-exported (`renderer::tri_mesh`); `PickedData::MeshTriangle { source_id,
-  series_id, triangle_index, vertex_index, distance_px }` is the pick result
-  to come, `to_ref` dropping the hover-only `vertex_index`. Migration: an
+  series_id, triangle_index, vertex_index, distance_px }` is the pick result,
+  `to_ref` dropping the hover-only `vertex_index`. Migration: an
   exhaustive `match` on `PickedData` adds `MeshTriangle { .. }`.
 
 - **Triangle mesh series: picking and the picked highlight** ([#210](https://github.com/shim9610/figgy/issues/210)).
@@ -1675,7 +1664,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `outline_width_px`, and a picked level redrawn `contour_width_extra_px`
   wider, through the mesh's selection entry (`fs_tri_selection`);
   `ColumnFieldSelectionLayer` gains `vertices` and `instances` for it. A
-  million triangles pick in about 50 ms on lavapipe; nothing caps the count.
+  million triangles pick in about 50 ms on lavapipe.
   Migration: code that builds a `ColumnFieldSelectionLayer` sets `vertices:
   FIELD_VERTICES, instances: 0..1` for a field.
 
@@ -1707,7 +1696,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `vertices` and `instances` (a grid's `SURFACE_QUAD_VERTICES` and quads, a
   mesh's `TRI_MESH_VERTICES` and triangles); `SurfacePass::label` and
   `create_surface_pipeline` take the `SurfaceInput`; `TargetPipelines`
-  gains `tri_surface`. Nothing caps the triangle count. Migration: code
+  gains `tri_surface`. Any number of triangles is drawn. Migration: code
   that built a `ColumnSurfaceLayer` sets `vertices: SURFACE_QUAD_VERTICES`
   and renames `quads` to `instances`.
 
@@ -1717,8 +1706,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   coefficient per node, interpolated across the triangles, with nice
   contour levels) and `SceneKind::TriSurface` (the same mesh as a matte,
   wireframed surface in a 3D box, its contours on the floor) join
-  `SceneKind::ALL`, so the decoration oracle, the automatic layout sweep,
-  the vector export sweep and the playground's self-test cover them. The
+  `SceneKind::ALL`. The
   new [triangle mesh guide](crates/renderer/TRIMESH.md) collects the input,
   the series, the drawing, the 3D surface, the interactions and the tests;
   the interaction and API guides, the READMEs and the model README name the
@@ -1730,14 +1718,12 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   the earlier series' scratches and the frame failed with an internal
   error: more than 256 heatmaps, images, vector series, colour-mapped
   scatter, streamline or parallel series (or triangle meshes) in one frame
-  did not draw (rule 10). Each cache (`field`, `vector`, `value_map`,
+  did not draw. Each cache (`field`, `vector`, `value_map`,
   `contour`, which also holds value label atlases and energy-level
   rasters) is now bounded before a frame resolves, keeping the series that
   frame draws, and evicts nothing while it runs; a lone preparation (a
   pick) still evicts as before. The contour cache never failed (its frame
   keeps snapshots), and now also stops rebuilding the frame's own entries.
-  Tests draw 300 heatmaps, vector series, colour-mapped scatter series,
-  contours and triangle meshes in one frame.
 
 - **Shaders compile on the renderer's own thread** ([#222](https://github.com/shim9610/figgy/issues/222)).
   A backend's shader compiler can need more stack than the calling thread
@@ -1759,13 +1745,6 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   so the result is unchanged. A host that observes initialization
   (`InitEvent::stage`) now sees these two stages in place of
   `pick_field_data`.
-
-- **Probability axes are refused until drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
-  A chart with a probability axis on any axis or subplot is refused at
-  registration and at export with `InvalidConfig` ("probability axes are not
-  drawn yet"), rather than drawn as a linear axis, until the GPU transform
-  places them. The annotation space, the fit stamp (codes 2 to 4) and the
-  render warnings take the new scale.
 
 - **The partner axis takes the main axis's scale.** `Chart::set_x_range`,
   `set_y_range`, the `auto_fit_*` helpers (and the renderer's fit applied
@@ -1804,8 +1783,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   1 takes the mirror of the other) and pads in `F⁻¹` units; line offsets
   shift fit extents in `F⁻¹` units; a view state checks the bounds. A
   streamed series on a probability axis is refused ("probability axes
-  require GPU-resident columns; streamed sources are not supported"). The
-  model PR's "not drawn yet" refusal is gone. The annotation space, the fit
+  require GPU-resident columns; streamed sources are not supported"). The annotation space, the fit
   stamp (codes 2 to 4) and the render warnings take the new scale.
   Migration: a `ScatterTransform` literal adds
   `scale_prob: renderer::data_render::NO_PROBABILITY` (`[0.0; 4]`).
@@ -1830,10 +1808,9 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   not pick), and the marker wins a tie. The baseline joins the value
   axis' auto-fit, as a histogram's does (`FitExtentParams::Stem`), before
   a line offset member's shift. Constellation drops a stem series, as it
-  drops an error-bar series. Streaming is not extended to stems
+  drops an error-bar series. Streamed sources are refused for stems
   (`STREAMED_STEM_REASON`). Every row draws a stem: 1,000,001 rows draw in
-  about 1.2 s and pick their last row in about 4.7 s on lavapipe, measured
-  by `tests/stem_render.rs` and never capped.
+  about 1.2 s and pick their last row in about 4.7 s on lavapipe.
 
 - **Polar heatmaps and contours** ([#208](https://github.com/shim9610/figgy/issues/208)).
   A field on a polar chart draws each cell as the annular sector between
@@ -1854,9 +1831,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   and inverted radius axes, a categorical angle axis, the hole and the
   sector work; an interpolated full circle closes its seam when the host
   names the first column again one turn on. Streaming stays refused for
-  every polar chart. No count limit: 65,537 angle cells by 64 rings draw
-  in about 0.4 s and a 2,048 by 2,048 grid in about 0.5 s on lavapipe,
-  measured by `tests/polar_heatmap_render.rs`. The `PolarHeatmap` scene is
+  every polar chart. Any grid size draws: 65,537 angle cells by 64 rings draw
+  in about 0.4 s and a 2,048 by 2,048 grid in about 0.5 s on lavapipe. The `PolarHeatmap` scene is
   a weather radar sweep and `polar_plot` writes a fifth image, an antenna
   gain heatmap. The shader prewarm contract is regenerated.
 
@@ -1867,8 +1843,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   (`VectorInput::Points3d`) is the point form with the flat projection
   fragment replaced by `common/project_3d.wgsl` and the new
   `vector/project_box3d.wgsl`, plus the ID pick entries of the new
-  `vector/vector_entry_3d.wgsl`; the glyph and the input are unchanged
-  (rule 9). Both projection fragments now define `arrow_clip(corner,
+  `vector/vector_entry_3d.wgsl`; the glyph and the input are unchanged. Both projection fragments now define `arrow_clip(corner,
   arrow)`, and `ArrowPx` carries the NDC depth at the tail and tip; the
   entry's body is `vector_vertex`, and the 2D vector modules draw
   byte-identical pixels. The glyph stays camera-facing in logical pixels.
@@ -1884,9 +1859,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `Data` arrow from column statistics. `SeriesDrawInfo` counts the height
   and `w`, and registration checks `w` on a 3D chart. A change of a
   series' `z_column` is now a data declaration change (it moved no
-  revision before). Streamed sources are refused. No count limit:
-  `(1 << 20) + 1` arrows draw, pick their last row and step to it in
-  `tests/surface_render.rs`. The `Quiver3d` scene draws an
+  revision before). Streamed sources are refused. Any number of
+  arrows draws, picks and steps. The `Quiver3d` scene draws an
   Arnold-Beltrami-Childress flow coloured by a host-computed speed. The
   shader prewarm contract is regenerated.
 
@@ -1914,10 +1888,9 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   On native an awaited readback no longer polls the device on the awaiting
   thread: `RendererDevice::new` starts one poll thread per device bundle,
   which completes every awaited wait, so the future returns `Pending` until
-  the work is done. The thread holds no lock (two atomic counters and its
-  park token), parks while nothing is pending and exits once the bundle's
-  clones, its renderers and engines and every pending ticket are gone;
-  `tools/loom-poller` model-checks its protocol with loom. Each wait now
+  the work is done. The thread parks while nothing is pending and exits once the bundle's
+  clones, its renderers and engines and every pending ticket are gone.
+  Each wait now
   comes in three forms with the same result, sharing the work's submit and
   its synchronous finish:
   - awaited: `resolve`, `export_rgba` / `export_png` / `export_svg` /
@@ -1936,7 +1909,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     waiting, for a UI that checks a hover pick each frame.
 
   A streamed series' pick resolves by `resolve` only: its blocking and
-  checked forms fail with the new `GpuPickError::Streamed` (rule 8).
+  checked forms fail with the new `GpuPickError::Streamed`.
 
   Every other call that waited for the GPU or initialized pipelines
   asynchronously gains a native `_blocking` twin that shares its steps:
@@ -2075,7 +2048,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   owns (`resize`, `draw`, `draw_registered`, `draw_prepared`,
   `first_frame_ready`, `warm_up`, `pick_chart_at`, `pick_chart_data_at`,
   `surface_size`, `surface_format` and the constructors) and implements
-  `DerefMut<Target = Renderer>` beside `Deref`; its 87 hand-written
+  `DerefMut<Target = Renderer>` beside `Deref`; its hand-written
   forwarding methods are gone. Migration: none for calls written as
   `windowed.method(...)`, which now resolve to the `Renderer` method through
   auto-deref; code that named a forwarder as a path
@@ -2261,8 +2234,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   layout, stack arithmetic, overrides, materials, corner rounding, value
   labels (`value_label_wedge`), pick, highlight and `step_selection` the
   bar's; the wedge's footprint is the radial chart's sector
-  (`radial_sector.wgsl`, now spliced into the bar module) built in
-  registers, so nothing is stored per bar. Grouped wedges sit side by side
+  (`radial_sector.wgsl`, now spliced into the bar module). Grouped wedges sit side by side
   in the categories' order, `bar_gap` pixels apart along the ring. The
   `Rose` catalogue scene is a wind rose of sixteen directions and three
   stacked speed bands.
@@ -2276,8 +2248,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `ParallelParams`, the lane table and the range table;
   `create_parallel_data_bind_group_layout` /
   `create_parallel_data_bind_group`, `ParallelParamsGpu`,
-  `ParallelAxisGpu`), the normalization computed on every draw and never
-  stored; a row's colour is its colour column's value through the
+  `ParallelAxisGpu`); a row's colour is its colour column's value through the
   colourbar ramp or the series colour; `vs_parallel_selected` redraws the
   picked row in the selection's style over every body; `pick_parallel`
   answers the nearest segment's row as a point (`GpuDataPickGeometry::Parallel`,
@@ -2310,8 +2281,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   in order, the material seed is `(ring · 97 + index) · 13.17`. Outside
   labels are the outermost ring's, an inner ring's `Outside` draws inside
   its band (`placement`); every node's label is a decoration. The
-  `Sunburst` catalogue document is a three-ring budget, swept by the oracle
-  and the vector export.
+  `Sunburst` catalogue document is a three-ring budget.
 - **Colour images (imshow)**
   ([#139](https://github.com/shim9610/figgy/issues/139), #58). An
   `RgbImage` series draws through the field module with `FIELD_FLAG_RGB`:
@@ -2334,7 +2304,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   centre among the nearest column, its nearest row and the six neighbours;
   `FIELD_FLAG_HEXAGONAL` in `FieldParams.flags`), and the fill, the cell
   pick and the selection outline (`hex_edge_distance_px`) all go through
-  that one lookup, O(1) per fragment with nothing stored per cell. The
+  that one lookup, O(1) per fragment. The
   pool measures every column's uniform step as it is written
   (`ColumnSlot::uniform_step`, `data::UniformStep`; a promoted streamed
   column has none), and registration requires it of a hexagonal grid's
@@ -2349,10 +2319,9 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   every bit past f32 was lost unless the host used `add_hilo_column`; past
   2^24 that silently moved ragged group offsets. They now write the
   `(hi, lo)` split (about 48 significant bits; integers below 2^48 exact)
-  straight into the pair writer, resident and streamed alike
-  (the maintainer's exception to rule 8 for upload precision, #107), and the
-  web wrapper's borrowed f64 column does the same. No extra pass, buffer or
-  copy; memory is unchanged (every lane was already a pair). Values that are
+  straight into the pair writer, resident and streamed alike, and the
+  web wrapper's borrowed f64 column does the same. No extra pass or
+  buffer; memory is unchanged (every lane was already a pair). Values that are
   not exact f32 now place a sub-ulp closer to their f64 position.
 
 - **No export scale cap.** `MAX_EXPORT_SCALE` (8.0) is removed and
@@ -2361,21 +2330,20 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   must fit the device's texture limit (`max_texture_dimension_2d`); past it
   the PNG, SVG and PDF exports fail with `FiggyError::GpuResourceLimit`
   before anything is allocated, as a target past the limit already did.
-  Streamed charts keep their 8× bound (streaming is not extended).
+  Streamed charts keep their 8× bound.
   Migration: code that names `renderer::MAX_EXPORT_SCALE` picks its own
   bound; code that relied on a scale above 8 being clamped now gets that
   scale, or the `GpuResourceLimit` error when it does not fit the device.
 
 - **No value label cap**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R11). The value
+  ([#107](https://github.com/shim9610/figgy/issues/107)). The value
   label uniform held 64 label cells (`ValueLabelParamsGpu::cells`, 1120 B)
   and the atlas 64 widths, so a bar, box or radar series over more
   categories labelled its first 64 only. The cells are now a read-only
   storage array bound at group 1 binding 7 of the value label draw and
   pick, one per label, written straight into its buffer's mapping at
   prepare; the atlas keeps its bake's cell widths. Every category is
-  labelled, drawn, picked and dragged: 300 labels in `value_labels_render`.
-  No policy cap replaces it: the label count is the host's to budget.
+  labelled, drawn, picked and dragged, however many there are.
   Images of up to 64 labels are byte-identical; a series over more
   categories now also draws the labels past the 64th. Migration: the public
   `VALUE_LABEL_CAPACITY` is removed; `ValueLabelParamsGpu` loses `cells` and
@@ -2383,7 +2351,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   binding 7 (read-only storage).
 
 - **No series cap on bar, box and radar groups**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R3). A category
+  ([#107](https://github.com/shim9610/figgy/issues/107)). A category
   bar group kept its members' value column lanes in a 16-entry table in
   the params uniform (`CategoryBarParamsGpu::values`, 112 B). The lanes are
   now the series' lane table, a read-only storage array bound at group 3
@@ -2393,8 +2361,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   mapping at creation; nothing is staged on the CPU. A group of 40 series
   stacks and picks like a group of two; the stack and percent loops read
   every member at each bar, so a draw costs `O(members² · categories)`
-  pool reads, measured in `category_bars_render` and documented in
-  SHADER_COMMON §5.13, never capped. The renderer's 16-member check is
+  pool reads (SHADER_COMMON §5.13). The renderer's 16-member check is
   gone; existing category bar, box plot and radar images are
   byte-identical. Migration:
   `CategoryBarParamsGpu` loses `values` and is 48 B;
@@ -2404,7 +2371,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   built for the category bar group 3 adds binding 10 (read-only storage).
 
 - **Column-backed series past the old caps draw and pick**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R5, R10). A box
+  ([#107](https://github.com/shim9610/figgy/issues/107)). A box
   plot's override rows were built in a stack table of 64 categories' rows
   and the rows past it were dropped; they are now written straight into
   the override buffer's mapping at creation, sized by the series'
@@ -2414,21 +2381,19 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   engine asks for each member's transform. Migration: none.
 
 - **No ragged value cap**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R6). A ragged
+  ([#107](https://github.com/shim9610/figgy/issues/107)). A ragged
   column's offsets were `(hi, lo)` f32 pairs read as `u32(hi + lo)`, exact
   only to 2^24, so a ragged column (a box plot's outliers) held at most
   2^24 values. The pool now stores the offsets as `u32` index lanes: the
   integer `hi + lo` of the pair the source writes, summed in f64, as `u32`
   bits in the pair's first lane and 0 in the second, read with
   `bitcast<u32>` (SHADER_COMMON §5.14). Every offset up to `u32::MAX` is
-  exact: the encoding is tested on the CPU write and a GPU read-back at
-  2^24 - 1, 2^24, 2^24 + 1, `u32::MAX - 1` and `u32::MAX`, where the
-  former read loses 2^24 + 1. The only bound left is the `u32` index space
+  exact. The only bound left is the `u32` index space
   (`u32::MAX` values); box plot images are byte-identical. An offset is the
   integer its source writes, so offsets past 2^24 come from a source that
   writes the `(hi, lo)` split, as `Config::from_boxplot`'s uploads, the
   WASM `register_ragged` and now `Column<f64>` (see "f64 columns upload
-  exactly") do. Migration: the unreleased `MAX_RAGGED_VALUES` is removed.
+  exactly") do.
 
 - **The picker measures in the draw's own pixel frame**
   ([#114](https://github.com/shim9610/figgy/issues/114)). The exact
@@ -2442,12 +2407,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   the cursor mapped in once by `pick_cursor_px`). The sketch stroke's pick
   also stopped clamping its knot weight, since a multisampled fragment
   past a strip's square cap extrapolates its end span to the pixel centre
-  (a faint dash sliver at a joint was painted but not picked). New
-  property tests draw seeded random compositions of elementary functions
-  under random styles, dashes, widths, step modes, gaps and off-screen
-  leads (`random_composite_lines_pick_where_they_draw`,
-  `random_composite_markers_and_star_lines_pick_where_they_draw`), which
-  found both. Migration: none.
+  (a faint dash sliver at a joint was painted but not picked). Migration: none.
 
 - **Line arcs stay exact past 2^24 px**
   ([#107](https://github.com/shim9610/figgy/issues/107)). The arc prefix of
@@ -2460,13 +2420,9 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   adds (SHADER_COMMON §5.6 arc pairs). Every reader takes a segment's arc as
   the pair at its start plus a small offset, and reduces the start exactly
   (integer long division) for the dash phase, the noise cell and the slot
-  index, so the pattern far along the arc is the pattern at its start:
-  `dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc` drew
-  a solid stroke before and draws [8, 4] dashes now, and
-  `gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels` holds a
-  3.9e7 px prefix to 0.05 px of the f64 sum. Picking reads the same pairs,
-  and the streamed arc replay writes them too (upload precision, the
-  maintainer's exception to rule 8). The prefix is 8 bytes per point
+  index, so the pattern far along the arc is the pattern at its start, and a
+  3.9e7 px prefix stays within 0.05 px of the f64 sum. Picking reads the
+  same pairs, and the streamed arc replay writes them too. The prefix is 8 bytes per point
   instead of 4; a dash period, noise wavelength or slot pitch is rounded to
   1/65536 px. The star pass skips slots its existence gate drops before
   any arc arithmetic. Migration: a custom line pipeline binds the arc
@@ -2474,21 +2430,19 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   the prefix decodes `(low + high * 2^32) / 65536` px.
 
 - **No star slot cap**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R7). The arc scan's
+  ([#107](https://github.com/shim9610/figgy/issues/107)). The arc scan's
   `star_indirect` kernel capped the candidate slots of a Milkyway star pass
   and a streamline's arrowheads at `STAR_MAX_SLOTS` (2 000 000) per series,
   so a series whose drawn arc ran past 1 M px (at the default 0.5 px pitch)
   drew no stars or arrowheads past that point. Every slot of the arc now
   draws, up to the `u32` instance count a draw can name. The cost grows with
   the drawn arc: one 6-vertex instance per slot, each a binary search over
-  the arc prefix (`O(slots · log n)`), measured in
-  `milkyway_stars_draw_past_two_million_arc_slots` and documented in
-  SHADER_COMMON §5.6, never capped. Images of series under the old cap are
+  the arc prefix (`O(slots · log n)`, SHADER_COMMON §5.6). Images of series under the old cap are
   byte-identical. Migration: the public `line_arc::STAR_MAX_SLOTS` is
   removed.
 
 - **The column pool grows by default, to the device's limits**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R8, R9). A pool
+  ([#107](https://github.com/shim9610/figgy/issues/107)). A pool
   kept the capacity `Renderer::try_new` was given unless the host chose
   `GrowthPolicy::OnAllocFailure`, the web wrapper's pool stayed at 16 MiB
   unless `set_pool_auto_growth(true)` was called, and `request_device`
@@ -2497,7 +2451,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   allowed. `GrowthPolicy::OnAllocFailure` is now the default, natively and
   on the web, and `request_device` / `request_device_async` request the
   adapter's supported limits. A column registers unless the device or the
-  memory budget cannot hold it, which is the only failure rule 10 allows.
+  memory budget cannot hold it.
   The pool's starting capacity is still the one the host passes.
   Migration: a host that relied on `OutOfSpace` from a full pool calls
   `set_pool_growth_policy(GrowthPolicy::Fixed)` (web:
@@ -2506,10 +2460,9 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   defragmentation does. A host that opens its own device keeps its own
   limits.
 
-- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
-  item 22b). A `Streamlines` series draws its polylines through the line
+- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58). A `Streamlines` series draws its polylines through the line
   path (dashes, picking and the picked ring included) and its arrowheads
-  through the vector glyph (rule 9): the line's arc prefix is scanned with
+  through the vector glyph: the line's arc prefix is scanned with
   the arrow spacing as the slot pitch, the scan's indirect kernel counts the
   slots, and the new path input of the vector shader
   (`VectorInput::Path`, `VECTOR_PATH_SHADER`, `vector/vector_input_path.wgsl`)
@@ -2554,8 +2507,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `PickQueryParamsGpu` grows from 528 to 560 bytes with the raw points'
   layout. A box override restyles its category's violin. The fit covers
   the curves and the points' values; streamed sources are rejected.
-  Two playground scenes (Split violins, Raincloud) join the decoration
-  oracle's catalogue. Picking among 600 violins of 4 096 curve points takes
+  The playground gains two scenes (Split violins, Raincloud). Picking among 600 violins of 4 096 curve points takes
   about 4 ms on lavapipe, and a raw point among 3 000 000 about 70 ms.
 - **3D surfaces** ([#49](https://github.com/shim9610/figgy/issues/49)).
   A 3D panel's composite gains a `Depth24PlusStencil8` attachment at the
@@ -2625,9 +2577,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   maximum of the rows after invalid rows, scanned in blocks of 256 and
   levels, written once per draw and pick into one `u32` per row. No
   invocation walks its ring, so the work per vertex is bounded whatever
-  the ring's length. A walk to the ring's first vertex in one invocation
-  had made Metal kill the command buffer for one ring of 131 072 vertices
-  and leave the device drawing nothing (#63). Group 1 binds the pool as
+  the ring's length. Group 1 binds the pool as
   storage with the fill's params and the ring starts; no vertex slot.
   The point picker counts the crossings of the cursor's ray with the edges
   under `PICK_FLAG_REGION` and folds the parity in the per-series reduction
@@ -2658,8 +2608,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   sinks (`axis_render/ternary_axes.rs`), so drawing, hit regions, the
   selection outline and the vector exports share one placement. Fits leave
   a ternary chart's axes alone, annotations place ratio anchors only, and
-  streamed sources are rejected. The playground's Ternary scene joins the
-  decoration oracle's catalogue. Guide: `TERNARY.md`.
+  streamed sources are rejected. The playground gains a Ternary scene. Guide: `TERNARY.md`.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52)). The bar module draws
   them through its range bar fragment (`common/range_bars.wgsl`,
@@ -2673,18 +2622,17 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   (`VALUE_LABEL_KIND_RANGE`). `Chart::auto_fit_layer_union` fits the value
   axis to the ends and whiskers without forcing zero, and a numeric
   position axis to the slots (`range_bar_extents`). Streamed sources are
-  rejected. Three playground scenes (Waterfall, Candlesticks, Gantt) join
-  the decoration oracle's catalogue. Guide: `RANGEBARS.md`.
+  rejected. The playground gains three scenes
+  (Waterfall, Candlesticks, Gantt). Guide: `RANGEBARS.md`.
 - **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50),
-  #58 item 22a). A document with `line_offsets` draws each member as an
+  #58). A document with `line_offsets` draws each member as an
   internal panel of its own through the existing per-panel path: lines,
   fills, markers, error bars, dashes, the picked ring and the PNG, SVG and
-  PDF exports follow the member's panel, with no shader change and no
-  transform, binding or cache of its own. The view counts member panels
+  PDF exports follow the member's panel. The view counts member panels
   like overlays (`overlay_count()`, `layer_raster_generations()`, the
   refresh rule of `layer_views`), and a member draws no backdrop and
   reports no tick warnings. A pick on the owner layer answers with what is
-  painted under the cursor (the approved D7 policy): the point pick tests
+  painted under the cursor: the point pick tests
   each member at its own panel's transform and reads back each member's
   candidate beside the final one; the last member with a hit at distance 0
   answers first, else the nearest hit of any series; a typed pick lets a
@@ -2701,7 +2649,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `Chart::line_offset_fit_extents`.
 
 - **Math layout from the OpenType MATH table**
-  ([#45](https://github.com/shim9610/figgy/issues/45), #58 item 19). A
+  ([#45](https://github.com/shim9610/figgy/issues/45), #58). A
   `Math` node in any rich text (titles, axis titles, legend labels,
   annotation and colourbar texts, series labels) is laid out by
   `text_render/math_layout.rs` from the MATH table of the math face:
@@ -2734,20 +2682,18 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   feature `std`) reads the MATH table and the GSUB `ssty` alternates. swash
   and egui pin read-fonts 0.41, which has no MATH table, so the lockfile
   holds both versions until they move, when the two are unified
-  ([#160](https://github.com/shim9610/figgy/issues/160)). The reader first
-  used `ttf-parser 0.25`, which RustSec marks unmaintained
-  (RUSTSEC-2026-0192); the renderer no longer depends on it.
+  ([#160](https://github.com/shim9610/figgy/issues/160)).
 - **Power tick labels** write the exponent as a text-mode `Scripts` node
-  (D3 of #45) instead of superscript segments. It lays out through the same
+  instead of superscript segments. It lays out through the same
   `script_placement`, so the labels' pixels, bounds and parts are unchanged.
 - **One cell placement.** `measure_rich_text` and `draw_rich_text` share
   one internal placement of a cell's glyphs, rules, dashes, bands and
   underlines, and the glyph caches are keyed by glyph id instead of
   character. Every pixel and extent is unchanged.
 
-- **Error bars and line fills pick where they are drawn** (G10 of
-  [#37](https://github.com/shim9610/figgy/issues/37),
-  [#46](https://github.com/shim9610/figgy/issues/46) item 6). `pick_chart`
+- **Error bars and line fills pick where they are drawn**
+  ([#37](https://github.com/shim9610/figgy/issues/37),
+  [#46](https://github.com/shim9610/figgy/issues/46)). `pick_chart`
   (`pick_point` in the WASM wrapper) now hits error-bar stems and caps on the
   quads the error-bar shader draws — per-point widths of the precise style
   map, the hashed corner wobble under Sketch, a Milkyway jet's beam and knot
@@ -2760,14 +2706,9 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   wins. A zero-alpha bar or fill picks nothing. The draw and the pick build
   the geometry from the same new fragments (`common/errorbar_segment.wgsl`,
   `common/area_piece.wgsl`); the draw is pixel-identical. Zero-size markers
-  already picked; a test now pins it. Streamed picks are unchanged (streaming
-  is not extended). G10 is closed except for band fills: a field drawn with
-  `FillMode::Bands` keeps deciding whether a cell paints by its opacity
-  alone, so a transparent ramp stop still picks. Its band position needs the
-  contour lookup metadata (binding 6), which the field pick cannot bind
-  within the storage-binding limit; moving it into the tail of `stops`
-  (binding 3) would change the frozen streaming field builders, so that
-  option was not taken. The point picker's
+  already picked. Streamed picks are unchanged. Band fills are the exception:
+  a field drawn with `FillMode::Bands` decides whether a cell paints by its
+  opacity alone, so a transparent ramp stop still picks. The point picker's
   device-limit check now asks for the 7 storage buffers and 3 bind groups its
   exact pass binds (it asked for 6 and 2). No public API or serialized field
   changes.
@@ -2815,8 +2756,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   (`srgb_output.wgsl`), and no shader carries a copy of a shared function
   any more ([#46](https://github.com/shim9610/figgy/issues/46)). Each
   module's source and fragment list come from one literal list
-  (`shader_assembly::Assembled`), and a test pins every pick module to the
-  shared fragments of the draw module it measures. Picks, pixels and the
+  (`shader_assembly::Assembled`). Picks, pixels and the
   pipeline layouts are unchanged.
 - **Pick slot keys.** A series' pick resources are keyed by the pick
   descriptor itself, compared field by field, instead of by separate
@@ -2828,7 +2768,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 - **Histogram selection outline.** A selected bin's outline resolves the
   bin's gap and width ratio with the bar draw's own resolver on the GPU
   (`resolve_bar_style` in `bar_columnar.wgsl`) instead of a CPU copy of it
-  ([#46](https://github.com/shim9610/figgy/issues/46) item 2). The selection
+  ([#46](https://github.com/shim9610/figgy/issues/46)). The selection
   writes the series' bar `Style` with the highlight colour, the outline width
   and the bin's global index in lanes a bar never reads, and a series drawn
   through its bar style map is outlined by the new `vs_bar_selection_mapped`
@@ -2838,25 +2778,24 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `selection_charge` and gains `style_map_bg: Option<&wgpu::BindGroup>`, the
   series' bar style map exactly when the bar draw binds it.
 - **Contour labels.** The label atlas code lives in `data_render/contour.rs`
-  beside the contour draw ([#58](https://github.com/shim9610/figgy/issues/58)
-  item 14). The label quad and the contour stroke gap under it take their
+  beside the contour draw ([#58](https://github.com/shim9610/figgy/issues/58)). The label quad and the contour stroke gap under it take their
   frame (centre, reading direction, upright turn) from one WGSL fragment,
   `common/contour_label_box.wgsl`
-  ([#46](https://github.com/shim9610/figgy/issues/46) item 4). The gap keeps
+  ([#46](https://github.com/shim9610/figgy/issues/46)). The gap keeps
   its 0.5 px edge inside the quad's 2 px edge; no pixel changes. Migration:
   the public module path `data_render::contour_label_atlas`, which exported
   nothing, no longer exists; remove a `use` of it.
 - **Radial inside-label lift.** The vertical offset of a lifted sector's
   inside label is computed once where the sector is built and passed to the
   shader in `Sector.effects.w` (reserved zero before)
-  ([#46](https://github.com/shim9610/figgy/issues/46) item 5); the layout,
+  ([#46](https://github.com/shim9610/figgy/issues/46)); the layout,
   the hit map and the shader read the same value. No pixel changes.
 - **Script layout.** Superscript and subscript segments, including the
   exponents of `LabelFormat::Power` tick labels, are sized and shifted by
-  one renderer function that the math `Scripts` node of #45 will share.
+  one renderer function, which the math `Scripts` node (#45) shares.
   No pixel, metric or public API changes.
 - **Cache keys.** Two renderer caches compared less than their computation
-  read, found by the new per-field mutation tests
+  read
   ([#46](https://github.com/shim9610/figgy/issues/46)):
   - the resident bodies of a panel were kept after an edit of the tick-label
     face (`bottom_x.label_style.label_font`), which the contour labels baked
@@ -2901,7 +2840,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   field changes.
 
 - **The bounded group, classified per chart**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13). The radial
+  ([#40](https://github.com/shim9610/figgy/issues/40)). The radial
   chart keeps its own renderer, on the shared sinks, title and hit map, with
   a GPU pick; category bars and box plots draw through the bar module and
   radar series through the polar line, area and scatter paths; the three
@@ -2909,15 +2848,14 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   changes and the oracle exclusions are under
   [Migrating from the bounded group](#unreleased-bounded-migration).
   - **Radial decorations on the shared sinks and hit map**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The radial
+    ([#40](https://github.com/shim9610/figgy/issues/40)). The radial
     frame's title, plot area and slice labels are `Selectable<RadialChart>`
     elements of a `HitMap<RadialChart>`: each places its parts from the chart
     through one emit into the `model::sink` sinks, and the label raster draws
     with the same emit, so hit regions, selection boxes, drag containment and
     the drawn highlight come from one placement. An outside label's leader line
     is a part of the label: it starts at the slice, follows the label's offset
-    from its elbow, and is hit and outlined with the text part by part (the
-    oracle's leader-line exclusion is gone). **Behaviour change:** the selected
+    from its elbow, and is hit and outlined with the text part by part. **Behaviour change:** the selected
     outside label's highlight outlines each text line and the leader line
     instead of one box around the text; a drag is contained on the text it
     moves. `RadialFrame::decorations()` returns the `HitMap<RadialChart>`
@@ -2944,8 +2882,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     are the shader fragment `data_render/common/radial_sector.wgsl`, spliced
     into the draw module and a new pick module (`radial_pick`); the pick runs
     the draw's `hit_pixel` and occlusion rule over the frame's own sector
-    buffer. `RadialFrame::hit_test` and `hit_test_at_rest`, whose CPU twin was
-    product code, are replaced by `RadialFrame::pick(position)` and
+    buffer. `RadialFrame::hit_test` and `hit_test_at_rest` are replaced by `RadialFrame::pick(position)` and
     `pick_at_rest(position)`, which submit the pick and return a
     `RadialPickTicket`; `resolve().await` (natively `resolve_blocking()`) reads
     the slice back, like the Cartesian pick ticket. The frame no longer keeps
@@ -2953,12 +2890,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     feature.
   - **Radial frame key.** The frame cache is keyed by `FrameKey`, the chart's
     fields that reach the frame named one by one, instead of a clone of the
-    chart; a mutation test classifies every field
+    chart
     ([#66](https://github.com/shim9610/figgy/issues/66)). Editing
     `label_format`, `label_decimals` or `value_suffix` without writing the
     labels again reuses the frame, since nothing it draws changed.
-  - **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13c). The four Cartesian axes and the overlay Y axes may be
+  - **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)). The four Cartesian axes and the overlay Y axes may be
     categorical (`AxisOptions::categories`). The category labels are the
     side's `AxisLabel` element, placed by the numeric labels' placement in the
     axis' label style, so hover, hit, selection, both drag offsets, the picked
@@ -2975,14 +2911,14 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     label and grid walks take the plot `RectF` instead of the integer data
     area. Every existing document draws the same pixels.
   - **Category bars on the bar path**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d). A
+    ([#40](https://github.com/shim9610/figgy/issues/40)). A
     `CategoryBars` series draws through the bar module: the input fragment
     `data_render/common/category_bars.wgsl` (SHADER_COMMON §5.13) is spliced
     into `bar.rs::BAR_SHADER` beside the histogram entries, one instance per
     category, the rect built on every draw from the positions, the group
     layout and, for a stack, the other series' values read by their pool
     lanes from the series' lane table (group 3, bindings 8 to 10: the pool,
-    `CategoryBarParamsGpu` and the lane table, #107 R3). The bars are shaded by `bar_surface` with their
+    `CategoryBarParamsGpu` and the lane table, #107). The bars are shaded by `bar_surface` with their
     material; the histogram's override table carries the per-bar overrides
     (`BarStyleSlotGpu` / `BarStyleOverrideGpu` gain the `material` and
     `finish` lanes, `BAR_STYLE_MASK_MATERIAL`). The typed data pick
@@ -2998,12 +2934,10 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     categories. A `PercentStacked` group whose value column's minimum
     statistic is below 0 is refused when drawn or picked, with
     `InvalidSeriesConfig` naming the series and the mode, since the shader
-    stacks only positive shares. Value labels are drawn from `labels.text` (#40
-    item 13h, below).
+    stacks only positive shares. Value labels are drawn from `labels.text` (below).
     `bar_groups.bar_gap` is logical pixels, scaled with the display config
     (`Config::scaled`), and `group_width` a share of the slot, so a 2x export
-    is the 1x layout doubled (`category_bars_render` and `box_plot_render`
-    check it).
+    is the 1x layout doubled.
     A streamed category bar series is rejected with `InvalidSeriesConfig`.
   - **The legacy categorical renderer is removed.** `CategoricalRenderer`,
     `CategoricalFrame` (`bar_rect`, `hit_test`, `decorations`, …),
@@ -3021,23 +2955,16 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     legend box in its corner instead of the row below the chart (the bottom
     row legend is gone), the export clear colour replaces the document's
     `background`, and value labels are drawn through the contour label
-    module (#40 item 13h, below; the changed-pixel counts here were measured
-    before they were). The bars themselves shade as before: the dominant bar
+    module (below). The bars themselves shade as before: the dominant bar
     colours of the former renderer's and the new exports of the same
     documents are equal for Flat, Enamel and Paper and within 1/255 for
-    SatinMetal and 2/255 for Matte, whose grain pattern differs. Changed pixels
-    of whole 900 × 620 exports of the five `categorical_gallery` cases
-    against the former renderer: grouped-matte 533 431 (95.6 %),
-    horizontal-satin 514 021 (92.1 %), stacked-enamel 369 997 (66.3 %),
-    percent-outline 373 719 (67.0 %), signed-stacked 454 125 (81.4 %); the
+    SatinMetal and 2/255 for Matte, whose grain pattern differs. The
     reader inverts the category axis of a horizontal document, so its first
-    category is at the top as before (the two horizontal cases drew it at the
-    bottom before that, 557 936 and 386 412 changed pixels); the
-    released 0.12.1 edited document at 800 × 600: 446 660 at 1x, 1 788 971
-    at 2x. None is pixel identical; every difference is the chrome above.
+    category is at the top as before. No export is pixel identical to the
+    former renderer's; every difference is the chrome above.
   - **Record and ragged column sources in the pool**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13e). Two
-    `ColumnSource` extensions for the box plot, with no drawing consumer yet:
+    ([#40](https://github.com/shim9610/figgy/issues/40)). Two
+    `ColumnSource` extensions for the box plot:
     a record (`RecordSource { schema, fields }`, a fixed set of named scalar
     fields per row checked by name against a static `RecordSchema` such as
     `BOX_PLOT_RECORD`, at most `MAX_RECORD_FIELDS` = 12) and a ragged column
@@ -3064,7 +2991,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     cannot reference it. No serialized field and no shader change; the
     additions are API only.
   - **Box plots on the bar path**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f). A
+    ([#40](https://github.com/shim9610/figgy/issues/40)). A
     `BoxPlot` series draws through the bar module: the fragment
     `data_render/common/box_plot.wgsl` (SHADER_COMMON §2.5 and §5.15) is
     spliced into `bar.rs::BAR_SHADER` with the marker, error bar segment,
@@ -3081,7 +3008,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     style map (`PrimitiveStyle::from_box_plot`,
     `create_bar_style_map_with_slots`, the `BAR_STYLE_MASK_FILL`, `_BORDER_*`,
     `_GAP` and `_WIDTH_RATIO` masks) and the per-box overrides its override
-    rows (`row * 3 + part`, a fixed array, no new binding).
+    rows (`row * 3 + part`).
     `ColumnCategoryBarLayer` gains `vertices`. The typed data pick
     (`pick_box_plot`, answered as `PickedData::HistogramBin` with the
     category row) tests the body, the whisker and cap and median strokes, the
@@ -3094,7 +3021,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     value-axis fit (`Chart::auto_fit_layer_union`, `box_plot_value_extent`)
     covers the pool's statistics of every value field of the records (all
     but `sample_count`) and of the outlier columns, hidden means and outliers
-    included as before. Nothing per box is stored on the CPU.
+    included as before.
     **Unordered statistics are clamped, not rejected**: the renderer cannot
     read a record on the CPU, so it no longer checks the order the former
     renderer checked. The body spans `min(q1, q3)..max(q1, q3)`, the median
@@ -3119,24 +3046,13 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     gallery) replaces the document's `background`, a selected box draws the
     Cartesian inside outline, an unfilled outlier is the marker's 1.5 px ring
     (formerly at most 1.2 logical px inside the marker), and value labels are
-    drawn through the contour label module (#40 item 13h, below; the
-    changed-pixel counts here were measured before they were). The boxes
+    drawn through the contour label module (below). The boxes
     themselves shade as before: the dominant box
     colours of the former renderer's and the new exports of the same
-    documents are equal. Changed pixels of whole 960 × 640 exports of the
-    five `boxplot_gallery` cases against the former renderer, composited
-    over white (raw RGBA in brackets, the clear colour differing): classic
-    matte 106 874 (17.4 %) [600 005], satin 93 480 (15.2 %) [587 033],
-    horizontal 98 512 (16.0 %) [600 129], grouped notch 92 956 (15.1 %)
-    [600 227], mean and selection 95 304 (15.5 %) [600 168]; at 2x 385 432,
-    340 208, 373 575, 328 413 and 335 510. A horizontal document with
-    per-box overrides: 92 608 (15.1 %) at 1x, 344 896 at 2x. The released
-    0.12.1 edited document at 800 × 600, whose background is not white:
-    479 241 (99.8 %) raw, 90 046 with a channel difference above 8; at 2x
-    1 916 942 and 352 881. None is pixel identical; every difference is the
-    chrome above.
+    documents are equal. No export is pixel identical to the former
+    renderer's; every difference is the chrome above.
   - **Categorical polar angle axis**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). The polar
+    ([#40](https://github.com/shim9610/figgy/issues/40)). The polar
     projection reads its angle constants from `AngleMap`, so a categorical
     angle axis places category `i` at `i / n` of the turn or sector with no
     shader change; a numeric axis draws pixel-identically. The polar axes
@@ -3149,13 +3065,12 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     annotation layer, subplots and PNG export follow the polar rules
     unchanged.
   - **Radar series on the line and scatter paths**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A `Radar`
+    ([#40](https://github.com/shim9610/figgy/issues/40)). A `Radar`
     series draws as the polar line layer with a new `closed` flag, one more
     instance that joins the last vertex to the first, its fill to the inner
     ring through the area layer (`closed` too, on a full circle; a sector
     leaves the closing wedge unfilled) and its vertex markers through the
-    scatter path, all built on every draw from the two columns; nothing per
-    vertex is stored on the CPU. The GPU pick gains the closing segment
+    scatter path, all built on every draw from the two columns. The GPU pick gains the closing segment
     (`line.z` of the pick query, `pick_next_point` and `pick_starts_segment`
     in the pick core, a closed line scanned directly) and the closed fill,
     with the tie rule markers over the outline over the fill, and answers
@@ -3163,8 +3078,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     vertex draws the picked ring. The radius-axis fit
     (`auto_fit_layer_union`) covers the value columns. A radar series is
     drawn in the precise draw style only; a radar series on a rectangular
-    chart, a numeric angle axis, an `Arc` interpolation, more than 16 radar
-    series in a layer or columns that do not hold one value per category are
+    chart, a numeric angle axis, an `Arc` interpolation or
+    columns that do not hold one value per category are
     rejected with `InvalidSeriesConfig`, and a streamed radar series with
     "radar series require GPU-resident columns; streamed sources are not
     supported".
@@ -3183,21 +3098,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     `background`, the ring labels are the radius tick labels on the ray, a
     picked vertex draws the picked ring instead of the brightened series,
     the ring labels include the centre's `0`, and value labels are drawn
-    through the contour label module (#40 item 13h, below; the changed-pixel
-    counts here were measured before they were). The polygons, fills and
-    markers themselves keep their places.
-    Changed pixels of whole 960 × 640 exports of the five `radar_gallery`
-    cases against the former renderer, composited over white (raw RGBA,
-    the clear colour differing, is 100 % in each): spider web 67 747
-    (11.0 %), circle values 72 870 (11.9 %), fixed axis 100 298 (16.3 %),
-    four series 132 665 (21.6 %), selection 111 500 (18.1 %); at 2x
-    251 852, 269 546, 384 227, 514 080 and 429 467. The released 0.12.1
-    edited document at 800 × 600, composited over its own background:
-    94 450 (19.7 %), 92 855 with a channel difference above 8; at 2x
-    371 662 and 365 452. None is pixel identical; every difference is the
-    chrome above.
+    through the contour label module (below). The polygons, fills and
+    markers themselves keep their places. No export is pixel identical to
+    the former renderer's; every difference is the chrome above.
   - **Value labels through the contour label module**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). Category
+    ([#40](https://github.com/shim9610/figgy/issues/40)). Category
     bar, box plot and radar series draw their value labels again: each
     series' `labels.text` strings are baked into one label atlas by the
     contour labels' builder (`bake_contour_label_atlas`: the one text stack,
@@ -3236,7 +3141,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     `SELECTION_STROKE_WIDTH`, `SELECTION_COLOR`). PNG export bakes the atlas
     at the export scale; labels of overlay and subplot series draw and pick
     in their panels.
-  - **Bounded leftovers removed** (13i). `decoration::DecorationMap`, which
+  - **Bounded leftovers removed**. `decoration::DecorationMap`, which
     had no constructor left after the radar renderer, and
     `BoundedAnnotationFrame::hit_test_active_layer`, which took one, are
     removed; the radial frame answers through `HitMap<RadialChart>` and
@@ -3254,7 +3159,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     struct changes; the radial pixels and picks are unchanged.
 - **Adaptive log-axis labels**
   ([#42](https://github.com/shim9610/figgy/issues/42),
-  [#58](https://github.com/shim9610/figgy/issues/58) item 20). On an axis
+  [#58](https://github.com/shim9610/figgy/issues/58)). On an axis
   with `log_ticks: Adaptive` the tick-label pruning first demotes crowded
   labels to the next sparser ladder, 1..9 → 1, 2, 5 → decades, while at
   least two labels remain, then thins what is left by the existing 1, 2, 5,
@@ -3271,13 +3176,14 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   Decimal labels).
 
 - **SVG and PDF export** ([#48](https://github.com/shim9610/figgy/issues/48),
-  [#58](https://github.com/shim9610/figgy/issues/58) item 21). Additive API:
-  `Renderer::export_document_svg_async(chart, series, scale) -> String` and
-  `export_document_pdf_async(..) -> Vec<u8>`, their `_with_clear_async`
-  variants (the clear colour as a background rectangle), the blocking native
-  `export_document_svg` / `export_document_pdf`, the same six methods on
-  `WindowedRenderer`, and `RadialRenderer::export_svg_async(chart, size,
-  scale)` / `export_pdf_async` with blocking `export_svg` / `export_pdf`. The
+  [#58](https://github.com/shim9610/figgy/issues/58)). Additive API:
+  `Renderer::export_svg(source, options) -> String` and
+  `export_pdf(source, options) -> Vec<u8>`, awaited or as the native
+  `export_svg_blocking` / `export_pdf_blocking`, and
+  `RadialRenderer::export_svg(chart, size, options)` / `export_pdf` with the
+  same blocking twins. `ExportOptions::with_clear` writes the clear colour as
+  a background rectangle; a vector export renders the whole document, so
+  `ExportScope::Panel` is refused. The
   decorations are vector content written from the emit the raster draws
   with, at the PNG export's scaled and placed document, so the file's
   decorations are the drawn ones: strokes with the raster's widths, width
@@ -3292,7 +3198,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   is rejected with `ColumnNotResident`. The PDF is written by hand (objects,
   cross-reference table, deflated content, one ExtGState per alpha byte, RGB
   image XObjects with soft masks).
-  - **Documented omissions** (D5): the Milkyway glow is raster-only and not
+  - **Documented omissions**: the Milkyway glow is raster-only and not
     drawn; no selection box is drawn (as in the Cartesian PNG; the radial PNG
     draws the selected decoration's box, its SVG and PDF do not); the radial
     export draws every inside label above every slice, where the PNG can hide
@@ -3300,13 +3206,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   - **New direct dependency**: `flate2 = "1"` (1.1.10, MIT OR Apache-2.0),
     already in the lockfile through `png`; `Cargo.lock` gains only the
     renderer's dependency line.
-  - Internals, no pixel change (the 17 catalogue scenes and the radial scene
-    export the same RGBA at 1x and 2x): the text placement is
+  - Internals, no pixel change: the text placement is
     `place_rich_text` / `place_plain_text` over the glyph sink, the sketch
     curve `sketch::smooth_cubics`, the annotation item loop
     `emit_annotation_layer`, the radial split connectors strokes into the
-    label sink (`emit_split_connectors`; the guard's `draw_line` allowance for
-    `radial_layout.rs` is removed), and the export `prepare_export` /
+    label sink (`emit_split_connectors`), and the export `prepare_export` /
     `paint_export`.
 
 - **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
@@ -3338,8 +3242,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   pixels at the series' display scale, cached in the scratch map by the
   panel config, the series, the records it draws and the font generation,
   and composited in the data slot after every picked highlight, per data
-  piece (approved on #203 as an exception to computing appearance in the
-  shader). The column-only paths skip the DataLess series. A typed data
+  piece. The column-only paths skip the DataLess series. A typed data
   pick answers for it on the CPU over the drawn placement (a level as a
   `HistogramBin`, a transition as a `Point`, a label as a `ValueLabel`
   naming its `part`); `GpuDataPickTicket` merges that hit with the GPU
@@ -3347,8 +3250,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   parent's data area (an inset) is drawn after every other panel, all its
   slots, and a base-layer pick inside it answers for the inset. A
   streamed display refuses the series (`STREAMED_ENERGY_LEVELS_REASON`).
-  The vector export carries it in the data image like any series (#234
-  makes it vector content). New
+  The SVG and PDF exports write it as vector content (#234). New
   `nist_grotrian` example: a std-only NIST ASD CSV parser over bundled He
   I exports. Migration: a `PickedData::ValueLabel { .. }` literal adds
   `part: None`; a `SeriesLayers` literal adds `energy_levels: None` (or
@@ -3374,7 +3276,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `support/nist_csv.rs` and `support/grotrian_sets.rs`, shared with the
   playground's `EnergyLevelsAr`, `EnergyLevelsCu`, `EnergyLevelsU` and
   `EnergyLevelsArAll` scenes. The display or export scale reaches the chrome
-  emit (the maintainer's option A on #205): new
+  emit: new
   `Renderer::create_chart_view_at(chart, panel_rect, scale)` and
   `Renderer::refresh_axis_with_selection_at(view, chart, panel_rect,
   selected, scale)` take the scale a placed or exported chart's pixels
@@ -3384,13 +3286,13 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   is the CPU raster at a scale. The export and the vector export pass their
   scale, the web wrapper its display scale, and the playground its display's,
   so a broken axis' piece frames (`frame_each_panel`) are crisp at 1x and
-  2x is 1x doubled; the Grotrian scenes draw their pieces framed again.
+  2x is 1x doubled; the Grotrian scenes draw their pieces framed.
 
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
 
-- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271); on `feat/271-monotonic-line`, after 0.19).
+- **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271)).
   Monotonic series live only in a monotonic chart: the kernel's general
   chart refuses them, and `FiggyChart.set_monotonic_document(config,
   series)` shows a monotonic chart instead (`clear_monotonic_document()`
@@ -3507,8 +3409,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   `remove_triangles(id)` removes one.
 - **Triangle mesh series JSON** ([#210](https://github.com/shim9610/figgy/issues/210)).
   The `TriMesh` render_type and the `mesh_triangle` selection parse and
-  write through serde (SCHEMA.md); a `pick_data` hit on a mesh will report
-  `kind: "mesh_triangle"` with its `triangle_index` and `vertex_index`.
+  write through serde (SCHEMA.md).
   `set_series` draws a mesh series on a flat chart.
 - **Triangle mesh picks, details and steps** ([#210](https://github.com/shim9610/figgy/issues/210)).
   `pick_data` answers a mesh's triangles (`kind: "mesh_triangle"`, with
@@ -3518,9 +3419,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   and values (or its face value), read back from the GPU columns.
   `step_selection` counts a mesh's triangles from the index column's
   statistics. `set_series` accepts a series that names a registered
-  triangle index column; it refused every mesh series before, because the
-  triangle id is not a column id. On a 3D chart the mesh draws as a surface
-  over its `z_column` (the trisurf, #210 step 5) and the details report the
+  triangle index column. On a 3D chart the mesh draws as a surface
+  over its `z_column` (the trisurf) and the details report the
   triangle's heights as `z`, next to its `values`.
 - **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
   A picked arrow of a 3D point vector reports `z` and `w` in
@@ -3613,16 +3513,16 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 - **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
   `set_series` reads and writes a series' `"z_column"` (SCHEMA.md, omitted
   when absent) and `selection_details()` adds a point's `z` when its
-  series has one. No new binding.
+  series has one. No new JavaScript method.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)). `set_series` reads and
   writes a ternary series' `"region"` (SCHEMA.md, omitted when absent); a
-  fill picks as a point of its series. No new binding.
+  fill picks as a point of its series. No new JavaScript method.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
   `set_config` / `get_config` read and write `"ternary"` (omitted when
   absent), `set_series` the `"Ternary"` render type (SCHEMA.md);
   `selection_details()` adds a picked point's `c`, and `auto_fit_all` leaves
-  a ternary chart's axes alone. No new binding.
+  a ternary chart's axes alone. No new JavaScript method.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52)). `RangeBars` series
   read and write in `set_series` JSON (SCHEMA.md); `selection_details()`
@@ -3632,7 +3532,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
   `set_series` / `get_series` read and write the `"Streamlines"` render
   type; `pick_point`, `step_selection`, the column references and
-  `auto_fit_colorbar` (the colour column) cover it. No new binding;
+  `auto_fit_colorbar` (the colour column) cover it. No new JavaScript method;
   `SCHEMA.md` gives the form.
 
 - **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50)).
@@ -3640,7 +3540,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   subplot's `config` too) and omitted when absent; `pick_point`,
   `pick_data`, `selection_details` and `step_selection` report the
   unshifted values, `auto_fit_all` fits the members where they are drawn,
-  and `hit_test` answers with the base layer's elements. No new binding;
+  and `hit_test` answers with the base layer's elements. No new JavaScript method;
   `SCHEMA.md` describes the key.
 
 - **`autoLayout(configJson)`** ([#44](https://github.com/shim9610/figgy/issues/44)):
@@ -3651,7 +3551,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 - **Adaptive log ticks.** `"log_ticks": "Adaptive"` is read and written on
   every axis of `set_config` / `get_config` and on `set_colorbar_axis`
   ([#42](https://github.com/shim9610/figgy/issues/42)); the default
-  `"Decades"` is not written. No new binding; `SCHEMA.md` lists the values.
+  `"Decades"` is not written. No new JavaScript method; `SCHEMA.md` lists the values.
 - **Math text.** `rich_text_from_tex(tex, font_size, font, r, g, b, a)`
   returns the JSON of `RichText::from_tex` for any rich text field of
   `set_config` or `set_series` ([#45](https://github.com/shim9610/figgy/issues/45)).
@@ -3666,20 +3566,20 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
   ([#38](https://github.com/shim9610/figgy/issues/38)). Migration: read
   `outline` where `labels` was read.
 - **Series extent key.** The series extent job identity had no vector
-  `factor`, so a factor edit reused the previous extent; the per-field
-  mutation test found it ([#46](https://github.com/shim9610/figgy/issues/46)).
+  `factor`, so a factor edit reused the previous extent
+  ([#46](https://github.com/shim9610/figgy/issues/46)).
 - The wrapper's inline `mod web` is split into files under `src/web/`
   (moves only); no JavaScript export changes.
 - **The bounded group, classified per chart**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13). Categorical
+  ([#40](https://github.com/shim9610/figgy/issues/40)). Categorical
   bar, box plot and radar documents open in `FiggyChart`; `FiggyBoundedChart`
   is the radial chart's host. Migrations are under
   [Migrating from the bounded group](#unreleased-bounded-migration).
   - **Asynchronous radial picks.** `FiggyBoundedChart.pick`, `hover` and
     `hit_decoration` return Promises, because a radial chart picks its slices on
-    the GPU ([#40](https://github.com/shim9610/figgy/issues/40) item 13b).
+    the GPU ([#40](https://github.com/shim9610/figgy/issues/40)).
   - **Categorical documents in the Cartesian wrapper**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `FiggyChart.set_categorical_document(json)` opens a `CategoricalChart`
     document as category bars (`Config::from_categorical`), registering its
     positions and value columns and fitting the value axis.
@@ -3689,14 +3589,13 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     longer has the `"categorical"` family; creating one with it is an error that
     names the new method.
   - **Record and ragged registration**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13e).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `FiggyChart.register_record(id, fields)` registers or replaces a box plot
     record from an object of `Float32Array`/`Float64Array` fields keyed by
     field name, and `FiggyChart.register_ragged(id, values, offsets)` a ragged
-    column from two `Float64Array`s. Both are additive; nothing draws them
-    yet (the box plot series of item 13f will).
+    column from two `Float64Array`s. Both are additive.
   - **Box plot documents in the Cartesian wrapper**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `FiggyChart.set_boxplot_document(json)` opens a `BoxPlotChart` document as
     box plot series (`Config::from_boxplot`), registering its positions column,
     one record per series and, for a series with outliers, its ragged outlier
@@ -3709,7 +3608,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     no longer has the `"boxplot"` family; creating one with it is an error that
     names the new method.
   - **Radar documents in the Cartesian wrapper**
-    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
+    ([#40](https://github.com/shim9610/figgy/issues/40)).
     `FiggyChart.set_radar_document(json)` opens a `RadarChart` document as radar
     series on a polar chart (`Config::from_radar`), registering its positions
     column and one value column per series from the borrowed values, and fitting
@@ -3719,8 +3618,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     `category_label`, and `step_selection` steps the vertices of the series and
     across the radar series. `FiggyBoundedChart` no longer has the `"radar"`
     family; creating one with it is an error that names the new method.
-  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
-    13h). `pick_data` reports a label as `{ kind: "value_label", source_id,
+  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40)). `pick_data` reports a label as `{ kind: "value_label", source_id,
     series_id, category_index, label_id, distance_px }`, and `pick_point` on
     a chart that draws value labels reports a label under the pointer before
     any point, as `{ source_id, series_id, point_index, distance_px,
@@ -3730,7 +3628,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
     writes the series' `labels.offsets` and `on_release` ends it.
     `step_selection` does not step a label; `selection_details()` reports its
     `category_id`, `category_label`, `text`, `offset` and `label_id`.
-  - **The radial chart host** (13i). `FiggyBoundedChart` serves only the
+  - **The radial chart host**. `FiggyBoundedChart` serves only the
     radial chart: its single-family document, renderer and frame enums and
     its unreachable host-clear path (a span is never drawn on a radial chart)
     are gone, and the Rust type is `FiggyRadialChart` in `src/radial.rs`,
@@ -3783,9 +3681,9 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 
 <a id="unreleased-bounded-migration"></a>
 
-### Migrating from the bounded group ([#40](https://github.com/shim9610/figgy/issues/40) item 13)
+### Migrating from the bounded group ([#40](https://github.com/shim9610/figgy/issues/40))
 
-The migrations of item 13 in one place; the model, renderer and browser
+The migrations of the bounded group in one place; the model, renderer and browser
 entries above describe the changes.
 
 - **Readers.** `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
@@ -3877,13 +3775,13 @@ entries above describe the changes.
   carried), the Cartesian legend box, the export clear colour instead of
   `background`, the Cartesian selection outline or the polar picked ring
   instead of a brightened series, and value labels through the contour
-  label module; the marks themselves keep their places and shading (the
-  per-case pixel counts are under [Renderer](#unreleased-renderer)). A legacy
+  label module; the marks themselves keep their places and shading (see
+  [Renderer](#unreleased-renderer)). A legacy
   radar document's `style.emphasis_brightness` is kept in the document but
   not drawn. The radial title moves about 2 px down into its band and is
   clipped instead of refused when wider than the canvas, and a selected
   outside radial label outlines its text lines and its leader line.
-- **Box plot statistics (D6).** The renderer cannot read a record on the
+- **Box plot statistics.** The renderer cannot read a record on the
   CPU, so it clamps unordered box statistics instead of rejecting them: the
   body spans `min(q1, q3)..max(q1, q3)`, the median is clamped into it, the
   stems reach the body, a notch needs both CI endpoints and a row with a
@@ -3893,13 +3791,13 @@ entries above describe the changes.
   itself.
 - **Stacked bar fit.** A `Stacked` bar group's value-axis fit comes from
   the per-column statistics, so its columns may be uploaded in any batches.
-- **Decoration oracle exclusions.** Item 13 adds three rows to the decoration
-  oracle's exclusions: I5 of the box plot scene's `axis_title_left` and I5
+- **Decoration oracle exclusions.** The decoration oracle's exclusions gain three
+  rows: I5 of the box plot scene's `axis_title_left` and I5
   of the radar scene's `tick_labels_left`, both sub-pixel glyph snapping
   between 1x and 2x (box-filtered shares of 63 % and 52 % against a 50 %
   limit), and I7 of the radar scene's `axis_bottom`, the polar outer ring's
   orphan ink the polar scene is excluded for. The radial leader-line row is
-  gone (13b), and the radial scene has no exclusion.
+  gone, and the radial scene has no exclusion.
 
 ### Tests and guards
 
@@ -3915,8 +3813,8 @@ entries above describe the changes.
   byte-identical to the full draw after a zoom
   (`strokes_up_to_the_margin_limit_draw_their_edges_exactly`).
   `autoscale_fits_x_to_the_grid_and_y_to_the_reduction` checks the fitted
-  ranges against the data, the image against a plain full call, an
-  and an overlay's own axis. Each of the four calls of the monotonic chart
+  ranges against the data and the image against a plain full call, on the
+  base axes and on an overlay's own axis. Each of the four calls of the monotonic chart
   handle that take the source is tested against a fresh full reduction
   (`set_monotonic_sets_the_x_range`, the append and slide tests,
   `resize_monotonic_reduces_the_moved_groups_again`,
@@ -3944,9 +3842,8 @@ entries above describe the changes.
   `ExportSource::Monotonic` (`export_scene`, which registers it as a
   monotonic chart). The playground registers a monotonic scene as a
   monotonic chart, follows its viewport with `MonotonicChart::resize` and
-  the scene's samples, gives a group never supplied its first full call,
-  never pans, zooms or holds it, and builds again: it had no arm for the new
-  series kind.
+  the scene's samples, gives a group never supplied its first full call
+  and never pans, zooms or holds it.
 
 - **The field contour and violin picks compile in a browser's software
   GPU.** Creating the `field contour data pick` and `violin data pick`
@@ -4018,7 +3915,7 @@ entries above describe the changes.
   radial documents' explicit plot area starts above the 70 px title band
   every release has used, so no release draws them as written: they must
   be refused alike, and their pixels are compared with the automatic plot
-  area. CLAUDE.md states the rule.
+  area.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
   `vector_render` places the heads at fixed arc spacing along the tangent,
@@ -4073,7 +3970,7 @@ entries above describe the changes.
   the perpendicular labels' overhang, category group headers, a hidden frame
   and a ternary chart.
 - **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
-  The model pins the plan's golden ladders, majors and minors (with guarded
+  The model pins the golden ladders, majors and minors (with guarded
   and extreme ranges), a sweep where every `Decades(n)` ladder draws the
   default policy's majors and minors at `major_spacing = n` and every
   promoted 2·10^k or 5·10^k major sits on the decade ladder's minor,
@@ -4141,12 +4038,11 @@ entries above describe the changes.
   crate itself; a packaged crate builds its tests without it. No product
   dependency changes.
 - **The bounded group, classified per chart**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13).
-  - **Released fixtures** (13a). Released-document fixtures written by
+  ([#40](https://github.com/shim9610/figgy/issues/40)).
+  - **Released fixtures**. Released-document fixtures written by
     figgy-model 0.12.1 cover the radial, categorical, box plot and radar
     charts at their default and edited (`released_documents`).
-  - **Radial pick and decorations** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13b). `radial_render` compares the GPU pick with the CPU twin over
+  - **Radial pick and decorations** ([#40](https://github.com/shim9610/figgy/issues/40)). `radial_render` compares the GPU pick with the CPU twin over
     tilt, depth, gaps, corners, explode, the hole, the detail circle and the
     lift, lifted and at rest, and checks the at-rest pick; the shader mirrors
     hold both radial modules' `Sector` and the pick query and result to their
@@ -4154,8 +4050,7 @@ entries above describe the changes.
     go through the radial frame's `HitMap<RadialChart>` (a test-support
     adapter covers both hit-map APIs), and the selection-only check accepts a
     selection that outlines its parts.
-  - **Category bars** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13d). `category_bars_render` checks every mode in both directions at
+  - **Category bars** ([#40](https://github.com/shim9610/figgy/issues/40)). `category_bars_render` checks every mode in both directions at
     1x and 2x against the bars' expected extents, signed and missing stacks,
     overrides and materials, the selection outline of an overridden bar, the
     value-axis fit from the per-column statistics (the sum rule, its bound
@@ -4171,8 +4066,7 @@ entries above describe the changes.
     browser test opens a document in `FiggyChart`. The legacy renderer's
     `categorical_render` and `categorical_browser` are removed with it; the
     bounded annotation tests that drew on bars run on box plots.
-  - **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13f). `box_plot_render` checks the boxes' statistics in both
+  - **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)). `box_plot_render` checks the boxes' statistics in both
     directions at 1x and 2x against their expected pixel extents, notches,
     missing boxes and clamped unordered statistics, overrides and materials
     restyling only their box, the selection outline of an overridden box, the
@@ -4196,8 +4090,7 @@ entries above describe the changes.
     layout tests and the bounded span underlay test (radial and radar charts
     place no spans); the annotation hit-region test that drew on boxes runs
     on a radar chart.
-  - **Radar series** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13g). `radar_series_render` checks the polygon, its closing segment
+  - **Radar series** ([#40](https://github.com/shim9610/figgy/issues/40)). `radar_series_render` checks the polygon, its closing segment
     and fill, the zero angle and direction, a NaN vertex, a sector, several
     series, circular and polygon grids, the category spoke labels, the picked
     ring, the radius fit, the validation errors, the annotation layer, a
@@ -4218,8 +4111,7 @@ entries above describe the changes.
     `radar_browser` are removed with it, and so are the radar cases of the
     bounded interaction, annotation and decoration tests; the annotation
     hit-region test that drew on a radar chart runs on a radial chart.
-  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
-    13h). `value_labels_render` checks, at 1x and 2x, that bar, box and radar
+  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40)). `value_labels_render` checks, at 1x and 2x, that bar, box and radar
     labels sit where the former charts placed them (within `2 * scale + 1`
     px), that the drawn label is the SSOT string's own raster texel for
     texel, that an empty string draws nothing, that a drag moves the label
@@ -4234,7 +4126,7 @@ entries above describe the changes.
     browser tests cover the label hit's JSON and a label's pick, selection
     and drag (`a_value_label_picks_selects_and_drags`). The playground scenes
     of the box plot and radar charts show their labels.
-  - **The radial tests** (13i). The tests and test support that only test the
+  - **The radial tests**. The tests and test support that only test the
     radial chart are named for it: `bounded_interaction`,
     `bounded_label_layout`, `bounded_interaction_browser` and
     `bounded_area_browser` are `radial_interaction`, `radial_label_layout`,
@@ -4285,18 +4177,17 @@ entries above describe the changes.
   overlay's breaks). The playground gains a **Broken axes** scene (both
   styles, a log Y cut), which the decoration oracle sweeps, and the
   browser tests a broken axis' JSON round trip and its upper labels'
-  hit and drag. Each new check was mutation tested.
+  hit and drag.
 
 - **Energy-level (Grotrian) diagrams** ([#203](https://github.com/shim9610/figgy/issues/203)).
   `tests/energy_levels_render.rs` checks at 1x and 2x: placement of
   levels, limits and arrows; the picked level drawn wider; a Continuous
   break; a components view drawing its source's records; 5,004 levels and
-  1,500 transitions drawn with no count limit (with their export time);
+  1,500 transitions drawn (with their export time);
   picks of levels, arrows and labels and none in a gap; a series edit
   redrawing a registered chart; a document round trip drawing the same
   pixels; SVG and PDF exports; and an inset covering its parent's data
-  and annotations and taking the pointer (mutation tested by drawing it in
-  the old order). The model tests cover validation, serde, stepping,
+  and annotations and taking the pointer. The model tests cover validation, serde, stepping,
   label drags, the continuum, category groups (validation, hit, drag,
   serde) and rich labels; the SSOT suite classifies the new fields. The
   playground gains an **Energy levels** scene, swept by the decoration
@@ -4306,8 +4197,7 @@ entries above describe the changes.
 
 - **Monotonic-x lines** ([#271](https://github.com/shim9610/figgy/issues/271)).
   `crates/model/MONOTONIC.md` (English and Korean) describes the core, the
-  renderer side and the rules M1–M7, which `CLAUDE.md` holds as their own
-  section; `USAGE.md` (both languages), `API.md` and `WASM.md` gain the
+  renderer side and the rules M1–M7; `USAGE.md` (both languages), `API.md` and `WASM.md` gain the
   calls.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
@@ -4346,9 +4236,8 @@ entries above describe the changes.
   guide, the CI guide and the guides that named a split file point at the
   file the item lives in now.
 - **The bounded group, classified per chart**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13).
-  - **Categorical bars** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13d). `CATEGORICAL.md` (Korean) says that the categorical chart is a
+  ([#40](https://github.com/shim9610/figgy/issues/40)).
+  - **Categorical bars** ([#40](https://github.com/shim9610/figgy/issues/40)). `CATEGORICAL.md` (Korean) says that the categorical chart is a
     `CategoryBars` series on a `Config` with a categorical axis, read from
     legacy documents by `Config::from_categorical`, and drops the sections of
     the removed bounded renderer; `SHADER_COMMON.md`
@@ -4357,8 +4246,7 @@ entries above describe the changes.
     the model README describe the series kind, `bar_groups`, `cross_at` and
     `set_categorical_document`, the Korean sections in Korean. The model README's DataLess class is the
     radial chart alone.
-  - **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13f). `BOXPLOT.md` describes the `BoxPlot` series, its record and
+  - **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)). `BOXPLOT.md` describes the `BoxPlot` series, its record and
     ragged sources, the box group, the clamping, styles and overrides, value
     labels, the fit, picking and the reader, and drops the removed renderer;
     `SHADER_COMMON.md` §2.5 and §5.15 hold the box plot contract; `CONFIG.md`,
@@ -4369,8 +4257,7 @@ entries above describe the changes.
     sections of `BOXPLOT.md`, `CONFIG.md`, `INTERACTION.md`, `USAGE.md`,
     `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md` and
     `examples/README.md`) is updated in Korean.
-  - **Radar charts** ([#40](https://github.com/shim9610/figgy/issues/40)
-    item 13g). `RADAR.md` describes the `Radar` series on a categorical
+  - **Radar charts** ([#40](https://github.com/shim9610/figgy/issues/40)). `RADAR.md` describes the `Radar` series on a categorical
     angle axis, its style, labels, picking, the fit and the reader, and drops
     the removed renderer; `POLAR.md` and `CONFIG.md` describe the categorical
     angle axis and `grid_shape`; `API.md`, `INTERACTION.md`, `WASM.md`,
@@ -4380,17 +4267,14 @@ entries above describe the changes.
     series kind and `set_radar_document`. The Korean text (the Korean
     sections of `RADAR.md`, `POLAR.md`, `CONFIG.md`, `INTERACTION.md`,
     `USAGE.md`, `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md`
-    and `examples/README.md`) is updated in Korean. `gallery-radar.png` and
-    `gallery-radar-circle.png` keep the former renderer's images, with value
-    labels, until 13h draws them.
-  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
-    13h). `INTERACTION.md` (Value labels), `API.md`, `WASM.md`, `CONFIG.md`,
+    and `examples/README.md`) is updated in Korean.
+  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40)). `INTERACTION.md` (Value labels), `API.md`, `WASM.md`, `CONFIG.md`,
     `CATEGORICAL.md`, `BOXPLOT.md`, `RADAR.md`, `GALLERY.md`,
     `examples/README.md`, `crates/web/README.md`, `crates/web/SCHEMA.md` and
     `SHADER_COMMON.md` (§5.16 Label quad, §5.17 Value labels) describe the
     drawn labels, their pick, selection and drag. The categorical, box plot
     and radar gallery images are regenerated with their labels.
-  - **The end state** (13i). The guides describe the radial chart as the
+  - **The radial chart and the readers**. The guides describe the radial chart as the
     DataLess chart, `FiggyBoundedChart` as its host and the three legacy
     documents as deprecated readers, and drop the deleted underlay path,
     `DecorationMap` and the removed helpers: `ARCHITECTURE.md` (both

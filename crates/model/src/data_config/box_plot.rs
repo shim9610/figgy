@@ -178,7 +178,7 @@ impl BoxPlotOverride {
 ///
 /// The host computes the density (a KDE evaluated on its own grid): the
 /// renderer draws the curve it is given, scaled to the slot by each half's
-/// `density_scale`, and estimates nothing (`CLAUDE.md` rule 1).
+/// `density_scale`, and estimates nothing.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Violin {
@@ -315,8 +315,8 @@ pub struct ViolinStyle {
 /// `positions` holds each point's category position (the index the
 /// series' `x_column` uses) and `values` its value. The jitter is the
 /// renderer's: a hash of the point's index, the same on every draw and
-/// pick, so a point never moves while the chart is panned or exported
-/// (`CLAUDE.md` rule 1). There is no limit on the number of points.
+/// pick, so a point never moves while the chart is panned or exported.
+/// There is no limit on the number of points.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoxPoints {
@@ -632,9 +632,9 @@ impl crate::config::Config {
     /// group: they stand side by side in series order, laid out by the
     /// layer's `bar_groups` ([`crate::config::Config::bar_groups_of`]), whose mode must be
     /// [`CategoryBarMode::Grouped`] (boxes do not stack). Any number of
-    /// them (#107), drawn against a categorical axis (`bottom_x` for vertical boxes, `left_y`
-    /// for horizontal ones) and a linear numeric value axis, with no cap on
-    /// the number of boxes (#107); a layer draws either
+    /// them, drawn against a categorical axis (`bottom_x` for vertical boxes, `left_y`
+    /// for horizontal ones) and a linear numeric value axis, with any
+    /// number of boxes; a layer draws either
     /// category bars or box plots. Each series passes
     /// [`validate_box_plot_series`] against the axis' categories.
     /// Horizontal boxes cannot sit on an overlay layer, and a polar chart

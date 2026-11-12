@@ -71,10 +71,9 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 A sample is placed at `(x·L + y·T + c·R) / (x + y + c)`: the triangle's
-corners weighted by its components. Normalizing only to place a sample is
-appearance: it is computed in the vertex stage on every draw and never
-stored. Hover, selection and `selection_details()` report the original
-components.
+corners weighted by its components. The sum is used only to place the
+sample: the columns keep the host's values, and hover, selection and
+`selection_details()` report the original components.
 
 A sample with a negative or non-finite component, or a sum of zero or less,
 is not drawn, and a line breaks on both of its sides, as at a NaN.
@@ -132,10 +131,9 @@ non-finite or negative component, or a sum of zero or less.
 
 The cost is one stencil triangle per vertex and one cover per series,
 after a GPU scan that finds each polygon's first row so its closing edge
-needs no walk along the polygon (#49). The scan keeps one `u32` per row
+needs no walk along the polygon. The scan keeps one `u32` per row
 for the draw and for each pick. There is no limit on polygons or
-vertices: `ternary_render.rs` draws and picks one polygon of a million
-vertices.
+vertices; a single polygon of a million vertices draws and picks.
 
 A ternary chart draws only ternary series, in the Precise draw style. It
 rejects overlays, line offsets, the polar system, subplot axis links to or
@@ -201,7 +199,7 @@ axes, the hit regions and the drags all read this one triangle.
 
 The playground's Ternary scene (`tests/support/playground_scenes.rs`) draws
 Fe/Ni/Cr alloy compositions coloured by hardness through a colourbar, with
-a dashed tie-line and a filled, outlined phase field with a hole. The decoration oracle sweeps it like every other scene.
+a dashed tie-line and a filled, outlined phase field with a hole.
 
 ```sh
 cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render

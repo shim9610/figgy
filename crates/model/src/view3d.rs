@@ -11,7 +11,7 @@
 //!
 //! The renderer projects, depth-tests, maps colour and, for a lit material,
 //! derives shading normals from the neighbouring heights on every draw:
-//! appearance only (`CLAUDE.md` rule 1), never stored. Hover and selection
+//! appearance only, never stored. Hover and selection
 //! report the grid sample and its values read back from the pool.
 //!
 //! [`Config::view_matrix`] is the one camera matrix: the GPU uniform, every

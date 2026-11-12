@@ -470,8 +470,8 @@ pub(crate) const CATEGORY_BAR_MODE_PERCENT: u32 = 2;
 /// category bar fragment reads beside `Transform`, `Style`, the override
 /// table and the series' lane table. Lane bases are f32 indices into the
 /// pool; nothing per bar is here. The group's value column lanes are the
-/// lane table's (group 3 binding 10), sized by the group, so no field here
-/// bounds the number of series (#107 R3).
+/// lane table's (group 3 binding 10), sized by the group, so any number of
+/// series fits.
 ///
 /// GPU twin: `category_bars.wgsl::CategoryBarParams`, 48 B.
 #[repr(C)]

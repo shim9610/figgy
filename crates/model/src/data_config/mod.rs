@@ -413,7 +413,7 @@ pub enum DataRenderType {
     /// Parallel coordinates (#141): one polyline per row across the axes of
     /// a parallel chart (`Config.parallel`), row `r` through
     /// `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, the
-    /// normalization only to place the sample (rule 1). `columns` names one
+    /// normalization only to place the sample. `columns` names one
     /// column per axis, in the axes' order; `x_column` and `y_column` are
     /// its first two. A row with a non-finite value breaks at that axis.
     /// With `color_column`, each row's polyline takes the colour of that
@@ -422,8 +422,7 @@ pub enum DataRenderType {
     /// without a fill; the columns must be GPU resident. See
     /// [`Config::validate_parallel_series`](crate::config::Config::validate_parallel_series).
     Parallel {
-        /// One column id per axis of the parallel chart, in order (a `Vec`
-        /// of configuration: SSOT, rule 3).
+        /// One column id per axis of the parallel chart, in order.
         columns: Vec<ColumnId>,
         /// The rows' line: its colour (without `color_column`) and width.
         line: DataLineStyleConfig,

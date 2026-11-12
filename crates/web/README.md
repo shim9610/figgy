@@ -103,7 +103,7 @@ with its `label_id` (`"series:<series_id>:label:<index>"`), and
 ends. A selected label reports its category, string and offset in
 `selection_details()`; `step_selection` does not step it.
 
-A Feynman diagram's parts are pick and drag targets too (#234): `pick_point`
+A Feynman diagram's parts are pick and drag targets too: `pick_point`
 reports a vertex, a propagator or a label as `{kind: "feynman_vertex" |
 "feynman_propagator" | "feynman_label", series_id, index, part?}`, and
 `press_feynman(series_id, kind, index, part)` selects it and starts its drag:

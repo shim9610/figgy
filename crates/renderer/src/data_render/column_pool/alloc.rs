@@ -196,7 +196,7 @@ pub enum DefragPolicy {
 /// Whether the pool may enlarge itself when an upload does not fit.
 ///
 /// Default is [`GrowthPolicy::OnAllocFailure`]: a registered column is
-/// refused only when the device or the budget cannot hold it (#107, rule 10).
+/// refused only when the device or the budget cannot hold it.
 /// [`GrowthPolicy::Fixed`] keeps a fixed capacity for hosts that want it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrowthPolicy {

@@ -104,8 +104,8 @@ A diagram is usually drawn without axes: `Config::apply_axis_preset(AxisPreset::
 switches off the axis lines, ticks, tick labels and grid and keeps the
 layout, so the diagram's data units stay where they were.
 
-Committing the layout is the auto-fit pattern: the renderer writes a
-display parameter into the registered SSOT, and the host reads it back.
+Committing the layout works like an auto-fit: the renderer writes the
+positions into the registered SSOT, and the host reads them back.
 `Renderer::auto_layout(chart, series_id)` commits a registered series; a
 host that owns its `SeriesConfig` calls `FeynmanSeries::auto_layout`. The
 first vertex drag commits the whole layout before it moves the vertex, so
@@ -164,7 +164,7 @@ draws at 1x in about 0.8 s in the debug test profile.
 
 Every line is clipped to the plot, widened by its ink, before it is
 sampled: a straight line exactly, an arc by bisecting its parameter
-towards the plot's edges (at most 60 times, a numerical setting), a loop
+towards the plot's edges (at most 60 times), a loop
 whole. A wave's or a coil's phase is the whole line's; only the visible
 spans are sampled, and a dashed line's span starts on a whole period so
 its dashes keep their place. The work of an emit or a pick is therefore
@@ -179,7 +179,7 @@ visible part of its lines can shift by up to that much.
 ## Working memory
 
 Every operation works in at most four transient buffers, dropped when the
-operation returns (rule 3). The topology, the positions and the solver
+operation returns. The topology, the positions and the solver
 buffer are each taken once at their exact size. The path buffer starts
 empty and grows, by doubling and before it is written, to the longest
 visible path of the emit. No loop over vertices, propagators, solver
@@ -203,11 +203,8 @@ on every raster and pick, as it does for an energy-level series.
 | Vertex drag, extent, `auto_layout`, a WASM `selection_details` | 0 | 3 |
 | `validate` | 1 | 1 |
 
-The model test `tests/feynman_memory.rs` counts every entry with a counting
-allocator up to the 5,000-rung ladder, and its ignored benchmark prints the
-times and the share the allocator takes (under 0.2% of a pick). A pick of
-the ladder takes about 7 ms in a release build, most of it resolving the
-propagators' vertex ids; commit the layout (`auto_layout`) before hovering
+A pick of the 5,000-rung ladder takes about 7 ms in a release build, most
+of it resolving the propagators' vertex ids; commit the layout (`auto_layout`) before hovering
 a large diagram, since an uncommitted one is laid out on every pick.
 
 ## Examples and tests

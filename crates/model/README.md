@@ -84,17 +84,17 @@ input of its own.
   its attributes beside its name, colour and the rest. The radial chart
   (`RadialChart`: pie, donut and the detail ring of a split) is the
   DataLess chart with a renderer of its own. A slice is named, coloured, exploded and labelled by the
-  host, its `value` is stored on it, and the chart is bounded by its nature
-  (`MAX_RADIAL_SLICES`, 64 slices, which `validate` enforces with the other
-  size limits). Its drawn label strings are SSOT strings too
+  host, its `value` is stored on it, and the chart holds at most 64 slices
+  (`MAX_RADIAL_SLICES`, which `validate` enforces with the other size
+  limits). Its drawn label strings are SSOT strings too
   (`RadialSlice::text`), written at edit time by `RadialChart::format_labels`;
-  the renderer draws them and formats nothing.
-  The energy-level series (`DataRenderType::EnergyLevels`, #203) is a
+  the renderer draws them as written.
+  The energy-level series (`DataRenderType::EnergyLevels`) is a
   DataLess series inside a `Config`: its levels, ionization limits and
   transitions are SSOT records following the NIST ASD exports, drawn on
   the chart's categorical axis and value axis through the CPU sink, with
-  no column, no streaming and no count limit.
-  The Feynman series (`DataRenderType::Feynman`, #234) is another: its
+  no column and no streaming, and any number of levels and transitions.
+  The Feynman series (`DataRenderType::Feynman`) is another: its
   vertices, propagators and particles are SSOT, vertex positions optional
   (a deterministic layout places the rest, committed into the SSOT by
   `auto_layout`), drawn through the CPU sink and written as vector curves.
@@ -107,7 +107,7 @@ input of its own.
   axis) are series kinds like lines, markers and fields, and so is a
   triangle mesh (`TriMesh`, whose triangles are a triangle index column of
   the pool and whose values a column per vertex or per triangle).
-- **Monotonic-x lines** (`DataRenderType::MonotonicLine`, #271) take their
+- **Monotonic-x lines** (`DataRenderType::MonotonicLine`) take their
   samples neither from the SSOT nor through `ColumnSource`: the host lends a
   `MonotonicSource` to each call that reads it, and the renderer keeps only
   the M4 envelope `monotonic::MonotonicEnvelope` reduces it to, in two pool
@@ -122,8 +122,7 @@ this release and are deprecated; they are removed in the next milestone.
 They parse, validate and turn into a column-backed chart:
 `Config::from_categorical`, `Config::from_boxplot` and `Config::from_radar`
 (in `bounded_sources`) return the `Config`, its series and the
-`SeriesUpload`s whose views borrow the document's values, so nothing is
-copied on the way into the pool. Their decoration state
+`SeriesUpload`s whose views borrow the document's values. Their decoration state
 (`DecorationLayout`) and title (`BoundedTitleOptions`) are read into the
 `Config`'s offsets and chart title.
 

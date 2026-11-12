@@ -126,7 +126,7 @@ pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = crate::shader_
 /// form with the flat projection replaced by the camera
 /// (`common/project_3d.wgsl`, `vector/project_box3d.wgsl`) and the 3D ID
 /// pick entries after the entry. The glyph, the input and the entry are the
-/// point form's (rule 9).
+/// point form's.
 pub const VECTOR_POINTS_3D_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",

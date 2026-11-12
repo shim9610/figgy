@@ -17,12 +17,12 @@
 //! `Config.colorbar`, and on a 3D chart a surface with the look of
 //! [`TriMeshSeries::surface`].
 //!
-//! The host computes every value the reader reads as data (rule 1): the
+//! The host computes every value the reader reads as data: the
 //! triangulation, the coordinates, the values and the heights. The renderer
 //! computes appearance only: the projection, the colour mapping, the linear
 //! interpolation of the given vertex values across each triangle, the
 //! level set of that interpolant as contour strokes, shading normals and
-//! the picked highlight, on every draw and never stored (rule 2).
+//! the picked highlight, on every draw and never stored.
 //!
 //! [`DataRenderType::TriMesh`]: crate::data_config::DataRenderType::TriMesh
 

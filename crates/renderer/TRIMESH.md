@@ -12,14 +12,12 @@ triangulates and never resamples the mesh onto a lattice: a mesh with a
 hole (flow around a cylinder) or a curved boundary draws as the host meshed
 it.
 
-The host computes the data and the renderer the appearance (rule 1). The
-host supplies the vertex coordinates, the triangles, the values and, on a 3D
-chart, the heights; the renderer places the vertices through the axes or
-the camera, interpolates the given vertex values across each triangle,
+The host supplies the vertex coordinates, the triangles, the values and, on
+a 3D chart, the heights; the renderer places the vertices through the axes
+or the camera, interpolates the given vertex values across each triangle,
 draws the level set of that interpolant as the contour lines, maps the
 values through the colourbar and shades a lit surface with each triangle's
-own normal. Nothing per vertex or per triangle is stored on the CPU (rule
-2): the only copy of the mesh is the GPU column pool.
+own normal. The mesh lives in the GPU column pool.
 
 ## Input and first render
 
@@ -115,9 +113,9 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 
 `upsert_triangles` replaces an index column of the same id and refuses a
 count that is not a non-zero multiple of three, an index that is not an
-integer in `0..=u32::MAX`, and a streamed id (rule 8); `remove_triangles`
+integer in `0..=u32::MAX`, and a streamed id; `remove_triangles`
 removes the column. The pool keeps the triangle count and the smallest and
-largest index as scalar statistics and nothing else on the CPU. Registering
+largest index as scalar statistics. Registering
 the series checks the largest index against the vertex count, the shortest
 of the coordinate columns, the value column for vertex values and, on a 3D
 chart, the height column, and refuses an index past it by naming the
@@ -144,15 +142,12 @@ In the browser the same mesh is `register_triangles(id, Uint32Array)` and a
 - `fill: Option<FieldFillConfig>` colours the triangles through the
   colourbar: `Continuous` or `Bands` (the band of the levels the value
   reaches). Vertex values are shaded `Interpolated`, linearly across each
-  triangle, and face values `Flat`. The other pairings are refused: a flat
-  colour from vertex values would be a mean the colourbar shows as data, and
-  interpolating face values needs values at the vertices, which the host
-  has and the renderer must not invent.
+  triangle, and face values `Flat`. The other pairings are refused: for a
+  flat colour per triangle, upload face values; for an interpolated colour,
+  upload vertex values.
 - `contour: Option<ContourConfig>` draws contour lines over the fill, or on
   the box floor of a 3D chart. They need vertex values (a field constant on
-  each triangle has cell boundaries, not isolines) and carry no labels: a
-  label pass would have to locate a triangle per seed, a search the plan
-  refused.
+  each triangle has cell boundaries, not isolines) and carry no labels.
 - `surface: Option<SurfaceStyle>` is the look on a 3D chart, kept and
   unused on a flat one: a material, a wireframe and the surface knobs of a
   heatmap's surface, but no `color_matrix`, because the values colour the
@@ -164,7 +159,7 @@ fields. On a 3D chart the series names its `z_column` and its fill is
 continuous. `Config::validate` (through `TriMeshSeries::validate` and
 `Config::validate_tri_mesh_series`) and series registration report every
 rule by name. Streamed displays refuse the kind, and `upsert_triangles`
-refuses a streamed id (rule 8).
+refuses a streamed id.
 
 The legend symbol is the heatmap's swatch. Every mesh series of a chart is
 coloured through the one colourbar; `Chart::auto_fit_colorbar_union` fits it
@@ -191,9 +186,7 @@ three projected vertices (an analytic flat value, never a derivative of the
 raster), and the heatmap's level search over the colourbar's levels. The
 interpolant is continuous across edges, so a stroke continues into the
 neighbouring triangle, and at the mesh boundary half the stroke is clipped,
-as at a heatmap's grid edge. A plateau (zero gradient) draws nothing. No
-segment is traced and no geometry is stored: the gradient only sets the
-stroke's coverage.
+as at a heatmap's grid edge. A plateau (zero gradient) draws nothing.
 
 Only the precise draw style draws a mesh, as it alone draws fields;
 `draw_style_supports` answers `false` under the stylized styles.
@@ -208,8 +201,8 @@ and `z_column` through the camera, and the fill colours the triangle by
 its values, interpolated for vertex values and flat for face values. The
 height and the value may be the same column (a pressure drawn as a pressure
 surface) or different ones (a temperature over a terrain). `surface` holds
-the look: a lit material shades with the triangle's own normal, a value
-computed on every draw from its three box points, and a wireframe outlines
+the look: a lit material shades with the triangle's own normal, taken from
+its three box points, and a wireframe outlines
 the triangles. The contours draw on the box floor, where the level set of
 each triangle's interpolant crosses it, with no labels.
 
@@ -222,8 +215,8 @@ in the box.
 
 ## Interaction
 
-Every interaction of a Cartesian chart applies (rule 6;
-[INTERACTION.md](INTERACTION.md)).
+Every interaction of a Cartesian chart applies
+([INTERACTION.md](INTERACTION.md)).
 
 - **Hover and click.** On a flat chart `pick_chart_data` answers
   `PickedData::MeshTriangle { series_id, triangle_index, vertex_index,
@@ -273,15 +266,14 @@ Every interaction of a Cartesian chart applies (rule 6;
 
 ## Cost and limits
 
-Nothing caps the triangle count, the vertex count or the number of mesh
-series (rule 10): the instance count is the triangle count, and no uniform
-or loop bound is sized by the data. The only failure is at registration,
-when the pool cannot allocate the column or the device cannot hold it. The
-draw and pick cost grows with the mesh and is measured, not capped: on
-lavapipe a million triangles export at 1x in about 0.9 s and pick in about
-50 ms, and 300 mesh series of one chart draw past the 256-entry scratch
-cache, which evicts and never refuses. Index memory is 24 bytes per
-triangle (two lanes per index, as for every pool column).
+Any number of triangles, vertices and mesh series can be drawn. A mesh
+fails only at registration, when the pool cannot allocate the column or the
+device cannot hold it. The draw and pick cost grows with the mesh: on
+lavapipe (a software Vulkan adapter) a million triangles export at 1x in
+about 0.9 s and pick in about 50 ms. A chart can hold more mesh series than
+the 256-entry scratch cache, which evicts old entries and never refuses a
+series. Index memory is 24 bytes per triangle (two lanes per index, as for
+every pool column).
 
 ## Examples and tests
 
@@ -289,9 +281,7 @@ triangle (two lanes per index, as for every pool column).
   cylinder on a graded annulus mesh, a mesh with a hole: the pressure
   coefficient per node, interpolated, with contour lines) and
   `SceneKind::TriSurface` (the same mesh as a matte, wireframed surface in
-  a 3D box with floor contours) in `tests/support/playground_scenes.rs`;
-  the decoration oracle, the automatic layout sweep and the vector export
-  sweep cover both.
+  a 3D box with floor contours) in `tests/support/playground_scenes.rs`.
 - `tests/tri_mesh_render.rs`: the fill, the contours, the pick, the
   highlight, `step_selection`, registration and its refusals, the
   interactions, and the million-triangle draw and pick.

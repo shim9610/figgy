@@ -3,7 +3,7 @@
 A 3D chart draws a box in its data area, seen through a camera kept in the
 chart's configuration. A heatmap on it draws as a surface over its grid, a
 contour draws its isolines on the box floor, and a heatmap with contours
-draws both. A triangle mesh (`TriMesh`, #210) draws as a surface over its
+draws both. A triangle mesh (`TriMesh`) draws as a surface over its
 triangles (a trisurf), its contours on the floor too. Set `Config.view_3d`
 to `Some(View3d::default())`. `view_3d: None` (the default, omitted from
 JSON) is the flat chart, so older documents are unchanged.
@@ -85,10 +85,10 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Each quad between four neighbouring samples draws as two triangles. The
-vertex stage reads every sample's x, y and height from the pool on every
-draw. Positions, colours and, for a lit material, normals are computed
-there and never stored. A quad with a NaN or unplaceable sample is not
+Each quad between four neighbouring samples draws as two triangles. On
+every draw the vertex stage reads every sample's x, y and height from the
+pool and computes the positions, colours and, for a lit material, normals.
+A quad with a NaN or unplaceable sample is not
 drawn, as a NaN breaks a line, so a NaN leaves a hole in the surface.
 
 ## The box and the camera
@@ -133,7 +133,7 @@ which is how a host places its own overlay on the box.
 look; `None` (omitted from JSON) takes every default. On a flat chart the
 field is kept and unused.
 
-- **`TriMesh`** ([TRIMESH.md](TRIMESH.md), #210) draws a surface over its
+- **`TriMesh`** ([TRIMESH.md](TRIMESH.md)) draws a surface over its
   triangles when the series names its height column in
   `SeriesConfig.z_column` (read on `right_y`, as a surface's heights are):
   each triangle's three vertices are placed by `x_column`, `y_column` and
@@ -142,8 +142,8 @@ field is kept and unused.
   for face values. Its contours draw on the box floor, where its level set
   crosses the triangles. `TriMeshSeries.surface` holds the look, with the
   same fields as a heatmap's but no `color_matrix` (the values colour the
-  mesh). The shading normal of a lit material is the triangle's own, a
-  value computed on every draw. `z_column: None` on a 3D chart is rejected,
+  mesh). The shading normal of a lit material is the triangle's own.
+  `z_column: None` on a 3D chart is rejected,
   and a banded fill too; on a flat chart both the height column and the
   look are kept and unused, so a mesh switches between 2D and 3D with the
   view too. A triangle naming a vertex past the height column is not
@@ -167,7 +167,7 @@ field is kept and unused.
   kept and unused, so a trajectory switches between 2D and 3D with the
   view too.
 - **`Vector`** in the points form draws one arrow per row from
-  `(x, y, z)` along `(u, v, w)` (#211). The series names its anchor height
+  `(x, y, z)` along `(u, v, w)`. The series names its anchor height
   in `SeriesConfig.z_column` and its z component in
   `VectorComponents::Points.w`; each missing column is rejected on a 3D
   chart, and on a flat chart both are kept and unused. The arrow is the
@@ -269,13 +269,12 @@ series' 3D line and every series' 3D markers,
 depth tested at the front of their tube and ball
 (`project_box_front`, `surface_mesh::point_depth_stencil`), with alpha to
 coverage on a multisampled composite so a mark's antialiased fringe writes
-depth only where it covers a sample and a dense trajectory stays solid. The 2D pipelines and
-the shared frame and export passes are unchanged: the 3D markers and
-strokes are the scatter and line modules' own entries (`vs_3d`,
+depth only where it covers a sample and a dense trajectory stays solid. The
+3D markers and strokes are the scatter and line modules' own entries (`vs_3d`,
 `vs_3d_mapped`, `vs_3d_pick`, `vs_pick_ring_3d`) placing the flat marker
 and stroke through the camera. The 3D arrows are the vector glyph with the
 flat projection fragment swapped for `vector/project_box3d.wgsl`
-(`VECTOR_POINTS_3D_SHADER`, rule 9), plus the ID pick entries of
+(`VECTOR_POINTS_3D_SHADER`), plus the ID pick entries of
 `vector/vector_entry_3d.wgsl`.
 
 A mesh surface is the surface module's entries over a second input
@@ -293,8 +292,7 @@ every triangle into its 1×1 target. Nothing caps the triangle count.
 Expected cost of the arrows: six vertices per arrow, and in `Pixels` mode
 four box projections per vertex (anchor, screen-plane step, tip and front
 shift). The ID pick redraws every arrow of the series into its 1×1 target,
-as the 3D scatter pick does. `(1 << 20) + 1` arrows draw, pick and step in
-the tests; nothing caps the count.
+as the 3D scatter pick does. Nothing caps the arrow count.
 
 Expected memory: 4 bytes per sample of the attachment, about 12 MB for an
 1100 × 700 panel at 4x MSAA.
