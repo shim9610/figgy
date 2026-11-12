@@ -3,9 +3,10 @@
 Each README image links to the example file that draws it. The
 [example index](examples/README.md#gallery-images) names the function for every
 image.
-[`readme_gallery.rs`](examples/readme_gallery.rs) runs the `error_bars`,
-`histogram`, `heatmap_contours` and `animated_lines` examples with one shared
-device. They use the native `Renderer` with an offscreen RGBA target, upload columns through
+[`readme_gallery.rs`](examples/readme_gallery.rs) runs twelve examples with
+one shared device: `error_bars`, `histogram`, `heatmap_contours`,
+`animated_lines`, and the 0.19 scenes `ternary`, `surface_3d`, `trimesh`,
+`parallel`, `range_bars`, `stem`, `broken_axes` and `feynman`. They use the native `Renderer` with an offscreen RGBA target, upload columns through
 the resident pool, and export through `export_rgba` and
 `encode_png`. No browser or window is needed. Axes, text, grid and legends follow
 the same CPU-raster/GPU-compositing path as other figgy charts.
@@ -31,8 +32,7 @@ intervals inferred from observations.
 | `gallery-polar.png` | `01-antenna-pattern.png` from `polar_plot.rs`: a filled line in polar coordinates with degree labels | 960 × 640 |
 | `gallery-polar-compass.png` | `02-compass-rose.png` from `polar_plot.rs`: a scatter-line clockwise from the top with arc segments, the radius labels on the 45° ray | 960 × 640 |
 
-`error_bars`, `histogram`, `heatmap_contours` and `animated_lines` also run on
-their own; `animated_lines` writes the wave and orbit frames. `line` is not part
+Each of the twelve also runs on its own; `animated_lines` writes the wave and orbit frames. `line` is not part
 of `readme_gallery` and runs only on its own.
 [support/gallery.rs](examples/support/gallery.rs) holds device setup,
 presentation defaults and PNG checks, not the chart definitions. To add an image
@@ -166,9 +166,16 @@ mixed into an animation.
 cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery
 ```
 
-This writes four static PNGs (`gallery-errorbars.png`, `gallery-histogram.png`,
-`gallery-histogram-horizontal.png` and `gallery-contours.png`) and the frames
-`wave/000.png` … `wave/047.png` and `orbit/000.png` … `orbit/047.png`. The
+This writes 19 static PNGs and the frames `wave/000.png` … `wave/047.png` and
+`orbit/000.png` … `orbit/047.png`. The PNGs are:
+- `gallery-errorbars.png`, `gallery-histogram.png` and
+  `gallery-histogram-horizontal.png`;
+- `gallery-contours.png`, `gallery-hexbin.png` and `gallery-imshow.png`;
+- `gallery-ternary.png`, `gallery-surface.png` and `gallery-quiver3d.png`;
+- `gallery-trimesh.png`, `gallery-trisurf.png` and `gallery-parallel.png`;
+- `gallery-waterfall.png`, `gallery-candlestick.png` and `gallery-gantt.png`;
+- `gallery-stem.png`, `gallery-lollipop.png`, `gallery-broken-axes.png` and
+  `gallery-feynman.png`. The
 optional second argument selects 2–240 frames; the default is 48. Phases cover
 one period without repeating the endpoint. The example uses fixed axis ranges so
 the animation does not rescale each frame.
@@ -310,7 +317,7 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 
 - **정지 이미지 4종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
-- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 4개와 애니메이션 프레임 96개를 만든다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
+- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 19개와 애니메이션 프레임 96개를 만든다. 오차 막대, 히스토그램, 등고선, 애니메이션 예제와 0.19 장면 예제 8개(삼각 좌표, 3D 곡면, 삼각 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표)를 장치 하나로 실행한다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
 - **재생 설정**: GIF 하나당 48프레임을 초당 12프레임으로 약 4초마다 반복한다. GIF는 색을 팔레트로 줄이므로 픽셀 검사는 원본 PNG로 한다. GIF의 재생 속도는 렌더링 성능을 나타내지 않는다.
 - **검증 환경**: 일반 장비에서는 기본 GPU 선택을 따른다. 이 이미지는 실제 GPU가 없는 Linux에서 Vulkan llvmpipe로 검증했다. 예제 자체가 소프트웨어 GPU를 강제하지는 않는다. 실제 GPU의 성능이나 다른 OS에서 같은 픽셀값이 나오는지는 확인하지 않았다.
 
