@@ -1352,17 +1352,21 @@ impl Renderer {
             .get(&chart)
             .ok_or(FiggyError::UnknownChart { id: chart })?;
         let mut config = state.config.clone();
-        for (series_id, layer) in &members {
-            let Some(cfg) = state.series.iter().find(|cfg| cfg.series_id == *series_id) else {
+        // One fit per y axis, over every member drawn on it: fitting member
+        // by member would leave the axis at the last member's range.
+        for (index, (_, layer)) in members.iter().enumerate() {
+            if members[..index].iter().any(|(_, seen)| seen == layer) {
                 continue;
-            };
-            let Some(extent) = self
-                .monotonic
-                .envelope_of(cfg)
-                .map(|(envelope, channel)| plot_extent(envelope, channel))
-            else {
-                continue;
-            };
+            }
+            let mut extent = crate::chart::FitExtent::EMPTY;
+            for (series_id, _) in members[index..].iter().filter(|(_, l)| l == layer) {
+                let Some(cfg) = state.series.iter().find(|cfg| cfg.series_id == *series_id) else {
+                    continue;
+                };
+                if let Some((envelope, channel)) = self.monotonic.envelope_of(cfg) {
+                    extent.union(&plot_extent(envelope, channel));
+                }
+            }
             fit_y_axis(&mut config, *layer, &extent);
         }
         self.set_chart_config_unreported(chart, config)?;

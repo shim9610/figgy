@@ -1504,6 +1504,68 @@ fn autoscale_fits_x_to_the_grid_and_y_to_the_reduction() {
     );
 }
 
+/// Autoscale with several channels fits each y axis once, to the union of
+/// the channels drawn on it: two channels on the base axis share one range
+/// that holds both, whichever comes last, and a channel on an overlay fits
+/// only the overlay's axis.
+#[test]
+fn autoscale_fits_each_y_axis_to_every_channel_on_it() {
+    let low: Vec<f64> = (0..20_000).map(|i| -50.0 + (i % 7) as f64).collect();
+    let high: Vec<f64> = (0..20_000).map(|i| 100.0 + (i % 11) as f64).collect();
+    let mid: Vec<f64> = (0..20_000).map(|i| 3.0 + (i % 5) as f64).collect();
+    let channels = [low.as_slice(), high.as_slice(), mid.as_slice()];
+    let source = MonotonicSlices::new(0.0, 1.0, &channels);
+    let padded = |lo: f64, hi: f64| {
+        let pad = (hi - lo) * 0.05;
+        (lo - pad, hi + pad)
+    };
+    let close = |got: (f64, f64), want: (f64, f64)| {
+        (got.0 - want.0).abs() < 1e-9 && (got.1 - want.1).abs() < 1e-9
+    };
+
+    // Both orders: the last channel must not decide the range.
+    for (first, second) in [(0, 1), (1, 0)] {
+        let mut r = renderer();
+        let config = bare_config(600, 300, (0.0, 1.0), (-1.0, 1.0));
+        let series = vec![
+            SeriesConfig::monotonic_line("a", "g", first).color(BLUE),
+            SeriesConfig::monotonic_line("b", "g", second).color(BLUE),
+        ];
+        let id = r.register_monotonic_chart(config, series).expect("chart");
+        r.monotonic_chart(id)
+            .expect("monotonic chart")
+            .set_monotonic("g", &source, MonotonicRange::Autoscale)
+            .expect("autoscale");
+        let fitted = r.monotonic_config(id).expect("config");
+        let got = (fitted.left_y.min, fitted.left_y.max);
+        assert!(
+            close(got, padded(-50.0, 110.0)),
+            "order {first},{second}: {got:?}"
+        );
+    }
+
+    // A base channel pair and an overlay channel: two axes, two fits.
+    let mut r = renderer();
+    let mut layered = bare_config(600, 300, (0.0, 1.0), (-1.0, 1.0));
+    layered.overlays.push(renderer::OverlayLayer::default());
+    layered.overlays[0].series = vec!["c".to_string()];
+    let series = vec![
+        SeriesConfig::monotonic_line("a", "g", 0).color(BLUE),
+        SeriesConfig::monotonic_line("b", "g", 1).color(BLUE),
+        SeriesConfig::monotonic_line("c", "g", 2).color(BLUE),
+    ];
+    let id = r.register_monotonic_chart(layered, series).expect("chart");
+    r.monotonic_chart(id)
+        .expect("monotonic chart")
+        .set_monotonic("g", &source, MonotonicRange::Autoscale)
+        .expect("autoscale");
+    let fitted = r.monotonic_config(id).expect("config");
+    let base = (fitted.left_y.min, fitted.left_y.max);
+    assert!(close(base, padded(-50.0, 110.0)), "base {base:?}");
+    let overlay = (fitted.overlays[0].y_axis.min, fitted.overlays[0].y_axis.max);
+    assert!(close(overlay, padded(3.0, 7.0)), "overlay {overlay:?}");
+}
+
 /// The plot area dragged keeps its width and draws without the source. A
 /// plot-area resize (the data area's handles) changes its width: it is a
 /// resize, the plot rect passed to `resize_monotonic` with the sources, and

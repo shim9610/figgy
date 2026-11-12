@@ -167,8 +167,9 @@ call that sets the x range. `range` is one of:
   stay as they are. A zoom or a pan is a full call with the new range.
 - `MonotonicRange::Autoscale`: the x range is set to the samples' span,
   `start ..= start + (len - 1) × interval`, with the tick plan an auto-fit
-  uses. Each series' y axis is fitted to the lowest and highest values that
-  series keeps in the plot, padded by 5 % of the span on each side. A
+  uses. Each y axis is fitted to the lowest and highest values that every
+  series drawn on it keeps in the plot, padded by 5 % of the span on each
+  side, so two channels on one axis both stay in view. A
   series on the base layer fits the panel's `left_y` (and its
   partner axis), an overlay series fits its overlay's own axis, and a
   subplot series fits its subplot's axes (its x axis through the root of
@@ -564,11 +565,12 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
   나머지 설정과 y 범위는 그대로 둔다. 확대와 이동은 새 범위로 하는 전체 호출이다.
 - `MonotonicRange::Autoscale`: x 범위를 샘플이 차지하는 구간
   `start ..= start + (len - 1) × interval`로 정하고, 눈금 계획은 자동 맞춤과 같은 방식으로 맞춘다.
-  각 시리즈의 y 축은 그 시리즈가 플롯 안에 남긴 가장 낮은 값과 가장 높은 값에 맞추고, 양쪽에
-  폭의 5 %씩 여유를 둔다. 기본 레이어 시리즈는 패널의 `left_y`(짝 축 포함)를, 오버레이 시리즈는
-  오버레이 자신의 축을, 서브플롯 시리즈는 서브플롯의 축(x 축은 연결의 맨 처음 축)을 맞춘다.
-  샘플이 하나뿐이거나 채널 값이 일정해 폭이 없으면 그 축은 그대로 둔다. 일반 자동 맞춤 호출은
-  단조 차트에 닿지 않으므로 단조 차트는 이 방법으로 맞춘다.
+  y 축마다 그 축에 그려지는 모든 시리즈가 플롯 안에 남긴 가장 낮은 값과 가장 높은 값에 맞추고,
+  양쪽에 폭의 5 %씩 여유를 둔다. 그래서 한 축에 채널이 둘이면 둘 다 화면 안에 들어온다. 기본
+  레이어 시리즈는 패널의 `left_y`(짝 축 포함)를, 오버레이 시리즈는 오버레이 자신의 축을,
+  서브플롯 시리즈는 서브플롯의 축(x 축은 연결의 맨 처음 축)을 맞춘다. 샘플이 하나뿐이거나 채널
+  값이 일정해 폭이 없으면 그 축은 그대로 둔다. 일반 자동 맞춤 호출은 단조 차트에 닿지 않으므로
+  단조 차트는 이 방법으로 맞춘다.
 
 이 호출은 화면에 보이는 샘플, 플롯 양쪽 바깥 64픽셀 열에 해당하는 샘플, 그리고 그 양 끝의
 샘플 하나씩만 읽는다. 그래서 긴 기록의 작은 부분을 확대해도 보이는 만큼만 비용이 든다. 차트가
