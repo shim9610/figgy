@@ -44,8 +44,8 @@ The example needs no async executor and no `wgpu` dependency of its own: it
 uses the `helpers` feature (on by default), whose `Renderer::headless_blocking`
 makes the instance, adapter and device, and whose `save_blocking` exports and
 writes the file in the format its extension names. A host with an async executor
-awaits `Renderer::headless` and the `export_*` calls instead, which the device
-bundle's poll thread completes.
+awaits `Renderer::headless` and the `export_*` calls instead; on native targets
+these futures complete without the host polling the device.
 Hosts that already own a matching wgpu 30 device/queue can share them through
 `RendererDevice`. They do not need a second device or a particular GUI toolkit.
 
@@ -54,7 +54,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Charts | Entry point | Input and guide |
 | --- | --- | --- |
 | Lines, scatter, error bars, histograms, heatmaps, contours | `Renderer` | Numeric columns and `SeriesConfig`; [native usage](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md) |
-| Monotonic-x lines: large, evenly spaced signals reduced per pixel column | `Renderer::register_monotonic_chart`, then `MonotonicChart` | `MonotonicLine` series, one per channel; the samples (`start + i × interval`) are lent through a `MonotonicSource` to `set_monotonic`, `append_monotonic`, `resize` and `fit_layout`, never kept, and reduced on the CPU to each pixel column's first, lowest, highest and last sample; [monotonic-x lines](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md#monotonic-x-lines), [core and rules](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md) |
+| Monotonic-x lines: large, evenly spaced signals reduced per pixel column | `Renderer::register_monotonic_chart`, then `MonotonicChart` | `MonotonicLine` series, one per channel; the samples (`start + i × interval`) are lent through a `MonotonicSource` to `set_monotonic`, `append_monotonic`, `resize` and `fit_layout` and not retained after the call; each pixel column draws its first, lowest, highest and last sample; [monotonic-x lines](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md#monotonic-x-lines), [core and rules](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md) |
 | Hexbins: host-binned counts on a hexagonal grid | `Renderer` | A `Heatmap` whose `MatrixRef.grid_layout` is `Hexagonal`, shaded flat on linear axes; [hexagonal grids](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |
 | Colour images (imshow) | `Renderer` | An `RgbImage` series: three channel grids on one lattice mapped from a `range`, no colourbar; [colour images](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#colour-images-imshow) |
 | Parallel coordinates | `Renderer` | A `Parallel` series on a chart with `Config.parallel`: one column per axis, one polyline per row, each axis its own range; [parallel coordinates](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#parallel-coordinates) |
@@ -65,15 +65,14 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
 | Polar plots: lines, scatter, areas, heatmaps and contours in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; heatmaps and contours draw their cells as annular sectors ([polar heatmaps](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#heatmaps-and-contours)); histograms, images, error bars, stems, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
 | Ternary plots: markers, lines and region fills of three-component samples | `Renderer` with `Config.ternary` | Three columns per `Ternary` series (`x_column`, `y_column`, `c_column`), unnormalized; a `region` fills the polygons the samples outline (even-odd); line fills, step lines, overlay layers and streamed sources are rejected; [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md) |
-| Feynman diagrams: vertices, propagators and particles, laid out automatically and dragged into place | `Renderer` with a `Feynman` series | DataLess: the topology is SSOT, vertex positions optional and committed by `auto_layout`; drawn on the CPU and written as vector curves in SVG and PDF; [Feynman guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/FEYNMAN.md) |
+| Feynman diagrams: vertices, propagators and particles, laid out automatically and dragged into place | `Renderer` with a `Feynman` series | No columns: the diagram is part of the series configuration; vertex positions are optional and `auto_layout` fills in the missing ones; SVG and PDF export write the strokes as vector curves; [Feynman guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/FEYNMAN.md) |
 | Triangle meshes: a colour field, contour lines and, in a 3D box, a surface over triangles the host gives | `Renderer` with a `TriMesh` series | Vertex coordinate and value columns (`x_column`, `y_column`, `values`) and a triangle index column (`Renderer::upsert_triangles`), coloured through `Config.colorbar`; on a 3D chart `z_column` is the height; streamed sources are rejected; [triangle mesh guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TRIMESH.md) |
 | 3D surfaces: a heatmap's grid as a lit surface, contours on the floor, points and trajectories (a scatter or line series with a `z_column`), vector fields (a point vector with a `z_column` and `w`) | `Renderer` with `Config.view_3d` | The heatmap's own columns; overlays, line offsets and streamed sources are rejected; [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md) |
 
 The renderer re-exports model types: most applications do not need a separate
-`figgy-model` dependency. Pies and donuts are the
-DataLess chart: it draws one validated model with at most 64 slices,
-takes no column sources or streamed data, and computes no
-statistics from raw samples. Categorical bars and box plots are `Renderer`
+`figgy-model` dependency. Pies and donuts are drawn from one validated
+`RadialChart` model with at most 64 slices per ring; they take no column
+sources or streamed data. Categorical bars and box plots are `Renderer`
 series over a categorical axis, and radar series over the categorical angle
 axis of a polar chart; the legacy `CategoricalChart`, `BoxPlotChart` and
 `RadarChart` documents are deprecated readers for this release, removed in the
@@ -95,7 +94,7 @@ Export that same model to preserve selection, moved
 labels and the drawing area. Data picking and decoration hit maps are separate;
 use the renderer's measured bounds when selecting titles, labels, axes or handles.
 Reference lines, shaded spans, text boxes and arrows live in each chart's
-`annotations` layer, which has its own hit map and cache: spans are drawn below
+`annotations` layer, which has its own hit map: spans are drawn below
 the data and the other items above every decoration; see the
 [interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 

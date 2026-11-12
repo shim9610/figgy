@@ -4,24 +4,23 @@ A triangle mesh series draws a field over triangles the host gives: the
 mesh of a finite element or finite volume solver with a pressure or a
 temperature per node or per element, or scattered measurements the host
 triangulated. It is matplotlib's `tripcolor`, `tricontour` and `trisurf`
-in one series kind, `DataRenderType::TriMesh(TriMeshSeries)`
-([#210](https://github.com/shim9610/figgy/issues/210)): a colour fill,
-contour lines, or both, on a flat chart, and a surface in the box of a 3D
-chart (`Config.view_3d`, [SURFACE.md](SURFACE.md)). The renderer never
-triangulates and never resamples the mesh onto a lattice: a mesh with a
-hole (flow around a cylinder) or a curved boundary draws as the host meshed
-it.
+in one series kind, `DataRenderType::TriMesh(TriMeshSeries)`: a colour
+fill, contour lines, or both, on a flat chart, and a surface in the box of a
+3D chart (`Config.view_3d`, [SURFACE.md](SURFACE.md)). The triangles are
+drawn as given, without triangulating or resampling onto a lattice, so a
+mesh with a hole (flow around a cylinder) or a curved boundary draws as the
+host meshed it.
 
 The host supplies the vertex coordinates, the triangles, the values and, on
 a 3D chart, the heights; the renderer places the vertices through the axes
 or the camera, interpolates the given vertex values across each triangle,
 draws the level set of that interpolant as the contour lines, maps the
 values through the colourbar and shades a lit surface with each triangle's
-own normal. The mesh lives in the GPU column pool.
+own normal.
 
 ## Input and first render
 
-A mesh series names four pool columns: `x_column` and `y_column` are the
+A mesh series names four columns: `x_column` and `y_column` are the
 vertex coordinates, one row per vertex; `values.column` holds one value per
 vertex or per triangle; and `triangles` names a triangle index column,
 three vertex rows per triangle in triangle order, uploaded with
@@ -114,9 +113,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 `upsert_triangles` replaces an index column of the same id and refuses a
 count that is not a non-zero multiple of three, an index that is not an
 integer in `0..=u32::MAX`, and a streamed id; `remove_triangles`
-removes the column. The pool keeps the triangle count and the smallest and
-largest index as scalar statistics. Registering
-the series checks the largest index against the vertex count, the shortest
+removes the column. Registering the series checks the largest index against the vertex count, the shortest
 of the coordinate columns, the value column for vertex values and, on a 3D
 chart, the height column, and refuses an index past it by naming the
 triangle, the index and the column. A column shortened by a later upload is
@@ -157,36 +154,30 @@ A series has a fill, contour lines or both, and a surface look only with a
 fill. Polar, ternary and parallel charts refuse the kind, as they refuse
 fields. On a 3D chart the series names its `z_column` and its fill is
 continuous. `Config::validate` (through `TriMeshSeries::validate` and
-`Config::validate_tri_mesh_series`) and series registration report every
-rule by name. Streamed displays refuse the kind, and `upsert_triangles`
+`Config::validate_tri_mesh_series`) and series registration report each
+broken rule by name. Streamed sources are rejected, and `upsert_triangles`
 refuses a streamed id.
 
 The legend symbol is the heatmap's swatch. Every mesh series of a chart is
 coloured through the one colourbar; `Chart::auto_fit_colorbar_union` fits it
-to the value columns' statistics.
+to the value columns' ranges.
 
-## Drawing
+## How a mesh is drawn
 
-The fill draws one instance per triangle, three vertices each, with no
-vertex buffer: each vertex reads its triangle's three indices and the three
-vertices' coordinates and values from the pool and places itself through
-the axes, log, probability and broken axes included. A triangle that names a
-vertex past the shortest vertex column or has a vertex the axes cannot
-place (a NaN coordinate) is dropped, as a NaN breaks a line. Vertex values
-blend barycentrically in screen space, so in axis `t` on a log axis, as a
-heatmap's interpolation does; a non-finite vertex value paints its triangles
-`nan_color`. The fragments are opaque, without coverage antialiasing: under MSAA
-every sample of a shared edge is covered by exactly one triangle, so an
-interior edge shows no background.
+Each vertex is placed through the axes, log, probability and broken axes
+included. A triangle that names a vertex past the shortest vertex column,
+or has a vertex the axes cannot place (a NaN coordinate), is not drawn, as
+a NaN breaks a line. Vertex values blend linearly across each triangle in
+screen space (so in axis units on a log axis, as a heatmap interpolates); a
+non-finite vertex value paints its triangles `nan_color`. Triangle edges are
+not antialiased, so neighbouring triangles meet with no background showing
+between them, under MSAA too.
 
 The contour lines are the level set of each triangle's linear interpolant,
-drawn per fragment as the heatmap's are: the distance to a level is
-`|f − L| / |∇f|` in output pixels, with the triangle's gradient from its
-three projected vertices (an analytic flat value, never a derivative of the
-raster), and the heatmap's level search over the colourbar's levels. The
-interpolant is continuous across edges, so a stroke continues into the
-neighbouring triangle, and at the mesh boundary half the stroke is clipped,
-as at a heatmap's grid edge. A plateau (zero gradient) draws nothing.
+drawn as a heatmap's are, at the colourbar's levels. The interpolant is
+continuous across edges, so a stroke continues into the neighbouring
+triangle; at the mesh boundary half the stroke is clipped, as at a
+heatmap's grid edge. A flat region (zero gradient) draws no line.
 
 Only the precise draw style draws a mesh, as it alone draws fields;
 `draw_style_supports` answers `false` under the stylized styles.
@@ -226,10 +217,9 @@ Every interaction of a Cartesian chart applies
   `vertex_index` is the triangle's vertex nearest the cursor, a hover
   answer the selection does not keep. A contour stroke within the pick
   distance answers first, as `PickedData::ContourLevel` with the level and
-  the triangle in `x_index` (`y_index` is 0). The pick walks every triangle
-  on the GPU and reads the draw's own snapshot of the mesh, so it picks
-  where it paints. On a 3D chart the 1×1 ID pick renders what the pixel
-  shows with the depth test: the surface answers the triangle the pixel
+  the triangle in `x_index` (`y_index` is 0). A triangle is picked exactly
+  where it is painted. On a 3D chart the pick answers what the pixel shows:
+  the surface answers the triangle the pixel
   shows and the vertex nearest the fragment, a floor stroke its level with
   the triangle, and never a triangle hidden behind the surface.
 - **The picked highlight.** The picked triangle is outlined inside its
@@ -238,8 +228,7 @@ Every interaction of a Cartesian chart applies
   wider. On a 3D chart the picked triangle is the surface's patch, outlined
   and brightened over anything in front of it.
 - **`step_selection`** moves a picked triangle by `dx` over the triangles
-  of its series (the triangle count, from the index column's statistics)
-  and by `dy` across the chart's mesh series in series order; a contour
+  of its series and by `dy` across the chart's mesh series in series order; a contour
   level does not step.
 - **`selection_details()`** reports the triangle's three vertex indices and
   their coordinates and values (and, on a 3D chart, their heights). The
@@ -247,8 +236,7 @@ Every interaction of a Cartesian chart applies
   vertex; `value` for face values), `z` on a 3D chart and `at`.
 - **Decorations and the plot area.** The title, legend, axes, tick labels,
   axis titles and colourbar drag as on any chart, and the plot area moves
-  and resizes; a geometry edit changes the transform only and re-uploads
-  nothing. On a 3D chart the data-area drag orbits the camera.
+  and resizes without re-uploading any data. On a 3D chart the data-area drag orbits the camera.
 - **Annotations, overlays and subplots.** The annotation layer places data
   and ratio anchors over the mesh and draws above it; a mesh on an overlay
   `y_axis` draws and picks against that axis; a mesh in a subplot cell
@@ -259,33 +247,27 @@ Every interaction of a Cartesian chart applies
   image, and a serde round trip of the series and the `mesh_triangle`
   selection, both additive, so older documents parse and re-serialize
   unchanged.
-- **SSOT invalidation.** A series edit (fill, contours, values, the surface
-  look) rebuilds only the mesh's own scratch, and `upsert_triangles` or a
-  vertex column upload moves the chart's data revision; the next frame
-  draws the new mesh with no other upload.
+- **Edits.** After a series edit (fill, contours, values, the surface
+  look), `upsert_triangles` or a vertex column upload, the next frame draws
+  the new mesh; nothing else needs to be uploaded again.
 
 ## Cost and limits
 
 Any number of triangles, vertices and mesh series can be drawn. A mesh
-fails only at registration, when the pool cannot allocate the column or the
+fails only at registration, when the memory for the column cannot be allocated or the
 device cannot hold it. The draw and pick cost grows with the mesh: on
 lavapipe (a software Vulkan adapter) a million triangles export at 1x in
-about 0.9 s and pick in about 50 ms. A chart can hold more mesh series than
-the 256-entry scratch cache, which evicts old entries and never refuses a
-series. Index memory is 24 bytes per triangle (two lanes per index, as for
-every pool column).
+about 0.9 s and pick in about 50 ms. Index memory is 24 bytes per triangle.
 
 ## Examples and tests
 
-- The playground scenes `SceneKind::TriMesh` (potential flow past a
-  cylinder on a graded annulus mesh, a mesh with a hole: the pressure
-  coefficient per node, interpolated, with contour lines) and
-  `SceneKind::TriSurface` (the same mesh as a matte, wireframed surface in
-  a 3D box with floor contours) in `tests/support/playground_scenes.rs`.
-- `tests/tri_mesh_render.rs`: the fill, the contours, the pick, the
-  highlight, `step_selection`, registration and its refusals, the
-  interactions, and the million-triangle draw and pick.
-- `tests/surface_render.rs`: the 3D surface, its ID pick, highlight, floor
-  contours, lit shading, z fit and height re-upload.
-- `crates/web/tests/tri_mesh_browser.rs`: the browser's
-  `register_triangles`, picks, details and steps, flat and in a 3D box.
+- [trimesh.rs](examples/trimesh.rs) draws `gallery-trimesh.png` (stress
+  around a hole in a plate) and `gallery-trisurf.png` (a drum mode as a 3D
+  surface).
+- The [playground](https://github.com/shim9610/figgy/blob/master/tools/playground/README.md)
+  scenes *Triangle mesh (flow past a cylinder)* (the pressure coefficient
+  per node on a graded annulus mesh with a hole, interpolated, with contour
+  lines) and *3D triangle mesh surface* (the same mesh as a matte,
+  wireframed surface in a 3D box with floor contours).
+- Tests: `cargo test --locked -p figgy-renderer --test tri_mesh_render` and
+  `--test surface_render`.

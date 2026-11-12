@@ -23,7 +23,7 @@ direction.
 
 The following assumes a vertical histogram registered as `chart_id`, with edges
 bound to X and counts bound to Y. Change the bindings, direction and axis options
-together. No data copy or re-upload is needed.
+together. Nothing needs to be uploaded again.
 
 ```rust,ignore
 use renderer::data_config::{BarOrientation, DataRenderType};
@@ -89,11 +89,7 @@ The example uploads the data once and reuses those columns for both directions.
 `bar_style_overrides`의 `index`와 선택 상태(`PickedDataRef::HistogramBin`)의 `bin_index`는
 방향을 바꿔도 같은 구간을 가리킨다.
 
-## Verification
-
-The histogram tests cover both orientations, a logarithmic count axis,
-signed and zero values, unequal bins, per-bin overrides, the selection
-outline and switching an existing chart between orientations:
+## Tests
 
 ```bash
 cargo test --locked -p figgy-renderer --test histogram_render

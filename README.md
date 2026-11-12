@@ -156,7 +156,7 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 |---|---|---|
 | Lines and scatter | `f64` columns through `ColumnSource` | [Usage](crates/renderer/USAGE.md) · [Series schema](crates/renderer/CONFIG.md#data_config--declarative-series-schema-the-active-api) |
 | Area fills and step lines | A line's `fill` (to a baseline or another series) and `interpolation` | [Area fill and step lines](crates/renderer/CONFIG.md#area-fill-and-step-lines) · [area_step.rs](crates/renderer/examples/area_step.rs) |
-| Monotonic-x lines (large, evenly spaced signals) | Samples at `start + i × interval`, lent on every call through a `MonotonicSource` and never kept; each pixel column is reduced to its first, lowest, highest and last sample on the CPU (`MonotonicLine` series in a chart from `Renderer::register_monotonic_chart`; `set_monotonic`, `append_monotonic`) | [Monotonic-x lines](crates/renderer/USAGE.md#monotonic-x-lines) · [MONOTONIC.md](crates/model/MONOTONIC.md) |
+| Monotonic-x lines (large, evenly spaced signals) | Samples at `start + i × interval`, lent on every call through a `MonotonicSource` and not retained after the call; each pixel column draws its first, lowest, highest and last sample (`MonotonicLine` series in a chart from `Renderer::register_monotonic_chart`; `set_monotonic`, `append_monotonic`) | [Monotonic-x lines](crates/renderer/USAGE.md#monotonic-x-lines) · [MONOTONIC.md](crates/model/MONOTONIC.md) |
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
 | Stems and lollipops | An `XySeries` with markers and a `stem`: one stroke per point from a baseline, along y for an impulse response, along x for a ranked lollipop | [Stems](crates/renderer/CONFIG.md#stems) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
@@ -183,17 +183,18 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
 | Sunbursts | `RadialChart` slices with `children`: nested rings over their parents' spans | [Radial (in Korean)](crates/renderer/RADIAL.md#선버스트중첩-고리) |
 
-Every row above pies and donuts is a column-backed chart: its data enters
-through `ColumnSource` into one GPU column pool, and these charts share one
-renderer, picking and export path. Overlay axes and subplots work with these
-charts, except that a polar chart takes no overlay axes. Streamed, non-resident
+Every row above pies and donuts is drawn by `Renderer`. Their per-point data
+enters through `ColumnSource`, except that monotonic-x lines lend their samples
+through a `MonotonicSource`, and energy-level and Feynman diagrams are records
+in the chart's configuration. Overlay axes and subplots work with these charts,
+except that a polar chart takes no overlay axes. Streamed, non-resident
 sources draw lines, scatter, error bars, histograms and heatmaps in a
 single-panel document. Contours, fills and step lines, vector fields, colour and
 size maps, polar plots, and documents with overlays or subplots reject streamed
 sources with an explicit error, and so do categorical bars, box plots, range
-bars and radar series. Pies and donuts keep their values in their own small model, with
-no `ColumnSource`, and have their own renderer. The annotation layer works on
-both kinds.
+bars and radar series. Pies and donuts keep their values in their own model
+(`RadialChart`), with no `ColumnSource`, and are drawn by `RadialRenderer`. The
+annotation layer works with both renderers.
 
 ## Quick start
 
@@ -364,14 +365,13 @@ required by default.
 The Rust renderer also compiles to `wasm32-unknown-unknown` and renders through
 WebGPU. [`crates/web`](crates/web/README.md) is figgy's **browser product**: the
 wasm-bindgen wrapper and the `<figgy-chart>` custom element, which connect a
-canvas, events and async calls. It is maintained with the renderer, and every
-renderer feature ships its wrapper methods. Its JavaScript API is the wrapper's
-own, separate from the Rust library's API. The `FiggyChart` export and
-`<figgy-chart>` element cover Cartesian charts, categorical bars and box
-plots included, and polar charts, radar charts included
-(`set_radar_document`); `FiggyBoundedChart`, the radial chart host,
-covers pies and donuts, and the host
-handles their canvas events. The wrapper is the Cargo package `figgy`, built from
+canvas, events and async calls. It is developed alongside the renderer and has
+wrapper methods for every renderer feature. Its JavaScript API is its own,
+separate from the Rust library's API. The `FiggyChart` export and the
+`<figgy-chart>` element cover Cartesian charts (categorical bars and box plots
+included) and polar charts (radar charts included, through
+`set_radar_document`). `FiggyBoundedChart`, the radial chart host, covers pies
+and donuts; your page handles their canvas events. The wrapper is the Cargo package `figgy`, built from
 this repository (`publish = false`); the `figgy` crate on crates.io and the
 `figgy` package on npm are unrelated projects.
 
@@ -407,4 +407,4 @@ Code: [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
 Bundled fonts retain their OFL and GUST notices: [Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt)
 and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt) (SIL OFL 1.1), and
 [New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt) (GUST Font License),
-the face formulas in rich text are drawn with.
+the face used for formulas in rich text.

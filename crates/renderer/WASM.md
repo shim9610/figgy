@@ -53,7 +53,7 @@ Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 
 | 동기 API(네이티브 전용) | 비동기 API(모든 플랫폼) | 내용 |
 |---|---|---|
 | `Renderer::for_window_blocking` | `Renderer::for_window_async` | surface·adapter·device 초기화 |
-| `Renderer::prewarm_all_blocking` / `PipelinePreparation::compile_blocking` / `ensure_errorbar_extent_engine_blocking` | `prewarm_all` / `compile` / `ensure_errorbar_extent_engine` | 파이프라인 준비. 웹에서는 브라우저의 비동기 컴파일을 기다리고 단계마다 실행을 넘긴다. 네이티브에서는 기다리는 곳이 없다 |
+| `Renderer::prewarm_all_blocking` / `PipelinePreparation::compile_blocking` / `ensure_errorbar_extent_engine_blocking` | `prewarm_all` / `compile` / `ensure_errorbar_extent_engine` | 파이프라인 준비. 웹에서는 브라우저의 비동기 컴파일을 기다리고 단계마다 실행을 넘긴다. 네이티브에서는 중간에 기다리지 않는다 |
 | `gpu::request_adapter_blocking` | `gpu::request_adapter_async` | 어댑터 요청 |
 | `gpu::request_adapter_for_surface_blocking` | `gpu::request_adapter_for_surface_async` | surface와 맞는 어댑터 요청 |
 | `gpu::request_device_blocking` / `request_device_with_blocking` | `gpu::request_device_async` | 장치와 큐 요청 |
@@ -70,9 +70,7 @@ GPU 결과를 기다리는 방법은 세 가지이고 결과는 같다. 기다�
 
 동기 함수만 쓰는 네이티브 호스트는 `RendererDevice::blocking`으로 poll 스레드 없는 장치 묶음을 만든다. 이 묶음에서 비동기 대기를 부르면 `FiggyError::AsyncWaitUnavailable`을 돌려준다.
 
-웹 이미지 출력은 같은 wgpu 장치의 `GPUDevice.pushErrorScope` / `popErrorScope`로 메모리 부족과 내부 오류를 확인한다. 오류 범위가 비동기 함수 전체에 걸쳐 열린 채 남지 않도록 자원 생성·렌더 제출과 각 결과 읽기 제출을 별도의 동기 구간으로 처리한다. 각 구간은 `push → 명령 기록·제출·매핑 요청 → pop 요청`을 마친 뒤 반환된 Promise만 기다린다.
-
-따라서 출력 작업이 취소돼도 다음 호출에 열린 오류 범위가 남지 않는다. 외부 호스트가 같은 장치에 설정한 오류 범위와도 대기 중 순서가 뒤섞이지 않는다. 동기 구간이 일찍 종료되면 RAII 정리 코드가 `popErrorScope()`를 요청한다. 실제 오류의 name·constructor·message는 `FiggyError::GpuResourceAllocationFailed`에 보존하며, 정상 결과인 `null`은 오류로 바꾸지 않는다. 네이티브 출력은 wgpu의 메모리 부족 검사를 사용한다.
+웹 이미지 출력은 같은 wgpu 장치의 `GPUDevice.pushErrorScope` / `popErrorScope`로 메모리 부족과 내부 오류를 확인한다. 오류 범위는 `await` 없이 한 번에 열고 닫으므로, 출력 작업이 취소돼도 다음 호출에 열린 오류 범위가 남지 않고 호스트가 같은 장치에 설정한 오류 범위와 순서가 뒤섞이지 않는다. 실제 오류의 name·constructor·message는 `FiggyError::GpuResourceAllocationFailed`에 담아 돌려주며, 오류가 없다는 뜻의 `null`은 오류로 바꾸지 않는다. 네이티브 출력은 wgpu의 메모리 부족 검사를 사용한다.
 
 **기존 장치에 연결하는 `Renderer::try_new`는 동기 대기를 하지 않는다.** 호스트가 장치와 큐를 만든 뒤 `RendererDevice`로 전달한다. 웹에서도 장치를 비동기로 생성한 다음 같은 방식으로 사용할 수 있다.
 
@@ -155,11 +153,9 @@ impl FiggyChart {
 
 `FiggyChart.create`는 피킹을 켜지 않는다. 첫 선택 전에 준비하려면 `await chart.prewarm_gpu_picking()`을 호출한다. 이 메서드와 `pick_point` / `pick_data`는 렌더러의 `enable_gpu_picking_async`를 거친 뒤 현재 차트의 피킹 캐시를 준비한다. 파이프라인·캐시·리비전은 렌더러가 관리하므로 반복 호출과 재시도도 저장된 활성화 오류를 포함한 같은 상태를 사용한다.
 
-`Renderer`는 차트별 설정과 시리즈 순서, `ColumnPool`, 피킹 파이프라인, 현재 차트용 피킹 캐시 하나, 대기 중인 정리 작업을 관리한다.
-
 네이티브·임베드 호스트는 `enable_gpu_picking()`, 필요에 따른 `prepare_gpu_picking_for_chart(chart_id)`, `pick_chart(chart_id, GpuPickRequest)` 순서로 사용한다. `WindowedRenderer::pick_chart_at`은 현재 surface에 맞는 패널 위치와 배율도 계산한다. 호스트가 축 변환이나 데이터 영역 자르기 계산을 중복할 필요는 없다.
 
-점·막대·셀·등고선을 구분하는 선택에는 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다. 결과에는 종류별 식별자와 `distance_px`가 들어간다. 막대·행렬 선택용 컴퓨트 셰이더는 그리기와 같은 좌표 변환·풀·스타일·격자·레벨 표·도형 계산 함수를 사용하므로 판정이 그려진 모양과 일치한다. 결과를 `set_picked_data`로 전달하면 그리기에 사용한 같은 바인드 그룹으로 선택 표시를 그리므로 축이나 데이터가 바뀌어도 위치가 맞는다.
+점·막대·셀·등고선을 구분하는 선택에는 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다. 결과에는 종류별 식별자와 `distance_px`가 들어가며, 판정은 그려진 모양과 일치한다. 결과를 `set_picked_data`로 전달하면 축이나 데이터가 바뀌어도 선택 표시가 그려진 위치를 따라간다.
 
 <a id="32-렌더-루프--requestanimationframe--renderer-stamp"></a>
 
@@ -215,31 +211,35 @@ match frame_decision(
 
 `interrupt_render()`가 스트림 취소를 예약하면 다음 프레임도 예약된다. 프레임 시작의 `process_pending_maintenance()`는 취소를 먼저 처리하고, 그 뒤에 스트림 화면과 상주 차트 중 어느 경로로 그릴지 결정한다. 풀 재배치가 없어도 취소는 처리된다. 같은 커널에 다른 차트의 설정과 시리즈를 복원하면 복귀 첫 프레임부터 창 크기에 맞는 좌표와 잘라내기 영역을 사용하며, 저장된 축 범위는 유지한다. 객체 선택이나 축 조작으로 다시 그릴 필요가 없다.
 
-`crates/web/tests/stream-resident-return-probe.html`은 **상주 차트 확대 → 스트림 → 상주 차트 복귀**의 첫 화면을 실제 캔버스 픽셀로 비교한다. 기본 창은 1200×800이며 `?width=600&height=900&partial=1`로 세로 창에서 스트림 도중 복귀를 검사할 수 있다. `cancelOnly=1`을 추가하면 설정 변경 없이 취소만 해도 다음 프레임에 반영되는지 함께 검사한다.
+컬럼 교체·제거·재배치는 한 번에 반영하며, 오류가 나면 기존 상태를 그대로 유지한다. Rust `Renderer::remove_column`은 해당 컬럼을 참조하는 시리즈만 함께 제거하고 범례 문서는 바꾸지 않는다. 범례 설정도 함께 바꿔야 한다면 `Renderer::remove_column_with_chart_config`로 한 번에 반영한다. 웹 `FiggyChart.remove_column`은 자동 범례의 해당 행도 지운다([데이터 등록·제거와 메모리 관리](#등록해제-모델--메모리는-내부-자동-관리) 참고).
 
-컬럼 교체·제거·재배치는 임시 풀, 영향을 받는 차트 상태·리비전, 새 피킹 캐시를 먼저 준비한다. 동기 준비 중 오류가 나면 기존 상태를 유지한다. 성공하면 풀·차트·피킹·정리 상태를 추가 할당 없이 반영한다. Rust `Renderer::remove_column`은 해당 컬럼을 참조하는 시리즈만 함께 제거하고 범례 문서는 바꾸지 않는다. 범례 설정도 함께 바꿔야 한다면 `Renderer::remove_column_with_chart_config`로 한 번에 반영한다. 웹 `FiggyChart.remove_column`은 자동 범례의 해당 행도 지운다([데이터 등록·제거와 메모리 관리](#등록해제-모델--메모리는-내부-자동-관리) 참고).
-
-`FiggyChart::load_demo()`도 데모 상태 전체를 한 번에 교체한다. 컬럼 4개, 최종 설정과 시리즈 순서, 피킹 상태, 웹의 컬럼 리비전·스타일·라벨·색상 메타데이터, 유효한 범위 캐시를 함께 반영한다. 확정 전에 동기 오류가 나면 모두 이전 상태를 유지한다. 트랜잭션 중에는 범위 계산 명령을 제출하지 않으며, 변경된 컬럼을 참조하던 캐시는 제거한 뒤 필요할 때 다시 만든다. 이 작업에는 풀 용량과 같은 임시 GPU 버퍼 하나와 스테이징 버퍼 4개가 추가로 필요하다. 재배치 백업이 남아 있으면 원본 풀·백업·임시 풀이 잠시 공존한다.
+`FiggyChart::load_demo()`도 데모 상태 전체를 한 번에 교체한다. 컬럼 4개, 설정과 시리즈 순서, 피킹 상태, 웹의 컬럼 리비전·스타일·라벨·색상 정보를 함께 바꾸며, 확정 전에 오류가 나면 모두 이전 상태를 유지한다. 이 작업에는 풀 용량과 같은 임시 GPU 버퍼 하나와 스테이징 버퍼 4개가 추가로 필요하다. 재배치 백업이 남아 있으면 원본 풀·백업·임시 풀이 잠시 공존한다.
 
 <a id="33-데이터-입력--명시적-registerupdate와-f32-물리-lane"></a>
 
 ### 3.3 데이터 등록·교체와 GPU 저장 형식
 
-GPU 풀은 논리값 하나를 **항상 f32 두 개**로 저장한다. 일반 컬럼은 `(value as f32, 0)`, `Float64Array` / `HiLoColumnSource`는 `(hi: f32, lo: f32)`를 기록한다. 셰이더의 f64 연산 대신 두 f32의 합을 이용해 큰 절대값 안의 작은 차이를 보존한다. 이 저장 형식은 네이티브와 WASM에서 같다. 다음 예는 매핑된 스테이징 버퍼를 준비한 뒤 실행하는 내부 업로드 코드다.
+GPU 풀은 값 하나를 항상 f32 두 개로 저장한다. f32 값은 `(value, 0)`으로, f64 값(`Float64Array`, Rust의 f64 `ColumnSource` / `HiLoColumnSource`)은 `(hi, lo)`로 나눠 기록한다. 셰이더는 f64 연산 대신 두 f32의 합으로 큰 절대값 안의 작은 차이를 보존한다. 이 저장 형식은 네이티브와 WASM에서 같다. Rust 호스트는 `ColumnSource`를 구현해 자기 자료 구조의 값을 바로 올릴 수 있다.
 
 ```rust
-// 일반 컬럼과 hi/lo 컬럼이 같은 호출을 사용한다.
-let mut view = staging.slice(..).get_mapped_range_mut();
-let mut writer = ColumnPairWriter::new(view.slice(..)); // renderer pool 내부, crate-private
-// ColumnSource는 `(value as f32, 0)`, HiLoColumnSource는 `(hi, lo)` 쌍을 기록한다.
-source.write_pairs(&mut writer);
-let stats = writer.bounds(); // 기록된 값에서 계산한 최솟값·최댓값·최소 양수
-drop(view);
-staging.unmap();
-enc.copy_buffer_to_buffer(&staging, 0, &pool, offset, None);  // 이후는 GPU 내부 복사
+use renderer::{ColumnPairWriter, ColumnSource};
+
+struct Sample { time: f64, volts: f32 }
+struct Volts<'a>(&'a [Sample]);
+
+impl ColumnSource for Volts<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        for (i, sample) in self.0.iter().enumerate() {
+            dst.write_pair(i, sample.volts, 0.0); // f32 값은 (value, 0)
+        }
+    }
+}
 ```
 
-네이티브에서는 원본 참조를 빌려 변환 결과를 매핑된 업로드 버퍼에 직접 쓴다. 통계는 값을 기록하는 같은 반복에서 writer가 계산하므로 렌더러가 쓰기 전용 영역을 다시 읽지 않고, 소스가 데이터를 따로 한 번 더 훑을 필요도 없다. f64 컬럼은 `write_value`로 기록하므로 통계에 원래 f64 값이 그대로 들어가고, `write_pair`로 쓴 값은 `hi as f64 + lo as f64`가 들어간다. 유한한 값만 포함한다.
+렌더러는 업로드 호출 동안만 소스를 빌린다. 자동 맞춤에 쓰는 통계(최솟값·최댓값·최소 양수)는 기록한 값에서 계산한다. `write_value`로 기록한 f64 값은 그 값이 그대로, `write_pair`로 기록한 값은 `hi as f64 + lo as f64`가 통계에 들어가며, 유한한 값만 포함한다.
 
 사용자 정의 `ColumnSource` / `HiLoColumnSource`는 값을 기록하는 `write_pairs`를 구현해야 한다. 구현이 빠지면 컴파일 오류가 난다. 소스는 통계를 넘기지 않으므로 통계가 데이터와 어긋날 수 없다.
 
@@ -250,7 +250,7 @@ WASM에서는 다음과 같은 메모리 경계 복사가 추가된다.
 
 입력 배열은 데이터 정밀도에 맞춰 고른다.
 
-- **`Float32Array`**: 일반 좌표에 권장한다. JS·WASM 경계에서 원소당 4바이트를 전달하며, 빌린 데이터에서 `(value, 0)` 기록과 통계 계산을 한 번에 수행한다.
+- **`Float32Array`**: 일반 좌표에 권장한다. JS·WASM 경계에서 원소당 4바이트를 전달하고, GPU에는 `(value, 0)`으로 원소당 8바이트를 저장한다.
 - **`Float64Array`**: 큰 절대 좌표에 사용한다. 경계 전달량과 GPU 저장량은 원소당 8바이트다. 최소·최대 메타데이터뿐 아니라 GPU 좌표 계산도 hi/lo 쌍을 사용하므로 타임스탬프 같은 큰 값에서 f32 하나로 표현할 수 없는 작은 차이를 보존한다.
 
 `crates/web`에는 WASM 메모리에 버퍼를 할당해 주는 메서드가 없다. 인자 변환 비용까지 줄이려면 버퍼를 할당해 포인터와 길이를 돌려주는 WASM 함수를 직접 추가하고, JS가 `new Float32Array(memory.buffer, ptr, len).set(src)`로 채우게 한다. 이 방식도 경계 복사는 한 번 필요하며 wasm-bindgen의 인자 변환 과정만 줄인다.
@@ -278,7 +278,7 @@ chart.register_columns_f32(ids, z, valuesPerColumn);   // 업로드 1회
 
 GPU 풀은 값마다 8바이트를 쓴다. 위 배치는 값 80만 개, 약 6.4MB로 처음 만든 16MiB 웹 풀에 들어간다. 더 큰 배치는 자동 확장이 켜진 기본 상태에서 풀이 늘어나 그대로 들어간다. 풀 크기의 상한은 장치의 버퍼 크기 한도와 스토리지 바인딩 한도 중 작은 값이다. 렌더러는 어댑터가 지원하는 한도를 그대로 요청하므로 이 상한은 하드웨어의 한도다. 이를 넘으면 `device_limit` 오류가 난다. `set_pool_auto_growth(false)`로 확장을 끄면 풀 공간이 부족할 때 `pool_space` 오류가 난다.
 
-일괄 등록은 컬럼별 배열 목록 대신 연속된 배열 하나를 받는다. 직사각형 행렬의 메모리 배치를 그대로 사용하면 JS에서 컬럼마다 순회하고 WASM 경계를 반복해서 넘는 비용을 줄일 수 있다. 업로드할 때 각 컬럼은 전달된 버퍼의 일부를 빌려 스테이징 버퍼에 기록하므로 컬럼별 복사본을 만들지 않는다. JS·WASM 경계 복사는 앞서 설명한 규칙을 따른다.
+일괄 등록은 컬럼별 배열 목록 대신 연속된 배열 하나를 받는다. 직사각형 행렬의 메모리 배치를 그대로 사용하면 JS에서 컬럼마다 순회하고 WASM 경계를 반복해서 넘는 비용을 줄일 수 있다. JS·WASM 경계 복사는 앞서 설명한 규칙을 따른다.
 
 - 새 ID만 등록할 수 있다. 배치 내 중복 ID, 이미 등록된 ID, `data.length !== ids.length × valuesPerColumn`이면 전체를 거부한다. 실패한 배치는 아무 ID도 등록하거나 업로드하지 않는다.
 - 컬럼 길이가 서로 다른 데이터는 개별 `register_column_*` 호출로 등록한다.
@@ -294,7 +294,7 @@ chart.register_record("boxes", { median, q1, q3, whisker_low, whisker_high, mean
 chart.register_ragged("outliers", values, offsets);
 ```
 
-- `register_record`의 필드는 `median`, `q1`, `q3`, `whisker_low`, `whisker_high`(필수)와 `mean`, `sample_count`, `ci_low`, `ci_high`(선택)이다. 없는 선택 필드는 NaN으로 읽고, 모든 필드가 NaN인 행은 빠진 박스다. 알 수 없는 필드, 빠진 필수 필드, 길이가 다른 필드는 오류다. 배열은 복사하지 않고 스테이징 버퍼에 바로 기록한다.
+- `register_record`의 필드는 `median`, `q1`, `q3`, `whisker_low`, `whisker_high`(필수)와 `mean`, `sample_count`, `ci_low`, `ci_high`(선택)이다. 없는 선택 필드는 NaN으로 읽고, 모든 필드가 NaN인 행은 빠진 박스다. 알 수 없는 필드, 빠진 필수 필드, 길이가 다른 필드는 오류다.
 - `register_ragged`는 `Float64Array` 두 개를 `(hi, lo)` 쌍으로 업로드한다. offsets가 줄어들거나 0에서 시작하지 않거나 정수가 아니거나 values.length로 끝나지 않으면 업로드를 버리고 오류를 낸다.
 - 두 함수 모두 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 컬럼, 레코드, ragged 컬럼, 삼각형 인덱스 컬럼은 ID 공간 하나를 공유하므로 이미 컬럼인 ID는 거부한다. 레코드와 ragged 컬럼은 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
 
@@ -306,18 +306,18 @@ chart.register_triangles("mesh", new Uint32Array([0, 1, 2, 2, 1, 3]));
 chart.remove_triangles("mesh"); // 있었으면 true
 ```
 
-- `register_triangles`는 `Uint32Array`를 복사하지 않고 스테이징 버퍼에 바로 기록하며, `u32::MAX`까지 모든 인덱스가 GPU에 정확히 올라간다. 빈 배열이나 길이가 3의 배수가 아닌 배열은 오류이고 아무것도 등록하지 않는다. 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
+- `register_triangles`는 `u32::MAX`까지 모든 인덱스를 GPU에 정확히 올린다. 빈 배열이나 길이가 3의 배수가 아닌 배열은 오류이고 아무것도 등록하지 않는다. 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
 - `RangeBars` 시리즈는 `x_column`(위치), `y_column`(끝값), `start`와 선택 컬럼(`whiskers`의 `low`·`high`, `color_by`의 합계 표시 또는 상태 컬럼, `progress`)을 일반 컬럼으로 읽는다. 모든 컬럼은 위치 컬럼과 길이가 같아야 한다. [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#rangebars-render_type)를 참고한다.
 - `BoxPlot` 시리즈는 `y_column`으로 레코드를, `outliers`로 ragged 컬럼을, `x_column`으로 범주 위치 컬럼(`0..n-1`)을 가리킨다. [박스플롯 문서](#box-plot-documents)를 참고한다.
-- 박스플롯의 `violin`은 반쪽마다 곡선 ragged 컬럼과 밀도 컬럼을, `points`는 원시 점의 범주 위치 컬럼과 값 컬럼을 가리킨다. 밀도는 호스트가 계산해 올리고, 점의 흔들림(jitter)은 셰이더가 점 번호로 계산하므로 별도 컬럼이 없다. 상자 없이 바이올린만 그리려면 `y_column`을 비운다.
+- 박스플롯의 `violin`은 반쪽마다 곡선 ragged 컬럼과 밀도 컬럼을, `points`는 원시 점의 범주 위치 컬럼과 값 컬럼을 가리킨다. 밀도는 호스트가 계산해 올리고, 점의 흔들림(jitter)은 렌더러가 정하므로 따로 컬럼을 올리지 않는다. 상자 없이 바이올린만 그리려면 `y_column`을 비운다.
 
-빈 배열은 거부한다. 유효한 `update_register_*` 호출은 같은 값이라도 매번 교체 업로드를 수행하며, 실패하면 기존 상태를 유지한다. 해시만 비교해 업로드를 생략하지 않는다. `set_series`는 어떤 등록 컬럼을 그릴지만 바꾸고 컬럼을 업로드하지 않는다.
+빈 배열은 거부한다. 유효한 `update_register_*` 호출은 같은 값이라도 매번 교체 업로드를 수행하며, 실패하면 기존 상태를 유지한다. `set_series`는 어떤 등록 컬럼을 그릴지만 바꾸고 컬럼을 업로드하지 않는다.
 
 <a id="34-이벤트-입력--포인터를-모델-정책으로-그대로-전달"></a>
 
 ### 3.4 포인터 이벤트 전달
 
-선택·드래그·크기 조절 정책은 `model`의 `Selectable` / `Draggable` / `Resizable` / `HitMap`에 정의돼 있으며 WASM에서도 같은 코드를 사용한다. 웹 래퍼가 포인터 좌표를 변환하므로 일반 호스트는 별도 처리가 필요 없다. 저수준 커널을 직접 사용할 때는 캔버스 이벤트의 위치를 픽셀 좌표로 바꿔 전달한다.
+선택·드래그·크기 조절 정책은 `model`의 `Selectable` / `Draggable` / `Resizable` / `HitMap`에 정의돼 있으며 WASM에서도 같은 규칙을 따른다. 웹 래퍼가 포인터 좌표를 변환하므로 일반 호스트는 별도 처리가 필요 없다. 저수준 커널을 직접 사용할 때는 캔버스 이벤트의 위치를 픽셀 좌표로 바꿔 전달한다.
 
 ```js
 const rect = canvas.getBoundingClientRect();
@@ -378,9 +378,9 @@ pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsV
 ```
 
 `export_png`는 문서 출력이다. `overlays`가 있으면 기본 레이어와 오버레이 레이어를 캔버스와
-같은 순서로 한 이미지에 합성하고, 없으면 패널 출력(`export_png`)과
-바이트 단위로 같은 결과를 낸다. `subplots`가 있으면 이미지는 모든 차트 영역의 합집합 크기이고,
-캔버스도 그 합집합을 표면에 맞춰 그린다.
+같은 순서로 한 이미지에 합성한다. `subplots`가 있으면 이미지는 모든 차트 영역의 합집합 크기이고,
+캔버스도 그 합집합을 표면에 맞춰 그린다. 둘 다 없으면 패널 하나만 출력한 결과(Rust의
+`ExportScope::Panel`)와 바이트 단위로 같다.
 
 <a id="raw-kernel-call-ownership"></a>
 
@@ -482,7 +482,7 @@ chart.set_x_title("Price (\\$)"); // 달러 기호
 // 먼저 auto-fit으로 범위를 정한 뒤, 설정을 읽어 원하는 필드를 고쳐 다시 넣는다.
 const cfg = JSON.parse(chart.get_config());
 cfg.left_y.scale = "Logarithmic";          // 스케일
-cfg.left_y.major_spacing = 1.0;            //   └ 로그는 decade 단위로 함께!
+cfg.left_y.major_spacing = 1.0;            //   └ 로그축이면 decade 단위로 함께 바꾼다
 cfg.left_y.label_style.format = "Power";   // 라벨 포맷 (10ⁿ)
 cfg.bottom_x.tick = "Both";                // 틱 모양
 cfg.bottom_x.major_tick_length = 12.0;     // 틱 길이
@@ -593,7 +593,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 분류 | 메서드와 동작 |
 |---|---|
 | 객체 수명 | `ready` Promise, `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` / `figgy-plot-resize` / `figgy-stream-progress` 이벤트, `free()`. 이벤트의 `detail`은 `figgy-ready`가 `{ chart, kernel }`, `figgy-select`가 `{ selected, x, y, originalEvent }`, `figgy-drag`가 `{ x, y, dx, dy }`, `figgy-release`가 `{ selected }`, `figgy-resize`가 `{ width, height, cssWidth, cssHeight, devicePixelRatio }`(단조 시리즈가 있는 차트는 `monotonic: true`가 붙고, 캔버스는 호스트가 `resize_monotonic(sources)`를 부를 때까지 크기를 유지한다), `figgy-plot-resize`가 `{ plotArea, monotonic: true }`(단조 차트의 데이터 영역 크기 조정 몸짓이 제안한 플롯 사각형, 호스트가 `resize_monotonic(sources, plotArea)`로 적용한다), `figgy-error`가 `{ error, operation?, recoverable? }`, `figgy-stream-progress`가 `{ executionId, revision, status, submittedPrimitives, totalPrimitives }`이다. 이미 완료된 스트림 화면을 다시 쓰는 `render_chart()`의 `figgy-stream-progress`에는 `status`, `submittedPrimitives`, `totalPrimitives`만 들어 있다. 첫 프레임과 준비 완료 알림 후 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보내며 준비 완료 상태는 유지한다. |
-| 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 브라우저에서는 설치된 시스템 폰트를 찾지 않으므로 한글을 표시하려면 한글 폰트를 등록해야 한다. 수식은 내장 수식 글꼴로 그리므로 등록이 필요 없고, `rich_text_from_tex(tex, font_size, font, r, g, b, a)`가 TeX에서 `RichText` JSON을 만든다. |
+| 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일을 다시 등록하면 새로 저장하지 않고 화면도 다시 그리지 않는다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 브라우저에서는 설치된 시스템 폰트를 찾지 않으므로 한글을 표시하려면 한글 폰트를 등록해야 한다. 수식은 내장 수식 글꼴로 그리므로 등록이 필요 없고, `rich_text_from_tex(tex, font_size, font, r, g, b, a)`가 TeX에서 `RichText` JSON을 만든다. |
 | 자동 배치 | `pkg/figgy.js`의 독립 함수 `autoLayout(configJson)`은 `layout::auto_layout`(#44)을 적용한 설정 JSON을 반환한다. 라벨·제목·범례·색상 막대가 겹치지 않도록 여백, 축 제목 오프셋, 라벨 형식을 정하며 차트는 바꾸지 않는다. `chart.set_config(autoLayout(chart.get_config()))`로 적용하고, 자동 맞춤이나 확대·축소 뒤에 다시 호출한다. |
 | 스타일 옵션 | 독립 함수 `draw_style_modes()`는 모드 이름의 JSON 배열을, `draw_style_param_specs(mode)`는 `{key, min, max, default, integer}`의 JSON 배열을 반환한다. UI 슬라이더를 만들 때 이 값을 사용한다. 최소·최대는 권장 범위이며 설정은 바깥 값도 허용하고 렌더러가 안전상 필요한 제한만 적용한다. 기본값은 모델의 `Default`와 같다. |
 | 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. `register_record(id, fields)`와 `register_ragged(id, values, offsets)`는 레코드와 ragged 컬럼을, `register_triangles(id, Uint32Array)`는 삼각형 인덱스 컬럼을 등록하거나 교체한다. `remove_triangles(id)`는 삼각형 인덱스 컬럼을 제거한다. |
@@ -636,7 +636,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 계층 | 관리하는 상태와 역할 |
 |---|---|
 | 호스트 원본 저장소 | 같은 리비전의 TypedArray나 `readRange` 공급자를 다시 그리기·조회가 끝날 때까지 유지한다. 파일 파싱과 Worker 입출력도 담당한다. |
-| 웹 래퍼 | 필요한 구간을 요청·전달하고 rAF, GPU 완료 대기, 취소 신호, 진행 알림과 Promise를 관리한다. 전체 데이터를 따로 복제하거나 처리 위치·통계를 중복 관리하지 않는다. |
+| 웹 래퍼 | 필요한 구간을 요청·전달하고 rAF, GPU 완료 대기, 취소 신호, 진행 알림과 Promise를 관리한다. |
 | 렌더러 | 설정·시리즈·소스 리비전·처리 위치·청크 통계를 관리한다. 연결된 컬럼 전체를 자동으로 상주 풀에 옮기지 않으며, 현재 화면에 필요한 원본 행을 패킹 캐시에 보관할 수 있는지 판단한다. |
 | GPU 렌더링 | 명시적으로 등록한 상주 컬럼은 `ColumnPool`에서 읽는다. 스트리밍은 제한된 청크를 올려 화면 밖 렌더 타깃에 누적한다. 지원되는 차트에서는 예산이 허용할 때 현재 화면의 원본 행만 차트별 패킹 캐시에 유지한다. 데이터를 줄이는 LOD·데시메이션은 적용하지 않는다. |
 
@@ -683,13 +683,13 @@ const png = await chart.export_png(2);
 
 ### 원본 공급과 작업 실행
 
-- `columns`에는 필요한 수만큼 컬럼을 지정할 수 있다. 전체 배열을 갖고 있다면 `{ id, revision, values: typedArray }`를 전달하고 `readRange`를 생략한다. 웹 래퍼는 배열 참조만 보관하고 필요한 구간만 WASM의 쓰기 전용 스테이징에 기록한다. Worker에서 만든 구간은 전송 가능한 버퍼로 넘길 수 있다. 파일 파싱·원본 저장·Worker 입출력은 호스트가 담당한다.
+- `columns`에는 필요한 수만큼 컬럼을 지정할 수 있다. 전체 배열을 갖고 있다면 `{ id, revision, values: typedArray }`를 전달하고 `readRange`를 생략한다. 웹 래퍼는 배열 참조를 보관하고 필요한 구간만 읽어 올린다. Worker에서 만든 구간은 전송 가능한 버퍼로 넘길 수 있다. 파일 파싱·원본 저장·Worker 입출력은 호스트가 담당한다.
 - 작업이 끝나도 원본 참조나 `readRange`를 유지한다. 크기·DPR 변경과 이미지 출력에 같은 리비전의 원본이 필요하기 때문이다. 같은 리비전의 값을 수정하거나 버퍼를 분리(detach)하지 않는다. 수정하면 새 리비전으로 등록한다. `job.cancel()`이나 컴포넌트 해제 시 해당 작업이 보관하던 참조를 놓는다.
 - 설정·시리즈·소스 리비전·처리 위치는 렌더러가 관리한다. 웹 래퍼는 구간 요청과 완료 알림을 연결한다.
 - `maxFrameTimeMs`는 실제 동기 제출 시간에 맞춰 청크 크기를 조절하기 위한 목표값이다. 브라우저 스케줄링·데이터 공급자·GPU 명령의 실행 시간을 강제로 제한하지는 않는다. 작업은 MessageChannel과 GPU 완료 알림으로 진행하고 화면 표시는 rAF에 맞춘다.
 - `job.done`은 `{ status, submittedPrimitives, totalPrimitives }`로 이행된다. `status`는 `"complete"`, `"cancelled"`, `"superseded"` 중 하나이며, 실패하면 Promise가 거부된다. 완료된 패킹 캐시는 `job.done`이 아니라 `stream_status().view_residency.state`의 `"resident"`로 확인한다. `job.cancel()`은 제출한 GPU 작업의 자원 회수까지 기다린다. 실행 중인 GPU 명령을 강제로 중단하지는 않는다. 이전 작업의 데이터 응답이 늦게 와도 새 작업에 반영하지 않는다.
-- 일반 점·선의 원본 구간 업로드는 GPU 작업 버퍼와 제한된 수의 staging 슬롯을 재사용한다. 슬롯 수는 `configure_streaming`의 두 번째 인자(`maxInFlightChunks`)를 넘지 않으며, GPU 복사와 다시 매핑하는 작업이 끝나지 않았으면 `backpressure`로 기다린다. 호스트는 GPU 완료를 기다리고 브라우저 이벤트 루프에 실행 기회를 줘야 한다. 초기 fit으로 다시 그릴 때도 슬롯을 유지한다. 선택 표시·격자·경로 길이 계산·export의 별도 업로드 자원에는 같은 재사용 방식을 일괄 적용하지 않는다.
-- 취소·교체 등으로 마지막 공유 소유자가 자원을 놓으면 회수 대기 상태로 옮긴다. 기존 명령의 제출 경계를 지난 뒤 GPU 완료를 확인하고 추적 중인 버퍼·텍스처에 `destroy()`를 호출한다. 명시적 `destroy()` 덕분에 GPU 메모리 반환이 JavaScript GC를 기다리지 않는다. 사용 중인 버퍼는 파괴하지 않는다.
+- 일반 점·선의 원본 구간 업로드는 GPU 작업 버퍼와 제한된 수의 staging 슬롯을 재사용한다. 슬롯 수는 `configure_streaming`의 두 번째 인자(`maxInFlightChunks`)를 넘지 않으며, GPU 복사와 다시 매핑하는 작업이 끝나지 않았으면 `backpressure`로 기다린다. 호스트는 GPU 완료를 기다리고 브라우저 이벤트 루프에 실행 기회를 줘야 한다. 초기 fit으로 다시 그릴 때도 슬롯을 유지한다.
+- 취소·교체로 더 쓰지 않는 버퍼와 텍스처는 앞서 제출한 GPU 작업이 끝나면 `destroy()`로 해제한다. 그래서 GPU 메모리 반환이 JavaScript GC를 기다리지 않는다. 사용 중인 버퍼는 해제하지 않는다.
 - `stream_status()`는 상태만 조회한다. 완료 후에도 누적 도형 수·리비전·작업 ID를 유지한다. 같은 입력을 다시 요청하면 원본을 다시 읽거나 그리지 않는다.
 
 <a id="streaming-fit"></a>
@@ -700,11 +700,11 @@ const png = await chart.export_png(2);
 
 숫자 눈금 라벨은 현재 축 범위에서 실제 글자 크기와 화면 길이를 재어, 일정한 간격으로 표시한다. 화면을 넓히거나 확대하면 생략했던 숫자가 다시 나타난다. 글꼴 크기와 설정의 주 눈금·격자 간격은 유지하며, 지수 표기·반전 축·색상 막대에도 같은 규칙을 적용한다. PNG 배율에 맞춰 글자 사이 여백도 함께 커진다.
 
-초기 fit의 중간 화면은 미리보기다. 리스케일 때문에 점 크기·선 두께·선명도가 잠시 달라질 수 있다. 전체 범위가 확정되면 원본을 **한 번만** 다시 읽어 정밀하게 그린다. 이 2순회에서도 새 청크가 반영된 화면 구역부터 갱신하고, 나머지 구역은 1순회 미리보기를 유지한다. 화면 전체를 지우거나 끝날 때까지 표시를 멈추지 않는다. 두 이미지를 덧그리지 않고 픽셀마다 하나를 선택하므로 반투명 중첩이나 AA가 이중으로 합성되지 않는다. 글씨·축·선택 표시는 별도로 한 번만 그린다.
+초기 fit의 중간 화면은 미리보기다. 리스케일 때문에 점 크기·선 두께·선명도가 잠시 달라질 수 있다. 전체 범위가 확정되면 원본을 한 번만 다시 읽어 정밀하게 그린다. 이 두 번째 읽기에서도 새 청크가 반영된 화면 구역부터 갱신하고, 나머지 구역은 첫 번째 읽기의 미리보기를 유지한다. 화면 전체를 지우거나 끝날 때까지 표시를 멈추지 않는다. 두 이미지를 덧그리지 않고 픽셀마다 하나를 선택하므로 반투명 중첩이나 AA가 이중으로 합성되지 않는다. 글씨·축·선택 표시는 별도로 한 번만 그린다.
 
-변경된 픽셀만 교체하며, 아직 처리하지 않은 선의 연결부가 지워지지 않도록 옆 픽셀까지 교체하지 않는다. 아직 처리하지 않은 도형이 같은 픽셀에 겹치면 중간 모습은 잠시 달라질 수 있다. 완료 시에는 정밀 누적 결과만 사용하며, 최종 화면과 PNG는 리스케일된 이미지를 확대해서 만드는 결과물이 아니다. 부분 갱신에는 화면 크기·MSAA에 비례하는 임시 텍스처 두 장과 작은 구역 버퍼가 필요하다. 전체 GPU 예산에 여유가 없으면 미리보기를 유지하다가 완료 후 교체한다. 원본 데이터 크기나 청크 수에 따라 메모리가 계속 늘어나지는 않는다.
+아직 처리하지 않은 도형이 같은 픽셀에 겹치면 중간 모습은 잠시 달라질 수 있다. 완료 시에는 정밀 누적 결과만 사용하며, 최종 화면과 PNG는 리스케일된 이미지를 확대해서 만드는 결과물이 아니다. 부분 갱신에는 화면 크기·MSAA에 비례하는 임시 텍스처 두 장과 작은 구역 버퍼가 필요하다. 전체 GPU 예산에 여유가 없으면 미리보기를 유지하다가 완료 후 교체한다. 원본 데이터 크기나 청크 수에 따라 메모리가 계속 늘어나지는 않는다.
 
-일반 점·선은 최초 순방향 처리와 마지막 정밀 렌더링으로 전체 구간을 두 번 읽는다. 청크 경계의 인접 값과 스타일별 GPU 계산에 필요한 읽기는 별도다. 범위가 바뀔 때마다 읽기 커서를 0으로 되돌리는 반복은 하지 않는다. 뷰 패킹 캐시는 마지막 정밀 렌더링에서 만든다.
+일반 점·선은 최초 순방향 처리와 마지막 정밀 렌더링으로 전체 구간을 두 번 읽는다. 청크 경계의 인접 값과 스타일별 GPU 계산에 필요한 읽기는 별도다. 뷰 패킹 캐시는 마지막 정밀 렌더링에서 만든다.
 
 `submitted_primitives`는 초기 순방향 처리의 진행량을 유지하며 마지막 정밀 렌더링 중에도 되감기지 않는다. 값이 `total_primitives`에 도달한 것만으로 완료로 판단하지 않는다. 최종 화면과 설정이 확정된 `complete` 또는 웹 래퍼의 `job.done`을 기다린다. 확정 설정에는 축 범위와 그 범위에 맞는 눈금 간격·표기 형식이 함께 반영된다.
 
@@ -762,27 +762,23 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 
 - `inspect_column_admission(metadata)`는 전체 컬럼을 명시적으로 등록할 때 필요한 인코딩 크기·한도·거부 이유를 조회한다. 공간을 예약하거나 모든 파생 자원의 할당을 보장하는 호출은 아니며 자동 스트리밍의 실행 기준도 아니다.
 - `configure_auto_residency(memoryBudgetBytes, workingSetLimitBytes)`는 전체 GPU 예산과 차트별 GPU 캐시 한도를 바이트 단위로 정한다. 예산이 현재 렌더러 사용량보다 작으면 오류를 반환한다. 지원되는 정밀 모드의 점·실선·오차 막대 차트는 스트리밍 중 현재 화면에 필요한 원본 행만 GPU에 남긴다. 완성된 패킹 페이지는 GPU로 옮기고 CPU에는 현재 청크와 작성 중인 페이지만 둔다. 화면 밖 점을 잇지만 화면을 통과하는 선과 화면에 닿는 오차 막대의 원본 행도 포함한다. 상주 한도 0은 패킹 캐시를 끈다. 연결된 컬럼 전체를 자동으로 `ColumnPool`에 넣지는 않는다.
-- 표시 범위를 좁히거나 창 크기·비율·DPR을 바꿔도, 새 화면의 필요 영역이 캐시에 있으면 패킹된 원본 행만으로 다시 그린다. 캐시에는 선 두께·점 크기·오차 막대 끝과 AA 영역에 더해 가장자리 8픽셀의 여유를 포함한다. 이 추가 데이터도 기존 패킹 한도에 포함된다. 화면 크기의 일치 여부 대신 데이터 좌표에서 실제 포함 관계를 검사하며, 새로 필요한 가장자리까지 캐시가 덮지 못하면 원본 구간을 다시 요청한다. 지원하지 않는 도형, 패킹 한도 초과, GPU 예산 부족, 할당 실패 시에는 원본을 빠짐없이 그리는 스트리밍 경로를 유지한다. `stream_status().view_residency`의 `state`, `needed_bytes`, `refusal_reason`, `picking_available`로 상태를 확인한다. `needed_bytes`는 준비 중에는 지금까지 필요한 최소 바이트 수, 완료 후에는 실제 패킹 크기다. `job.cancel()`은 해당 작업과 표시 자원을 정리한다.
-- 점선·히스토그램·히트맵·스케치·별자리와 지원되는 은하수 스트림에는 원본 순서와 인접 관계를 보존하는 별도 GPU 캐시를 사용한다. 참조 컬럼 전체의 hi/lo 인코딩 크기 합계가 차트별 상주 한도와 장치의 단일 버퍼 한도에 들어오고 전체 GPU 예산에도 여유가 있을 때만 만든다. 청크를 올릴 때 GPU 안에서 복사하며 CPU 원본 복사본은 남기지 않는다. 크기·DPR·축 범위·그리드·히트맵 색상 매핑 변경은 캐시된 원본으로 다시 계산하므로 이미지 확대에 따른 흐림이나 이전 설정의 잔상이 생기지 않는다. 캐시에 없는 구간, 새 데이터 리비전, 예산 초과는 일반 스트리밍으로 처리한다. 큰 컬럼의 일부만 잘라 이 캐시에 넣지는 않는다. 원본 공급자는 출력과 캐시 미적중에 대비해 계속 보관해야 한다.
+- 표시 범위를 좁히거나 창 크기·비율·DPR을 바꿔도, 새 화면의 필요 영역이 캐시에 있으면 패킹된 원본 행만으로 다시 그린다. 캐시에는 선 두께·점 크기·오차 막대 끝과 AA 영역에 더해 가장자리 8픽셀의 여유를 포함한다. 이 여유분도 패킹 한도에 포함된다. 새로 필요한 가장자리까지 캐시가 덮지 못하면 원본 구간을 다시 요청한다. 지원하지 않는 도형, 패킹 한도 초과, GPU 예산 부족, 할당 실패 시에는 원본을 빠짐없이 그리는 스트리밍 경로를 유지한다. `stream_status().view_residency`의 `state`, `needed_bytes`, `refusal_reason`, `picking_available`로 상태를 확인한다. `needed_bytes`는 준비 중에는 지금까지 필요한 최소 바이트 수, 완료 후에는 실제 패킹 크기다. `job.cancel()`은 해당 작업과 표시 자원을 정리한다.
+- 점선·히스토그램·히트맵·스케치·별자리와 지원되는 은하수 스트림에는 원본 순서와 인접 관계를 보존하는 별도 GPU 캐시를 사용한다. 참조 컬럼 전체의 hi/lo 인코딩 크기 합계가 차트별 상주 한도와 장치의 단일 버퍼 한도에 들어오고 전체 GPU 예산에도 여유가 있을 때만 만든다. CPU에는 원본 복사본이 남지 않는다. 크기·DPR·축 범위·그리드·히트맵 색상 매핑 변경은 캐시된 원본으로 다시 계산하므로 이미지 확대에 따른 흐림이나 이전 설정의 잔상이 생기지 않는다. 캐시에 없는 구간, 새 데이터 리비전, 예산 초과는 일반 스트리밍으로 처리한다. 큰 컬럼의 일부만 잘라 이 캐시에 넣지는 않는다. 원본 공급자는 출력과 캐시 미적중에 대비해 계속 보관해야 한다.
 - 원본 구간 캐시는 데이터 재공급 비용을 줄이는 기능이다. `view_residency`는 패킹된 뷰와 즉시 피킹 가능 여부를 나타내므로 이 캐시만 있는 차트는 여전히 `streamed`로 표시한다. 상주 한도를 0으로 내리면 원본 구간 캐시도 해제한다. 네이티브 `auto_stream_chart_request_ranges()`는 캐시 적중 시 한 청크의 GPU 작업을 진행하고 `Backpressure`를 반환할 수 있다. 완료까지 계속 호출하고 `Ready`일 때만 원본을 공급한다. 조회만 필요하면 작업을 진행하지 않는 `stream_status()`를 사용한다.
 - 웹 컬럼 풀은 16MiB로 시작하고, 업로드 공간이 부족하면 자동으로 늘어난다. 기본값은 `true`이며 장치의 스토리지 바인딩 한도와 전체 GPU 예산을 넘지 않는다. `set_pool_auto_growth(false)`로 끄면 현재 크기를 유지한다. 할당 오류는 JS `Error.code`의 `pool_space`, `budget_exceeded`, `device_limit`, `allocation_failed`로 구분한다. 가능한 경우 `requestedBytes`, `limitBytes`, `largestFreeBytes`, `totalFreeBytes`도 제공한다. JavaScript가 정수로 정확히 표현할 수 있는 범위 안에서는 숫자, 그 밖에서는 10진 문자열로 반환한다.
-- 설정이나 시리즈가 규칙을 어겨 거부되면([#215](https://github.com/shim9610/figgy/issues/215)) JS `Error`를 던진다. `message`는 예전과 같은 문장이고, `code`는 어긴 규칙의 이름(`RuleKind::code`, 예: `"ContourLevelCount"`, `"PolarImage"`)이다. 문장을 해석하지 말고 `error.code`로 분기한다. JSON을 읽는 단계에서 검사하는 규칙(양수가 아닌 등고선 라벨 `spacing_px`, 둘 이상 지정한 좌표계, 해석할 수 없는 서식 텍스트 조각이나 수식)은 JSON 해석 오류이므로, 그 밖의 오류와 마찬가지로 지금처럼 문자열로 던진다.
+- 설정이나 시리즈가 규칙을 어겨 거부되면([#215](https://github.com/shim9610/figgy/issues/215)) JS `Error`를 던진다. `message`는 규칙을 설명하는 문장이고, `code`는 어긴 규칙의 이름(`RuleKind::code`, 예: `"ContourLevelCount"`, `"PolarImage"`)이다. 문장을 해석하지 말고 `error.code`로 분기한다. JSON을 읽는 단계에서 검사하는 규칙(양수가 아닌 등고선 라벨 `spacing_px`, 둘 이상 지정한 좌표계, 해석할 수 없는 서식 텍스트 조각이나 수식)은 JSON 해석 오류이므로, 그 밖의 오류와 마찬가지로 문자열로 던진다.
 - `gpu_memory_status()`는 요청 할당량의 사용 중·회수 대기·합계(`live/retired/total`), 풀 용량·점유·최대 빈 공간·백업·반환 대기량, 자원별 사용량, 컬럼별 `resident` / `streamed` 상태를 반환한다. 실제 VRAM 잔량을 측정하지는 않는다. 은하수·별자리 스타일의 미리 생성한 텍스처는 일반 집계에서 제외되며 스트리밍 출력의 실행 가능 여부를 검사할 때만 크기를 따로 고려한다.
 - `await release_unused_gpu_memory()`는 활성 스트림이 없을 때 남은 컬럼을 GPU 안에서 작은 풀로 옮기고 이전 버퍼의 작업 완료를 기다린다. 최소 16MiB는 유지한다. 축소용 버퍼도 잠시 필요하므로 예산·장치 한도·할당 오류가 발생할 수 있다. 실패하면 기존 컬럼과 바인딩을 유지한다.
 - 호스트 정책의 예로 전체 예산 `4_000_000_000`바이트, 뷰별 패킹 한도 `500_000_000`바이트를 둘 수 있다. 현재 화면의 캐시가 한도를 넘으면 스트리밍을 유지한다. 컬럼 등록 시 공간·예산이 부족하면 불필요한 컬럼 제거, 정리 완료 대기, 한 번 재시도 순서로 처리한다. 계속 실패하거나 장치 한도·실제 할당 오류가 나면 스트리밍으로 전환한다. 이 수치는 예시이며 렌더러의 기본값이 아니다.
 
 정밀 스타일의 스트림 누적 화면에는 데이터만 저장한다. 그리드는 표시할 때 아래에 합성하므로 표시 여부·색·두께·선 모양을 바꿔도 작업 ID와 데이터 처리 위치를 유지한다. 상주 캐시가 없는 스트림도 원본 재생 없이 그리드를 갱신한다. 배경에 의존하는 다른 스타일은 그리드를 바꾸면 데이터를 다시 그린다. 원본 구간 GPU 캐시가 있으면 호스트에 같은 청크를 다시 요청하지 않는다. 정밀 스타일의 분리 합성은 텍스처를 리샘플링하거나 AA를 다시 적용하는 과정이 아니다. 다만 UNORM 색상 합성과 MSAA 반올림 때문에 배경 위에 직접 그리는 상주 경로와 색상 채널이 비트 단위로 같다는 보장은 없다. 회귀 장면에서는 채널 차이를 8비트 값 기준 최대 2로 제한하며, 반투명 점·막대 채움·테두리가 겹치는 장면은 최대 3으로 검사한다.
 
-`crates/web/tests/view-cache-resize-grid-probe.html`은 창 크기·비율 변경 시 원본 요청이 없는지, 새 크기에서 처음부터 스트리밍한 화면과 픽셀이 일치하는지, 그리드 변경이 작업 재시작 없이 반영되는지 검사한다.
-
 ### 지원 범위
 
 - 비상주 히트맵은 그리기·선택 표시·출력을 지원하지만 즉시 피킹은 지원하지 않는다. 이미 아는 셀을 표시할 때는 경계 계산에 필요한 인접 축 값만 읽는다. 자동 범위 맞춤은 GPU 격자 계산으로 범위를 구하고 결과를 리비전별로 저장한다.
 - `streaming_capabilities()`는 현재 설정과 시리즈의 지원 여부·이유를 반환한다. `operations_require_completed_revision`은 조회·출력 전에 작업 완료가 필요한지를 나타낸다. 지원하지 않는 조합은 무시하거나 다른 스타일로 바꾸지 않는다. 등고선과 은하수의 스트리밍 선·별 연결은 지원하지 않는다. 극좌표 차트, 영역 채우기·계단선, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어와 서브플롯도 상주 컬럼이 필요하므로 스트리밍 원본을 연결하면 오류를 반환한다. 정밀·스케치·별자리의 점선은 기존 경로 길이 스캔의 연산 순서를 유지하므로 청크가 바뀌어도 점선 간격이 처음부터 다시 시작되지 않는다.
 
-브라우저 회귀 검증 페이지는 `crates/web/tests/streaming-contract-probe.html`이다. 430만 점, Worker 구간 공급, 상주 차트 동시 표시, 크기 변경·취소·범위 맞춤, 패킹 캐시 없는 스트림 피킹의 즉시 종료와 원본 무조회, 1배·2배 출력을 검사한다.
-
-저수준 `pick_point`는 JSON 문자열 또는 `undefined`로, 웹 래퍼의 `pick_point`는 객체 또는 `null`로 이행하며, 오류는 Promise 거부로 전달한다. 제출된 요청은 결과 읽기 자원과 당시의 `Arc` 기반 `source_id` / `series_id` 매핑을 보관한다. 대기 중 차트·풀이 바뀌거나 렌더러가 해제돼도 해당 요청의 대상은 바뀌지 않는다.
+저수준 `pick_point`는 JSON 문자열 또는 `undefined`로, 웹 래퍼의 `pick_point`는 객체 또는 `null`로 이행하며, 오류는 Promise 거부로 전달한다. 요청의 대상(`source_id` / `series_id`)은 제출 시점에 정해지며, 대기 중에 차트나 풀이 바뀌거나 렌더러가 해제돼도 바뀌지 않는다.
 
 <a id="streaming-contract"></a>
 
@@ -799,7 +795,7 @@ Inside the screen update loop, the figure separates resident data reuse, chunked
 | Layer | State it owns and its role |
 |---|---|
 | Host source store | Keeps the TypedArray or `readRange` provider of the same revision until redraws and queries are finished. It also handles file parsing and Worker I/O. |
-| Web wrapper | Requests and forwards the needed ranges, and manages rAF, GPU completion waits, cancellation signals, progress notifications and Promises. It does not copy the whole data set or track the processing position or statistics a second time. |
+| Web wrapper | Requests and forwards the needed ranges, and manages rAF, GPU completion waits, cancellation signals, progress notifications and Promises. |
 | Renderer | Owns the configuration, series, source revisions, processing position and chunk statistics. It does not move connected columns into the resident pool automatically; it decides whether the original rows the current view needs can be kept in the packed cache. |
 | GPU rendering | Explicitly registered resident columns are read from `ColumnPool`. Streaming uploads bounded chunks and accumulates them in an offscreen render target. For supported charts, when the budget allows, only the current view's original rows stay in a chart-local packed cache. No LOD or decimation reduces the data. |
 
@@ -846,13 +842,13 @@ const png = await chart.export_png(2);
 
 ### Supplying sources and running jobs
 
-- `columns` can list as many columns as needed. When the whole array is in memory, pass `{ id, revision, values: typedArray }` and omit `readRange`. The web wrapper keeps only the array reference and writes only the needed ranges into the write-only WASM staging. Ranges produced in a Worker can be passed as transferable buffers. The host owns file parsing, source storage and Worker I/O.
+- `columns` can list as many columns as needed. When the whole array is in memory, pass `{ id, revision, values: typedArray }` and omit `readRange`. The web wrapper keeps the array reference and uploads only the ranges it needs. Ranges produced in a Worker can be passed as transferable buffers. The host owns file parsing, source storage and Worker I/O.
 - Keep the source references or `readRange` after the job finishes: size and DPR changes and image export need the source of the same revision. Do not modify the values of a revision or detach its buffers; register changed data as a new revision. `job.cancel()` or disposing of the component releases the references the job held.
 - The renderer owns the configuration, series, source revisions and processing position. The web wrapper connects range requests with completion notifications.
 - `maxFrameTimeMs` is a target for sizing chunks from the measured synchronous submission time. It does not enforce a time limit on browser scheduling, the data provider or GPU command execution. Work advances through MessageChannel tasks and GPU completion notifications; on-screen updates follow rAF.
 - `job.done` fulfils with `{ status, submittedPrimitives, totalPrimitives }`. `status` is `"complete"`, `"cancelled"` or `"superseded"`; on failure the Promise rejects. A completed packed cache is reported as `"resident"` in `stream_status().view_residency.state`, not by `job.done`. `job.cancel()` waits until the resources of the submitted GPU work are reclaimed. It does not force running GPU commands to stop. A late data response for an earlier job is never applied to a newer one.
-- Original-range uploads for ordinary points and lines reuse the GPU work buffer and a bounded number of staging slots. The slot count never exceeds the second argument of `configure_streaming` (`maxInFlightChunks`); while GPU copies and remapping are unfinished, the next upload waits and the step reports `backpressure`. The host must wait for GPU completion and give the browser event loop a chance to run. The slots are also kept when the initial fit redraws. The separate upload resources for selection highlights, grids, path-length computation and export do not all use the same reuse scheme.
-- When cancellation, replacement or a similar change makes the last shared owner release a resource, the resource moves to the retirement queue. After the submission boundary of earlier commands, GPU completion is confirmed and `destroy()` is called on the tracked buffers and textures. The explicit `destroy()` keeps the return of GPU memory from waiting for JavaScript garbage collection; buffers still in use are not destroyed.
+- Original-range uploads for ordinary points and lines reuse the GPU work buffer and a bounded number of staging slots. The slot count never exceeds the second argument of `configure_streaming` (`maxInFlightChunks`); while GPU copies and remapping are unfinished, the next upload waits and the step reports `backpressure`. The host must wait for GPU completion and give the browser event loop a chance to run. The slots are also kept when the initial fit redraws.
+- Buffers and textures that cancellation or replacement leaves unused are released with `destroy()` once the GPU work submitted before has completed, so returning GPU memory does not wait for JavaScript garbage collection. Buffers still in use are not destroyed.
 - `stream_status()` only reads state. After completion it keeps the accumulated primitive count, revision and job ID. Requesting the same input again neither rereads nor redraws the source.
 
 <a id="streaming-fit-en"></a>
@@ -865,9 +861,9 @@ Numeric tick labels are placed at an even interval chosen from the measured text
 
 The intermediate display of the initial fit is a preview. Rescaling can briefly change point size, line width and sharpness. Once the full range is known, the source is reread **once** and drawn exactly. During this second pass, screen regions reached by new chunks are updated first and the remaining regions keep the first-pass preview. The display is never cleared and never paused until the end. Each pixel takes one of the two images instead of drawing one over the other, so translucent overlaps and AA are never composited twice. Text, axes and selection highlights are drawn separately, once.
 
-Only changed pixels are replaced. Neighbouring pixels are not replaced, so the unprocessed continuation of a line is not erased. Where unprocessed primitives overlap the same pixel, the intermediate appearance can briefly differ. On completion only the exact accumulation is used; the final display and the PNG are not made by enlarging the rescaled image. Partial updates need two temporary textures proportional to the screen size and MSAA, plus a small region buffer. When the overall GPU budget has no room for them, the preview stays until completion and is then replaced. Memory does not keep growing with the source size or the number of chunks.
+Where unprocessed primitives overlap the same pixel, the intermediate appearance can briefly differ. On completion only the exact accumulation is used; the final display and the PNG are not made by enlarging the rescaled image. Partial updates need two temporary textures proportional to the screen size and MSAA, plus a small region buffer. When the overall GPU budget has no room for them, the preview stays until completion and is then replaced. Memory does not keep growing with the source size or the number of chunks.
 
-Ordinary points and lines read the full range twice: in the first forward pass and in the final exact rendering. Reads of neighbouring values at chunk boundaries and reads for style-specific GPU computation come on top of these two passes. The read cursor is not reset to 0 each time the range changes. The packed view cache is built during the final exact rendering.
+Ordinary points and lines read the full range twice: in the first forward pass and in the final exact rendering. Reads of neighbouring values at chunk boundaries and reads for style-specific GPU computation come on top of these two passes. The packed view cache is built during the final exact rendering.
 
 `submitted_primitives` keeps the progress of the initial forward pass and does not rewind during the final exact rendering. Reaching `total_primitives` alone does not mean completion. Wait for `complete`, where the final display and configuration are committed, or for the web wrapper's `job.done`. The committed configuration includes the axis range together with the tick spacing and number format that fit it.
 
@@ -925,27 +921,23 @@ After the first fit, the source of the same revision must remain available: redr
 
 - `inspect_column_admission(metadata)` reports the encoded size, the limits and the refusal reason for registering whole columns explicitly. It does not reserve space or guarantee the allocation of every derived resource, and it is not the criterion for running automatic streaming.
 - `configure_auto_residency(memoryBudgetBytes, workingSetLimitBytes)` sets the total GPU budget and the per-chart GPU cache limit in bytes. It returns an error when the budget is smaller than the renderer's current usage. For supported precise-mode point, solid-line and error-bar charts, only the original rows the current view needs stay on the GPU during streaming. Completed packed pages move to the GPU; the CPU keeps only the current chunk and the page being written. The original rows of lines that join off-screen points but cross the view, and of error bars that reach the view, are included. A residency limit of 0 disables the packed cache. Connected columns are never put into `ColumnPool` automatically.
-- When the display range narrows or the window size, aspect ratio or DPR changes, the view is redrawn from the packed original rows alone if the cache covers the area the new view needs. The cache covers line width, point size, error-bar caps and the AA footprint, plus an 8-pixel margin at the edges; this extra data counts toward the same packing limit. Coverage is checked as actual containment in data coordinates rather than by matching screen sizes, and when the cache does not reach a newly needed edge, the original ranges are requested again. Unsupported primitives, an exceeded packing limit, a short GPU budget and allocation failures keep the streaming path that draws every original primitive. Check the status with `state`, `needed_bytes`, `refusal_reason` and `picking_available` of `stream_status().view_residency`. `needed_bytes` is the minimum number of bytes needed so far while the cache is being prepared, and the actual packed size after completion. `job.cancel()` releases the job and its display resources.
-- Dashed lines, histograms, heatmaps, sketch, constellation and supported Milkyway streams use a separate GPU cache that preserves source order and adjacency. It is built only when the total hi/lo encoded size of all referenced columns fits the per-chart residency limit and the device's single-buffer limit, and the total GPU budget has room for it. Chunks are copied into it on the GPU as they are uploaded, and no CPU copy of the source remains. After a size, DPR, axis-range, grid or heatmap colour-map change, the view is recomputed from the cached source, so it is never a blurred enlargement of an earlier image and keeps no trace of the previous settings. Ranges outside the cache, a new data revision and an exceeded budget use ordinary streaming. A large column is never cut so that part of it fits this cache. Keep the source provider for export and cache misses.
+- When the display range narrows or the window size, aspect ratio or DPR changes, the view is redrawn from the packed original rows alone if the cache covers the area the new view needs. The cache covers line width, point size, error-bar caps and the AA footprint, plus an 8-pixel margin at the edges; this extra data counts toward the same packing limit. When the cache does not reach a newly needed edge, the original ranges are requested again. Unsupported primitives, an exceeded packing limit, a short GPU budget and allocation failures keep the streaming path that draws every original primitive. Check the status with `state`, `needed_bytes`, `refusal_reason` and `picking_available` of `stream_status().view_residency`. `needed_bytes` is the minimum number of bytes needed so far while the cache is being prepared, and the actual packed size after completion. `job.cancel()` releases the job and its display resources.
+- Dashed lines, histograms, heatmaps, sketch, constellation and supported Milkyway streams use a separate GPU cache that preserves source order and adjacency. It is built only when the total hi/lo encoded size of all referenced columns fits the per-chart residency limit and the device's single-buffer limit, and the total GPU budget has room for it. No CPU copy of the source remains. After a size, DPR, axis-range, grid or heatmap colour-map change, the view is recomputed from the cached source, so it is never a blurred enlargement of an earlier image and keeps no trace of the previous settings. Ranges outside the cache, a new data revision and an exceeded budget use ordinary streaming. A large column is never cut so that part of it fits this cache. Keep the source provider for export and cache misses.
 - The source-range cache reduces the cost of supplying data again. `view_residency` reports the packed view and whether immediate picking is available, so a chart with only this cache still shows `streamed`. Lowering the residency limit to 0 also releases the source-range cache. On a cache hit, native `auto_stream_chart_request_ranges()` can advance the GPU work of one chunk and return `Backpressure`. Keep calling it until completion, and supply source data only on `Ready`. For a read-only query, use `stream_status()`, which advances no work.
 - The web column pool starts at 16 MiB and grows when upload space runs out. The default is `true`, and growth never exceeds the device's storage-binding limit or the total GPU budget. `set_pool_auto_growth(false)` keeps the current capacity. Allocation errors are told apart by the JS `Error.code` values `pool_space`, `budget_exceeded`, `device_limit` and `allocation_failed`. Where available, `requestedBytes`, `limitBytes`, `largestFreeBytes` and `totalFreeBytes` are also provided, as numbers within the range of integers JavaScript represents exactly and as decimal strings beyond it.
-- A configuration or series that breaks a rule ([#215](https://github.com/shim9610/figgy/issues/215)) throws a JS `Error` whose `message` is the same sentence as before and whose `code` names the rule (`RuleKind::code`, for example `"ContourLevelCount"` or `"PolarImage"`). Branch on `error.code` rather than parsing the text. A rule checked while the JSON is parsed (a contour label `spacing_px` that is not positive, more than one coordinate system, a rich-text segment or math that does not parse) is a JSON parse error and, like every other error, still throws its message as a string.
+- A configuration or series that breaks a rule ([#215](https://github.com/shim9610/figgy/issues/215)) throws a JS `Error` whose `message` is the rule's sentence and whose `code` names the rule (`RuleKind::code`, for example `"ContourLevelCount"` or `"PolarImage"`). Branch on `error.code` rather than parsing the text. A rule checked while the JSON is parsed (a contour label `spacing_px` that is not positive, more than one coordinate system, a rich-text segment or math that does not parse) is a JSON parse error and, like every other error, throws its message as a string.
 - `gpu_memory_status()` returns the live, retired and total requested allocations (`live/retired/total`); the pool capacity, occupancy, largest free region, backup and bytes pending release; the usage per resource; and each column's `resident` / `streamed` state. It does not measure the actual remaining VRAM. The precomputed textures of the Milkyway and constellation styles are excluded from the general totals; their size is considered separately only when checking whether a streaming export can run.
 - `await release_unused_gpu_memory()`, when no stream is active, moves the remaining columns into a smaller pool on the GPU and waits for the work on the previous buffer to complete. At least 16 MiB is kept. The compaction also needs a temporary buffer, so budget, device-limit and allocation errors can occur. On failure the existing columns and bindings are kept.
 - As an example of a host policy, the total budget can be `4_000_000_000` bytes with a per-view packing limit of `500_000_000` bytes. When the current view's cache exceeds the limit, streaming stays in use. When space or budget runs short while registering columns, remove unneeded columns, wait for cleanup to complete, and retry once. If it still fails, or a device-limit or actual allocation error occurs, switch to streaming. These numbers are an example, not renderer defaults.
 
 The stream accumulation of precise styles stores data only. The grid is composited underneath at display time, so changing its visibility, colour, width or line style keeps the job ID and the data processing position. Streams without a resident cache also update the grid without replaying the source. Other styles that depend on the background redraw the data when the grid changes. With a source-range GPU cache, the host is not asked for the same chunks again. The separate compositing of precise styles does not resample a texture or apply AA again. UNORM colour compositing and MSAA rounding mean, however, that the colour channels are not guaranteed to be bit-identical to the resident path, which draws directly onto the background. Regression scenes limit the channel difference to at most 2 in 8-bit values, and scenes where translucent points, bar fills and outlines overlap are checked against at most 3.
 
-`crates/web/tests/view-cache-resize-grid-probe.html` checks that window size and aspect-ratio changes request no source ranges, that the result matches pixel for pixel a display streamed from the start at the new size, and that grid changes apply without restarting the job.
-
 ### Support scope
 
 - Nonresident heatmaps support drawing, selection highlights and export, but not immediate picking. Highlighting a known cell reads only the neighbouring axis values needed to compute its bounds. Auto-fit computes the range with the GPU lattice computation and stores the result per revision.
 - `streaming_capabilities()` returns whether the current configuration and series are supported, with the reason. `operations_require_completed_revision` tells whether queries and export need a completed job. Unsupported combinations are never ignored or switched to another style. Streaming does not support contours or Milkyway lines and their star chains. Polar charts, area fills and step lines, vector series, point colour and size maps, and overlay layers and subplots also need resident columns, so connecting a streamed source to them returns an error. Dashed lines in the precise, sketch and constellation styles keep the operation order of the existing path-length scan, so the dash pattern does not restart when chunks change.
 
-The browser regression page is `crates/web/tests/streaming-contract-probe.html`. It checks 4.3 million points, Worker range supply, a resident chart shown at the same time, resizing, cancellation and range fitting, 1x and 2x export, and that picking on a stream without a packed cache returns at once and reads no source ranges.
-
-Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper's `pick_point` with an object or `null`; errors arrive as Promise rejections. A submitted request holds its readback resources and the `Arc`-based `source_id` / `series_id` mapping current at submission. If the chart or the pool changes, or the renderer is released, while the request is pending, its target does not change.
+Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper's `pick_point` with an object or `null`; errors arrive as Promise rejections. A request's target (`source_id` / `series_id`) is fixed when it is submitted: it does not change if the chart or the pool changes, or the renderer is released, while the request is pending.
 
 <a id="등록해제-모델--메모리는-내부-자동-관리"></a>
 
@@ -954,9 +946,9 @@ Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper'
 차트는 캔버스마다 인스턴스 하나를 두고 ID로 데이터를 등록·교체·제거한다. 풀의 할당, 재배치와 자원 해제는 렌더러가 처리한다.
 
 - 컬럼 등록·일괄 등록·교체 규칙은 [3.3 데이터 등록·교체와 GPU 저장 형식](#33-데이터-입력--명시적-registerupdate와-f32-물리-lane)을 따른다.
-- 업로드할 때 자동 범위 맞춤용 최소·최대·최소 양수 값을 저장한다. 점선 간격에 필요한 누적 경로 길이 같은 점별 정보는 GPU 스캔(`line_arc.wgsl`)으로 계산한다.
+- 업로드할 때 자동 범위 맞춤용 최소·최대·최소 양수 값을 저장한다.
 - `remove_column(id)`는 해당 컬럼을 참조하는 시리즈도 제거한다. 자동 범례에서는 대응하는 행을 지운다. `set_config`로 직접 편집한 범례는 사용자 텍스트를 보존하고 남은 시리즈의 인식 가능한 기호만 갱신한다.
-- 제거·교체로 생긴 빈 공간은 렌더러가 정리 작업으로 등록하고 다음 `frame()` 시작에 GPU 내부 복사로 모아 정리한다. 연속 교체 중 할당 공간이 부족하면 `OnAllocFailure` 정책으로 재배치를 시도한다.
+- 제거·교체로 생긴 빈 공간은 다음 `frame()` 시작에 렌더러가 모아 정리한다. 연속 교체 중 할당 공간이 부족하면 컬럼을 한 번 재배치한 뒤 다시 시도한다.
 - `add_line_series`는 기존 ID이면 색을 유지하며 교체하고, 새 ID이면 색상 순서의 다음 색을 사용한다. 기존 ID에 빈 라벨을 전달해도 기존 범례 텍스트는 지우지 않는다. 비어 있지 않으면 해당 행의 텍스트만 바꾼다.
 - `free()`로 인스턴스를 해제하면 풀 버퍼·파이프라인·텍스처·surface의 참조를 정리한다. GC의 FinalizationRegistry도 정리를 지원하지만 실행 시점이 정해져 있지 않으므로 SPA에서 컴포넌트를 제거할 때는 `free()`를 직접 호출한다.
 
@@ -965,8 +957,8 @@ Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper'
 ### Categorical bar documents
 
 `FiggyChart.set_categorical_document(json)` opens a categorical bar
-document (`CategoricalChart` JSON, which `FiggyBoundedChart` took as the
-`"categorical"` family before this release) in the Cartesian wrapper. The
+document (`CategoricalChart` JSON, which `FiggyBoundedChart` no longer opens) in
+the Cartesian wrapper. The
 document is validated and read by `Config::from_categorical`: its
 categories become the categorical axis of the bar direction, each of its
 series a `CategoryBars` series, and its values two kinds of registered
@@ -992,16 +984,15 @@ await chart.first_frame_ready();
 ### Box plot documents
 
 `FiggyChart.set_boxplot_document(json)` opens a box plot document
-(`BoxPlotChart` JSON, which `FiggyBoundedChart` took as the `"boxplot"`
-family before this release) in the Cartesian wrapper. The document is
+(`BoxPlotChart` JSON, which `FiggyBoundedChart` no longer opens) in the
+Cartesian wrapper. The document is
 validated and read by `Config::from_boxplot`: its categories become the
 categorical axis of the box direction, each of its series a `BoxPlot`
 series, and its summaries three kinds of registered sources: the
 positions column `boxplot.positions`, one record of box statistics per
 series (`boxplot.record.<series id>`, as `register_record` registers one)
 and, for a series with outliers, one ragged outlier column
-(`boxplot.outliers.<series id>`, as `register_ragged`). The summaries are
-uploaded through borrowed adapters, without a copy. Without a document
+(`boxplot.outliers.<series id>`, as `register_ragged`). Without a document
 `value_range` the value axis is fitted to the records' and outliers'
 statistics and rounded to nice ticks; the chart keeps its chart area.
 Opening another document replaces the series, columns and records of the
@@ -1027,14 +1018,14 @@ await chart.first_frame_ready();
 ### Radar documents
 
 `FiggyChart.set_radar_document(json)` opens a radar document (`RadarChart`
-JSON, which `FiggyBoundedChart` took as the `"radar"` family before this
-release) in the Cartesian wrapper as a polar chart. The document is
+JSON, which `FiggyBoundedChart` no longer opens) in the Cartesian wrapper as
+a polar chart. The document is
 validated and read by `Config::from_radar`: its categories become the
 categorical angle axis (category `i` of `n` at `i / n` of the turn from the
 document's start angle, in its direction), each of its series a `Radar`
 series, and its values two kinds of registered columns, `radar.positions`
-and `radar.values.<series id>`, uploaded through borrowed adapters without a
-copy. The document's grid shape becomes `PolarOptions.grid_shape`. Without
+and `radar.values.<series id>`. The document's grid shape becomes
+`PolarOptions.grid_shape`. Without
 a document `value_range` the radius axis is fitted to the value columns'
 statistics, from zero when no value is negative, and rounded to nice
 ticks; a document `ring_spacing` is kept either way. The chart keeps its
@@ -1058,7 +1049,8 @@ await chart.first_frame_ready();
 ### Monotonic-x lines
 
 A `MonotonicLine` series (#271) is one channel of a group of evenly spaced
-samples, `x = start + i × interval`, drawn through its M4 envelope. The
+samples, `x = start + i × interval`, drawn through its M4 envelope (the
+first, last, lowest and highest sample of each pixel column). The
 samples stay in the host's typed arrays and are lent to each call; only the
 samples a call reads (the visible ones and one on each side, or the new
 ones) are copied into wasm memory, a bounded chunk at a time, and nothing is
@@ -1138,10 +1130,9 @@ const png = await chart.export_png_monotonic(2, sources);
 ## 8. Radial chart host
 
 `FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
-`radial` documents, the DataLess radial chart, to browser hosts. The class
-keeps its name and `family` stays `"radial"`. For this release the
-`"categorical"`, `"boxplot"` and `"radar"` families are rejected with an error
-naming the `FiggyChart` method that opens those documents
+`radial` documents, the DataLess radial chart, to browser hosts; `family` is
+`"radial"`. The `"categorical"`, `"boxplot"` and `"radar"` families are
+rejected with an error naming the `FiggyChart` method that opens those documents
 (`set_categorical_document`, `set_boxplot_document`, `set_radar_document`; see
 [Radar documents](#radar-documents) and the sections above it). It
 uses the same native renderer, decoration hit map, slice picking,
@@ -1192,8 +1183,8 @@ The interactive editing and export methods are:
   time since the previous call in seconds, capped at 0.1. Pass `null` for both
   coordinates when the pointer leaves.
 - `pick`, `hover` and `hit_decoration` return Promises, like
-  `FiggyChart.pick_point`: a radial chart picks its slices on the GPU with the
-  draw's own sector ray-march and reads the answer back. Await each before the
+  `FiggyChart.pick_point`: a radial chart picks its slices on the GPU and reads the
+  answer back. Await each before the
   next call on the object.
 - `step_selection(backwards)` takes one boolean, unlike the Cartesian two-axis
   navigation method.
@@ -1280,7 +1271,7 @@ on `"Base"` the items are not part of the route and clicks pass through them.
 `pick` and `hover` keep addressing slices on
 every layer. A
 layer change clears `decorations.selected` (an annotation included) and keeps
-the data selection; the frame and its label raster are reused. On `FiggyChart`
+the data selection. On `FiggyChart`
 the same route drives `hit_test`, `on_press` / `on_move` and
 `decoration_bounds`, as listed in the method table above. The index-based
 annotation methods keep working on every layer.
@@ -1362,8 +1353,7 @@ drawn part, each a list of `[x, y]` corners in physical canvas pixels. They are
 exactly the shapes the canvas strokes around the selection: a text block or
 rectangle as its box padded by 2 logical px, a stroke as the thin oriented box
 around it, and an arrow head as its triangle grown outward. `step_selection(dx, dy)` navigates
-resident point, histogram or matrix selections using source indices, without
-copying arrays. For a point, `dx` moves the source index and `dy` switches
+resident point, histogram or matrix selections using source indices. For a point, `dx` moves the source index and `dy` switches
 between the series that draw points or lines; a selected point-vector arrow
 steps along its series' points like a scatter point. Histogram bin navigation
 follows the category direction: `dx` for vertical bars and `dy` for horizontal

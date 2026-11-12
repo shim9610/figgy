@@ -2,10 +2,9 @@
 
 A Feynman diagram draws an interaction as a graph: external legs for the
 incoming and outgoing particles, internal vertices, and propagators whose
-stroke names the particle. `DataRenderType::Feynman` is a DataLess series
-([#234](https://github.com/shim9610/figgy/issues/234)): the topology is the
-data and lives in the SSOT, serialized with the document. No column is
-registered; `x_column` and `y_column` stay empty.
+stroke names the particle. `DataRenderType::Feynman` takes no columns: the
+diagram (its vertices and propagators) is part of the series configuration
+and is saved with the document. `x_column` and `y_column` stay empty.
 
 ## Input and first render
 
@@ -61,23 +60,23 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## Who computes what
+## What the host supplies
 
-The host computes the data: the topology, each propagator's particle, each
-leg's role, every label and momentum string, and any position it wants
-fixed. Nothing physical is computed: charge, momentum conservation and the
-allowed couplings are the host's.
+The host supplies the topology, each propagator's particle, each leg's role,
+every label and momentum string, and any position it wants fixed. Nothing
+physical is checked: charge, momentum conservation and the allowed
+couplings are up to the host.
 
-The renderer computes appearance only: the placement of unplaced vertices,
-pixel positions, the stroke geometry (a wave's or a coil's phase, fitted so
-that whole periods span each line), the fan of parallel lines, arrowheads
-along the drawn path, and label places.
+The renderer places the vertices that have no position and draws the
+strokes: a wave or a coil is fitted so that whole periods span each line,
+parallel lines fan out, arrowheads follow the drawn path, and the labels
+are placed.
 
 ## The layout
 
 `FeynmanSeries::positions` places every vertex without `at`, and
 `auto_layout` writes those places into `at`. The layout is deterministic:
-the same SSOT gives bit-identical positions.
+the same diagram always gives the same positions.
 
 - Placed vertices are pinned.
 - Unplaced incoming legs are spaced evenly on the early edge of the frame
@@ -85,10 +84,8 @@ the same SSOT gives bit-identical positions.
   `LeftToRight` puts them left and right, `BottomToTop` at the bottom and
   the top).
 - Every other unplaced vertex goes to the mean of its neighbours (the
-  barycentric, or Tutte, embedding), solved by conjugate gradients to a
-  relative residual of 1e-12, both axes in one pass. There is no iteration
-  bound: a residual that stops improving, or turns non-finite, is an error
-  that the renderer reports as the series' `InvalidSeriesConfig`. A planar diagram
+  barycentric, or Tutte, embedding). If that solve does not converge, the
+  renderer reports `InvalidSeriesConfig` for the series. A planar diagram
   with its legs on the boundary is drawn without crossings.
 - A group that no placed vertex or leg reaches (a vacuum bubble) is placed
   on a circle. Vertices that land on one point are spread across the time
@@ -105,7 +102,8 @@ switches off the axis lines, ticks, tick labels and grid and keeps the
 layout, so the diagram's data units stay where they were.
 
 Committing the layout works like an auto-fit: the renderer writes the
-positions into the registered SSOT, and the host reads them back.
+positions into the registered series, and the host reads them back
+(`Renderer::chart_series`).
 `Renderer::auto_layout(chart, series_id)` commits a registered series; a
 host that owns its `SeriesConfig` calls `FeynmanSeries::auto_layout`. The
 first vertex drag commits the whole layout before it moves the vertex, so
@@ -132,8 +130,8 @@ away from the vertex's neighbours. Lines between the same two vertices fan
 out by `style.fan_step` degrees, unless a line sets its own `bend`; a fan of
 many lines narrows its step so its outer lines stay within 170 degrees, so
 any number of parallel lines draws, each on its own arc. Waves,
-coils and arcs are cubic Bézier paths (`Sink::path`), so a dash runs along
-the whole line and the SVG and PDF keep the curves.
+coils and arcs are cubic Bézier curves, so a dash runs along the whole line
+and SVG and PDF export keep the curves.
 
 A vertex draws a dot when internal and nothing at a leg's end, unless its
 `marker` says otherwise: `Hidden`, `Dot`, `Blob { radius_px, fill }`,
@@ -146,76 +144,43 @@ propagator label on the side its arc bulges to, and a momentum arrow
 
 | Interaction | Behaviour |
 |---|---|
-| Hover, click | A typed data pick answers `PickedData::FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel { part, index }` on the CPU, through the placement the raster draws with. A vertex answers within the pick distance of its marker and there wins over its own lines (within a third of a line between the markers), so a leg end without a marker picks and a short line still picks in its middle; other parts compete by distance, a tie going to labels over markers over lines. A layout that fails is the pick's error |
+| Hover, click | The data pick answers `PickedData::FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel { part, index }` where the part is drawn. A vertex answers within the pick distance of its marker and there wins over its own lines (within a third of a line between the markers), so a leg end without a marker picks and a short line still picks in its middle; other parts compete by distance, a tie going to labels over markers over lines. If the layout fails, the pick returns that error |
 | Picked highlight | The picked vertex or line is drawn in `style.picked.color`, `style.picked.width_extra_px` wider; a picked leg end shows a dot; a picked label is boxed in that colour |
 | `step_selection` | `dx` steps the vertices or the propagators, `dy` the Feynman series of the chart; a label does not step |
 | Drag | `Renderer::drag_feynman(chart, series_id, FeynmanHit, dx, dy)`: `Vertex(i)` moves a vertex through the axes, `Propagator(i)` sets a line's bend to the arc through its moved middle. A label moves in logical pixels through the value-label drag: `FeynmanSeries::drag_label` on the host's series, which `drag_feynman` refuses. The web wrapper's `press_feynman` starts the vertex and bend drags, and a label's through the value-label pointer |
 | Picks in a break gap or outside the plot | Answer nothing: the series is drawn clipped to the plot |
-| Decorations, plot area, annotations | Unchanged: the series is data in the data slot, under the annotation overlay |
-| Export | PNG at any scale; SVG and PDF write the series as vector curves between the GPU data under it and the value labels over it |
-| Serialization | Every field is additive; defaults are omitted |
-| Streaming | A streamed display refuses the series |
+| Decorations, plot area, annotations | As on any Cartesian chart: the series draws in the data area, under the annotations |
+| Export | PNG at any scale; SVG and PDF write the series as vector curves, over the other data and under the value labels |
+| Serialization | The series round-trips through serde; default values are omitted |
+| Streaming | A streamed chart rejects the series |
 
 There is no count limit on vertices, propagators or labels. A 5,000-rung
 ladder (10,004 vertices, 15,002 propagators) lays out in about 0.5 s and
-draws at 1x in about 0.8 s in the debug test profile.
+draws at 1x in about 0.8 s in the debug test profile. A pick of that ladder
+takes about 7 ms in a release build. An uncommitted layout is recomputed on
+every pick, so commit it (`auto_layout`) before hovering a large diagram.
 
 ## Drawn within the plot
 
-Every line is clipped to the plot, widened by its ink, before it is
-sampled: a straight line exactly, an arc by bisecting its parameter
-towards the plot's edges (at most 60 times), a loop
-whole. A wave's or a coil's phase is the whole line's; only the visible
-spans are sampled, and a dashed line's span starts on a whole period so
-its dashes keep their place. The work of an emit or a pick is therefore
-bounded by the plot, not by how long the lines are on screen: a diagram
-zoomed in a million times draws and picks as an ordinary view does, and a
-line whose length on screen is not finite draws nothing. Arcs are
-evaluated from their chord and their angle, so a nearly straight arc
-stays exact. Positions on screen are `f32` (`AnnotationSpace`): a vertex
-about 10⁹ pixels off screen lies on f32's 64-pixel spacing there, so the
-visible part of its lines can shift by up to that much.
-
-## Working memory
-
-Every operation works in at most four transient buffers, dropped when the
-operation returns. The topology, the positions and the solver
-buffer are each taken once at their exact size. The path buffer starts
-empty and grows, by doubling and before it is written, to the longest
-visible path of the emit. No loop over vertices, propagators, solver
-iterations or path samples allocates in the model. Text is the exception:
-each label is measured through the caller's `MeasureText`, and the
-renderer's `CpuTextMeasure` lays the text out, allocating, for every label
-on every raster and pick, as it does for an energy-level series.
-
-| Buffer | Holds | Size |
-|---|---|---|
-| Topology | One `Vec<usize>`: the vertex rows sorted by id, the CSR adjacency (each vertex's `(other end, propagator)` pairs sorted so that a fan and the loops at a vertex are runs), each propagator's resolved ends, and the layout's flags | `3V + 1 + 6E` words |
-| Positions | Each vertex's position, converted in place to its screen point | `V` × 16 bytes |
-| Solver | The conjugate-gradient residual, direction and product, only while a vertex is solved for | `3V` × 16 bytes |
-| Path | One propagator's path segments, reused by every line of an emit and grown before it is written | the longest path |
-
-| Operation | Allocations, every vertex placed | With unplaced vertices |
-|---|---|---|
-| Hover or click pick | 2 | 3 |
-| Emit (raster, SVG, PDF) | 2, plus the path buffer and its growths | 3, plus the path buffer |
-| Bend drag | 2 | 3 |
-| Vertex drag, extent, `auto_layout`, a WASM `selection_details` | 0 | 3 |
-| `validate` | 1 | 1 |
-
-A pick of the 5,000-rung ladder takes about 7 ms in a release build, most
-of it resolving the propagators' vertex ids; commit the layout (`auto_layout`) before hovering
-a large diagram, since an uncommitted one is laid out on every pick.
+Every line is clipped to the plot, enlarged by the line's own width. A wave keeps its
+phase and a dashed line its dash pattern where the clip cuts them. Drawing
+and picking cost depend on the plot's size, not on how long the lines are
+on screen: a diagram zoomed in a million times draws and picks as fast as
+an ordinary view, and a line whose length on screen is not finite draws
+nothing. Positions on screen are `f32`: a vertex about 10⁹ pixels off
+screen lies on a 64-pixel grid there, so the visible part of its lines can
+shift by up to that much.
 
 ## Examples and tests
 
-The playground scene `SceneKind::Feynman` draws four well-known processes:
-Higgs production by gluon fusion through a top loop, the electron's
-anomalous magnetic moment (the one-loop vertex correction), beta decay at
-the quark level through a W⁻, and a three-jet event in electron–positron
-annihilation, the gluon radiated by the quark.
-`tests/feynman_render.rs` covers drawing, the layout commit, picks, every
-part's picked style, drags, plot-area and decoration drags over a diagram,
-the vector export and the cost; the model's `feynman` tests cover the
-layout, fans of any size, the emit, the pick and the edits; the renderer's
-SSOT invalidation and mutation suites walk a diagram's leaves.
+[feynman.rs](examples/feynman.rs) draws six processes on cards
+(`gallery-feynman.png`). The playground's *Feynman diagrams* scene draws four
+well-known processes: Higgs production by gluon fusion through a top loop,
+the electron's anomalous magnetic moment (the one-loop vertex correction),
+beta decay at the quark level through a W⁻, and a three-jet event in
+electron–positron annihilation, the gluon radiated by the quark. Drag a
+vertex, bend a line or move a label there.
+
+```sh
+cargo test --locked -p figgy-renderer --test feynman_render
+```
