@@ -27,8 +27,8 @@ impl PrepareContext<'_> {
         let Some(instance) = columns.rows.instance(*bin_index, count as usize) else {
             return Ok(());
         };
-        // The bin's global index keys its overrides, so a
-        // rebased (streamed) instance zero still resolves them.
+        // The bin's global index keys its overrides, whatever
+        // instance the outline draws.
         let Ok(global_bin) = u32::try_from(*bin_index) else {
             return Ok(());
         };

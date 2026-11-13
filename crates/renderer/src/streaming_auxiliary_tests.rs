@@ -5,9 +5,7 @@ fn column(data: Vec<f32>) -> crate::Column<f32> {
     crate::Column { data }
 }
 
-fn setup(
-    histogram: bool,
-) -> (
+fn setup() -> (
     Renderer,
     ChartId,
     ChartView,
@@ -23,14 +21,14 @@ fn setup(
         4096,
     )
     .unwrap();
-    let count = if histogram { 257 } else { 17 };
+    let count = 17;
     let x = column(
         (0..count)
             .map(|index| index as f32 / (count - 1) as f32)
             .collect(),
     );
     let y = column(
-        (0..count - usize::from(histogram))
+        (0..count)
             .map(|index| 0.2 + (index % 13) as f32 / 20.0)
             .collect(),
     );
@@ -66,34 +64,19 @@ fn setup(
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: if histogram {
-            DataRenderType::Histogram {
-                bar: DataBarStyleConfig {
-                    fill_color: Color::new(0.2, 0.6, 0.8, 0.45),
-                    border_color: Color::new(0.8, 0.2, 0.1, 0.65),
-                    border_width: 1.0,
-                    baseline: 0.0,
-                    gap_px: 0.0,
-                    width_ratio: 1.0,
-                    orientation: crate::data_config::BarOrientation::Vertical,
-                    bar_style_overrides: None,
-                },
-            }
-        } else {
-            DataRenderType::Xy(crate::data_config::XySeries {
-                scatter: None,
-                line: Some(DataLineStyleConfig {
-                    line_color: Color::new(0.2, 0.6, 0.8, 0.45),
-                    line_width: 2.0,
-                    line_style: LineStylePreset::Solid,
-                    fill: None,
-                    fill_color: None,
-                    interpolation: crate::data_config::LineInterpolation::Linear,
-                }),
-                errors: None,
-                stem: None,
-            })
-        },
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
+                line_color: Color::new(0.2, 0.6, 0.8, 0.45),
+                line_width: 2.0,
+                line_style: LineStylePreset::Solid,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
+            }),
+            errors: None,
+            stem: None,
+        }),
     }];
     let id = renderer
         .register_chart(chart.config().clone(), series.clone())
@@ -202,65 +185,58 @@ fn pump(
 
 #[test]
 fn streamed_export_replays_document_resolution_and_preserves_display() {
-    for histogram in [false, true] {
-        let (mut renderer, id, mut view, chart, series, x, y) = setup(histogram);
-        let job = renderer.active_stream_job(id).unwrap();
-        let status = renderer.stream_status(id).unwrap();
-        let (device, queue) = data_render::shared_device().unwrap();
-        let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Rgba8Unorm,
-            16384,
-        )
-        .unwrap();
-        resident.add_column("x", &x).unwrap();
-        resident.add_column("y", &y).unwrap();
-        for scale in [1.0, 2.0] {
-            let operation = renderer
+    let (mut renderer, id, mut view, chart, series, x, y) = setup();
+    let job = renderer.active_stream_job(id).unwrap();
+    let status = renderer.stream_status(id).unwrap();
+    let (device, queue) = data_render::shared_device().unwrap();
+    let mut resident = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        16384,
+    )
+    .unwrap();
+    resident.add_column("x", &x).unwrap();
+    resident.add_column("y", &y).unwrap();
+    for scale in [1.0, 2.0] {
+        let operation = renderer
+            .begin_stream_export(id, scale, Color::new(0.0, 0.0, 0.0, 0.0), 11)
+            .unwrap();
+        assert!(
+            renderer
                 .begin_stream_export(id, scale, Color::new(0.0, 0.0, 0.0, 0.0), 11)
-                .unwrap();
-            assert!(
-                renderer
-                    .begin_stream_export(id, scale, Color::new(0.0, 0.0, 0.0, 0.0), 11)
-                    .is_err()
-            );
-            pump(&mut renderer, operation, &x, &y);
-            let actual =
-                crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
-            let expected = resident
-                .export_rgba(
-                    crate::ExportSource::chart(&chart, &series),
-                    crate::ExportOptions::panel(scale),
-                )
-                .block_on()
-                .unwrap();
-            assert_eq!(
-                (actual.width, actual.height),
-                (expected.width, expected.height)
-            );
-            assert_eq!(
-                actual.rgba, expected.rgba,
-                "histogram={histogram} scale={scale}"
-            );
-            assert_eq!(renderer.active_stream_job(id), Some(job));
-            assert_eq!(renderer.stream_status(id).unwrap(), status);
-            drop(
-                renderer
-                    .prepare_registered(&mut [RegisteredChartDrawItem {
-                        chart_id: id,
-                        view: &mut view,
-                    }])
-                    .unwrap(),
-            );
-            crate::test_gpu::block_on(renderer.cancel_stream_operation_and_wait(operation))
-                .unwrap();
-        }
+                .is_err()
+        );
+        pump(&mut renderer, operation, &x, &y);
+        let actual = crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
+        let expected = resident
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert_eq!(
+            (actual.width, actual.height),
+            (expected.width, expected.height)
+        );
+        assert_eq!(actual.rgba, expected.rgba, "scale={scale}");
+        assert_eq!(renderer.active_stream_job(id), Some(job));
+        assert_eq!(renderer.stream_status(id).unwrap(), status);
+        drop(
+            renderer
+                .prepare_registered(&mut [RegisteredChartDrawItem {
+                    chart_id: id,
+                    view: &mut view,
+                }])
+                .unwrap(),
+        );
+        crate::test_gpu::block_on(renderer.cancel_stream_operation_and_wait(operation)).unwrap();
     }
 }
 
 #[test]
 fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
-    let (mut renderer, id, _, chart, series, x, y) = setup(false);
+    let (mut renderer, id, _, chart, series, x, y) = setup();
     let original_job = renderer.active_stream_job(id);
     let original_count = renderer.stream_status(id).unwrap().submitted_primitives;
     let first = renderer
@@ -321,7 +297,7 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
 
 #[test]
 fn streamed_operations_reject_stale_supply_cancel_idempotently_and_keep_display() {
-    let (mut renderer, id, _, _, _, x, y) = setup(false);
+    let (mut renderer, id, _, _, _, x, y) = setup();
     let screen = renderer.active_stream_job(id);
     let operation = renderer
         .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 3)
@@ -372,72 +348,68 @@ fn streamed_operations_reject_stale_supply_cancel_idempotently_and_keep_display(
 
 #[test]
 fn streamed_pick_matches_resident_and_preserves_display() {
-    for histogram in [false, true] {
-        let (mut renderer, id, _, chart, series, x, y) = setup(histogram);
-        let job = renderer.active_stream_job(id);
-        let snapshot = renderer.auto_stream_snapshot(job.unwrap()).unwrap();
-        let (device, queue) = data_render::shared_device().unwrap();
-        let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Rgba8Unorm,
-            16384,
+    let (mut renderer, id, _, chart, series, x, y) = setup();
+    let job = renderer.active_stream_job(id);
+    let snapshot = renderer.auto_stream_snapshot(job.unwrap()).unwrap();
+    let (device, queue) = data_render::shared_device().unwrap();
+    let mut resident = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        16384,
+    )
+    .unwrap();
+    resident.add_column("x", &x).unwrap();
+    resident.add_column("y", &y).unwrap();
+    // Match the actual completed view and its currently captured style scale.
+    let resident_id = resident
+        .register_chart(snapshot.config.clone(), series)
+        .unwrap();
+    resident.enable_gpu_picking().unwrap();
+    let panel = snapshot.config.chart_area.0;
+    drop(snapshot);
+    for position in [[80.0, 60.0], [130.0, 75.0], [2.0, 2.0]] {
+        let request = GpuPickRequest {
+            canvas_position_px: position,
+            display_panel_px: panel,
+            display_scale: 1.0,
+            max_distance_px: 20.0,
+        };
+        let expected = crate::test_gpu::block_on(
+            resident
+                .pick_chart_data(resident_id, request)
+                .unwrap()
+                .resolve(),
         )
         .unwrap();
-        resident.add_column("x", &x).unwrap();
-        resident.add_column("y", &y).unwrap();
-        // Match the actual completed view and its currently captured style scale.
-        let resident_id = resident
-            .register_chart(snapshot.config.clone(), series)
-            .unwrap();
-        resident.enable_gpu_picking().unwrap();
-        let panel = snapshot.config.chart_area.0;
-        drop(snapshot);
-        for position in [[80.0, 60.0], [130.0, 75.0], [2.0, 2.0]] {
-            let request = GpuPickRequest {
-                canvas_position_px: position,
-                display_panel_px: panel,
-                display_scale: 1.0,
-                max_distance_px: 20.0,
-            };
-            let expected = crate::test_gpu::block_on(
-                resident
-                    .pick_chart_data(resident_id, request)
-                    .unwrap()
-                    .resolve(),
-            )
-            .unwrap();
-            let operation =
-                crate::test_gpu::block_on(renderer.begin_stream_pick_data(id, position, 20.0, 11))
-                    .unwrap();
-            pump(&mut renderer, operation, &x, &y);
-            let actual =
-                crate::test_gpu::block_on(renderer.finish_stream_pick_data(operation)).unwrap();
-            assert_eq!(
-                actual,
-                expected,
-                "histogram={histogram}, position={position:?}, chart={:?}",
-                chart.config().chart_area
-            );
-            let expected_point = crate::test_gpu::block_on(
-                resident.pick_chart(resident_id, request).unwrap().resolve(),
-            )
-            .unwrap();
-            let point_operation =
-                crate::test_gpu::block_on(renderer.begin_stream_pick_point(id, position, 20.0, 5))
-                    .unwrap();
-            pump(&mut renderer, point_operation, &x, &y);
-            let actual_point =
-                crate::test_gpu::block_on(renderer.finish_stream_pick_point(point_operation))
-                    .unwrap();
-            assert_eq!(actual_point, expected_point);
-            assert_eq!(renderer.active_stream_job(id), job);
-        }
+        let operation =
+            crate::test_gpu::block_on(renderer.begin_stream_pick_data(id, position, 20.0, 11))
+                .unwrap();
+        pump(&mut renderer, operation, &x, &y);
+        let actual =
+            crate::test_gpu::block_on(renderer.finish_stream_pick_data(operation)).unwrap();
+        assert_eq!(
+            actual,
+            expected,
+            "position={position:?}, chart={:?}",
+            chart.config().chart_area
+        );
+        let expected_point =
+            crate::test_gpu::block_on(resident.pick_chart(resident_id, request).unwrap().resolve())
+                .unwrap();
+        let point_operation =
+            crate::test_gpu::block_on(renderer.begin_stream_pick_point(id, position, 20.0, 5))
+                .unwrap();
+        pump(&mut renderer, point_operation, &x, &y);
+        let actual_point =
+            crate::test_gpu::block_on(renderer.finish_stream_pick_point(point_operation)).unwrap();
+        assert_eq!(actual_point, expected_point);
+        assert_eq!(renderer.active_stream_job(id), job);
     }
 }
 
 #[test]
 fn stream_export_budget_rejection_is_preallocation_and_replay_survives_screen_retarget() {
-    let (mut renderer, id, _, chart, series, x, y) = setup(false);
+    let (mut renderer, id, _, chart, series, x, y) = setup();
     renderer.end_gpu_frame();
     renderer.wait_idle().unwrap();
     renderer.service_stream_requests();

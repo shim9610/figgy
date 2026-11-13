@@ -454,7 +454,7 @@ impl Renderer {
             .await
     }
 
-    /// Exact tagged point/line/histogram replay; Pending is represented by the
+    /// Exact tagged point/line replay; Pending is represented by the
     /// operation, never by a fabricated miss.
     pub async fn begin_stream_pick_data(
         &mut self,
@@ -618,9 +618,6 @@ impl Renderer {
             surface_clear: None,
             display_dirty: false,
             display_serial: 0,
-            hist_envelope: None,
-            hist_series: None,
-            hist_overlay: false,
             mode: StreamExecutionMode::Explicit,
             auxiliary: Some(Arc::new(StreamAuxiliaryTarget {
                 snapshot: Arc::clone(&snapshot),
@@ -797,8 +794,6 @@ impl Renderer {
             pick.point
                 .chunk_bytes(desc, columns[0].len as usize)
                 .map_err(FiggyError::from)?
-        } else if phase == StreamDrawPhase::Histogram && pick.data.is_some() {
-            crate::gpu_data_pick::GpuStreamDataPick::CHUNK_BYTES
         } else {
             0
         };
@@ -863,44 +858,6 @@ impl Renderer {
                     } else {
                         0
                     },
-                )?);
-            }
-            if phase == StreamDrawPhase::Histogram
-                && let Some(data) = &mut pick.data
-            {
-                let bar = extract_bar(&cfg.render_type).ok_or_else(|| {
-                    StreamRequestError::from(StreamError::WrongState).into_figgy()
-                })?;
-                let horizontal = bar.orientation == crate::data_config::BarOrientation::Horizontal;
-                let (hi, lo) = crate::data::split_f64_to_f32_pair(bar.baseline);
-                let (edges, values) = if horizontal {
-                    (handles(&cfg.y_column)?, handles(&cfg.x_column)?)
-                } else {
-                    (handles(&cfg.x_column)?, handles(&cfg.y_column)?)
-                };
-                return Ok(data.encode_chunk(
-                    &mut encoder,
-                    &chunk.work,
-                    crate::gpu_data_pick::GpuDataPickSeries {
-                        source_id: cfg.source_id.clone(),
-                        series_id: cfg.series_id.clone(),
-                        paint_order: series_index as u32,
-                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Histogram {
-                            edges,
-                            values,
-                            bin_count: primitives as u32,
-                            baseline: [hi, lo],
-                            gap_px: bar.gap_px.max(0.0)
-                                * snapshot.styles.styles[series_index].display_scale,
-                            width_ratio: data_render::sanitize_bar_width_ratio(bar.width_ratio),
-                            horizontal,
-                            style_map: snapshot.styles.styles[series_index]
-                                .bar_map
-                                .as_ref()
-                                .map(|map| map.bind_group.clone()),
-                        },
-                    },
-                    offset as u32,
                 )?);
             }
             Ok(None)
@@ -1048,7 +1005,7 @@ impl Renderer {
                     {
                         (total + 1).min(max_primitives).min(257)
                     } else {
-                        stream_phase_request_len(series, *phase, id, total.min(max_primitives))?
+                        stream_phase_request_len(*phase, total.min(max_primitives))?
                     };
                     input = input
                         .checked_add(
@@ -1287,9 +1244,6 @@ impl Renderer {
             surface_clear: None,
             display_dirty: false,
             display_serial: 0,
-            hist_envelope: None,
-            hist_series: None,
-            hist_overlay: false,
             mode: StreamExecutionMode::Explicit,
             auxiliary: Some(auxiliary),
             auxiliary_pick: None,

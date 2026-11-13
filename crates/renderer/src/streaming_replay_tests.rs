@@ -97,7 +97,6 @@ fn display(
         reveal.then_some([0, 0, s.spec.width, s.spec.height]),
         |_| {},
         |_| {},
-        |_| {},
     )
     .unwrap();
     r.queue.submit([e.finish()]);

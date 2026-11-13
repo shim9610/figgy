@@ -203,8 +203,8 @@ colour, `line_width_px` the outline width in pixels (unscaled), and
 baseline stay the draw's, so the outline takes the draw's resolver: the
 mapped entry, used exactly when the draw binds the bar style map, runs
 `resolve_bar_style(base_bar_style(), style.dash_len)` over the same group 2.
-The global index keeps a streamed selection, whose instance is local zero,
-on the bin's own overrides without a stream map binding. The highlight
+The global index keeps the outline on the bin's own overrides whatever
+instance the caller draws. The highlight
 colour and outline width are never taken from the resolved fill or border.
 
 ### 2.2 `line_columnar.wgsl`의 면 채움 엔트리 `vs_area` / `fs_area`

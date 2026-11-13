@@ -461,15 +461,7 @@ impl StreamSurface {
         underlay: impl FnOnce(&mut wgpu::RenderPass<'_>),
         suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) -> Result<(), StreamSurfaceError> {
-        self.record_display_chunks(
-            transfer,
-            encoder,
-            background,
-            None,
-            underlay,
-            |_| {},
-            suffix,
-        )
+        self.record_display_chunks(transfer, encoder, background, None, underlay, suffix)
     }
 
     pub(crate) fn record_display_chunks(
@@ -479,7 +471,6 @@ impl StreamSurface {
         background: Option<wgpu::Color>,
         replay_clip: Option<[u32; 4]>,
         underlay: impl FnOnce(&mut wgpu::RenderPass<'_>),
-        data_suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
         suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) -> Result<(), StreamSurfaceError> {
         if transfer.format != self.spec.format || transfer.sample_count != self.spec.sample_count {
@@ -523,7 +514,6 @@ impl StreamSurface {
         });
         pass.set_bind_group(0, &self.source, &[]);
         pass.draw(0..3, 0..1);
-        data_suffix(&mut pass);
         if let Some(clip) = replay_clip {
             drop(pass);
             self.record_replay_restore(transfer, encoder, clip, suffix)?;

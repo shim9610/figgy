@@ -6811,6 +6811,65 @@ fn streamed_series_reject_range_bars() {
     ));
 }
 
+/// A histogram's columns are the host's bins, one row per bin, so it is
+/// resident only (#284): a streamed one is rejected with an explicit reason
+/// before a cursor exists, in either orientation and with or without bar
+/// style overrides.
+#[test]
+fn streamed_series_reject_histograms() {
+    let config = basic_errorbar_chart().config().clone();
+    for orientation in [
+        crate::data_config::BarOrientation::Vertical,
+        crate::data_config::BarOrientation::Horizontal,
+    ] {
+        for overrides in [
+            None,
+            Some(vec![crate::data_config::DataBarStyleOverride {
+                index: 1,
+                style: Default::default(),
+            }]),
+        ] {
+            let series = SeriesConfig {
+                series_id: "stream".into(),
+                source_id: None,
+                label: None,
+                x_column: "x".into(),
+                y_column: "y".into(),
+                z_column: None,
+                render_type: DataRenderType::Histogram {
+                    bar: DataBarStyleConfig {
+                        fill_color: Color::BLACK,
+                        border_color: Color::BLACK,
+                        border_width: 1.0,
+                        baseline: 0.0,
+                        gap_px: 0.0,
+                        width_ratio: 1.0,
+                        orientation: orientation.clone(),
+                        bar_style_overrides: overrides,
+                    },
+                },
+            };
+            let refused = PrepareContext::validate_stream_series(&config, &series);
+            assert!(
+                matches!(
+                    &refused,
+                    Err(FiggyError::InvalidSeriesConfig {
+                        series_id,
+                        kind: crate::RuleKind::StreamedHistogram,
+                    }) if series_id == "stream"
+                ),
+                "{refused:?}"
+            );
+            let reason = refused.unwrap_err().to_string();
+            assert!(
+                reason.contains("histogram")
+                    && reason.contains("streamed sources are not supported"),
+                "{reason}"
+            );
+        }
+    }
+}
+
 /// Streaming is not extended to ternary series (CLAUDE.md rule 8): a
 /// streamed one is rejected with an explicit reason.
 /// A hexagonal grid reads its lattice from resident coordinate columns

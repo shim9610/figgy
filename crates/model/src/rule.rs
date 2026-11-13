@@ -980,6 +980,8 @@ pub enum RuleKind {
     TriangleIndicesOrder,
     /// range bar series require GPU-resident columns; streamed sources are not supported
     StreamedRangeBars,
+    /// histogram series require GPU-resident columns; streamed sources are not supported
+    StreamedHistogram,
     /// streamline series require GPU-resident columns; streamed sources are not supported
     StreamedStreamlines,
     /// hexagonal grids require GPU-resident columns; streamed sources are not supported
@@ -1668,6 +1670,7 @@ impl RuleKind {
             Self::TrianglesEmpty => "TrianglesEmpty",
             Self::TriangleIndicesOrder => "TriangleIndicesOrder",
             Self::StreamedRangeBars => "StreamedRangeBars",
+            Self::StreamedHistogram => "StreamedHistogram",
             Self::StreamedStreamlines => "StreamedStreamlines",
             Self::StreamedHexagonal => "StreamedHexagonal",
             Self::StreamedTernary => "StreamedTernary",
@@ -2567,6 +2570,9 @@ impl std::fmt::Display for RuleKind {
             }
             Self::StreamedRangeBars => {
                 "range bar series require GPU-resident columns; streamed sources are not supported"
+            }
+            Self::StreamedHistogram => {
+                "histogram series require GPU-resident columns; streamed sources are not supported"
             }
             Self::StreamedStreamlines => {
                 "streamline series require GPU-resident columns; streamed sources are not supported"
@@ -4678,6 +4684,10 @@ mod tests {
             (
                 RuleKind::StreamedRangeBars,
                 "range bar series require GPU-resident columns; streamed sources are not supported",
+            ),
+            (
+                RuleKind::StreamedHistogram,
+                "histogram series require GPU-resident columns; streamed sources are not supported",
             ),
             (
                 RuleKind::StreamedStreamlines,

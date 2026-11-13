@@ -1,8 +1,6 @@
 use super::*;
 use crate::config::DataSelectionsConfig;
-use crate::data_config::{
-    BarOrientation, DataBarBinStyleConfig, DataBarStyleOverride, DataScatterPointStyleOverride,
-};
+use crate::data_config::DataScatterPointStyleOverride;
 use crate::test_gpu::BlockOn as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
@@ -129,34 +127,7 @@ fn fixture_with_display(
             stem: None,
         }),
     };
-    let bar = SeriesConfig {
-        source_id: Some("source".into()),
-        series_id: "bar".into(),
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Histogram {
-            bar: DataBarStyleConfig {
-                fill_color: Color::new(0.5, 0.2, 0.1, 0.2),
-                border_color: Color::new(0.2, 0.3, 0.5, 0.3),
-                border_width: 1.0,
-                baseline: 0.0,
-                gap_px: 0.0,
-                width_ratio: 1.0,
-                orientation: BarOrientation::Vertical,
-                bar_style_overrides: Some(vec![DataBarStyleOverride {
-                    index: 10,
-                    style: DataBarBinStyleConfig {
-                        gap_px: Some(2.0),
-                        width_ratio: Some(0.4),
-                        ..Default::default()
-                    },
-                }]),
-            },
-        },
-    };
-    let series = vec![point, bar];
+    let series = vec![point];
     let mut config = crate::default::default_config();
     config.chart_area = crate::layout::ChartArea(Rect {
         x: 0,
@@ -197,20 +168,10 @@ fn select(config: &mut Config, indices: &[usize]) {
     config.picked_data = Some(DataSelectionsConfig {
         refs: indices
             .iter()
-            .flat_map(|index| {
-                [
-                    PickedDataRef::Point {
-                        source_id: Some("source".into()),
-                        series_id: "point".into(),
-                        point_index: *index,
-                    },
-                    PickedDataRef::HistogramBin {
-                        source_id: Some("source".into()),
-                        series_id: "bar".into(),
-                        bin_index: *index,
-                        half: None,
-                    },
-                ]
+            .map(|index| PickedDataRef::Point {
+                source_id: Some("source".into()),
+                series_id: "point".into(),
+                point_index: *index,
             })
             .collect(),
         highlight_color: Color::new(0.0, 1.0, 0.0, 0.5),
@@ -471,7 +432,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
             .selection
             .ready
             .len(),
-        6
+        3
     );
     let bindings: Vec<_> = values
         .iter()
@@ -824,10 +785,9 @@ fn display_comparison_measures_alpha_composition_and_rejects_visible_changes() {
 
 /// SELECTION_PLAN_COUNT_LE_3 (#152): `columns_for` names one to three
 /// distinct columns (`x`, `y` and the Precise style index), so its `[_; 3]`
-/// ids, rows and offsets cover `..count`: x equal to y, a histogram bar
-/// (its edge column read twice as far), a Precise scatter with its own style
-/// column, a style column equal to x, a Sketch scatter (no style column),
-/// and a field cell on equal and on different axes.
+/// ids, rows and offsets cover `..count`: x equal to y, a Precise scatter
+/// with its own style column, a style column equal to x, a Sketch scatter
+/// (no style column), and a field cell on equal and on different axes.
 #[test]
 fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     let (_, _, _, _, chart, series, _) = fixture();
@@ -835,11 +795,10 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     assert!(matches!(precise.draw_style, DrawStyle::Precise));
     let mut sketch = precise.clone();
     sketch.draw_style = DrawStyle::Sketch(Default::default());
-    let entry = |bar: bool, field: Option<field::Cell>| SelectionEntry {
+    let entry = |field: Option<field::Cell>| SelectionEntry {
         series: 0,
         index: 4,
         filter: SelectionRefFilter::All,
-        bar,
         field,
     };
     let check = |plan: SelectionColumnPlan<'_>, expected: &[(&str, u64)]| {
@@ -856,13 +815,12 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
         assert_eq!(ids.len(), plan.count, "repeated ids");
     };
     let point = &series[0];
-    let bar = &series[1];
     check(
-        columns_for(&precise, point, entry(false, None)),
+        columns_for(&precise, point, entry(None)),
         &[("x", 1), ("y", 1), ("index", 1)],
     );
     check(
-        columns_for(&sketch, point, entry(false, None)),
+        columns_for(&sketch, point, entry(None)),
         &[("x", 1), ("y", 1)],
     );
     let mut style_is_x = point.clone();
@@ -876,25 +834,12 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
         scatter.point_style_index_column = Some("x".into());
     }
     check(
-        columns_for(&precise, &style_is_x, entry(false, None)),
+        columns_for(&precise, &style_is_x, entry(None)),
         &[("x", 1), ("y", 1)],
     );
     let mut same = style_is_x.clone();
     same.y_column = "x".into();
-    check(
-        columns_for(&precise, &same, entry(false, None)),
-        &[("x", 1)],
-    );
-    check(
-        columns_for(&precise, bar, entry(true, None)),
-        &[("x", 2), ("y", 1)],
-    );
-    let mut same_bar = bar.clone();
-    same_bar.y_column = "x".into();
-    check(
-        columns_for(&precise, &same_bar, entry(true, None)),
-        &[("x", 2)],
-    );
+    check(columns_for(&precise, &same, entry(None)), &[("x", 1)]);
 
     let heatmap = |x: &str, y: &str| SeriesConfig {
         source_id: None,
@@ -922,7 +867,7 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     for (x, y, count) in [("fx", "fy", 2), ("fx", "fx", 1)] {
         let series = heatmap(x, y);
         let cell = field::Cell::resolve(&series, [1, 1], len).expect("an inner cell");
-        let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+        let plan = columns_for(&precise, &series, entry(Some(cell)));
         assert_eq!(plan.count, count, "{x} {y}");
         assert!(plan.count <= 3);
         let ids = &plan.ids[..plan.count];
@@ -931,7 +876,7 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     // Different cells on one axis column are two ranges of the same id.
     let series = heatmap("fx", "fx");
     let cell = field::Cell::resolve(&series, [0, 2], len).expect("a cell");
-    let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+    let plan = columns_for(&precise, &series, entry(Some(cell)));
     assert_eq!(plan.count, 2);
 }
 
