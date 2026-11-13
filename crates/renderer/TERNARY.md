@@ -9,10 +9,9 @@ JSON) draws the rectangular chart, so older documents are unchanged.
 
 ## Input and first render
 
-A ternary series names three ordinary pool columns: `x_column`, `y_column`
-and `c_column`. Each enters through `ColumnSource` like any other column.
-There is no record type and no third column on `SeriesConfig`; `c_column`
-lives on the series kind.
+A ternary series names three columns: `x_column`, `y_column` and
+`c_column`. Each enters through `ColumnSource` like any other column.
+`c_column` is a field of the `Ternary` render type, not of `SeriesConfig`.
 
 ```rust,no_run
 use renderer::{
@@ -24,7 +23,7 @@ use renderer::{
 };
 
 fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
-    // The host's components, unnormalized: no projection before upload.
+    // Upload the components as they are; they need not sum to 100.
     renderer.add_column("fe", &Column { data: vec![70.0, 20.0, 10.0] })?;
     renderer.add_column("ni", &Column { data: vec![20.0, 70.0, 20.0] })?;
     renderer.add_column("cr", &Column { data: vec![10.0, 10.0, 70.0] })?;
@@ -71,10 +70,9 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 A sample is placed at `(x·L + y·T + c·R) / (x + y + c)`: the triangle's
-corners weighted by its components. Normalizing only to place a sample is
-appearance: it is computed in the vertex stage on every draw and never
-stored. Hover, selection and `selection_details()` report the original
-components.
+corners weighted by its components. The sum is used only to place the
+sample: hover, selection and `selection_details()` report the components
+as uploaded.
 
 A sample with a negative or non-finite component, or a sum of zero or less,
 is not drawn, and a line breaks on both of its sides, as at a NaN.
@@ -96,8 +94,8 @@ drawn.
 
 The three axes span the whole triangle: each has `min` 0 and the same
 `max`, 1 or 100 (which only scales the labels). The axes must be linear,
-not inverted and not categorical. These rules are checked where the chart
-is drawn, as a polar chart's are. A fit (`auto_fit_layer_union`,
+not inverted and not categorical. The renderer checks these rules when it
+draws the chart, as for a polar chart. A fit (`auto_fit_layer_union`,
 `auto_fit_x_extent`, the browser's `autoFitAll`) leaves the axes as they
 are: their range is the triangle, not a data extent.
 
@@ -122,20 +120,16 @@ fill is `color` at `opacity`, painted under every series' markers and
 lines in series order, as a line's area fill is; a series with a `line`
 draws its outline over its own fill.
 
-The fill is a stencil-then-cover with the even-odd rule: one triangle per
-edge from the triangle's centre inverts a stencil, and one cover per
-series paints where the stencil is odd. So, within one series, a polygon
-inside another is a hole, and two polygons that overlap leave their
-overlap unfilled. Regions that should overlap go in separate series. Any
-row that cannot be placed separates polygons as a NaN row does: a
-non-finite or negative component, or a sum of zero or less.
+The fill follows the even-odd rule: within one series, a polygon inside
+another is a hole, and two polygons that overlap leave their overlap
+unfilled. Put regions that should overlap in separate series. Any row that
+cannot be placed separates polygons as a NaN row does: a non-finite or
+negative component, or a sum of zero or less.
 
-The cost is one stencil triangle per vertex and one cover per series,
-after a GPU scan that finds each polygon's first row so its closing edge
-needs no walk along the polygon (#49). The scan keeps one `u32` per row
-for the draw and for each pick. There is no limit on polygons or
-vertices: `ternary_render.rs` draws and picks one polygon of a million
-vertices.
+The cost is one triangle per vertex and one cover per series, plus 4 bytes
+of working memory per row for the draw and for each pick. There is no limit
+on polygons or vertices; a single polygon of a million vertices draws and
+picks.
 
 A ternary chart draws only ternary series, in the Precise draw style. It
 rejects overlays, line offsets, the polar system, subplot axis links to or
@@ -145,9 +139,8 @@ from it, and streamed sources, each with an explicit error.
 
 `Config::ternary_geometry()` returns the triangle: the largest one inside
 the data area that leaves a band for each edge's ticks, labels and title,
-centred with those bands. Every band term scales with `Config::scaled`, so
-a 2x export is the 1x layout doubled. The GPU transform, the grid and the
-axes, the hit regions and the drags all read this one triangle.
+centred with those bands. The bands scale with `Config::scaled`, so a 2x
+export is the 1x layout doubled.
 
 - **Grid.** At each tick of each axis, a line of constant value runs
   across the triangle. The x family takes the grid's x styles; the y and c
@@ -162,15 +155,12 @@ axes, the hit regions and the drags all read this one triangle.
 
 ## Interaction
 
-- **Hover and click.** Markers, strokes and dashes pick where they paint:
-  the pick reads the c column from the pool and places the sample with the
-  draw's own projection. A ternary series always takes the direct scan (one
-  exact pass over its points), because the placement is not separable by
-  axis. The result is `PickedData::Point` with the sample's index. A region
-  fill picks where it paints, by the same even-odd rule (the crossings of
-  the cursor's ray with the polygons' edges): the hit names the lowest
-  index of an edge the ray crosses, at distance zero, and loses every tie
-  to a marker or a stroke, as a line fill does.
+- **Hover and click.** Markers, strokes and dashes are picked where they
+  are drawn; a pick checks every point of a ternary series. The result is
+  `PickedData::Point` with the sample's index. A region fill is picked
+  where it paints, by the same even-odd rule: the hit names the lowest row
+  index of a polygon edge on the ray from the cursor, at distance zero, and
+  loses every tie to a marker or a stroke, as a line fill does.
 - **Highlight.** The picked point's ring is drawn at the marker's place and
   radius.
 - **`step_selection`** walks the points; the count is the shortest of the
@@ -199,9 +189,10 @@ axes, the hit regions and the drags all read this one triangle.
 
 ## Examples and tests
 
-The playground's Ternary scene (`tests/support/playground_scenes.rs`) draws
-Fe/Ni/Cr alloy compositions coloured by hardness through a colourbar, with
-a dashed tie-line and a filled, outlined phase field with a hole. The decoration oracle sweeps it like every other scene.
+[ternary.rs](examples/ternary.rs) draws the USDA soil texture triangle
+(`gallery-ternary.png`). The playground's *Ternary (three components)* scene
+draws Fe/Ni/Cr alloy compositions coloured by hardness through a colourbar, with
+a dashed tie-line and a filled, outlined phase field with a hole.
 
 ```sh
 cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render

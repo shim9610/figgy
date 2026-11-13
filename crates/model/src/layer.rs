@@ -18,11 +18,10 @@
 /// which layer's elements are registered in the hit map, not which element is
 /// selected. `Base` is the default and exists on every chart, so a document
 /// without the field routes the pointer to the chart's own elements.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LayerRef {
     /// The chart's own series, axes and decorations.
-    #[default]
     Base,
     /// An overlay layer by index into the document's overlay list. The
     /// radial chart has no overlays; a setter must fall back to `Base` there and
@@ -85,7 +84,7 @@ pub(crate) fn set_bounded_active_layer(
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::annotation_layer")
 )]
 pub struct AnnotationLayer {
     /// Skips the layer's composite draws without re-rasterizing anything.
@@ -95,33 +94,37 @@ pub struct AnnotationLayer {
     pub items: Vec<crate::annotation::Annotation>,
 }
 
-impl Default for AnnotationLayer {
-    fn default() -> Self {
-        Self {
-            visible: true,
-            items: Vec::new(),
-        }
-    }
-}
-
 impl AnnotationLayer {
     /// `true` when nothing differs from the default; used to omit the field
     /// from JSON so existing documents serialize byte-identically.
     pub fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == crate::defaults::annotation_layer()
+    }
+
+    /// A layer with no items, visible: a document without annotations
+    /// (#266).
+    pub fn empty() -> Self {
+        crate::defaults::annotation_layer()
     }
 }
 
-/// One overlay layer of a Cartesian document: a second Y axis drawn on the
-/// right side of the shared data area, with the series that are scaled by it.
+/// One overlay layer of a Cartesian document: series drawn over the shared
+/// data area, scaled by axes of their own or by the parent's.
 ///
-/// An overlay holds only what may differ from the parent `Config`: its Y
-/// axis, the ids of the series it owns and an optional legend of its own. The
-/// chart area, both X axes, the chart title, the shared legend, the grid, the
-/// colourbar and `draw_style` exist exactly once, on the parent, so the type
-/// itself guarantees that a document has one X range and one plot rectangle.
-/// Expansion (`Config::expand`) turns the parent and its overlays into one
-/// internal panel each; those panels are never serialized.
+/// Each side is linked or the overlay's own. By default the overlay follows
+/// the parent's X axis (`link_x`) and has a Y axis of its own, drawn on the
+/// right (`y_axis`). With `link_x` off it has an X axis of its own too,
+/// `x_axis`, drawn on the top side; with `link_y` on it follows the parent's
+/// left Y axis and draws none. A linked side keeps the overlay's own axis
+/// settings, so unlinking it again restores them.
+///
+/// An overlay holds only what may differ from the parent `Config`: its axes,
+/// the ids of the series it owns and an optional legend of its own. The
+/// chart area, the chart title, the shared legend, the grid, the colourbar
+/// and `draw_style` exist exactly once, on the parent, so a document has one
+/// plot rectangle. Expansion (`Config::expand`) turns the parent and its
+/// overlays into one internal panel each; those panels are never
+/// serialized.
 ///
 /// Series are referenced by `series_id` from the chart's single series list,
 /// so the series declarations, their styles, column references and picking
@@ -131,15 +134,33 @@ impl AnnotationLayer {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::overlay_layer")
 )]
 pub struct OverlayLayer {
     /// The overlay's own Y axis, drawn on the right side of the data area.
     /// Its `min` / `max` / `scale` / `inverted` are the data-to-pixel mapping
     /// of the overlay's series. `out_margin` contributes to the shared right
     /// margin; the group takes the widest band of the parent and every
-    /// overlay (`Config::margins`).
+    /// overlay (`Config::margins`). Unused while `link_y` is on.
     pub y_axis: crate::config::AxisOptions,
+    /// `true` (default, omitted): the overlay's series are scaled by the
+    /// parent's `bottom_x`. `false`: by `x_axis`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_true"))]
+    pub link_x: bool,
+    /// The overlay's own X axis, drawn on the top side of the data area while
+    /// `link_x` is off, as `y_axis` is on the right. `out_margin` contributes
+    /// to the shared top margin, as `y_axis`'s does to the right one. Omitted
+    /// from JSON while it is the default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "OverlayLayer::x_axis_is_default")
+    )]
+    pub x_axis: crate::config::AxisOptions,
+    /// `false` (default, omitted): the overlay's series are scaled by
+    /// `y_axis`. `true`: by the parent's `left_y`, and the overlay draws no Y
+    /// axis.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_false"))]
+    pub link_y: bool,
     /// Ids of the series this layer scales. Each id may appear in at most one
     /// overlay; ids with no matching series declaration are ignored.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
@@ -150,23 +171,38 @@ pub struct OverlayLayer {
     pub legend: Option<crate::legend::Legend>,
 }
 
-impl Default for OverlayLayer {
-    /// A right-hand Y axis with the default Y label style, no series and no
-    /// legend of its own.
-    fn default() -> Self {
-        Self {
-            y_axis: crate::default::default_axis_options_y(),
-            series: Vec::new(),
-            legend: None,
-        }
-    }
-}
-
 impl OverlayLayer {
     /// `true` when this overlay scales `series_id`.
     pub fn owns_series(&self, series_id: &str) -> bool {
         self.series.iter().any(|id| id == series_id)
     }
+
+    /// The X axis the overlay's series are scaled by: `x_axis`, or `None`
+    /// while `link_x` is on (the parent's `bottom_x`).
+    pub fn own_x(&self) -> Option<&crate::config::AxisOptions> {
+        (!self.link_x).then_some(&self.x_axis)
+    }
+
+    /// The Y axis the overlay's series are scaled by: `y_axis`, or `None`
+    /// while `link_y` is on (the parent's `left_y`).
+    pub fn own_y(&self) -> Option<&crate::config::AxisOptions> {
+        (!self.link_y).then_some(&self.y_axis)
+    }
+
+    #[cfg(feature = "serde")]
+    fn x_axis_is_default(axis: &crate::config::AxisOptions) -> bool {
+        *axis == crate::defaults::axis_options_x()
+    }
+}
+
+#[cfg(feature = "serde")]
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+#[cfg(feature = "serde")]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A chart of the document that a link can point at: the parent (the
@@ -199,7 +235,7 @@ pub enum CellRef {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::subplot")
 )]
 pub struct Subplot {
     /// The subplot's chart. Its own `subplots` must be empty (one level of
@@ -239,7 +275,7 @@ pub struct Subplot {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::inset_marker")
 )]
 pub struct InsetMarker {
     /// The window in the parent's data coordinates, `[[x0, x1], [y0, y1]]`.
@@ -251,34 +287,6 @@ pub struct InsetMarker {
     pub line: crate::annotation::AnnotationLineStyle,
     /// Whether the connectors are drawn. Default `true`.
     pub connectors: bool,
-}
-
-impl Default for InsetMarker {
-    /// A derived window, a thin grey line and connectors.
-    fn default() -> Self {
-        Self {
-            window: None,
-            line: crate::annotation::AnnotationLineStyle {
-                color: crate::color::Color::from_rgb8(120, 128, 140),
-                width: 1.0,
-                style: crate::line::LineStylePreset::Solid,
-            },
-            connectors: true,
-        }
-    }
-}
-
-impl Default for Subplot {
-    /// The default chart, no series and no links.
-    fn default() -> Self {
-        Self {
-            config: crate::default::default_config(),
-            series: Vec::new(),
-            link_x: None,
-            link_y: None,
-            marker: None,
-        }
-    }
 }
 
 impl Subplot {
@@ -300,7 +308,7 @@ mod tests {
 
     #[test]
     fn base_is_the_default_layer() {
-        assert_eq!(LayerRef::default(), LayerRef::Base);
+        assert_eq!(crate::defaults::layer_ref(), LayerRef::Base);
         assert!(LayerRef::Base.is_base());
         assert!(!LayerRef::Overlay(0).is_base());
         assert!(!LayerRef::Annotations.is_base());
@@ -312,7 +320,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn subplots_round_trip_and_omit_their_defaults() {
-        let json = serde_json::to_value(Subplot::default()).unwrap();
+        let json = serde_json::to_value(crate::defaults::subplot()).unwrap();
         assert!(json.get("config").is_some());
         for key in ["series", "link_x", "link_y"] {
             assert!(json.get(key).is_none(), "{key}: {json}");
@@ -321,7 +329,7 @@ mod tests {
             series: vec!["flow".into()],
             link_x: Some(CellRef::Parent),
             link_y: Some(CellRef::Subplot(0)),
-            ..Default::default()
+            ..crate::defaults::subplot()
         };
         let json = serde_json::to_value(&subplot).unwrap();
         assert_eq!(json["link_x"], serde_json::json!("Parent"));
@@ -348,7 +356,7 @@ mod tests {
         let mut active = LayerRef::Base;
         let mut decorations = crate::DecorationLayout {
             selected: Some(DecorationId::Legend),
-            ..Default::default()
+            ..crate::defaults::decoration_layout()
         };
         // An overlay is stored as `Base`, which is no change: the selection stays.
         assert_eq!(
@@ -382,7 +390,7 @@ mod tests {
         use crate::decoration::DecorationId;
         macro_rules! check {
             ($chart:ty, $data:expr) => {{
-                let mut c = <$chart>::default();
+                let mut c = crate::defaults::radial_chart();
                 let select_data: fn(&mut $chart) = $data;
                 assert_eq!(c.active_layer(), LayerRef::Base);
                 c.active_layer = LayerRef::Overlay(1);
@@ -402,7 +410,7 @@ mod tests {
                     assert_eq!(json["active_layer"], serde_json::json!("Annotations"));
                     let back: $chart = serde_json::from_value(json).unwrap();
                     assert_eq!(back, c);
-                    let mut legacy = serde_json::to_value(<$chart>::default()).unwrap();
+                    let mut legacy = serde_json::to_value(crate::defaults::radial_chart()).unwrap();
                     assert!(legacy.get("active_layer").is_none());
                     legacy["active_layer"] = serde_json::json!({ "Overlay": 0 });
                     let read: $chart = serde_json::from_value(legacy).unwrap();
@@ -421,8 +429,8 @@ mod tests {
     #[allow(deprecated)]
     fn legacy_documents_read_their_active_layer() {
         macro_rules! check {
-            ($chart:ty) => {{
-                let mut c = <$chart>::default();
+            ($new:expr) => {{
+                let mut c = $new;
                 assert_eq!(c.active_layer(), LayerRef::Base);
                 c.active_layer = LayerRef::Overlay(1);
                 assert_eq!(c.active_layer(), LayerRef::Base);
@@ -430,14 +438,14 @@ mod tests {
                 assert_eq!(c.active_layer(), LayerRef::Annotations);
             }};
         }
-        check!(crate::categorical::CategoricalChart);
-        check!(crate::boxplot::BoxPlotChart);
-        check!(crate::radar::RadarChart);
+        check!(crate::defaults::categorical_chart());
+        check!(crate::defaults::box_plot_chart());
+        check!(crate::defaults::radar_chart());
     }
 
     #[test]
     fn annotation_layer_defaults_to_visible() {
-        let layer = AnnotationLayer::default();
+        let layer = crate::defaults::annotation_layer();
         assert!(layer.visible);
         assert!(layer.is_default());
         assert!(
@@ -465,14 +473,14 @@ mod tests {
 
     #[test]
     fn overlay_layer_defaults_to_an_unassigned_right_axis() {
-        let layer = OverlayLayer::default();
-        assert_eq!(layer.y_axis, crate::default::default_axis_options_y());
+        let layer = crate::defaults::overlay_layer();
+        assert_eq!(layer.y_axis, crate::defaults::axis_options_y());
         assert!(layer.series.is_empty());
         assert!(layer.legend.is_none());
         assert!(!layer.owns_series("a"));
         let layer = OverlayLayer {
             series: vec!["a".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         };
         assert!(layer.owns_series("a"));
         assert!(!layer.owns_series("b"));
@@ -481,17 +489,17 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn overlay_layer_omits_its_optional_keys_and_round_trips() {
-        let json = serde_json::to_value(OverlayLayer::default()).unwrap();
+        let json = serde_json::to_value(crate::defaults::overlay_layer()).unwrap();
         assert!(json.get("y_axis").is_some());
         assert!(json.get("series").is_none(), "{json}");
         assert!(json.get("legend").is_none(), "{json}");
         let back: OverlayLayer = serde_json::from_value(json).unwrap();
-        assert_eq!(back, OverlayLayer::default());
+        assert_eq!(back, crate::defaults::overlay_layer());
 
         let layer = OverlayLayer {
             series: vec!["pressure".into()],
-            legend: Some(crate::default::default_legend()),
-            ..Default::default()
+            legend: Some(crate::defaults::legend()),
+            ..crate::defaults::overlay_layer()
         };
         let json = serde_json::to_value(&layer).unwrap();
         assert_eq!(json["series"], serde_json::json!(["pressure"]));
@@ -500,15 +508,57 @@ mod tests {
         assert_eq!(back, layer);
         // A document written with only the axis still parses.
         let partial: OverlayLayer = serde_json::from_str(r#"{"series":["a"]}"#).unwrap();
-        assert_eq!(partial.y_axis, OverlayLayer::default().y_axis);
+        assert_eq!(partial.y_axis, crate::defaults::overlay_layer().y_axis);
         assert_eq!(partial.series, vec!["a".to_string()]);
+    }
+
+    // The link keys are omitted while they hold their defaults, so a
+    // document written before they existed re-serializes unchanged, and each
+    // round-trips once set.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn overlay_links_are_omitted_by_default_and_round_trip() {
+        let json = serde_json::to_value(crate::defaults::overlay_layer()).unwrap();
+        for key in ["link_x", "x_axis", "link_y"] {
+            assert!(json.get(key).is_none(), "{key}: {json}");
+        }
+        let old = r#"{"series":["a"]}"#;
+        let parsed: OverlayLayer = serde_json::from_str(old).unwrap();
+        assert!(parsed.link_x && !parsed.link_y);
+        assert_eq!(parsed.x_axis, crate::defaults::axis_options_x());
+        assert!(parsed.own_x().is_none());
+        assert_eq!(parsed.own_y(), Some(&parsed.y_axis));
+
+        let mut layer = crate::defaults::overlay_layer();
+        layer.link_x = false;
+        layer.x_axis.min = 10.0;
+        layer.x_axis.max = 20.0;
+        layer.link_y = true;
+        let json = serde_json::to_value(&layer).unwrap();
+        assert_eq!(json["link_x"], serde_json::json!(false));
+        assert_eq!(json["link_y"], serde_json::json!(true));
+        assert_eq!(json["x_axis"]["min"], serde_json::json!(10.0));
+        let back: OverlayLayer = serde_json::from_value(json).unwrap();
+        assert_eq!(back, layer);
+        assert_eq!(back.own_x(), Some(&layer.x_axis));
+        assert!(back.own_y().is_none());
+        // A linked side keeps its own axis in the document.
+        let mut relinked = layer.clone();
+        relinked.link_x = true;
+        let json = serde_json::to_value(&relinked).unwrap();
+        assert!(json.get("link_x").is_none());
+        assert_eq!(json["x_axis"]["min"], serde_json::json!(10.0));
+        assert_eq!(
+            serde_json::from_value::<OverlayLayer>(json).unwrap(),
+            relinked
+        );
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn annotation_layer_reads_missing_keys_as_defaults() {
         let layer: AnnotationLayer = serde_json::from_str("{}").unwrap();
-        assert_eq!(layer, AnnotationLayer::default());
+        assert_eq!(layer, crate::defaults::annotation_layer());
         let hidden: AnnotationLayer = serde_json::from_str(r#"{"visible":false}"#).unwrap();
         assert!(!hidden.visible);
         assert_eq!(

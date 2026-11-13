@@ -3,10 +3,13 @@
 //! 1200 x 800 pixels.
 use crate::gallery::{self, Result};
 use renderer::{
-    Chart, Color, ColorMap, Config, RasterImage, Renderer,
+    AxisTitleElement, Chart, Color, ColorMap, Config, CpuTextMeasure, LegendElement, RasterImage,
+    Renderer, SelectionGeometry,
     config::{AxisScale, LegendCorner, TickVisibility},
     encode_png,
     layout::Side,
+    text::RichSegment,
+    theme::{SubplotScope, Theme},
 };
 use std::path::Path;
 
@@ -50,40 +53,28 @@ pub fn save(image: &RasterImage, background: Color, path: &Path) -> Result {
     Ok(())
 }
 
-/// The shared chrome: no axis lines or ticks, horizontal grid only, a quiet
-/// legend in the background colour.
+/// The designed scenes' look: the dashboard theme in the scene's background,
+/// ink and grid colours.
+pub fn theme(bg: Color, ink: Color, grid: Color) -> Theme {
+    let mut theme = Theme::dashboard();
+    let chrome = &mut theme.chrome;
+    chrome.background = Some(bg);
+    chrome.ink = ink;
+    chrome.frame_ink = ink;
+    chrome.label_ink = ink;
+    chrome.grid.major_x.color = grid;
+    chrome.grid.major_y.color = grid;
+    chrome.legend_fill = bg;
+    chrome.legend_border = bg;
+    theme
+}
+
+/// The shared chrome: the scene's theme and a top-left legend. The margins
+/// are fitted to the labels when the chart is exported.
 pub fn chrome(config: &mut Config, bg: Color, ink: Color, grid: Color) {
-    config.chart_title.text.font_size = 34.;
-    config.chart_title.text.color = ink;
-    config.chart_title.top_margin = 85.;
-    config.left_y.out_margin = 110.;
-    config.right_y.out_margin = 65.;
-    config.bottom_x.out_margin = 95.;
-    config.top_x.out_margin = 45.;
-    config.grid.major_y_color = grid;
-    config.grid.major_x_color = grid;
-    config.grid.show_major_x = false;
-    config.grid.show_minor_x = false;
-    config.grid.show_minor_y = false;
-    for a in [
-        &mut config.left_y,
-        &mut config.right_y,
-        &mut config.bottom_x,
-        &mut config.top_x,
-    ] {
-        a.line_visible = false;
-        a.tick = TickVisibility::None;
-        a.label_style.color = ink;
-        a.label_style.font_size = 21.;
-        a.title_option.text.color = ink;
-        a.title_option.text.font_size = 23.;
-    }
+    theme(bg, ink, grid).apply_chrome(config, SubplotScope::All);
     config.legend.visible = true;
     config.legend.corner = LegendCorner::TopLeft;
-    config.legend.bg_color = bg;
-    config.legend.border_color = bg;
-    config.legend.content.color = ink;
-    config.legend.content.font_size = 22.;
     config.legend.padding = 15.;
 }
 
@@ -113,12 +104,45 @@ pub fn colorbar(config: &mut Config, ramp: ColorMap, min: f64, max: f64, spacing
     config.colorbar = Some(bar);
 }
 
+/// The legend in one row under the x axis title, centred on the plot: the
+/// line breaks between entries become `gap_em` of space, the chart is laid
+/// out, the legend is moved below the title, and the chart is laid out
+/// again. The legend is the host's placement past the plot: the layout
+/// keeps it there and grows the bottom band to hold it (#270).
+pub fn legend_row_under_x_title(chart: &mut Chart, gap_em: f32) {
+    let legend = &mut chart.config_mut().legend;
+    legend.corner = LegendCorner::BottomLeft;
+    legend.offset_x = 0.;
+    legend.offset_y = 0.;
+    for segment in &mut legend.content.segments {
+        if segment.text == '\n' {
+            *segment = RichSegment::fielded(' ', gap_em, None);
+        }
+    }
+    chart.fit_layout();
+    let measure = CpuTextMeasure::for_style(&chart.config().draw_style);
+    let cfg = chart.config();
+    let title = AxisTitleElement { side: Side::Bottom }.bounds(cfg, &measure);
+    let boxed = LegendElement.bounds(cfg, &measure);
+    if let (Ok(plot), Some(title), Some(boxed)) = (cfg.data_area(), title, boxed) {
+        let offset_x = plot.x as f32 + (plot.width as f32 - boxed.width) * 0.5 - boxed.x;
+        let offset_y = title.y + title.height + 10. - boxed.y;
+        let legend = &mut chart.config_mut().legend;
+        legend.offset_x = offset_x.round();
+        legend.offset_y = offset_y.round();
+        // Laid out again around the legend in its place.
+        chart.fit_layout();
+    }
+}
+
+/// Fit the chart's margins to its labels and render it on `bg`.
 pub fn export(
     r: &mut Renderer,
-    chart: &Chart,
+    chart: &mut Chart,
     specs: &[renderer::SeriesConfig],
     bg: Color,
 ) -> Result<RasterImage> {
+    chart.fit_layout();
     Ok(r.export_rgba_blocking(
         renderer::ExportSource::chart(chart, specs),
         renderer::ExportOptions::panel(1.).with_clear(bg),

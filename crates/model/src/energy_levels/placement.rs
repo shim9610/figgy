@@ -5,7 +5,7 @@ use super::*;
 /// Where an energy-level series is placed: the panel's anchor space (a
 /// categorical `bottom_x`, the energy on `left_y`), its categories, the view
 /// the series draws, the colour bar its mapped transitions read and the row
-/// drawn picked. Everything here is a display parameter (rule 1).
+/// drawn picked. Everything here is a display parameter.
 pub struct LevelPlacement<'a> {
     pub space: &'a dyn crate::annotation::AnnotationSpace,
     pub categories: &'a [crate::config::Category],
@@ -45,10 +45,9 @@ pub(super) const LABEL_STOPS: [f32; 17] = [
 /// Where the emit and the pick place a series' parts this draw (#205):
 /// each arrow's ends spread across the levels they meet, each level label
 /// stacked clear of the others in its column, and each transition label at
-/// the first free spot along its arrow. Display parameters only (rule 1),
+/// the first free spot along its arrow. Display parameters only,
 /// computed from the SSOT and the panel on every raster and pick and
-/// dropped after it: the three lists are the per-raster placement scratch
-/// #205 names (rule 3).
+/// dropped after it.
 pub struct LevelLayout {
     arrows: Vec<Option<([f32; 2], [f32; 2])>>,
     /// Per label item (the levels, then the bands): its shift from its own
@@ -1609,7 +1608,7 @@ impl LevelPlacement<'_> {
     /// The drawn part of `records` nearest `cursor`, within `max_distance`
     /// of its edge, and that distance (zero on the part). Walks the SSOT
     /// through the same placement the emit draws with, so the pick is the
-    /// drawn geometry; nothing is registered per row (rule 3). On a tie a
+    /// drawn geometry; nothing is registered per row. On a tie a
     /// part drawn later wins: labels over arrows over strokes.
     pub fn pick(
         &self,

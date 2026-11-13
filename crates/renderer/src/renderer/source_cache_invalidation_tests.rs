@@ -9,13 +9,7 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
         .lock()
         .unwrap();
     let mut failures = Vec::new();
-    for kind in [
-        "dash",
-        "sketch",
-        "constellation",
-        "milkyway points",
-        "histogram",
-    ] {
+    for kind in ["dash", "sketch", "constellation", "milkyway points"] {
         for edit in ["size", "grid", "range", "inverted", "title"] {
             let mut c = baseline();
             let mut s = declaration("s", "x", "a");
@@ -29,20 +23,6 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                     }) = &mut s.render_type
                     {
                         line.line_style = LineStylePreset::Dash;
-                    }
-                }
-                "histogram" => {
-                    s.render_type = DataRenderType::Histogram {
-                        bar: DataBarStyleConfig {
-                            fill_color: Color::new(1.0, 0.0, 0.0, 1.0),
-                            border_color: Color::BLACK,
-                            border_width: 1.0,
-                            baseline: 0.0,
-                            gap_px: 0.0,
-                            width_ratio: 1.0,
-                            orientation: crate::data_config::BarOrientation::Vertical,
-                            bar_style_overrides: None,
-                        },
                     }
                 }
                 "sketch" => c.draw_style = DrawStyle::Sketch(Default::default()),
@@ -388,7 +368,7 @@ fn bounded_source_cache_resizes_physical_target_and_dpr_preserving_arc_boundarie
     };
     let render = |r: &mut Renderer, id, document: &Config, size| {
         let (config, panel, scale) = display_config_for_surface(document, size);
-        let view = r
+        let mut view = r
             .create_chart_view(&Chart::new(config.clone()), panel)
             .unwrap();
         r.request_auto_streaming_chart_with_display_scale(
@@ -421,9 +401,9 @@ fn bounded_source_cache_resizes_physical_target_and_dpr_preserving_arc_boundarie
         }
         assert!(done, "cached replay failed to finish");
         wait_stream_slots(r, 0);
-        r.prepare_registered(&[RegisteredChartDrawItem {
+        r.prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
         assert!(matches!(

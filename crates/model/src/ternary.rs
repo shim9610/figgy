@@ -4,10 +4,9 @@
 //! data area and places each sample of a [`DataRenderType::Ternary`] series
 //! by its three components: `(x·L + y·T + c·R) / (x + y + c)`, the
 //! triangle's corners weighted by the component columns. The host supplies
-//! the three columns unnormalized; normalizing only to place a sample is
-//! appearance (`CLAUDE.md` rule 1), computed in the vertex stage on every
-//! draw and never stored. Hover, selection and the reported values are the
-//! original components.
+//! the three columns unnormalized; the normalization only places a
+//! sample, computed in the vertex stage on every draw and never stored.
+//! Hover, selection and the reported values are the original components.
 //!
 //! The convention is fixed: `x_column` is read on `bottom_x`, whose 100 %
 //! corner is the bottom-left (L); `y_column` on `left_y`, the top (T);
@@ -35,9 +34,9 @@ use crate::text::TextExtents;
 /// The ternary coordinate system of a `Config`. It has no field in this
 /// release: it is the switch that turns the chart into a triangle, and
 /// later options (such as a partial triangle) join it additively.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::ternary_options"))]
 pub struct TernaryOptions {}
 
 /// The fill of the closed regions a ternary series outlines: phase fields,
@@ -52,21 +51,15 @@ pub struct TernaryOptions {}
 /// as a line's area fill is.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::ternary_region_style")
+)]
 pub struct TernaryRegionStyle {
     /// The fill colour; its alpha multiplies `opacity`.
     pub color: Color,
     /// `0..=1`.
     pub opacity: f32,
-}
-
-impl Default for TernaryRegionStyle {
-    fn default() -> Self {
-        Self {
-            color: Color::new(0.3, 0.5, 0.8, 1.0),
-            opacity: 0.35,
-        }
-    }
 }
 
 impl TernaryRegionStyle {
@@ -277,18 +270,27 @@ impl Config {
     /// Where the title of component `k`'s axis sits: centred past the
     /// edge's tick and label band along the outward normal, parallel to the
     /// edge and reading left to right, moved by the title offsets in screen
-    /// space. `None` when the chart is not ternary.
+    /// space. `label_reach` is how far the drawn tick labels reach along the
+    /// normal (the widest label's extent along it, as the chrome measures
+    /// it); the title keeps auto_layout's title gap past that (#270, #272),
+    /// half the label font and at least `LABEL_GAP`, so a wide label on a
+    /// slanted edge does not run into it. `None` when the chart is not
+    /// ternary.
     pub fn ternary_title_placement(
         &self,
         k: usize,
         offset: (f32, f32),
         extents: TextExtents,
+        label_reach: Option<f32>,
     ) -> Option<TitlePlacement> {
         let g = self.ternary_geometry()?;
-        let (labels, _) = edge_band(ternary_axis(self, k));
+        let axis = ternary_axis(self, k);
+        let (labels, _) = edge_band(axis);
+        let gap = crate::chrome::label_title_gap(axis.label_style.font_size);
+        let band = label_reach.map_or(labels, |reach| labels.max(reach + gap));
         let [a, b] = g.edge(k);
         let n = g.outward_normal(k);
-        let reach = labels + extents.height() * 0.5;
+        let reach = band + extents.height() * 0.5;
         let center = (
             (a[0] + b[0]) * 0.5 + n[0] * reach + offset.0,
             (a[1] + b[1]) * 0.5 + n[1] * reach + offset.1,
@@ -383,12 +385,12 @@ mod tests {
     use crate::data_config::{
         DataLineStyleConfig, DataScatterStyleConfig, LineFill, LineInterpolation,
     };
-    use crate::layer::{OverlayLayer, Subplot};
+
     use crate::line::LineStylePreset;
     use crate::{Color, ScatterShape};
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         for axis in [
             &mut config.bottom_x,
             &mut config.left_y,
@@ -520,16 +522,17 @@ mod tests {
                 .contains("same")
         );
         assert!(
-            reject(&|c| c.overlays.push(OverlayLayer::default()))
+            reject(&|c| c.overlays.push(crate::defaults::overlay_layer()))
                 .to_string()
                 .contains("overlay")
         );
         assert!(
-            reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
-                .to_string()
-                .contains("Precise")
+            reject(&|c| c.draw_style =
+                crate::config::DrawStyle::Sketch(crate::defaults::sketch_options()))
+            .to_string()
+            .contains("Precise")
         );
-        let mut linked = Subplot::default();
+        let mut linked = crate::defaults::subplot();
         linked.link_x = Some(crate::layer::CellRef::Parent);
         assert!(
             reject(&|c| c.subplots.push(linked.clone()))
@@ -556,7 +559,7 @@ mod tests {
         ));
         let mut filled_region = ternary(None, None);
         if let DataRenderType::Ternary { region, .. } = &mut filled_region {
-            *region = Some(TernaryRegionStyle::default());
+            *region = Some(crate::defaults::ternary_region_style());
         }
         assert_eq!(
             config.validate_ternary_series(&[series("t", filled_region.clone())]),
@@ -566,7 +569,7 @@ mod tests {
         if let DataRenderType::Ternary { region, .. } = &mut filled_region {
             *region = Some(TernaryRegionStyle {
                 opacity: 2.0,
-                ..TernaryRegionStyle::default()
+                ..crate::defaults::ternary_region_style()
             });
         }
         assert!(
@@ -625,7 +628,7 @@ mod tests {
                 series_id: "t".into(),
                 point_index: 1,
             }],
-            ..DataSelectionsConfig::default()
+            ..crate::defaults::data_selections_config()
         });
         let len = |id: &str| match id {
             "a" => Some(10),
@@ -689,7 +692,88 @@ mod tests {
         assert_eq!(back, s);
         let partial: TernaryRegionStyle = serde_json::from_str("{\"opacity\":0.2}").unwrap();
         assert_eq!(partial.opacity, 0.2);
-        assert_eq!(partial.color, TernaryRegionStyle::default().color);
+        assert_eq!(partial.color, crate::defaults::ternary_region_style().color);
+    }
+
+    /// Each edge's title keeps auto_layout's title gap (#270) past the
+    /// farthest reach of its own tick labels along the edge's normal, so
+    /// the 50 at the middle of a slanted edge no longer touches it (#272).
+    #[test]
+    fn titles_keep_the_title_gap_past_their_labels() {
+        struct HalfEm;
+        impl crate::text::MeasureText for HalfEm {
+            fn measure_plain(&self, text: &str, _family: &str, size: f32) -> TextExtents {
+                TextExtents {
+                    width: text.chars().count() as f32 * size * 0.5,
+                    ascent: size * 0.8,
+                    descent: size * 0.2,
+                }
+            }
+            fn measure_rich(&self, text: &crate::text::RichText) -> TextExtents {
+                let size = text.font_size;
+                TextExtents {
+                    width: text.segments.len() as f32 * size * 0.5,
+                    ascent: size * 0.8,
+                    descent: size * 0.2,
+                }
+            }
+        }
+        let mut config = chart();
+        config.chart_area.0.width = 900;
+        config.chart_area.0.height = 800;
+        for (k, text) in ["Sand (%)", "Silt (%)", "Clay (%)"].into_iter().enumerate() {
+            let axis = match k {
+                0 => &mut config.bottom_x,
+                1 => &mut config.left_y,
+                _ => &mut config.right_y,
+            };
+            axis.major_spacing = 10.0;
+            axis.label_style.font_size = 16.0;
+            axis.label_style.visible = true;
+            axis.label_style.label_visible = true;
+            let title = &mut axis.title_option;
+            title.visible = true;
+            title.text = crate::text::RichText::plain(text, title.text.color, 18.0, "");
+        }
+        let g = config.ternary_geometry().unwrap();
+        for (k, side) in [Side::Bottom, Side::Left, Side::Right]
+            .into_iter()
+            .enumerate()
+        {
+            let n = g.outward_normal(k);
+            let [a, _] = g.edge(k);
+            // Along the normal from the edge.
+            let out = |p: (f32, f32)| (p.0 - a[0]) * n[0] + (p.1 - a[1]) * n[1];
+            let mut reach = f32::NEG_INFINITY;
+            crate::select::emit_element(
+                &config,
+                &crate::layout::Element::AxisLabel(side.clone()),
+                &HalfEm,
+                &mut crate::sink::Parts(&mut |part| {
+                    let r = part.extent();
+                    for corner in [
+                        (r.x, r.y),
+                        (r.x + r.width, r.y),
+                        (r.x, r.y + r.height),
+                        (r.x + r.width, r.y + r.height),
+                    ] {
+                        reach = reach.max(out(corner));
+                    }
+                }),
+            );
+            assert!(reach.is_finite(), "{k}: labels drawn");
+            let m = crate::text::MeasureText::measure_rich(
+                &HalfEm,
+                &ternary_axis(&config, k).title_option.text,
+            );
+            let reach_measured = crate::chrome::ternary_label_reach(&config, k, &HalfEm);
+            let title = config
+                .ternary_title_placement(k, (0.0, 0.0), m, reach_measured)
+                .unwrap();
+            let inner = out(title.rotation_center) - m.height() * 0.5;
+            let gap = crate::chrome::label_title_gap(16.0);
+            assert!(inner - reach >= gap - 1e-3, "{k}: {inner} past {reach}");
+        }
     }
 
     #[test]
@@ -702,7 +786,9 @@ mod tests {
             descent: 3.0,
         };
         for k in 0..3 {
-            let p = config.ternary_title_placement(k, (0.0, 0.0), m).unwrap();
+            let p = config
+                .ternary_title_placement(k, (0.0, 0.0), m, None)
+                .unwrap();
             let [a, b] = g.edge(k);
             let n = g.outward_normal(k);
             let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
@@ -715,14 +801,18 @@ mod tests {
         }
         assert_eq!(
             config
-                .ternary_title_placement(0, (0.0, 0.0), m)
+                .ternary_title_placement(0, (0.0, 0.0), m, None)
                 .unwrap()
                 .rotation_degrees,
             0.0
         );
         // The offset moves the title in screen space.
-        let at = config.ternary_title_placement(1, (0.0, 0.0), m).unwrap();
-        let moved = config.ternary_title_placement(1, (5.0, -7.0), m).unwrap();
+        let at = config
+            .ternary_title_placement(1, (0.0, 0.0), m, None)
+            .unwrap();
+        let moved = config
+            .ternary_title_placement(1, (5.0, -7.0), m, None)
+            .unwrap();
         assert_eq!(
             moved.rotation_center,
             (at.rotation_center.0 + 5.0, at.rotation_center.1 - 7.0)

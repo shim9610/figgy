@@ -122,9 +122,9 @@ fn series() -> Vec<SeriesConfig> {
     ]
 }
 
-fn frame_with_view(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
+fn frame_with_view(r: &mut Renderer, id: ChartId, view: &mut ChartView) -> Vec<u8> {
     let prepared = r
-        .prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
+        .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
         .unwrap();
     paint_frame_pixels(r, &prepared, 1)
 }
@@ -136,10 +136,10 @@ fn fresh_frame(config: &Config) -> Vec<u8> {
 fn fresh_frame_with(config: &Config, series: Vec<SeriesConfig>) -> Vec<u8> {
     let mut r = renderer();
     let id = r.register_chart(config.clone(), series).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
-    frame_with_view(&mut r, id, &view)
+    frame_with_view(&mut r, id, &mut view)
 }
 
 /// Refresh every panel of `id`, selecting the element `selected` names on
@@ -206,7 +206,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
         view.layer_raster_generations() == vec![1, 1, 1, 1],
         format!("initial generations {:?}", view.layer_raster_generations()),
     );
-    let first = frame_with_view(&mut r, id, &view);
+    let first = frame_with_view(&mut r, id, &mut view);
     check(
         first == fresh_frame(&config),
         "first frame differs from a fresh render".into(),
@@ -282,7 +282,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
             ),
         );
         let stored = r.chart_config(id).unwrap().clone();
-        let actual = frame_with_view(&mut r, id, &view);
+        let actual = frame_with_view(&mut r, id, &mut view);
         check(
             actual == fresh_frame(&stored),
             format!("{name}: cached view + refreshed panels differ from a fresh render"),
@@ -316,7 +316,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
         view.layer_raster_generations() == vec![3, 4, 3, 4],
         format!("subplot 1 selection: {:?}", view.layer_raster_generations()),
     );
-    let boxed = frame_with_view(&mut r, id, &view);
+    let boxed = frame_with_view(&mut r, id, &mut view);
     check(
         differing(&boxed, &previous)
             .iter()
@@ -336,7 +336,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
     );
     refresh(&mut r, id, &mut view, None);
     check(
-        frame_with_view(&mut r, id, &view) == previous,
+        frame_with_view(&mut r, id, &mut view) == previous,
         "clearing the selection did not restore the frame".into(),
     );
     drop(_fonts);
@@ -364,7 +364,7 @@ fn a_linked_view_state_edit_moves_the_group_in_one_call() {
     r.set_chart_view_state(id, state.clone()).unwrap();
     let edited = r.chart_config(id).unwrap().clone();
     refresh(&mut r, id, &mut view, None);
-    let after = frame_with_view(&mut r, id, &view);
+    let after = frame_with_view(&mut r, id, &mut view);
     let fresh = fresh_frame(&edited);
 
     let mut short = r.chart_view_state(id).unwrap();
@@ -1063,7 +1063,7 @@ fn rendered_panels_match_the_panel_layers_through_every_edit() {
         let panels = expand_for_render(chart.config()).unwrap();
         assert_eq!(panels.len(), 1 + overlays + members);
         assert_eq!(view.overlay_count(), panels.len() - 1);
-        let pixels = frame_with_view(&mut r, id, &view);
+        let pixels = frame_with_view(&mut r, id, &mut view);
         assert!(pixels.chunks_exact(4).any(|p| p[3] != 0));
         let png = r
             .export_png(

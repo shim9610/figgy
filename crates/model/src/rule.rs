@@ -262,6 +262,18 @@ pub enum RuleKind {
     LogAxisBounds,
     /// probability axis bounds must lie strictly between 0 and 1
     ProbabilityAxisBounds,
+    /// an axis unit's scale must be finite and non-zero
+    AxisUnitScale,
+    /// an axis unit's offset must be finite
+    AxisUnitOffset,
+    /// a logarithmic axis takes a unit with offset 0 and a positive scale
+    AxisUnitLog,
+    /// a probability axis cannot have a unit
+    AxisUnitProbability,
+    /// an axis with timestamp labels cannot have a unit
+    AxisUnitTimestamp,
+    /// a categorical axis cannot have a unit
+    AxisUnitCategorical,
     /// series\_id must not be empty
     SeriesIdEmpty,
     /// series\_id must be unique within a chart
@@ -430,6 +442,30 @@ pub enum RuleKind {
     StreamlineColumns,
     /// a streamline colour map names its column
     StreamlineColorMapColumn,
+    /// a monotonic series names its group
+    MonotonicGroupEmpty,
+    /// a monotonic series is a polyline: the line interpolation must be Linear
+    MonotonicInterpolation,
+    /// a monotonic series has no fill
+    MonotonicFill,
+    /// a monotonic series names two distinct envelope columns in x\\_column and y\\_column
+    MonotonicColumns,
+    /// a monotonic series' envelope columns are its own: no other series of the chart reads them
+    MonotonicColumnsShared,
+    /// monotonic series are drawn on rectangular 2D charts, not ternary, parallel or 3D ones
+    MonotonicChartKind,
+    /// a monotonic series needs a linear, numeric, unbroken x axis
+    MonotonicXAxis,
+    /// monotonic series are not drawn on polar axes
+    PolarMonotonic,
+    /// monotonic series are fed by their own calls; streamed displays do not draw them
+    StreamedMonotonic,
+    /// a monotonic line series lives only in a chart registered as a monotonic chart
+    MonotonicGeneralChart,
+    /// a monotonic chart's x range, x scale, breaks, direction and plot area change only through its monotonic calls
+    MonotonicMappingEdit,
+    /// a monotonic series' x range must be finite and increasing
+    MonotonicRange,
     /// vector width\_px, head\_length\_px, head\_width\_px and min\_length\_px must be finite and non-negative
     VectorPixels,
     /// vector scale must be finite and non-zero
@@ -838,7 +874,7 @@ pub enum RuleKind {
     ColorbarProbabilityAxis,
     /// category groups are drawn on a categorical top\_x or bottom\_x
     CategoryGroupsAxis,
-    /// breaks go on bottom\_x, left\_y or an overlay's y\_axis
+    /// breaks go on bottom\_x, left\_y or an overlay's x\_axis or y\_axis
     BreaksAxis,
     /// a broken axis needs a rectangular chart
     BreaksChart,
@@ -944,6 +980,8 @@ pub enum RuleKind {
     TriangleIndicesOrder,
     /// range bar series require GPU-resident columns; streamed sources are not supported
     StreamedRangeBars,
+    /// histogram series require GPU-resident columns; streamed sources are not supported
+    StreamedHistogram,
     /// streamline series require GPU-resident columns; streamed sources are not supported
     StreamedStreamlines,
     /// hexagonal grids require GPU-resident columns; streamed sources are not supported
@@ -1001,6 +1039,13 @@ pub enum RuleKind {
     },
     /// A PercentStacked bar group's value column has a negative value.
     PercentStackedNegative { column: String, series_id: String },
+    /// A monotonic series names a channel its group's source does not have
+    /// (#271).
+    MonotonicChannel { channel: usize, channels: usize },
+    /// A monotonic series' envelope column is already a pool column the
+    /// series does not own: a host column, or another series' or chart's
+    /// envelope (#271).
+    MonotonicColumnTaken { column: String },
     /// A range bar column does not hold one value per position.
     RangeBarColumnLength {
         column: String,
@@ -1266,6 +1311,12 @@ impl RuleKind {
             Self::AxisBoundsOrder => "AxisBoundsOrder",
             Self::LogAxisBounds => "LogAxisBounds",
             Self::ProbabilityAxisBounds => "ProbabilityAxisBounds",
+            Self::AxisUnitScale => "AxisUnitScale",
+            Self::AxisUnitOffset => "AxisUnitOffset",
+            Self::AxisUnitLog => "AxisUnitLog",
+            Self::AxisUnitProbability => "AxisUnitProbability",
+            Self::AxisUnitTimestamp => "AxisUnitTimestamp",
+            Self::AxisUnitCategorical => "AxisUnitCategorical",
             Self::SeriesIdEmpty => "SeriesIdEmpty",
             Self::SeriesIdDuplicate => "SeriesIdDuplicate",
             Self::PolarErrorBars => "PolarErrorBars",
@@ -1350,6 +1401,18 @@ impl RuleKind {
             Self::StreamlineFill => "StreamlineFill",
             Self::StreamlineColumns => "StreamlineColumns",
             Self::StreamlineColorMapColumn => "StreamlineColorMapColumn",
+            Self::MonotonicGroupEmpty => "MonotonicGroupEmpty",
+            Self::MonotonicInterpolation => "MonotonicInterpolation",
+            Self::MonotonicFill => "MonotonicFill",
+            Self::MonotonicColumns => "MonotonicColumns",
+            Self::MonotonicColumnsShared => "MonotonicColumnsShared",
+            Self::MonotonicChartKind => "MonotonicChartKind",
+            Self::MonotonicXAxis => "MonotonicXAxis",
+            Self::PolarMonotonic => "PolarMonotonic",
+            Self::StreamedMonotonic => "StreamedMonotonic",
+            Self::MonotonicGeneralChart => "MonotonicGeneralChart",
+            Self::MonotonicMappingEdit => "MonotonicMappingEdit",
+            Self::MonotonicRange => "MonotonicRange",
             Self::VectorPixels => "VectorPixels",
             Self::VectorScale => "VectorScale",
             Self::PointSizeMapDomain => "PointSizeMapDomain",
@@ -1607,6 +1670,7 @@ impl RuleKind {
             Self::TrianglesEmpty => "TrianglesEmpty",
             Self::TriangleIndicesOrder => "TriangleIndicesOrder",
             Self::StreamedRangeBars => "StreamedRangeBars",
+            Self::StreamedHistogram => "StreamedHistogram",
             Self::StreamedStreamlines => "StreamedStreamlines",
             Self::StreamedHexagonal => "StreamedHexagonal",
             Self::StreamedTernary => "StreamedTernary",
@@ -1630,6 +1694,8 @@ impl RuleKind {
             Self::RadarValueCount { .. } => "RadarValueCount",
             Self::CategoryBarColumnLength { .. } => "CategoryBarColumnLength",
             Self::PercentStackedNegative { .. } => "PercentStackedNegative",
+            Self::MonotonicChannel { .. } => "MonotonicChannel",
+            Self::MonotonicColumnTaken { .. } => "MonotonicColumnTaken",
             Self::RangeBarColumnLength { .. } => "RangeBarColumnLength",
             Self::PointMapColumnShort { .. } => "PointMapColumnShort",
             Self::ScatterStyleIndexShort { .. } => "ScatterStyleIndexShort",
@@ -1858,6 +1924,14 @@ impl std::fmt::Display for RuleKind {
             Self::ProbabilityAxisBounds => {
                 "probability axis bounds must lie strictly between 0 and 1"
             }
+            Self::AxisUnitScale => "an axis unit's scale must be finite and non-zero",
+            Self::AxisUnitOffset => "an axis unit's offset must be finite",
+            Self::AxisUnitLog => {
+                "a logarithmic axis takes a unit with offset 0 and a positive scale"
+            }
+            Self::AxisUnitProbability => "a probability axis cannot have a unit",
+            Self::AxisUnitTimestamp => "an axis with timestamp labels cannot have a unit",
+            Self::AxisUnitCategorical => "a categorical axis cannot have a unit",
             Self::SeriesIdEmpty => "series_id must not be empty",
             Self::SeriesIdDuplicate => "series_id must be unique within a chart",
             Self::PolarErrorBars => "error bars are not drawn on polar axes",
@@ -1980,6 +2054,34 @@ impl std::fmt::Display for RuleKind {
             Self::StreamlineFill => "streamlines have no fill",
             Self::StreamlineColumns => "a streamline series names its x_column and y_column",
             Self::StreamlineColorMapColumn => "a streamline colour map names its column",
+            Self::MonotonicGroupEmpty => "a monotonic series names its group",
+            Self::MonotonicInterpolation => {
+                "a monotonic series is a polyline: the line interpolation must be Linear"
+            }
+            Self::MonotonicFill => "a monotonic series has no fill",
+            Self::MonotonicColumns => {
+                "a monotonic series names two distinct envelope columns in x_column and y_column"
+            }
+            Self::MonotonicColumnsShared => {
+                "a monotonic series' envelope columns are its own: no other series of the chart reads them"
+            }
+            Self::MonotonicChartKind => {
+                "monotonic series are drawn on rectangular 2D charts, not ternary, parallel or 3D ones"
+            }
+            Self::MonotonicXAxis => "a monotonic series needs a linear, numeric, unbroken x axis",
+            Self::PolarMonotonic => "monotonic series are not drawn on polar axes",
+            Self::StreamedMonotonic => {
+                "monotonic series are fed by their own calls; streamed displays do not draw them"
+            }
+            Self::MonotonicGeneralChart => {
+                "a monotonic line series lives only in a chart registered as a monotonic \
+                 chart"
+            }
+            Self::MonotonicMappingEdit => {
+                "a monotonic chart's x range, x scale, breaks, direction and plot area change \
+                 only through its monotonic calls"
+            }
+            Self::MonotonicRange => "a monotonic series' x range must be finite and increasing",
             Self::VectorPixels => {
                 "vector width_px, head_length_px, head_width_px and min_length_px must be finite and non-negative"
             }
@@ -2380,7 +2482,7 @@ impl std::fmt::Display for RuleKind {
             Self::CategoryGroupsAxis => {
                 "category groups are drawn on a categorical top_x or bottom_x"
             }
-            Self::BreaksAxis => "breaks go on bottom_x, left_y or an overlay's y_axis",
+            Self::BreaksAxis => "breaks go on bottom_x, left_y or an overlay's x_axis or y_axis",
             Self::BreaksChart => "a broken axis needs a rectangular chart",
             Self::LayoutDataAreaEmpty => {
                 "margins and visual dimensions must produce a non-empty data area"
@@ -2468,6 +2570,9 @@ impl std::fmt::Display for RuleKind {
             }
             Self::StreamedRangeBars => {
                 "range bar series require GPU-resident columns; streamed sources are not supported"
+            }
+            Self::StreamedHistogram => {
+                "histogram series require GPU-resident columns; streamed sources are not supported"
             }
             Self::StreamedStreamlines => {
                 "streamline series require GPU-resident columns; streamed sources are not supported"
@@ -2558,6 +2663,14 @@ impl RuleKind {
             } => write!(
                 f,
                 "category bar column {column:?} has {len} values for {categories} categories; it needs one per category"
+            ),
+            Self::MonotonicChannel { channel, channels } => write!(
+                f,
+                "a monotonic series draws channel {channel} of a source with {channels} channels"
+            ),
+            Self::MonotonicColumnTaken { column } => write!(
+                f,
+                "monotonic envelope column {column:?} is already a column the series does not own"
             ),
             Self::PercentStackedNegative { column, series_id } => write!(
                 f,
@@ -3223,6 +3336,30 @@ mod tests {
                 RuleKind::ProbabilityAxisBounds,
                 "probability axis bounds must lie strictly between 0 and 1",
             ),
+            (
+                RuleKind::AxisUnitScale,
+                "an axis unit's scale must be finite and non-zero",
+            ),
+            (
+                RuleKind::AxisUnitOffset,
+                "an axis unit's offset must be finite",
+            ),
+            (
+                RuleKind::AxisUnitLog,
+                "a logarithmic axis takes a unit with offset 0 and a positive scale",
+            ),
+            (
+                RuleKind::AxisUnitProbability,
+                "a probability axis cannot have a unit",
+            ),
+            (
+                RuleKind::AxisUnitTimestamp,
+                "an axis with timestamp labels cannot have a unit",
+            ),
+            (
+                RuleKind::AxisUnitCategorical,
+                "a categorical axis cannot have a unit",
+            ),
             (RuleKind::SeriesIdEmpty, "series_id must not be empty"),
             (
                 RuleKind::SeriesIdDuplicate,
@@ -3537,6 +3674,51 @@ mod tests {
             (
                 RuleKind::StreamlineColorMapColumn,
                 "a streamline colour map names its column",
+            ),
+            (
+                RuleKind::MonotonicGroupEmpty,
+                "a monotonic series names its group",
+            ),
+            (
+                RuleKind::MonotonicInterpolation,
+                "a monotonic series is a polyline: the line interpolation must be Linear",
+            ),
+            (RuleKind::MonotonicFill, "a monotonic series has no fill"),
+            (
+                RuleKind::MonotonicColumns,
+                "a monotonic series names two distinct envelope columns in x_column and y_column",
+            ),
+            (
+                RuleKind::MonotonicColumnsShared,
+                "a monotonic series' envelope columns are its own: no other series of the chart reads them",
+            ),
+            (
+                RuleKind::MonotonicChartKind,
+                "monotonic series are drawn on rectangular 2D charts, not ternary, parallel or 3D ones",
+            ),
+            (
+                RuleKind::MonotonicXAxis,
+                "a monotonic series needs a linear, numeric, unbroken x axis",
+            ),
+            (
+                RuleKind::PolarMonotonic,
+                "monotonic series are not drawn on polar axes",
+            ),
+            (
+                RuleKind::StreamedMonotonic,
+                "monotonic series are fed by their own calls; streamed displays do not draw them",
+            ),
+            (
+                RuleKind::MonotonicGeneralChart,
+                "a monotonic line series lives only in a chart registered as a monotonic chart",
+            ),
+            (
+                RuleKind::MonotonicMappingEdit,
+                "a monotonic chart's x range, x scale, breaks, direction and plot area change only through its monotonic calls",
+            ),
+            (
+                RuleKind::MonotonicRange,
+                "a monotonic series' x range must be finite and increasing",
             ),
             (
                 RuleKind::VectorPixels,
@@ -4308,7 +4490,7 @@ mod tests {
             ),
             (
                 RuleKind::BreaksAxis,
-                "breaks go on bottom_x, left_y or an overlay's y_axis",
+                "breaks go on bottom_x, left_y or an overlay's x_axis or y_axis",
             ),
             (
                 RuleKind::BreaksChart,
@@ -4502,6 +4684,10 @@ mod tests {
             (
                 RuleKind::StreamedRangeBars,
                 "range bar series require GPU-resident columns; streamed sources are not supported",
+            ),
+            (
+                RuleKind::StreamedHistogram,
+                "histogram series require GPU-resident columns; streamed sources are not supported",
             ),
             (
                 RuleKind::StreamedStreamlines,

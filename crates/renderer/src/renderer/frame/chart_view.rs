@@ -63,6 +63,54 @@ pub struct ChartView {
     pub(in crate::renderer) raster_key: Option<PanelRasterKey>,
     /// Counts the rasters uploaded into this panel's textures.
     pub(in crate::renderer) raster_generation: u64,
+    /// What the base view's raster was last drawn from by
+    /// [`Renderer::prepare`] or [`Renderer::prepare_registered`] (#265):
+    /// they redraw it when this no longer matches. A view made or refreshed
+    /// from a held chart as `prepare` would draw it records that chart;
+    /// otherwise it is `None` and the next prepare redraws once. A redraw
+    /// whose raster keys all match uploads nothing.
+    pub(in crate::renderer) raster_source: Option<RasterSource>,
+    /// What the annotation layer was last rasterized from: a refresh that
+    /// arrives with the same key uploads nothing, as [`Self::raster_key`]
+    /// does for the panel rasters (#265).
+    pub(in crate::renderer) annotation_key: Option<AnnotationRasterKey>,
+}
+
+/// The chart content and font a view's raster was drawn from, compared by
+/// prepare before it draws (#265).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::renderer) struct RasterSource {
+    pub(in crate::renderer) chart: RasterChart,
+    /// [`crate::text_render::font_generation`] when it was drawn.
+    pub(in crate::renderer) font_generation: u64,
+    /// The panel rect and scale it was drawn at: a registered chart's
+    /// display placement can move without a document change.
+    pub(in crate::renderer) panel_rect: Rect,
+    pub(in crate::renderer) scale: f32,
+}
+
+/// Which chart content a raster was drawn from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::renderer) enum RasterChart {
+    /// A host-held [`Chart`] at its raster stamp.
+    Held { stamp: u64 },
+    /// A registered chart at its raster and annotation revisions.
+    Registered {
+        chart: ChartId,
+        raster: RenderRevision,
+        annotation: RenderRevision,
+    },
+}
+
+/// Cache key of the annotation layer's rasters: the whole document (the
+/// anchor space follows the axes and the data area), the selected item, the
+/// font and the panel rect the raster is sized by.
+#[derive(Clone, PartialEq)]
+pub(in crate::renderer) struct AnnotationRasterKey {
+    pub(in crate::renderer) config: Config,
+    pub(in crate::renderer) selected: Option<usize>,
+    pub(in crate::renderer) font_generation: u64,
+    pub(in crate::renderer) panel_rect: Rect,
 }
 
 /// Cache key of one panel's grid and decoration rasters.
@@ -88,7 +136,7 @@ impl PanelRasterKey {
         scale: f32,
     ) -> Self {
         let mut config = config.clone();
-        config.annotations = crate::AnnotationLayer::default();
+        config.annotations = crate::AnnotationLayer::empty();
         Self {
             config,
             selection: selection.to_vec(),

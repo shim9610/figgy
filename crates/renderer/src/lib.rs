@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![doc = "\n## First chart: render a PNG\n\nThis is the complete native `line` example. With the `renderer` and `wgpu` dependencies above, copy it into `src/main.rs` and run `cargo run`. Rendering needs a working adapter; building the documentation does not.\n\n```rust,no_run\n"]
+#![doc = "\n## First chart: render a PNG\n\nThis is the complete native `line` example. With the `renderer` dependency above, copy it into `src/main.rs` and run `cargo run`. Rendering needs a working adapter; building the documentation does not.\n\n```rust,no_run\n"]
 #![doc = include_str!("../examples/line.rs")]
 #![doc = "\n```\n\nFor embedding, reuse your host's device/queue instead of the example's adapter setup. For editing, picking and exporting the current state, follow the workflow below.\n"]
 #![doc = include_str!("../API.md")]
@@ -90,12 +90,26 @@ pub use ::model::bounded_sources::{BoxColumn, BoxField};
 /// for its own tests.
 #[doc(hidden)]
 pub use ::model::chrome;
+/// The model's default builders, behind the `helpers` feature (#266).
+#[cfg(feature = "helpers")]
+pub use ::model::default;
+pub use ::model::monotonic;
+pub use ::model::monotonic::{
+    MappingChange, MonotonicAppend, MonotonicError, MonotonicInterleaved, MonotonicSlices,
+    MonotonicSource, MonotonicSourceRef, MonotonicUpdate,
+};
+/// Chart themes, behind the `helpers` feature (#265).
+#[cfg(feature = "helpers")]
+pub use ::model::theme;
 pub use ::model::{ConfigError, Coordinates, RuleKind, SeriesUpload, UploadValues};
 pub use ::model::{
-    bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config,
-    default, drag, format, layout, legend, line, preset, resize, select, sink, text, tick,
-    validate,
+    bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config, drag,
+    format, layout, legend, line, preset, resize, select, sink, text, tick, validate,
 };
+#[cfg(feature = "helpers")]
+pub mod helpers;
+#[cfg(feature = "helpers")]
+pub use helpers::{ExportFormat, HeadlessOptions, SaveError};
 
 // Public API re-exports.
 pub use annotation::{AnnotationMap, BoundedAnnotationFrame, LayerHit};
@@ -111,8 +125,8 @@ pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterStyleConfig, ErrorBars, ErrorRef, FieldSeries, LineFill, LineInterpolation,
-    MAX_CONTOUR_LEVELS, RadarRef, RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef,
-    StreamlineArrows, XySeries,
+    MAX_CONTOUR_LEVELS, MonotonicLineSeries, RadarRef, RadarSeriesLabels, ScatterShape,
+    SeriesConfig, SeriesRef, StreamlineArrows, XySeries,
 };
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
@@ -143,20 +157,20 @@ pub use render_warning::{
 pub use renderer::{
     AxisViewState, ChartColumnsReplacement, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle,
     ChartView, ChartViewLayerStamps, ChartViewState, ExportOptions, ExportScope, ExportSource,
-    FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature,
-    PreparedFrame, PreparedPipelines, RasterImage, RegisteredChartDrawItem, RenderRevision,
-    Renderer, RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
-    StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer, clamp_export_scale,
-    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png, fit_display_panel,
-    place_document,
+    FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart, MonotonicChartDrawItem,
+    MonotonicChartId, PipelinePreparation, PreparationFeature, PreparedFrame, PreparedPipelines,
+    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
+    RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
+    StreamingSelectionTicket, WindowedRenderer, clamp_export_scale, display_config_for_surface,
+    dpi_to_scale, draw_style_supports, encode_png, fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox, SelectionGeometry, SelectionOutline,
-    SubplotElement,
+    OverlayLegendElement, OverlayXAxisElement, OverlayXAxisLabelElement, OverlayXAxisTitleElement,
+    Selectable, SelectionBox, SelectionGeometry, SelectionOutline, SubplotElement,
 };
 pub use sink::{DrawnPart, PlacedText, Sink, Slot};
 pub use streaming_source::{

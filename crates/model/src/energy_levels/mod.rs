@@ -16,7 +16,7 @@
 //! - [`Transition`]: one row of a lines file the host chose to draw, as an
 //!   arrow between its two levels. Only listed transitions are drawn.
 //!
-//! The host computes every value the reader reads as data (rule 1): the
+//! The host computes every value the reader reads as data: the
 //! g-weighted centroid of a fine-structure multiplet is a level row of role
 //! [`LevelRole::Centroid`], written by the host; the energy unit is whatever
 //! the host stored, named by the axis title. The renderer computes only
@@ -24,9 +24,9 @@
 //! time, never stored.
 //!
 //! The series is drawn through the CPU sink, as annotations and chrome are,
-//! and the GPU only composites the raster (approved on #203). The SVG and
-//! PDF export write the same emit as vector parts (#234). It has no count
-//! limit: every list is drawn to its end (rule 10).
+//! and the GPU only composites the raster. The SVG and PDF export write the
+//! same emit as vector parts (#234). It has no count limit: every list is
+//! drawn to its end.
 //!
 //! [`DataRenderType::EnergyLevels`]: crate::data_config::DataRenderType::EnergyLevels
 
@@ -47,7 +47,7 @@ pub const MAX_ENERGY_LEVEL_FIELD_CHARS: usize = MAX_CATEGORY_BAR_LABEL_CHARS;
 
 /// An energy-level diagram: its levels, ionization limits and transitions,
 /// and their look. See the [module documentation](self).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnergyLevelSeries {
     /// The levels, in the host's order (a levels file's row order). A
@@ -79,13 +79,19 @@ pub struct EnergyLevelSeries {
     /// The look of the strokes, arrows and labels.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "EnergyLevelStyle::is_default")
+        serde(
+            default = "crate::defaults::energy_level_style",
+            skip_serializing_if = "EnergyLevelStyle::is_default"
+        )
     )]
     pub style: EnergyLevelStyle,
     /// Which levels are drawn: the main view or a fine-structure view.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "LevelView::is_main")
+        serde(
+            default = "crate::defaults::level_view",
+            skip_serializing_if = "LevelView::is_main"
+        )
     )]
     pub show: LevelView,
     /// Draw the levels, limits and transitions of another energy-level
@@ -163,7 +169,10 @@ pub struct EnergyLevel {
     /// What the row is in a fine-structure multiplet.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "LevelRole::is_level")
+        serde(
+            default = "crate::defaults::level_role",
+            skip_serializing_if = "LevelRole::is_level"
+        )
     )]
     pub role: LevelRole,
     /// The drawn label, beside the stroke; none draws no label. The host
@@ -182,12 +191,11 @@ pub struct EnergyLevel {
 }
 
 /// What a level row is in a fine-structure multiplet.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LevelRole {
     /// A level drawn in the main view: a single J, or an unresolved
     /// multiplet as NIST lists it.
-    #[default]
     Level,
     /// The host's centroid of a resolved multiplet, drawn in the main view
     /// in place of its components.
@@ -214,12 +222,11 @@ impl LevelRole {
 }
 
 /// Which levels a series draws.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LevelView {
     /// Levels and multiplet centroids; fine-structure components are not
     /// drawn.
-    #[default]
     Main,
     /// Levels and fine-structure components, the resolved view an inset
     /// magnifies; centroids are not drawn. The inset's own categories and
@@ -316,7 +323,7 @@ pub struct Transition {
     /// column the host chose (`obs_wl`, `ritz_wl`, in air or vacuum). The
     /// renderer formats it for a drawn label
     /// ([`EnergyLevelStyle::wavelength_labels`]) and never converts or
-    /// chooses it (rule 1).
+    /// chooses it.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -372,23 +379,41 @@ pub struct Transition {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnergyLevelStyle {
     /// The level strokes.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::level_stroke_style")
+    )]
     pub level: LevelStrokeStyle,
     /// The ionization limit lines.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::annotation_line_style")
+    )]
     pub limit: AnnotationLineStyle,
     /// The transition arrows.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::transition_arrow_style")
+    )]
     pub transition: TransitionArrowStyle,
     /// Where a level's label sits against its stroke.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::level_label_side")
+    )]
     pub label_side: LevelLabelSide,
     /// How much a picked stroke or arrow widens: its width times this, in
     /// `1..=4`.
-    #[cfg_attr(feature = "serde", serde(default = "default_picked_scale"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::energy_level_picked_width_scale")
+    )]
     pub picked_width_scale: f32,
     /// The level bands (#205).
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::level_band_style")
+    )]
     pub band: LevelBandStyle,
     /// Labels formatted from each transition's `wavelength` (#258): set,
     /// every transition with a wavelength and no host `label` gets one.
@@ -402,14 +427,17 @@ pub struct EnergyLevelStyle {
 
 /// How a transition's `wavelength` is written as its drawn label (#258).
 /// The renderer formats the host's value for display and nothing else: it
-/// converts no unit and chooses between no values (rule 1).
+/// converts no unit and chooses between no values.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WavelengthLabels {
     /// The number's form: fixed decimals (at most
     /// [`MAX_WAVELENGTH_DECIMALS`]) or the automatic form, and whether
     /// trailing zeros are trimmed.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::plain_number_format")
+    )]
     pub format: crate::format::PlainNumberFormat,
     /// The unit written after each number, as the host writes it: `nm`,
     /// `Å`, `nm (air)`. The labels own it; the renderer converts nothing.
@@ -424,16 +452,6 @@ pub struct WavelengthLabels {
     /// text, the style a host label carries. Its segments are not drawn;
     /// the label's characters are the formatted wavelength.
     pub text: RichText,
-}
-
-impl Default for WavelengthLabels {
-    fn default() -> Self {
-        Self {
-            format: crate::format::PlainNumberFormat::AUTO,
-            unit: None,
-            text: RichText::plain("", Color::from_rgb8(40, 40, 40), 11.0, ""),
-        }
-    }
 }
 
 /// The most fixed decimals a wavelength label prints: past it an `f64`
@@ -482,33 +500,11 @@ impl WavelengthLabels {
     }
 }
 
-impl Default for EnergyLevelStyle {
-    fn default() -> Self {
-        Self {
-            level: LevelStrokeStyle::default(),
-            limit: AnnotationLineStyle {
-                color: Color::from_rgb8(60, 60, 140),
-                width: 1.5,
-                style: crate::line::LineStylePreset::Dash,
-            },
-            transition: TransitionArrowStyle::default(),
-            label_side: LevelLabelSide::default(),
-            picked_width_scale: default_picked_scale(),
-            band: LevelBandStyle::default(),
-            wavelength_labels: None,
-        }
-    }
-}
-
 impl EnergyLevelStyle {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == crate::defaults::energy_level_style()
     }
-}
-
-fn default_picked_scale() -> f32 {
-    2.0
 }
 
 /// The look of the level strokes.
@@ -522,16 +518,6 @@ pub struct LevelStrokeStyle {
     pub width: f32,
     /// The share of the column's slot a stroke spans, `0.05..=1`.
     pub slot_fraction: f32,
-}
-
-impl Default for LevelStrokeStyle {
-    fn default() -> Self {
-        Self {
-            color: Color::from_rgb8(40, 40, 40),
-            width: 2.0,
-            slot_fraction: 0.7,
-        }
-    }
 }
 
 /// The look of the transition arrows.
@@ -554,25 +540,11 @@ pub struct TransitionArrowStyle {
     pub color_by_value: bool,
 }
 
-impl Default for TransitionArrowStyle {
-    fn default() -> Self {
-        Self {
-            color: Color::from_rgb8(200, 120, 0),
-            width: 1.5,
-            head_length: 9.0,
-            head_width: 7.0,
-            direction: TransitionDirection::Emission,
-            color_by_value: false,
-        }
-    }
-}
-
 /// Which end of a transition arrow carries the head.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TransitionDirection {
     /// From the upper level down to the lower one.
-    #[default]
     Emission,
     /// From the lower level up to the upper one.
     Absorption,
@@ -581,11 +553,10 @@ pub enum TransitionDirection {
 }
 
 /// Where a level's label sits against its stroke.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LevelLabelSide {
     /// Past the stroke's right end, centred on it.
-    #[default]
     Right,
     /// Before the stroke's left end, centred on it.
     Left,
@@ -636,21 +607,15 @@ pub struct LevelBand {
 /// The look of the level bands (#205).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::level_band_style")
+)]
 pub struct LevelBandStyle {
     /// The band's fill.
     pub fill: Color,
     /// The width of the levels inside a band, logical pixels, in `0..=16`.
     pub inner_width: f32,
-}
-
-impl Default for LevelBandStyle {
-    fn default() -> Self {
-        Self {
-            fill: Color::from_rgba8(34, 52, 88, 40),
-            inner_width: 0.8,
-        }
-    }
 }
 
 #[cfg(feature = "serde")]
@@ -716,7 +681,7 @@ impl EnergyLevelSeries {
     /// component names a centroid row; text fields are one line of at most
     /// [`MAX_ENERGY_LEVEL_FIELD_CHARS`] characters and labels are valid rich
     /// text; offsets and styles are in range. A series with a `source`
-    /// holds no records. No list has a count limit (rule 10).
+    /// holds no records. No list has a count limit.
     pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.style.validate()?;
         if self.source.is_some() {
@@ -775,7 +740,7 @@ impl EnergyLevelSeries {
     }
 
     /// The level with id `id`. A linear scan over the SSOT: no index is
-    /// kept (rule 3).
+    /// kept.
     pub fn level(&self, id: &str) -> Option<&EnergyLevel> {
         self.levels.iter().find(|level| level.id == id)
     }
@@ -827,7 +792,7 @@ impl EnergyLevelSeries {
 
     /// The lowest and highest energy the series draws in `view`: its drawn
     /// levels and its limits. `None` when it draws none. A display
-    /// parameter for an axis fit (rule 1), read from the SSOT.
+    /// parameter for an axis fit, read from the SSOT.
     pub fn energy_extent(&self, view: LevelView) -> Option<(f64, f64)> {
         let drawn = self
             .levels
@@ -845,13 +810,11 @@ impl EnergyLevelSeries {
     }
 
     /// The continuum annotations of the series' ionization limits, for the
-    /// document's annotation layer (the maintainer's choice on #203: the
-    /// continuum is drawn by annotations; the limit lines and their labels
-    /// are the series' own): per limit, a [`AnnotationKind::Span`] on Y from
-    /// the limit up to `top`, filled with `fill`. Its id is
-    /// `{series_id}/limit/{limit id}/continuum`, so
-    /// [`Self::write_continuum`] replaces it on a later call. The list is
-    /// the helper's output (rule 3).
+    /// document's annotation layer (the continuum is drawn by annotations;
+    /// the limit lines and their labels are the series' own): per limit, a
+    /// [`AnnotationKind::Span`] on Y from the limit up to `top`, filled with
+    /// `fill`. Its id is `{series_id}/limit/{limit id}/continuum`, so
+    /// [`Self::write_continuum`] replaces it on a later call.
     pub fn continuum_annotations(&self, series_id: &str, top: f64, fill: Color) -> Vec<Annotation> {
         self.limits
             .iter()
@@ -1370,7 +1333,7 @@ impl crate::config::Config {
     /// [`crate::layer::Subplot::marker`] (#205), which is placed on every
     /// draw and follows the inset. Ids are `inset/{subplot}/window`,
     /// `…/link0` and `…/link1`. `None` for a subplot that is not an inset
-    /// of this chart. The list is the helper's output (rule 3).
+    /// of this chart.
     pub fn inset_marker(
         &self,
         subplot: usize,
@@ -1669,7 +1632,7 @@ mod tests {
                 transition("j2", "2s3S", "2p3P2"),
                 transition("j1", "2s3S", "2p3P1"),
             ],
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         }
     }
 
@@ -1686,7 +1649,7 @@ mod tests {
     }
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         config.bottom_x.categories = Some(
             ["1S", "1P*", "3S", "3P*"]
                 .into_iter()
@@ -1753,7 +1716,7 @@ mod tests {
             EnergyLevelSeries {
                 source: Some("inset".into()),
                 show: LevelView::Components,
-                ..EnergyLevelSeries::default()
+                ..crate::defaults::energy_level_series()
             },
         );
         assert!(config.validate_series(&[view]).is_err());
@@ -1763,7 +1726,7 @@ mod tests {
     fn no_list_has_a_count_limit() {
         // Past every bound the code has had: the 1024 annotation items and
         // the 64 radial slices (rule 10).
-        let mut levels = EnergyLevelSeries::default();
+        let mut levels = crate::defaults::energy_level_series();
         for i in 0..5_000 {
             levels.levels.push(level(&format!("l{i}"), "1S", i as f64));
         }
@@ -1816,7 +1779,7 @@ mod tests {
     fn selected(config: &mut Config, reference: PickedDataRef) {
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![reference],
-            ..DataSelectionsConfig::default()
+            ..crate::defaults::data_selections_config()
         });
     }
 
@@ -1833,7 +1796,7 @@ mod tests {
                 EnergyLevelSeries {
                     source: Some("he".into()),
                     show: LevelView::Components,
-                    ..EnergyLevelSeries::default()
+                    ..crate::defaults::energy_level_series()
                 },
             ),
         ];
@@ -1924,7 +1887,7 @@ mod tests {
         assert_eq!(lo, 20.964_086_889_08, "the centroid is not drawn there");
         assert_eq!(hi, 24.587_389_011, "the limits are drawn in every view");
         assert_eq!(
-            EnergyLevelSeries::default().energy_extent(LevelView::Main),
+            crate::defaults::energy_level_series().energy_extent(LevelView::Main),
             None
         );
     }
@@ -2053,7 +2016,7 @@ mod wavelength_label_tests {
                 line("t", "low", "high", Some(1083.034)),
                 line("bare", "low", "high", None),
             ],
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         };
         records.transitions[1].x_offset = 0.4;
         records.style.wavelength_labels = Some(labels(Some(1), Some("nm")));
@@ -2335,7 +2298,7 @@ mod band_tests {
                 level("5s", "s", 1.2),
             ],
             bands: vec![band("6p", "7p")],
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         }
     }
 
@@ -2353,7 +2316,7 @@ mod band_tests {
         assert!(twice.validate().is_err(), "ids must be unique");
         let mut viewer = EnergyLevelSeries {
             source: Some("he".into()),
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         };
         viewer.bands.push(band("6p", "7p"));
         assert!(viewer.validate().is_err(), "a view holds no records");
@@ -2383,7 +2346,7 @@ mod band_tests {
         assert!(json["bands"][0].get("label").is_none());
         let back: EnergyLevelSeries = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
-        let none = serde_json::to_value(EnergyLevelSeries::default()).unwrap();
+        let none = serde_json::to_value(crate::defaults::energy_level_series()).unwrap();
         assert!(none.get("bands").is_none());
         assert_eq!(
             serde_json::to_value(LabelPart::Band).unwrap(),
@@ -2433,7 +2396,7 @@ mod category_group_tests {
     }
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         config.bottom_x.categories = Some(
             ["a", "b", "c", "d"]
                 .into_iter()
@@ -2559,7 +2522,7 @@ mod category_group_tests {
     #[cfg(feature = "serde")]
     #[test]
     fn groups_and_rich_labels_round_trip_and_stay_absent_by_default() {
-        let plain = crate::default::default_config();
+        let plain = crate::defaults::config();
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json["bottom_x"].get("category_groups").is_none());
         let config = chart();
@@ -2582,13 +2545,13 @@ mod category_group_tests {
 #[cfg(test)]
 mod inset_marker_tests {
     use crate::config::{Category, Config};
-    use crate::layer::{InsetMarker, Subplot};
+    use crate::layer::Subplot;
     use crate::layout::{ChartArea, Rect};
 
     /// A 600 × 400 parent with categories a, b, c over 0..100, and an inset
     /// at its top right naming `b` over 40..50.
     fn document() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         config.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -2603,7 +2566,7 @@ mod inset_marker_tests {
         config.left_y.min = 0.0;
         config.left_y.max = 100.0;
         let plot = config.data_area().unwrap().0;
-        let mut inset = crate::default::default_config();
+        let mut inset = crate::defaults::config();
         inset.chart_area = ChartArea(Rect {
             x: plot.x + plot.width - 200,
             y: plot.y + 10,
@@ -2615,8 +2578,8 @@ mod inset_marker_tests {
         inset.left_y.max = 50.0;
         config.subplots.push(Subplot {
             config: inset,
-            marker: Some(InsetMarker::default()),
-            ..Subplot::default()
+            marker: Some(crate::defaults::inset_marker()),
+            ..crate::defaults::subplot()
         });
         config
     }
@@ -2688,7 +2651,7 @@ mod inset_marker_tests {
         assert_eq!(config.subplots[0].marker.as_ref().unwrap().line.width, 2.0);
         #[cfg(feature = "serde")]
         {
-            let json = serde_json::to_string(&Subplot::default()).unwrap();
+            let json = serde_json::to_string(&crate::defaults::subplot()).unwrap();
             assert!(!json.contains("marker"), "{json}");
             let json = serde_json::to_string(&config.subplots[0]).unwrap();
             let back: Subplot = serde_json::from_str(&json).unwrap();

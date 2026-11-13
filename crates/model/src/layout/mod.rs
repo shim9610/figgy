@@ -8,8 +8,8 @@ mod rect;
 pub use fit::FitStrategy;
 pub use geometry::{
     BreakKnot, BreakMap, LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN,
-    PROBABILITY_RANGE_FALLBACK, TitleBand, TitlePlacement, auto_layout, axis_anchor, axis_cross,
-    axis_fraction, axis_offset, axis_title_offset_to_screen, axis_title_placement,
+    MeasuredTitle, PROBABILITY_RANGE_FALLBACK, TitleBand, TitlePlacement, auto_layout, axis_anchor,
+    axis_cross, axis_fraction, axis_offset, axis_title_offset_to_screen, axis_title_placement,
     chart_title_placement, chart_title_placement_in, colorbar_rect, colorbar_title_placement,
     fit_chart_title_margin, guarded_log_range, guarded_probability_range, label_origin, label_rect,
     legend_rect, mirrored_breaks, point_on_rect_side, screen_offset_to_axis_title, span_fraction,
@@ -107,7 +107,7 @@ pub(super) fn colorbar_contribution(cfg: &Config, side: &Side) -> f32 {
 
 fn top_total(cfg: &Config) -> f32 {
     chart_title_contribution(&cfg.chart_title)
-        + cfg.top_x.out_margin
+        + top_out_margin_effective(cfg)
         + tick_contribution(&cfg.top_x)
         + colorbar_contribution(cfg, &Side::Top)
 }
@@ -139,14 +139,52 @@ fn right_total(cfg: &Config) -> f32 {
 /// the three other sides, so a document without overlays computes exactly the
 /// margins it did before the field existed, and lets the fit and nudge paths
 /// write the group band back through the parent axis.
+///
+/// An overlay with `link_y` on draws no Y axis and adds no band.
 pub(super) fn right_out_margin_effective(cfg: &Config) -> f32 {
-    let fixed = tick_contribution(&cfg.right_y) + colorbar_contribution(cfg, &Side::Right);
+    group_out_margin_effective(cfg, &Side::Right)
+}
+
+/// The top band every overlay layer shares, expressed as the parent
+/// `top_x.out_margin` it is equivalent to: the right side's rule
+/// ([`right_out_margin_effective`]) for the X axes of overlays with
+/// `link_x` off, which are drawn on the top side.
+pub(super) fn top_out_margin_effective(cfg: &Config) -> f32 {
+    group_out_margin_effective(cfg, &Side::Top)
+}
+
+/// The axis an overlay draws on `side` (`Top` or `Right`), `None` when that
+/// side is linked to the parent's.
+pub(super) fn overlay_axis_on<'a>(
+    overlay: &'a crate::layer::OverlayLayer,
+    side: &Side,
+) -> Option<&'a AxisOptions> {
+    match side {
+        Side::Top => overlay.own_x(),
+        Side::Right => overlay.own_y(),
+        Side::Bottom | Side::Left => None,
+    }
+}
+
+fn overlay_axis_on_mut<'a>(
+    overlay: &'a mut crate::layer::OverlayLayer,
+    side: &Side,
+) -> Option<&'a mut AxisOptions> {
+    match side {
+        Side::Top if !overlay.link_x => Some(&mut overlay.x_axis),
+        Side::Right if !overlay.link_y => Some(&mut overlay.y_axis),
+        _ => None,
+    }
+}
+
+fn group_out_margin_effective(cfg: &Config, side: &Side) -> f32 {
+    let parent = axis_ref(cfg, side);
+    let fixed = tick_contribution(parent) + colorbar_contribution(cfg, side);
     cfg.overlays
         .iter()
-        .fold(cfg.right_y.out_margin, |widest, overlay| {
-            let band = overlay.y_axis.out_margin
-                + tick_contribution(&overlay.y_axis)
-                + colorbar_contribution(cfg, &Side::Right)
+        .filter_map(|overlay| overlay_axis_on(overlay, side))
+        .fold(parent.out_margin, |widest, axis| {
+            let band = axis.out_margin + tick_contribution(axis) + colorbar_contribution(cfg, side)
                 - fixed;
             if band > widest { band } else { widest }
         })
@@ -157,13 +195,26 @@ pub(super) fn right_out_margin_effective(cfg: &Config) -> f32 {
 /// A data-area edge drag or a fit sets group geometry, and the group is what
 /// the host sees move. Nothing changes for a document without overlays.
 pub(super) fn sync_overlay_right_margins(cfg: &mut Config) {
+    sync_overlay_margins(cfg, &Side::Right);
+}
+
+/// [`sync_overlay_right_margins`] for the top band, which the X axes of
+/// overlays with `link_x` off share.
+pub(super) fn sync_overlay_top_margins(cfg: &mut Config) {
+    sync_overlay_margins(cfg, &Side::Top);
+}
+
+fn sync_overlay_margins(cfg: &mut Config, side: &Side) {
     if cfg.overlays.is_empty() {
         return;
     }
-    let own = cfg.right_y.out_margin + tick_contribution(&cfg.right_y);
+    let parent = axis_ref(cfg, side);
+    let own = parent.out_margin + tick_contribution(parent);
     for overlay in &mut cfg.overlays {
-        let out = own - tick_contribution(&overlay.y_axis);
-        overlay.y_axis.out_margin = if out > 0.0 { out } else { 0.0 };
+        if let Some(axis) = overlay_axis_on_mut(overlay, side) {
+            let out = own - tick_contribution(axis);
+            axis.out_margin = if out > 0.0 { out } else { 0.0 };
+        }
     }
 }
 
@@ -292,14 +343,18 @@ impl Config {
         for axis in [&self.top_x, &self.bottom_x, &self.left_y, &self.right_y] {
             axis_dims_feasible(axis)?;
         }
-        // Overlay axes contribute to the shared right band, so they are held
-        // to the chart axes' dimensional rules. A non-finite band would hide
-        // inside the group maximum, which is why finiteness is explicit here.
-        for overlay in &self.overlays {
-            axis_dims_feasible(&overlay.y_axis)?;
-            if !overlay.y_axis.out_margin.is_finite()
-                || !overlay.y_axis.major_tick_length.is_finite()
-            {
+        // Overlay axes contribute to the shared right and top bands, so they
+        // are held to the chart axes' dimensional rules, linked or not (a
+        // link can be turned off by any later edit). A non-finite band would
+        // hide inside the group maximum, which is why finiteness is explicit
+        // here.
+        for axis in self
+            .overlays
+            .iter()
+            .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis])
+        {
+            axis_dims_feasible(axis)?;
+            if !axis.out_margin.is_finite() || !axis.major_tick_length.is_finite() {
                 return Err(LayoutError::Infeasible);
             }
         }
@@ -398,13 +453,12 @@ mod inset_order_tests {
 mod tests {
     use super::{Side, colorbar_contribution};
     use crate::config::Config;
-    use crate::default::{default_colorbar_options, default_config};
     use crate::layout::{ChartArea, LayoutError, Rect};
     use crate::select::tests::LaysOut;
 
     fn config_with_colorbar(side: Side) -> Config {
-        let mut cfg = default_config();
-        let mut bar = default_colorbar_options();
+        let mut cfg = crate::defaults::config();
+        let mut bar = crate::defaults::color_bar_options();
         bar.side = side;
         cfg.colorbar = Some(bar);
         cfg
@@ -418,7 +472,7 @@ mod tests {
     // data_area() must be fully contained inside chart_area on success.
     #[test]
     fn data_area_contained_in_chart_area() {
-        let cfg = default_config();
+        let cfg = crate::defaults::config();
         let da = cfg.data_area().unwrap();
         let ca = &cfg.chart_area;
         assert!(da.x >= ca.x);
@@ -430,7 +484,7 @@ mod tests {
     // All margin-contribution fields must be non-negative.
     #[test]
     fn margins_non_negative() {
-        let cfg = default_config();
+        let cfg = crate::defaults::config();
         let m = cfg.margins();
         assert!(m.top >= 0.0);
         assert!(m.bottom >= 0.0);
@@ -443,7 +497,7 @@ mod tests {
     #[test]
     fn the_colorbar_band_is_charged_to_its_own_side_only() {
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
-            let base = default_config();
+            let base = crate::defaults::config();
             let cfg = config_with_colorbar(side.clone());
             let (before, after) = (base.margins(), cfg.margins());
             let expected = band(&cfg);
@@ -515,7 +569,7 @@ mod tests {
     fn a_hidden_colorbar_reserves_nothing() {
         let mut cfg = config_with_colorbar(Side::Right);
         cfg.colorbar.as_mut().expect("colourbar").visible = false;
-        assert_eq!(cfg.margins(), default_config().margins());
+        assert_eq!(cfg.margins(), crate::defaults::config().margins());
         assert_eq!(colorbar_contribution(&cfg, &Side::Right), 0.0);
     }
 
@@ -523,7 +577,7 @@ mod tests {
     // from one written before the field existed.
     #[test]
     fn a_config_without_a_colorbar_is_unaffected() {
-        let cfg = default_config();
+        let cfg = crate::defaults::config();
         assert!(cfg.colorbar.is_none());
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
             assert_eq!(colorbar_contribution(&cfg, &side), 0.0);
@@ -660,11 +714,10 @@ mod tests {
     // overlays are untouched.
     #[test]
     fn overlay_axes_widen_only_the_shared_right_margin() {
-        use crate::layer::OverlayLayer;
-        let base = default_config();
+        let base = crate::defaults::config();
         let own = base.margins();
         let mut cfg = base.clone();
-        cfg.overlays.push(OverlayLayer::default());
+        cfg.overlays.push(crate::defaults::overlay_layer());
         let band = |cfg: &Config, i: usize| {
             cfg.overlays[i].y_axis.out_margin + cfg.overlays[i].y_axis.major_tick_length
         };
@@ -683,19 +736,58 @@ mod tests {
         assert_eq!(cfg.margins(), own);
 
         // The widest of several overlays wins.
-        cfg.overlays.push(OverlayLayer::default());
+        cfg.overlays.push(crate::defaults::overlay_layer());
         cfg.overlays[1].y_axis.out_margin = 70.0;
         assert_eq!(cfg.margins().right, band(&cfg, 1));
+    }
+
+    // The top band is group geometry for overlays with an X axis of their
+    // own: the widest band counts, and a top edge drag writes the group
+    // band through the parent axis and pulls every own overlay X band
+    // inside it. A linked overlay X axis counts for nothing and is left
+    // alone.
+    #[test]
+    fn the_top_band_is_group_geometry_for_overlay_x_axes() {
+        use crate::layout::Element;
+        let mut cfg = crate::defaults::config();
+        let top = cfg.margins().top;
+        let mut own = crate::defaults::overlay_layer();
+        own.link_x = false;
+        own.x_axis.out_margin = cfg.top_x.out_margin + 40.0;
+        cfg.overlays.push(own);
+        let mut linked = crate::defaults::overlay_layer();
+        linked.x_axis.out_margin = 500.0;
+        cfg.overlays.push(linked);
+        let band = |axis: &crate::config::AxisOptions| axis.out_margin + axis.major_tick_length;
+        assert!(
+            (cfg.margins().top - (top + band(&cfg.overlays[0].x_axis) - band(&cfg.top_x))).abs()
+                < 1e-3
+        );
+        let widened = cfg.margins().top;
+        assert_eq!(
+            cfg.nudge(Element::DataAreaEdge(Side::Top), &LaysOut, 0.0, -10.0),
+            crate::layout::NudgeResult::Moved
+        );
+        assert!((cfg.margins().top - (widened - 10.0)).abs() < 1e-3);
+        assert!((band(&cfg.overlays[0].x_axis) - band(&cfg.top_x)).abs() < 1e-3);
+        assert_eq!(cfg.overlays[1].x_axis.out_margin, 500.0);
+        // A whole-plot move shifts the group band too.
+        let before = cfg.data_area().unwrap().0;
+        assert_eq!(
+            cfg.nudge(Element::DataArea, &LaysOut, 0.0, 5.0),
+            crate::layout::NudgeResult::Moved
+        );
+        assert_eq!(cfg.data_area().unwrap().0.y, before.y + 5);
+        assert_eq!(cfg.data_area().unwrap().0.height, before.height);
     }
 
     // Writing the data area through the parent (fit, edge drag) writes the
     // group band: every overlay band is pulled inside the parent's.
     #[test]
     fn data_area_writes_set_the_group_right_band() {
-        use crate::layer::OverlayLayer;
         use crate::layout::{Element, FitStrategy};
-        let mut cfg = default_config();
-        cfg.overlays.push(OverlayLayer::default());
+        let mut cfg = crate::defaults::config();
+        cfg.overlays.push(crate::defaults::overlay_layer());
         let before = cfg.data_area().unwrap().0;
         assert_eq!(
             cfg.nudge(Element::DataAreaEdge(Side::Right), &LaysOut, 20.0, 0.0),
@@ -724,8 +816,8 @@ mod tests {
     #[test]
     fn validate_rejects_a_degenerate_overlay_axis() {
         use crate::layer::OverlayLayer;
-        let mut cfg = default_config();
-        cfg.overlays.push(OverlayLayer::default());
+        let mut cfg = crate::defaults::config();
+        cfg.overlays.push(crate::defaults::overlay_layer());
         assert!(cfg.validate().is_ok());
         let mut reversed = cfg.clone();
         reversed.overlays[0].y_axis.max = reversed.overlays[0].y_axis.min;
@@ -737,7 +829,7 @@ mod tests {
         shared.overlays[0].series = vec!["a".into()];
         shared.overlays.push(OverlayLayer {
             series: vec!["a".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         assert_eq!(shared.validate(), Err(LayoutError::Infeasible));
     }
@@ -763,7 +855,7 @@ mod tests {
         let mut checked = 0usize;
 
         for _ in 0..1500 {
-            let mut cfg = default_config();
+            let mut cfg = crate::defaults::config();
             cfg.chart_area = ChartArea(Rect {
                 x: (next() * 5000.0) as u32,
                 y: (next() * 5000.0) as u32,
@@ -775,12 +867,12 @@ mod tests {
                 super::axis_mut(&mut cfg, side).out_margin = next() * 90.0;
             }
             if next() < 0.5 {
-                let mut bar = default_colorbar_options();
+                let mut bar = crate::defaults::color_bar_options();
                 bar.side = sides[(next() * 4.0) as usize % 4].clone();
                 cfg.colorbar = Some(bar);
             }
             if next() < 0.5 {
-                let mut overlay = crate::layer::OverlayLayer::default();
+                let mut overlay = crate::defaults::overlay_layer();
                 overlay.y_axis.out_margin = next() * 150.0;
                 cfg.overlays.push(overlay);
             }

@@ -458,11 +458,13 @@ impl Config {
             }
         }
         if dy != 0.0 {
-            let new_top = self.top_x.out_margin + dy;
+            // The top band is group geometry too (overlay X axes share it).
+            let new_top = super::top_out_margin_effective(self) + dy;
             let new_bottom = self.bottom_x.out_margin - dy;
             if new_top >= 0.0 && new_bottom >= 0.0 {
                 self.top_x.out_margin = new_top;
                 self.bottom_x.out_margin = new_bottom;
+                super::sync_overlay_top_margins(self);
                 moved = true;
             }
         }
@@ -928,9 +930,11 @@ impl Config {
             return NudgeResult::Moved;
         }
         let old = match side {
-            // The right band is group geometry shared with the overlay axes.
+            // The right and top bands are group geometry shared with the
+            // overlay axes.
             Side::Right => super::right_out_margin_effective(self),
-            Side::Top | Side::Bottom | Side::Left => axis_ref(self, &side).out_margin,
+            Side::Top => super::top_out_margin_effective(self),
+            Side::Bottom | Side::Left => axis_ref(self, &side).out_margin,
         };
         let new = old + dm;
         if new < 0.0 {
@@ -938,8 +942,10 @@ impl Config {
         }
         let backup = self.clone();
         axis_mut(self, &side).out_margin = new;
-        if side == Side::Right {
-            super::sync_overlay_right_margins(self);
+        match side {
+            Side::Right => super::sync_overlay_right_margins(self),
+            Side::Top => super::sync_overlay_top_margins(self),
+            Side::Bottom | Side::Left => {}
         }
         // The shifted margin must still leave a valid data area.
         if self.data_area().is_err() {
@@ -963,14 +969,13 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
     use crate::select::tests::LaysOut;
     use crate::text::rich_segments_from_text;
 
     /// The default config with a visible chart title: a title that draws
     /// nothing cannot be grabbed, so it has no move.
     fn titled_config() -> Config {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.chart_title.text.segments = rich_segments_from_text("T");
         cfg
     }
@@ -1002,7 +1007,7 @@ mod tests {
     // measure does.
     #[test]
     fn nudge_moved_changes_only_target_offset() {
-        let before = default_config();
+        let before = crate::defaults::config();
         let mut expected = before.clone();
         expected.left_y.label_style.label_offset_x += 1.0;
         for measure in [
@@ -1028,7 +1033,7 @@ mod tests {
         use crate::drag::Draggable;
         use crate::select::AxisElement;
 
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.left_y.out_margin;
 
@@ -1039,7 +1044,7 @@ mod tests {
         assert_eq!(cfg.left_y.out_margin, margin_before);
         assert_eq!(cfg.data_area().unwrap(), da_before);
 
-        let mut dragged = default_config();
+        let mut dragged = crate::defaults::config();
         let el = AxisElement { side: Side::Left };
         assert_eq!(
             el.drag_by(&mut dragged, &LaysOut, 12.0, -40.0),
@@ -1057,7 +1062,7 @@ mod tests {
         use crate::drag::Draggable;
         use crate::select::AxisElement;
 
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.bottom_x.out_margin;
 
@@ -1067,7 +1072,7 @@ mod tests {
         assert_eq!(cfg.bottom_x.out_margin, margin_before);
         assert_eq!(cfg.data_area().unwrap(), da_before);
 
-        let mut dragged = default_config();
+        let mut dragged = crate::defaults::config();
         let el = AxisElement { side: Side::Bottom };
         assert_eq!(
             el.drag_by(&mut dragged, &LaysOut, -40.0, -6.0),
@@ -1082,7 +1087,7 @@ mod tests {
     // but never leave the chart area.
     #[test]
     fn axis_nudge_allows_crossing_into_data_area() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let r = cfg.nudge(Element::Axis(Side::Left), &LaysOut, 50.0, 0.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.line_offset, 50.0);
@@ -1090,7 +1095,7 @@ mod tests {
 
     #[test]
     fn axis_nudge_rejects_leaving_chart_area() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let r = cfg.nudge(Element::Axis(Side::Left), &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
@@ -1100,7 +1105,7 @@ mod tests {
     // Data-area edges (resize path) still move via margins.
     #[test]
     fn data_area_edge_nudge_moves_margin_and_data_area() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.left_y.out_margin;
 
@@ -1114,7 +1119,7 @@ mod tests {
 
     #[test]
     fn data_area_edge_rejects_negative_margin() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let r = cfg.nudge(Element::DataAreaEdge(Side::Left), &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
@@ -1123,7 +1128,7 @@ mod tests {
 
     #[test]
     fn data_area_edge_rejects_margin_overflow() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let w = cfg.chart_area.width as f32;
         let r = cfg.nudge(Element::DataAreaEdge(Side::Left), &LaysOut, w * 2.0, 0.0);

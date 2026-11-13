@@ -62,6 +62,9 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     if let Err(reason) = axis.validate_breaks() {
         return fail(reason);
     }
+    if let Err(reason) = axis.validate_unit() {
+        return fail(reason);
+    }
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
         return fail(crate::RuleKind::AxisCrossAt);
     }
@@ -144,7 +147,7 @@ impl Config {
             }
         }
         // Breaks (#200) cut the data axes of a rectangular chart: the x and
-        // y the data is placed on, and an overlay's own y. The secondary
+        // y the data is placed on, and an overlay's own x and y. The secondary
         // axes and the colourbar draw no data of their own to cut, and the
         // other coordinate systems have no straight value axis.
         for (field, axis) in [("top_x", &self.top_x), ("right_y", &self.right_y)]
@@ -157,22 +160,32 @@ impl Config {
         }
         let broken = self.bottom_x.breaks.is_some()
             || self.left_y.breaks.is_some()
-            || self.overlays.iter().any(|o| o.y_axis.breaks.is_some());
+            || self
+                .overlays
+                .iter()
+                .any(|o| o.y_axis.breaks.is_some() || o.x_axis.breaks.is_some());
         if broken && !matches!(self.coordinates, crate::coordinates::Coordinates::Cartesian) {
             return Err(ConfigError::chart(
                 "coordinates",
                 crate::RuleKind::BreaksChart,
             ));
         }
-        // Overlay y axes are ranges of the same kind, and the layer
-        // membership must be unambiguous before a series is drawn on a panel.
+        // Overlay axes are ranges of the same kind, linked or not (a later
+        // edit may unlink them), and the layer membership must be
+        // unambiguous before a series is drawn on a panel. Group headers are
+        // drawn by the parent's x axes only.
         for overlay in &self.overlays {
-            validate_axis_range("overlays.y_axis", &overlay.y_axis)?;
-            if overlay.y_axis.category_groups.is_some() {
-                return Err(ConfigError::chart(
-                    "overlays.y_axis",
-                    crate::RuleKind::CategoryGroupsAxis,
-                ));
+            for (field, axis) in [
+                ("overlays.y_axis", &overlay.y_axis),
+                ("overlays.x_axis", &overlay.x_axis),
+            ] {
+                validate_axis_range(field, axis)?;
+                if axis.category_groups.is_some() {
+                    return Err(ConfigError::chart(
+                        field,
+                        crate::RuleKind::CategoryGroupsAxis,
+                    ));
+                }
             }
         }
         self.validate_overlays()
@@ -201,14 +214,17 @@ impl Config {
         .chain(axes.map(|(field, axis)| (field, &axis.title_option.text)))
         .chain(colorbar_axis.map(|axis| ("colorbar.axis", &axis.title_option.text)))
         .chain(self.overlays.iter().flat_map(|overlay| {
-            [("overlays.y_axis", &overlay.y_axis.title_option.text)]
-                .into_iter()
-                .chain(
-                    overlay
-                        .legend
-                        .as_ref()
-                        .map(|legend| ("overlays.legend", &legend.content)),
-                )
+            [
+                ("overlays.y_axis", &overlay.y_axis.title_option.text),
+                ("overlays.x_axis", &overlay.x_axis.title_option.text),
+            ]
+            .into_iter()
+            .chain(
+                overlay
+                    .legend
+                    .as_ref()
+                    .map(|legend| ("overlays.legend", &legend.content)),
+            )
         }));
         for (field, text) in texts {
             text.validate_math().map_err(|error| {
@@ -276,7 +292,7 @@ impl Config {
             })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), crate::RuleKind>;
-        let rules: [(&'static str, Rule); 13] = [
+        let rules: [(&'static str, Rule); 14] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
             ("range_bars", Config::validate_range_bars),
@@ -290,6 +306,7 @@ impl Config {
             ("hexagonal", Config::validate_hexagonal_series),
             ("rgb_image", Config::validate_rgb_image_series),
             ("line_offsets", Config::validate_line_offsets),
+            ("monotonic", Config::validate_monotonic_series),
         ];
         for (field, rule) in rules {
             if let Err(reason) = rule(self, series) {
@@ -388,6 +405,9 @@ impl Config {
             DataRenderType::Feynman(_) => {
                 return Err(crate::RuleKind::PolarFeynman);
             }
+            DataRenderType::MonotonicLine(_) => {
+                return Err(crate::RuleKind::PolarMonotonic);
+            }
             DataRenderType::Ternary { .. } => {
                 return Err(crate::RuleKind::PolarTernary);
             }
@@ -409,7 +429,7 @@ mod tests {
     use super::*;
     use crate::color::Color;
     use crate::data_config::{DataScatterStyleConfig, ScatterShape};
-    use crate::default::default_config;
+    #[cfg(feature = "serde")]
     use crate::polar::PolarOptions;
 
     fn scatter(id: &str) -> SeriesConfig {
@@ -438,9 +458,53 @@ mod tests {
         }
     }
 
+    // An overlay's own X axis is held to the rules of its Y axis, linked or
+    // not: a bad range, a group-header row or a malformed title is refused
+    // and named `overlays.x_axis`; breaks are allowed on it, as on the Y.
+    #[test]
+    fn an_overlay_x_axis_is_validated_like_its_y_axis() {
+        let base = || {
+            let mut config = crate::defaults::config();
+            config.overlays.push(crate::defaults::overlay_layer());
+            config
+        };
+        assert_eq!(base().validate_chart(), Ok(()));
+        for link_x in [true, false] {
+            let mut config = base();
+            config.overlays[0].link_x = link_x;
+            config.overlays[0].x_axis.scale = AxisScale::Logarithmic;
+            config.overlays[0].x_axis.min = -1.0;
+            assert_eq!(
+                config.validate_chart().map_err(|e| e.field),
+                Err("overlays.x_axis")
+            );
+        }
+        let mut config = base();
+        config.overlays[0].link_x = false;
+        config.overlays[0].x_axis.categories = Some(vec![crate::config::Category::new("a", "A")]);
+        config.overlays[0].x_axis.category_groups = Some(crate::config::CategoryGroups {
+            groups: Vec::new(),
+            offset: [0.0, 0.0],
+        });
+        let error = config.validate_chart().unwrap_err();
+        assert_eq!(
+            (error.field, error.kind),
+            ("overlays.x_axis", crate::RuleKind::CategoryGroupsAxis)
+        );
+        let mut config = base();
+        config.overlays[0].link_x = false;
+        config.overlays[0].x_axis.min = 0.0;
+        config.overlays[0].x_axis.max = 10.0;
+        config.overlays[0].x_axis.breaks = Some(crate::config::AxisBreaks {
+            ranges: vec![crate::config::AxisBreak::new(2.0, 4.0)],
+            ..crate::defaults::axis_breaks()
+        });
+        assert_eq!(config.validate_chart(), Ok(()));
+    }
+
     #[test]
     fn series_ids_are_named_by_the_series_that_breaks_them() {
-        let config = default_config();
+        let config = crate::defaults::config();
         assert_eq!(
             config.validate_series(&[scatter("a"), scatter("b")]),
             Ok(())
@@ -474,7 +538,7 @@ mod tests {
             }
             series
         };
-        let config = default_config();
+        let config = crate::defaults::config();
         assert_eq!(config.validate_series(&[with(stem.clone())]), Ok(()));
         let reason = |series: SeriesConfig| config.validate_series(&[series]).unwrap_err().kind;
         assert_eq!(
@@ -496,20 +560,20 @@ mod tests {
         let mut bare = with(stem.clone());
         if let DataRenderType::Xy(XySeries { scatter, line, .. }) = &mut bare.render_type {
             *scatter = None;
-            *line = Some(crate::data_config::DataLineStyleConfig::default());
+            *line = Some(crate::defaults::data_line_style_config());
         }
         assert_eq!(reason(bare), crate::RuleKind::StemsWithoutMarkers);
 
-        let mut polar = default_config();
+        let mut polar = crate::defaults::config();
         polar.bottom_x.min = 0.0;
         polar.bottom_x.max = 360.0;
-        polar.set_polar(Some(PolarOptions::default()));
+        polar.set_polar(Some(crate::defaults::polar_options()));
         assert_eq!(
             polar.validate_series_on_polar(&with(stem.clone())),
             Err(crate::RuleKind::PolarStems)
         );
-        let mut three_d = default_config();
-        three_d.set_view_3d(Some(crate::view3d::View3d::default()));
+        let mut three_d = crate::defaults::config();
+        three_d.set_view_3d(Some(crate::defaults::view3d()));
         let mut tall = with(stem.clone());
         tall.z_column = Some("z".into());
         assert_eq!(
@@ -530,13 +594,13 @@ mod tests {
 
     #[test]
     fn a_polar_chart_names_the_series_it_does_not_draw() {
-        let mut config = default_config();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 360.0;
-        config.set_polar(Some(PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         let mut vector = scatter("v");
         vector.render_type = DataRenderType::Streamlines {
-            line: crate::data_config::DataLineStyleConfig::default(),
+            line: crate::defaults::data_line_style_config(),
             arrows: None,
             color_map: None,
         };
@@ -545,7 +609,7 @@ mod tests {
         assert_eq!(error.series_id.as_deref(), Some("v"));
         assert_eq!(error.field, "polar");
         assert_eq!(
-            default_config().validate_series_on_polar(&scatter("a")),
+            crate::defaults::config().validate_series_on_polar(&scatter("a")),
             Ok(())
         );
     }
@@ -569,7 +633,7 @@ mod tests {
             }),
             contour: contour.then(|| ContourConfig {
                 levels: vec![0.5],
-                line: crate::data_config::DataLineStyleConfig::default(),
+                line: crate::defaults::data_line_style_config(),
                 per_level_color: None,
                 labels: None,
             }),
@@ -583,8 +647,8 @@ mod tests {
     #[test]
     fn a_polar_heatmap_is_held_to_its_rules() {
         use crate::data_config::GridLayout;
-        let mut config = default_config();
-        config.set_polar(Some(PolarOptions::default()));
+        let mut config = crate::defaults::config();
+        config.set_polar(Some(crate::defaults::polar_options()));
         for layout in [GridLayout::Edges, GridLayout::Centers] {
             for contour in [false, true] {
                 assert_eq!(
@@ -610,11 +674,11 @@ mod tests {
     #[test]
     fn a_polar_heatmap_document_round_trips() {
         use crate::data_config::GridLayout;
-        let mut config = default_config();
+        let mut config = crate::defaults::config();
         config.set_polar(Some(PolarOptions {
             inner_radius_fraction: 0.1,
             clockwise: true,
-            ..PolarOptions::default()
+            ..crate::defaults::polar_options()
         }));
         let series = vec![polar_field(GridLayout::Edges, true)];
         let config_json = serde_json::to_string(&config).unwrap();
@@ -630,7 +694,7 @@ mod tests {
 
     #[test]
     fn the_chart_rules_name_the_field() {
-        let mut config = default_config();
+        let mut config = crate::defaults::config();
         assert_eq!(config.validate_chart(), Ok(()));
         config.bottom_x.max = config.bottom_x.min;
         let error = config.validate_chart().unwrap_err();

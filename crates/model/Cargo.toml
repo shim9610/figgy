@@ -9,7 +9,7 @@ repository = "https://github.com/shim9610/figgy"
 readme = "README.md"
 keywords = ["plotting", "charts", "visualization"]
 categories = ["graphics", "visualization"]
-include = ["/Cargo.toml", "/Cargo.lock", "/LICENSE-*", "/README.md", "/src/**", "/tests/**"]
+include = ["/Cargo.toml", "/Cargo.lock", "/LICENSE-*", "/*.md", "/src/**", "/tests/**"]
 
 # Preserve the Rust import path used by existing Git consumers.
 [lib]
@@ -30,4 +30,9 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = "1"
 
 [features]
+default = ["helpers"]
+# Host conveniences: `Default` on the document types and the `default`
+# module's functions (#266). The model and renderer libraries build without
+# it, so their own code cannot fall back on a default.
+helpers = []
 serde = ["dep:serde"]

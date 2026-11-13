@@ -22,13 +22,15 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 // Axis presets.
 // ============================================================================
 
-/// Whole-chart axis frame styles, applied to all four axes at once via
-/// [`Config::apply_axis_preset`].
+/// Whole-chart axis frame styles, applied to all four axes and every
+/// overlay's own axes at once via [`Config::apply_axis_preset`].
 ///
 /// Every preset leaves data ranges, margins, tick lengths, colors and title
 /// text untouched. It switches which axis lines are drawn, the tick
 /// direction and which sides show tick-value labels; every preset but
-/// [`AxisPreset::Hidden`] keeps labels on the bottom/left axes only.
+/// [`AxisPreset::Hidden`] keeps labels on the bottom/left axes only. An
+/// overlay's `x_axis` and `y_axis` are data axes and take the bottom/left
+/// style on the side they are drawn on (#283).
 /// `Hidden`, which shows none, and [`AxisPreset::Grotrian`] also switch the
 /// grid off, and `Grotrian` gives a continuous `left_y` break a thin lowest
 /// piece (#205).
@@ -78,8 +80,8 @@ fn apply_side(axis: &mut AxisOptions, s: SideStyle) {
 }
 
 impl Config {
-    /// Apply `preset` to all four axes at once. See [`AxisPreset`] for what
-    /// is (and is not) touched.
+    /// Apply `preset` to all four axes and every overlay's own axes at once.
+    /// See [`AxisPreset`] for what is (and is not) touched.
     pub fn apply_axis_preset(&mut self, preset: AxisPreset) {
         use TickVisibility::{Inside, None as NoTick, Outside};
 
@@ -187,6 +189,12 @@ impl Config {
             }
         };
 
+        // An overlay's own axes are data axes, so they take the labeled
+        // side's frame wherever they are drawn (#283).
+        for overlay in &mut self.overlays {
+            apply_side(&mut overlay.x_axis, labeled.clone());
+            apply_side(&mut overlay.y_axis, labeled.clone());
+        }
         apply_side(&mut self.bottom_x, labeled.clone());
         apply_side(&mut self.left_y, labeled);
         apply_side(&mut self.top_x, unlabeled.clone());
@@ -397,6 +405,10 @@ impl ColorCycle {
             DataRenderType::Parallel { line, .. } => {
                 line.line_color = c;
             }
+            // Each channel of a monotonic group joins the cycle (#271).
+            DataRenderType::MonotonicLine(series) => {
+                series.line.line_color = c;
+            }
         }
     }
 
@@ -415,12 +427,11 @@ mod tests {
         DataErrorBarStyleConfig, DataLineStyleConfig, DataScatterStyleConfig, ErrorRef,
         ScatterShape,
     };
-    use crate::default::default_config;
     use crate::line::LineStylePreset;
 
     #[test]
     fn boxed_inward_shows_full_frame_with_inside_ticks() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.apply_axis_preset(AxisPreset::BoxedInward);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
             assert!(axis.line_visible);
@@ -434,7 +445,7 @@ mod tests {
 
     #[test]
     fn open_outward_hides_top_right_entirely() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.apply_axis_preset(AxisPreset::OpenOutward);
         assert!(cfg.bottom_x.line_visible);
         assert_eq!(cfg.bottom_x.tick, TickVisibility::Outside);
@@ -445,7 +456,7 @@ mod tests {
 
     #[test]
     fn minimal_drops_lines_and_ticks_but_keeps_labels() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.apply_axis_preset(AxisPreset::Minimal);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
             assert!(!axis.line_visible);
@@ -461,12 +472,12 @@ mod tests {
     #[test]
     fn grotrian_drops_the_grid_and_mirrored_ticks_and_thins_the_ground_strip() {
         use crate::config::{AxisBreak, AxisBreaks};
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.left_y.min = 0.0;
         cfg.left_y.max = 25.0;
         cfg.left_y.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(0.5, 10.0), AxisBreak::new(12.0, 20.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         cfg.apply_axis_preset(AxisPreset::Grotrian);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
@@ -484,25 +495,25 @@ mod tests {
             cfg.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
             Some(PieceSizing::Weights(vec![1.0, 9.0, 9.0]))
         );
-        let mut panels = default_config();
+        let mut panels = crate::defaults::config();
         panels.left_y.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(0.5, 10.0)],
             style: AxisBreakStyle::Panels,
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         panels.apply_axis_preset(AxisPreset::Grotrian);
         assert_eq!(
             panels.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
             Some(PieceSizing::ByValue)
         );
-        let mut plain = default_config();
+        let mut plain = crate::defaults::config();
         plain.apply_axis_preset(AxisPreset::Grotrian);
         assert!(plain.left_y.breaks.is_none());
     }
 
     #[test]
     fn hidden_drops_lines_ticks_labels_and_the_grid_and_keeps_the_layout() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.grid.show_major_x = true;
         cfg.grid.show_minor_y = true;
         let before = cfg.clone();
@@ -519,10 +530,35 @@ mod tests {
         assert_eq!(cfg.data_area().unwrap(), before.data_area().unwrap());
     }
 
+    // An overlay's own axes are data axes: they take the labeled side's
+    // frame, so a minimal or hidden chart has no stray overlay frame (#283).
+    #[test]
+    fn an_overlay_s_own_axes_take_the_labeled_frame() {
+        let mut cfg = crate::defaults::config();
+        cfg.overlays.push(crate::defaults::overlay_layer());
+        cfg.overlays[0].link_x = false;
+        cfg.apply_axis_preset(AxisPreset::Minimal);
+        for axis in [&cfg.overlays[0].x_axis, &cfg.overlays[0].y_axis] {
+            assert!(!axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::None);
+            assert!(axis.label_style.label_visible);
+        }
+        cfg.apply_axis_preset(AxisPreset::BoxedOutward);
+        for axis in [&cfg.overlays[0].x_axis, &cfg.overlays[0].y_axis] {
+            assert!(axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::Outside);
+            assert!(axis.label_style.label_visible);
+        }
+        cfg.apply_axis_preset(AxisPreset::Hidden);
+        for axis in [&cfg.overlays[0].x_axis, &cfg.overlays[0].y_axis] {
+            assert!(!axis.line_visible && !axis.label_style.label_visible);
+        }
+    }
+
     // A preset must not disturb anything outside frame/tick/label visibility.
     #[test]
     fn preset_leaves_ranges_margins_titles_untouched() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         cfg.apply_axis_preset(AxisPreset::OpenOutward);
 

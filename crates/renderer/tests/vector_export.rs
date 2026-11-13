@@ -176,30 +176,23 @@ fn check_document(
     context: &str,
     chart: &Chart,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     scale: f32,
     amplitude: f32,
 ) -> Sizes {
-    let svg = r
-        .export_svg(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::document(scale),
-        )
-        .block_on()
-        .unwrap();
-    let pdf = r
-        .export_pdf(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::document(scale),
-        )
-        .block_on()
-        .unwrap();
-    let image = r
-        .export_rgba(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::document(scale),
-        )
-        .block_on()
-        .unwrap();
+    let options = renderer::ExportOptions::document(scale);
+    let svg = scenes::export_scene(r, chart, series, monotonic, |r, source| {
+        r.export_svg(source, options).block_on()
+    })
+    .unwrap();
+    let pdf = scenes::export_scene(r, chart, series, monotonic, |r, source| {
+        r.export_pdf(source, options).block_on()
+    })
+    .unwrap();
+    let image = scenes::export_scene(r, chart, series, monotonic, |r, source| {
+        r.export_rgba(source, options).block_on()
+    })
+    .unwrap();
     let png = encode_png(&image).unwrap();
     let mut written = Vec::new();
     written_document_parts(chart, series, scale, &mut |part| written.push(part)).unwrap();
@@ -275,7 +268,15 @@ fn every_catalogue_scene_reads_back_as_its_emitted_parts_within_budget() {
         let chart = Chart::new(scene.config.clone());
         for scale in SCALES {
             let context = format!("{kind:?} at {scale}x");
-            let sizes = check_document(&mut r, &context, &chart, &scene.series, scale, 0.0);
+            let sizes = check_document(
+                &mut r,
+                &context,
+                &chart,
+                &scene.series,
+                &scene.monotonic,
+                scale,
+                0.0,
+            );
             report += &format!(
                 "{context}: SVG {} KiB + images {} KiB, PDF {} KiB + images {} KiB, PNG {} KiB\n",
                 sizes.svg_other / 1024,
@@ -327,6 +328,7 @@ fn the_sketch_and_milkyway_styles_read_back() {
             &format!("sketch Lines at {scale}x"),
             &chart,
             &scene.series,
+            &scene.monotonic,
             scale,
             1.5 * scale,
         );
@@ -334,7 +336,15 @@ fn the_sketch_and_milkyway_styles_read_back() {
     let mut milkyway = scene.config.clone();
     milkyway.draw_style = DrawStyle::Milkyway(Default::default());
     let chart = Chart::new(milkyway);
-    check_document(&mut r, "Milkyway Lines", &chart, &scene.series, 1.0, 0.0);
+    check_document(
+        &mut r,
+        "Milkyway Lines",
+        &chart,
+        &scene.series,
+        &scene.monotonic,
+        1.0,
+        0.0,
+    );
     let svg = svg_parts::read(
         &r.export_svg(
             renderer::ExportSource::chart(&chart, &scene.series),
@@ -384,8 +394,10 @@ fn hide_decorations(config: &mut Config) {
     config.annotations.visible = false;
     // The plot fill is chrome (the slot below the grid).
     config.plot_background = None;
+    config.background = None;
     for overlay in &mut config.overlays {
         hide_axis(&mut overlay.y_axis);
+        hide_axis(&mut overlay.x_axis);
     }
     for subplot in &mut config.subplots {
         // A subplot has no annotation layer of its own to hide.
@@ -417,20 +429,23 @@ fn the_data_images_are_the_png_exports_pixels() {
             .collect();
         for scale in SCALES {
             let context = format!("{kind:?} at {scale}x");
-            let export = r
-                .export_rgba(
-                    renderer::ExportSource::chart(&chart, &gpu_series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .block_on()
-                .unwrap();
-            let text = r
-                .export_svg(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .block_on()
-                .unwrap();
+            let options = renderer::ExportOptions::document(scale);
+            let export = scenes::export_scene(
+                &mut r,
+                &chart,
+                &gpu_series,
+                &scene.monotonic,
+                |r, source| r.export_rgba(source, options).block_on(),
+            )
+            .unwrap();
+            let text = scenes::export_scene(
+                &mut r,
+                &chart,
+                &scene.series,
+                &scene.monotonic,
+                |r, source| r.export_svg(source, options).block_on(),
+            )
+            .unwrap();
             let svg = svg_parts::read(&text);
             assert_eq!(
                 svg.images.is_empty(),
@@ -473,13 +488,14 @@ fn the_data_images_are_the_png_exports_pixels() {
             // its images and its DataLess vector parts rasterized in order
             // (`svg_raster`), is the PNG export of the whole document.
             if scene.series.iter().any(SeriesConfig::is_dataless) {
-                let full = r
-                    .export_rgba(
-                        renderer::ExportSource::chart(&chart, &scene.series),
-                        renderer::ExportOptions::document(scale),
-                    )
-                    .block_on()
-                    .unwrap();
+                let full = scenes::export_scene(
+                    &mut r,
+                    &chart,
+                    &scene.series,
+                    &scene.monotonic,
+                    |r, source| r.export_rgba(source, options).block_on(),
+                )
+                .unwrap();
                 svg_raster::assert_same_picture(
                     &full,
                     &svg_raster::rasterize(&text),
@@ -679,13 +695,15 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
         let chart = Chart::new(config.clone());
         for scale in SCALES {
             let context = format!("{kind:?} at {scale}x");
-            let export = r
-                .export_rgba(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .block_on()
-                .unwrap();
+            let options = renderer::ExportOptions::document(scale);
+            let export = scenes::export_scene(
+                &mut r,
+                &chart,
+                &scene.series,
+                &scene.monotonic,
+                |r, source| r.export_rgba(source, options).block_on(),
+            )
+            .unwrap();
             let target = Rect {
                 x: 0,
                 y: 0,
@@ -713,13 +731,14 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
                 scale,
             )
             .unwrap();
-            let text = r
-                .export_svg(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .block_on()
-                .unwrap();
+            let text = scenes::export_scene(
+                &mut r,
+                &chart,
+                &scene.series,
+                &scene.monotonic,
+                |r, source| r.export_svg(source, options).block_on(),
+            )
+            .unwrap();
             // A DataLess series is vector parts between the body image and
             // the value-label image (D11), so its file is checked as a
             // whole: rasterized element by element (`svg_raster`), chrome
@@ -1232,5 +1251,74 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
                 rr.end_frame();
             }
         }
+    }
+}
+
+// An axis with a unit (#273) exports what it draws: the SVG, the PDF and
+// the PNG at 1x and 2x of a chart whose axes print 16-bit ADC counts as
+// volts are those of the same chart with its range written in volts, and
+// differ from the counts printed as they are.
+#[test]
+fn an_axis_unit_exports_its_converted_labels() {
+    let gpu = gpu();
+    let mut r = renderer(&gpu);
+    let chart = |counts: bool, unit: bool| {
+        let mut config = renderer::default::default_config();
+        for axis in [&mut config.bottom_x, &mut config.left_y] {
+            axis.min = 0.0;
+            axis.max = if counts { 32768.0 } else { 5.0 };
+            axis.major_spacing = 1.0;
+            axis.minor_count = 4;
+            axis.unit = unit.then(|| renderer::config::AxisUnit::new(5.0 / 32768.0, 0.0));
+            axis.label_style.format = renderer::format::LabelFormat::Decimal;
+            axis.label_style.significant_digits = 1;
+        }
+        Chart::new(config)
+    };
+    let converted = chart(true, true);
+    let written_in_volts = chart(false, false);
+    let raw_counts = chart(true, false);
+    for scale in SCALES {
+        let options = renderer::ExportOptions::document(scale);
+        let svg = |r: &mut Renderer, chart: &Chart| {
+            r.export_svg(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+        };
+        let pdf = |r: &mut Renderer, chart: &Chart| {
+            r.export_pdf(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+        };
+        let png = |r: &mut Renderer, chart: &Chart| {
+            r.export_rgba(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+                .rgba
+        };
+        let text = svg(&mut r, &converted);
+        assert_eq!(text, svg(&mut r, &written_in_volts), "SVG at {scale}x");
+        assert_ne!(text, svg(&mut r, &raw_counts), "SVG at {scale}x");
+        assert_eq!(
+            pdf(&mut r, &converted),
+            pdf(&mut r, &written_in_volts),
+            "PDF at {scale}x"
+        );
+        let image = png(&mut r, &converted);
+        assert!(
+            image == png(&mut r, &written_in_volts),
+            "PNG at {scale}x differs"
+        );
+        assert!(image != png(&mut r, &raw_counts), "PNG at {scale}x");
+        // The parts the SVG was handed are the ones it reads back as.
+        let mut written = Vec::new();
+        written_document_parts(&converted, &[], scale, &mut |part| written.push(part)).unwrap();
+        assert_parts_match(
+            &svg_parts::read(&text).parts,
+            &written,
+            TOLERANCE,
+            0.0,
+            &format!("converted axes at {scale}x"),
+        );
     }
 }

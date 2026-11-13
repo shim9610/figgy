@@ -17,13 +17,12 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
 use renderer::{
     Chart, Color, ColorMap, LayerRef, Material, Renderer, SeriesConfig, TriangleSource,
-    data::Column,
-    data_config::{ContourConfig, DataRenderType, FieldFillConfig, FillMode, Shading, XySeries},
+    data_config::{ContourConfig, DataLineStyleConfig, DataRenderType, Shading},
     text::RichText,
-    tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries},
+    tri_mesh::{MeshValueLocation, MeshValues},
     view3d::{SurfaceStyle, SurfaceWireframe, View3d},
 };
 use std::f64::consts::TAU;
@@ -33,32 +32,28 @@ use styled::{cartesian, colorbar, export, rgb, rgba, save};
 /// A mesh series over the columns `{id}-x`, `{id}-y`, `{id}-value` and the
 /// triangle column `{id}-tri`, filled and contoured.
 fn mesh_series(id: &str, contour: ContourConfig, surface: Option<SurfaceStyle>) -> SeriesConfig {
-    series(
-        id,
-        &format!("{id}-x"),
-        &format!("{id}-y"),
-        DataRenderType::TriMesh(TriMeshSeries {
-            triangles: format!("{id}-tri").into(),
-            values: MeshValues {
-                column: format!("{id}-value").into(),
-                at: MeshValueLocation::Vertices,
-            },
-            fill: Some(FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Interpolated,
-                opacity: 1.,
-            }),
-            contour: Some(contour),
-            surface,
-        }),
-    )
+    let values = MeshValues {
+        column: format!("{id}-value"),
+        at: MeshValueLocation::Vertices,
+    };
+    let (x, y, triangles) = (format!("{id}-x"), format!("{id}-y"), format!("{id}-tri"));
+    let mut mesh = SeriesConfig::mesh(id, x, y, triangles, values).shading(Shading::Interpolated);
+    if let DataRenderType::TriMesh(series) = &mut mesh.render_type {
+        series.contour = Some(contour);
+        series.surface = surface;
+    }
+    mesh
 }
 
 /// Contour lines at about `count` round levels of the chart's colourbar.
 fn contours(chart: &Chart, color: Color, width: f32, count: usize) -> Result<ContourConfig> {
     let mut contour = ContourConfig {
         levels: vec![],
-        line: line(color, width),
+        line: DataLineStyleConfig {
+            line_color: color,
+            line_width: width,
+            ..Default::default()
+        },
         per_level_color: None,
         labels: None,
     };
@@ -165,14 +160,9 @@ fn plate(r: &mut Renderer, out: &Path) -> Result {
         ("plate-edge-x", ex),
         ("plate-edge-y", ey),
     ] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
-    r.upsert_triangles(
-        "plate-tri",
-        &TriangleSource {
-            indices: &Column { data: tris },
-        },
-    )?;
+    r.upsert_triangles("plate-tri", &TriangleSource { indices: &tris })?;
 
     let mut chart = cartesian(
         "Plate with a hole / von Mises stress under tension",
@@ -212,20 +202,11 @@ fn plate(r: &mut Renderer, out: &Path) -> Result {
     );
     colorbar_title(&mut chart, "von Mises stress / S", ink);
     let contour = contours(&chart, rgba(255, 255, 255, 0.55), 1.2, 12)?;
-    let mut edges = series(
-        "mesh",
-        "plate-edge-x",
-        "plate-edge-y",
-        DataRenderType::Xy(XySeries {
-            scatter: None,
-            line: Some(line(rgba(255, 255, 255, 0.16), 0.7)),
-            errors: None,
-            stem: None,
-        }),
-    );
-    edges.label = None;
+    let edges = SeriesConfig::line("mesh", "plate-edge-x", "plate-edge-y")
+        .color(rgba(255, 255, 255, 0.16))
+        .width(0.7);
     let specs = [mesh_series("plate", contour, None), edges];
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-trimesh.png"))
 }
 
@@ -292,14 +273,9 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
         }
     }
     for (id, data) in [("drum-x", xs), ("drum-y", ys), ("drum-value", zs)] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
-    r.upsert_triangles(
-        "drum-tri",
-        &TriangleSource {
-            indices: &Column { data: tris },
-        },
-    )?;
+    r.upsert_triangles("drum-tri", &TriangleSource { indices: &tris })?;
 
     let mut chart = cartesian(
         "Circular drum / vibration mode (2, 2)",
@@ -356,7 +332,7 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
         box_aspect: Some([1., 1., 0.6]),
         ..View3d::default()
     }));
-    let mut drum = mesh_series(
+    let drum = mesh_series(
         "drum",
         contour,
         Some(SurfaceStyle {
@@ -367,8 +343,8 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
             material: Material::Matte,
             ..SurfaceStyle::default()
         }),
-    );
-    drum.z_column = Some("drum-value".into());
+    )
+    .z("drum-value");
     let specs = [drum];
     chart.auto_fit_view_3d_z(r.pool(), LayerRef::Base, &specs, 0.)?;
     let config = chart.config_mut();
@@ -384,7 +360,7 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
     if let Some(bar) = config.colorbar.as_mut() {
         bar.axis.label_style.significant_digits = 1;
     }
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-trisurf.png"))
 }
 

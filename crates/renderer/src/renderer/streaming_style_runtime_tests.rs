@@ -168,6 +168,7 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_)
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
@@ -185,9 +186,9 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
     }
 }
 
-fn draw_registered(r: &mut Renderer, id: ChartId, view: &ChartView, samples: u32) -> Vec<u8> {
+fn draw_registered(r: &mut Renderer, id: ChartId, view: &mut ChartView, samples: u32) -> Vec<u8> {
     let frame = r
-        .prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
+        .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
         .unwrap();
     let pixels = paint_frame_pixels(r, &frame, samples);
     drop(frame);
@@ -361,7 +362,7 @@ fn compare_isolated_stream_chunks(
         )
         .unwrap();
     let chart = Chart::new(config.clone());
-    let resident_view = resident
+    let mut resident_view = resident
         .create_chart_view(&chart, config.chart_area.0)
         .unwrap();
     let stream_view = streamed
@@ -454,9 +455,9 @@ fn compare_isolated_stream_chunks(
                     resident_y.data[end..].fill(f32::NAN);
                     resident.upsert_column("y", &resident_y).unwrap();
                     let frame = resident
-                        .prepare_registered(&[RegisteredChartDrawItem {
+                        .prepare_registered(&mut [RegisteredChartDrawItem {
                             chart_id: resident_id,
-                            view: &resident_view,
+                            view: &mut resident_view,
                         }])
                         .unwrap();
                     let reference = draw_target(resident, samples);
@@ -591,7 +592,7 @@ fn compare_stream_phase_pairs(
         )
         .unwrap();
     let chart = Chart::new(config.clone());
-    let resident_view = resident
+    let mut resident_view = resident
         .create_chart_view(&chart, config.chart_area.0)
         .unwrap();
     let stream_view = streamed
@@ -604,9 +605,9 @@ fn compare_stream_phase_pairs(
         .register_chart(config.clone(), declarations.to_vec())
         .unwrap();
     let frame = resident
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: resident_id,
-            view: &resident_view,
+            view: &mut resident_view,
         }])
         .unwrap();
     let data = config.data_area().unwrap().0;
@@ -837,13 +838,13 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         let chart = resident
             .register_chart(config.clone(), series.clone())
             .unwrap();
-        let view = resident
+        let mut view = resident
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         let frame = resident
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: chart,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         let item = &frame.items[0];
@@ -1016,7 +1017,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         let chart = streamed
             .register_chart(config.clone(), series.clone())
             .unwrap();
-        let view = streamed
+        let mut view = streamed
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         streamed
@@ -1050,9 +1051,9 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         streamed.wait_idle().unwrap();
         drop(
             streamed
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: chart,
-                    view: &view,
+                    view: &mut view,
                 }])
                 .unwrap(),
         );
@@ -1173,7 +1174,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                     r.add_column(&format!("r{id}"), column).unwrap();
                 }
                 let config = test_config(style);
-                let view = r
+                let mut view = r
                     .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
                     .unwrap();
                 let declarations: Vec<_> = ["front", "back"]
@@ -1239,8 +1240,8 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                 let resident_id = r.register_chart(config.clone(), resident).unwrap();
                 let unmapped_id = r.register_chart(config.clone(), unmapped).unwrap();
                 let stream_id = r.register_chart(config, declarations).unwrap();
-                let expected = draw_registered(&mut r, resident_id, &view, samples);
-                let no_maps = draw_registered(&mut r, unmapped_id, &view, samples);
+                let expected = draw_registered(&mut r, resident_id, &mut view, samples);
+                let no_maps = draw_registered(&mut r, unmapped_id, &mut view, samples);
                 if let Some(failure) = mismatch(
                     &expected,
                     &no_maps,
@@ -1308,7 +1309,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                         range_sources.iter().all(|source| source.largest.get()
                             <= chunk as usize + usize::from(mode == 2))
                     );
-                    let actual = draw_registered(&mut r, stream_id, &view, samples);
+                    let actual = draw_registered(&mut r, stream_id, &mut view, samples);
                     if let Some(failure) = stream_mismatch(
                         &expected,
                         &actual,
@@ -1318,7 +1319,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                     ) {
                         failures.push(failure);
                     }
-                    let stable = draw_registered(&mut r, stream_id, &view, samples);
+                    let stable = draw_registered(&mut r, stream_id, &mut view, samples);
                     assert!(
                         mismatch(&actual, &stable, "completed stream output changed").is_none()
                     );
@@ -1332,7 +1333,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
 }
 
 #[test]
-fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
+fn styled_stream_suppressed_fields_are_exact_noops() {
     let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
         .unwrap();
@@ -1367,12 +1368,12 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
             }
             let mut config = test_config(style);
             config.colorbar = Some(crate::default::default_colorbar_options());
-            let view = r
+            let mut view = r
                 .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
                 .unwrap();
             let empty = r.register_chart(config.clone(), Vec::new()).unwrap();
-            let blank = draw_registered(&mut r, empty, &view, samples);
-            for kind in 0..4 {
+            let blank = draw_registered(&mut r, empty, &mut view, samples);
+            for kind in 1..4 {
                 let matrix = MatrixRef {
                     columns: vec!["z".into()],
                     orientation: MatrixOrientation::ColumnsAreX,
@@ -1398,18 +1399,6 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                 };
                 let mut stream = declaration("suppressed", "x", "y");
                 stream.render_type = match kind {
-                    0 => DataRenderType::Histogram {
-                        bar: DataBarStyleConfig {
-                            fill_color: Color::BLACK,
-                            border_color: Color::BLACK,
-                            border_width: 1.0,
-                            baseline: 0.0,
-                            gap_px: 1.0,
-                            width_ratio: 1.0,
-                            orientation: crate::data_config::BarOrientation::Vertical,
-                            bar_style_overrides: None,
-                        },
-                    },
                     1 => DataRenderType::Field(crate::data_config::FieldSeries {
                         matrix,
                         fill: Some(fill),
@@ -1456,12 +1445,13 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::EnergyLevels(_)
                     | DataRenderType::TriMesh(_)
                     | DataRenderType::Feynman(_)
+                    | DataRenderType::MonotonicLine(_)
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }
                 let resident_id = r.register_chart(config.clone(), vec![resident]).unwrap();
                 let stream_id = r.register_chart(config.clone(), vec![stream]).unwrap();
-                let expected = draw_registered(&mut r, resident_id, &view, samples);
+                let expected = draw_registered(&mut r, resident_id, &mut view, samples);
                 if let Some(failure) = mismatch(
                     &blank,
                     &expected,
@@ -1486,7 +1476,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                             total_primitives: 0
                         }
                     ));
-                    let actual = draw_registered(&mut r, stream_id, &view, samples);
+                    let actual = draw_registered(&mut r, stream_id, &mut view, samples);
                     if let Some(failure) = stream_mismatch(
                         &expected,
                         &actual,

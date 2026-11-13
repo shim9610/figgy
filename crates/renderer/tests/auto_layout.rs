@@ -1,10 +1,10 @@
 //! `layout::auto_layout` (#44) through the renderer's text measure: pure and
 //! idempotent on every catalogue scene and released config document, data
-//! untouched, documents that already clear kept as they are, and an
-//! auto-laid-out document as an ordinary SSOT (serialization, the registry's
-//! invalidation, hit testing). The no-overlap property on drawn pixels at 1x
-//! and 2x, and drag, selection and export on every scene, are the decoration
-//! oracle's `auto_layout_*` tests.
+//! untouched, the bands of the default and released documents set exactly
+//! to what they hold (#270), and an auto-laid-out document as an ordinary
+//! SSOT (serialization, the registry's invalidation, hit testing). The
+//! no-overlap property on drawn pixels at 1x and 2x, and drag, selection and
+//! export on every scene, are the decoration oracle's `auto_layout_*` tests.
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
@@ -72,7 +72,8 @@ fn released_configs() -> Vec<(String, Config)> {
 
 /// What `auto_layout` may write, set back to the input's, so the rest can be
 /// compared whole: the bands, the title offsets across them, the label
-/// formats, the chart title band and the legend's placement.
+/// formats, the chart title band and its offset down (a grid row's shared
+/// baseline) and the legend's placement.
 fn without_layout(mut out: Config, input: &Config) -> Config {
     fn axis(to: &mut renderer::config::AxisOptions, from: &renderer::config::AxisOptions) {
         to.out_margin = from.out_margin;
@@ -86,11 +87,13 @@ fn without_layout(mut out: Config, input: &Config) -> Config {
         axis(&mut out.right_y, &input.right_y);
         for (to, from) in out.overlays.iter_mut().zip(&input.overlays) {
             axis(&mut to.y_axis, &from.y_axis);
+            axis(&mut to.x_axis, &from.x_axis);
         }
         if let (Some(to), Some(from)) = (out.colorbar.as_mut(), input.colorbar.as_ref()) {
             axis(&mut to.axis, &from.axis);
         }
         out.chart_title.top_margin = input.chart_title.top_margin;
+        out.chart_title.offset_y = input.chart_title.offset_y;
         out.legend.corner = input.legend.corner;
         out.legend.offset_x = input.legend.offset_x;
         out.legend.offset_y = input.legend.offset_y;
@@ -170,6 +173,12 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
             before.chart_title.top_margin, after.chart_title.top_margin
         ));
     }
+    if before.chart_title.offset_y != after.chart_title.offset_y {
+        out.push(format!(
+            "chart_title.offset_y {} -> {}",
+            before.chart_title.offset_y, after.chart_title.offset_y
+        ));
+    }
     let (b, a) = (&before.legend, &after.legend);
     if (b.corner, b.offset_x, b.offset_y) != (a.corner, a.offset_x, a.offset_y) {
         out.push(format!(
@@ -180,14 +189,51 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
     out
 }
 
-// The default document already clears, so it is returned as it is: 0 px.
-// So are the released config documents of every model version (their
-// chrome: margins, offsets, formats), except the changes listed.
+// Every band of the default document and of the released config documents
+// of every model version (their chrome: margins, offsets, formats) is set to
+// exactly what it holds (#270), smaller or larger than the document had it:
+// the changes listed, and nothing else.
+//
+// The edge padding is half the font of what sits at the band's outer edge,
+// at least 8 px: 9 px past the 18 px labels and the frame, half the title
+// font past an axis title (#270); a title sits half its labels' font (9 px)
+// past them.
+//
+// - The default document: the bottom and left bands shrink to their labels
+//   and the 9 px edge padding (no axis titles); the top band holds the pixel
+//   of the top y label that runs past the top tick, and the right band the
+//   last x label's overhang past the right tick, each with the padding; the
+//   empty chart title gets no band.
+// - `config-default` (0.10.0 and 0.11.0) is the same document with an 8 px
+//   right band, which grows to the overhang.
+// - `config-series` is the default with a right-hand colourbar: its band
+//   shrinks to its labels and the 9 px padding (no title).
+// - `config-edited` shows the top labels (the band grows to their reach and
+//   the padding), puts each axis title beside its labels in a band set to
+//   labels, the 9 px gap, title and padding (10 px past the 20 px bottom
+//   title, 11 px past the 22 px left one; the bottom title moves 8 px
+//   outward, the left one 26 px), holds the last x label's overhang past
+//   the 8 px right tick, shrinks the bottom colourbar's band to its labels,
+//   its 16 px title (half the 18 px label font past them) and 8 px of
+//   padding, and pads its two-line 30 px title by 0.3 em above and below;
+//   above its first baseline the band holds the font's line ascent, which
+//   rises past the ink of "Released".
 #[cfg(feature = "serde")]
 #[test]
-fn auto_layout_keeps_the_default_and_the_released_config_documents() {
+fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands() {
     let default = renderer::default::default_config();
-    assert_eq!(laid_out(&default), default);
+    let out = laid_out(&default);
+    assert_eq!(laid_out(&out), out, "default: not idempotent");
+    assert_eq!(
+        layout_changes(&default, &out),
+        [
+            "top_x.out_margin 8 -> 10",
+            "bottom_x.out_margin 80 -> 25",
+            "left_y.out_margin 110 -> 49",
+            "right_y.out_margin 32 -> 22",
+            "chart_title.top_margin 32 -> 0",
+        ]
+    );
     let mut seen = Vec::new();
     for (name, cfg) in released_configs() {
         let out = laid_out(&cfg);
@@ -197,18 +243,49 @@ fn auto_layout_keeps_the_default_and_the_released_config_documents() {
             seen.push(format!("{name}: {change}"));
         }
     }
-    // The edited documents of 0.10.0 and 0.11.0 set a 48 px title band for a
-    // taller title (fitted to 60 px), show the top labels in an 8 px band
-    // and centre a left title less than the gap from its labels, which moves
-    // 10 px outward. Every other released config is kept to the pixel.
-    let expected: &[&str] = &[
-        "model-0.10.0-config-edited.json: top_x.out_margin 8 -> 12",
-        "model-0.10.0-config-edited.json: left_y.title_option.offset_y 0 -> -10",
-        "model-0.10.0-config-edited.json: chart_title.top_margin 48 -> 60",
-        "model-0.11.0-config-edited.json: top_x.out_margin 8 -> 12",
-        "model-0.11.0-config-edited.json: left_y.title_option.offset_y 0 -> -10",
-        "model-0.11.0-config-edited.json: chart_title.top_margin 48 -> 60",
-    ];
+    let mut expected = Vec::new();
+    for version in ["0.10.0", "0.11.0"] {
+        for (doc, changes) in [
+            (
+                "default",
+                &[
+                    "top_x.out_margin 8 -> 10",
+                    "bottom_x.out_margin 80 -> 25",
+                    "left_y.out_margin 110 -> 49",
+                    "right_y.out_margin 8 -> 22",
+                    "chart_title.top_margin 32 -> 0",
+                ][..],
+            ),
+            (
+                "edited",
+                &[
+                    "top_x.out_margin 8 -> 17",
+                    "bottom_x.out_margin 80 -> 54",
+                    "bottom_x.title_option.offset_y 0 -> 8",
+                    "left_y.out_margin 120 -> 97",
+                    "left_y.title_option.offset_y 0 -> -26",
+                    "right_y.out_margin 8 -> 15",
+                    "colorbar.axis.out_margin 60 -> 48",
+                    "chart_title.top_margin 48 -> 80",
+                ][..],
+            ),
+            (
+                "series",
+                &[
+                    "top_x.out_margin 8 -> 10",
+                    "bottom_x.out_margin 80 -> 25",
+                    "left_y.out_margin 110 -> 49",
+                    "right_y.out_margin 8 -> 22",
+                    "colorbar.axis.out_margin 60 -> 55",
+                    "chart_title.top_margin 32 -> 0",
+                ][..],
+            ),
+        ] {
+            for change in changes {
+                expected.push(format!("model-{version}-config-{doc}.json: {change}"));
+            }
+        }
+    }
     assert_eq!(seen, expected);
 }
 
@@ -247,6 +324,166 @@ fn title_overlaps(cfg: &Config) -> usize {
         .sum()
 }
 
+/// A title-less 1280 x 1024 chart, the size of the style previews, with
+/// an x and a y title, its tick labels `label` px and its axis titles
+/// `title` px.
+fn titled_axes(label: f32, title: f32) -> Config {
+    let mut cfg = renderer::default::default_config();
+    cfg.chart_area.0.width = 1280;
+    cfg.chart_area.0.height = 1024;
+    for (axis, text) in [
+        (&mut cfg.bottom_x, "Time [min]"),
+        (&mut cfg.left_y, "Response mean"),
+    ] {
+        axis.title_option.text =
+            renderer::text::RichText::plain(text, axis.title_option.text.color, title, "");
+    }
+    for axis in [
+        &mut cfg.top_x,
+        &mut cfg.bottom_x,
+        &mut cfg.left_y,
+        &mut cfg.right_y,
+    ] {
+        axis.label_style.font_size = label;
+    }
+    cfg
+}
+
+/// The smallest gap between the measured glyphs of the title on `side`
+/// and those of its labels, across the band.
+fn title_clearance(cfg: &Config, side: Side) -> f32 {
+    let title = rects(cfg, Element::AxisTitle(side.clone()))[0];
+    rects(cfg, Element::AxisLabel(side.clone()))
+        .iter()
+        .map(|l| match side {
+            Side::Left => l.x - (title.x + title.width),
+            Side::Right => title.x - (l.x + l.width),
+            Side::Top => l.y - (title.y + title.height),
+            Side::Bottom => title.y - (l.y + l.height),
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+// An axis title's glyphs clear its labels' by at least half the label font
+// (#270), at least 4 px, and by no more than a pixel past it (the offset is
+// rounded outward); a 2x export of the result keeps twice the gap, within
+// the pixel the glyphs' measured extents move between the two sizes.
+#[test]
+fn an_axis_title_clears_its_labels_by_half_their_font() {
+    for (label, title) in [(6.0, 8.0), (12.0, 14.0), (16.0, 18.0), (25.0, 32.0)] {
+        let out = laid_out(&titled_axes(label, title));
+        let gap = f32::max(4.0, 0.5 * label);
+        for side in [Side::Bottom, Side::Left] {
+            let clearance = title_clearance(&out, side.clone());
+            assert!(
+                clearance >= gap - 1e-3 && clearance < gap + 1.0,
+                "{label} px {side:?}: {clearance}"
+            );
+            if label >= 8.0 {
+                let twice = title_clearance(&out.scaled(2.0), side.clone());
+                assert!(
+                    twice >= 2.0 * gap - 1.0,
+                    "{label} px {side:?} at 2x: {twice}"
+                );
+            }
+        }
+    }
+}
+
+// The padding between what a band holds and the chart edge is half the
+// font of the text at that edge (#270), at least 8 px: the x title's
+// glyphs end that far above the bottom edge, and the top band, which holds
+// the frame, pads by half the label font. Larger text pads more.
+#[test]
+fn the_edge_padding_grows_with_the_font() {
+    let mut paddings = Vec::new();
+    for (label, title) in [(12.0, 14.0), (18.0, 22.0), (25.0, 32.0), (40.0, 48.0)] {
+        let out = laid_out(&titled_axes(label, title));
+        let x_title = rects(&out, Element::AxisTitle(Side::Bottom))[0];
+        let ca = RectF::from_rect(&out.chart_area);
+        let bottom = ca.y + ca.height - (x_title.y + x_title.height);
+        let want = f32::max(8.0, 0.5 * title);
+        assert!(
+            bottom >= want - 1.0 && bottom < want + 1.0,
+            "{label}/{title} px: bottom {bottom}"
+        );
+        // The frame past the top tick, or the top y label above it.
+        let da = out.data_area().expect("a data area").0;
+        let tick = out.top_x.major_tick_length;
+        let top = rects(&out, Element::AxisLabel(Side::Left))
+            .iter()
+            .map(|r| r.y)
+            .fold(da.y as f32 - tick, f32::min)
+            - ca.y;
+        let want = f32::max(8.0, 0.5 * label);
+        assert!(
+            top >= want && top < want + 1.0,
+            "{label}/{title} px: top {top}"
+        );
+        paddings.push((top, bottom));
+    }
+    for pair in paddings.windows(2) {
+        assert!(
+            pair[0].0 <= pair[1].0 && pair[0].1 < pair[1].1,
+            "{paddings:?}"
+        );
+    }
+    assert!(paddings[0].0 < paddings[3].0, "{paddings:?}");
+}
+
+// An axis with a unit (#273) prints longer labels than its data values:
+// `auto_layout` measures the labels as drawn, so the y band grows to hold
+// `-40000` .. `40000` where the data reads `0.0` .. `1.0`, and the title
+// clears them at 1x and 2x.
+#[test]
+fn auto_layout_gives_converted_labels_their_room() {
+    let plain = titled_axes(12.0, 14.0);
+    let mut converted = plain.clone();
+    converted.left_y.unit = Some(renderer::config::AxisUnit::new(80_000.0, -40_000.0));
+    converted.left_y.major_spacing = 20_000.0;
+    assert_eq!(converted.validate_chart(), Ok(()));
+    let texts = |cfg: &Config| {
+        let mut out = Vec::new();
+        renderer::select::emit_element(
+            cfg,
+            &Element::AxisLabel(Side::Left),
+            &measure(cfg),
+            &mut Parts(&mut |part| {
+                if let renderer::layout::DrawnPart::Text(r) = part {
+                    out.push(r.width);
+                }
+            }),
+        );
+        out
+    };
+    let widest = |cfg: &Config| texts(cfg).into_iter().fold(0.0f32, f32::max);
+    assert!(widest(&converted) > widest(&plain) + 10.0);
+    let (plain_out, converted_out) = (laid_out(&plain), laid_out(&converted));
+    // The format stays: five digits are not long labels.
+    assert_eq!(
+        converted_out.left_y.label_style.format,
+        converted.left_y.label_style.format
+    );
+    assert!(
+        converted_out.left_y.out_margin
+            >= plain_out.left_y.out_margin + (widest(&converted) - widest(&plain)).floor(),
+        "{} against {}",
+        converted_out.left_y.out_margin,
+        plain_out.left_y.out_margin
+    );
+    let gap = f32::max(4.0, 0.5 * 12.0);
+    for (scale, doc) in [
+        (1.0, converted_out.clone()),
+        (2.0, converted_out.scaled(2.0)),
+    ] {
+        assert_eq!(title_overlaps(&doc), 0, "{scale}x");
+        let clearance = title_clearance(&doc, Side::Left);
+        assert!(clearance >= scale * gap - 1.0, "{scale}x: {clearance}");
+    }
+    // Laid out again, nothing changes.
+    assert_eq!(laid_out(&converted_out), converted_out);
+}
+
 // The user's case: `0.00300` labels under the Y title. After `auto_layout`
 // the Y labels print as powers of ten, the title sits beside them, and no
 // title touches its labels, at 1x and 2x.
@@ -271,10 +508,19 @@ fn the_long_labels_scene_overlaps_as_laid_out_and_clears_after_auto_layout() {
         out.left_y.label_style.format,
         renderer::format::LabelFormat::Power
     );
-    // The 110 px band the host set holds the labels and the title beside
-    // them: the band is kept and the title moves outward by its offset.
-    assert_eq!(out.left_y.out_margin, scene.config.left_y.out_margin);
+    // The band is set to exactly the labels, the gap (half the 18 px label
+    // font), the title beside them and the edge padding (half the 22 px
+    // title font, 11 px): the 110 px band grows to 114 px, the title moves
+    // outward by its offset and ends the padding (within the pixel the
+    // offset is rounded to) from the chart edge.
+    assert_eq!(
+        (scene.config.left_y.out_margin, out.left_y.out_margin),
+        (110.0, 114.0)
+    );
     assert!(out.left_y.title_option.offset_y < 0.0);
+    let title = rects(&out, Element::AxisTitle(Side::Left))[0];
+    let edge_gap = title.x - out.chart_area.x as f32;
+    assert!((10.0..=12.0).contains(&edge_gap), "{edge_gap}");
 }
 
 // An auto-laid-out document is an ordinary SSOT: it serializes and parses

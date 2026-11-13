@@ -46,6 +46,7 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         bar_groups: _,
         line_offsets,
         plot_background,
+        background,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -73,16 +74,37 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         && line_offsets == &right.line_offsets
         // The plot fill is the grid raster's first part (#203).
         && plot_background == &right.plot_background
+        // The chart fill is the grid raster's first part (#265).
+        && background == &right.background
+}
+
+/// Whether the hit map `HitMap::for_active_layer` registers for `after`
+/// can differ from `before`'s in what a `HitId` names: another active layer,
+/// or other links of the active overlay (an own X axis registers on the top
+/// side, a followed Y axis registers the chart's left one).
+pub(in crate::renderer) fn registration_changed(before: &Config, after: &Config) -> bool {
+    let links = |config: &Config| {
+        config
+            .overlay_of_layer(config.active_layer())
+            .map(|overlay| (overlay.link_x, overlay.link_y))
+    };
+    before.active_layer() != after.active_layer() || links(before) != links(after)
 }
 
 /// Whether two configs map data to the same pixels on every layer: the
-/// overlay count, each overlay's Y range and the series each one scales.
-/// Decoration-only overlay edits (axis colour, legend) are not geometry.
+/// overlay count, each overlay's links, X and Y ranges and the series each
+/// one scales. Decoration-only overlay edits (axis colour, legend) are not
+/// geometry.
 pub(in crate::renderer) fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
+    let axis_equal = |a: &AxisOptions, b: &AxisOptions| {
+        AxisViewState::from_axis(a) == AxisViewState::from_axis(b) && break_geometry_equal(a, b)
+    };
     left.overlays.len() == right.overlays.len()
         && left.overlays.iter().zip(&right.overlays).all(|(a, b)| {
-            AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
-                && break_geometry_equal(&a.y_axis, &b.y_axis)
+            axis_equal(&a.y_axis, &b.y_axis)
+                && axis_equal(&a.x_axis, &b.x_axis)
+                && a.link_x == b.link_x
+                && a.link_y == b.link_y
                 && a.series == b.series
         })
 }
@@ -461,7 +483,7 @@ impl ColumnRemovalPlan {
             if let Some(referencing) = update.referencing {
                 state
                     .series
-                    .retain(|series| !series_references_column(series, removed_column));
+                    .retain(|series| !series_dropped_with_column(series, removed_column));
                 *series_revision = referencing.series;
                 *data = referencing.data;
             }
@@ -489,7 +511,7 @@ pub(in crate::renderer) fn series_after_column_removal(
 ) -> Result<Vec<SeriesConfig>> {
     let retained = series
         .iter()
-        .filter(|series| !series_references_column(series, removed_column))
+        .filter(|series| !series_dropped_with_column(series, removed_column))
         .count();
     let mut candidate = Vec::new();
     candidate
@@ -501,7 +523,7 @@ pub(in crate::renderer) fn series_after_column_removal(
     candidate.extend(
         series
             .iter()
-            .filter(|series| !series_references_column(series, removed_column))
+            .filter(|series| !series_dropped_with_column(series, removed_column))
             .cloned(),
     );
     Ok(candidate)

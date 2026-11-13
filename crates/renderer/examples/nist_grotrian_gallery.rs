@@ -13,27 +13,22 @@ mod grotrian_sets;
 #[path = "support/nist_csv.rs"]
 mod nist_csv;
 use gallery::{Result, output_directory, with_renderer};
-use renderer::{Chart, Color, Renderer, SeriesConfig, encode_png};
+use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::path::Path;
 
 fn save(
     r: &mut Renderer,
-    (c, series): (Chart, Vec<SeriesConfig>),
+    (mut c, series): (Chart, Vec<SeriesConfig>),
     out: &Path,
     name: &str,
 ) -> Result {
     // The host fits the axis bands to their labels and titles.
-    let measure = renderer::CpuTextMeasure::for_style(&c.config().draw_style);
-    let c = &Chart::new(renderer::layout::auto_layout(c.config(), &measure));
-    let series = &series[..];
+    c.fit_layout();
     for scale in [1.0, 2.0] {
-        let image = r.export_rgba_blocking(
-            renderer::ExportSource::chart(c, series),
-            renderer::ExportOptions::document(scale).with_clear(Color::WHITE),
-        )?;
         let path = out.join(format!("{name}-{scale}x.png"));
-        std::fs::write(&path, encode_png(&image)?)?;
-        println!("{}: {}x{}", path.display(), image.width, image.height);
+        let options = ExportOptions::document(scale).with_clear(Color::WHITE);
+        r.save_blocking(ExportSource::chart(&c, &series), options, &path)?;
+        println!("{}", path.display());
     }
     Ok(())
 }

@@ -510,7 +510,7 @@ fn a_translucent_surface_shows_its_floor_contours() {
 fn paint_screen(r: &mut Renderer, config: &Config, series: &[SeriesConfig]) -> RasterImage {
     let chart = Chart::new(config.clone());
     let rect = config.chart_area.0;
-    let view = r.create_chart_view(&chart, rect).unwrap();
+    let mut view = r.create_chart_view(&chart, rect).unwrap();
     let styles: Vec<_> = series
         .iter()
         .map(|cfg| r.create_style_for_series(cfg).unwrap())
@@ -520,12 +520,12 @@ fn paint_screen(r: &mut Renderer, config: &Config, series: &[SeriesConfig]) -> R
         .zip(&styles)
         .map(|(config, style)| renderer::Series { config, style })
         .collect();
-    let items = [renderer::ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [renderer::ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &drawn,
     }];
-    let prepared = r.prepare(&items).unwrap();
+    let prepared = r.prepare(&mut items).unwrap();
     let (w, h) = (rect.width, rect.height);
     let device = r.device().clone();
     let queue = r.queue().clone();

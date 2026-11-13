@@ -2011,10 +2011,18 @@ fn data_to_px_f(chart: &Chart, x: f64, y: f64, scale: f64) -> (f64, f64) {
 /// gap reaches `LABEL_GAP_EDGE_PX` (0.5) past the content, the quad
 /// `LABEL_EDGE_PX` (2), and the baked background fades out over the gutter
 /// between them. So with a background every pixel the label changes, the
-/// stroke it removes included, is a pixel the label paints: no blanked stroke
-/// shows past the box. With a transparent label the gap alone shows: it
-/// blanks the stroke along the whole box, in the label's rotated frame, and
-/// nothing past the box.
+/// stroke it removes included, lies inside the box the label paints: no
+/// blanked stroke shows past the box. With a transparent label the gap alone
+/// shows: it blanks the stroke along the whole box, in the label's rotated
+/// frame, and nothing past the box.
+///
+/// The box is the label's rectangle in its own frame, measured from the
+/// pixels the label alone paints. A pixel of the fading rim is not tested on
+/// its own: its fragment can be under half a code value, which a
+/// transparent background rounds away, while over a partly covered stroke
+/// pixel the export's half-float target keeps it and the straight-alpha
+/// readback divides it by the stroke's alpha (#271), so the same fragment
+/// shows over the stroke and not alone.
 #[test]
 fn a_rotated_label_gap_lies_inside_its_quad() {
     let Some(mut renderer) = try_renderer() else {
@@ -2098,8 +2106,8 @@ fn a_rotated_label_gap_lies_inside_its_quad() {
                 let (u, v) = local(x, y);
                 if differs(&with_box, &stroke, x, y) {
                     assert!(
-                        differs(&label_only, &nothing, x, y),
-                        "{scale}x: the label changed ({x}, {y}), which its box does not paint: {u} x {v} in {box_u} x {box_v}"
+                        in_box(u, v),
+                        "{scale}x: the label changed ({x}, {y}) past the box it paints: {u} x {v} past {box_u} x {box_v}"
                     );
                 }
                 if differs(&gapped, &stroke, x, y) {

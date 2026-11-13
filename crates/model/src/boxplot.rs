@@ -90,13 +90,13 @@ impl BoxSummary {
     since = "0.13.0",
     note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
 )]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxPlotDirection {
-    #[default]
     Vertical,
     Horizontal,
 }
+
 /// The former box material enum, now the shared [`Material`](crate::Material). Boxes
 /// reject the materials
 /// [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body)
@@ -144,11 +144,14 @@ impl BoxPlotSeries {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::box_plot_chart")
 )]
 pub struct BoxPlotChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::decoration_layout")
+    )]
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
@@ -162,13 +165,19 @@ pub struct BoxPlotChart {
     /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+        serde(
+            default = "crate::defaults::layer_ref",
+            skip_serializing_if = "crate::LayerRef::is_base"
+        )
     )]
     pub active_layer: crate::LayerRef,
     /// The dedicated annotation layer, shared with every chart family.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+        serde(
+            default = "crate::defaults::annotation_layer",
+            skip_serializing_if = "crate::AnnotationLayer::is_default"
+        )
     )]
     pub annotations: crate::AnnotationLayer,
     pub categories: Vec<Category>,
@@ -195,38 +204,7 @@ pub struct BoxPlotChart {
     pub text_color: Color,
     pub background: Color,
 }
-impl Default for BoxPlotChart {
-    fn default() -> Self {
-        Self {
-            decorations: Default::default(),
-            title: String::new(),
-            chart_title: None,
-            active_layer: Default::default(),
-            annotations: Default::default(),
-            categories: vec![],
-            series: vec![],
-            direction: BoxPlotDirection::Vertical,
-            style: BoxPlotStyle::default(),
-            overrides: vec![],
-            hovered: None,
-            selected: None,
-            labels: BoxPlotLabels::None,
-            label_decimals: 1,
-            value_suffix: String::new(),
-            value_title: String::new(),
-            category_title: String::new(),
-            value_range: None,
-            grid: true,
-            legend: true,
-            group_width: 0.65,
-            box_gap: 8.0,
-            font_family: "sans-serif".into(),
-            font_size: 14.0,
-            text_color: Color::from_rgb8(32, 46, 60),
-            background: Color::WHITE,
-        }
-    }
-}
+
 impl BoxPlotChart {
     /// The layer the document's pointer interaction targeted, as the reader
     /// carries it: the document has no overlays or subplots, so an
@@ -382,7 +360,7 @@ mod tests {
                 vec![Some(BoxSummary::new(1., 2., 3., 4., 5.)), None],
                 Color::WHITE,
             )],
-            ..Default::default()
+            ..crate::defaults::box_plot_chart()
         }
     }
     #[test]
@@ -394,14 +372,14 @@ mod tests {
             let mut c = chart();
             c.series[0].style = Some(BoxPlotStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::box_plot_style()
             });
             assert_eq!(c.validate(), Err(crate::RuleKind::BoxMaterial));
             let mut c = chart();
             let mut o = BoxPlotOverride::new(BoxPlotTarget::new("a", "s"));
             o.style = Some(BoxPlotStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::box_plot_style()
             });
             c.overrides.push(o);
             assert_eq!(c.validate(), Err(crate::RuleKind::BoxMaterial));
@@ -421,7 +399,7 @@ mod tests {
             c.style.material = material;
             assert_eq!(c.validate(), Ok(()), "{material:?}");
         }
-        assert_eq!(BoxPlotStyle::default().material, Material::Matte);
+        assert_eq!(crate::defaults::box_plot_style().material, Material::Matte);
     }
     #[test]
     fn summaries_reject_invalid_order_nonfinite_and_nonoutliers() {
@@ -464,14 +442,14 @@ mod tests {
         c.style.notched = false;
         c.series[0].style = Some(BoxPlotStyle {
             notched: true,
-            ..Default::default()
+            ..crate::defaults::box_plot_style()
         });
         assert!(c.validate().is_err());
         c.series[0].style = None;
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new("a", "s"));
         o.style = Some(BoxPlotStyle {
             notched: true,
-            ..Default::default()
+            ..crate::defaults::box_plot_style()
         });
         c.overrides.push(o);
         assert!(c.validate().is_err());
@@ -538,7 +516,7 @@ mod tests {
         ] {
             for level in 0..3 {
                 let mut c = chart();
-                let mut st = BoxPlotStyle::default();
+                let mut st = crate::defaults::box_plot_style();
                 edit(&mut st);
                 match level {
                     0 => c.style = st,

@@ -44,7 +44,7 @@ To change shared shader code:
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl`, `errorbar_segment.wgsl` and `category_jitter.wgsl`) and the pick marker modules |
 | `category_jitter.wgsl` (§5.20) | bar (the box group's slot layout and raw point placement), the pick marker modules |
-| `line_step.wgsl` | line, line_arc, the pick line modules |
+| `line_step.wgsl` (§5.6 step pieces) | line, line_arc, the pick line modules |
 | `arc_walk.wgsl` (§5.6 arc slots) | line, the path vector module (draw only: the pick walks a segment's arc through `pick_arc`) |
 | `path_arrow.wgsl` (§5.3 path form) | the path vector module, the pick line modules |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
@@ -92,8 +92,8 @@ every primitive there: it maps the cursor into that frame once
 (`pick_cursor_px`, `gpu_pick/core.wgsl`) and projects every vertex with
 `data_to_px` (`pick_data_px`), so a primitive's pixels are the very values
 the draw computed, not a second projection of the same data. A separate
-canvas projection once rounded a 1e-5 px step riser to zero length where the
-draw kept it and its square caps (#114). The axis gates
+canvas projection can round a 1e-5 px step riser to zero length where the
+draw keeps it and its square caps (#114). The axis gates
 (`pick_*_may_hit`) still test canvas pixels per axis: they only prefilter,
 with a conservative pad, and the exact pass decides.
 
@@ -203,8 +203,8 @@ colour, `line_width_px` the outline width in pixels (unscaled), and
 baseline stay the draw's, so the outline takes the draw's resolver: the
 mapped entry, used exactly when the draw binds the bar style map, runs
 `resolve_bar_style(base_bar_style(), style.dash_len)` over the same group 2.
-The global index keeps a streamed selection, whose instance is local zero,
-on the bin's own overrides without a stream map binding. The highlight
+The global index keeps the outline on the bin's own overrides whatever
+instance the caller draws. The highlight
 colour and outline width are never taken from the resolved fill or border.
 
 ### 2.2 `line_columnar.wgsl`의 면 채움 엔트리 `vs_area` / `fs_area`
@@ -272,7 +272,7 @@ along the stepped path (`pick_segment_endpoint`, the stroke's rule).
 count, to-series flag, 0) and `area_baseline` the baseline pair; the
 segment count is the shortest of the three columns minus one, zero without a
 fill or for a fill whose colour has zero alpha (the descriptor's `paints`).
-A streamed series has no fill (streaming is not extended).
+A streamed series has no fill.
 
 ### 2.3 `field_columnar.wgsl`의 `Style` 사용
 
@@ -465,8 +465,7 @@ is vertex-visible only.
 draw's pixel frame, y up) it returns the angle value in the turn `atan2`
 returns (before any wrap), the radius axis `t` as `axis_pair_to_t` gives it,
 and their derivatives per pixel (`d_angle`, `d_ty`). The centre has no
-angle: its derivatives are zero. It places given data, so it is projection,
-not data (CLAUDE.md rule 1). CPU twin: none; the polar heatmap tests compute
+angle: its derivatives are zero. CPU twin: none; the polar heatmap tests compute
 expected pixels from `polar_geometry` and `polar_angle_map`.
 
 The code is the fragment [`data_render/common/sample_validity.wgsl`](common/sample_validity.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
@@ -492,7 +491,7 @@ entry that locates a cell first turns the fragment's (or the cursor's)
 chart-area `t` into lookup `t` with `field_lookup(t, lattice)`, which also
 returns the lookup `t`'s derivatives per pixel (`jac_x`, `jac_y`). On a
 rectangular chart it returns `t` and the axis-aligned `pixel_to_ndc / 2`
-(the identity: the rectangular path is unchanged). On a polar chart it
+(the identity). On a polar chart it
 takes the pixel offset (`polar_clip_offset`), misses outside the outer ring,
 inside the hole and outside the sector (`polar_fragment_visible`), inverts
 the placement (`polar_unproject`, §4), wraps the angle into the turn that
@@ -625,8 +624,8 @@ arrow on the field's cell centre with the field's own `midpoint_grid_pair`.
 **3D form (#211).** `VECTOR_POINTS_3D_SHADER` draws a point vector on a 3D
 chart: the point form with the flat projection `vector/project_cartesian2d.wgsl`
 replaced by `common/project_3d.wgsl` (§5.21) and `vector/project_box3d.wgsl`,
-and `vector/vector_entry_3d.wgsl` appended; nothing else differs (rule 9,
-tested by `the_3d_form_replaces_only_the_projection`). Both projection
+and `vector/vector_entry_3d.wgsl` appended; nothing else differs
+(`the_3d_form_replaces_only_the_projection` holds this). Both projection
 fragments define the same interface: `VectorSample`, `ArrowPx` (which carries
 `depth`, the NDC depth at the tail and tip; the flat fragment sets 0),
 `project_arrow` and `arrow_clip(corner, arrow)`, the clip position of a quad
@@ -634,8 +633,7 @@ corner in pixels. The flat `arrow_clip` is `px_to_clip(corner)`; the box one
 extrapolates the depth linearly along the tail → tip screen axis, which is
 exact because NDC depth is affine along a projected line. The entry's body is
 `vector_vertex(vertex_index, instance_index)`, which `vs_main` returns and the
-3D pick entry reuses, since WGSL cannot call an entry point; the 2D modules
-emit byte-identical pixels after the change. Under `VECTOR_FLAG_THREE_D` the
+3D pick entry reuses, since WGSL cannot call an entry point. Under `VECTOR_FLAG_THREE_D` the
 point input reads the anchor height (`height_base` / `height_len`) into
 `origin_*.z` and `w` (`w_base` / `w_len`) into `vector.z`; the 2D modules
 never set it.
@@ -666,8 +664,8 @@ with `vector/vector_input_path.wgsl` as the input, which splices
 pipeline layout adds group 3, the arc slot data of the line's arc scan
 (the arc prefix, the pool and `StarVsParams`), and the draw is indirect:
 the scan runs with the arrow spacing in render pixels as its slot pitch,
-and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (no
-slot cap, #107; only the `u32` instance count bounds it). Slot `i` sits at arc `(i + 0.5) * spacing`
+and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (any
+number of slots; only the `u32` instance count bounds it). Slot `i` sits at arc `(i + 0.5) * spacing`
 (`VectorParams.spacing_px`, the arc pair `arc_slot_position(i, 0.5, spacing)`,
 §5.6 arc pairs): `arc_walk_segment` finds its segment (a slot
 past the arc, on a NaN gap, on a segment with an invalid sample or past
@@ -799,13 +797,63 @@ each piece into `SKETCH_SUBDIV` spans whose knots are displaced along the
 normal by `sketch_line_offset_from` at their arc position, and the fragment
 evaluates the same rectangle in the undisplaced `(along, side)` frame.
 
+**Step pieces.** The pieces are the fragment
+[`data_render/common/line_step.wgsl`](common/line_step.wgsl), spliced into
+the line, line_arc and pick line modules, so all of them split a segment the
+same way:
+
+```wgsl
+struct StepPiece { x0: vec2<f32>, y0: vec2<f32>, x1: vec2<f32>, y1: vec2<f32>, axis: u32 };
+const STEP_AXIS_NONE: u32 = 0u;  const STEP_AXIS_X: u32 = 1u;
+const STEP_AXIS_Y: u32 = 2u;     const STEP_AXIS_POINT: u32 = 3u;
+fn step_piece_count(mode: u32) -> u32
+fn step_piece(xa, ya, xb, yb: vec2<f32>, mode: u32, k: u32) -> StepPiece
+fn step_piece_end(t: Transform, p: StepPiece, a: vec2<f32>, b: vec2<f32>) -> vec2<f32>
+fn step_piece_dir(t: Transform, p: StepPiece, dir: vec2<f32>) -> vec2<f32>
+fn step_piece_len_px(t: Transform, p: StepPiece) -> f32
+```
+
+- `step_piece` is piece `k` of segment `a → b` under the mode word (bits
+  0-1 the step mode, bits 4 and up the polar arc pieces; `step_piece_count`
+  is how many). Its corners are `(hi, lo)` pairs in data space, so every
+  reader projects the same points.
+- `axis` names the coordinate the piece's two corners share in data space:
+  `STEP_AXIS_X` for a riser (equal x), `STEP_AXIS_Y` for a run (equal y),
+  `STEP_AXIS_NONE` for a linear segment or a polar arc piece. A piece whose
+  two corners are one data point (a repeated sample, such as the join rows
+  of a monotonic line's envelope, or a riser between equal values) is
+  `STEP_AXIS_POINT` (#277), decided by comparing the data-space corners,
+  never the two projections.
+- `step_piece_end(t, p, a, b)` is the projected end given the projected
+  start `a`: a riser copies `a.x` into `b`, a run copies `a.y`, so the shared
+  coordinate is not projected twice (#63: Metal may contract one evaluation
+  and not the other, and an ulp across a piece far shorter than a pixel
+  tilted the square-capped quad by about a degree). A vertex stage that
+  divides NDC into pixels calls it again after the division. A
+  `STEP_AXIS_POINT` piece returns `a`, in any projection. On a polar chart
+  (`polar_angle.x > 0.5`) nothing else is copied: the data axes map onto
+  rings and spokes.
+- `step_piece_dir(t, p, dir)` is the piece's unit direction in pixels,
+  exactly along its axis: a riser keeps only the sign of `dir.y`, a run only
+  the sign of `dir.x`, since copying the shared coordinate can still leave
+  an ulp in the difference in Metal's vertex stage (#63). A
+  `STEP_AXIS_POINT` piece returns zero, so its quad collapses on every
+  backend instead of drawing a stroke-wide square cap.
+- The ternary entry (`vs_ternary`) and the 3D entry (`line_3d_vertex`) take
+  the linear piece and reset `axis` to `STEP_AXIS_NONE`: their third
+  component (`c` or the height) places the ends too, so equal x and y are
+  not one point there.
+
+CPU twin: `line_step::line_pieces` (test support) gives the same corners; it
+has no `axis`.
+
 **Arc pairs.** The prefix holds each point's cumulative arc as a 64-bit
 fixed-point integer of `ARC_UNITS_PER_PX` (65536) units per pixel, stored as
-`vec2<u32>(low word, high word)` (8 bytes per point; #107). Integer sums are
+`vec2<u32>(low word, high word)` (8 bytes per point). Integer sums are
 exact and associative, so the prefix keeps 1/65536 px resolution up to 2^48
 px in any order a scan adds (the resident scan and the streamed replay give
 the same words), and no compiler can fold them the way it may fold an
-error-free float sum: an f32 `(hi, lo)` two-sum lost its low part on
+error-free float sum: an f32 `(hi, lo)` two-sum loses its low part on
 lavapipe. `line_arc.wgsl` rounds each segment's f32 length to units
 (`arc_from_px`) and adds them with `arc_add`. Every reader takes a
 segment's arc as an origin, the pair at A, plus a small f32 offset along
@@ -839,7 +887,7 @@ precise stroke's straight `dist_px` does (#114). Its exact pass
 binds the line's arc prefix (group 2, `pick_arc`, the same arc pairs) — the buffer the line was
 drawn with, from the renderer's arc cache under the same key — so the dash
 phase and the wobble are the drawn ones. A streamed series is picked without
-it (streaming is not extended): its dashes pick as a solid stroke and its
+it: its dashes pick as a solid stroke and its
 sketch wobble as the envelope `±amplitude_px`. In a dash gap the hit distance
 runs along the stroke to the nearer dash of the same piece. A Milkyway
 ribbon is never dashed; its strip and the star field scattered along it pick
@@ -882,11 +930,11 @@ placed). The stroke's coverage, dash and polar clip are `fs_main`'s.
 **Arc slots.** The Milkyway star pass (`vs_stars`) draws one instance per
 slot along the polyline's total pixel arc, the count the scan's
 `star_indirect` kernel writes into a `DrawIndirect` buffer (`(6,
-ceil(total / pitch))`, counted in arc units, no slot cap, #107;
+ceil(total / pitch))`, counted in arc units, any number of slots;
 only the `u32` instance count bounds it). The cost grows with the drawn arc, not with `n`: one 6-vertex
 instance per slot, each a binary search over the prefix, so a draw is
 `O(slots · log n)`; `milkyway_stars_draw_past_two_million_arc_slots`
-measures a 2.8 M-slot series, and the host budgets it (rule 10). Its vertex stage binds
+measures a 2.8 M-slot series; the host budgets this cost. Its vertex stage binds
 no vertex buffers: group 3 is the arc prefix, the pool and `StarVsParams`
 (`n_points`, the x / y lane bases and the step mode word; CPU twin
 `line_arc.rs::StarVsParams`, layout
@@ -944,8 +992,8 @@ non-finite end are not drawn and do not pick.
 
 `ARROW_SHAFT_MIN_PX` keeps the head-only arrow (shorter than its head) from
 growing a round dot at the tail: the fragment stage recomputes the length from
-the pivot-shifted tail and tip, and that rounding used to leave a shaft of a
-few ulps whose round end the draw painted and the pick did not.
+the pivot-shifted tail and tip, and that rounding can leave a shaft of a
+few ulps whose round end the draw would paint and the pick would not.
 
 CPU twin: `cpu_twin::vector_arrow_distance` with `arrow_place` /
 `arrow_distance`.
@@ -1262,7 +1310,7 @@ distance from the camera, or `t = 10000` for a miss; a pixel is drawn, and
 picked, as the sector with the smallest `t`, the first one on a tie.
 The loops that choose a sector by index (the pick, and the draw's moving
 inside glyphs) count the winner from 1, with 0 for none: Metal compiles a
-0-based `winner = i` as a constant 0, so every pick answered sector 0
+0-based `winner = i` as a constant 0, so every pick would answer sector 0
 (#63).
 
 Rust twin: `radial::Sector` (`radial.rs`), built per slice by
@@ -1305,7 +1353,7 @@ struct CategoryBarParams { positions, count, member, members, mode,
 ```
 
 `category_lanes` is the series' lane table, a storage array sized by what
-it holds (#107 R3): for a category bar series the f32 lane bases of the
+it holds: for a category bar series the f32 lane bases of the
 group's value columns in group order, entry `k` member `k`'s, `members`
 entries; a box plot (§5.15) and a radar series' labels (§5.17) keep their
 own lanes there. No count in the layout bounds the group: a group of any
@@ -1435,7 +1483,7 @@ the category bar pipeline layout and group 3 unchanged: the pool at binding
 10, which a box plot reads as follows (CPU writer:
 `renderer/series.rs::box_plot_params`; `BOX_PLOT_LANES`, 18 entries, the
 record schema's fields, the outlier column, the box width and two violin
-curves, not a count of data). A violin without boxes names no record:
+curves). A violin without boxes names no record:
 every record lane is `BOX_LANE_ABSENT` and no box draws or picks.
 
 | Entry of `category_lanes` | Meaning for a box plot |
@@ -1548,28 +1596,32 @@ after `category_bars.wgsl` and `box_plot.wgsl`, whose geometry they read.
 The pipelines use the category bar layout with group 1 replaced: group 0
 the transform, group 1 the series' value label group, group 2 its bar
 style map (an empty one for a radar series), group 3 its category bar data
-(§5.13; for a radar series `positions` is its category column,
-`category_lanes[0]` its value column and `count` its rows).
+(§5.13; for a radar series `positions` is its category column, `count`
+its rows, `member` and `members` its rank and the members of its label
+group, and `category_lanes[k]` member `k`'s value column).
 
 | Binding | Contents |
 |---|---|
-| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 96 B) |
+| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 128 B) |
 | 5 | the atlas texture |
 | 6 | its filtering sampler |
-| 7 | `value_label_cells: array<vec4<f32>>`, read-only storage: one cell per label, sized by the series' labels (#107 R11) and written straight into its mapping at prepare (`data_render::value_label_cells`, `create_value_label_data`); the cell widths are the atlas bake's |
+| 7 | `value_label_cells: array<vec4<f32>>`, read-only storage: one cell per label in each of `shape.w` blocks (one block but for a radar series, which has one per member of its label group), sized by the series' labels and its group and written straight into its mapping at prepare (`data_render::value_label_cells`, `create_value_label_data`); the cell widths are the atlas bake's |
 
 Bindings 0 to 3 of group 1 are the module's `Style` and typed pick query;
 the pick's group 1 binds the same uniform and cells at 4 and 7 beside its
-query. Each label loop runs to `shape.y`: nothing in the layout bounds the
-labels.
+query. Each label loop runs to `shape.y` and each loop over a radar label
+group's members to `shape.w`: nothing in the layout bounds the labels or
+the members.
 
 | Member (binding 4, and binding 7's cells) | Meaning |
 |---|---|
 | `atlas` | the atlas geometry (§5.16) |
-| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; binding 7 holds that many cells |
-| `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10, radar 9 logical px, at the render scale), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
+| `shape` | `(kind, labels, rank, count)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; each block of binding 7 holds that many cells. For a radar series `rank` and `count` are its rank among the members of its label group (the panel's radar series that draw value labels, in series order) and their count (`RadarLabelGroup`, #272): binding 7 holds `count` blocks, block `rank` this series'. `0` and `1` for the other kinds |
+| `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10 logical px at the render scale; radar `max(4 logical px, 0.25 em)` past the vertex's marker), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
 | `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
-| `value_label_cells[i]` | `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down |
+| `radar` | a radar series' `(visual gap, 0, ray x, ray y)`: the visual gap two labels keep (the model's `visual_gap_for` of the label font, 2 px at 18 px, #272) in render pixels, and the radius axis' ray, a unit vector y down |
+| `ring` | a radar series' box of the drawn ring (radius) labels in the ray's frame from the polar centre, as fractions of the outer radius: `(along min, along max, across min, across max)`, across toward the ring labels' side; empty (`x > y`) without ring labels |
+| `value_label_cells[b * labels + i]` | label `i` of block `b`: `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2; for a radar label the reach of its vertex's marker in render pixels, `radar_marker_reach`: half a circle's size, half a square's diagonal, at least half the outline width) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down. A radar block `b` is member `b`'s own cells, written from its own atlas and strings |
 
 `value_label_place(row)` is the content box of label `row` in chart-area
 render pixels (y down), shared by the draw, the selection box and the
@@ -1583,15 +1635,50 @@ pick:
   bar (baseline `0.32` font sizes below the middle); `AUTO` is outside a
   grouped bar and inside a stack segment that fits it (`8` logical px
   narrower and `1.4` font sizes lower than the segment), else nothing;
-- a box's label: the baseline `gap` past the farthest of the high whisker,
-  the mean, the notch's upper bound and the box's outliers along the value
-  axis, centred across the box (`box_stats`, `box_layout`,
-  `box_outlier_range`);
-- a radar vertex's label: `gap` outside the vertex along its spoke (the
-  direction from the inner ring to the outer one through the vertex's
-  category), its centre `gap + width / 2` out across and its baseline
-  `gap` out plus `0.35` font sizes down, as the former radar chart placed
-  it.
+- a box's label (#272): beside its median line, `gap` past the side of
+  the box's slot (`box_slot`, its full width before a violin narrows it)
+  away from its group's centre, the right of a vertical box and above a
+  horizontal one when the box is centred in its slot; beside a vertical
+  box the text is centred on the median line (baseline `0.32` font sizes
+  below it), over or under a horizontal box it is centred on the median
+  and placed as a bar's outside label (`value_label_beside_box`). It never
+  sits at an outlier or a whisker end, whose value it would seem to name.
+  A violin whose box is hidden puts the baseline `gap` past the farther
+  end of its curves, centred across its slot;
+- a radar vertex's label (#272) sits next to its vertex
+  (`value_label_radar`): its box's near edge `gap` past the vertex's
+  marker, outside the vertex along its spoke (the direction from the inner
+  ring to the outer one through the vertex's category), inside it, or
+  beside it at its radius. The labels of the series' label group at the
+  same spoke (the same row of each member's columns; the members' value
+  columns are group 3's lane table, their sizes and marker reaches the
+  cell blocks) are placed together in one scan from the outermost vertex
+  (the larger value) inward, equal positions by rank. Each takes the
+  first of these positions that keeps the visual gap (`radar.x`) from the
+  two labels placed before it and from the drawn ring labels' box
+  (`ring`): (1) its home, outside the vertex, or inward along the spoke
+  when outward would cross the data area's edge or the outer ring (the
+  category labels sit past it); (2) the other side of the vertex along
+  the spoke (none for a flipped label), so of two labels that would touch
+  the larger value's stays outside and the smaller value's goes inside
+  its own vertex, toward the centre; (3) beside the vertex,
+  counter-clockwise of the spoke, then clockwise, moved inward along the
+  spoke until it lies inside the outer ring. A label whose home is free
+  splits with the next label of the scan instead when their homes touch
+  and that one cannot clear it on the other side of its vertex: their
+  vertices lie within the visual gap of each other (equal values), the
+  next one is flipped, or its other side still touches. The two go beside
+  their vertices, one on each side of the spoke: the earlier one on its
+  first free side, the next one on the other. More than two labels on a
+  spoke follow the same scan, each past the two placed before it; with no
+  free position a label keeps its home, a crowding past the four
+  positions next to a vertex that the host resolves (fewer labels,
+  shorter strings), as are labels on different spokes near the centre.
+  Every label of a spoke runs the same scan over the same pool values, so
+  they agree without anything stored: the placement is computed on every
+  draw, `shape.w` steps of a search over the `shape.w` members, for any
+  number of members. A label is never farther from its
+  vertex than its gap past the marker, about one em plus the marker size.
 
 The flip rule of every kind: a label placed outside its anchor (a bar's
 `OUTSIDE` label, or `AUTO` on a grouped bar; every box and radar label)
@@ -1599,8 +1686,8 @@ whose box, before the drag offset, would cross the data area's edge in the
 direction it was placed from the anchor goes to the other side of the
 anchor, as `AUTO` puts a stack's label inside its segment: inside the
 bar's end (the text top about `gap` inside a rising end, `gap` inside a
-horizontal one), on the other side of the box's top, or inward along the
-radar spoke (`-d`). The data area comes from the transform
+horizontal one), on the other side of the box (or of the curves' top),
+or inward along the radar spoke. The data area comes from the transform
 (`value_label_data_area`: the data-to-panel affine over the chart area
 that `pixel_to_ndc` spans), so the rule reads only the uniform and the
 pool, and the pick sees it through the same `value_label_place`. What
@@ -1608,8 +1695,9 @@ still overflows after the flip is clipped by the data-area scissor.
 
 The box is then moved by the drag offset and its origin rounded to the
 pixel grid, so `label_quad` samples the atlas texel for texel
-(`texel_exact`). Labels never displace each other: thinning the category
-axis is the only thinning. `vs_value_label` / `fs_value_label` draw the
+(`texel_exact`). Only the labels of a radar label group displace each
+other, next to their own vertices; thinning the category axis is the only
+thinning. `vs_value_label` / `fs_value_label` draw the
 labels (one instance per label, `VALUE_LABEL_VERTICES`), after every
 series' picked highlights, scissored to the data area like every data
 primitive; `vs_value_label_selection` / `fs_value_label_selection` stroke
@@ -1634,7 +1722,7 @@ module after `box_plot.wgsl`, whose slot layout (`box_slot`), value reads
 group 3 unchanged: the pool at binding 8, a `CategoryBarParams` (§5.13) at
 binding 9 and the lane table at binding 10, which a range bar series reads
 as follows (CPU writer: `renderer/series.rs::range_bar_params`;
-`RANGE_BAR_LANES`, 8 entries, a fixed schema, not a count of data).
+`RANGE_BAR_LANES`, 8 entries, a fixed schema).
 
 | Entry of `category_lanes` | Meaning for a range bar series |
 |---|---|
@@ -1682,8 +1770,7 @@ reads 1; or the style of the state `round(v)`, the series colour past the
 styles. With progress, the body past `start + p · (end − start)` (`p`
 clamped to `0..=1`, the difference taken on the pairs so a time axis keeps
 its precision; a NaN `p` draws the bar whole) is drawn at the remaining
-opacity. The renderer compares the given ends and maps a given state; it
-computes no value the user reads as data.
+opacity. The renderer compares the given ends and maps a given state.
 
 `vs_range_bar_selection` / `fs_range_bar_selection` draw the picked bar's
 body ring and emphasis as a category bar's (one quad, the body). The
@@ -1717,10 +1804,10 @@ where the box stands), with these lane tables (CPU writers:
 | `+ 5` | its density column's lane, index-aligned with the curve's values |
 | `+ 6` | its density scale as `f32` bits: the density drawn at the full half thickness |
 
-`VIOLIN_LANES` (16) is a fixed schema, not a count of data. The style
+`VIOLIN_LANES` (16) is a fixed schema. The style
 map's slot `h` is half `h`'s fill, outline colour and outline width, and
 each box override is one row keyed by its category's row with the
-override's colour as the fill and its style's outline (D7; CPU writer
+override's colour as the fill and its style's outline (CPU writer
 `renderer/style.rs::violin_style_map`).
 
 One instance is one curve segment, value `s` to `s + 1` of a half: it finds
@@ -1736,7 +1823,8 @@ across the slanted edge, the outline is the distance to the segment's edge
 and its neighbours' (round joins), the caps at a group's ends and a half's
 straight side at the middle; an edge with no width at either end has no
 outline, so no stalk is drawn where the density is zero. A NaN value or density draws no segment
-there. The renderer scales the density it is given; it estimates nothing.
+there. The host computes the density; the renderer scales the density it
+is given.
 
 `vs_violin_selection` draws every segment of the series and keeps the
 selected category's (and half's, §2.5) outline ring with the body's
@@ -1805,7 +1893,7 @@ target's (the live highlight), and `box_space_point` to box space for shading.
 `box_visible` clips a fragment to the box. Both matrices are
 `Config::view_matrix` composed on the host with the target's pixel map, so
 the draw, the ID pick and the CPU decorations project through one camera.
-This is the projection layer the 3D vector glyph reuses (rule 9, §5.3 3D
+This is the projection layer the 3D vector glyph reuses (§5.3 3D
 form).
 
 [`common/field_paint.wgsl`](common/field_paint.wgsl) holds the colour a
@@ -1880,9 +1968,8 @@ floor point in the flat entries' cell space, so the contour search runs per
 floor fragment; the floor entries set the screen derivatives of that point
 before painting (`contour_floor_width_scale`), which carry each stroke's
 half-width to the floor along the level's gradient, so a floor stroke is
-`line_width_px` wide on screen whichever way it runs (#259; #49 D7 measured
-it in floor-plane pixels, which thinned the strokes running across the
-view); the mesh module's `vs_tri_floor` / `fs_tri_floor` /
+`line_width_px` wide on screen whichever way it runs (#259; a width in
+floor-plane pixels would thin the strokes running across the view); the mesh module's `vs_tri_floor` / `fs_tri_floor` /
 `fs_tri_floor_pick` (§5.25) place every triangle on the floor. The ID pick
 writes `(id, 0, c, r)` for a grid surface sample, `(id, 2, triangle,
 vertex)` for a mesh surface, and `(id | 0x80000000, level, c, r)` for a
@@ -1948,24 +2035,24 @@ valid vertex, or past the ring's last the ring's first,
 `region_ring_start(i) = region_start[i]`), with the stencil op `Invert`,
 colour writes masked. `vs_cover` / `fs_cover` draws the whole triangle once
 per series where the stencil is not zero and resets it (`NotEqual`,
-`Zero`), so one series' polygons combine by even-odd. The anchor is fixed
-(the maintainer's decision on #49): N triangles for N vertices.
+`Zero`), so one series' polygons combine by even-odd. The anchor is fixed:
+N triangles for N vertices.
 
 The ring starts come from the ring-start scan, three compute entries of the
 same module in group 2 (`ring_pool`, `ring_dst`, `ring_sums`,
 `RingScanParams`; CPU twin `ternary_region.rs::RingScanParamsGpu`, 16 B:
 the entry count of the level and the three lane bases), run by
-`ternary_region.rs::scan_ring_starts` before every region draw and pick
-(the maintainer's approval on #49, 2026-10-31). `ring_init` writes each
+`ternary_region.rs::scan_ring_starts` before every region draw and pick.
+`ring_init` writes each
 row's candidate, `i + 1` on a row `ternary_sample_valid` rejects and 0
 otherwise; `ring_scan_block` takes the running maximum of each block of
 256 in workgroup memory and writes the block's maximum to the level above;
 the levels are scanned in turn up to one entry, and `ring_apply` folds
 each scanned level into the one below. A row's start is then the row after
 the nearest invalid row at or before it, so the closing edge reads one
-index instead of walking its ring: before the scan, the invocation at a
-ring's last vertex walked back to its first, and a ring of 131 072
-vertices made Metal kill the command buffer and stop drawing (#63). Every
+index instead of walking its ring: an invocation that walks back from a
+ring's last vertex to its first makes Metal kill the command buffer and
+stop drawing on a ring of 131 072 vertices (#63). Every
 invocation does a bounded amount of work, the depth is log256 of the rows,
 and dispatches are two-dimensional so no level is bounded by one
 dimension's workgroup limit. The rows' `u32` buffer is the only storage the
@@ -2007,7 +2094,7 @@ f32 lane base in axis order) and the axis range table (binding 5,
 `mode` with `PARALLEL_AXIS_INVERTED = 1` and `PARALLEL_AXIS_LOG = 2`).
 Both tables are sized by the axis count and written straight into their
 mappings (`create_parallel_data_bind_group`): nothing per row is on the
-CPU, and no field bounds the number of axes (#107 R3). No vertex slot is
+CPU, and no field bounds the number of axes. No vertex slot is
 bound.
 
 `vs_parallel` draws instance `inst` as segment `i = inst mod (axes − 1)` of
@@ -2044,8 +2131,7 @@ The bundle's pipeline is `DataPickPipelineBundle.parallel`
 
 [#209](https://github.com/shim9610/figgy/issues/209). A probability `p` in
 `(0, 1)` is drawn at `F⁻¹(p)` for the axis' code `kind`
-(`Transform.scale_prob`). It places given data: projection (CLAUDE.md
-rule 1). Every function reads the column's `(hi, lo)` pair, not its sum:
+(`Transform.scale_prob`). Every function reads the column's `(hi, lo)` pair, not its sum:
 `q = (1 − hi) − lo` keeps the upper tail that `hi` alone rounds away.
 
 | Function | What it computes |
@@ -2056,8 +2142,8 @@ rule 1). Every function reads the column's `(hi, lo)` pair, not its sum:
 | `prob_inverse(y, kind)` | `(p, 0)` below the median and `(1, −q)` above; the normal uses Numerical Recipes' `erfcc` (under 1.2e-7) |
 
 **Sites.** `axis_pair_to_t` and `axis_px_per_unit_at` take `prob` after
-`is_log` and branch on it first, so the linear and log arithmetic is
-unchanged. `sample_valid` and `pick_coordinate_is_valid` omit a value with
+`is_log` and branch on it first, so the linear and log paths keep their
+own arithmetic. `sample_valid` and `pick_coordinate_is_valid` omit a value with
 no position (a line breaks there, as at a non-positive sample on a log
 axis). `axis_baseline_ndc` clamps an area or stem baseline at or past 0 or
 1 to the axis end on its side (`p ≤ 0` the low end, `p ≥ 1` the high one;
@@ -2195,8 +2281,7 @@ every triangle (`DATA_SELECTION_KIND_CONTOUR_LEVEL`, `indices.y` the level),
 painting that level's stroke widened by `metrics.y`.
 
 The gradient only sets stroke coverage, and the blend only shades given
-values: nothing the reader reads as data is computed (rule 1), and nothing
-per vertex is stored (rule 2).
+values; nothing per vertex is stored.
 
 ## Checklist
 

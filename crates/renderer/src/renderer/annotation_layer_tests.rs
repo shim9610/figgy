@@ -123,7 +123,7 @@ fn fixture(config: &Config) -> (Renderer, ChartId) {
 }
 
 /// Paint the registered chart through `view` into a white target.
-fn paint(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
+fn paint(r: &mut Renderer, id: ChartId, view: &mut ChartView) -> Vec<u8> {
     let target = r.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("annotation layer test target"),
         size: wgpu::Extent3d {
@@ -139,7 +139,7 @@ fn paint(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
         view_formats: &[],
     });
     let prepared = r
-        .prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
+        .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
         .unwrap();
     let attachment = target.create_view(&Default::default());
     let mut encoder = r.device.create_command_encoder(&Default::default());
@@ -166,10 +166,10 @@ fn paint(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
 /// A brand-new renderer and view for `config`, painted once.
 fn fresh(config: &Config) -> Vec<u8> {
     let (mut r, id) = fixture(config);
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), PANEL)
         .unwrap();
-    paint(&mut r, id, &view)
+    paint(&mut r, id, &mut view)
 }
 
 fn pixel(rgba: &[u8], x: f32, y: f32) -> [u8; 4] {
@@ -202,7 +202,7 @@ fn annotation_edits_refresh_only_their_layer_and_match_fresh_renders() {
         .unwrap();
     assert!(view.render_warnings().is_empty());
     assert_eq!(view.annotation_map().entries().count(), 4);
-    let first = paint(&mut r, id, &view);
+    let first = paint(&mut r, id, &mut view);
     assert_eq!(
         first,
         fresh(&config),
@@ -242,7 +242,7 @@ fn annotation_edits_refresh_only_their_layer_and_match_fresh_renders() {
         },
         "an annotation refresh must not rewrite the grid or decoration texture"
     );
-    let cached = paint(&mut r, id, &view);
+    let cached = paint(&mut r, id, &mut view);
     assert_ne!(cached, first);
     assert_eq!(
         cached,
@@ -260,7 +260,7 @@ fn annotation_edits_refresh_only_their_layer_and_match_fresh_renders() {
     assert!(after.needs_draw_since(Some(&before)));
     assert!(!after.needs_raster_since(Some(&before)));
     assert!(!after.needs_annotation_raster_since(Some(&before)));
-    let hidden_pixels = paint(&mut r, id, &view);
+    let hidden_pixels = paint(&mut r, id, &mut view);
     assert_eq!(
         view.layer_stamps().annotations,
         2,
@@ -295,7 +295,7 @@ fn annotation_edits_refresh_only_their_layer_and_match_fresh_renders() {
             annotations: 3
         }
     );
-    assert_eq!(paint(&mut r, id, &view), fresh(&chrome));
+    assert_eq!(paint(&mut r, id, &mut view), fresh(&chrome));
 
     // 4) Identical replacement: no revision moves at all.
     let before = after;
@@ -314,10 +314,10 @@ fn spans_sit_below_the_data_and_text_boxes_above_the_legend() {
     let plain = base_config();
     let config = annotated_config();
     let (mut r, id) = fixture(&config);
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), PANEL)
         .unwrap();
-    let with = paint(&mut r, id, &view);
+    let with = paint(&mut r, id, &mut view);
     let without = fresh(&plain);
     let space = crate::annotation::pixel_space_for_config(&config);
     let x = space.value_to_px(AnnotationAxis::X, 0.75).unwrap();
@@ -435,10 +435,10 @@ fn view_map_drags_write_anchors_that_round_trip() {
     assert!((after.x - before.x - 9.0).abs() < 0.01 && (after.y - before.y - 7.0).abs() < 0.01);
     assert_eq!(view.annotation_selected(), Some(2));
     // The selection box lives on the overlay: pixels change, no other layer.
-    let selected = paint(&mut r, id, &view);
+    let selected = paint(&mut r, id, &mut view);
     r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, None)
         .unwrap();
-    assert_ne!(selected, paint(&mut r, id, &view));
+    assert_ne!(selected, paint(&mut r, id, &mut view));
     assert_eq!(view.layer_stamps().decoration, 1);
     // JSON keeps the dragged anchors to the parser's precision (serde_json
     // without `float_roundtrip` may land one ULP off), which is pixel-exact.
@@ -610,7 +610,7 @@ fn fresh_selected(config: &Config, selected: Option<usize>) -> Vec<u8> {
         .unwrap();
     r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, selected)
         .unwrap();
-    paint(&mut r, id, &view)
+    paint(&mut r, id, &mut view)
 }
 
 // While `Annotations` is active the drawn items sit on top of the shared
@@ -754,7 +754,7 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         let mut view = r
             .create_chart_view(&Chart::new(config.clone()), PANEL)
             .unwrap();
-        let first = paint(&mut r, id, &view);
+        let first = paint(&mut r, id, &mut view);
         assert_eq!(first, fresh(&config));
         let stamps = view.layer_stamps();
         let generations = view.layer_raster_generations();
@@ -775,7 +775,7 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         assert!(!after.needs_raster_since(Some(&before)));
         assert!(!after.needs_annotation_raster_since(Some(&before)));
         let active = r.chart_config(id).unwrap().clone();
-        assert_eq!(paint(&mut r, id, &view), first);
+        assert_eq!(paint(&mut r, id, &mut view), first);
         assert_eq!(first, fresh(&active));
         chrome_unchanged(&view);
 
@@ -794,7 +794,7 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
             .unwrap();
         chrome_unchanged(&view);
         assert_eq!(view.layer_stamps().annotations, stamps.annotations + 1);
-        let selected = paint(&mut r, id, &view);
+        let selected = paint(&mut r, id, &mut view);
         assert_ne!(selected, first);
         assert_eq!(selected, fresh_selected(&active, Some(2)));
 
@@ -851,7 +851,10 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         r.refresh_annotations(&mut view, &Chart::new(edited.clone()), PANEL, Some(2))
             .unwrap();
         chrome_unchanged(&view);
-        assert_eq!(paint(&mut r, id, &view), fresh_selected(&edited, Some(2)));
+        assert_eq!(
+            paint(&mut r, id, &mut view),
+            fresh_selected(&edited, Some(2))
+        );
         #[cfg(feature = "serde")]
         {
             let json = serde_json::to_string(&edited).unwrap();
@@ -889,7 +892,7 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         r.refresh_annotations(&mut view, &Chart::new(last.clone()), PANEL, None)
             .unwrap();
         chrome_unchanged(&view);
-        assert_eq!(paint(&mut r, id, &view), fresh(&last));
+        assert_eq!(paint(&mut r, id, &mut view), fresh(&last));
         let map = crate::HitMap::for_active_layer(&last);
         let moved = view
             .annotation_map()

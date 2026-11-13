@@ -16,7 +16,9 @@
 // quad is inflated by one AA pixel; the fragment stage evaluates the local
 // square-cap stroke SDF so side edges, caps, and dash cuts get smooth coverage
 // even when the render target itself is single-sample.
-// Zero-length segments collapse the quad and become invisible.
+// Zero-length segments collapse the quad and become invisible; a segment
+// between two equal data points is zero-length by construction
+// (`STEP_AXIS_POINT`, common/line_step.wgsl), not by its projected length.
 //
 // Dash patterns (Style.dash / Style.dash_len) are evaluated per fragment
 // against the polyline's CUMULATIVE ARC LENGTH: slots 4/5 carry a GPU-computed
@@ -189,7 +191,10 @@ fn vs_ternary(in: VsIn, arc: VsArc, c: VsTernaryC, @builtin(vertex_index) vid: u
         return masked;
     }
     let slot = strip_slot(vid, 4u);
-    let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, LINE_STEP_LINEAR, slot.piece);
+    var piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, LINE_STEP_LINEAR, slot.piece);
+    // The third component places the ends too: equal x and y are not one
+    // point here.
+    piece.axis = STEP_AXIS_NONE;
     let a_ndc = ternary_ndc(transform, in.x_a, in.y_a, c.c_a);
     let b_ndc = ternary_ndc(transform, in.x_b, in.y_b, c.c_b);
     return line_stroke_vertex(in, arc, LINE_STEP_LINEAR, slot, piece, a_ndc, b_ndc);
@@ -216,7 +221,9 @@ fn line_3d_vertex(in: VsIn, arc: VsArc, z: VsZ, vid: u32) -> VsOut {
         return masked;
     }
     let slot = strip_slot(vid, 4u);
-    let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, LINE_STEP_LINEAR, slot.piece);
+    var piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, LINE_STEP_LINEAR, slot.piece);
+    // The height places the ends too: equal x and y are not one point here.
+    piece.axis = STEP_AXIS_NONE;
     let half_w = max(style.line_width_px, 1.0) * 0.5;
     let t_a = view3d_point_t(in.x_a, in.y_a, z.z_a);
     let t_b = view3d_point_t(in.x_b, in.y_b, z.z_b);

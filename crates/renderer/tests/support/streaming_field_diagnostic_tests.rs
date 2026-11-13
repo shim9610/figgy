@@ -129,13 +129,13 @@ fn pass_control(
     config.chart_area.0.y = 0;
     r.ensure_target(wgpu::TextureFormat::Rgba8Unorm, 4).unwrap();
     let id = r.register_chart(config.clone(), series.to_vec()).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let frame = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     let item = &frame.items[0];

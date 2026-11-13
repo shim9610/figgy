@@ -225,16 +225,16 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
         config: &config,
         style: &style,
     }];
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .expect("1024-label browser view");
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
     let prepared = renderer
-        .prepare(&items)
+        .prepare(&mut items)
         .expect("1024-label browser prepare");
     let count = renderer
         .contour_label_instance_count_for_test(&prepared, 0, 0)

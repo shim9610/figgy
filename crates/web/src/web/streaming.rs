@@ -484,6 +484,7 @@ impl FiggyChart {
         &mut self,
         max_primitives_per_chunk: f64,
     ) -> Result<AutoStreamingRequestResult, JsValue> {
+        self.refuse_streaming()?;
         let max_primitives_per_chunk =
             js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
         let (display_config, _, display_scale) = self.display_config()?;
@@ -692,6 +693,7 @@ impl FiggyChart {
         encodings: Vec<String>,
         max_primitives_per_chunk: f64,
     ) -> Result<AutoStreamingRequestResult, JsValue> {
+        self.refuse_streaming()?;
         let columns = stream_columns_from_metadata(&ids, &revisions, &lengths, &encodings)?;
         for source in &columns {
             if self.renderer.logical_column(&source.id).is_none() {

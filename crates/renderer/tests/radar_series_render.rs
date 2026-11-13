@@ -904,6 +904,44 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
             );
             previous = after.rgba;
         }
+        // Both series labelled: the first series' labels make room for the
+        // second's at their spokes (#272) and follow every edit of the
+        // second series' labels and values like a fresh renderer.
+        let mut both = labelled.clone();
+        if let DataRenderType::Radar { labels, .. } = &mut both[1].render_type {
+            labels.placement = RadarLabels::Values;
+            labels.text = vec!["b".into(); 5];
+        }
+        let mut other_text = both.clone();
+        if let DataRenderType::Radar { labels, .. } = &mut other_text[1].render_type {
+            labels.text[1] = "bbbb".into();
+        }
+        for (name, edited) in [
+            ("other series labelled", &both),
+            ("other series' label text", &other_text),
+        ] {
+            let after = export(&mut r, &grid, edited, scale);
+            assert_ne!(after.rgba, previous, "{name} {scale}x");
+            assert_eq!(
+                after.rgba,
+                export(&mut renderer(), &grid, edited, scale).rgba,
+                "{name} {scale}x: cached"
+            );
+            previous = after.rgba;
+        }
+        // The second series' values equal to the first's at every spoke.
+        let equal = col(ONE.to_vec());
+        r.upsert_column("two", &equal).unwrap();
+        let mut fresh = renderer();
+        fresh.upsert_column("two", &equal).unwrap();
+        let after = export(&mut r, &grid, &other_text, scale);
+        assert_ne!(after.rgba, previous, "other series' values {scale}x");
+        assert_eq!(
+            after.rgba,
+            export(&mut fresh, &grid, &other_text, scale).rgba,
+            "other series' values {scale}x: cached"
+        );
+        r.upsert_column("two", &col(TWO.to_vec())).unwrap();
     }
 }
 
@@ -941,6 +979,188 @@ fn a_released_radar_document_draws_through_the_reader() {
                 })
                 .count();
             assert!(n > 50 * (scale as usize), "{}: {n}", s.id);
+        }
+    }
+}
+
+/// The radar gallery's documents with value labels on every vertex: two
+/// and three releases over six categories on a 0..10 radius whose ring
+/// labels run up the first spoke, at 960 x 640.
+fn labelled_radar_documents() -> Vec<renderer::RadarChart> {
+    let release = |id: &str, values: Vec<f64>, color: Color| {
+        renderer::radar::RadarSeries::new(id, id, values, color)
+    };
+    let two = renderer::RadarChart {
+        categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
+            .into_iter()
+            .map(|s| renderer::Category::new(s.to_lowercase(), s))
+            .collect(),
+        series: vec![
+            release("v1", vec![6., 8., 4., 5., 7., 6.5], BLUE),
+            release("v2", vec![8., 7., 6., 8., 9., 7.], RED),
+        ],
+        font_size: 18.,
+        labels: RadarLabels::Values,
+        value_suffix: " pt".into(),
+        label_decimals: 0,
+        value_range: Some([0.0, 10.0]),
+        ring_spacing: Some(2.0),
+        ..Default::default()
+    };
+    let mut three = two.clone();
+    three
+        .series
+        .push(release("v3", vec![9., 8.5, 8., 9., 9.5, 8.], GREEN));
+    let mut circle = two.clone();
+    circle.style.grid_shape = renderer::radar::RadarGridShape::Circle;
+    vec![two, three, circle]
+}
+
+/// Radar value labels keep clear of each other, of the ring labels and of
+/// the category labels (#272), at 1x and 2x: each series' labels drawn
+/// alone (the others' dragged off the chart, so every label stays where it
+/// is placed: the drag applies after the placement) share no pixel, a
+/// pixel apart, with another series' labels, and no label pixel lies in
+/// the box of a ring or category label the chrome draws. In the gallery
+/// the 7 pt and 6 pt at Ergonomics overlapped, and the 8 pt sat on the
+/// ring label 8. Each label stays next to its own vertex: its ink lies
+/// within one em plus the marker size of the vertex.
+#[test]
+fn radar_value_labels_meet_no_other_label() {
+    for (d, document) in labelled_radar_documents().into_iter().enumerate() {
+        let (mut config, series, uploads) = Config::from_radar(&document);
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 960,
+            height: 640,
+        });
+        let mut r = renderer();
+        for upload in &uploads {
+            r.add_column(upload.column.clone(), &upload.values).unwrap();
+        }
+        let chart = Chart::new(config);
+        // `only` keeps the labels of that series on the chart; the others
+        // are dragged far off it, which leaves every label where it is
+        // placed (the drag applies after the placement); `None` drags them
+        // all off.
+        let labelled = |only: Option<usize>| {
+            let mut out = series.clone();
+            for (k, s) in out.iter_mut().enumerate() {
+                if let DataRenderType::Radar { labels, .. } = &mut s.render_type
+                    && only != Some(k)
+                {
+                    labels.offsets = vec![[4000.0, 4000.0]; labels.text.len()];
+                }
+            }
+            out
+        };
+        for scale in [1.0f32, 2.0] {
+            let bare = export(&mut r, &chart, &labelled(None), scale);
+            let ink = |k: usize, r: &mut Renderer| {
+                let img = export(r, &chart, &labelled(Some(k)), scale);
+                save(&format!("radar-value-labels-{d}-{k}-{scale}x"), &img);
+                img.rgba
+                    .chunks_exact(4)
+                    .zip(bare.rgba.chunks_exact(4))
+                    .map(|(a, b)| (0..4).any(|c| a[c].abs_diff(b[c]) > 40))
+                    .collect::<Vec<bool>>()
+            };
+            let inks: Vec<Vec<bool>> = (0..series.len()).map(|k| ink(k, &mut r)).collect();
+            let (w, h) = (bare.width as i64, bare.height as i64);
+            let at = |mask: &[bool], x: i64, y: i64| {
+                x >= 0 && y >= 0 && x < w && y < h && mask[(y * w + x) as usize]
+            };
+            for (k, mask) in inks.iter().enumerate() {
+                assert!(
+                    mask.iter().filter(|p| **p).count() > 100,
+                    "{d} {k} {scale}x: drawn"
+                );
+                for other in inks.iter().skip(k + 1) {
+                    for y in 0..h {
+                        for x in 0..w {
+                            if at(mask, x, y) {
+                                let near =
+                                    (-1..=1).any(|dy| (-1..=1).any(|dx| at(other, x + dx, y + dy)));
+                                assert!(!near, "{d} {k} {scale}x: labels meet at {x},{y}");
+                            }
+                        }
+                    }
+                }
+            }
+            // Each label stays next to its own vertex (#272): every pixel of
+            // a series' labels lies within one em plus the marker size, plus
+            // the extent of its widest label, of one of that series'
+            // vertices.
+            let scaled = chart.config().scaled(scale);
+            let face = &scaled.left_y.label_style;
+            for (k, mask) in inks.iter().enumerate() {
+                let DataRenderType::Radar { labels, style, .. } = &series[k].render_type else {
+                    unreachable!("a radar document opens as radar series")
+                };
+                let extent = labels
+                    .text
+                    .iter()
+                    .map(|t| {
+                        let m = renderer::text_render::measure_plain_text(
+                            t,
+                            &face.label_font,
+                            face.font_size,
+                            false,
+                            false,
+                            renderer::text_render::FontPolicy::Standard,
+                        );
+                        m.width.hypot(m.ascent + m.descent)
+                    })
+                    .fold(0.0f32, f32::max);
+                let bound = f64::from(
+                    face.font_size + style.marker_size() * scale + extent + 2.0 * scale + 1.0,
+                );
+                let values = &document.series[k].values;
+                for y in 0..h {
+                    for x in 0..w {
+                        if !at(mask, x, y) {
+                            continue;
+                        }
+                        let near = values.iter().enumerate().any(|(i, v)| {
+                            let (vx, vy) = vertex(&chart, scale, i as f64, *v);
+                            (x as f64 + 0.5 - vx).hypot(y as f64 + 0.5 - vy) <= bound
+                        });
+                        assert!(
+                            near,
+                            "{d} {k} {scale}x: a label pixel at {x},{y} far from its vertices"
+                        );
+                    }
+                }
+            }
+            // The ring and category labels as the chrome draws them.
+            let measure = renderer::CpuTextMeasure::for_style(&scaled.draw_style);
+            for element in [
+                renderer::layout::Element::AxisLabel(renderer::layout::Side::Left),
+                renderer::layout::Element::AxisLabel(renderer::layout::Side::Bottom),
+            ] {
+                let mut boxes = 0;
+                renderer::select::emit_element(
+                    &scaled,
+                    &element,
+                    &measure,
+                    &mut renderer::sink::Parts(&mut |part| {
+                        let b = part.extent();
+                        boxes += 1;
+                        for (k, mask) in inks.iter().enumerate() {
+                            for y in b.y.floor() as i64..(b.y + b.height).ceil() as i64 {
+                                for x in b.x.floor() as i64..(b.x + b.width).ceil() as i64 {
+                                    assert!(
+                                        !at(mask, x, y),
+                                        "{d} {k} {scale}x: a value label in {element:?} {b:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }),
+                );
+                assert!(boxes >= 6, "{d} {element:?}");
+            }
         }
     }
 }

@@ -44,8 +44,10 @@ pub(in crate::renderer) fn validate_renderer_series(
             });
         }
         // A DataLess series registers no column (#203, #234): its values
-        // are SSOT, held to the model's rules above.
-        if item.is_dataless() {
+        // are SSOT, held to the model's rules above. A monotonic series'
+        // columns are its envelope, written by its own calls (#271): a
+        // frame refuses it with `MonotonicSourceRequired` until they are.
+        if item.is_dataless() || item.monotonic().is_some() {
             continue;
         }
         if let Some(mesh) = item.tri_mesh() {

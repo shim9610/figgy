@@ -621,8 +621,8 @@ pub(super) fn draw_area_closing(
 
 /// What a parallel coordinates series draws with beside `Transform` and
 /// `Style`: its row and axis counts and its colour column's lane. The axis
-/// lanes and ranges are the group's tables, sized by the axis count, so no
-/// field here bounds the number of axes (#107 R3).
+/// lanes and ranges are the group's tables, sized by the axis count, so any
+/// number of axes fits.
 ///
 /// GPU twin: `parallel_columnar.wgsl::ParallelParams`, 16 B.
 #[repr(C)]

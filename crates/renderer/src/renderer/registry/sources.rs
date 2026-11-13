@@ -336,6 +336,27 @@ impl Renderer {
         next_config: Config,
     ) -> Result<bool> {
         self.health.check()?;
-        self.remove_column_impl(id, Some((chart_id, next_config)))
+        // A config that moves a monotonic series' x mapping needs its
+        // group's source, which this call does not lend (#271).
+        let monotonic = self
+            .chart_states
+            .get(&chart_id)
+            .ok_or(FiggyError::UnknownChart { id: chart_id })?
+            .series
+            .iter()
+            .any(|series| series.monotonic().is_some());
+        let touched = monotonic
+            && self.reconcile_monotonic(
+                chart_id,
+                Some(&next_config),
+                None,
+                Placement::Current,
+                &mut lend_none,
+            )?;
+        let result = self.remove_column_impl(id, Some((chart_id, next_config)));
+        if result.is_err() && touched {
+            self.forget_monotonic_chart(chart_id);
+        }
+        result
     }
 }

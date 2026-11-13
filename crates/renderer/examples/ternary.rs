@@ -13,11 +13,12 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, scatter, series};
+use gallery::Result;
 use renderer::{
-    Anchor, Annotation, AnnotationKind, Color, CpuTextMeasure, MeasureText, Renderer, TextAlign,
-    config::{LegendCorner, LegendEntryKind, TickVisibility},
-    data_config::{DataRenderType, PointSizeMap, SizeScale},
+    Anchor, Annotation, AnnotationKind, Color, CpuTextMeasure, MeasureText, Renderer, SeriesConfig,
+    TextAlign,
+    config::{LegendCorner, TickVisibility},
+    data_config::{DataLineStyleConfig, DataRenderType, SizeScale},
     ternary::{TernaryOptions, TernaryRegionStyle},
     text::RichText,
 };
@@ -220,9 +221,6 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         axis.label_style.color = rgb(120, 110, 100);
     }
     config.legend.corner = LegendCorner::TopLeft;
-    // The triangle is as tall as the plot: no chrome below it.
-    config.bottom_x.out_margin = 30.;
-    config.top_x.out_margin = 10.;
 
     let mut specs = Vec::new();
     // The class polygons, one series each so that neighbours never form an
@@ -230,19 +228,22 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     for (k, (name, color, polygon, _)) in classes().iter().enumerate() {
         let ring = polygon.iter().chain(polygon.first());
         for (i, suffix) in ["sand", "silt", "clay"].iter().enumerate() {
-            r.add_column(
-                format!("class-{k}-{suffix}"),
-                &column(ring.clone().map(|v| v[i]).collect()),
-            )?;
+            let values: Vec<f64> = ring.clone().map(|v| v[i]).collect();
+            r.add_column(format!("class-{k}-{suffix}"), &values)?;
         }
-        specs.push(series(
-            name,
-            &format!("class-{k}-sand"),
-            &format!("class-{k}-clay"),
+        // An outlined region without markers: no constructor draws that.
+        specs.push(SeriesConfig::of_kind(
+            *name,
+            format!("class-{k}-sand"),
+            format!("class-{k}-clay"),
             DataRenderType::Ternary {
-                c_column: format!("class-{k}-silt"),
+                c_column: format!("class-{k}-silt").into(),
                 scatter: None,
-                line: Some(line(bg, 2.)),
+                line: Some(DataLineStyleConfig {
+                    line_color: bg,
+                    line_width: 2.,
+                    ..Default::default()
+                }),
                 region: Some(TernaryRegionStyle {
                     color: *color,
                     opacity: 0.75,
@@ -262,37 +263,33 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             silt.push(100. - s - c);
         }
         for (suffix, data) in [
-            ("sand", sand),
-            ("silt", silt),
-            ("clay", clay),
-            ("depth", depths.clone()),
+            ("sand", &sand),
+            ("silt", &silt),
+            ("clay", &clay),
+            ("depth", &depths),
         ] {
-            r.add_column(format!("core-{k}-{suffix}"), &column(data))?;
+            r.add_column(format!("core-{k}-{suffix}"), data)?;
         }
-        let mut markers = scatter(*color, 6.);
-        let mut size = PointSizeMap {
-            column: format!("core-{k}-depth"),
-            domain_min: 0.,
-            domain_max: 1.,
-            min_px: 3.5,
-            max_px: 9.,
-            scale: SizeScale::Radius,
-        };
-        size.fit_domain(0., 140.);
-        markers.point_size_map = Some(size);
-        specs.push(series(
-            &format!("core-{k}"),
-            &format!("core-{k}-sand"),
-            &format!("core-{k}-clay"),
-            DataRenderType::Ternary {
-                c_column: format!("core-{k}-silt"),
-                scatter: Some(markers),
-                line: Some(line(*color, 2.2)),
-                region: None,
-            },
-        ));
-        chart = chart.with_legend_entry(name, *color, 2.2, LegendEntryKind::LineScatter);
+        // A line through markers whose radius (not area) follows the depth.
+        let core = SeriesConfig::ternary(
+            format!("core-{k}"),
+            format!("core-{k}-sand"),
+            format!("core-{k}-clay"),
+            format!("core-{k}-silt"),
+        )
+        .color(*color)
+        .with_line(2.2)
+        .size_by(format!("core-{k}-depth"), [0., 140.], [3.5, 9.])
+        .style_markers(|markers| {
+            if let Some(size) = &mut markers.point_size_map {
+                size.scale = SizeScale::Radius;
+            }
+        });
+        specs.push(core.label(name));
     }
+    chart = chart.with_legend_from(&specs);
+    // The class names below are placed from the fitted data area.
+    chart.fit_layout();
 
     // Each class name centred on its place: the triangle's geometry turns
     // the composition into pixels, the measured text centres the block.
@@ -333,7 +330,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             align: Default::default(),
         }));
 
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-ternary.png"))
 }
 

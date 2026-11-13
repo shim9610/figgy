@@ -1,10 +1,11 @@
 //! Point value maps: a value column colours the points through the chart's
 //! colourbar or sizes their markers.
 //! - `colormap_scatter` writes `gallery-colormap.png`: 1400 particles along two
-//!   spiral arms coloured by an age column (`point_color_map`).
+//!   spiral arms coloured by an age column (`point_color_map` through
+//!   `color_by`).
 //! - `bubbles` writes `gallery-bubbles.png`: three regions of cities whose
 //!   marker area follows a population column over one explicit domain
-//!   (`point_size_map` with `fit_domain`).
+//!   (`point_size_map` through `size_by`).
 //!
 //! cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
 #[allow(dead_code)]
@@ -13,11 +14,11 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, scatter, series};
+use gallery::Result;
 use renderer::{
-    Color, ColorMap, Renderer,
+    Color, ColorMap, Renderer, SeriesConfig,
     config::{LegendCorner, LegendEntryKind},
-    data_config::{DataRenderType, PointColorMap, PointSizeMap, SizeScale},
+    data_config::ScatterShape,
     text::RichText,
 };
 use std::path::Path;
@@ -56,23 +57,12 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
         age.push(100. * (1. - t) + 14. * j1);
     }
     for (id, data) in [("sx", x), ("sy", y), ("sage", age)] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
-    let mut points = scatter(ink, 5.5);
-    points.point_color_map = Some(PointColorMap {
-        column: "sage".into(),
-    });
-    let specs = [series(
-        "stars",
-        "sx",
-        "sy",
-        DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: Some(points),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    )];
+    let specs = [SeriesConfig::scatter("stars", "sx", "sy")
+        .color(ink)
+        .marker(ScatterShape::CircleFilled, 5.5)
+        .color_by("sage")];
     colorbar(
         chart.config_mut(),
         ColorMap::Custom {
@@ -89,25 +79,18 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
         25.,
         ink,
     );
-    chart
+    let title = &mut chart
         .config_mut()
         .colorbar
         .as_mut()
         .unwrap()
         .axis
-        .title_option
-        .visible = true;
-    chart
-        .config_mut()
-        .colorbar
-        .as_mut()
-        .unwrap()
-        .axis
-        .title_option
-        .text = RichText::plain("Age (Myr)", ink, 19., "");
+        .title_option;
+    title.visible = true;
+    title.text = RichText::plain("Age (Myr)", ink, 19., "");
     chart.config_mut().bottom_x.major_spacing = 5.;
     chart.config_mut().left_y.major_spacing = 3.5;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-colormap.png"))
 }
 
@@ -150,33 +133,19 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
             p.push(0.4 + 9.6 * j3 * j3 * pop);
         }
         for (suffix, data) in [("x", x), ("y", y), ("pop", p)] {
-            r.add_column(format!("{id}-{suffix}"), &column(data))?;
+            r.add_column(format!("{id}-{suffix}"), &data)?;
         }
-        let mut marker = scatter(Color::from_rgba(color.r, color.g, color.b, 0.62), 8.);
-        let mut size = PointSizeMap {
-            column: format!("{id}-pop"),
-            domain_min: 0.,
-            domain_max: 1.,
-            min_px: 5.,
-            max_px: 34.,
-            scale: SizeScale::Area,
-        };
-        size.fit_domain(0.4, 10.);
-        marker.point_size_map = Some(size);
-        specs.push(series(
-            id,
-            &format!("{id}-x"),
-            &format!("{id}-y"),
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(marker),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        ));
+        specs.push(
+            SeriesConfig::scatter(id, format!("{id}-x"), format!("{id}-y"))
+                .color(Color::from_rgba(color.r, color.g, color.b, 0.62))
+                .marker(ScatterShape::CircleFilled, 8.)
+                .size_by(format!("{id}-pop"), [0.4, 10.], [5., 34.]),
+        );
+        // The legend shows each region's colour opaque, not the translucent
+        // marker fill.
         chart = chart.with_legend_entry(label, color, 2., LegendEntryKind::Scatter);
     }
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-bubbles.png"))
 }
 

@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
-use renderer::layout::{ChartArea, Rect};
+use renderer::layout::Rect;
 use renderer::{
-    Chart, ChartId, ChartView, ColumnPairWriter, ColumnRangeWriteError, ColumnSource,
-    DataRenderType, DataScatterStyleConfig, FiggyError, HiLoColumnSource, PreparedFrame,
-    RegisteredChartDrawItem, Renderer, RendererDevice, ScatterShape, SeriesConfig, StreamColumn,
-    StreamColumnSource, StreamEncoding, StreamReplay, StreamSourceBinding, StreamStatistics,
-    StreamingChartOptions, StreamingLimits, StreamingProgress,
+    Chart, ChartId, ChartView, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, FiggyError,
+    HiLoColumnSource, PreparedFrame, RegisteredChartDrawItem, Renderer, RendererDevice,
+    ScatterShape, SeriesConfig, StreamColumn, StreamColumnSource, StreamEncoding, StreamReplay,
+    StreamSourceBinding, StreamStatistics, StreamingChartOptions, StreamingLimits,
+    StreamingProgress,
 };
 
 const POOL_CAPACITY: u64 = 1024 * 1024;
@@ -479,7 +479,10 @@ impl DemoState {
                 .flatten()
         });
         self.cancel(Phase::Cancelled);
-        self.chart.config_mut().chart_area = ChartArea(panel_rect);
+        let r = panel_rect;
+        self.chart.set_area(r.x, r.y, r.width, r.height);
+        // Refit the margins to the labels at the new size.
+        self.chart.fit_layout();
         self.renderer
             .set_chart_config(self.chart_id, self.chart.config().clone())?;
         self.renderer
@@ -492,10 +495,12 @@ impl DemoState {
     }
 
     fn prepare_frame(&mut self) {
-        self.prepared = match self.renderer.prepare_registered(&[RegisteredChartDrawItem {
-            chart_id: self.chart_id,
-            view: &self.view,
-        }]) {
+        self.prepared = match self
+            .renderer
+            .prepare_registered(&mut [RegisteredChartDrawItem {
+                chart_id: self.chart_id,
+                view: &mut self.view,
+            }]) {
             Ok(prepared) => Some(prepared),
             Err(error) => {
                 self.snapshot.error = Some(error.to_string());
@@ -623,14 +628,7 @@ impl DemoApp {
             DemoState::metadata("stream-x", 2, 1, StreamEncoding::HiLoF32),
             DemoState::metadata("stream-y", 2, 1, StreamEncoding::HiLoF32),
         ])?;
-        let placeholder = Rect {
-            x: 0,
-            y: 100,
-            width: 800,
-            height: 500,
-        };
         let mut config = renderer::default::default_config();
-        config.chart_area = ChartArea(placeholder);
         let foreground = renderer::Color::new(0.92, 0.92, 0.94, 1.0);
         config.chart_title.text.color = foreground;
         for axis in [
@@ -648,36 +646,19 @@ impl DemoApp {
         config.grid.minor_x_color = renderer::Color::new(0.18, 0.20, 0.24, 1.0);
         config.grid.minor_y_color = renderer::Color::new(0.18, 0.20, 0.24, 1.0);
         let mut chart = Chart::new(config)
+            .with_area(0, 100, 800, 500)
             .with_title("Exact streaming: every point is drawn")
             .with_x_title("Normalized X")
             .with_y_title("Virtual signal");
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(0.0, 1.0);
-        let series = SeriesConfig {
-            series_id: "stream-points".into(),
-            source_id: None,
-            label: None,
-            x_column: "stream-x".into(),
-            y_column: "stream-y".into(),
-            z_column: None,
-            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(DataScatterStyleConfig {
-                    point_color: renderer::Color::new(0.15, 0.65, 1.0, 0.35),
-                    point_shape: ScatterShape::SquareFilled,
-                    point_size: 1.0,
-                    point_style_table: None,
-                    point_style_index_column: None,
-                    point_style_overrides: None,
-                    point_color_map: None,
-                    point_size_map: None,
-                }),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        };
+        // Fit the margins to the labels and titles.
+        chart.fit_layout();
+        let series = SeriesConfig::scatter("stream-points", "stream-x", "stream-y")
+            .marker(ScatterShape::SquareFilled, 1.0)
+            .color(renderer::Color::new(0.15, 0.65, 1.0, 0.35));
         let chart_id = renderer.register_chart(chart.config().clone(), vec![series])?;
-        let view = renderer.create_chart_view(&chart, placeholder)?;
+        let view = renderer.create_chart_view(&chart, chart.config().chart_area.0)?;
         render_state
             .renderer
             .write()

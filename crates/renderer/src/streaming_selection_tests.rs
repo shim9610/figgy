@@ -1,8 +1,6 @@
 use super::*;
 use crate::config::DataSelectionsConfig;
-use crate::data_config::{
-    BarOrientation, DataBarBinStyleConfig, DataBarStyleOverride, DataScatterPointStyleOverride,
-};
+use crate::data_config::DataScatterPointStyleOverride;
 use crate::test_gpu::BlockOn as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
@@ -129,34 +127,7 @@ fn fixture_with_display(
             stem: None,
         }),
     };
-    let bar = SeriesConfig {
-        source_id: Some("source".into()),
-        series_id: "bar".into(),
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Histogram {
-            bar: DataBarStyleConfig {
-                fill_color: Color::new(0.5, 0.2, 0.1, 0.2),
-                border_color: Color::new(0.2, 0.3, 0.5, 0.3),
-                border_width: 1.0,
-                baseline: 0.0,
-                gap_px: 0.0,
-                width_ratio: 1.0,
-                orientation: BarOrientation::Vertical,
-                bar_style_overrides: Some(vec![DataBarStyleOverride {
-                    index: 10,
-                    style: DataBarBinStyleConfig {
-                        gap_px: Some(2.0),
-                        width_ratio: Some(0.4),
-                        ..Default::default()
-                    },
-                }]),
-            },
-        },
-    };
-    let series = vec![point, bar];
+    let series = vec![point];
     let mut config = crate::default::default_config();
     config.chart_area = crate::layout::ChartArea(Rect {
         x: 0,
@@ -197,20 +168,10 @@ fn select(config: &mut Config, indices: &[usize]) {
     config.picked_data = Some(DataSelectionsConfig {
         refs: indices
             .iter()
-            .flat_map(|index| {
-                [
-                    PickedDataRef::Point {
-                        source_id: Some("source".into()),
-                        series_id: "point".into(),
-                        point_index: *index,
-                    },
-                    PickedDataRef::HistogramBin {
-                        source_id: Some("source".into()),
-                        series_id: "bar".into(),
-                        bin_index: *index,
-                        half: None,
-                    },
-                ]
+            .map(|index| PickedDataRef::Point {
+                source_id: Some("source".into()),
+                series_id: "point".into(),
+                point_index: *index,
             })
             .collect(),
         highlight_color: Color::new(0.0, 1.0, 0.0, 0.5),
@@ -316,6 +277,92 @@ fn screen(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
     let job = r.active_stream_job(id).unwrap();
     r.refresh_chart_stream_display(job, view).unwrap();
     let texture = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
+    read_display(r, &texture)
+}
+
+/// The resident twin of [`screen`]: `chart` and `series` drawn by the
+/// resident renderer `r` through the on-screen path (`prepare` and
+/// `paint_prepared`) at display `scale`, into a transparent target of the
+/// renderer's surface format and sample count, as the stream display is
+/// drawn. Both images then blend in the same 8-bit target and are read back
+/// alike; the export blends in `EXPORT_FORMAT` instead (#271).
+fn resident_screen(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    scale: f32,
+) -> Vec<u8> {
+    let display = Chart::new(chart.config().scaled(scale));
+    let area = display.config().chart_area.0;
+    let mut view = r.create_chart_view(&display, area).unwrap();
+    let styles: Vec<_> = series
+        .iter()
+        .map(|config| r.create_style_for_series_scaled(config, scale).unwrap())
+        .collect();
+    let series: Vec<_> = series
+        .iter()
+        .zip(&styles)
+        .map(|(config, style)| crate::Series { config, style })
+        .collect();
+    let mut frame = r
+        .prepare(&mut [ChartDrawItem {
+            view: &mut view,
+            chart: &display,
+            series: &series,
+        }])
+        .unwrap();
+    // The direct draw, as the export records it: without the Precise
+    // panel's cached bodies, which composite once more in UNORM
+    // (`resident_display_tests::painted_like_direct`).
+    for item in &mut frame.items {
+        item.resident_display = None;
+    }
+    let texture = |sample_count| {
+        r.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("resident display test target"),
+            size: wgpu::Extent3d {
+                width: area.width,
+                height: area.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: r.surface_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    };
+    let resolved = texture(1);
+    let samples = r.target_sample_count;
+    let multisampled = (samples > 1).then(|| texture(samples));
+    let resolved_view = resolved.create_view(&Default::default());
+    let multisampled_view = multisampled
+        .as_ref()
+        .map(|texture| texture.create_view(&Default::default()));
+    let mut encoder = r.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: multisampled_view.as_ref().unwrap_or(&resolved_view),
+                depth_slice: None,
+                resolve_target: multisampled_view.as_ref().map(|_| &resolved_view),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        r.paint_prepared(&mut pass, (area.width, area.height), &frame)
+            .unwrap();
+    }
+    r.queue.submit([encoder.finish()]);
+    read_display(r, &resolved)
+}
+
+/// A single-sample display texture read back as straight-alpha RGBA8.
+fn read_display(r: &mut Renderer, texture: &wgpu::Texture) -> Vec<u8> {
     let row = texture.width() * 4;
     let padded = row.div_ceil(256) * 256;
     let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
@@ -327,7 +374,7 @@ fn screen(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
     let mut encoder = r.device.create_command_encoder(&Default::default());
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -385,7 +432,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
             .selection
             .ready
             .len(),
-        6
+        3
     );
     let bindings: Vec<_> = values
         .iter()
@@ -640,6 +687,10 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
     assert_eq!(r.stream_request_usage(), (0, 0, 0));
 }
 
+/// The stream display at a display scale against the resident chart drawn
+/// on screen at that scale: both blend in the renderer's 8-bit surface
+/// format. The export blends in `EXPORT_FORMAT` (#271), and the streamed
+/// export is compared with the resident export byte for byte above.
 #[test]
 fn stream_selection_and_data_match_resident_at_exact_display_scale() {
     let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
@@ -667,44 +718,29 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
                 _ => {}
             }
         }
-        let expected = resident
-            .export_rgba(
-                crate::ExportSource::chart(&chart, &series),
-                crate::ExportOptions::panel(scale),
-            )
-            .block_on()
-            .unwrap();
+        let expected = resident_screen(&mut resident, &chart, &series, scale);
         let actual = screen(&mut r, id, &view);
-        assert_display_equivalent(
-            &actual,
-            &expected.rgba,
-            &format!("data display scale {scale}"),
-        );
+        assert_display_equivalent(&actual, &expected, &format!("data display scale {scale}"));
         select(chart.config_mut(), &[10, 2, 10]);
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
-        let expected = resident
-            .export_rgba(
-                crate::ExportSource::chart(&chart, &series),
-                crate::ExportOptions::panel(scale),
-            )
-            .block_on()
-            .unwrap();
+        let expected = resident_screen(&mut resident, &chart, &series, scale);
         let actual = screen(&mut r, id, &view);
         assert_display_equivalent(
             &actual,
-            &expected.rgba,
+            &expected,
             &format!("selection display scale {scale}"),
         );
     }
 }
 
-// PNGs contain straight-alpha RGB, whereas attachments blend premultiplied
-// channels. Dividing by alpha during export amplifies a one-code-value rounding
-// difference (e.g. alpha=55 turns it into almost five straight RGB values).
-// Compare the visible result on both black and white: these bound the error on
-// every background, independently per channel. Keep the three-code-value
-// composition bound and additionally limit alpha to one code value.
+// Both images are read back as straight-alpha RGB (`read_display`), whereas
+// attachments blend premultiplied channels. Dividing by alpha amplifies a
+// one-code-value rounding difference (e.g. alpha=55 turns it into almost five
+// straight RGB values). Compare the visible result on both black and white:
+// these bound the error on every background, independently per channel. Keep
+// the three-code-value composition bound and additionally limit alpha to one
+// code value.
 fn display_error(actual: &[u8], expected: &[u8]) -> (u32, u32) {
     assert_eq!(actual.len(), expected.len());
     assert_eq!(actual.len() % 4, 0);
@@ -749,10 +785,9 @@ fn display_comparison_measures_alpha_composition_and_rejects_visible_changes() {
 
 /// SELECTION_PLAN_COUNT_LE_3 (#152): `columns_for` names one to three
 /// distinct columns (`x`, `y` and the Precise style index), so its `[_; 3]`
-/// ids, rows and offsets cover `..count`: x equal to y, a histogram bar
-/// (its edge column read twice as far), a Precise scatter with its own style
-/// column, a style column equal to x, a Sketch scatter (no style column),
-/// and a field cell on equal and on different axes.
+/// ids, rows and offsets cover `..count`: x equal to y, a Precise scatter
+/// with its own style column, a style column equal to x, a Sketch scatter
+/// (no style column), and a field cell on equal and on different axes.
 #[test]
 fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     let (_, _, _, _, chart, series, _) = fixture();
@@ -760,11 +795,10 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     assert!(matches!(precise.draw_style, DrawStyle::Precise));
     let mut sketch = precise.clone();
     sketch.draw_style = DrawStyle::Sketch(Default::default());
-    let entry = |bar: bool, field: Option<field::Cell>| SelectionEntry {
+    let entry = |field: Option<field::Cell>| SelectionEntry {
         series: 0,
         index: 4,
         filter: SelectionRefFilter::All,
-        bar,
         field,
     };
     let check = |plan: SelectionColumnPlan<'_>, expected: &[(&str, u64)]| {
@@ -781,13 +815,12 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
         assert_eq!(ids.len(), plan.count, "repeated ids");
     };
     let point = &series[0];
-    let bar = &series[1];
     check(
-        columns_for(&precise, point, entry(false, None)),
+        columns_for(&precise, point, entry(None)),
         &[("x", 1), ("y", 1), ("index", 1)],
     );
     check(
-        columns_for(&sketch, point, entry(false, None)),
+        columns_for(&sketch, point, entry(None)),
         &[("x", 1), ("y", 1)],
     );
     let mut style_is_x = point.clone();
@@ -801,25 +834,12 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
         scatter.point_style_index_column = Some("x".into());
     }
     check(
-        columns_for(&precise, &style_is_x, entry(false, None)),
+        columns_for(&precise, &style_is_x, entry(None)),
         &[("x", 1), ("y", 1)],
     );
     let mut same = style_is_x.clone();
     same.y_column = "x".into();
-    check(
-        columns_for(&precise, &same, entry(false, None)),
-        &[("x", 1)],
-    );
-    check(
-        columns_for(&precise, bar, entry(true, None)),
-        &[("x", 2), ("y", 1)],
-    );
-    let mut same_bar = bar.clone();
-    same_bar.y_column = "x".into();
-    check(
-        columns_for(&precise, &same_bar, entry(true, None)),
-        &[("x", 2)],
-    );
+    check(columns_for(&precise, &same, entry(None)), &[("x", 1)]);
 
     let heatmap = |x: &str, y: &str| SeriesConfig {
         source_id: None,
@@ -847,7 +867,7 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     for (x, y, count) in [("fx", "fy", 2), ("fx", "fx", 1)] {
         let series = heatmap(x, y);
         let cell = field::Cell::resolve(&series, [1, 1], len).expect("an inner cell");
-        let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+        let plan = columns_for(&precise, &series, entry(Some(cell)));
         assert_eq!(plan.count, count, "{x} {y}");
         assert!(plan.count <= 3);
         let ids = &plan.ids[..plan.count];
@@ -856,7 +876,7 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     // Different cells on one axis column are two ranges of the same id.
     let series = heatmap("fx", "fx");
     let cell = field::Cell::resolve(&series, [0, 2], len).expect("a cell");
-    let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+    let plan = columns_for(&precise, &series, entry(Some(cell)));
     assert_eq!(plan.count, 2);
 }
 

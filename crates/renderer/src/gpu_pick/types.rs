@@ -86,7 +86,7 @@ pub enum GpuPickError {
     /// The GPU reported an error during a pick.
     Gpu(String),
     /// A blocking or nonblocking resolve of a pick on a streamed series:
-    /// streaming keeps its asynchronous `resolve` only (rule 8).
+    /// streaming keeps its asynchronous `resolve` only.
     Streamed,
 }
 
@@ -789,6 +789,7 @@ impl GpuStreamPick {
         );
         bundle.queue.submit([encoder.finish()]);
         Ok(GpuPickTicket {
+            monotonic: Vec::new(),
             state: GpuPickTicketState::Pending {
                 readback: GpuReadback::map(&bundle.device, &bundle.health, &readback, None),
                 identities: self.identities,

@@ -137,8 +137,9 @@ impl Renderer {
                 return Err(crate::gpu_pick::GpuPickError::ColumnNotResident(id));
             }
         }
+        let series = pickable_series(&self.pool, &state.series);
         self.picker
-            .prepare_chart(&self.pool, id, &state.config, &state.series)
+            .prepare_chart(&self.pool, id, &state.config, &series)
     }
 
     /// Submit one exact pick against renderer-owned chart state.
@@ -180,13 +181,21 @@ impl Renderer {
                 return Err(crate::gpu_pick::GpuPickError::ColumnNotResident(id));
             }
         }
+        // A monotonic series picks the envelope its columns hold, which
+        // every call that moves its mapping rebuilds (#271); its rows map
+        // back through it.
+        let series = pickable_series(&self.pool, &state.series);
+        let monotonic_rows = self
+            .monotonic
+            .pick_rows(&series)
+            .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         self.picker.prepare_chart(
             &self.pool,
             id,
             routed.as_ref().unwrap_or(&state.config),
-            &state.series,
+            &series,
         )?;
-        let inputs = active_layer_pick_inputs(&displayed, &state.series)?;
+        let inputs = active_layer_pick_inputs(&displayed, &series)?;
         let (display_config, layer_series) = (&inputs.panel, &inputs.series);
         let (request, moved) = pick_request_outside_gaps(display_config, request);
         let transform = data_render::scatter_transform_from_config(display_config);
@@ -312,7 +321,7 @@ impl Renderer {
         for key in active.engine.exact_variants(&query) {
             picker.exact.ensure(active.engine.bundle(), key)?;
         }
-        active.engine.pick_with_arcs(
+        let mut ticket = active.engine.pick_with_arcs(
             &self.pool,
             query,
             request.display_scale,
@@ -321,6 +330,8 @@ impl Renderer {
             inputs.member_count(),
             &|member| inputs.member_transform(member),
             &picker.exact,
-        )
+        )?;
+        ticket.monotonic = monotonic_rows;
+        Ok(ticket)
     }
 }

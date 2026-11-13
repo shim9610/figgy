@@ -9,7 +9,9 @@
 //! Public for the renderer crate, which paints it; not a host API, and with
 //! no compatibility promise.
 
-use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, TickVisibility};
+use crate::config::{
+    AxisOptions, AxisScale, Config, LabelClearanceMode, LabelStyle, TickVisibility,
+};
 use crate::format::LabelFormat;
 use crate::layout::{
     DataArea, Element, RectF, Side, axis_anchor, axis_offset, label_origin, label_rect,
@@ -36,7 +38,9 @@ mod box3d;
 pub(crate) use box3d::box_label_reach as box3d_label_reach;
 mod parallel;
 mod polar;
+pub(crate) use polar::{label_title_gap, polar_title_shift};
 mod ternary;
+pub(crate) use ternary::ternary_label_reach;
 
 /// Place every decoration of `config` into `sink`: the grid below the data,
 /// then above it the axes with their ticks and labels, the colourbar, the
@@ -55,6 +59,15 @@ pub fn emit_chart_chrome(
     sink: &mut dyn Sink,
     scale: f32,
 ) {
+    // The chart's own fill, under everything it draws (#265).
+    if let Some(fill) = config.background {
+        sink.rect(
+            Slot::Below,
+            RectF::from_rect(&config.chart_area.0),
+            Some(fill),
+            None,
+        );
+    }
     let Ok(da) = config.data_area() else { return };
     // The Cartesian walks take the plot rectangle.
     let plot = data_area_rect(&da);
@@ -81,7 +94,17 @@ pub fn emit_chart_chrome(
         // not drawn (#141).
         for (axis, side) in [(&config.top_x, Side::Top), (&config.bottom_x, Side::Bottom)] {
             let cross = crate::layout::axis_cross(config, &side);
-            emit_axis(axis, side, &plot, cross, None, measure, sink, scale);
+            emit_axis(
+                axis,
+                side,
+                &plot,
+                cross,
+                None,
+                [None, None],
+                measure,
+                sink,
+                scale,
+            );
         }
         parallel::emit_parallel_axes(config, &da, measure, sink);
     } else {
@@ -94,15 +117,27 @@ pub fn emit_chart_chrome(
             drawn_axis(config, &Side::Top),
             drawn_axis(config, &Side::Right),
         );
-        for (axis, side) in [
-            (top.as_ref(), Side::Top),
-            (&config.bottom_x, Side::Bottom),
-            (&config.left_y, Side::Left),
-            (right.as_ref(), Side::Right),
-        ] {
+        let axis_of = |side: &Side| match side {
+            Side::Top => top.as_ref(),
+            Side::Bottom => &config.bottom_x,
+            Side::Left => &config.left_y,
+            Side::Right => right.as_ref(),
+        };
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
             let cross = crate::layout::axis_cross(config, &side);
             let across = across_axis(config, &side);
-            emit_axis(axis, side, &plot, cross, across, measure, sink, scale);
+            let corners = corner_axes(config, &side, axis_of);
+            emit_axis(
+                axis_of(&side),
+                side,
+                &plot,
+                cross,
+                across,
+                corners,
+                measure,
+                sink,
+                scale,
+            );
         }
         // The category group headers past the x axes' labels (#203).
         for side in [Side::Top, Side::Bottom] {
@@ -257,10 +292,16 @@ pub fn emit_part_of(
             }
         }
         Element::AxisLabel(side) => {
-            emit_axis_tick_labels(
+            let clearance = LabelClearance {
+                cross: crate::layout::axis_cross(config, side),
+                scale,
+                corners: corner_axes(config, side, axis_of),
+            };
+            emit_axis_tick_labels_clear_of(
                 axis_of(side),
                 side.clone(),
                 &data_area_rect(&da),
+                &clearance,
                 measure,
                 sink,
             );
@@ -420,6 +461,31 @@ pub fn drawn_colorbar<'a>(
     _da: &DataArea,
 ) -> Option<(&'a crate::config::ColorBarOptions, RectF)> {
     visible_colorbar_rect(config)
+}
+
+/// The axes whose tick labels meet the labels of a rectangular chart's
+/// axis on `side` at its two ends (#272): the x axes across a y axis and
+/// the y axes across an x axis, as `axis_of` draws them, each with where
+/// its line crosses.
+fn corner_axes<'a>(
+    config: &Config,
+    side: &Side,
+    axis_of: impl Fn(&Side) -> &'a AxisOptions,
+) -> [Option<CornerAxis<'a>>; 2] {
+    const X: [Side; 2] = [Side::Bottom, Side::Top];
+    const Y: [Side; 2] = [Side::Left, Side::Right];
+    let sides = match side {
+        Side::Left | Side::Right => &X,
+        Side::Top | Side::Bottom => &Y,
+    };
+    [0, 1].map(|k| {
+        let side = &sides[k];
+        Some(CornerAxis {
+            axis: axis_of(side),
+            side,
+            cross: crate::layout::axis_cross(config, side),
+        })
+    })
 }
 
 /// The axis across a rectangular chart's `side` (#249): `left_y` for an x

@@ -1011,7 +1011,9 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => false,
+        | DataRenderType::Feynman(_)
+        // Stylized modes need every sample of a line (#271).
+        | DataRenderType::MonotonicLine(_) => false,
     }
 }
 

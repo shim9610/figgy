@@ -56,7 +56,7 @@ pub(crate) fn picked_row(config: &Config, cfg: &SeriesConfig) -> Option<PickedRo
 /// energy-level series that holds records.
 pub(in crate::renderer) fn source_records<'s>(
     levels: &'s EnergyLevelSeries,
-    items: &'s [ChartDrawItem<'s>],
+    items: &'s [PanelDraw<'s>],
 ) -> Option<&'s EnergyLevelSeries> {
     find_records(
         levels,
@@ -261,7 +261,7 @@ impl PrepareContext<'_> {
         &mut self,
         config: &Config,
         cfg: &SeriesConfig,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<Option<Arc<EnergyLevelRaster>>> {
         if !cfg.is_dataless() {

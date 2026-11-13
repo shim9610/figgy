@@ -15,13 +15,12 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, scatter, series};
+use gallery::Result;
 use renderer::{
-    Chart, Color, ColorMap, LayerRef, Material, Renderer,
+    Chart, Color, ColorMap, LayerRef, Material, Renderer, SeriesConfig,
     data_config::{
-        ContourConfig, DataRenderType, FieldFillConfig, FieldSeries, FillMode, GridLayout,
-        MatrixOrientation, MatrixRef, Shading, VectorColorMap, VectorComponents, VectorPivot,
-        VectorScale, VectorStyle, XySeries,
+        ContourConfig, DataLineStyleConfig, DataRenderType, FieldFillConfig, FieldSeries,
+        MatrixRef, ScatterShape, Shading, VectorColorMap, VectorPivot, VectorScale,
     },
     text::RichText,
     view3d::{SurfaceStyle, SurfaceWireframe, View3d},
@@ -103,15 +102,13 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
             .collect()
     };
     let (xs, ys) = (axis(61), axis(61));
-    r.add_column("terrain-x", &column(xs.clone()))?;
-    r.add_column("terrain-y", &column(ys.clone()))?;
+    r.add_column("terrain-x", &xs)?;
+    r.add_column("terrain-y", &ys)?;
     let mut ids = Vec::new();
     for (i, x) in xs.iter().enumerate() {
         let id = format!("terrain-z-{i}");
-        r.add_column(
-            id.clone(),
-            &column(ys.iter().map(|y| height(*x, *y)).collect()),
-        )?;
+        let z: Vec<f64> = ys.iter().map(|y| height(*x, *y)).collect();
+        r.add_column(id.clone(), &z)?;
         ids.push(id);
     }
     let trailhead = [-2.5, -2.3];
@@ -133,16 +130,18 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     tx.push(summit[0]);
     ty.push(summit[1]);
     tz.push(height(summit[0], summit[1]) + 0.06);
-    r.add_column("hike-x", &column(tx))?;
-    r.add_column("hike-y", &column(ty))?;
-    r.add_column("hike-z", &column(tz))?;
+    r.add_column("hike-x", &tx)?;
+    r.add_column("hike-y", &ty)?;
+    r.add_column("hike-z", &tz)?;
     let stops = [trailhead, saddle, summit];
-    r.add_column("stop-x", &column(stops.iter().map(|p| p[0]).collect()))?;
-    r.add_column("stop-y", &column(stops.iter().map(|p| p[1]).collect()))?;
-    r.add_column(
-        "stop-z",
-        &column(stops.iter().map(|p| height(p[0], p[1]) + 0.08).collect()),
-    )?;
+    let (sx, sy, sz): (Vec<f64>, Vec<f64>, Vec<f64>) = (
+        stops.iter().map(|p| p[0]).collect(),
+        stops.iter().map(|p| p[1]).collect(),
+        stops.iter().map(|p| height(p[0], p[1]) + 0.08).collect(),
+    );
+    r.add_column("stop-x", &sx)?;
+    r.add_column("stop-y", &sy)?;
+    r.add_column("stop-z", &sz)?;
 
     let ramp = ColorMap::Custom {
         stops: vec![
@@ -174,7 +173,11 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     // the light levels stay visible on the light floor.
     let mut contour = ContourConfig {
         levels: vec![],
-        line: line(ink, 2.6),
+        line: DataLineStyleConfig {
+            line_color: ink,
+            line_width: 2.6,
+            ..Default::default()
+        },
         per_level_color: None,
         labels: None,
     };
@@ -199,45 +202,25 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         ..View3d::default()
     }));
     let trail_red = rgb(206, 44, 58);
-    let mut trail = series(
-        "trail",
-        "hike-x",
-        "hike-y",
-        DataRenderType::Xy(XySeries {
-            scatter: None,
-            line: Some(line(trail_red, 3.5)),
-            errors: None,
-            stem: None,
-        }),
-    );
-    trail.z_column = Some("hike-z".into());
-    let mut waypoints = series(
-        "waypoints",
-        "stop-x",
-        "stop-y",
-        DataRenderType::Xy(XySeries {
-            scatter: Some(scatter(trail_red, 13.)),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    );
-    waypoints.z_column = Some("stop-z".into());
+    let trail = SeriesConfig::line("trail", "hike-x", "hike-y")
+        .color(trail_red)
+        .width(3.5)
+        .z("hike-z");
+    let waypoints = SeriesConfig::scatter("waypoints", "stop-x", "stop-y")
+        .color(trail_red)
+        .marker(ScatterShape::CircleFilled, 13.)
+        .z("stop-z");
     let specs = [
-        series(
+        SeriesConfig::of_kind(
             "terrain",
             "terrain-x",
             "terrain-y",
             DataRenderType::Field(FieldSeries {
-                matrix: MatrixRef {
-                    columns: ids,
-                    orientation: MatrixOrientation::ColumnsAreX,
-                    grid_layout: GridLayout::Centers,
-                },
+                matrix: MatrixRef::columns_are_x(ids),
                 fill: Some(FieldFillConfig {
-                    mode: FillMode::Continuous,
                     shading: Shading::Interpolated,
                     opacity: 0.9,
+                    ..Default::default()
                 }),
                 contour: Some(contour),
                 surface: Some(SurfaceStyle {
@@ -258,7 +241,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     // The floor sits at sea level, well below the massif's base.
     chart.config_mut().right_y.min = 0.;
     short_labels(&mut chart);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-surface.png"))
 }
 
@@ -311,35 +294,22 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
         ("vortex-w", w),
         ("vortex-speed", speed),
     ] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
-    let mut style = VectorStyle {
-        color: ink,
-        width_px: 2.4,
-        scale: VectorScale::Data { factor: 1. },
-        pivot: VectorPivot::Middle,
-        head_length_px: 10.,
-        head_width_px: 8.,
-        min_length_px: 2.,
-        color_map: Some(VectorColorMap::Column("vortex-speed".into())),
-    };
-    // The longest arrow spans 0.9 of the lattice spacing.
-    style.fit_scale_3d(ub, vb, wb, 0.9 * spacing);
-    let mut arrows = series(
-        "vortex",
-        "vortex-x",
-        "vortex-y",
-        DataRenderType::Vector {
-            components: VectorComponents::Points {
-                u: "vortex-u".into(),
-                v: "vortex-v".into(),
-                w: Some("vortex-w".into()),
-            },
-            style,
-        },
-    );
-    arrows.z_column = Some("vortex-z".into());
-    let specs = [arrows];
+    let specs = [SeriesConfig::vectors_3d(
+        "vortex", "vortex-x", "vortex-y", "vortex-z", "vortex-u", "vortex-v", "vortex-w",
+    )
+    .color(ink)
+    .width(2.4)
+    .pivot(VectorPivot::Middle)
+    .arrow_head(10., 8.)
+    .style_vectors(|style| {
+        style.scale = VectorScale::Data { factor: 1. };
+        style.min_length_px = 2.;
+        style.color_map = Some(VectorColorMap::Column("vortex-speed".into()));
+        // The longest arrow spans 0.9 of the lattice spacing.
+        style.fit_scale_3d(ub, vb, wb, 0.9 * spacing);
+    })];
     let mut chart = cartesian(
         "Burgers vortex / swirl, inflow and updraft",
         "x (km)",
@@ -382,7 +352,7 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
     chart.auto_fit_view_3d_z(r.pool(), LayerRef::Base, &specs, 0.)?;
     nice_z(&mut chart, 1.);
     short_labels(&mut chart);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-quiver3d.png"))
 }
 

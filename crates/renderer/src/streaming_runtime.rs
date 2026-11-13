@@ -36,10 +36,16 @@ mod source_cache;
 mod view_residency;
 pub use selection::{StreamingSelectionRequest, StreamingSelectionTicket};
 
-/// Why a streamed streamline series is rejected: streaming is not extended
+/// Why a streamed range bar series is rejected: streaming is not extended
 /// to them (CLAUDE.md rule 8).
 pub(crate) const STREAMED_RANGE_BARS_REASON: crate::RuleKind = crate::RuleKind::StreamedRangeBars;
 
+/// Why a streamed histogram is rejected (#284): its columns are the host's
+/// bins, one row per bin, so it is always resident.
+pub(crate) const STREAMED_HISTOGRAM_REASON: crate::RuleKind = crate::RuleKind::StreamedHistogram;
+
+/// Why a streamed streamline series is rejected: streaming is not extended
+/// to them (CLAUDE.md rule 8).
 pub(crate) const STREAMED_STREAMLINES_REASON: crate::RuleKind =
     crate::RuleKind::StreamedStreamlines;
 
@@ -84,6 +90,10 @@ pub(crate) const STREAMED_ENERGY_LEVELS_REASON: crate::RuleKind =
 /// 8, #234): it is DataLess, so no stream can feed it.
 pub(crate) const STREAMED_FEYNMAN_REASON: crate::RuleKind = crate::RuleKind::StreamedFeynman;
 
+/// Why a monotonic series in a streamed display is rejected (M5, #271): it
+/// does not use the streaming runtime; its own calls feed it.
+pub(crate) const STREAMED_MONOTONIC_REASON: crate::RuleKind = crate::RuleKind::StreamedMonotonic;
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => true,
@@ -103,7 +113,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => false,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => false,
     }
 }
 
@@ -436,9 +447,6 @@ struct StreamDrawCursor {
     surface_clear: Option<wgpu::Color>,
     display_dirty: bool,
     display_serial: u64,
-    hist_envelope: Option<Arc<data_render::bar_envelope::Persistent>>,
-    hist_series: Option<usize>,
-    hist_overlay: bool,
     mode: StreamExecutionMode,
     auxiliary: Option<Arc<auxiliary::StreamAuxiliaryTarget>>,
     auxiliary_pick: Option<auxiliary::AuxiliaryPick>,
@@ -550,7 +558,6 @@ impl StreamRuntime {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StreamDrawPhase {
     Field,
-    Histogram,
     Errorbar,
     Line,
     Scatter,
@@ -560,7 +567,6 @@ impl StreamDrawPhase {
     pub(super) fn halo(self) -> u64 {
         match self {
             Self::Field => 0,
-            Self::Histogram => 1,
             Self::Errorbar => 0,
             Self::Line => 1,
             Self::Scatter => 0,
@@ -591,16 +597,6 @@ impl StreamDrawCursor {
     }
 }
 
-pub(super) fn histogram_edge_column(series: &SeriesConfig) -> Option<&str> {
-    let DataRenderType::Histogram { bar } = &series.render_type else {
-        return None;
-    };
-    Some(match bar.orientation {
-        crate::data_config::BarOrientation::Vertical => &series.x_column,
-        crate::data_config::BarOrientation::Horizontal => &series.y_column,
-    })
-}
-
 fn stream_phase_total(
     series: &SeriesConfig,
     phase: StreamDrawPhase,
@@ -608,16 +604,6 @@ fn stream_phase_total(
 ) -> StreamResult<u64> {
     if phase == StreamDrawPhase::Field {
         field_runtime::field_total(series, source_len)
-    } else if phase == StreamDrawPhase::Histogram {
-        let edge_id = histogram_edge_column(series).ok_or(StreamError::InvalidRange)?;
-        let value_id = if edge_id == series.x_column {
-            series.y_column.as_str()
-        } else {
-            series.x_column.as_str()
-        };
-        let edges = source_len(edge_id).ok_or(StreamError::InvalidRange)?;
-        let values = source_len(value_id).ok_or(StreamError::InvalidRange)?;
-        Ok(edges.saturating_sub(1).min(values))
     } else {
         let columns = stream_phase_columns(series, phase);
         let mut total = u64::MAX;
@@ -628,25 +614,10 @@ fn stream_phase_total(
     }
 }
 
-fn stream_phase_request_len(
-    series: &SeriesConfig,
-    phase: StreamDrawPhase,
-    id: &str,
-    primitives: u64,
-) -> StreamResult<u64> {
-    if phase == StreamDrawPhase::Histogram {
-        if histogram_edge_column(series) == Some(id) {
-            primitives
-                .checked_add(1)
-                .ok_or(StreamError::Overflow.into())
-        } else {
-            Ok(primitives)
-        }
-    } else {
-        primitives
-            .checked_add(phase.halo())
-            .ok_or(StreamError::Overflow.into())
-    }
+fn stream_phase_request_len(phase: StreamDrawPhase, primitives: u64) -> StreamResult<u64> {
+    primitives
+        .checked_add(phase.halo())
+        .ok_or(StreamError::Overflow.into())
 }
 
 pub(super) struct StreamPhaseColumns<'a> {
@@ -703,7 +674,7 @@ pub(super) fn stream_phase_columns(
         }
         StreamDrawPhase::Errorbar => extract_errorbar_style(&series.render_type)
             .and_then(|style| style.error_bar_style_index_column.as_deref()),
-        StreamDrawPhase::Line | StreamDrawPhase::Histogram | StreamDrawPhase::Field => None,
+        StreamDrawPhase::Line | StreamDrawPhase::Field => None,
     };
     if let Some(id) = style_index {
         push_unique_phase_column(id, &mut ids, &mut count);
@@ -729,11 +700,16 @@ fn stream_draw_phases(
         });
     }
     match &series.render_type {
-        DataRenderType::Histogram { .. } => Ok(if primitives.bar {
-            &[StreamDrawPhase::Histogram]
-        } else {
-            &[]
-        }),
+        // Histograms are refused (#284). Rejected before a cursor exists;
+        // this is a backstop.
+        DataRenderType::Histogram { .. } if primitives.bar => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: STREAMED_HISTOGRAM_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::Histogram { .. } => Ok(&[]),
         // Streaming is not extended to stems (rule 8, #206);
         // `validate_stream_series` rejects them first, so this is a backstop.
         DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. }) => {
@@ -892,6 +868,12 @@ fn stream_draw_phases(
         DataRenderType::Feynman(_) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
             kind: STREAMED_FEYNMAN_REASON.into(),
+        }
+        .into()),
+        // Nor to monotonic series (M5, #271): their own calls feed them.
+        DataRenderType::MonotonicLine(_) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: STREAMED_MONOTONIC_REASON.into(),
         }
         .into()),
         DataRenderType::Field(crate::data_config::FieldSeries {
@@ -1062,17 +1044,6 @@ fn auto_stream_fit_extents(
             && let Some(extent) = stream_error_extent(statistics, &series.y_column, error)
         {
             y.union(&extent);
-        }
-        if let DataRenderType::Histogram { bar } = &series.render_type {
-            let baseline = crate::FitExtent {
-                min: bar.baseline,
-                max: bar.baseline,
-                min_positive: (bar.baseline > 0.0).then_some(bar.baseline),
-            };
-            match bar.orientation {
-                crate::data_config::BarOrientation::Vertical => y.union(&baseline),
-                crate::data_config::BarOrientation::Horizontal => x.union(&baseline),
-            }
         }
     }
     (x, y)
@@ -1456,9 +1427,6 @@ impl Renderer {
         }
         draw.expected_view_revision = expected_view_revision;
         draw.display_dirty = true;
-        draw.hist_envelope = None;
-        draw.hist_series = None;
-        draw.hist_overlay = false;
         if replay {
             draw.arc = None;
             draw.field = None;
@@ -2494,8 +2462,8 @@ impl Renderer {
             }
         })?;
         for id in sources.keys() {
-            // Partial-column statistics are job-local (histogram values and
-            // field tiles may not visit the whole source). Carry that coverage
+            // Partial-column statistics are job-local (field tiles may not
+            // visit the whole source). Carry that coverage
             // with the immutable GPU cache, rather than fabricating bounds or
             // rereading already cached ranges in the successor job.
             let prior = reusable_source
@@ -4002,20 +3970,6 @@ impl Renderer {
                 .map_or(stream_view.panel_rect, |area| area.0),
             size,
         );
-        let histogram = if draw.hist_overlay {
-            let (_, _, style) = stream_execution_series(
-                &self.chart_states,
-                auto_snapshot.as_deref(),
-                job.chart,
-                draw.hist_series.ok_or(StreamError::WrongState)?,
-            )?;
-            Some((
-                draw.hist_envelope.as_ref().ok_or(StreamError::WrongState)?,
-                &style.bar_bg,
-            ))
-        } else {
-            None
-        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
         // Styled blend equations can depend on the background. Preserve
         // their original prefix; Precise uses a reusable transparent layer.
@@ -4068,22 +4022,6 @@ impl Renderer {
                         pass.set_bind_group(0, underlay, &[]);
                         pass.draw(0..3, 0..1);
                     }
-                }
-            },
-            |pass| {
-                if let (Some(panel), Some(data), Some((envelope, bar_bg))) =
-                    (panel, data, histogram)
-                {
-                    pass.set_viewport(
-                        panel.x as f32,
-                        panel.y as f32,
-                        panel.width as f32,
-                        panel.height as f32,
-                        0.0,
-                        1.0,
-                    );
-                    pass.set_scissor_rect(data.x, data.y, data.width, data.height);
-                    envelope.draw(pass, &stream_view.transform_bg, bar_bg);
                 }
             },
             |pass| {
@@ -4360,34 +4298,6 @@ impl Renderer {
                     return Err(StreamError::TooLarge.into());
                 }
                 let primitives = total.min(max_primitives_per_chunk);
-                if *phase == StreamDrawPhase::Histogram {
-                    let bar = extract_bar(&series.render_type).ok_or(StreamError::WrongState)?;
-                    let pixels = match bar.orientation {
-                        crate::data_config::BarOrientation::Vertical => view.panel_rect.width,
-                        crate::data_config::BarOrientation::Horizontal => view.panel_rect.height,
-                    }
-                    .max(1);
-                    let pixel_bytes = u64::from(pixels)
-                        .checked_mul(16)
-                        .ok_or(StreamError::Overflow)?;
-                    let scratch_bytes = u64::from(pixels)
-                        .checked_mul(4)
-                        .ok_or(StreamError::Overflow)?;
-                    let max_groups = self.device.limits().max_compute_workgroups_per_dimension;
-                    let reduce_groups = primitives.div_ceil(64);
-                    if total > u64::from(u32::MAX) + 1
-                        || pixel_bytes > self.device.limits().max_buffer_size
-                        || pixel_bytes
-                            > u64::from(self.device.limits().max_storage_buffer_binding_size)
-                        || scratch_bytes
-                            > u64::from(self.device.limits().max_storage_buffer_binding_size)
-                        || pixels.div_ceil(64) > max_groups
-                        || reduce_groups.min(65535) > u64::from(max_groups)
-                        || reduce_groups.div_ceil(65535) > u64::from(max_groups)
-                    {
-                        return Err(StreamError::TooLarge.into());
-                    }
-                }
                 let mut input = 0u64;
                 let mut work_bytes = 0u64;
                 for id in &columns.ids[..columns.count] {
@@ -4397,11 +4307,8 @@ impl Renderer {
                     {
                         (total + 1).min(max_primitives_per_chunk).min(257)
                     } else {
-                        stream_phase_request_len(series, *phase, id, primitives)?
+                        stream_phase_request_len(*phase, primitives)?
                     };
-                    if *phase == StreamDrawPhase::Histogram && rows > u64::from(u32::MAX) {
-                        return Err(StreamError::TooLarge.into());
-                    }
                     input = input
                         .checked_add(
                             rows.checked_mul(source.encoding.bytes_per_value())
@@ -4477,7 +4384,7 @@ impl Renderer {
                 &self.style_bgl,
                 &self.star_data_bgl,
                 self.surface_format,
-                &[ChartDrawItem {
+                &[PanelDraw {
                     view,
                     chart_config: config,
                     series: &series,
@@ -4498,7 +4405,7 @@ impl Renderer {
                 &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
-                &[ChartDrawItem {
+                &[PanelDraw {
                     view,
                     chart_config: config,
                     series: &series,
@@ -4541,9 +4448,6 @@ impl Renderer {
                 surface_clear: None,
                 display_dirty: false,
                 display_serial: 0,
-                hist_envelope: None,
-                hist_series: None,
-                hist_overlay: false,
                 mode: StreamExecutionMode::Explicit,
                 auxiliary: None,
                 auxiliary_pick: None,
@@ -4662,15 +4566,13 @@ impl Renderer {
             for (index, id) in columns.ids[..columns.count].iter().enumerate() {
                 names[index] = copy_name(id)?;
             }
-            let mut ranges: [StreamSourceRange<'_>; 7] =
+            let len = stream_phase_request_len(*phase, primitives)?;
+            let ranges: [StreamSourceRange<'_>; 7] =
                 std::array::from_fn(|index| StreamSourceRange {
                     column: &names[index],
                     offset,
-                    len: primitives,
+                    len,
                 });
-            for (index, id) in columns.ids[..columns.count].iter().enumerate() {
-                ranges[index].len = stream_phase_request_len(series, *phase, id, primitives)?;
-            }
             return match self.request_stream_columns(job, &ranges[..columns.count])? {
                 StreamRequestStatus::Backpressure => Ok(StreamDrawRequestStatus::Backpressure),
                 StreamRequestStatus::Ready(ticket) => {
@@ -4775,7 +4677,7 @@ impl Renderer {
             Some(snapshot) => &snapshot.view,
             None => explicit_view.ok_or(StreamError::WrongState)?,
         };
-        let (series_index, phase_index, draw_offset, prior_histogram, prior_hist_series) = {
+        let (series_index, phase_index, draw_offset) = {
             let draw = live_runtime(&self.stream_runtime)?
                 .draws
                 .iter()
@@ -4788,13 +4690,7 @@ impl Renderer {
             {
                 return Err(StreamError::Stale.into());
             }
-            (
-                draw.series,
-                draw.phase_index,
-                draw.offset,
-                draw.hist_envelope.clone(),
-                draw.hist_series,
-            )
+            (draw.series, draw.phase_index, draw.offset)
         };
         let execution_series = auto_snapshot.as_ref().map_or_else(
             || self.chart_states[&ticket.job.chart].series[series_index].clone(),
@@ -4822,16 +4718,7 @@ impl Renderer {
             }
             (columns, requested.len())
         };
-        let primitives = if phase == StreamDrawPhase::Histogram {
-            if histogram_edge_column(&execution_series) == Some(execution_series.x_column.as_str())
-            {
-                columns[0].len.saturating_sub(1)
-            } else {
-                columns[0].len
-            }
-        } else {
-            columns[0].len.saturating_sub(phase.halo())
-        };
+        let primitives = columns[0].len.saturating_sub(phase.halo());
         self.validate_stream_supply_kind(ticket, supply)?;
         if live_runtime(&self.stream_runtime)?
             .draws
@@ -4848,62 +4735,6 @@ impl Renderer {
                 primitives,
             );
         }
-        let fit_preview = live_runtime(&self.stream_runtime)?
-            .live_draw(ticket.job)?
-            .fit_preview;
-        let histogram = if phase == StreamDrawPhase::Histogram {
-            let (_, _, execution_style) = stream_execution_series(
-                &self.chart_states,
-                auto_snapshot.as_deref(),
-                ticket.job.chart,
-                series_index,
-            )?;
-            let bar = extract_bar(&execution_series.render_type).ok_or(StreamError::WrongState)?;
-            let pixels = match bar.orientation {
-                crate::data_config::BarOrientation::Vertical => view.panel_rect.width,
-                crate::data_config::BarOrientation::Horizontal => view.panel_rect.height,
-            };
-            let existing = prior_histogram.as_ref();
-            if existing.is_some() && prior_hist_series != Some(series_index) {
-                return Err(StreamError::WrongState.into());
-            }
-            let envelope = match existing {
-                Some(envelope) => Arc::clone(envelope),
-                None => Arc::new(data_render::bar_envelope::Persistent::new(
-                    auxiliary
-                        .as_ref()
-                        .and_then(|aux| aux.pipelines.as_ref())
-                        .unwrap_or(&self.pipelines)
-                        .bar_envelope
-                        .as_ref()
-                        .ok_or(StreamError::WrongState)?,
-                    &self.device,
-                    &self.gpu_ledger,
-                    pixels,
-                    self.gpu_ledger.budget_limit(),
-                    execution_style.bar_map.as_ref().map(|map| &map.bind_group),
-                )?),
-            };
-            let total = stream_phase_total(&execution_series, phase, |id| {
-                auto_snapshot.as_ref().map_or_else(
-                    || self.streaming_sources.get(id).map(|source| source.len),
-                    |snapshot| snapshot.sources.get(id).map(|source| source.len),
-                )
-            })?;
-            let final_chunk = draw_offset
-                .checked_add(primitives)
-                .ok_or(StreamError::Overflow)?
-                == total;
-            let global_start = u32::try_from(draw_offset).map_err(|_| StreamError::TooLarge)?;
-            Some((
-                envelope,
-                existing.is_none() || fit_preview,
-                final_chunk,
-                global_start,
-            ))
-        } else {
-            None
-        };
         let transform_headroom = if styled_points {
             data_render::STREAM_POINT_TRANSFORM_BYTES
         } else {
@@ -4940,9 +4771,6 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("figgy stream chunk draw"),
             });
-        if let Some((envelope, true, _, _)) = &histogram {
-            envelope.record_clear(&mut encoder);
-        }
         let capture_enabled = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
@@ -4986,7 +4814,7 @@ impl Renderer {
         } {
             Ok(chunk) => chunk,
             Err(error) => {
-                drop((encoder, histogram, prior_histogram));
+                drop(encoder);
                 self.end_gpu_frame();
                 return Err(error);
             }
@@ -5023,7 +4851,7 @@ impl Renderer {
         let pending_fit = match self.pending_auto_fit_config(ticket.job) {
             Ok(config) => config,
             Err(error) => {
-                drop((encoder, chunk, histogram, prior_histogram));
+                drop((encoder, chunk));
                 let discarded = self.discard_stream_recording(ticket);
                 self.end_gpu_frame();
                 discarded?;
@@ -5033,7 +4861,7 @@ impl Renderer {
         if let Some(config) = pending_fit {
             drop(auto_snapshot);
             if let Err(error) = self.update_auto_stream_fit(ticket.job, config, false) {
-                drop((encoder, chunk, histogram, prior_histogram));
+                drop((encoder, chunk));
                 self.discard_stream_recording(ticket)?;
                 self.end_gpu_frame();
                 return Err(error);
@@ -5075,7 +4903,7 @@ impl Renderer {
         let mut packet = match built {
             Ok(packet) => packet,
             Err(error) => {
-                drop((encoder, chunk, histogram, prior_histogram));
+                drop((encoder, chunk));
                 let discarded = self.discard_stream_recording(ticket);
                 self.end_gpu_frame();
                 discarded?;
@@ -5129,7 +4957,7 @@ impl Renderer {
                             .ok_or(StreamError::WrongState)?
                             .style_map_bg,
                     ),
-                    StreamDrawPhase::Histogram | StreamDrawPhase::Line | StreamDrawPhase::Field => {
+                    StreamDrawPhase::Line | StreamDrawPhase::Field => {
                         return Err(StreamError::WrongState.into());
                     }
                 };
@@ -5148,51 +4976,13 @@ impl Renderer {
                 Ok(())
             })();
             if let Err(error) = mapped {
-                drop((encoder, packet, chunk, histogram, prior_histogram));
+                drop((encoder, packet, chunk));
                 let discarded = self.discard_stream_recording(ticket);
                 self.end_gpu_frame();
                 discarded?;
                 return Err(error);
             }
         }
-        let histogram_chunk = if let Some((envelope, _, _, global_start)) = &histogram {
-            let recorded = (|| -> std::result::Result<_, StreamError> {
-                let layers = packet.layers();
-                let bar = layers.bar.as_ref().ok_or(StreamError::WrongState)?;
-                auxiliary
-                    .as_ref()
-                    .and_then(|aux| aux.pipelines.as_ref())
-                    .unwrap_or(&self.pipelines)
-                    .bar_envelope
-                    .as_ref()
-                    .ok_or(StreamError::WrongState)?
-                    .record_stream_chunk(
-                        &self.device,
-                        &mut encoder,
-                        &self.gpu_ledger,
-                        self.gpu_ledger.budget_limit(),
-                        envelope,
-                        &chunk.work,
-                        bar.edges,
-                        bar.values,
-                        *global_start,
-                        bar.transform_bg,
-                        bar.style_bg,
-                    )
-            })();
-            match recorded {
-                Ok(chunk) => Some(chunk),
-                Err(error) => {
-                    drop((encoder, packet, chunk, histogram, prior_histogram));
-                    let discarded = self.discard_stream_recording(ticket);
-                    self.end_gpu_frame();
-                    discarded?;
-                    return Err(error.into());
-                }
-            }
-        } else {
-            None
-        };
         let execution = stream_execution_series(
             &self.chart_states,
             auto_snapshot.as_deref(),
@@ -5204,11 +4994,6 @@ impl Renderer {
             match phase {
                 StreamDrawPhase::Field => {
                     return Err(FiggyError::internal("field uses its bounded tile executor"));
-                }
-                StreamDrawPhase::Histogram => {
-                    layers.errorbar = None;
-                    layers.line = None;
-                    layers.scatter = None;
                 }
                 StreamDrawPhase::Errorbar => {
                     layers.line = None;
@@ -5225,17 +5010,10 @@ impl Renderer {
             }
             Ok((execution, layers))
         });
-        let ((execution_config, _, execution_style), mut layers) = match execution {
+        let ((execution_config, _, _), layers) = match execution {
             Ok(execution) => execution,
             Err(error) => {
-                drop((
-                    encoder,
-                    packet,
-                    chunk,
-                    histogram,
-                    histogram_chunk,
-                    prior_histogram,
-                ));
+                drop((encoder, packet, chunk));
                 let discarded = self.discard_stream_recording(ticket);
                 self.end_gpu_frame();
                 discarded?;
@@ -5280,37 +5058,10 @@ impl Renderer {
                 1.0,
             );
             pass.set_scissor_rect(data.x, data.y, data.width, data.height);
-            let mapped_bar = if phase == StreamDrawPhase::Histogram
-                && layers
-                    .bar
-                    .as_ref()
-                    .is_some_and(|bar| bar.style_map_bg.is_some())
-            {
-                layers.bar.take()
-            } else {
-                None
-            };
             data_render::issue_series_data(&mut pass, &layers);
-            if let (Some(bar), Some(hist_chunk)) = (mapped_bar.as_ref(), histogram_chunk.as_ref()) {
-                hist_chunk.draw_full_mapped_bars(
-                    &mut pass,
-                    &chunk.work,
-                    bar.edges,
-                    bar.values,
-                    bar.transform_bg,
-                    bar.style_bg,
-                );
-            }
-            // Preview envelopes belong to this chunk's pixel window. Bake
-            // them into the data image so future rescaling moves them too.
-            if let Some((envelope, _, final_chunk, _)) = &histogram
-                && (*final_chunk || fit_preview)
-            {
-                envelope.draw(&mut pass, &view.transform_bg, &execution_style.bar_bg);
-            }
         }
         let result = self.queue_stream_recording(ticket, encoder.finish());
-        drop((packet, histogram_chunk, chunk));
+        drop((packet, chunk));
         match result {
             Ok(submission) => {
                 let current_gpu_bytes = self.gpu_memory_usage().total_bytes();
@@ -5342,18 +5093,6 @@ impl Renderer {
                 draw.offset += primitives;
                 draw.pending = None;
                 draw.display_dirty = true;
-                if let Some((envelope, _, final_chunk, _)) = histogram {
-                    if final_chunk {
-                        draw.hist_envelope = None;
-                        draw.hist_series = None;
-                        draw.hist_overlay = false;
-                    } else {
-                        draw.hist_envelope = Some(envelope);
-                        draw.hist_series = Some(series_index);
-                        draw.hist_overlay = !fit_preview;
-                    }
-                }
-                drop(prior_histogram);
                 // This is a Renderer-owned submission. External host recordings
                 // must already be submitted, as for draw/export owned paths.
                 self.end_gpu_frame();
@@ -5361,7 +5100,6 @@ impl Renderer {
                 Ok(submission)
             }
             Err(error) => {
-                drop((histogram, prior_histogram));
                 let discarded = self.discard_stream_recording(ticket);
                 self.end_gpu_frame();
                 discarded?;
@@ -5708,7 +5446,7 @@ impl Renderer {
     }
 
     /// Preflight borrowed payload and source authority without creating GPU
-    /// resources. Histogram's persistent reduction must call this first too.
+    /// resources.
     #[cfg(test)]
     fn validate_stream_supply(
         &mut self,

@@ -2,6 +2,7 @@
 //! auto-fit.
 
 use super::*;
+use renderer::theme::SubplotScope;
 
 // ------------------------------------------------------------------
 // Preset mirrors — fieldless enums cross the boundary as integers.
@@ -91,7 +92,8 @@ impl FiggyChart {
 
     /// Fit overlay layer `layer`'s Y axis to a column's cached statistics
     /// with proportional padding, the overlay counterpart of `auto_fit_y`.
-    /// A layer index past the overlay list is an error.
+    /// With the overlay's `link_y` on it fits the chart's Y axes it
+    /// follows. A layer index past the overlay list is an error.
     /// JS: `chart.auto_fit_overlay_y(0, "pressure", 0.05)`
     pub fn auto_fit_overlay_y(
         &mut self,
@@ -105,6 +107,29 @@ impl FiggyChart {
         let mut chart = Chart::new(self.chart_config()?.clone());
         chart
             .auto_fit_overlay_y_union(self.renderer.pool(), layer, &[column], padding)
+            .map_err(js_err)?;
+        self.replace_chart_config(chart.config().clone())?;
+        Ok(())
+    }
+
+    /// Fit overlay layer `layer`'s own X axis (`OverlayLayer::x_axis`) to a
+    /// column's cached statistics with proportional padding, the X
+    /// counterpart of `auto_fit_overlay_y`. With the overlay's `link_x` on
+    /// it fits the chart's X axes it follows. A layer index past the
+    /// overlay list is an error.
+    /// JS: `chart.auto_fit_overlay_x(0, "time_b", 0.05)`
+    pub fn auto_fit_overlay_x(
+        &mut self,
+        layer: usize,
+        column: &str,
+        padding: f64,
+    ) -> Result<(), JsValue> {
+        if layer >= self.chart_config()?.overlays.len() {
+            return Err(js_err("overlay layer index is out of range"));
+        }
+        let mut chart = Chart::new(self.chart_config()?.clone());
+        chart
+            .auto_fit_overlay_x_union(self.renderer.pool(), layer, &[column], padding)
             .map_err(js_err)?;
         self.replace_chart_config(chart.config().clone())?;
         Ok(())
@@ -147,14 +172,15 @@ impl FiggyChart {
     /// The active layer (`set_active_layer`) decides which axes move:
     /// `Base` and `Annotations` fit the parent's `bottom_x` and `left_y`,
     /// `Subplot(i)` fits subplot `i`'s, and `Overlay(n)` /
-    /// `SubplotOverlay(i, n)` fit that overlay's Y axis only. An axis fits
-    /// every series drawn against it (`Config::layer_of_series`). A linked
-    /// axis (`link_x`, `link_y`) is one axis shared by its link group: it
-    /// fits the series of every chart in the group and the range moves
-    /// the whole group, whichever member is active. X and Y links are
-    /// followed separately. An overlay shares its chart's X axis and has
-    /// its own Y axis, so its series count towards that X axis and not
-    /// towards `left_y`. An axis that is not linked fits its own chart's
+    /// `SubplotOverlay(i, n)` fit that overlay's own axes: its Y axis, and
+    /// its X axis while its `link_x` is off. An axis fits every series
+    /// drawn against it (`Config::layer_of_series`). A linked axis
+    /// (`link_x`, `link_y` of a subplot or an overlay) is one axis shared
+    /// by its link group: it fits the series of every chart and overlay in
+    /// the group and the range moves the whole group, whichever member is
+    /// active. X and Y links are followed separately. By default an overlay
+    /// follows its chart's X axis and has its own Y axis, so its series
+    /// count towards that X axis and not towards `left_y`. An axis that is not linked fits its own chart's
     /// series only; to fit every layer, set each layer active in turn and
     /// call this again.
     ///
@@ -169,6 +195,12 @@ impl FiggyChart {
     /// union because their uploaded edge column already is their geometry.
     /// Series registration itself does not submit GPU work.
     pub async fn auto_fit_all(&mut self, padding: f64) -> Result<(), JsValue> {
+        // A monotonic chart is auto-scaled by its full call (#271).
+        if self.monotonic.is_some() {
+            return Err(js_err(
+                "a monotonic chart auto-scales with set_monotonic(..., \"autoscale\")",
+            ));
+        }
         if self.request_stream_auto_fit(padding)? {
             self.request_host_redraw();
             return Ok(());
@@ -249,8 +281,9 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
-                // A Feynman series maps no value (#234).
-                DataRenderType::Feynman(_) => {}
+                // A Feynman series maps no value (#234), nor does a
+                // monotonic one (#271).
+                DataRenderType::Feynman(_) | DataRenderType::MonotonicLine(_) => {}
                 // An energy-level series' mapped transition values are SSOT
                 // (#203): each finite one widens the extent.
                 DataRenderType::EnergyLevels(levels) => {
@@ -293,28 +326,35 @@ impl FiggyChart {
 
     // ---- titles ----
 
-    /// Set plain title text and grow its band if needed. For a text-only
-    /// edit that keeps the exact margin, use `get_config` / `set_config`
-    /// and change only `chart_title.text`.
+    /// Set the title text and grow its band if needed. Like every text
+    /// setter (`set_x_title`, `set_y_title`, `set_colorbar_title`, and the
+    /// labels of `add_line_series` and `set_series_label`), it reads the
+    /// text as matplotlib reads a label: `$…$`, `\(…\)` and `$$…$$` spans
+    /// are TeX, `\$` is a dollar sign, and text whose TeX does not parse is
+    /// shown as written. For a text-only edit that keeps the exact margin,
+    /// use `get_config` / `set_config` and change only `chart_title.text`.
     pub fn set_title(&mut self, text: &str) -> Result<(), JsValue> {
         let mut config = self.chart_config()?.clone();
-        set_plain_chart_title(&mut config, text);
+        set_chart_title_label(&mut config, text);
         self.replace_chart_config(config)
     }
 
+    /// Set the bottom x axis title, a label with `$…$` spans as TeX.
     pub fn set_x_title(&mut self, text: &str) -> Result<(), JsValue> {
         let mut config = self.chart_config()?.clone();
-        config.bottom_x.title_option.text.segments = rich_segments_from_text(text);
+        config.bottom_x.title_option.text.segments = rich_segments_from_label(text);
         self.replace_chart_config(config)
     }
 
+    /// Set the left y axis title, a label with `$…$` spans as TeX.
     pub fn set_y_title(&mut self, text: &str) -> Result<(), JsValue> {
         let mut config = self.chart_config()?.clone();
-        config.left_y.title_option.text.segments = rich_segments_from_text(text);
+        config.left_y.title_option.text.segments = rich_segments_from_label(text);
         self.replace_chart_config(config)
     }
 
-    /// Set the colourbar title text and make it visible. An empty string
+    /// Set the colourbar title text, a label with `$…$` spans as TeX, and
+    /// make it visible. An empty string
     /// hides it. The full rich-text/title offsets remain available through
     /// `set_colorbar_axis` or the chart Config SSoT.
     pub fn set_colorbar_title(&mut self, text: &str) -> Result<(), JsValue> {
@@ -323,7 +363,7 @@ impl FiggyChart {
             .colorbar
             .as_mut()
             .ok_or_else(|| js_err("colorbar title needs Config.colorbar"))?;
-        bar.axis.title_option.text.segments = rich_segments_from_text(text);
+        bar.axis.title_option.text.segments = rich_segments_from_label(text);
         bar.axis.title_option.visible = !text.is_empty();
         self.replace_chart_config(config)
     }
@@ -469,9 +509,7 @@ impl FiggyChart {
             return Err(js_err("unknown annotation"));
         }
         if index.is_some() && self.chart_selection()?.is_some() {
-            self.renderer
-                .set_chart_selection(self.chart_id, None)
-                .map_err(js_err)?;
+            self.set_chart_selection(None)?;
         }
         self.set_selected_annotation(index);
         Ok(())
@@ -726,6 +764,53 @@ impl FiggyChart {
             .get(index)
             .ok_or_else(|| js_err(format!("no subplot {index}")))?;
         serde_json::to_string(&subplot.config.chart_area.0).map_err(js_err)
+    }
+
+    /// Fill the chart area with a colour under everything the chart draws
+    /// (JSON `{"r":1,"g":1,"b":1,"a":1}`), or leave it transparent (`null`)
+    /// so the page or the export's clear colour shows through (#265).
+    pub fn set_background(&mut self, json: &str) -> Result<(), JsValue> {
+        let color: Option<Color> = serde_json::from_str(json).map_err(js_err)?;
+        let mut config = self.chart_config()?.clone();
+        config.background = color;
+        self.replace_chart_config(config)
+    }
+
+    /// Apply the built-in theme `name` (`light`, `dark`, `paper`,
+    /// `dashboard` or `sketch`, #265) to the chart, its overlays and the
+    /// series drawn there, then fit the layout to the theme's text sizes.
+    /// `subplots` names the subplots that take it too: `"all"`, `"none"`
+    /// or a JSON array of indices. Ranges, text, annotations, the layer
+    /// structure and the selection stay; an unknown name or a bad list
+    /// changes nothing. A chart with monotonic series keeps its layout
+    /// (#271): `fit_layout`, which takes the groups' sources, fits it.
+    pub fn apply_theme(&mut self, name: &str, subplots: &str) -> Result<(), JsValue> {
+        let theme = theme_named(name)?;
+        let indices: Vec<usize> = match subplots.trim() {
+            "all" | "none" => Vec::new(),
+            list => serde_json::from_str(list).map_err(js_err)?,
+        };
+        let scope = match subplots.trim() {
+            "all" => SubplotScope::All,
+            "none" => SubplotScope::None,
+            _ => SubplotScope::Only(&indices),
+        };
+        let mut config = self.chart_config()?.clone();
+        let mut series = self.chart_series()?.to_vec();
+        theme.apply(&mut config, &mut series, scope);
+        // A chart with monotonic series keeps its layout: the layout fit can
+        // move the plot's edges, so it is `fit_layout`, which takes the
+        // groups' sources (#271).
+        let config = if self.has_monotonic()? {
+            config
+        } else {
+            let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+            renderer::layout::auto_layout(&config, &measure)
+        };
+        self.renderer
+            .preflight_chart_styles(&series)
+            .map_err(js_err)?;
+        self.replace_chart_state(config, series)
     }
 
     /// Fill subplot `index`'s plot with a colour (JSON `{"r":1,"g":1,"b":1,

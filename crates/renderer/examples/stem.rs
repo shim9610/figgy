@@ -15,11 +15,12 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, scatter, series};
+use gallery::Result;
 use renderer::{
     Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, Chart, Color, Renderer,
-    config::{Category, LegendCorner, LegendEntryKind},
-    data_config::{CategoryBarDirection, DataRenderType, Stem, XySeries},
+    SeriesConfig,
+    config::{Category, LegendCorner},
+    data_config::ScatterShape,
     format::{LabelFormat, PlainNumberFormat},
     line::LineStylePreset,
 };
@@ -68,58 +69,34 @@ fn impulse_response(r: &mut Renderer, out: &Path) -> Result {
         .iter()
         .map(|n| 2. * cutoff * sinc(2. * cutoff * n))
         .collect();
-    r.add_column("stem-n", &column(taps))?;
-    r.add_column("stem-h", &column(h))?;
-    r.add_column("stem-fine-n", &column(fine))?;
-    r.add_column("stem-ideal", &column(ideal))?;
-    let mut dashed = line(faded(sand, 0.9), 2.);
-    dashed.line_style = LineStylePreset::Dash;
-    let specs = [
-        series(
-            "ideal",
-            "stem-fine-n",
-            "stem-ideal",
-            DataRenderType::Xy(XySeries {
-                scatter: None,
-                line: Some(dashed),
-                errors: None,
-                stem: None,
-            }),
-        ),
-        series(
-            "taps",
-            "stem-n",
-            "stem-h",
-            DataRenderType::Xy(XySeries {
-                scatter: Some(scatter(teal, 10.)),
-                line: None,
-                errors: None,
-                stem: Some(Stem {
-                    baseline: 0.,
-                    direction: CategoryBarDirection::Vertical,
-                    color: faded(teal, 0.75),
-                    width: 2.5,
-                    line_style: LineStylePreset::Solid,
-                }),
-            }),
-        ),
-    ];
+    r.add_column("stem-n", &taps)?;
+    r.add_column("stem-h", &h)?;
+    r.add_column("stem-fine-n", &fine)?;
+    r.add_column("stem-ideal", &ideal)?;
+    let ideal = SeriesConfig::line("ideal", "stem-fine-n", "stem-ideal")
+        .label("Ideal sinc")
+        .color(faded(sand, 0.9))
+        .width(2.)
+        .dash(LineStylePreset::Dash);
+    let taps = SeriesConfig::stem("taps", "stem-n", "stem-h")
+        .label("Taps h[n], Hamming window")
+        .color(teal)
+        .width(2.5)
+        .marker(ScatterShape::CircleFilled, 10.)
+        .style_stem(|stem| stem.color = faded(teal, 0.75));
+    let specs = [ideal, taps];
     chart.set_x_range(-21.5, 21.5);
     chart.set_y_range(-0.1, 0.45);
     chart.config_mut().bottom_x.major_spacing = 5.;
     chart.config_mut().left_y.major_spacing = 0.1;
     plain_labels(&mut chart);
     chart.config_mut().legend.corner = LegendCorner::TopRight;
+    // The taps lead the legend but draw over the ideal curve.
     chart = chart
-        .with_legend_entry(
-            "Taps h[n], Hamming window",
-            teal,
-            3.,
-            LegendEntryKind::Scatter,
-        )
-        .with_legend_entry("Ideal sinc", sand, 2., LegendEntryKind::Line);
+        .with_legend_from(&specs[1..])
+        .with_legend_from(&specs[..1]);
     chart.config_mut().annotations.items = vec![baseline(AnnotationAxis::Y, ink)];
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-stem.png"))
 }
 
@@ -152,13 +129,14 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
     let ink = rgb(62, 56, 52);
     let green = rgb(46, 140, 96);
     let rust = rgb(204, 88, 64);
+    let grid = rgb(234, 228, 218);
     let mut chart = cartesian(
         "Tree canopy change / 2015 to 2025",
         "Change in canopy cover (percentage points)",
         "",
         bg,
         ink,
-        rgb(234, 228, 218),
+        grid,
     );
     // Ranked from the largest loss (row 0, at the bottom) to the largest
     // gain (at the top).
@@ -181,7 +159,6 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
         .map(|(id, label, _)| Category::new(*id, *label))
         .collect();
     chart.config_mut().left_y.categories = Some(categories);
-    chart.config_mut().left_y.out_margin = 200.;
     chart.config_mut().grid.show_major_y = false;
     chart.config_mut().grid.show_major_x = true;
     chart.config_mut().legend.corner = LegendCorner::TopLeft;
@@ -197,32 +174,26 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
                 change.push(*value);
             }
         }
-        r.add_column(format!("lollipop-{id}-row"), &column(rows))?;
-        r.add_column(format!("lollipop-{id}-change"), &column(change))?;
-        specs.push(series(
+        r.add_column(format!("lollipop-{id}-row"), &rows)?;
+        r.add_column(format!("lollipop-{id}-change"), &change)?;
+        let lollipops = SeriesConfig::stem(
             id,
-            &format!("lollipop-{id}-change"),
-            &format!("lollipop-{id}-row"),
-            DataRenderType::Xy(XySeries {
-                scatter: Some(scatter(color, 18.)),
-                line: None,
-                errors: None,
-                stem: Some(Stem {
-                    baseline: 0.,
-                    direction: CategoryBarDirection::Horizontal,
-                    color,
-                    width: 4.,
-                    line_style: LineStylePreset::Solid,
-                }),
-            }),
-        ));
-        chart = chart.with_legend_entry(label, color, 12., LegendEntryKind::Scatter);
+            format!("lollipop-{id}-change"),
+            format!("lollipop-{id}-row"),
+        )
+        .label(label)
+        .color(color)
+        .width(4.)
+        .marker(ScatterShape::CircleFilled, 18.)
+        .horizontal();
+        specs.push(lollipops);
     }
+    chart = chart.with_legend_from(&specs);
     chart.set_x_range(-5., 8.);
     chart.config_mut().bottom_x.major_spacing = 1.;
     plain_labels(&mut chart);
     chart.config_mut().annotations.items = vec![baseline(AnnotationAxis::X, ink)];
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-lollipop.png"))
 }
 

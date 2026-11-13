@@ -32,7 +32,7 @@ file name. To refresh an image, run the example's command from
 |---|---|---|---|
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-line.png" width="160" alt="Sine curve"> | `gallery-line.png` | [line.rs](line.rs), `main` | The complete minimal setup: two columns, one line series, one PNG |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-errorbars.png" width="160" alt="Response curves with error bars"> | `gallery-errorbars.png` | [error_bars.rs](error_bars.rs), `render` | Lines, markers and symmetric error bars from X, Y and error columns |
-| <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-histogram.png" width="160" alt="Vertical histogram"> | `gallery-histogram.png` | [histogram.rs](histogram.rs), `render` | 40 supplied bins; the renderer draws the counts it is given |
+| <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-histogram.png" width="160" alt="Vertical histogram"> | `gallery-histogram.png` | [histogram.rs](histogram.rs), `render` | 40 supplied bins and their counts |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-histogram-horizontal.png" width="160" alt="Horizontal histogram"> | `gallery-histogram-horizontal.png` | [histogram.rs](histogram.rs), `render` | The same bins with horizontal bars |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-contours.png" width="160" alt="Heatmap with labelled contours"> | `gallery-contours.png` | [heatmap_contours.rs](heatmap_contours.rs), `render` | An interpolated matrix fill, labelled isolines with line gaps, a colourbar |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-wave.gif" width="160" alt="Travelling waves"> | `gallery-wave.gif` | [animated_lines.rs](animated_lines.rs), `render` | Columns replaced every frame; writes `wave/NNN.png` frames, encoded as described in [the gallery notes](../GALLERY.md#encode-the-gifs) |
@@ -52,7 +52,7 @@ file name. To refresh an image, run the example's command from
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-thermostat.png" width="160" alt="Step schedule"> | `gallery-thermostat.png` | [area_step.rs](area_step.rs), `thermostat` | A `StepPost` line filled to a baseline |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-twin-axes.png" width="160" alt="Twin Y axes"> | `gallery-twin-axes.png` | [overlay_axes.rs](overlay_axes.rs), `twin_axes` | An overlay layer with its own right Y axis, exported as a document |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-subplots.png" width="160" alt="Small multiples"> | `gallery-subplots.png` | [subplots.rs](subplots.rs), `small_multiples` | A 2 × 2 grid: the parent and three subplots linked to its X axis, each with its own Y range |
-| <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-probability.png" width="160" alt="Probability paper"> | `gallery-probability.png` | [probability_paper.rs](probability_paper.rs), `probability_paper` | Normal and Weibull probability axes (#209), the Weibull panel over a log time axis |
+| <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-probability.png" width="160" alt="Probability paper"> | `gallery-probability.png` | [probability_paper.rs](probability_paper.rs), `probability_paper` | Normal and Weibull probability axes, the Weibull panel over a log time axis |
 
 ### Charts new in 0.19
 
@@ -134,7 +134,7 @@ in [gallery_concepts.rs](gallery_concepts.rs) holds its data and styling.
 | [heatmap_contours.rs](heatmap_contours.rs) | `gallery-contours.png`, `gallery-hexbin.png`, `gallery-imshow.png` | `cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours` |
 | [animated_lines.rs](animated_lines.rs) | `wave/NNN.png`, `orbit/NNN.png`; the second argument is the frame count | `cargo run --locked -p figgy-renderer --example animated_lines -- target/animation 48` |
 | [readme_gallery.rs](readme_gallery.rs) | The outputs of `error_bars`, `histogram`, `heatmap_contours`, `animated_lines`, `ternary`, `surface_3d`, `trimesh`, `parallel`, `range_bars`, `stem`, `broken_axes` and `feynman` from one shared device | `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery` |
-| [polar_plot.rs](polar_plot.rs) | `01-antenna-pattern.png`, `02-compass-rose.png`, `03-spiral-arcs.png` (a dashed spiral with arc segments), `04-sector-radians.png` (a half-circle sector in radians), `gallery-polar-heatmap.png`, `gallery-rose.png` | `cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot` |
+| [polar_plot.rs](polar_plot.rs) | `01-antenna-pattern.png`, `02-compass-rose.png`, `03-spiral-arcs.png` (a dashed spiral with arc segments), `04-sector-radians.png` (a half-circle sector in radians), `05-gain-heatmap.png` (an antenna's gain as a heatmap with labelled contours), `gallery-polar-heatmap.png`, `gallery-rose.png` | `cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot` |
 | [vector_field.rs](vector_field.rs) | `gallery-wind.png`, `gallery-currents.png`, and `gradient.png` from `gradient`: grid arrows in data units from their tails, coloured by a third matrix (`VectorColorMap::Grid`) | `cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field` |
 | [value_maps.rs](value_maps.rs) | `gallery-colormap.png`, `gallery-bubbles.png` | `cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps` |
 | [area_step.rs](area_step.rs) | `gallery-forecast.png`, `gallery-thermostat.png`, and `steps.png` from `step_modes`: `StepPre`, `StepPost` and `StepMid` on the same samples | `cargo run --locked -p figgy-renderer --example area_step -- target/area-step` |
@@ -186,8 +186,7 @@ cargo run --locked -p figgy-renderer --features egui_demo --example constellatio
 - **radial_editor** selects, edits and drags the parts of a radial chart.
   `Edit plot area` shows eight resize handles.
 - **ssot_lab** edits four charts live, one per draw style. All four series
-  read one X column from the pool, and vertically adjacent panels share their
-  X range.
+  share one X column, and vertically adjacent panels share their X range.
 - **streaming_capacity_demo** generates its data lazily through `ColumnSource`
   and draws every point. Add `-- --benchmark` to print timings for the default
   source.
@@ -196,9 +195,8 @@ cargo run --locked -p figgy-renderer --features egui_demo --example constellatio
 [Interaction contracts](../INTERACTION.md) explain logical coordinates, hit
 priority, incremental deltas, rejected edits and export state.
 The [browser product](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)
-(`crates/web`) is a separate WASM consumer. Its wrapper and `<figgy-chart>`
-element bridge a browser host to the renderer and do not expose every native
-chart API.
+(`crates/web`) wraps the renderer for WebAssembly. Its JavaScript API and
+`<figgy-chart>` element are its own and do not mirror every native Rust API.
 
 ## Review and measurement tools
 
@@ -210,6 +208,7 @@ images are not in the README.
 | [constellation_demo.rs](constellation_demo.rs) | Despite its name, renders the Milkyway style: parameter sweeps of the line stars and ribbon, spectrum and sampling checks, scatter planets and errorbar jets, into `target/constellation_demo/` | `cargo run --locked -p figgy-renderer --example constellation_demo` |
 | [sketch_demo.rs](sketch_demo.rs) | Precise and Sketch exports of one chart, and a Sketch tour with line, scatter-line and errorbar series, into `target/sketch_demo/` | `cargo run --locked -p figgy-renderer --example sketch_demo` |
 | [raster_bench.rs](raster_bench.rs) | Prints the CPU raster time of the grid and decoration layers for Precise and Milkyway at two sizes; needs no GPU | `cargo run --locked --release -p figgy-renderer --example raster_bench` |
+| [monotonic_bench.rs](monotonic_bench.rs) | Times a monotonic-x chart on the native GPU: one full call of N samples, sliding appends to a window, and a 1x export check that the line covers each pixel column's data range; f64 data or i16 counts on a volts axis | `cargo run --locked --release -p figgy-renderer --example monotonic_bench -- once --samples 100000000` |
 
 ## 한국어 안내
 
@@ -231,5 +230,5 @@ images are not in the README.
   평행 좌표, 바이올린·레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위,
   파인만 도표 그림은 위 [0.19 표](#charts-new-in-019)의 예제가 그린다. 그리는 값은 모두 예제가 계산한다.
 - **창 예제와 도구**: 편집 예제는 실제 창을 열어 선택·이동·영역 조정을 보여준다.
-  `constellation_demo`, `sketch_demo`, `raster_bench`는 렌더러를 바꿀 때 출력과 비용을
+  `constellation_demo`, `sketch_demo`, `raster_bench`, `monotonic_bench`는 렌더러를 바꿀 때 출력과 비용을
   확인하는 도구다.

@@ -86,6 +86,9 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         DataRenderType::Streamlines { line, .. } => Some(Cow::Borrowed(line)),
         // A ternary line, placed by its three components.
         DataRenderType::Ternary { line, .. } => line.as_ref().map(Cow::Borrowed),
+        // A monotonic channel's envelope is drawn as this line through its
+        // envelope columns (#271).
+        DataRenderType::MonotonicLine(series) => Some(Cow::Borrowed(&series.line)),
         // A parallel series' line is not this line: its rows are drawn by
         // the parallel entries through every axis column, never as the
         // polyline through `(x_column, y_column)`. Its style is read
@@ -123,8 +126,10 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
             .map(Cow::Owned),
         // Ternary markers, placed by their three components.
         DataRenderType::Ternary { scatter, .. } => scatter.as_ref().map(Cow::Borrowed),
-        // A parallel series draws no markers.
+        // A parallel series draws no markers; nor does a monotonic one,
+        // whose kept points are not every sample (#271).
         DataRenderType::Parallel { .. }
+        | DataRenderType::MonotonicLine(_)
 
         | DataRenderType::EnergyLevels(_)
 
@@ -195,7 +200,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -234,7 +240,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -270,7 +277,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -299,7 +307,8 @@ pub(super) fn extract_vector(
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -379,6 +388,16 @@ pub(super) fn series_draw_info_from_pool(
         // (#234).
         DataRenderType::Feynman(diagram) => SeriesDrawInfo {
             drawn_count: (diagram.vertices.len() + diagram.propagators.len()) as u64,
+            cols: None,
+            rows: None,
+            truncated: false,
+        },
+        // A monotonic series draws its envelope (#271): one segment
+        // between adjacent rows of its two envelope columns, sized by the
+        // plot width, never by the sample count. Its group's own
+        // truncation is reported by `Renderer::series_draw_info`.
+        DataRenderType::MonotonicLine(_) => SeriesDrawInfo {
+            drawn_count: x.min(y).saturating_sub(1),
             cols: None,
             rows: None,
             truncated: false,
@@ -657,7 +676,8 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::EnergyLevels(_)
 
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -687,7 +707,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -707,7 +728,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -727,7 +749,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
-        | DataRenderType::Feynman(_) => None,
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_) => None,
     }
 }
 
@@ -788,7 +811,7 @@ pub(super) fn polar_fill_closes(config: &Config) -> bool {
 /// The categories a category bar series of `config` (one panel) draws
 /// against: the categorical axis of the panel's bar direction.
 pub(super) fn category_bar_categories(config: &Config) -> Option<&[crate::config::Category]> {
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     match groups.direction {
         crate::data_config::CategoryBarDirection::Vertical => config.bottom_x.categories.as_deref(),
         crate::data_config::CategoryBarDirection::Horizontal => config.left_y.categories.as_deref(),
@@ -842,7 +865,7 @@ fn visit_category_bar_members<'c>(
     lookup: &mut impl FnMut(&str) -> Result<ColumnHandle>,
     mut visit: impl FnMut(usize, &'c SeriesConfig, &str, u32) -> Result<()>,
 ) -> Result<usize> {
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let n = category_bar_count(config, series)?;
     let mut members = 0usize;
     for item in group {
@@ -984,7 +1007,7 @@ pub(super) fn category_bar_params<'c>(
         .render_type
         .category_bars()
         .ok_or_else(|| invalid(crate::RuleKind::NotCategoryBars))?;
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let n = category_bar_count(config, series)?;
     let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
     let mut member = None;
@@ -1083,7 +1106,7 @@ pub(super) fn box_plot_params<'c>(
         .render_type
         .box_plot()
         .ok_or_else(|| invalid(crate::RuleKind::NotBoxPlot))?;
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let n = category_bar_categories(config)
         .map(<[_]>::len)
         .ok_or_else(|| invalid(crate::RuleKind::BoxPlotsAxis))?;
@@ -1500,7 +1523,7 @@ pub(super) fn range_bar_params<'c>(
         .render_type
         .range_bars()
         .ok_or_else(|| invalid(crate::RuleKind::NotRangeBars))?;
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let positions = lookup(&series.x_column)?;
     let n = positions.len_values;
     let mut lane = |id: &str| -> Result<u32> {

@@ -47,7 +47,6 @@ struct SelectionEntry {
     series: usize,
     index: usize,
     filter: SelectionRefFilter,
-    bar: bool,
     field: Option<field::Cell>,
 }
 
@@ -95,13 +94,12 @@ fn next_entry(
                 if let Some(picks) = config
                     .picked_data
                     .as_ref()
-                    .filter(|p| p.visible && (primitives.bar || primitives.field))
+                    .filter(|p| p.visible && primitives.field)
                 {
                     while let Some(pick) = picks.refs.get(cursor.ordinal) {
                         let ordinal = cursor.ordinal;
                         cursor.ordinal += 1;
-                        if primitives.field
-                            && picked_data_ref_matches_series(declaration, pick)
+                        if picked_data_ref_matches_series(declaration, pick)
                             && let PickedDataRef::MatrixCell {
                                 x_index, y_index, ..
                             } = pick
@@ -113,17 +111,10 @@ fn next_entry(
                                     series: cursor.series,
                                     index: 0,
                                     filter: SelectionRefFilter::Typed(ordinal),
-                                    bar: false,
                                     field: Some(cell),
                                 },
                                 cursor,
                             ));
-                        }
-                        if picked_data_ref_matches_series(declaration, pick)
-                            && let PickedDataRef::HistogramBin { bin_index, .. } = pick
-                        {
-                            selected = Some((*bin_index, SelectionRefFilter::Typed(ordinal), true));
-                            break;
                         }
                     }
                 }
@@ -140,8 +131,7 @@ fn next_entry(
                         if picked_data_ref_matches_series(declaration, pick)
                             && let PickedDataRef::Point { point_index, .. } = pick
                         {
-                            selected =
-                                Some((*point_index, SelectionRefFilter::Typed(ordinal), false));
+                            selected = Some((*point_index, SelectionRefFilter::Typed(ordinal)));
                             break;
                         }
                     }
@@ -154,25 +144,15 @@ fn next_entry(
                 continue;
             }
         }
-        if let Some((index, filter, bar)) = selected {
+        if let Some((index, filter)) = selected {
             let x = len(&declaration.x_column).unwrap_or(0);
             let y = len(&declaration.y_column).unwrap_or(0);
-            let count = if bar {
-                if histogram_edge_column(declaration) == Some(declaration.x_column.as_str()) {
-                    x.saturating_sub(1).min(y)
-                } else {
-                    y.saturating_sub(1).min(x)
-                }
-            } else {
-                x.min(y)
-            };
-            if (index as u64) < count {
+            if (index as u64) < x.min(y) {
                 return Some((
                     SelectionEntry {
                         series: cursor.series,
                         index,
                         filter,
-                        bar,
                         field: None,
                     },
                     cursor,
@@ -227,17 +207,9 @@ fn columns_for<'a>(
         }
     };
     for id in [&series.x_column, &series.y_column] {
-        add(
-            id,
-            if entry.bar && histogram_edge_column(series) == Some(id.as_str()) {
-                2
-            } else {
-                1
-            },
-        );
+        add(id, 1);
     }
-    if !entry.bar
-        && matches!(config.draw_style, DrawStyle::Precise)
+    if matches!(config.draw_style, DrawStyle::Precise)
         && let Some(id) = extract_scatter(&series.render_type).and_then(|scatter| match scatter {
             std::borrow::Cow::Borrowed(scatter) => scatter.point_style_index_column.as_deref(),
             // A derived (radar) marker style reads no style-index column.
@@ -379,7 +351,6 @@ impl Renderer {
                 return Err(StreamError::TooLarge.into());
             }
             let mapped = entry.field.is_none()
-                && !entry.bar
                 && matches!(config.draw_style, DrawStyle::Precise)
                 && styles[entry.series].scatter_map.is_some();
             let overhead = if entry.field.is_some() {
@@ -483,7 +454,6 @@ impl Renderer {
                 return Ok(StreamingSelectionRequest::Complete { revision });
             };
             if let Some(cache) = draw.view_cache.clone()
-                && !entry.bar
                 && entry.field.is_none()
             {
                 self.append_packed_selection_entry(job, &config, entry, next_cursor, &cache)?;
@@ -587,7 +557,7 @@ impl Renderer {
             &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view,
                 chart_config: config,
                 series: &[Series {
@@ -795,7 +765,6 @@ impl Renderer {
             entry.series,
         )?;
         let mapped = entry.field.is_none()
-            && !entry.bar
             && matches!(config.draw_style, DrawStyle::Precise)
             && style.scatter_map.is_some();
         if auxiliary.is_none() {
@@ -814,7 +783,7 @@ impl Renderer {
                 &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
-                &[ChartDrawItem {
+                &[PanelDraw {
                     view,
                     chart_config: &config,
                     series: &[Series {
@@ -882,13 +851,6 @@ impl Renderer {
             };
             let x = lookup(&series_config.x_column)?;
             let y = lookup(&series_config.y_column)?;
-            let bar = entry.bar.then(|| {
-                if histogram_edge_column(series_config) == Some(series_config.x_column.as_str()) {
-                    (x, y)
-                } else {
-                    (y, x)
-                }
-            });
             let tally = crate::gpu_memory::ChargeTally::new();
             // `mapped` requires the scatter map.
             let map = match style.scatter_map.as_ref().filter(|_| mapped) {
@@ -922,7 +884,7 @@ impl Renderer {
                     buffer: &chunk.work,
                     x,
                     y,
-                    bar,
+                    bar: None,
                     category: None,
                     violin: None,
                     box_points: None,

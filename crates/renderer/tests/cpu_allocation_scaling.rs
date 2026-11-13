@@ -91,6 +91,46 @@ fn calls() -> u64 {
     CALLS.load(Ordering::Relaxed)
 }
 
+/// Set in the child process `measured` starts, so it measures instead of
+/// starting another.
+const CHILD_ENV: &str = "FIGGY_ALLOCATION_MEASUREMENT_CHILD";
+
+/// Whether `RUST_BACKTRACE` or `RUST_LIB_BACKTRACE` turns backtrace capture
+/// on. In debug builds wgpu-core's snatch-lock trace then captures a real
+/// backtrace on every `queue.write_buffer`, which adds host allocations
+/// the renderer does not make. The counts would depend on the shell that
+/// runs the test.
+fn backtraces_requested() -> bool {
+    ["RUST_LIB_BACKTRACE", "RUST_BACKTRACE"]
+        .iter()
+        .find_map(std::env::var_os)
+        .is_some_and(|value| value != "0")
+}
+
+/// The measurement lock for test `name`, or `None` when this process
+/// should not measure. With backtrace capture requested, the test runs
+/// again in a child process with both variables removed, so every shell
+/// measures the same counts; this process then only checks that the child
+/// passed. Setting the variables here instead would race the other test
+/// threads that read the environment.
+fn measured(name: &str) -> Option<MutexGuard<'static, ()>> {
+    if !backtraces_requested() || std::env::var_os(CHILD_ENV).is_some() {
+        return Some(measurement_guard());
+    }
+    let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([name, "--exact", "--nocapture", "--test-threads=1"])
+        .env_remove("RUST_BACKTRACE")
+        .env_remove("RUST_LIB_BACKTRACE")
+        .env(CHILD_ENV, "1")
+        .status()
+        .expect("run the measurement without backtrace capture");
+    assert!(
+        status.success(),
+        "{name} failed without backtrace capture: {status}"
+    );
+    None
+}
+
 fn measurement_guard() -> MutexGuard<'static, ()> {
     MEASUREMENT_LOCK
         .lock()
@@ -136,7 +176,9 @@ fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
 
 #[test]
 fn host_bytes_do_not_scale_with_uploaded_data() {
-    let _measurement = measurement_guard();
+    let Some(_measurement) = measured("host_bytes_do_not_scale_with_uploaded_data") else {
+        return;
+    };
     // One renderer, pre-sized for the largest column, warmed up first.
     // Measuring across construction would fold in shader compilation and
     // one-time driver caches: large, one-off, and nothing to do with the data.
@@ -232,10 +274,16 @@ fn host_bytes_do_not_scale_with_uploaded_data() {
 
 /// Allocations a warm prepare may make **per panel**.
 ///
-/// Measured 8–9 on llvmpipe. Figgy's own share is the two
-/// `Vec::with_capacity(items.len())` its two prepare phases build; the rest is
-/// wgpu's own bookkeeping inside `queue.write_buffer` for the transform
-/// uniform — label strings and pending-write vectors in wgpu-core.
+/// Measured 7 for one panel and 4 more per further panel on lavapipe.
+/// Figgy's own share is three `Vec`s per frame, whatever the panel count: the
+/// panel inputs `prepare` borrows, the per-panel products its phases fill in
+/// place, and the token's prepared items. The rest is wgpu's own bookkeeping
+/// inside `queue.write_buffer` for each panel's transform uniform: the
+/// staging buffer's label copied twice and an `Arc<Backtrace>` in
+/// gpu-allocator, and the barrier `Vec` in wgpu-core. A debug build run with
+/// `RUST_BACKTRACE` set would cost 4 more per write, because wgpu-core's
+/// snatch-lock trace then captures a real backtrace, so the measured tests
+/// run with backtrace capture off (`measured`).
 const MAX_PREPARE_ALLOCATIONS_PER_PANEL: u64 = 12;
 
 /// Measured 135 on llvmpipe: allocator bookkeeping for the relayout, not data.
@@ -270,13 +318,17 @@ fn panel_config(width: u32, height: u32) -> renderer::Config {
 /// diagnostic because warm driver caches are not a per-frame ownership bound.
 #[test]
 fn a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels() {
-    let _measurement = measurement_guard();
+    let Some(_measurement) =
+        measured("a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels")
+    else {
+        return;
+    };
     let Some(mut renderer) = renderer_with_pool(4 << 20) else {
         no_gpu("prepare allocation measurement");
         return;
     };
     let chart = Chart::new(panel_config(320, 240));
-    let views: Vec<_> = (0..4)
+    let mut views: Vec<_> = (0..4)
         .map(|_| {
             renderer
                 .create_chart_view(&chart, chart.config().chart_area.0)
@@ -292,31 +344,31 @@ fn a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels() {
     );
     let mut measured = Vec::new();
     for panels in [0usize, 1, 2, 4] {
-        let items: Vec<ChartDrawItem<'_>> = views
-            .iter()
+        let mut items: Vec<ChartDrawItem<'_>> = views
+            .iter_mut()
             .take(panels)
             .map(|view| ChartDrawItem {
                 view,
-                chart_config: chart.config(),
+                chart: &chart,
                 series: &[],
             })
             .collect();
         // Warm this exact shape: a shape's first prepare compiles pipeline
         // variants and fills caches, which is not per-frame cost.
-        renderer.prepare(&items).unwrap();
+        renderer.prepare(&mut items).unwrap();
 
         let calls_before = calls();
-        let prepared = renderer.prepare(&items).unwrap();
+        let prepared = renderer.prepare(&mut items).unwrap();
         let allocations = calls() - calls_before;
         drop(prepared);
 
         // Retained is measured as a **steady-state** diagnostic, not a one-shot
         // ownership bound. A one-shot delta cannot distinguish a leak from a
         // driver cache filling for the first time.
-        let cycle = |renderer: &mut Renderer, rounds: usize| -> i64 {
+        let mut cycle = |renderer: &mut Renderer, rounds: usize| -> i64 {
             let before = live_bytes();
             for _ in 0..rounds {
-                let prepared = renderer.prepare(&items).unwrap();
+                let prepared = renderer.prepare(&mut items).unwrap();
                 drop(prepared);
             }
             live_bytes() - before
@@ -347,7 +399,9 @@ fn a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels() {
 /// must prepare in the same number of host allocations.
 #[test]
 fn prepare_cost_is_independent_of_series_length() {
-    let _measurement = measurement_guard();
+    let Some(_measurement) = measured("prepare_cost_is_independent_of_series_length") else {
+        return;
+    };
     let Some(mut renderer) = renderer_with_pool(16 << 20) else {
         no_gpu("prepare-vs-length measurement");
         return;
@@ -367,7 +421,7 @@ fn prepare_cost_is_independent_of_series_length() {
     renderer.end_gpu_frame();
 
     let chart = Chart::new(panel_config(320, 240));
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
 
@@ -399,18 +453,18 @@ fn prepare_cost_is_independent_of_series_length() {
             config: &series_config,
             style: &style,
         }];
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
         // Two warm-ups: the first prepare of a series compiles what it needs
         // and builds its arc scratch; the second settles the cache.
-        renderer.prepare(&items).unwrap();
-        renderer.prepare(&items).unwrap();
+        renderer.prepare(&mut items).unwrap();
+        renderer.prepare(&mut items).unwrap();
 
         let before = calls();
-        let prepared = renderer.prepare(&items).unwrap();
+        let prepared = renderer.prepare(&mut items).unwrap();
         let allocations = calls() - before;
         drop(prepared);
         println!("prepare with {len} points: {allocations} allocations");
@@ -436,7 +490,9 @@ fn prepare_cost_is_independent_of_series_length() {
 /// never per cell. Sixteen angle columns of 64 rows and of 65,536 rows.
 #[test]
 fn polar_field_prepare_cost_is_independent_of_its_rows() {
-    let _measurement = measurement_guard();
+    let Some(_measurement) = measured("polar_field_prepare_cost_is_independent_of_its_rows") else {
+        return;
+    };
     let Some(mut renderer) = renderer_with_pool(64 << 20) else {
         no_gpu("polar field prepare-vs-rows measurement");
         return;
@@ -485,7 +541,7 @@ fn polar_field_prepare_cost_is_independent_of_its_rows() {
         let mut chart = Chart::new(config.clone());
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(0.0, rows as f64);
-        let view = renderer
+        let mut view = renderer
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         let series_config = renderer::SeriesConfig {
@@ -515,15 +571,15 @@ fn polar_field_prepare_cost_is_independent_of_its_rows() {
             config: &series_config,
             style: &style,
         }];
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
-        renderer.prepare(&items).unwrap();
-        renderer.prepare(&items).unwrap();
+        renderer.prepare(&mut items).unwrap();
+        renderer.prepare(&mut items).unwrap();
         let before = calls();
-        let prepared = renderer.prepare(&items).unwrap();
+        let prepared = renderer.prepare(&mut items).unwrap();
         let allocations = calls() - before;
         drop(prepared);
         println!("polar field prepare with {rows} rows: {allocations} allocations");
@@ -541,7 +597,9 @@ fn polar_field_prepare_cost_is_independent_of_its_rows() {
 
 #[test]
 fn pool_growth_allocates_a_bounded_amount() {
-    let _measurement = measurement_guard();
+    let Some(_measurement) = measured("pool_growth_allocates_a_bounded_amount") else {
+        return;
+    };
     let Some(mut renderer) = renderer_with_pool(64 * 1024) else {
         no_gpu("growth allocation measurement");
         return;
@@ -612,7 +670,11 @@ fn pool_growth_allocates_a_bounded_amount() {
 /// columns are. Both are asserted; the printout is the record.
 #[test]
 fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
-    let _measurement = measurement_guard();
+    let Some(_measurement) =
+        measured("a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time")
+    else {
+        return;
+    };
     const COLUMNS: usize = 64;
     let Some(mut renderer) = renderer_with_pool(64 << 20) else {
         no_gpu("batch allocation measurement");

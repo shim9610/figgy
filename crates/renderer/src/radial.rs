@@ -541,7 +541,7 @@ struct RadialVectorFrame {
 }
 
 /// Shares the host device/queue. Owns one pipeline and at most one cached frame.
-/// Kept separate from the large numeric-data/Cartesian renderer deliberately.
+/// Separate from the numeric-data/Cartesian renderer.
 pub struct RadialRenderer {
     gpu: RendererDevice,
     format: wgpu::TextureFormat,
@@ -1827,78 +1827,22 @@ impl FrameKey {
 /// GPU draws put to fixed values, so appearance edits and ordinary hover
 /// reuse the raster.
 fn annotation_key(chart: &RadialChart) -> FrameKey {
-    fn style(s: &RadialStyle) -> RadialStyle {
-        let RadialStyle {
-            tilt_degrees,
-            depth,
-            shadow,
-            hover_lift,
-            // Surface appearance: GPU work, never on the label raster.
-            material: _,
-            bevel: _,
-            gap_degrees: _,
-            roughness: _,
-            texture_strength: _,
-            texture_scale: _,
-            light: _,
-            inner_corner: _,
-            outer_corner: _,
-            outline: _,
-            hover_brightness: _,
-            gloss: _,
-            texture_angle_degrees: _,
-        } = s;
-        let RadialStyle {
-            tilt_degrees: _,
-            depth: _,
-            shadow: _,
-            hover_lift: _,
-            material,
-            bevel,
-            gap_degrees,
-            roughness,
-            texture_strength,
-            texture_scale,
-            light,
-            inner_corner,
-            outer_corner,
-            outline,
-            hover_brightness,
-            gloss,
-            texture_angle_degrees,
-        } = RadialStyle::default();
-        RadialStyle {
-            material,
-            tilt_degrees: *tilt_degrees,
-            depth: *depth,
-            bevel,
-            gap_degrees,
-            roughness,
-            texture_strength,
-            texture_scale,
-            light,
-            shadow: *shadow,
-            inner_corner,
-            outer_corner,
-            outline,
-            hover_lift: *hover_lift,
-            hover_brightness,
-            gloss,
-            texture_angle_degrees,
-        }
-    }
     let mut c = FrameKey::of(chart);
-    c.style = style(&c.style);
-    if !raster_moves_inside_labels(chart) {
-        c.interaction = RadialInteraction::default();
-    }
+    c.style = c.style.label_raster_key();
+    c.interaction = c
+        .interaction
+        .label_raster_key(raster_moves_inside_labels(chart));
     c.background = crate::Color::WHITE;
     for slice in c
         .slices
         .iter_mut()
         .chain(c.split.iter_mut().flat_map(|s| s.children.iter_mut()))
     {
-        slice.style = slice.style.as_ref().map(style).filter(|s| s != &c.style);
+        slice.style = slice
+            .style
+            .as_ref()
+            .map(RadialStyle::label_raster_key)
+            .filter(|s| s != &c.style);
         if slice.labels.unwrap_or(c.labels) != RadialLabels::Inside || slice.label_color.is_some() {
             slice.color = crate::Color::WHITE;
         }

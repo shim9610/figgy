@@ -155,8 +155,9 @@ give the reproduction commands.
 |---|---|---|
 | Lines and scatter | `f64` columns through `ColumnSource` | [Usage](crates/renderer/USAGE.md) · [Series schema](crates/renderer/CONFIG.md#data_config--declarative-series-schema-the-active-api) |
 | Area fills and step lines | A line's `fill` (to a baseline or another series) and `interpolation` | [Area fill and step lines](crates/renderer/CONFIG.md#area-fill-and-step-lines) · [area_step.rs](crates/renderer/examples/area_step.rs) |
+| Monotonic-x lines (large, evenly spaced signals) | Samples at `start + i × interval`, lent on every call through a `MonotonicSource` and not retained after the call; each pixel column draws its first, lowest, highest and last sample (`MonotonicLine` series in a chart from `Renderer::register_monotonic_chart`; `set_monotonic`, `append_monotonic`) | [Monotonic-x lines](crates/renderer/USAGE.md#monotonic-x-lines) · [MONOTONIC.md](crates/model/MONOTONIC.md) |
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
-| Stems and lollipops | An `XySeries` with markers and a `stem` (#206): one stroke per point from a baseline, along y for an impulse response, along x for a ranked lollipop | [Stems](crates/renderer/CONFIG.md#stems) |
+| Stems and lollipops | An `XySeries` with markers and a `stem`: one stroke per point from a baseline, along y for an impulse response, along x for a ranked lollipop | [Stems](crates/renderer/CONFIG.md#stems) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
 | Heatmaps and contours | X and Y coordinate columns and one z column per grid row or column (`MatrixRef`) | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
 | Hexbins | Host-binned counts on a `Hexagonal` grid of flat-topped hexagons (`MatrixRef.grid_layout`) | [Hexagonal grids](crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |
@@ -167,7 +168,7 @@ give the reproduction commands.
 | Probability axes | `AxisScale::Probability` (normal, Weibull or logistic paper) on a value axis; the host computes the plotting positions and any fit | [Axis options](crates/renderer/CONFIG.md#axisoptions-top_x--bottom_x--left_y--right_y) · [probability_paper.rs](crates/renderer/examples/probability_paper.rs) |
 | Broken axes | `AxisBreaks` on a value axis: ranges cut out, each cut marked as a gap, the pieces sized by span, equally or by weight | [Axis breaks](crates/renderer/CONFIG.md#axisbreaks) |
 | Insets | A subplot drawn over its parent with an `InsetMarker`: the magnified window and connectors on the parent, dragged and resized like any subplot | [Subplots and insets](crates/renderer/CONFIG.md#subplot-configsubplots) |
-| Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text, arrows and shapes (rectangles, ellipses, polygons) | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
+| Overlay axes, subplots, annotations | Overlay layers with their own Y axis on the right and, when unlinked, their own X axis on the top, a grid of panels, reference lines, spans, text, arrows and shapes (rectangles, ellipses, polygons) | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
 | Polar plots | (angle, radius) columns and `Config.polar`; heatmaps and contours draw as annular cells | [Polar](crates/renderer/POLAR.md) · [Heatmaps](crates/renderer/POLAR.md#heatmaps-and-contours) |
 | Ternary plots | Three component columns per `Ternary` series and `Config.ternary`; region fills of the polygons a series outlines | [Ternary](crates/renderer/TERNARY.md) |
 | Triangle meshes (tripcolor, tricontour, trisurf) | Vertex coordinate and value columns and a triangle index column (`TriMesh`, `Renderer::upsert_triangles`): the host's triangulation, a colour field and contour lines over it; with `Config.view_3d` and a `z_column` a surface in the box | [Triangle meshes](crates/renderer/TRIMESH.md) |
@@ -181,17 +182,18 @@ give the reproduction commands.
 | Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
 | Sunbursts | `RadialChart` slices with `children`: nested rings over their parents' spans | [Radial (in Korean)](crates/renderer/RADIAL.md#선버스트중첩-고리) |
 
-Every row above pies and donuts is a column-backed chart: its data enters
-through `ColumnSource` into one GPU column pool, and these charts share one
-renderer, picking and export path. Overlay axes and subplots work with these
-charts, except that a polar chart takes no overlay axes. Streamed, non-resident
-sources draw lines, scatter, error bars, histograms and heatmaps in a
-single-panel document. Contours, fills and step lines, vector fields, colour and
-size maps, polar plots, and documents with overlays or subplots reject streamed
-sources with an explicit error, and so do categorical bars, box plots, range
-bars and radar series. Pies and donuts keep their values in their own small model, with
-no `ColumnSource`, and have their own renderer. The annotation layer works on
-both kinds.
+Every row above pies and donuts is drawn by `Renderer`. Their per-point data
+enters through `ColumnSource`, except that monotonic-x lines lend their samples
+through a `MonotonicSource`, and energy-level and Feynman diagrams are records
+in the chart's configuration. Overlay axes and subplots work with these charts,
+except that a polar chart takes no overlay axes. Streamed, non-resident
+sources draw lines, scatter, error bars and heatmaps in a single-panel
+document. Contours, fills and step lines, vector fields, colour and size maps,
+polar plots, and documents with overlays or subplots reject streamed sources
+with an explicit error, and so do histograms, categorical bars, box plots,
+range bars and radar series. Pies and donuts keep their values in their own model
+(`RadialChart`), with no `ColumnSource`, and are drawn by `RadialRenderer`. The
+annotation layer works with both renderers.
 
 ## Quick start
 
@@ -201,7 +203,6 @@ Add these dependencies to your application's `Cargo.toml`:
 ```toml
 [dependencies]
 renderer = { package = "figgy-renderer", version = "0.18.1" }
-wgpu = "30"
 ```
 
 The `version` line installs [figgy-renderer](https://crates.io/crates/figgy-renderer)
@@ -214,96 +215,46 @@ Copy this into `src/main.rs`, then run `cargo run`. It writes `line.png` without
 opening a window. `renderer` is the Rust import name of the `figgy-renderer` package.
 
 ```rust
-use renderer::{
-    Chart, Color, Renderer, RendererDevice, SeriesConfig,
-    data::Column,
-    data_config::{DataLineStyleConfig, DataRenderType},
-    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
-    default, encode_png,
-    layout::{ChartArea, Rect},
-    line::LineStylePreset,
-};
+use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let instance = create_instance();
-    let adapter = request_adapter_blocking(&instance)?;
-    eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_blocking(&adapter)?;
-    let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue)?,
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024, // initial GPU column pool size in bytes
-    )?;
+    let mut renderer = Renderer::headless_blocking()?;
+    let x: Vec<f64> = (0..=100).map(|i| f64::from(i) / 10.0).collect();
+    let f = 0.2;
+    let y: Vec<f64> = x
+        .iter()
+        .map(|t| (std::f64::consts::TAU * f * t).sin())
+        .collect();
+    renderer.add_column("x", &x)?;
+    renderer.add_column("y", &y)?;
 
-    let x: Vec<f64> = (0..=100).map(|i| i as f64 / 10.0).collect();
-    let y: Vec<f64> = x.iter().map(|x| x.sin()).collect();
-    renderer.add_column(
-        "x",
-        &Column {
-            data: x,
-        },
-    )?;
-    renderer.add_column(
-        "y",
-        &Column {
-            data: y,
-        },
-    )?;
-
-    let mut config = default::default_config();
-    config.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: 960,
-        height: 600,
-    });
-    config.legend.visible = false;
-    config.left_y.out_margin = 80.0;
-    config.right_y.out_margin = 40.0;
-    config.bottom_x.out_margin = 70.0;
-    config.top_x.out_margin = 24.0;
-    let mut chart = Chart::new(config)
-        .with_title("A sine wave")
+    let series = [SeriesConfig::line("sine", "x", "y")
+        .color(Color::from_rgb8(34, 104, 198))
+        .width(2.5)];
+    let mut chart = Chart::sized(960, 600)
+        .with_title("A 0.2 Hz sine wave")
         .with_x_title("Time (s)")
-        .with_y_title("Amplitude");
+        // A `$…$` span in a title is TeX.
+        .with_y_title(r"$\sin(2\pi f t)$");
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
-    let series = [SeriesConfig {
-        series_id: "sine".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: Color::from_rgb8(34, 104, 198),
-                line_width: 2.5,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            }), errors: None, stem: None }),
-    }];
-    let image = renderer.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &series),
-        renderer::ExportOptions::panel(1.0).with_clear(Color::WHITE),
-    )?;
+    chart.fit_layout();
+
     let output = std::env::args_os()
         .nth(1)
         .unwrap_or_else(|| "line.png".into());
-    std::fs::write(&output, encode_png(&image)?)?;
-    renderer.wait_idle()?;
-    println!(
-        "{}: {}x{}",
-        std::path::Path::new(&output).display(),
-        image.width,
-        image.height
-    );
+    let options = ExportOptions::panel(1.0).with_clear(Color::WHITE);
+    renderer.save_blocking(ExportSource::chart(&chart, &series), options, &output)?;
+    println!("{}", std::path::Path::new(&output).display());
     Ok(())
 }
 ```
 
-The renderer returns pixels or PNG bytes; the application chooses where to save them.
+`Renderer::headless_blocking` makes the GPU device itself, and `save_blocking`
+writes the format the file name's extension names (`.png`, `.svg` or `.pdf`).
+A host that also wants the bytes or pixels calls `export_png_blocking` or
+`export_rgba_blocking` instead. A host that embeds figgy in its own window adds a
+`wgpu = "30"` dependency and shares its device through `RendererDevice`.
 For your own data, replace the `x`/`y` vectors or implement
 [`ColumnSource`](crates/renderer/USAGE.md#columnsource--the-data-adapter-trait).
 
@@ -322,8 +273,7 @@ this:
 ```rust,ignore
 use renderer::{format::LabelFormat, polar::PolarOptions};
 
-config.set_polar(Some(PolarOptions::default())); // 0° right, counter-clockwise
-let mut chart = Chart::new(config);
+chart.config_mut().set_polar(Some(PolarOptions::default())); // 0° right, counter-clockwise
 chart.set_x_range(0.0, 360.0); // which angle ticks and spokes are drawn
 chart.set_y_range(0.0, 1.0); // radius axis
 // The range helpers choose tick spacing and label format, so set these after them.
@@ -414,14 +364,13 @@ required by default.
 The Rust renderer also compiles to `wasm32-unknown-unknown` and renders through
 WebGPU. [`crates/web`](crates/web/README.md) is figgy's **browser product**: the
 wasm-bindgen wrapper and the `<figgy-chart>` custom element, which connect a
-canvas, events and async calls. It is maintained with the renderer, and every
-renderer feature ships its wrapper methods. Its JavaScript API is the wrapper's
-own, separate from the Rust library's API. The `FiggyChart` export and
-`<figgy-chart>` element cover Cartesian charts, categorical bars and box
-plots included, and polar charts, radar charts included
-(`set_radar_document`); `FiggyBoundedChart`, the radial chart host,
-covers pies and donuts, and the host
-handles their canvas events. The wrapper is the Cargo package `figgy`, built from
+canvas, events and async calls. It is developed alongside the renderer and has
+wrapper methods for every renderer feature. Its JavaScript API is its own,
+separate from the Rust library's API. The `FiggyChart` export and the
+`<figgy-chart>` element cover Cartesian charts (categorical bars and box plots
+included) and polar charts (radar charts included, through
+`set_radar_document`). `FiggyBoundedChart`, the radial chart host, covers pies
+and donuts; your page handles their canvas events. The wrapper is the Cargo package `figgy`, built from
 this repository (`publish = false`); the `figgy` crate on crates.io and the
 `figgy` package on npm are unrelated projects.
 
@@ -436,7 +385,7 @@ part of the `figgy-renderer` crate or the browser product.
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
 | Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
-| Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) |
+| Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams · monotonic-x lines | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) · [Monotonic-x lines](crates/model/MONOTONIC.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
 | Source versions and migration notes | [Changelog](CHANGELOG.md) |
@@ -457,4 +406,4 @@ Code: [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
 Bundled fonts retain their OFL and GUST notices: [Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt)
 and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt) (SIL OFL 1.1), and
 [New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt) (GUST Font License),
-the face formulas in rich text are drawn with.
+the face used for formulas in rich text.

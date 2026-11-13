@@ -12,11 +12,10 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
 use renderer::{
-    BarAlign, ColorMap, Renderer,
+    BarAlign, ColorMap, Renderer, SeriesConfig,
     config::{AxisScale, Category, TickVisibility},
-    data_config::DataRenderType,
     layout::Side,
     parallel::{ParallelAxis, ParallelOptions},
     text::RichText,
@@ -76,22 +75,15 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
 
     let ids = ["lr", "batch", "dropout", "layers", "epochs", "accuracy"];
     for (k, id) in ids.iter().enumerate() {
-        r.add_column(
-            format!("sweep-{id}"),
-            &column(runs.iter().map(|run| run[k]).collect()),
-        )?;
+        let values: Vec<f64> = runs.iter().map(|run| run[k]).collect();
+        r.add_column(format!("sweep-{id}"), &values)?;
     }
-    let columns: Vec<String> = ids.iter().map(|id| format!("sweep-{id}")).collect();
-    let specs = [series(
-        "runs",
-        &columns[0],
-        &columns[1],
-        DataRenderType::Parallel {
-            columns: columns.clone(),
-            line: line(ink, 1.2),
-            color_column: Some("sweep-accuracy".into()),
-        },
-    )];
+    let specs = [
+        SeriesConfig::parallel("runs", ids.map(|id| format!("sweep-{id}")))
+            .color(ink)
+            .width(1.2)
+            .color_by("sweep-accuracy"),
+    ];
 
     let config = chart.config_mut();
     config.bottom_x.categories = Some(
@@ -109,10 +101,6 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         .collect(),
     );
     config.bottom_x.label_style.font_size = 20.;
-    config.bottom_x.out_margin = 70.;
-    config.top_x.out_margin = 30.;
-    config.left_y.out_margin = 70.;
-    config.right_y.out_margin = 40.;
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
     // The parallel axes draw in the left axis' style.
@@ -170,7 +158,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.title_option.visible = true;
     bar.axis.title_option.text = RichText::plain("Validation accuracy (%)", ink, 19., "");
 
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-parallel.png"))
 }
 

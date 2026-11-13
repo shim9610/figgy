@@ -4,24 +4,20 @@
 //! at 900 x 620 without post-render scaling.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
+#[allow(dead_code)]
+#[path = "support/gallery.rs"]
+mod gallery;
+use gallery::Result;
 use renderer::{
-    Chart, Color, ColumnSource, LayerRef, Material, Renderer, RendererDevice, categorical::*,
-    config::Config, encode_png, gpu,
+    Chart, Color, ColumnSource, ExportOptions, ExportSource, LayerRef, Material, Renderer,
+    categorical::*, config::Config,
 };
-use std::{path::Path, path::PathBuf};
-
-type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+use std::path::Path;
 
 /// `document` as a Cartesian chart of category bars, exported to `name.png`.
 fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &str) -> Result {
     document.validate()?;
-    let (mut config, series, uploads) = Config::from_categorical(document);
-    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-        x: 0,
-        y: 0,
-        width: 900,
-        height: 620,
-    });
+    let (config, series, uploads) = Config::from_categorical(document);
     // The previous document's columns go; the positions come first, then
     // the value columns as one batch.
     for upload in &uploads {
@@ -52,9 +48,9 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
         && (document.labels == CategoryBarLabels::Outside
             || (document.labels == CategoryBarLabels::Auto
                 && document.mode == CategoryBarMode::Grouped));
-    let mut chart = Chart::new(config);
+    let mut chart = Chart::new(config).with_area(0, 0, 900, 620);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
-    let mut config = chart.config().clone();
+    let config = chart.config_mut();
     let value = if horizontal {
         &mut config.bottom_x
     } else {
@@ -72,27 +68,23 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
     value
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
-    let image = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&Chart::new(config), &series),
-        renderer::ExportOptions::panel(1.0),
+    chart.fit_layout();
+    let path = directory.join(format!("{name}.png"));
+    r.save_blocking(
+        ExportSource::chart(&chart, &series),
+        ExportOptions::panel(1.0),
+        &path,
     )?;
-    std::fs::write(directory.join(format!("{name}.png")), encode_png(&image)?)?;
-    println!("{name}: {}x{}", image.width, image.height);
+    println!("{}", path.display());
     Ok(())
 }
 
 fn main() -> Result {
-    let directory = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "target/categorical-gallery".into()),
-    );
-    std::fs::create_dir_all(&directory)?;
-    let instance = gpu::create_instance();
-    let adapter = gpu::request_adapter_blocking(&instance)?;
-    let (device, queue) = gpu::request_device_blocking(&adapter)?;
-    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
-    let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 4 << 20)?;
+    let directory = gallery::output_directory("target/categorical-gallery")?;
+    gallery::with_renderer(|renderer| render(renderer, &directory))
+}
+
+fn render(renderer: &mut Renderer, directory: &Path) -> Result {
     let mut chart = CategoricalChart {
         title: "Grouped · Matte".into(),
         categories: ["A", "B", "C", "D"]
@@ -118,7 +110,7 @@ fn main() -> Result {
         ..Default::default()
     };
     chart.style.material = Material::Matte;
-    save(&mut renderer, &chart, &directory, "grouped-matte")?;
+    save(renderer, &chart, directory, "grouped-matte")?;
     chart.title = "Horizontal · Satin".into();
     chart.direction = CategoryBarDirection::Horizontal;
     chart.legend = false;
@@ -143,7 +135,7 @@ fn main() -> Result {
         edit.color = Some(color);
         chart.overrides.push(edit);
     }
-    save(&mut renderer, &chart, &directory, "horizontal-satin")?;
+    save(renderer, &chart, directory, "horizontal-satin")?;
     chart = CategoricalChart {
         title: "Stacked · Enamel".into(),
         categories: ["A", "B", "C"]
@@ -176,7 +168,7 @@ fn main() -> Result {
         ..Default::default()
     };
     chart.style.material = Material::Enamel;
-    save(&mut renderer, &chart, &directory, "stacked-enamel")?;
+    save(renderer, &chart, directory, "stacked-enamel")?;
     chart.title = "100% Stacked · Outline".into();
     chart.direction = CategoryBarDirection::Horizontal;
     chart.mode = CategoryBarMode::PercentStacked;
@@ -184,13 +176,13 @@ fn main() -> Result {
     chart.value_title = "Share".into();
     chart.style.material = Material::Flat;
     chart.style.outline = true;
-    save(&mut renderer, &chart, &directory, "percent-outline")?;
+    save(renderer, &chart, directory, "percent-outline")?;
     chart.title = "Positive and negative values".into();
     chart.mode = CategoryBarMode::Stacked;
     chart.direction = CategoryBarDirection::Vertical;
     chart.label_format = CategoryBarLabelFormat::Value;
     chart.value_title = "Change".into();
     chart.series[1].values = vec![Some(-8.), Some(-6.), Some(-12.)];
-    save(&mut renderer, &chart, &directory, "signed-stacked")?;
+    save(renderer, &chart, directory, "signed-stacked")?;
     Ok(())
 }

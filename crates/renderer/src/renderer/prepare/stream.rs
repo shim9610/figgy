@@ -71,6 +71,13 @@ impl PrepareContext<'_> {
                 kind: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
             });
         }
+        // Nor to monotonic series (M5, #271): their own calls feed them.
+        if series.monotonic().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_MONOTONIC_REASON.into(),
+            });
+        }
         // Nor to Feynman series (rule 8, #234): they are DataLess.
         if series.feynman().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -88,7 +95,12 @@ impl PrepareContext<'_> {
         // Streaming is not extended to broken axes (rule 8, #200).
         if [&config.bottom_x, &config.left_y]
             .into_iter()
-            .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+            .chain(
+                config
+                    .overlays
+                    .iter()
+                    .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+            )
             .any(|axis| axis.breaks.as_ref().is_some_and(|b| !b.ranges.is_empty()))
         {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -99,7 +111,12 @@ impl PrepareContext<'_> {
         // Nor to probability axes (rule 8, #209).
         if [&config.bottom_x, &config.left_y]
             .into_iter()
-            .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+            .chain(
+                config
+                    .overlays
+                    .iter()
+                    .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+            )
             .any(|axis| matches!(axis.scale, crate::config::AxisScale::Probability(_)))
         {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -122,7 +139,12 @@ impl PrepareContext<'_> {
             &config.right_y,
         ]
         .into_iter()
-        .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+        .chain(
+            config
+                .overlays
+                .iter()
+                .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+        )
         .any(|axis| axis.categories.is_some())
         {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -165,6 +187,14 @@ impl PrepareContext<'_> {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: crate::RuleKind::StreamedBoxPlot,
+            });
+        }
+        // Histograms are refused (#284): their columns are the host's bins,
+        // one row per bin, which never need streaming.
+        if matches!(series.render_type, DataRenderType::Histogram { .. }) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_HISTOGRAM_REASON.into(),
             });
         }
         // Nor to range bars: a bar reads its start, whiskers, colour and
@@ -321,30 +351,12 @@ impl PrepareContext<'_> {
                 series_id: series.config.series_id.clone(),
                 kind: crate::RuleKind::StreamedPrimitiveColumns,
             })?;
-        let bins = if phase == streaming_runtime::StreamDrawPhase::Histogram {
-            if streaming_runtime::histogram_edge_column(series.config)
-                == Some(series.config.x_column.as_str())
-            {
-                first.len.saturating_sub(1)
-            } else {
-                first.len
-            }
-        } else {
-            first.len.saturating_sub(phase.halo())
-        };
+        let primitives = first.len.saturating_sub(phase.halo());
         if columns.len() != expected.count
             || columns.iter().enumerate().any(|(index, column)| {
                 column.column != index as u64
                     || column.offset != first.offset
-                    || column.len
-                        != if phase == streaming_runtime::StreamDrawPhase::Histogram {
-                            bins.saturating_add(u64::from(
-                                streaming_runtime::histogram_edge_column(series.config)
-                                    == Some(expected.ids[index]),
-                            ))
-                        } else {
-                            bins.saturating_add(phase.halo())
-                        }
+                    || column.len != primitives.saturating_add(phase.halo())
             })
         {
             return Err(FiggyError::InvalidSeriesConfig {

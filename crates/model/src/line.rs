@@ -1,8 +1,7 @@
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LineStylePreset {
     /// Solid line (no pattern).
-    #[default]
     Solid,
     /// Standard dash: `[8, 4]`.
     Dash,

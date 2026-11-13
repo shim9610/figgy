@@ -64,11 +64,10 @@ impl RadarTarget {
     since = "0.13.0",
     note = "part of the RadarChart document reader; removed with it in the next milestone"
 )]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarGridShape {
     /// Rings as regular polygons through the spokes (the default).
-    #[default]
     Polygon,
     /// Rings as circles.
     Circle,
@@ -84,7 +83,7 @@ pub enum RadarGridShape {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::radar_style")
 )]
 pub struct RadarStyle {
     /// Where the first category's spoke points, in degrees; -90 is up.
@@ -110,22 +109,6 @@ pub struct RadarStyle {
     /// renderer. [`Config::from_radar`](crate::config::Config::from_radar)
     /// does not carry it: a picked vertex takes the picked ring instead.
     pub emphasis_brightness: f32,
-}
-impl Default for RadarStyle {
-    fn default() -> Self {
-        Self {
-            start_angle_degrees: -90.0,
-            clockwise: true,
-            grid_shape: RadarGridShape::Polygon,
-            spoke_color: Color::from_rgb8(200, 206, 214),
-            ring_color: Color::from_rgb8(224, 229, 235),
-            line_width_px: RadarSeriesStyle::DEFAULT_LINE_WIDTH_PX,
-            fill_opacity: RadarSeriesStyle::DEFAULT_FILL_OPACITY,
-            marker: RadarSeriesStyle::DEFAULT_MARKER,
-            marker_size_px: RadarSeriesStyle::DEFAULT_MARKER_SIZE_PX,
-            emphasis_brightness: 0.08,
-        }
-    }
 }
 
 /// One series: a closed polygon with one value per category.
@@ -181,11 +164,14 @@ impl RadarSeries {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::radar_chart")
 )]
 pub struct RadarChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::decoration_layout")
+    )]
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
@@ -199,13 +185,19 @@ pub struct RadarChart {
     /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+        serde(
+            default = "crate::defaults::layer_ref",
+            skip_serializing_if = "crate::LayerRef::is_base"
+        )
     )]
     pub active_layer: crate::LayerRef,
     /// The dedicated annotation layer, shared with every chart family.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+        serde(
+            default = "crate::defaults::annotation_layer",
+            skip_serializing_if = "crate::AnnotationLayer::is_default"
+        )
     )]
     pub annotations: crate::AnnotationLayer,
     /// One spoke per category, in drawing order from `start_angle_degrees`.
@@ -253,33 +245,7 @@ pub struct RadarChart {
     /// The frame's clear colour.
     pub background: Color,
 }
-impl Default for RadarChart {
-    fn default() -> Self {
-        Self {
-            decorations: Default::default(),
-            title: String::new(),
-            chart_title: None,
-            active_layer: Default::default(),
-            annotations: Default::default(),
-            categories: vec![],
-            series: vec![],
-            style: RadarStyle::default(),
-            hovered: None,
-            selected: None,
-            labels: RadarLabels::None,
-            label_decimals: 1,
-            value_suffix: String::new(),
-            value_range: None,
-            ring_spacing: None,
-            grid: true,
-            legend: true,
-            font_family: "sans-serif".into(),
-            font_size: 14.0,
-            text_color: Color::from_rgb8(32, 46, 60),
-            background: Color::WHITE,
-        }
-    }
-}
+
 impl RadarChart {
     /// The layer the document's pointer interaction targeted, as the reader
     /// carries it: the document has no overlays or subplots, so an
@@ -416,7 +382,7 @@ mod tests {
                 vec![1.0, 2.0, 3.0],
                 Color::WHITE,
             )],
-            ..Default::default()
+            ..crate::defaults::radar_chart()
         }
     }
     #[test]
@@ -491,7 +457,7 @@ mod tests {
         let mut c = chart();
         c.series[0].style = Some(RadarSeriesStyle {
             marker: Some(RadarMarker::Square),
-            ..Default::default()
+            ..crate::defaults::radar_series_style()
         });
         c.style.grid_shape = RadarGridShape::Circle;
         c.selected = Some(RadarTarget::vertex("s", "b"));

@@ -5,29 +5,31 @@
 mod gallery;
 use gallery::*;
 use renderer::{
-    Chart, Color,
-    config::{DrawStyle, LegendCorner, LegendEntryKind, SketchOptions},
-    data_config::DataRenderType,
-    default,
-    layout::{ChartArea, Rect},
+    Chart, Color, SeriesConfig,
+    config::{DrawStyle, LegendCorner, SketchOptions},
+    data_config::ScatterShape,
+    theme::{SubplotScope, Theme},
 };
 
 fn main() -> Result {
     let out = output_directory("target/precise-sketch")?;
     with_renderer(|r| {
         let times: Vec<f64> = vec![0., 5., 10., 15., 20., 30., 45., 60., 90., 120.];
-        r.add_column("time", &column(times.clone()))?;
+        r.add_column("time", &times)?;
         for (id, ceiling, tau) in [("control", 0.87, 40.), ("treated", 1.04, 19.)] {
-            r.add_column(
-                id,
-                &column(
-                    times
-                        .iter()
-                        .map(|t| 0.06 + (ceiling - 0.06) * (1. - (-t / tau).exp()))
-                        .collect(),
-                ),
-            )?;
+            let values: Vec<f64> = times
+                .iter()
+                .map(|t| 0.06 + (ceiling - 0.06) * (1. - (-t / tau).exp()))
+                .collect();
+            r.add_column(id, &values)?;
         }
+        // The style row's text sizes, without minor grid lines.
+        let mut theme = Theme::light();
+        theme.chrome.tick_label_size = 25.;
+        theme.chrome.axis_title_size = 32.;
+        theme.chrome.legend_size = 23.;
+        theme.chrome.grid.minor_x.show = false;
+        theme.chrome.grid.minor_y.show = false;
         for (name, style, colors) in [
             (
                 "precise",
@@ -47,59 +49,34 @@ fn main() -> Result {
                 ],
             ),
         ] {
-            let mut cfg = default::default_config();
-            cfg.chart_area = ChartArea(Rect {
-                x: 0,
-                y: 0,
-                width: 1280,
-                height: 1024,
-            });
-            cfg.chart_title.top_margin = 60.;
-            cfg.left_y.out_margin = 200.;
-            cfg.bottom_x.out_margin = 145.;
-            cfg.top_x.out_margin = 32.;
-            cfg.right_y.out_margin = 64.;
+            let mut chart = Chart::sized(1280, 1024);
+            theme.apply_chrome(chart.config_mut(), SubplotScope::All);
+            let cfg = chart.config_mut();
+            // After the theme, which writes the draw style too.
             cfg.draw_style = style;
-            for a in [
-                &mut cfg.bottom_x,
-                &mut cfg.top_x,
-                &mut cfg.left_y,
-                &mut cfg.right_y,
-            ] {
-                a.label_style.font_size = 25.;
-                a.title_option.text.font_size = 32.;
-            }
-            cfg.grid.show_minor_x = false;
-            cfg.grid.show_minor_y = false;
             cfg.legend.corner = LegendCorner::TopLeft;
-            cfg.legend.content.font_size = 23.;
             cfg.legend.padding = 9.;
-            let mut chart = Chart::new(cfg)
+            let [control, treated] = colors;
+            let specs = [
+                ("control", "Control mean", control),
+                ("treated", "Treated mean", treated),
+            ]
+            .map(|(id, label, color)| {
+                SeriesConfig::scatter_line(id, "time", id)
+                    .label(label)
+                    .color(color)
+                    .width(2.5)
+                    .marker(ScatterShape::CircleFilled, 8.)
+            });
+            let mut chart = chart
                 .with_x_title("Time [min]")
-                .with_y_title("Response mean");
+                .with_y_title("Response mean")
+                .with_legend_from(&specs);
             chart.set_x_range(-6., 126.);
             chart.set_y_range(-0.05, 1.08);
-            let mut specs = Vec::new();
-            for ((id, label), color) in [("control", "Control mean"), ("treated", "Treated mean")]
-                .into_iter()
-                .zip(colors)
-            {
-                specs.push(series(
-                    id,
-                    "time",
-                    id,
-                    DataRenderType::Xy(renderer::data_config::XySeries {
-                        scatter: Some(scatter(color, 8.)),
-                        line: Some(line(color, 2.5)),
-                        errors: None,
-                        stem: None,
-                    }),
-                ));
-                chart = chart.with_legend_entry(label, color, 2.5, LegendEntryKind::LineScatter);
-            }
             save(
                 r,
-                &chart,
+                &mut chart,
                 &specs,
                 &out.join(format!("style-growth-response-{name}.png")),
             )?;

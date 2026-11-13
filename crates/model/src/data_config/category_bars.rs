@@ -5,11 +5,10 @@ use super::*;
 // ───── Category bars ─────
 
 /// How the bars of one bar group share a category slot.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarMode {
     /// Side by side, one bar per series in series order.
-    #[default]
     Grouped,
     /// On top of each other in series order; positive and negative values
     /// stack away from zero independently.
@@ -22,33 +21,30 @@ pub enum CategoryBarMode {
 }
 
 /// The direction bars grow in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarDirection {
     /// Categories along x, values along y.
-    #[default]
     Vertical,
     /// Categories along y, values along x.
     Horizontal,
 }
 
 /// Where a bar's value label goes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarLabels {
     None,
     Inside,
     Outside,
     /// Outside grouped bars, inside stacked ones.
-    #[default]
     Auto,
 }
 
 /// What a bar's value label says.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarLabelFormat {
-    #[default]
     Value,
     /// The bar's share of its category total.
     Percent,
@@ -62,7 +58,7 @@ pub enum CategoryBarLabelFormat {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::category_bar_style")
 )]
 pub struct CategoryBarStyle {
     /// A bar is a flat body: [`Material::supported_on_flat_body`] decides.
@@ -78,22 +74,6 @@ pub struct CategoryBarStyle {
     /// The brightness a picked bar gains. A highlight keeps the bar's data
     /// end; it never grows or lifts the bar.
     pub emphasis_brightness: f32,
-}
-
-impl Default for CategoryBarStyle {
-    fn default() -> Self {
-        Self {
-            material: Material::Flat,
-            corner_radius: 5.0,
-            outline: false,
-            outline_width: 1.0,
-            outline_color: Color::from_rgb8(40, 55, 75),
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            gloss: 0.45,
-            emphasis_brightness: 0.08,
-        }
-    }
 }
 
 pub(super) fn finite_in(v: f32, lo: f32, hi: f32) -> bool {
@@ -317,7 +297,7 @@ pub const MAX_CATEGORY_BAR_LABEL_CHARS: usize = 160;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::category_bar_series_labels")
 )]
 pub struct CategoryBarSeriesLabels {
     pub placement: CategoryBarLabels,
@@ -337,29 +317,17 @@ pub struct CategoryBarSeriesLabels {
     pub offsets: Vec<[f32; 2]>,
 }
 
-impl Default for CategoryBarSeriesLabels {
-    fn default() -> Self {
-        Self {
-            placement: CategoryBarLabels::Auto,
-            decimals: 1,
-            value_suffix: String::new(),
-            text: Vec::new(),
-            offsets: Vec::new(),
-        }
-    }
-}
-
 /// How the [`DataRenderType::CategoryBars`] series of one layer share their
 /// categorical axis: `Config::bar_groups`. The property of the set of bar
 /// series, not of one series. `None` there reads as the default (grouped,
 /// vertical, 0.7 of the slot, 3 px apart). A [`CategoryBarMode::PercentStacked`]
 /// group draws only non-negative values; a member series with a negative
 /// value is refused when the group is drawn.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::bar_groups")
 )]
 pub struct BarGroups {
     pub mode: CategoryBarMode,
@@ -368,17 +336,6 @@ pub struct BarGroups {
     pub group_width: f32,
     /// Logical pixels between grouped bars, `0..=24`.
     pub bar_gap: f32,
-}
-
-impl Default for BarGroups {
-    fn default() -> Self {
-        Self {
-            mode: CategoryBarMode::Grouped,
-            direction: CategoryBarDirection::Vertical,
-            group_width: 0.7,
-            bar_gap: 3.0,
-        }
-    }
 }
 
 impl BarGroups {
@@ -485,6 +442,13 @@ pub fn validate_category_bar_series(
 }
 
 impl crate::config::Config {
+    /// The bar group options this chart draws its own category bar series
+    /// with: its `bar_groups`, or the documented default when it has none
+    /// (#266). The one place an omitted `bar_groups` is resolved.
+    pub fn effective_bar_groups(&self) -> BarGroups {
+        self.bar_groups.unwrap_or_else(crate::defaults::bar_groups)
+    }
+
     /// The bar group options of `layer`: the `bar_groups` of the chart that
     /// draws it (the parent's for `Base` and an overlay, the subplot's own
     /// for a subplot and its overlays), or the default.
@@ -499,7 +463,7 @@ impl crate::config::Config {
                 self.bar_groups.as_ref()
             }
         };
-        groups.cloned().unwrap_or_default()
+        groups.copied().unwrap_or_else(crate::defaults::bar_groups)
     }
 
     /// The rules the category bar series of a chart are held to, with the
@@ -507,10 +471,10 @@ impl crate::config::Config {
     ///
     /// Every `bar_groups` (the chart's and each subplot's) passes
     /// [`BarGroups::validate`]. The [`DataRenderType::CategoryBars`] series
-    /// of one layer are its bar group: any number of them (#107), each
+    /// of one layer are its bar group: any number of them, each
     /// with its own value column, drawn against a categorical axis
     /// (`bottom_x` for vertical bars, `left_y` for horizontal ones) and a
-    /// linear numeric value axis, with no cap on the number of bars (#107),
+    /// linear numeric value axis, with any number of bars,
     /// and each series passes [`validate_category_bar_series`] against the
     /// axis' categories. Horizontal bars cannot sit on an overlay layer,
     /// whose own axis is a value axis on y. On a polar chart the bars are
@@ -558,17 +522,16 @@ impl crate::config::Config {
             if horizontal && chart.polar().is_some() {
                 return Err(crate::RuleKind::RoseDirection);
             }
-            let category_axis = if horizontal {
-                &chart.left_y
+            // The axes the layer's series are scaled by: an overlay's own
+            // or, linked, its chart's.
+            let (x_axis, y_axis) = chart.scaling_axes(match layer {
+                LayerRef::Overlay(index) | LayerRef::SubplotOverlay(_, index) => Some(index),
+                _ => None,
+            });
+            let (category_axis, value_axis) = if horizontal {
+                (y_axis, x_axis)
             } else {
-                &chart.bottom_x
-            };
-            let value_axis = match layer {
-                LayerRef::Overlay(index) | LayerRef::SubplotOverlay(_, index) => {
-                    &chart.overlays[index].y_axis
-                }
-                _ if horizontal => &chart.bottom_x,
-                _ => &chart.left_y,
+                (x_axis, y_axis)
             };
             let Some(categories) = category_axis.categories.as_deref() else {
                 return Err(crate::RuleKind::CategoryBarsAxis);

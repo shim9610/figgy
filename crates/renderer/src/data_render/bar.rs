@@ -470,8 +470,8 @@ pub(crate) const CATEGORY_BAR_MODE_PERCENT: u32 = 2;
 /// category bar fragment reads beside `Transform`, `Style`, the override
 /// table and the series' lane table. Lane bases are f32 indices into the
 /// pool; nothing per bar is here. The group's value column lanes are the
-/// lane table's (group 3 binding 10), sized by the group, so no field here
-/// bounds the number of series (#107 R3).
+/// lane table's (group 3 binding 10), sized by the group, so any number of
+/// series fits.
 ///
 /// GPU twin: `category_bars.wgsl::CategoryBarParams`, 48 B.
 #[repr(C)]
@@ -580,8 +580,8 @@ pub struct CategoryBarData {
 /// The lane table holds `lanes` entries: `write` pushes them in order and
 /// they go straight into the mapping of the table's buffer at creation, so
 /// nothing is staged on the CPU and the table is sized by what it holds (a
-/// bar group's members, a box plot's 13 record and outlier lanes, a radar
-/// label's one value column). Entries `write` does not push read as zero; pushes
+/// bar group's members, a box plot's 13 record and outlier lanes, the
+/// value columns of a radar label group's members). Entries `write` does not push read as zero; pushes
 /// past `lanes` are dropped. An error from `write` is returned as is. The
 /// buffers are owned by the bind group and charged as a uniform.
 #[allow(clippy::too_many_arguments)]

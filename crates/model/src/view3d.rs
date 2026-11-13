@@ -11,7 +11,7 @@
 //!
 //! The renderer projects, depth-tests, maps colour and, for a lit material,
 //! derives shading normals from the neighbouring heights on every draw:
-//! appearance only (`CLAUDE.md` rule 1), never stored. Hover and selection
+//! appearance only, never stored. Hover and selection
 //! report the grid sample and its values read back from the pool.
 //!
 //! [`Config::view_matrix`] is the one camera matrix: the GPU uniform, every
@@ -43,11 +43,10 @@ pub const BOX_ASPECT_RANGE: std::ops::RangeInclusive<f64> = 0.05..=20.0;
 pub const DEFAULT_BOX_ASPECT: [f64; 3] = [1.0, 1.0, 0.75];
 
 /// How the box is projected onto the screen.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Projection3d {
     /// Parallel projection: a distance change scales the view.
-    #[default]
     Orthographic,
     /// A pinhole at [`View3d::distance`]: nearer parts are larger, and a
     /// shorter distance foreshortens more. The box is fitted to the data
@@ -60,7 +59,7 @@ pub enum Projection3d {
 /// (`bottom_x`), y (`left_y`) and z (`right_y`, up).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::view3d"))]
 pub struct View3d {
     /// The camera's turn around the z axis, in degrees from the +x axis
     /// towards +y. Any finite value; it is read modulo 360.
@@ -81,18 +80,6 @@ pub struct View3d {
     pub box_aspect: Option<[f64; 3]>,
 }
 
-impl Default for View3d {
-    fn default() -> Self {
-        Self {
-            azimuth_degrees: -60.0,
-            elevation_degrees: 30.0,
-            distance: REFERENCE_DISTANCE,
-            projection: Projection3d::Orthographic,
-            box_aspect: None,
-        }
-    }
-}
-
 /// The grid lines a surface draws over its fill, along the grid's rows and
 /// columns only.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,7 +96,7 @@ pub struct SurfaceWireframe {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::surface_style")
 )]
 pub struct SurfaceStyle {
     /// A second grid of the same shape to colour the surface by; `None`
@@ -128,16 +115,13 @@ pub struct SurfaceStyle {
     pub emphasis_brightness: f32,
 }
 
-impl Default for SurfaceStyle {
-    fn default() -> Self {
-        Self {
-            color_matrix: None,
-            wireframe: None,
-            material: Material::Flat,
-            gloss: 0.45,
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            emphasis_brightness: 0.12,
+impl SurfaceStyle {
+    /// The look a surface draws with: `style`, or the documented default
+    /// when a series sets none (#266). Borrowed when given.
+    pub fn resolved(style: Option<&Self>) -> std::borrow::Cow<'_, Self> {
+        match style {
+            Some(style) => std::borrow::Cow::Borrowed(style),
+            None => std::borrow::Cow::Owned(crate::defaults::surface_style()),
         }
     }
 }
@@ -771,8 +755,8 @@ mod tests {
     use crate::{ScatterShape, layout::Element, layout::NudgeResult};
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
-        config.set_view_3d(Some(View3d::default()));
+        let mut config = crate::defaults::config();
+        config.set_view_3d(Some(crate::defaults::view3d()));
         config
     }
 
@@ -888,7 +872,7 @@ mod tests {
         // The view stays well defined at the pole.
         assert!(orbit.project_3d([1.0, 0.0, 0.0]).is_some());
         // A flat chart's data area still moves.
-        let mut flat = crate::default::default_config();
+        let mut flat = crate::defaults::config();
         assert!(!flat.orbit_view(1.0, 1.0));
         assert!(!flat.zoom_view(2.0));
     }
@@ -918,14 +902,15 @@ mod tests {
             crate::RuleKind::View3dBoxAspectOutOfRange
         ));
         assert!(
-            reject(&|c| c.overlays.push(crate::layer::OverlayLayer::default()))
+            reject(&|c| c.overlays.push(crate::defaults::overlay_layer()))
                 .to_string()
                 .contains("overlay")
         );
         assert!(
-            reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
-                .to_string()
-                .contains("Precise")
+            reject(&|c| c.draw_style =
+                crate::config::DrawStyle::Sketch(crate::defaults::sketch_options()))
+            .to_string()
+            .contains("Precise")
         );
         assert!(
             reject(&|c| c.bottom_x.categories = Some(vec![crate::config::Category::new("a", "A")]))
@@ -952,7 +937,7 @@ mod tests {
             z_column: z.map(Into::into),
             render_type: DataRenderType::Xy(crate::data_config::XySeries {
                 scatter: None,
-                line: Some(crate::data_config::DataLineStyleConfig::default()),
+                line: Some(crate::defaults::data_line_style_config()),
                 errors: None,
                 stem: None,
             }),
@@ -983,7 +968,7 @@ mod tests {
         document.subplots = vec![crate::layer::Subplot {
             config: three_d.clone(),
             series: vec!["inner".into()],
-            ..crate::layer::Subplot::default()
+            ..crate::defaults::subplot()
         }];
         assert_eq!(
             document.drawn_z_column(&point("inner", Some("z"))),
@@ -996,7 +981,7 @@ mod tests {
         crate::data_config::VectorStyle {
             color: Color::BLACK,
             width_px: 1.5,
-            scale: crate::data_config::VectorScale::default(),
+            scale: crate::defaults::vector_scale(),
             pivot: crate::data_config::VectorPivot::Tail,
             head_length_px: 8.0,
             head_width_px: 6.0,
@@ -1056,7 +1041,7 @@ mod tests {
             config.validate_view3d_series(&[grid]),
             Err(crate::RuleKind::View3dGridVector)
         );
-        let flat = crate::default::default_config();
+        let flat = crate::defaults::config();
         assert_eq!(
             flat.validate_view3d_series(&[vector_3d(None, None)]),
             Ok(())
@@ -1083,7 +1068,7 @@ mod tests {
                 _ => 10,
             })
         };
-        for (config, last) in [(chart(), 3usize), (crate::default::default_config(), 9)] {
+        for (config, last) in [(chart(), 3usize), (crate::defaults::config(), 9)] {
             let mut config = config;
             config.picked_data = Some(crate::config::DataSelectionsConfig {
                 refs: vec![crate::config::PickedDataRef::Point {
@@ -1091,7 +1076,7 @@ mod tests {
                     series_id: "s".into(),
                     point_index: 0,
                 }],
-                ..Default::default()
+                ..crate::defaults::data_selections_config()
             });
             assert_eq!(
                 config.step_selection(std::slice::from_ref(&arrows), 100, 0, len),
@@ -1142,7 +1127,7 @@ mod tests {
             }),
             ..scatter_3d.clone()
         };
-        let plain = crate::data_config::DataLineStyleConfig::default();
+        let plain = crate::defaults::data_line_style_config();
         assert_eq!(
             config.validate_view3d_series(&[line(plain.clone())]),
             Ok(())
@@ -1189,12 +1174,12 @@ mod tests {
         assert!(matches!(err(bars), crate::RuleKind::View3dSeriesKind));
         // A flat chart draws the scatter and keeps a heatmap's surface style
         // and a series' z column.
-        let flat = crate::default::default_config();
+        let flat = crate::defaults::config();
         assert_eq!(
             flat.validate_view3d_series(&[
                 scatter,
                 scatter_3d,
-                heatmap(Some(SurfaceStyle::default()))
+                heatmap(Some(crate::defaults::surface_style()))
             ]),
             Ok(())
         );
@@ -1211,7 +1196,7 @@ mod tests {
         assert!(matches!(err(banded), crate::RuleKind::View3dBandedSurface));
         let wrong = SurfaceStyle {
             color_matrix: Some(matrix(2)),
-            ..SurfaceStyle::default()
+            ..crate::defaults::surface_style()
         };
         assert!(
             err(heatmap(Some(wrong)))
@@ -1220,7 +1205,7 @@ mod tests {
         );
         let bright = SurfaceStyle {
             gloss: 2.0,
-            ..SurfaceStyle::default()
+            ..crate::defaults::surface_style()
         };
         assert!(matches!(
             err(heatmap(Some(bright))),
@@ -1270,7 +1255,7 @@ mod tests {
         assert!(!json.contains("box_aspect"), "{json}");
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.view_3d(), config.view_3d());
-        let flat = crate::default::default_config();
+        let flat = crate::defaults::config();
         assert!(!serde_json::to_string(&flat).unwrap().contains("view_3d"));
         let plain = heatmap(None);
         let json = serde_json::to_string(&plain).unwrap();
@@ -1283,7 +1268,7 @@ mod tests {
                 color: Color::BLACK,
                 width: 1.0,
             }),
-            ..SurfaceStyle::default()
+            ..crate::defaults::surface_style()
         }));
         let json = serde_json::to_string(&styled).unwrap();
         assert!(

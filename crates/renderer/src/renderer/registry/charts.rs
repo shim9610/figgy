@@ -21,6 +21,17 @@ impl Renderer {
         &self.chart_order
     }
 
+    /// Every registered chart, the general ones in [`Self::chart_order`]
+    /// and then the monotonic ones (#271): what internal passes over the
+    /// charts walk.
+    pub(in crate::renderer) fn every_chart(&self) -> impl Iterator<Item = &ChartId> + '_ {
+        self.chart_order.iter().chain(&self.monotonic_order)
+    }
+
+    pub(in crate::renderer) fn chart_count(&self) -> usize {
+        self.chart_order.len() + self.monotonic_order.len()
+    }
+
     pub fn chart_config(&self, id: ChartId) -> Result<&Config> {
         self.chart_states
             .get(&id)
@@ -56,11 +67,17 @@ impl Renderer {
                 series_id: series_id.to_string(),
                 kind: crate::RuleKind::SeriesNotInChart,
             })?;
-        Ok(series_draw_info_from_pool(
+        let mut info = series_draw_info_from_pool(
             &(&self.pool, &self.streaming_sources),
             series,
             state.config.drawn_z_column(series),
-        ))
+        );
+        // A monotonic group whose channels differ in length draws their
+        // common extent (#271).
+        if series.monotonic().is_some() {
+            info.truncated = self.monotonic.truncated(series);
+        }
+        Ok(info)
     }
 
     pub fn chart_selection(&self, id: ChartId) -> Result<Option<HitId>> {
@@ -93,15 +110,22 @@ impl Renderer {
 
     /// Register one renderer-owned chart. The id issuer and visual revision
     /// are checked before any state is published.
+    /// A monotonic line series lives only in a monotonic chart
+    /// ([`Self::register_monotonic_chart`], #271): refused with
+    /// `RuleKind::MonotonicGeneralChart`.
     pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
-        let result = self.register_chart_unreported(config, series);
+        let result = refuse_monotonic_series(&series)
+            .and_then(|()| self.register_chart_unreported(config, series, false));
         self.reported(result)
     }
 
-    pub(super) fn register_chart_unreported(
+    /// Registers a chart: a general one, or a monotonic one (`monotonic`),
+    /// kept out of [`Self::chart_order`].
+    pub(in crate::renderer) fn register_chart_unreported(
         &mut self,
         mut config: Config,
         series: Vec<SeriesConfig>,
+        monotonic: bool,
     ) -> Result<ChartId> {
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(&(&self.pool, &self.streaming_sources), &config, &series)?;
@@ -124,7 +148,12 @@ impl Renderer {
                 resource: "chart registry",
                 reason: error.to_string(),
             })?;
-        self.chart_order
+        let order = if monotonic {
+            &mut self.monotonic_order
+        } else {
+            &mut self.chart_order
+        };
+        order
             .try_reserve(1)
             .map_err(|error| FiggyError::StateAllocationFailed {
                 resource: "chart order",
@@ -151,7 +180,11 @@ impl Renderer {
                 display: None,
             },
         );
-        self.chart_order.push(id);
+        if monotonic {
+            self.monotonic_order.push(id);
+        } else {
+            self.chart_order.push(id);
+        }
         self.next_chart_id = id_value;
         self.visual_revision = visual_revision;
         Ok(id)
@@ -169,6 +202,7 @@ impl Renderer {
         let visual_revision = self.visual_revision.successor("renderer visual revision")?;
         self.chart_states.remove(&id);
         self.chart_order.retain(|candidate| *candidate != id);
+        self.monotonic_order.retain(|candidate| *candidate != id);
         if self
             .picker
             .active
@@ -178,6 +212,9 @@ impl Renderer {
             self.picker.active = None;
         }
         self.visual_revision = visual_revision;
+        // The chart's monotonic envelopes and their columns go with it
+        // (#271).
+        self.forget_monotonic_chart(id);
         Ok(())
     }
 
@@ -186,11 +223,40 @@ impl Renderer {
         self.reported(result)
     }
 
-    pub(super) fn set_chart_config_unreported(
+    pub(in crate::renderer) fn set_chart_config_unreported(
         &mut self,
         id: ChartId,
-        mut config: Config,
+        config: Config,
     ) -> Result<()> {
+        self.set_chart_config_lent(id, config, &mut lend_none)
+    }
+
+    /// [`Self::set_chart_config`] with the sources `lend` lends: a config
+    /// that moves a monotonic series' mapping rebuilds its envelope from
+    /// them, or is refused before anything changes (#271).
+    pub(in crate::renderer) fn set_chart_config_lent(
+        &mut self,
+        id: ChartId,
+        config: Config,
+        lend: &mut Lender<'_>,
+    ) -> Result<()> {
+        let config = self.prepared_chart_config(id, config)?;
+        let touched =
+            self.reconcile_monotonic(id, Some(&config), None, Placement::Current, lend)?;
+        let result = self.commit_chart_config(id, config);
+        if result.is_err() && touched {
+            self.forget_monotonic_chart(id);
+        }
+        result
+    }
+
+    /// `config` validated for chart `id` and normalized as the registry
+    /// holds it: reads only, so a refusal changes nothing.
+    pub(in crate::renderer) fn prepared_chart_config(
+        &self,
+        id: ChartId,
+        mut config: Config,
+    ) -> Result<Config> {
         crate::chart::validate_renderer_config(&config)?;
         let state = self
             .chart_states
@@ -209,14 +275,28 @@ impl Renderer {
         // group here, inside this one `&mut self` call: no frame can show one
         // member moved and another not.
         config.sync_subplot_links(Some(&state.config));
+        Ok(config)
+    }
+
+    /// The revisions and the write of a validated config.
+    pub(in crate::renderer) fn commit_chart_config(
+        &mut self,
+        id: ChartId,
+        config: Config,
+    ) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
         // Each revision follows exactly the fields it depends on: an identical
         // config changes nothing, a layer-only or selection-only edit draws
         // again without re-rasterizing the axis chrome.
         let changed = state.config != config;
         // Element selection lives one level below the layer: a `HitId` names
         // an entry of the hit map registered for the previous layer, so a
-        // layer change clears it, and its selection chrome must be redrawn.
-        let layer_changed = state.config.active_layer() != config.active_layer();
+        // change of the registered set (the layer, or the active overlay's
+        // links) clears it, and its selection chrome must be redrawn.
+        let layer_changed = registration_changed(&state.config, &config);
         let clear_selection = layer_changed && state.selected.is_some();
         let ChartRevisions {
             desired: desired_before,
@@ -505,12 +585,15 @@ impl Renderer {
         Ok(moved)
     }
 
+    /// A monotonic line series is refused (`RuleKind::MonotonicGeneralChart`):
+    /// it lives only in a monotonic chart (#271).
     pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
-        let result = self.set_chart_series_unreported(id, series);
+        let result = refuse_monotonic_series(&series)
+            .and_then(|()| self.set_chart_series_unreported(id, series));
         self.reported(result)
     }
 
-    pub(super) fn set_chart_series_unreported(
+    pub(in crate::renderer) fn set_chart_series_unreported(
         &mut self,
         id: ChartId,
         series: Vec<SeriesConfig>,
@@ -527,6 +610,21 @@ impl Renderer {
             &series,
         )?;
         self.require_resident_overlay_series(&state.config, &series)?;
+        let touched =
+            self.reconcile_monotonic(id, None, Some(&series), Placement::Current, &mut lend_none)?;
+        let result = self.commit_chart_series(id, series);
+        if result.is_err() && touched {
+            self.forget_monotonic_chart(id);
+        }
+        result
+    }
+
+    /// The revisions and the write of validated series.
+    fn commit_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
         let ChartRevisions {
             desired: desired_before,
             // A series edit leaves the config and everything derived from it
@@ -578,5 +676,17 @@ impl Renderer {
         }
         .commit();
         Ok(())
+    }
+}
+
+/// A general chart holds no monotonic line series (#271): they live only in
+/// a monotonic chart (`Renderer::register_monotonic_chart`).
+pub(in crate::renderer) fn refuse_monotonic_series(series: &[SeriesConfig]) -> Result<()> {
+    match series.iter().find(|series| series.monotonic().is_some()) {
+        Some(series) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: crate::RuleKind::MonotonicGeneralChart,
+        }),
+        None => Ok(()),
     }
 }

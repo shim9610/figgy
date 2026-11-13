@@ -19,23 +19,27 @@ feature, which the wrapper's JSON methods need:
 renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
 ```
 
-The generated module exports `FiggyChart` for Cartesian charts, including polar
-plots (`Config.polar`; see the [polar guide](../renderer/POLAR.md)) and
-categorical bars, box plots and radar charts, and `FiggyBoundedChart` for
-radial charts (including donuts). `FiggyChart.set_categorical_document(json)`
-opens a categorical bar document (`CategoricalChart` JSON, which
-`FiggyBoundedChart` took as the `"categorical"` family before) as category bars
-on a categorical axis, and `FiggyChart.set_boxplot_document(json)` a box plot
-document (`BoxPlotChart` JSON, the former `"boxplot"` family) as box plot
-series reading a record and a ragged outlier column, and
-`FiggyChart.set_radar_document(json)` a radar document (`RadarChart` JSON, the
-former `"radar"` family) as radar series on a polar chart with a categorical
-angle axis. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts
-using `FiggyBoundedChart` own their canvas events and scheduling; see the
-[radial chart host API](../renderer/WASM.md#bounded-chart-host). The class
-keeps its name and its `"radial"` family argument; the `"categorical"`,
-`"boxplot"` and `"radar"` families are errors naming the `FiggyChart` method
-that opens their documents, for this release.
+The generated module exports two classes. `FiggyChart` draws Cartesian charts,
+including polar plots (`Config.polar`; see the
+[polar guide](../renderer/POLAR.md)), categorical bars, box plots and radar
+charts. `FiggyBoundedChart` draws radial charts (including donuts).
+
+Earlier releases opened categorical bar, box plot and radar documents through
+`FiggyBoundedChart`. `FiggyChart` now opens them:
+
+- `set_categorical_document(json)` reads `CategoricalChart` JSON as category
+  bars on a categorical axis.
+- `set_boxplot_document(json)` reads `BoxPlotChart` JSON as box plot series
+  that read a record and a ragged outlier column.
+- `set_radar_document(json)` reads `RadarChart` JSON as radar series on a
+  polar chart with a categorical angle axis.
+
+`FiggyBoundedChart` keeps its name and its `"radial"` family argument. In this
+release its `"categorical"`, `"boxplot"` and `"radar"` families are errors
+that name the `FiggyChart` method to use instead. The `<figgy-chart>` custom
+element wraps `FiggyChart` only. Hosts using `FiggyBoundedChart` own their
+canvas events and scheduling; see the
+[radial chart host API](../renderer/WASM.md#bounded-chart-host).
 
 ## Build and run
 
@@ -66,7 +70,7 @@ Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cj
 | [timestamp-demo.html](timestamp-demo.html) | Timestamp data and axis formatting |
 | [figgy-chart.js](figgy-chart.js) | `<figgy-chart>` element: host lifecycle, events and Promise adaptation |
 | [src/lib.rs](src/lib.rs), [src/web/](src/web/chart.rs) and [src/radial.rs](src/radial.rs) | wasm-bindgen bridge to the renderer: `FiggyChart` in `src/web/` (one file per concern, `chart.rs` first), `FiggyBoundedChart` (the radial chart host) in `src/radial.rs` |
-| [WASM guide](../renderer/WASM.md) (in Korean; the [streaming contract](../renderer/WASM.md#streaming-contract) and section 8, the radial chart host with the annotation layer and Cartesian selection helpers, are in English) | Build, lifecycle, streaming, async export and wrapper methods |
+| [WASM guide](../renderer/WASM.md) (mostly in Korean; the [streaming contract](../renderer/WASM.md#streaming-contract), the document and monotonic-x line parts of section 7, and section 8, the radial chart host with the annotation layer and Cartesian selection helpers, are in English) | Build, lifecycle, streaming, async export and wrapper methods |
 | [JSON reference](SCHEMA.md) | The wrapper's JSON representation of the shared model |
 
 ## Readiness and selected values
@@ -87,7 +91,7 @@ Points report their
 index and coordinates, plus `color_value` / `size_value` when the series has a
 point color or size map; matrix cells report their indices, coordinates and
 cell value; vector series report their `u` and `v` components in place of a
-value. Only the selected GPU samples are read back.
+value. The call reads back only the selected values, not whole columns.
 `chart.step_selection(dx, dy)` moves the selection through resident data:
 points (point-vector arrows included), histogram bins, category bars (along
 the categories and across the series of the bar group) and matrix cells
@@ -103,7 +107,7 @@ with its `label_id` (`"series:<series_id>:label:<index>"`), and
 ends. A selected label reports its category, string and offset in
 `selection_details()`; `step_selection` does not step it.
 
-A Feynman diagram's parts are pick and drag targets too (#234): `pick_point`
+A Feynman diagram's parts are pick and drag targets too: `pick_point`
 reports a vertex, a propagator or a label as `{kind: "feynman_vertex" |
 "feynman_propagator" | "feynman_label", series_id, index, part?}`, and
 `press_feynman(series_id, kind, index, part)` selects it and starts its drag:
@@ -134,8 +138,8 @@ on the renderer, with its own deployment and UI.
 
 이 디렉터리는 figgy의 브라우저용 제품이다. wasm-bindgen 래퍼(`FiggyChart`, `FiggyBoundedChart`)와
 `<figgy-chart>` 사용자 정의 요소가 캔버스·이벤트·비동기 호출을 연결한다. 렌더러와 함께 관리하므로
-렌더러에 기능이 추가되면 래퍼 메서드도 함께 추가된다. WASM으로 컴파일되는 렌더러와 이 래퍼는
-서로 다른 계층이며, `FiggyChart`나 `<figgy-chart>`가 모든 Rust 차트 API를 제공하는 것은 아니다.
+렌더러에 기능을 더하면 래퍼 메서드도 함께 더한다. WASM으로 컴파일되는 렌더러와 이 래퍼는
+서로 다른 계층이며, `FiggyChart`나 `<figgy-chart>`가 모든 Rust 차트 API를 제공하지는 않는다.
 
 Cargo 패키지 `figgy` 0.15.1은 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
 (`publish = false`, 배포 대상은 아직 정하지 않았다: [#57](https://github.com/shim9610/figgy/issues/57)).

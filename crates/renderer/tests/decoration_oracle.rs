@@ -16,8 +16,9 @@
 //!   element's bounds inside the canvas.
 //! - **I2** every element's hit region is its drawn outline: every strong
 //!   ink pixel inside the region the selection outlines, the region near
-//!   the ink, `contains` agreeing with it, and the topmost region at every
-//!   ink pixel belonging to an element with ink there.
+//!   the ink, `contains` agreeing with it, and the element the hit test
+//!   names at every ink pixel, which arbitrates between overlapping padded
+//!   regions (#272), being one with ink there.
 //! - **I3** the drawn highlight is the model's selection box: the pixels it
 //!   changes lie on the box's outline and handles, and every edge is drawn.
 //! - **I4** no two decorations that must stay apart overlap: the pair
@@ -259,17 +260,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#38",
     },
     Exclusion {
-        scene: "EnergyLevels*",
-        layer: "*",
-        element: "axis_left",
-        inv: Inv::I2,
-        detail: "*hit another element that has no ink there ({\"axis_right\": 1})*",
-        reason: "a piece frame of the broken energy axis stands inside its piece (#249) and \
-                 ends a line width short of the right axis line, whose box takes the frame's \
-                 last pixel at 2x, as at the axis corners",
-        issue: "#38",
-    },
-    Exclusion {
         scene: "*",
         layer: "*",
         element: "*axis_*",
@@ -372,24 +362,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#47",
     },
     Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I2,
-        detail: "4 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 4})*",
-        reason: "the span's pixels under the arrow shaft's band past the tip",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_0: 4 of * ({\"annotation_3\": 4})*",
-        reason: "the span under the arrow shaft past the tip, as in I2",
-        issue: "#47",
-    },
-    Exclusion {
         scene: "Polar",
         layer: "base",
         element: "axis_left",
@@ -423,25 +395,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         element: "axis_title_left",
         inv: Inv::I6,
         detail: "after the drag, I2 of axis_title_left: box * px past the padding*",
-        reason: "the slanted title's turned box, as in I2",
-        issue: "#55",
-    },
-    Exclusion {
-        scene: "Ternary",
-        layer: "base",
-        element: "axis_title_right",
-        inv: Inv::I2,
-        detail: "box * is * px past the padding from the ink extent*",
-        reason: "a slanted title's box is the bounding box of its text box turned along the \
-                 edge; the turned corners hold no glyphs",
-        issue: "#55",
-    },
-    Exclusion {
-        scene: "Ternary",
-        layer: "base",
-        element: "axis_title_right",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of axis_title_right: box * px past the padding*",
         reason: "the slanted title's turned box, as in I2",
         issue: "#55",
     },
@@ -714,17 +667,6 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
         issue: "#44",
     },
     Exclusion {
-        scene: "CategoryAxis",
-        layer: "base",
-        element: "tick_labels_bottom",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
-        reason: "the scene's `auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
-                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
-                 for LongLabels' right axis. They stay grabbable elsewhere",
-        issue: "#205",
-    },
-    Exclusion {
         scene: "EnergyLevelsCu",
         layer: "document",
         element: "category_groups_bottom",
@@ -774,47 +716,46 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
                  instead of moving",
         issue: "#205",
     },
+    // The BoxPlot scene's rotated "Response" title, placed the edge
+    // padding from the chart edge (#270): its box spans x 8.5..21.5 at
+    // 1x and 17.5..42.5 at 2x (the 2x measure is 25 px, not 26). Looked at
+    // side by side, both draw the same glyphs at the same place; 68 % of
+    // the 1x ink pixels differ from the 2x ink box-filtered against the
+    // 65 % text limit, the glyph snapping at the two sizes, as for the
+    // category headers above.
     Exclusion {
-        scene: "CategoryAxis",
-        layer: "base",
-        element: "tick_labels_bottom",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
-        reason: "`auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
-                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
-                 for LongLabels' right axis. They stay grabbable elsewhere",
-        issue: "#205",
+        scene: "BoxPlot",
+        layer: "document",
+        element: "axis_title_left",
+        inv: Inv::I5,
+        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
+        reason: "the rotated title's glyphs snap differently at 1x and 2x; the ink is in the \
+                 same place at both scales",
+        issue: "#270",
     },
+    // The `Annotations` scene's arrow past its tip (the shared exclusions'
+    // rows) at the data area the exact bands give it, with the chart title
+    // band holding the font's line (#270): 2 points and 2 pixels at 1x and
+    // at 2x where the shared rows have 4, 2 points after the drag. The
+    // points are the shaft's grab band left of the head's tip, over the
+    // span.
     Exclusion {
-        scene: "LongLabels",
-        layer: "base",
-        element: "tick_labels_top",
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_3",
         inv: Inv::I2,
-        detail: "1 of * strong ink pixels hit another element that has no ink there ({\"tick_labels_left\": 1})*",
-        reason: "at 2x the first top label, centred on the data area's corner, and the top left \
-                 label are 2.5 px apart, under each other's padded box: labels at a corner run \
-                 along their axes, which auto_layout does not move (out of scope in the plan)",
-        issue: "#44",
+        detail: "2 points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
+        issue: "#47",
     },
     Exclusion {
-        scene: "LongLabels",
-        layer: "base",
-        element: "*tick_labels_right",
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_3",
         inv: Inv::I6,
-        detail: "after the drag, I2 of tick_labels_right: *({\"axis_title_right\": *",
-        reason: "auto_layout leaves the gap (4 px) between the labels and their title; the \
-                 (+7, +5) drag moves the right labels outward under the title's padded box, as \
-                 on the twin axes' overlay. They stay grabbable elsewhere",
-        issue: "#44",
-    },
-    Exclusion {
-        scene: "LongLabels",
-        layer: "base",
-        element: "colorbar_tick_labels",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of colorbar_tick_labels: *({\"colorbar_title\": *",
-        reason: "the colourbar's labels dragged under its title, as for the right axis",
-        issue: "#44",
+        detail: "after the drag, I2 of annotation_3: 2 points of stroke outlines*",
+        reason: "the arrow shaft past the tip, as in I2",
+        issue: "#47",
     },
 ];
 
@@ -1216,6 +1157,9 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Feynman => "Feynman",
         SceneKind::TriMesh => "TriMesh",
         SceneKind::TriSurface => "TriSurface",
+        SceneKind::AxisUnits => "AxisUnits",
+        SceneKind::Monotonic => "Monotonic",
+        SceneKind::MonotonicClocks => "MonotonicClocks",
     }
 }
 
@@ -1251,6 +1195,7 @@ fn sweep(sweep: Sweep) -> Report {
                 scenes::CartesianScene {
                     config: renderer::layout::auto_layout(&scene.config, &measure),
                     series: scene.series,
+                    monotonic: scene.monotonic,
                 }
             }
             Ok(scene) => scene,
@@ -1273,6 +1218,7 @@ fn sweep(sweep: Sweep) -> Report {
             scene_name(kind),
             &scene.config,
             &scene.series,
+            &scene.monotonic,
         );
     }
     report.line(format!(
@@ -1343,17 +1289,14 @@ fn standard_names(prefix: &str) -> Vec<String> {
 }
 
 /// The shared elements a non-base layer registers first, as
-/// `HitMap::for_active_layer` documents them: the data area, the X axes
-/// with their labels and titles, the legend, the chart title and the
-/// colourbar chrome.
-fn shared_names(prefix: &str) -> Vec<String> {
+/// `HitMap::for_active_layer` documents them: the data area, the parent's
+/// axes the layer shares (`sides`, in top, bottom, left order) with their
+/// labels and titles, the legend, the chart title, the colourbar chrome and
+/// the shared x axes' group headers.
+fn shared_names(prefix: &str, sides: &[&str]) -> Vec<String> {
     let mut names = vec![format!("{prefix}data_area")];
     for kind in ["axis_", "tick_labels_", "axis_title_"] {
-        names.extend(
-            ["top", "bottom"]
-                .iter()
-                .map(|s| format!("{prefix}{kind}{s}")),
-        );
+        names.extend(sides.iter().map(|s| format!("{prefix}{kind}{s}")));
     }
     for name in [
         "legend",
@@ -1362,24 +1305,49 @@ fn shared_names(prefix: &str) -> Vec<String> {
         "colorbar_axis",
         "colorbar_tick_labels",
         "colorbar_title",
-        "category_groups_top",
-        "category_groups_bottom",
     ] {
         names.push(format!("{prefix}{name}"));
     }
+    names.extend(
+        sides
+            .iter()
+            .filter(|s| matches!(**s, "top" | "bottom"))
+            .map(|s| format!("{prefix}category_groups_{s}")),
+    );
     names
 }
 
-fn overlay_names(prefix: &str, overlay: usize) -> Vec<String> {
-    [
-        "axis_right",
-        "tick_labels_right",
-        "axis_title_right",
-        "legend",
-    ]
-    .iter()
-    .map(|n| format!("{prefix}overlay_{overlay}:{n}"))
-    .collect()
+/// The parent's axes an overlay layer shares (#283): both x axes, or only
+/// the bottom one while it has an x axis of its own, and the left one while
+/// it follows the parent's y axis.
+fn overlay_shared_sides(overlay: Option<&OverlayLayer>) -> &'static [&'static str] {
+    let own_x = overlay.is_some_and(|o| !o.link_x);
+    let linked_y = overlay.is_some_and(|o| o.link_y);
+    match (own_x, linked_y) {
+        (false, false) => &["top", "bottom"],
+        (false, true) => &["top", "bottom", "left"],
+        (true, false) => &["bottom"],
+        (true, true) => &["bottom", "left"],
+    }
+}
+
+/// An overlay layer's own elements: its own x axis on the top side, its own
+/// y axis on the right, then its legend.
+fn overlay_names(prefix: &str, index: usize, overlay: Option<&OverlayLayer>) -> Vec<String> {
+    let own_x = overlay.is_some_and(|o| !o.link_x);
+    let linked_y = overlay.is_some_and(|o| o.link_y);
+    let mut names = Vec::new();
+    if own_x {
+        names.extend(["axis_top", "tick_labels_top", "axis_title_top"]);
+    }
+    if !linked_y {
+        names.extend(["axis_right", "tick_labels_right", "axis_title_right"]);
+    }
+    names.push("legend");
+    names
+        .iter()
+        .map(|n| format!("{prefix}overlay_{index}:{n}"))
+        .collect()
 }
 
 /// The code of a parallel chart's axis lines and ticks, drawn in `left_y`'s
@@ -1404,17 +1372,19 @@ const PARALLEL_AXIS_LABELS: &str = "parallel_axis_labels";
 fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
     let mut names = match layer {
         LayerRef::Base => standard_names(""),
-        LayerRef::Annotations => shared_names(""),
+        LayerRef::Annotations => shared_names("", &["top", "bottom"]),
         LayerRef::Overlay(i) => {
-            let mut names = shared_names("");
-            names.extend(overlay_names("", i));
+            let overlay = cfg.overlays.get(i);
+            let mut names = shared_names("", overlay_shared_sides(overlay));
+            names.extend(overlay_names("", i, overlay));
             names
         }
         LayerRef::Subplot(i) => standard_names(&format!("subplot_{i}:")),
         LayerRef::SubplotOverlay(i, j) => {
             let prefix = format!("subplot_{i}:");
-            let mut names = shared_names(&prefix);
-            names.extend(overlay_names(&prefix, j));
+            let overlay = cfg.overlay_of_layer(layer);
+            let mut names = shared_names(&prefix, overlay_shared_sides(overlay));
+            names.extend(overlay_names(&prefix, j, overlay));
             names
         }
     };
@@ -1515,6 +1485,7 @@ fn cartesian_scene(
     scene: &'static str,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
 ) -> usize {
     let layers = layer_cases(config);
     let (palette_config, codes) = palette(config);
@@ -1541,7 +1512,15 @@ fn cartesian_scene(
         };
         report.time("Cartesian palette rasters", phase);
         let phase = Instant::now();
-        check_export(report, &document, r, &palette_config, series, &ink);
+        check_export(
+            report,
+            &document,
+            r,
+            &palette_config,
+            series,
+            monotonic,
+            &ink,
+        );
         report.time("Cartesian exports", phase);
         // Each element's bounds in the layer cases that register it.
         let mut registered: BTreeMap<String, Option<RectF>> = BTreeMap::new();
@@ -1600,8 +1579,9 @@ fn cartesian_scene(
             );
             report.time("Cartesian hit regions (I2)", phase);
             if layer == LayerRef::Annotations {
-                let geometry_items =
-                    check_annotations(report, &at, r, config, series, &cfg, &measured, &ink);
+                let geometry_items = check_annotations(
+                    report, &at, r, config, series, monotonic, &cfg, &measured, &ink,
+                );
                 for (item, bounds) in geometry_items {
                     geometry.insert((name.clone(), item), (bounds, 0));
                 }
@@ -1905,15 +1885,30 @@ impl Painter {
         }
     }
 
+    /// The axes the overlay draws, each in its own codes: its own x axis
+    /// on the top side while `link_x` is off (#283), its own y axis on the
+    /// right while `link_y` is off.
     fn overlay(&mut self, overlay: &mut OverlayLayer, prefix: &str, panel: LayerRef) {
-        let axis = &mut overlay.y_axis;
-        axis.line_color = self.code(format!("{prefix}axis_right"), panel);
-        axis.label_style.color = self.code(format!("{prefix}tick_labels_right"), panel);
-        self.text(
-            &mut axis.title_option.text,
-            format!("{prefix}axis_title_right"),
-            panel,
-        );
+        if !overlay.link_x {
+            let axis = &mut overlay.x_axis;
+            axis.line_color = self.code(format!("{prefix}axis_top"), panel);
+            axis.label_style.color = self.code(format!("{prefix}tick_labels_top"), panel);
+            self.text(
+                &mut axis.title_option.text,
+                format!("{prefix}axis_title_top"),
+                panel,
+            );
+        }
+        if !overlay.link_y {
+            let axis = &mut overlay.y_axis;
+            axis.line_color = self.code(format!("{prefix}axis_right"), panel);
+            axis.label_style.color = self.code(format!("{prefix}tick_labels_right"), panel);
+            self.text(
+                &mut axis.title_option.text,
+                format!("{prefix}axis_title_right"),
+                panel,
+            );
+        }
         if let Some(legend) = overlay.legend.as_mut() {
             self.legend(legend, format!("{prefix}legend"), panel);
         }
@@ -2439,8 +2434,8 @@ fn box_misfit(outline: RectF, ink: RectF) -> f32 {
 /// the padding plus [`BOX_FIT`] of the ink extent, a stroke's band within
 /// its grab half width plus [`STROKE_FIT`] of ink); `contains` agrees with
 /// the region on capped edge-band samples; and at every strong ink pixel
-/// the topmost region in registration order belongs to an element that has
-/// ink there.
+/// the element the hit test names (`HitMap::hit_test`, which arbitrates
+/// between overlapping padded regions, #272) has ink there.
 #[allow(clippy::too_many_arguments)]
 fn check_i2<C: DragConfig>(
     report: &mut Report,
@@ -2536,25 +2531,38 @@ fn check_i2<C: DragConfig>(
                 check_parts_near_ink(report, at, &m.name, parts, code, ink);
             }
         }
-        // The topmost region at each strong pixel has ink there.
+        // The element the hit test names at each strong pixel has ink
+        // there (#272). Where no other region holds the pixel, or only
+        // backgrounds registered below the element, which take no part in
+        // the hit test's arbitration, that is the element itself; at the
+        // other pixels the product's `HitMap::hit_test` decides.
+        let background = |t: usize| map.get(measured[t].id).is_some_and(|e| e.is_background());
+        let own_background = background(index);
         let mut covered: Vec<(String, (f32, f32))> = Vec::new();
         for &i in &strong {
             let (x, y) = (i64::from(i) % ink.w as i64, i64::from(i) / ink.w as i64);
             if !mask.get(x, y) {
                 continue;
             }
-            for (t, (tm, tmask)) in measured.iter().zip(masks).enumerate().rev() {
-                if !tmask.get(x, y) {
-                    continue;
-                }
-                let has_ink = t == index
-                    || ink
-                        .code_of(&tm.name)
-                        .is_some_and(|c| ink.inked_near(c, x, y, TOPMOST_REACH));
-                if !has_ink {
-                    covered.push((tm.name.clone(), ink.point(x as usize, y as usize)));
-                }
-                break;
+            let contested = masks.iter().enumerate().any(|(t, tmask)| {
+                t != index && tmask.get(x, y) && (t > index || !(own_background || background(t)))
+            });
+            if !contested {
+                continue;
+            }
+            let (cx, cy) = ink.point(x as usize, y as usize);
+            let Some(t) = map
+                .hit_test(cfg, measure, cx, cy)
+                .and_then(|hit| measured.iter().position(|tm| tm.id == hit))
+            else {
+                continue;
+            };
+            let has_ink = t == index
+                || ink
+                    .code_of(&measured[t].name)
+                    .is_some_and(|c| ink.inked_near(c, x, y, TOPMOST_REACH));
+            if !has_ink {
+                covered.push((measured[t].name.clone(), (cx, cy)));
             }
         }
         report.check(at, &m.name, Inv::I2, covered.is_empty(), || {
@@ -2816,18 +2824,16 @@ fn check_export(
     r: &mut Renderer,
     palette_1x: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     ink: &SceneInk,
 ) {
     // The export takes the unscaled document and the scale.
     let mut doc = palette_1x.clone();
     doc.annotations.visible = false;
-    let image = match r
-        .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(doc), series),
-            renderer::ExportOptions::document(at.scale),
-        )
-        .block_on()
-    {
+    let image = match scenes::export_scene(r, &Chart::new(doc), series, monotonic, |r, source| {
+        r.export_rgba(source, renderer::ExportOptions::document(at.scale))
+            .block_on()
+    }) {
         Ok(image) => image,
         Err(e) => {
             report.check(at, "<export>", Inv::I7, false, || {
@@ -3135,19 +3141,23 @@ fn overlap_pairs(cfg: &Config, prefix: &str) -> Vec<(String, String)> {
             pairs.push((n("legend"), n(a)));
         }
     }
-    for i in 0..cfg.overlays.len() {
-        let own = [
-            n(&format!("overlay_{i}:tick_labels_right")),
-            n(&format!("overlay_{i}:axis_title_right")),
-        ];
-        pairs.push((own[0].clone(), own[0].clone()));
-        pairs.push((own[0].clone(), own[1].clone()));
-        for a in &own {
-            pairs.push((a.clone(), n("tick_labels_right")));
-            pairs.push((a.clone(), n("axis_title_right")));
-            for j in i + 1..cfg.overlays.len() {
-                pairs.push((a.clone(), n(&format!("overlay_{j}:tick_labels_right"))));
-                pairs.push((a.clone(), n(&format!("overlay_{j}:axis_title_right"))));
+    // Overlay axes against the parent's axis on their side and each other's
+    // (#283: an own x axis on the top side as an own y axis on the right).
+    for side in ["right", "top"] {
+        for i in 0..cfg.overlays.len() {
+            let own = [
+                n(&format!("overlay_{i}:tick_labels_{side}")),
+                n(&format!("overlay_{i}:axis_title_{side}")),
+            ];
+            pairs.push((own[0].clone(), own[0].clone()));
+            pairs.push((own[0].clone(), own[1].clone()));
+            for a in &own {
+                pairs.push((a.clone(), n(&format!("tick_labels_{side}"))));
+                pairs.push((a.clone(), n(&format!("axis_title_{side}"))));
+                for j in i + 1..cfg.overlays.len() {
+                    pairs.push((a.clone(), n(&format!("overlay_{j}:tick_labels_{side}"))));
+                    pairs.push((a.clone(), n(&format!("overlay_{j}:axis_title_{side}"))));
+                }
             }
         }
     }
@@ -3721,7 +3731,7 @@ fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: 
         let phase = Instant::now();
         let mut c = chart.clone();
         c.decorations = DecorationLayout::default();
-        let (frame, base) = match (r.prepare(&c, scale), r.export(&c, scale)) {
+        let (frame, base) = match (r.prepare(&mut c, scale), r.export(&c, scale)) {
             (Ok(f), Ok(b)) => (f, b),
             (Err(e), _) | (_, Err(e)) => {
                 report.check(&at, "<frame>", Inv::I7, false, || e);
@@ -3960,7 +3970,7 @@ fn radial_ink(
             _ if parts => vec![(0.0, oy), (0.0, -oy), (ox, 0.0), (-ox, 0.0)],
             _ => vec![(ox, 0.0), (-ox, 0.0), (0.0, oy), (0.0, -oy)],
         };
-        let Some((moved, (dx, dy))) = candidates.into_iter().find_map(|(dx, dy)| {
+        let Some((mut moved, (dx, dy))) = candidates.into_iter().find_map(|(dx, dy)| {
             let mut trial = c.clone();
             (frame.drag(&mut trial, e.id, dx, dy) == Some(NudgeResult::Moved))
                 .then_some((trial, (dx, dy)))
@@ -3970,7 +3980,7 @@ fn radial_ink(
             });
             continue;
         };
-        let (frame2, image) = match (r.prepare(&moved, 1.0), r.export(&moved, 1.0)) {
+        let (frame2, image) = match (r.prepare(&mut moved, 1.0), r.export(&moved, 1.0)) {
             (Ok(f), Ok(i)) => (f, i),
             (Err(e2), _) | (_, Err(e2)) => {
                 report.check(at, &e.name, Inv::I2, false, || e2);
@@ -4163,7 +4173,7 @@ fn radial_ink(
                 shrunk == Some(NudgeResult::Moved),
                 || format!("shrinking it before the move gave {shrunk:?}"),
             );
-            let Ok(frame) = r.prepare(&moved, 1.0) else {
+            let Ok(frame) = r.prepare(&mut moved, 1.0) else {
                 continue;
             };
             let Some(entry) = radial_entries(&frame, &moved)
@@ -4199,7 +4209,7 @@ fn radial_ink(
             DecorationId::Axis(_) => (DRAG.0, 0.0),
             _ => DRAG,
         };
-        let frame = match r.prepare(&moved, 1.0) {
+        let frame = match r.prepare(&mut moved, 1.0) {
             Ok(f) => f,
             Err(e2) => {
                 report.check(at, &e.name, Inv::I6, false, || e2);
@@ -4298,6 +4308,7 @@ fn export_annotations(
     r: &mut Renderer,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     scale: f32,
     hidden: Option<usize>,
 ) -> Result<RasterImage, String> {
@@ -4313,11 +4324,10 @@ fn export_annotations(
         Some(i) => doc.annotations.items[i].visible = false,
         None => {}
     }
-    r.export_rgba(
-        renderer::ExportSource::chart(&Chart::new(doc), series),
-        renderer::ExportOptions::document(scale),
-    )
-    .block_on()
+    scenes::export_scene(r, &Chart::new(doc), series, monotonic, |r, source| {
+        r.export_rgba(source, renderer::ExportOptions::document(scale))
+            .block_on()
+    })
     .map_err(|e| e.to_string())
 }
 
@@ -4416,6 +4426,7 @@ fn check_annotations(
     r: &mut Renderer,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     cfg: &Config,
     decorations: &[Measured],
     palette_ink: &SceneInk,
@@ -4478,7 +4489,7 @@ fn check_annotations(
     let exports: Result<Vec<RasterImage>, String> = std::iter::once(None)
         .chain(std::iter::once(Some(usize::MAX)))
         .chain((0..items).map(Some))
-        .map(|hidden| export_annotations(r, config, series, at.scale, hidden))
+        .map(|hidden| export_annotations(r, config, series, monotonic, at.scale, hidden))
         .collect();
     let exports = match exports {
         Ok(e) => e,
@@ -4574,7 +4585,9 @@ fn check_annotations(
         annotation_highlights(report, at, r, cfg, &measured);
         report.time("annotation highlights (I3)", phase);
         let phase = Instant::now();
-        annotation_drags(report, at, r, config, series, cfg, map, &measured, &exports);
+        annotation_drags(
+            report, at, r, config, series, monotonic, cfg, map, &measured, &exports,
+        );
         report.time("annotation drags (I6)", phase);
     }
     measured
@@ -4597,12 +4610,12 @@ fn paint_view(
     let mut view = r.create_chart_view(&chart, rect).map_err(e)?;
     r.refresh_annotations(&mut view, &chart, rect, selected)
         .map_err(e)?;
-    let items = [renderer::ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [renderer::ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &[],
     }];
-    let prepared = r.prepare(&items).map_err(e)?;
+    let prepared = r.prepare(&mut items).map_err(e)?;
     let (w, h) = (rect.x + rect.width, rect.y + rect.height);
     let device = r.device().clone();
     let queue = r.queue().clone();
@@ -4782,6 +4795,7 @@ fn annotation_drags(
     r: &mut Renderer,
     config: &Config,
     series: &[SeriesConfig],
+    monotonic: &[scenes::MonotonicData],
     cfg: &Config,
     map: &renderer::AnnotationMap,
     measured: &[Measured],
@@ -4854,8 +4868,8 @@ fn annotation_drags(
         });
         // Its new ink lies in its new region, and picks it where on top.
         let (Ok(all), Ok(without)) = (
-            export_annotations(r, &moved_1x, series, 1.0, None),
-            export_annotations(r, &moved_1x, series, 1.0, Some(index)),
+            export_annotations(r, &moved_1x, series, monotonic, 1.0, None),
+            export_annotations(r, &moved_1x, series, monotonic, 1.0, Some(index)),
         ) else {
             report.check(at, &m.name, Inv::I6, false, || "export failed".into());
             continue;

@@ -6,8 +6,8 @@
 //! they edit the document, so drags stay exact at any window size.
 
 use renderer::config::{
-    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, ProbabilityScale,
-    SketchOptions,
+    AxisOptions, AxisScale, AxisUnit, Config, DrawStyle, LabelClearanceMode, LogTickPolicy,
+    MilkywayOptions, ProbabilityScale, SketchOptions,
 };
 use renderer::data_config::{
     BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
@@ -126,10 +126,16 @@ enum ViewTarget {
 
 pub struct CartesianHost {
     kind: SceneKind,
-    id: ChartId,
+    id: HostChart,
     initial: Config,
     initial_series: Vec<SeriesConfig>,
+    /// The samples of the scene's monotonic groups (#271), lent to the
+    /// calls that take them ([`Self::sync_monotonic`] and the exports).
+    monotonic: Vec<scenes::MonotonicData>,
     view: Option<ChartView>,
+    /// The display chart the view draws, kept across frames so its raster
+    /// stamp moves only when the display config or the selection changes.
+    display_chart: Option<Chart>,
     styles: Vec<ChartStyle>,
     /// Display scale the styles were built at; `None` forces a rebuild.
     styles_scale: Option<f32>,
@@ -165,13 +171,22 @@ pub struct CartesianHost {
 impl CartesianHost {
     pub fn new(r: &mut Renderer, kind: SceneKind) -> Result<Self, renderer::FiggyError> {
         let scene = scenes::build(r, kind, big_data::START_POINTS)?;
-        let id = r.register_chart(scene.config.clone(), scene.series.clone())?;
+        // A scene with monotonic groups is a monotonic chart (#271).
+        let id = if scene.monotonic.is_empty() {
+            HostChart::General(r.register_chart(scene.config.clone(), scene.series.clone())?)
+        } else {
+            HostChart::Monotonic(
+                r.register_monotonic_chart(scene.config.clone(), scene.series.clone())?,
+            )
+        };
         Ok(Self {
             kind,
             id,
             initial: scene.config,
             initial_series: scene.series,
+            monotonic: scene.monotonic,
             view: None,
+            display_chart: None,
             styles: Vec::new(),
             styles_scale: None,
             raster_dirty: true,
@@ -201,7 +216,7 @@ impl CartesianHost {
     pub fn remove(self, r: &mut Renderer) {
         drop(self.view);
         drop(self.styles);
-        if let Err(e) = r.remove_chart(self.id) {
+        if let Err(e) = self.id.remove(r) {
             eprintln!("[scene] remove chart: {e}");
         }
         if self.big.is_some() {
@@ -237,15 +252,15 @@ impl CartesianHost {
     }
 
     fn config(&self, r: &Renderer) -> Config {
-        r.chart_config(self.id).expect("registered chart").clone()
+        self.id.config(r).expect("registered chart").clone()
     }
 
     fn series(&self, r: &Renderer) -> Vec<SeriesConfig> {
-        r.chart_series(self.id).expect("registered chart").to_vec()
+        self.id.series(r).expect("registered chart").to_vec()
     }
 
     fn commit(&mut self, r: &mut Renderer, config: Config) -> bool {
-        match r.set_chart_config(self.id, config) {
+        match self.id.set_config(r, config) {
             Ok(()) => {
                 self.raster_dirty = true;
                 self.error = None;
@@ -261,20 +276,20 @@ impl CartesianHost {
     /// Replace the series, then recolour the legends to match.
     fn commit_series(&mut self, r: &mut Renderer, series: Vec<SeriesConfig>) {
         let previous = self.series(r);
-        if let Err(e) = r.set_chart_series(self.id, series.clone()) {
+        if let Err(e) = self.id.set_series(r, series.clone()) {
             self.error = Some(format!("series rejected: {e}"));
             return;
         }
         let mut config = self.config(r);
         scenes::rebuild_legends(&mut config, &series);
         if !self.commit(r, config) {
-            let _ = r.set_chart_series(self.id, previous);
+            let _ = self.id.set_series(r, previous);
         }
         self.styles_scale = None;
     }
 
     fn display(&self, r: &Renderer) -> Option<Display> {
-        let cfg = r.chart_config(self.id).ok()?;
+        let cfg = self.id.config(r).ok()?;
         let vp = self.viewport_px;
         if vp.width < 8 || vp.height < 8 {
             return None;
@@ -305,6 +320,65 @@ impl CartesianHost {
         })
     }
 
+    /// A monotonic series draws from an envelope the renderer built at the
+    /// mapping it is displayed at (#271). The registered chart's display
+    /// follows the viewport, which places the document as [`Self::display`]
+    /// does: a viewport resize is the resize call, which takes the scene's
+    /// samples, and a group never supplied gets its first full call here.
+    /// A monotonic scene is never held, and pans and zooms nothing: the x
+    /// range is the full call's.
+    fn sync_monotonic(&self, r: &mut Renderer) -> Result<(), renderer::FiggyError> {
+        let views: Vec<Vec<&[f64]>> = self
+            .monotonic
+            .iter()
+            .map(|group| group.channels.iter().map(Vec::as_slice).collect())
+            .collect();
+        let slices: Vec<renderer::MonotonicSlices<'_, f64>> = self
+            .monotonic
+            .iter()
+            .zip(&views)
+            .map(|(group, view)| renderer::MonotonicSlices::new(group.start, group.interval, view))
+            .collect();
+        let refs: Vec<renderer::renderer::MonotonicGroupRef<'_>> = self
+            .monotonic
+            .iter()
+            .zip(&slices)
+            .map(|(group, source)| renderer::renderer::MonotonicGroupRef::new(&group.group, source))
+            .collect();
+        let vp = self.viewport_px;
+        let area = self.config(r).chart_area.0;
+        let HostChart::Monotonic(id) = self.id else {
+            return Ok(());
+        };
+        // The first full call keeps the x range the scene's document sets
+        // on the x axis each group is drawn against: the parent's, or an
+        // overlay's own (`link_x` off).
+        let config = self.config(r);
+        let series = self.series(r);
+        let range_of = |group: &str| {
+            let overlay = series
+                .iter()
+                .find(|s| s.monotonic().is_some_and(|m| m.group == group))
+                .and_then(|s| match config.layer_of_series(&s.series_id) {
+                    LayerRef::Overlay(i) => Some(i),
+                    _ => None,
+                });
+            config.scaling_axes(overlay).0.data_range()
+        };
+        r.monotonic_chart(id)?
+            .resize(area, None, Some((vp.width, vp.height)), &refs)?;
+        let needs = r.monotonic_needs_source(id)?;
+        let mut chart = r.monotonic_chart(id)?;
+        for (group, source) in self.monotonic.iter().zip(&slices) {
+            if needs.iter().any(|need| need.group == group.group) {
+                let (min, max) = range_of(&group.group);
+                let range = renderer::renderer::MonotonicRange::X { min, max };
+                chart.set_monotonic(&group.group, source, range)?;
+            }
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Frame
     // ------------------------------------------------------------------
@@ -317,6 +391,11 @@ impl CartesianHost {
             self.commit(r, chart.config().clone());
         }
         let d = self.display(r)?;
+        if !self.monotonic.is_empty()
+            && let Err(e) = self.sync_monotonic(r)
+        {
+            self.error = Some(format!("monotonic: {e}"));
+        }
         let series = self.series(r);
         if self.styles_scale != Some(d.scale) {
             match series
@@ -334,10 +413,25 @@ impl CartesianHost {
                 }
             }
         }
-        let chart = Chart::new(d.config.clone());
+        if self
+            .display_chart
+            .as_ref()
+            .is_none_or(|chart| chart.config() != &d.config)
+        {
+            self.display_chart = Some(Chart::new(d.config.clone()));
+        }
+        let selected = {
+            let hitmap = HitMap::for_active_layer(&d.config);
+            self.selected
+                .and_then(|id| hitmap.get(id))
+                .map(|el| el.element_id())
+        };
+        let chart = self.display_chart.as_mut()?;
+        chart.select(selected.as_deref());
+        let chart: &Chart = chart;
         let view = match self.view.take() {
             Some(v) => v,
-            None => match r.create_chart_view_at(&chart, d.panel, d.scale) {
+            None => match r.create_chart_view_at(chart, d.panel, d.scale) {
                 Ok(v) => {
                     self.raster_dirty = true;
                     v
@@ -350,20 +444,13 @@ impl CartesianHost {
         };
         let mut view = view;
         if self.raster_dirty || view.panel_rect() != d.panel {
-            let hitmap = HitMap::for_active_layer(&d.config);
-            let selected = self
-                .selected
-                .and_then(|id| hitmap.get(id))
-                .map(|el| el.element_id());
-            if let Err(e) =
-                r.refresh_axis_with_selection_at(
-                    &mut view,
-                    &chart,
-                    d.panel,
-                    selected.as_deref(),
-                    d.scale,
-                )
-            {
+            if let Err(e) = r.refresh_axis_with_selection_at(
+                &mut view,
+                chart,
+                d.panel,
+                selected.as_deref(),
+                d.scale,
+            ) {
                 self.error = Some(format!("refresh: {e}"));
             }
             self.warnings = view.render_warnings().to_vec();
@@ -371,7 +458,7 @@ impl CartesianHost {
         }
         if view.annotation_selected() != self.selected_annotation
             && let Err(e) =
-                r.refresh_annotations(&mut view, &chart, d.panel, self.selected_annotation)
+                r.refresh_annotations(&mut view, chart, d.panel, self.selected_annotation)
         {
             self.error = Some(format!("annotations: {e}"));
         }
@@ -380,9 +467,9 @@ impl CartesianHost {
             .zip(&self.styles)
             .map(|(config, style)| Series { config, style })
             .collect();
-        let prepared = r.prepare(&[ChartDrawItem {
-            view: &view,
-            chart_config: &d.config,
+        let prepared = r.prepare(&mut [ChartDrawItem {
+            view: &mut view,
+            chart,
             series: &draw,
         }]);
         drop(draw);
@@ -460,10 +547,13 @@ impl CartesianHost {
             // The document fits the viewport again.
             changed |= self.hold.take().is_some();
         }
-        if pan_down && response.hovered() && (delta.x != 0.0 || delta.y != 0.0) {
+        // A monotonic scene's x range is the full call's (#271): no pan or
+        // zoom moves it.
+        let navigable = self.monotonic.is_empty();
+        if navigable && pan_down && response.hovered() && (delta.x != 0.0 || delta.y != 0.0) {
             changed |= self.pan(r, &d, delta.x * ppp, delta.y * ppp);
         }
-        if inside && scroll.y != 0.0 {
+        if navigable && inside && scroll.y != 0.0 {
             let factor = (-scroll.y as f64 * 0.0025).exp();
             let (zx, zy) = if mods.shift {
                 (true, false)
@@ -475,6 +565,11 @@ impl CartesianHost {
             changed |= self.zoom(r, &d, px(pos.unwrap()), factor, zx, zy);
         }
         if let Some((x, y)) = self.cursor_data {
+            // The readout in the units the axes print (#273).
+            let (x, y) = (
+                d.config.bottom_x.shown_value(x),
+                d.config.left_y.shown_value(y),
+            );
             response
                 .clone()
                 .on_hover_text_at_pointer(format!("x = {x:.4}\ny = {y:.4}"));
@@ -569,7 +664,7 @@ impl CartesianHost {
     /// A surface point in document pixels: the inverse of the display's
     /// scale and placement.
     fn document_point(&self, r: &Renderer, d: &Display, p: [f32; 2]) -> [f32; 2] {
-        let Ok(cfg) = r.chart_config(self.id) else {
+        let Ok(cfg) = self.id.config(r) else {
             return p;
         };
         let doc = cfg.document_area();
@@ -584,6 +679,11 @@ impl CartesianHost {
 
     /// Hold the display where it is while a subplot frame drags (#205).
     fn hold_display(&mut self, d: &Display) {
+        // A monotonic scene is never held (#271): the release would move
+        // the plot's device pixels without the scene's samples.
+        if !self.monotonic.is_empty() {
+            return;
+        }
         let at = d.config.chart_area.0;
         self.hold = Some((d.scale, [i64::from(at.x), i64::from(at.y)]));
     }
@@ -690,15 +790,18 @@ impl CartesianHost {
         p: [f32; 2],
         ppp: f32,
     ) -> Option<PickedData> {
-        let ticket = r.pick_chart_data(
-            self.id,
-            GpuPickRequest {
-                canvas_position_px: p,
-                display_panel_px: d.document,
-                display_scale: d.scale,
-                max_distance_px: 10.0 * ppp,
-            },
-        );
+        let request = GpuPickRequest {
+            canvas_position_px: p,
+            display_panel_px: d.document,
+            display_scale: d.scale,
+            max_distance_px: 10.0 * ppp,
+        };
+        let ticket = match self.id {
+            HostChart::General(id) => r.pick_chart_data(id, request),
+            HostChart::Monotonic(id) => r
+                .monotonic_chart(id)
+                .and_then(|mut chart| chart.pick_data(request)),
+        };
         match ticket {
             Ok(t) => match t.resolve_blocking() {
                 Ok(p) => p,
@@ -772,11 +875,9 @@ impl CartesianHost {
         Some(match target {
             ViewTarget::Parent { overlay } => {
                 let area = d.config.data_area().ok()?.0;
-                let y = match overlay {
-                    Some(i) => config.overlays.get(i)?.y_axis.clone(),
-                    None => config.left_y.clone(),
-                };
-                (target, area, config.bottom_x.clone(), y)
+                // An overlay's own axes, or the parent's where it is linked.
+                let (x, y) = config.scaling_axes(overlay);
+                (target, area, x.clone(), y.clone())
             }
             ViewTarget::Subplot(i) => {
                 let area = d.config.subplot_config(i)?.data_area().ok()?.0;
@@ -813,8 +914,12 @@ impl CartesianHost {
         let mut chart = Chart::new(self.config(r));
         match target {
             ViewTarget::Parent { overlay } => {
+                // A linked overlay axis moves the parent's.
                 if let Some(x) = x.filter(ok) {
-                    chart.set_x_range(x.0, x.1);
+                    match overlay {
+                        Some(i) => chart.set_overlay_x_range(i, x.0, x.1),
+                        None => chart.set_x_range(x.0, x.1),
+                    }
                 }
                 if let Some(y) = y.filter(ok) {
                     match overlay {
@@ -1066,6 +1171,74 @@ impl CartesianHost {
                     }
                 }
             });
+            // The unit an axis pair prints in (`AxisOptions::unit`, #273):
+            // `scale * value + offset`, on round steps of the shown values.
+            // The data and the picks stay raw.
+            for (x, label) in [(true, "X unit"), (false, "Y unit")] {
+                let axis = if x { &config.bottom_x } else { &config.left_y };
+                let mut on = axis.unit.is_some();
+                let mut unit = axis.unit.unwrap_or(AxisUnit::new(1.0, 0.0));
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .checkbox(&mut on, label)
+                        .on_hover_text(
+                            "Print the axis as scale × value + offset: counts as volts, \
+                             kelvin as °C. A log axis takes offset 0 and scale > 0.",
+                        )
+                        .changed();
+                    ui.add_enabled_ui(on, |ui| {
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut unit.scale)
+                                    .speed(0.01)
+                                    .prefix("scale "),
+                            )
+                            .changed();
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut unit.offset)
+                                    .speed(0.1)
+                                    .prefix("offset "),
+                            )
+                            .changed();
+                    });
+                });
+                if changed {
+                    set_unit(&mut config, x, on.then_some(unit));
+                }
+            }
+            // The tick label clearance (`LabelStyle::clearance`, #272):
+            // `Auto` drops a label that comes within a small visual gap
+            // (2 px in total at the 18 px label font) of the corner label
+            // of the axis across or a break mark, `Keep` drops none.
+            ui.horizontal(|ui| {
+                for (x, label) in [(true, "keep X labels"), (false, "keep Y labels")] {
+                    let pair = if x {
+                        [&mut config.bottom_x, &mut config.top_x]
+                    } else {
+                        [&mut config.left_y, &mut config.right_y]
+                    };
+                    let mut keep = pair[0].label_style.clearance == LabelClearanceMode::Keep;
+                    if ui
+                        .checkbox(&mut keep, label)
+                        .on_hover_text(
+                            "Keep every tick label where it meets the labels of the axis \
+                             across or a break mark (right_y is a 3D chart's z axis).",
+                        )
+                        .changed()
+                    {
+                        let mode = if keep {
+                            LabelClearanceMode::Keep
+                        } else {
+                            LabelClearanceMode::Auto
+                        };
+                        for axis in pair {
+                            axis.label_style.clearance = mode;
+                        }
+                    }
+                }
+            });
             ui.horizontal(|ui| {
                 ui.checkbox(&mut config.legend.visible, "Legend");
                 choice(ui, "corner", &mut config.legend.corner, CORNERS);
@@ -1289,27 +1462,33 @@ impl CartesianHost {
             let exported = if ui.button("Export document PNG").clicked() {
                 Some((
                     "png",
-                    r.export_png_blocking(
-                        renderer::ExportSource::chart(&chart, &series),
-                        renderer::ExportOptions::document(self.export_scale),
-                    ),
+                    scenes::export_scene(r, &chart, &series, &self.monotonic, |r, source| {
+                        r.export_png_blocking(
+                            source,
+                            renderer::ExportOptions::document(self.export_scale),
+                        )
+                    }),
                 ))
             } else if ui.button("Export document SVG").clicked() {
                 Some((
                     "svg",
-                    r.export_svg_blocking(
-                        renderer::ExportSource::chart(&chart, &series),
-                        renderer::ExportOptions::document(self.export_scale),
-                    )
+                    scenes::export_scene(r, &chart, &series, &self.monotonic, |r, source| {
+                        r.export_svg_blocking(
+                            source,
+                            renderer::ExportOptions::document(self.export_scale),
+                        )
+                    })
                     .map(String::into_bytes),
                 ))
             } else if ui.button("Export document PDF").clicked() {
                 Some((
                     "pdf",
-                    r.export_pdf_blocking(
-                        renderer::ExportSource::chart(&chart, &series),
-                        renderer::ExportOptions::document(self.export_scale),
-                    ),
+                    scenes::export_scene(r, &chart, &series, &self.monotonic, |r, source| {
+                        r.export_pdf_blocking(
+                            source,
+                            renderer::ExportOptions::document(self.export_scale),
+                        )
+                    }),
                 ))
             } else {
                 None
@@ -1376,7 +1555,7 @@ impl CartesianHost {
                     return;
                 };
                 let (config, series) = big.upload(r, current);
-                if let Err(e) = r.set_chart_series(self.id, series) {
+                if let Err(e) = self.id.set_series(r, series) {
                     self.error = Some(format!("series rejected: {e}"));
                 } else {
                     self.commit(r, config);
@@ -1558,6 +1737,35 @@ fn from_space(axis: &AxisOptions, v: f64) -> f64 {
 /// Put the X or Y axis pair on `scale`, keeping the range where the scale
 /// can draw it: a logarithmic axis needs a positive minimum, a probability
 /// axis both bounds strictly inside `(0, 1)`.
+/// Give an axis pair `unit` and choose its spacing for the shown range, as
+/// the range helpers do (#273).
+fn set_unit(config: &mut Config, x: bool, unit: Option<AxisUnit>) {
+    let (min, max, categorical) = {
+        let axis = if x { &config.bottom_x } else { &config.left_y };
+        (axis.min, axis.max, axis.categories.is_some())
+    };
+    let mut chart = Chart::new(config.clone());
+    chart.with_axis_range_change(|c| {
+        let pair = if x {
+            [&mut c.bottom_x, &mut c.top_x]
+        } else {
+            [&mut c.left_y, &mut c.right_y]
+        };
+        for axis in pair {
+            axis.unit = unit;
+        }
+    });
+    // A categorical axis refuses a unit; its window stays as it is.
+    if !categorical {
+        if x {
+            chart.set_x_range(min, max);
+        } else {
+            chart.set_y_range(min, max);
+        }
+    }
+    *config = chart.config().clone();
+}
+
 fn set_scale(config: &mut Config, x: bool, scale: AxisScale) {
     let (min, max) = {
         let axis = if x { &config.bottom_x } else { &config.left_y };
@@ -1606,6 +1814,7 @@ fn reset_ranges(config: &mut Config, initial: &Config) {
     copy(&mut config.right_y, &initial.right_y);
     for (o, i) in config.overlays.iter_mut().zip(&initial.overlays) {
         copy(&mut o.y_axis, &i.y_axis);
+        copy(&mut o.x_axis, &i.x_axis);
     }
     for (s, i) in config.subplots.iter_mut().zip(&initial.subplots) {
         copy(&mut s.config.bottom_x, &i.config.bottom_x);
@@ -1614,6 +1823,7 @@ fn reset_ranges(config: &mut Config, initial: &Config) {
         copy(&mut s.config.right_y, &i.config.right_y);
         for (o, i) in s.config.overlays.iter_mut().zip(&i.config.overlays) {
             copy(&mut o.y_axis, &i.y_axis);
+            copy(&mut o.x_axis, &i.x_axis);
         }
     }
 }
@@ -1660,6 +1870,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
             (true, true) => "triangle mesh+contour",
         },
         DataRenderType::Feynman(_) => "Feynman diagram",
+        DataRenderType::MonotonicLine(_) => "monotonic line",
     }
 }
 
@@ -1983,6 +2194,15 @@ fn series_controls(
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
         DataRenderType::Parallel { line, .. } => line_controls(ui, line),
+        // A monotonic line (#271) is linear without a fill: its colour,
+        // width and dash. A width that widens the columns its stroke
+        // reaches from asks for the samples again.
+        DataRenderType::MonotonicLine(monotonic) => {
+            let line = &mut monotonic.line;
+            color(ui, "line colour", &mut line.line_color);
+            slider(ui, "line width", &mut line.line_width, 0.5..=60.0);
+            choice(ui, "dash", &mut line.line_style, widgets::LINE_STYLES);
+        }
         // An energy-level series (#203): its strokes and arrows.
         DataRenderType::EnergyLevels(levels) => {
             color(ui, "level colour", &mut levels.style.level.color);
@@ -1999,8 +2219,18 @@ fn series_controls(
         DataRenderType::Feynman(diagram) => {
             color(ui, "line colour", &mut diagram.style.color);
             slider(ui, "line width", &mut diagram.style.width, 0.5..=24.0);
-            slider(ui, "wave amplitude", &mut diagram.style.wave.amplitude, 0.0..=64.0);
-            slider(ui, "coil size", &mut diagram.style.coil.amplitude, 0.0..=64.0);
+            slider(
+                ui,
+                "wave amplitude",
+                &mut diagram.style.wave.amplitude,
+                0.0..=64.0,
+            );
+            slider(
+                ui,
+                "coil size",
+                &mut diagram.style.coil.amplitude,
+                0.0..=64.0,
+            );
         }
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {
@@ -2371,7 +2601,16 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
     let pool = r.pool();
     let mut chart = Chart::new(config.clone());
     let result = match layer {
-        LayerRef::Overlay(i) => chart.auto_fit_overlay_y_union(pool, i, &ys, PADDING),
+        LayerRef::Overlay(i) => {
+            // Its own X axis too, while it has one.
+            let own_x = config.overlays.get(i).is_some_and(|o| !o.link_x);
+            (if own_x {
+                chart.auto_fit_overlay_x_union(pool, i, &xs, PADDING)
+            } else {
+                Ok(())
+            })
+            .and_then(|_| chart.auto_fit_overlay_y_union(pool, i, &ys, PADDING))
+        }
         LayerRef::Subplot(j) => chart
             .auto_fit_subplot_x_union(pool, j, &xs, PADDING)
             .and_then(|_| chart.auto_fit_subplot_y_union(pool, j, &ys, PADDING)),
@@ -2380,11 +2619,22 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
             let Some(sub) = config.subplots.get(j) else {
                 return;
             };
+            let own_x = sub.config.overlays.get(k).is_some_and(|o| !o.link_x);
             let mut inner = Chart::new(sub.config.clone());
-            let fitted = inner.auto_fit_overlay_y_union(pool, k, &ys, PADDING);
+            let fitted = (if own_x {
+                inner.auto_fit_overlay_x_union(pool, k, &xs, PADDING)
+            } else {
+                Ok(())
+            })
+            .and_then(|_| inner.auto_fit_overlay_y_union(pool, k, &ys, PADDING));
             if fitted.is_ok() {
-                let axis = inner.config().overlays[k].y_axis.clone();
-                chart.with_axis_range_change(|c| c.subplots[j].config.overlays[k].y_axis = axis);
+                let fitted = &inner.config().overlays[k];
+                let (x_axis, y_axis) = (fitted.x_axis.clone(), fitted.y_axis.clone());
+                chart.with_axis_range_change(|c| {
+                    let target = &mut c.subplots[j].config.overlays[k];
+                    target.x_axis = x_axis;
+                    target.y_axis = y_axis;
+                });
             }
             fitted
         }
@@ -2407,6 +2657,28 @@ fn fit_link_group(config: &mut Config, series: &[SeriesConfig], r: &Renderer, la
     {
         *config = chart.config().clone();
     }
+}
+
+/// An overlay's own X axis when it is first unlinked: the parent's range and
+/// tick plan, titled and coloured like the overlay's Y axis, with a band of
+/// its own on the top side.
+fn own_x_axis(parent: &AxisOptions, y_axis: &AxisOptions, n: usize) -> AxisOptions {
+    let mut x = OverlayLayer::default().x_axis;
+    x.scale = parent.scale.clone();
+    x.min = parent.min;
+    x.max = parent.max;
+    x.major_spacing = parent.major_spacing;
+    x.minor_count = parent.minor_count;
+    x.out_margin = 60.0;
+    x.title_option.visible = true;
+    x.title_option.text = RichText::plain(
+        &format!("overlay {n} x"),
+        y_axis.title_option.text.color,
+        16.0,
+        "",
+    );
+    axis_color(&mut x, y_axis.line_color);
+    x
 }
 
 fn new_overlay(n: usize) -> OverlayLayer {
@@ -2603,9 +2875,10 @@ fn layers_controls(
     let mut status = None;
 
     // ---- parent overlays ----
-    ui.label(egui::RichText::new("Overlays (extra Y axis on the same plot)").strong());
+    ui.label(egui::RichText::new("Overlays (extra axes on the same plot)").strong());
     let mut remove_overlay = None;
     let mut fit_overlay = None;
+    let parent_x = config.bottom_x.clone();
     for i in 0..config.overlays.len() {
         ui.push_id(("ov", i), |ui| {
             let o = &mut config.overlays[i];
@@ -2623,6 +2896,34 @@ fn layers_controls(
                 }
             });
             slider(ui, "axis margin", &mut o.y_axis.out_margin, 30.0..=200.0);
+            ui.horizontal(|ui| {
+                let mut own_x = !o.link_x;
+                if ui
+                    .checkbox(&mut own_x, "own X axis (top)")
+                    .on_hover_text(
+                        "Unlink X: the overlay's series are scaled by an X axis of its own",
+                    )
+                    .changed()
+                {
+                    o.link_x = !own_x;
+                    if own_x && o.x_axis == OverlayLayer::default().x_axis {
+                        // Start from the parent's range, styled like the
+                        // overlay's Y axis.
+                        o.x_axis = own_x_axis(&parent_x, &o.y_axis, i);
+                    }
+                }
+                ui.checkbox(&mut o.link_y, "follow base Y").on_hover_text(
+                    "Link Y: the overlay's series are scaled by the parent's left Y axis",
+                );
+            });
+            if !o.link_x {
+                slider(
+                    ui,
+                    "top axis margin",
+                    &mut o.x_axis.out_margin,
+                    20.0..=200.0,
+                );
+            }
             let mut legend = o.legend.is_some();
             if ui.checkbox(&mut legend, "own legend").changed() {
                 o.legend = legend.then(legend_template);
@@ -2924,29 +3225,49 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_radial()) {
         let scene = scenes::build(r, kind, big_data::START_POINTS).map_err(e)?;
         let chart = Chart::new(scene.config);
+        // A monotonic scene's series take its samples at the export's
+        // mapping (#271).
+        let export = |r: &mut Renderer,
+                      format: fn(
+            &mut Renderer,
+            renderer::ExportSource<'_>,
+            f32,
+        ) -> Result<Vec<u8>, renderer::FiggyError>,
+                      scale: f32| {
+            scenes::export_scene(r, &chart, &scene.series, &scene.monotonic, |r, source| {
+                format(r, source, scale)
+            })
+        };
         for scale in [1.0f32, 2.0] {
-            let png = r
-                .export_png_blocking(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .map_err(e)?;
+            let png = export(
+                r,
+                |r, source, scale| {
+                    r.export_png_blocking(source, renderer::ExportOptions::document(scale))
+                },
+                scale,
+            )
+            .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.png").to_lowercase());
             std::fs::write(&path, png).map_err(|e| e.to_string())?;
-            let svg = r
-                .export_svg_blocking(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .map_err(e)?;
+            let svg = export(
+                r,
+                |r, source, scale| {
+                    r.export_svg_blocking(source, renderer::ExportOptions::document(scale))
+                        .map(String::into_bytes)
+                },
+                scale,
+            )
+            .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.svg").to_lowercase());
             std::fs::write(&path, svg).map_err(|e| e.to_string())?;
-            let pdf = r
-                .export_pdf_blocking(
-                    renderer::ExportSource::chart(&chart, &scene.series),
-                    renderer::ExportOptions::document(scale),
-                )
-                .map_err(e)?;
+            let pdf = export(
+                r,
+                |r, source, scale| {
+                    r.export_pdf_blocking(source, renderer::ExportOptions::document(scale))
+                },
+                scale,
+            )
+            .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.pdf").to_lowercase());
             std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
         }
@@ -3038,4 +3359,61 @@ fn moves_subplot_frame(element: Option<&renderer::layout::Element>) -> bool {
                 | renderer::layout::Element::SubplotFrameEdge(..)
         )
     )
+}
+
+/// The registered chart a host shows: a general one, or a monotonic one
+/// (#271), reached through its own handle. A monotonic chart's document is
+/// replaced through its editor, which refuses an edit that would move its
+/// x-to-pixel mapping.
+#[derive(Clone, Copy)]
+enum HostChart {
+    General(ChartId),
+    Monotonic(renderer::MonotonicChartId),
+}
+
+impl HostChart {
+    fn config<'r>(&self, r: &'r Renderer) -> Result<&'r Config, renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.chart_config(id),
+            Self::Monotonic(id) => r.monotonic_config(id),
+        }
+    }
+
+    fn series<'r>(&self, r: &'r Renderer) -> Result<&'r [SeriesConfig], renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.chart_series(id),
+            Self::Monotonic(id) => r.monotonic_series(id),
+        }
+    }
+
+    fn set_config(&self, r: &mut Renderer, config: Config) -> Result<(), renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.set_chart_config(id, config),
+            Self::Monotonic(id) => r
+                .monotonic_chart(id)?
+                .edit_config(|editor| editor.assign(config))?
+                .map_err(|kind| renderer::FiggyError::InvalidConfig {
+                    field: "config",
+                    kind,
+                }),
+        }
+    }
+
+    fn set_series(
+        &self,
+        r: &mut Renderer,
+        series: Vec<SeriesConfig>,
+    ) -> Result<(), renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.set_chart_series(id, series),
+            Self::Monotonic(id) => r.monotonic_chart(id)?.set_series(series),
+        }
+    }
+
+    fn remove(&self, r: &mut Renderer) -> Result<(), renderer::FiggyError> {
+        match *self {
+            Self::General(id) => r.remove_chart(id),
+            Self::Monotonic(id) => r.monotonic_chart(id)?.remove(),
+        }
+    }
 }

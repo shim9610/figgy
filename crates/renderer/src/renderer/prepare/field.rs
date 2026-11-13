@@ -131,14 +131,14 @@ pub(in crate::renderer) fn colorbar_stops(
 impl PrepareContext<'_> {
     pub(in crate::renderer) fn ensure_field_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) -> Result<Vec<Arc<GridSources>>> {
         self.frame_batch(|ctx| ctx.ensure_field_scratches_in_frame(items))
     }
 
     fn ensure_field_scratches_in_frame(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.field_cache, items, FIELD_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
@@ -169,7 +169,7 @@ impl PrepareContext<'_> {
     /// `ensure_contour_scratches`' is.
     pub(in crate::renderer) fn ensure_mesh_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
         self.frame_batch(|ctx| ctx.ensure_mesh_scratches_in_frame(items, scale))
@@ -177,7 +177,7 @@ impl PrepareContext<'_> {
 
     fn ensure_mesh_scratches_in_frame(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.field_cache, items, FIELD_SCRATCH_CACHE_LIMIT);
@@ -884,7 +884,7 @@ impl Renderer {
     /// the per-field source receipts in `items` order for the token to hold.
     pub(in crate::renderer) fn ensure_field_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) -> Result<Vec<Arc<GridSources>>> {
         self.preparation_parts().1.ensure_field_scratches(items)
     }
@@ -893,7 +893,7 @@ impl Renderer {
     /// [`Self::ensure_field_scratches`] does every field's.
     pub(in crate::renderer) fn ensure_mesh_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
         self.preparation_parts()

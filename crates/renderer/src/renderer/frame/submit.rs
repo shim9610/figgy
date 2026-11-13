@@ -29,7 +29,7 @@ impl Renderer {
         &mut self,
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
-        items: &[ChartDrawItem<'_>],
+        items: &mut [ChartDrawItem<'_>],
     ) -> Result<()> {
         let prepared = self.prepare(items)?;
         self.paint_prepared(pass, target_size, &prepared)
@@ -46,6 +46,7 @@ impl Renderer {
                 queue: &self.queue,
                 caps: &self.caps,
                 pool: &self.pool,
+                monotonic: &self.monotonic,
                 gpu_ledger: &self.gpu_ledger,
                 style_bgl: &self.style_bgl,
                 field_bgl: &self.field_bgl,
@@ -90,10 +91,14 @@ impl Renderer {
     /// Mutable half of the frame: finish every state change the draw needs,
     /// before any render pass opens.
     ///
-    /// Does not rerasterize axes/decorations or rebuild caller-owned styles.
-    /// Refresh a changed view with [`Self::refresh_axis`] (or its selection
-    /// variant), and recreate affected styles with [`Self::create_style_for_series`]
-    /// before calling this method. Unchanged inputs may be reused.
+    /// First redraws each stale view's text and axis raster (#265): a view
+    /// drawn from another raster stamp of its chart, another panel rect or
+    /// scale, or an older font generation. The raster draws the chart's
+    /// selection ([`Chart::selected`]). A view whose chart has not changed
+    /// is left as it is. [`Self::refresh_axis`] stays for a host that draws
+    /// the raster itself; the next prepare then checks it once. Rebuilds no
+    /// caller-owned styles: recreate affected ones with
+    /// [`Self::create_style_for_series`] before calling this method.
     ///
     /// Runs the styled-pipeline ensure (compiles pipeline sets the items
     /// need but the cache lacks), writes each panel's data→NDC transform
@@ -108,8 +113,8 @@ impl Renderer {
     /// [`Self::update_transform`] per frame becomes unnecessary (though
     /// harmless) for callers of this API.
     ///
-    /// Contract: call after this frame's data uploads (`add_column`),
-    /// `ensure_target_format`, and `refresh_axis`; before the host records and
+    /// Contract: call after this frame's data uploads (`add_column`) and
+    /// `ensure_target_format`; before the host records and
     /// submits the command buffer containing the render pass. Once a command
     /// buffer has been recorded from the token, submit it before any later
     /// mutation of the same [`ChartView`] or another `prepare` for that view.
@@ -119,15 +124,102 @@ impl Renderer {
     /// changes that invalidate the captured GPU work: target-pipeline rebuild,
     /// pool layout change, replacement of any captured column allocation, or
     /// another transform/axis write to a captured `ChartView`.
-    pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
-        let result = self.prepare_unreported(items);
+    pub fn prepare(&mut self, items: &mut [ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        let result = self.prepare_items_unreported(items);
         self.reported(result)
     }
 
-    pub(super) fn prepare_unreported(
+    pub(super) fn prepare_items_unreported(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &mut [ChartDrawItem<'_>],
     ) -> Result<PreparedFrame> {
+        self.health.check()?;
+        for item in items.iter_mut() {
+            self.refresh_stale_view(item.view, item.chart)?;
+        }
+        let mut panels = Vec::new();
+        panels.try_reserve_exact(items.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "chart prepare inputs",
+                reason: error.to_string(),
+            }
+        })?;
+        panels.extend(items.iter().map(|item| PanelDraw {
+            view: &*item.view,
+            chart_config: item.chart.config(),
+            series: item.series,
+        }));
+        self.prepare_unreported(&panels)
+    }
+
+    /// Redraw `view`'s raster from `chart` when it was drawn from other
+    /// content: another raster stamp, panel rect or scale, or font
+    /// generation.
+    fn refresh_stale_view(&mut self, view: &mut ChartView, chart: &Chart) -> Result<()> {
+        let panel_rect = chart.config().chart_area.0;
+        let scale = view.display_scale;
+        let stamp = chart.raster_stamp().ok_or(FiggyError::CounterExhausted {
+            counter: "chart raster stamp",
+        })?;
+        let source = Some(RasterSource {
+            chart: RasterChart::Held { stamp },
+            font_generation: crate::text_render::font_generation(),
+            panel_rect,
+            scale,
+        });
+        if view.raster_source == source {
+            return Ok(());
+        }
+        self.refresh_axis_with_selection_unreported(
+            view,
+            chart,
+            panel_rect,
+            chart.selected(),
+            scale,
+        )?;
+        view.raster_source = source;
+        Ok(())
+    }
+
+    /// Redraw a registered chart's `view` from its stored document, display
+    /// placement and selection when it was drawn from other content.
+    fn refresh_stale_registered_view(&mut self, view: &mut ChartView, id: ChartId) -> Result<()> {
+        let (config, panel_rect, scale) = self.chart_display_config(id)?;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let source = RasterSource {
+            chart: RasterChart::Registered {
+                chart: id,
+                raster: state.revisions.raster,
+                annotation: state.revisions.annotation,
+            },
+            font_generation: crate::text_render::font_generation(),
+            panel_rect,
+            scale,
+        };
+        if view.raster_source == Some(source) {
+            return Ok(());
+        }
+        let selected = state.selected.and_then(|hit| {
+            crate::select::HitMap::for_active_layer(&state.config)
+                .get(hit)
+                .map(|element| element.element_id())
+        });
+        let chart = Chart::new(config.into_owned());
+        self.refresh_axis_with_selection_unreported(
+            view,
+            &chart,
+            panel_rect,
+            selected.as_deref(),
+            scale,
+        )?;
+        view.raster_source = Some(source);
+        Ok(())
+    }
+
+    pub(super) fn prepare_unreported(&mut self, items: &[PanelDraw<'_>]) -> Result<PreparedFrame> {
         self.health.check()?;
         for item in items {
             for series in item.series {
@@ -141,20 +233,51 @@ impl Renderer {
     /// SeriesConfig values. GPU styles are cached derivatives of those series;
     /// chart identity is always the explicit id, never inferred from resources.
     ///
-    /// Refresh each view's raster before this call as for [`Self::prepare`].
-    /// Mutating or removing a captured chart makes its token stale. Changes to
-    /// unrelated charts do not invalidate the captured chart stamps.
+    /// Each stale view's raster is redrawn first, as for [`Self::prepare`],
+    /// from the stored chart, its display placement and its selection
+    /// ([`Self::set_chart_selection`]). Mutating or removing a captured chart
+    /// makes its token stale. Changes to unrelated charts do not invalidate
+    /// the captured chart stamps.
     pub fn prepare_registered(
         &mut self,
-        items: &[RegisteredChartDrawItem<'_>],
+        items: &mut [RegisteredChartDrawItem<'_>],
     ) -> Result<PreparedFrame> {
-        let result = self.prepare_registered_unreported(items);
+        let result = self.prepare_registered_items_unreported(items);
         self.reported(result)
+    }
+
+    pub(in crate::renderer) fn prepare_registered_items_unreported(
+        &mut self,
+        items: &mut [RegisteredChartDrawItem<'_>],
+    ) -> Result<PreparedFrame> {
+        self.health.check()?;
+        // Every id resolves before any view is redrawn: a failed prepare
+        // leaves every view as it was.
+        for item in items.iter() {
+            if !self.chart_states.contains_key(&item.chart_id) {
+                return Err(FiggyError::UnknownChart { id: item.chart_id });
+            }
+        }
+        for item in items.iter_mut() {
+            self.refresh_stale_registered_view(item.view, item.chart_id)?;
+        }
+        let mut panels = Vec::new();
+        panels.try_reserve_exact(items.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "registered chart prepare inputs",
+                reason: error.to_string(),
+            }
+        })?;
+        panels.extend(items.iter().map(|item| RegisteredPanel {
+            chart_id: item.chart_id,
+            view: &*item.view,
+        }));
+        self.prepare_registered_unreported(&panels)
     }
 
     pub(super) fn prepare_registered_unreported(
         &mut self,
-        items: &[RegisteredChartDrawItem<'_>],
+        items: &[RegisteredPanel<'_>],
     ) -> Result<PreparedFrame> {
         self.health.check()?;
         self.prepare_registered_mixed(items)
@@ -163,7 +286,7 @@ impl Renderer {
 
     pub(in crate::renderer) fn prepare_registered_resident(
         &mut self,
-        items: &[RegisteredChartDrawItem<'_>],
+        items: &[RegisteredPanel<'_>],
     ) -> Result<PreparedFrame> {
         let allocation =
             |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
@@ -280,7 +403,7 @@ impl Renderer {
                 Some(placed) => &placed.config,
                 None => &state.config,
             };
-            draws.push(ChartDrawItem {
+            draws.push(PanelDraw {
                 view: item.view,
                 chart_config,
                 series,
@@ -295,7 +418,7 @@ impl Renderer {
     /// from its explicit id. Paint receives only the prepared token.
     pub(crate) fn prepare_registered_mixed(
         &mut self,
-        items: &[RegisteredChartDrawItem<'_>],
+        items: &[RegisteredPanel<'_>],
     ) -> streaming_runtime::StreamResult<PreparedFrame> {
         let allocation =
             |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
@@ -334,7 +457,7 @@ impl Renderer {
                 self.preflight_chart_stream_display(item.chart_id, item.view)?;
             }
             if !active {
-                resident.push(RegisteredChartDrawItem {
+                resident.push(RegisteredPanel {
                     chart_id: item.chart_id,
                     view: item.view,
                 });

@@ -111,7 +111,7 @@ pub struct AnnotationMap {
 impl AnnotationMap {
     pub(crate) fn empty(space: PixelSpace) -> Self {
         Self {
-            state: AnnotationLayer::default(),
+            state: AnnotationLayer::empty(),
             space,
             map: HitMap::for_state(),
             entries: Vec::new(),
@@ -141,7 +141,9 @@ impl AnnotationMap {
 
     /// The common hit-map contract: a hit can be queried for identity,
     /// bounds, selection box, drag and handles. Nothing is selected
-    /// implicitly. Later items win where items overlap.
+    /// implicitly. Where padded hit regions overlap the item the point is
+    /// visually on wins, and later items win ties
+    /// ([`crate::HitMap::hit_test`], #272).
     pub fn hit_test(&self, position: [f32; 2]) -> Option<HitId> {
         if position.iter().any(|v| !v.is_finite())
             || !self.space.panel.contains(position[0], position[1])

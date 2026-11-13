@@ -20,8 +20,8 @@ use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, FitExtent, HitMap, LayerRef, MeasureText, RasterImage, Renderer,
-    RendererDevice, ScatterShape, SeriesConfig, Subplot, TernaryOptions,
+    DataScatterStyleConfig, FitExtent, HitMap, LayerRef, RasterImage, Renderer, RendererDevice,
+    ScatterShape, SeriesConfig, Subplot, TernaryOptions,
 };
 
 const WIDTH: u32 = 480;
@@ -808,14 +808,20 @@ fn the_hit_map_answers_each_edge_part() {
         let p = [a[0] + (b[0] - a[0]) * 0.35, a[1] + (b[1] - a[1]) * 0.35];
         let id = hit(p[0], p[1]).unwrap_or_else(|| panic!("{side}: no hit on the edge"));
         assert!(id.contains("axis") && id.contains(side), "{side}: {id}");
-        // The title, past the labels.
-        let m = measure.measure_rich(
-            &renderer::ternary::ternary_axis(&config, k)
-                .title_option
-                .text,
+        // The title, past the labels: the centre of the box it draws.
+        let mut title = None;
+        renderer::select::emit_element(
+            &config,
+            &Element::AxisTitle(match k {
+                0 => Side::Bottom,
+                1 => Side::Left,
+                _ => Side::Right,
+            }),
+            &measure,
+            &mut renderer::sink::Parts(&mut |part| title = Some(part.extent())),
         );
-        let title = config.ternary_title_placement(k, (0.0, 0.0), m).unwrap();
-        let c = title.rotation_center;
+        let title = title.unwrap_or_else(|| panic!("{side}: no title drawn"));
+        let c = (title.x + title.width * 0.5, title.y + title.height * 0.5);
         let id = hit(c.0, c.1).unwrap_or_else(|| panic!("{side}: no hit on the title"));
         assert!(id.contains("title") && id.contains(side), "{side}: {id}");
     }
@@ -1315,7 +1321,7 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
     // The screen path: prepare + paint through the resident composite.
     let chart = Chart::new(config.clone());
     let rect = config.chart_area.0;
-    let view = r.create_chart_view(&chart, rect).unwrap();
+    let mut view = r.create_chart_view(&chart, rect).unwrap();
     let styles: Vec<_> = series
         .iter()
         .map(|cfg| r.create_style_for_series(cfg).unwrap())
@@ -1325,12 +1331,12 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
         .zip(&styles)
         .map(|(config, style)| renderer::Series { config, style })
         .collect();
-    let items = [renderer::ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [renderer::ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &drawn,
     }];
-    let prepared = r.prepare(&items).unwrap();
+    let prepared = r.prepare(&mut items).unwrap();
     let (w, h) = (rect.width, rect.height);
     let device = r.device().clone();
     let queue = r.queue().clone();

@@ -13,8 +13,8 @@ pub struct FitCommitToken {
     pub(super) series: Vec<FitSeriesStamp>,
 }
 
-/// The axes a fit reads or writes: the parent's four, each overlay's y axis
-/// and each subplot's cell. A range edit on any of them between `begin` and
+/// The axes a fit reads or writes: the parent's four, each overlay's axes
+/// and links and each subplot's cell. A range edit on any of them between `begin` and
 /// `commit` retires the token, so a concurrent user edit is never overwritten
 /// by a fit computed before it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -23,13 +23,23 @@ pub(super) struct FitAxisStamp {
     pub(super) bottom_x: (u8, u64, u64),
     pub(super) left_y: (u8, u64, u64),
     pub(super) right_y: (u8, u64, u64),
-    pub(super) overlays: Vec<(u8, u64, u64)>,
+    pub(super) overlays: Vec<FitOverlayStamp>,
     pub(super) subplots: Vec<FitSubplotStamp>,
+}
+
+/// One overlay as the fit sees it: its own axes and its links, which decide
+/// which axis a series fits through `Config::series_fit_roles`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct FitOverlayStamp {
+    pub(super) y_axis: (u8, u64, u64),
+    pub(super) x_axis: (u8, u64, u64),
+    pub(super) link_x: bool,
+    pub(super) link_y: bool,
 }
 
 /// One subplot cell as the fit sees it: its axes, its links (which decide
 /// whose range a series fits through `Config::series_fit_roles`) and its own
-/// overlays' y axes.
+/// overlays.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct FitSubplotStamp {
     pub(super) top_x: (u8, u64, u64),
@@ -38,7 +48,7 @@ pub(super) struct FitSubplotStamp {
     pub(super) right_y: (u8, u64, u64),
     pub(super) link_x: Option<model::layer::CellRef>,
     pub(super) link_y: Option<model::layer::CellRef>,
-    pub(super) overlays: Vec<(u8, u64, u64)>,
+    pub(super) overlays: Vec<FitOverlayStamp>,
 }
 
 /// The parameters of a series' extent that are not column content: what the
@@ -342,11 +352,12 @@ pub(super) fn build_fit_token_from_state(
                 reason: error.to_string(),
             }
         })?;
-        stamps.extend(
-            overlays
-                .iter()
-                .map(|overlay| axis_fit_stamp(&overlay.y_axis)),
-        );
+        stamps.extend(overlays.iter().map(|overlay| FitOverlayStamp {
+            y_axis: axis_fit_stamp(&overlay.y_axis),
+            x_axis: axis_fit_stamp(&overlay.x_axis),
+            link_x: overlay.link_x,
+            link_y: overlay.link_y,
+        }));
         Ok(stamps)
     };
     let mut subplots = Vec::new();

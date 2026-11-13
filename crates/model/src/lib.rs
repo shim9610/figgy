@@ -15,7 +15,13 @@ pub use coordinates::Coordinates;
 pub mod data;
 pub mod data_config;
 pub mod decoration;
-pub mod default;
+mod defaults;
+#[cfg(feature = "helpers")]
+pub mod helpers;
+#[cfg(feature = "helpers")]
+pub use helpers::default;
+#[cfg(feature = "helpers")]
+pub use helpers::theme;
 pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
 pub mod annotation;
@@ -38,6 +44,7 @@ pub mod format;
 pub mod layout;
 pub mod legend;
 pub mod line;
+pub mod monotonic;
 pub mod preset;
 pub mod probability;
 pub mod radial;
@@ -77,8 +84,8 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox, SelectionGeometry, SelectionOutline,
-    SubplotElement,
+    OverlayLegendElement, OverlayXAxisElement, OverlayXAxisLabelElement, OverlayXAxisTitleElement,
+    Selectable, SelectionBox, SelectionGeometry, SelectionOutline, SubplotElement,
 };
 pub use sink::{DrawnPart, PlacedText, Sink, Slot};
 pub use text::{MeasureText, TextAlign, TextExtents};

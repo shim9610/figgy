@@ -59,7 +59,8 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | --- | --- |
 | Cartesian axes, ticks, legends and styles | `Config`, `default::default_config`, `SeriesConfig` |
 | Numeric input columns | `Column` |
-| Triangle meshes over host-given triangles | `data_config::DataRenderType::TriMesh`, `tri_mesh::TriMeshSeries`, `MeshValues`, `MeshValueLocation`; the triangle index column itself is a renderer pool column (`Renderer::upsert_triangles`) |
+| Triangle meshes over host-given triangles | `data_config::DataRenderType::TriMesh`, `tri_mesh::TriMeshSeries`, `MeshValues`, `MeshValueLocation`; the triangle index column itself is uploaded to the renderer (`Renderer::upsert_triangles`) |
+| Large, evenly spaced signals drawn as lines (monotonic x) | `data_config::DataRenderType::MonotonicLine`, `MonotonicLineSeries`, `SeriesConfig::monotonic_line`; in `monotonic`: `MonotonicSource` (`MonotonicSlices`, `MonotonicInterleaved`), the per-pixel-column `MonotonicEnvelope` and the document editor `MonotonicConfig`; see [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md) |
 | Pie/donut slice values and presentation | `RadialChart`, `RadialSlice` |
 | Category/series bars | `data_config::DataRenderType::CategoryBars` over a categorical axis (`AxisOptions::categories`), `Config.bar_groups`; legacy documents: `CategoricalChart`, read by `Config::from_categorical` (`bounded_sources`) |
 | Supplied statistical summaries | `data_config::DataRenderType::BoxPlot` over a categorical axis, reading a record and a ragged outlier column, `BoxPlotSeriesLabels`, `format_box_plot_labels`; legacy documents: `BoxPlotChart`, `BoxPlotSeries`, read by `Config::from_boxplot` (`bounded_sources`) |
@@ -67,60 +68,59 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | A Cartesian chart drawn in (angle, radius) | `polar::PolarOptions` on `Config.polar`, `polar::PolarGeometry` |
 | Arrows, point colour and size maps, area fills and step lines | `data_config::DataRenderType::Vector`, `PointColorMap`, `PointSizeMap`, `LineFill`, `LineInterpolation` |
 | Selection, dragging and area handles | `Selectable` (an element's one placement, `emit`, into a `sink::Sink`), `SelectionGeometry`, `Draggable`, `Resizable`, `DecorationLayout` |
-| Secondary Y axes, subplots and the layer that receives pointer input | `OverlayLayer` on `Config.overlays`, `Subplot` on `Config.subplots`, `LayerRef` on `active_layer` |
+| Overlay layers (own or linked X and Y axes), subplots and the layer that receives pointer input | `OverlayLayer` on `Config.overlays`, `Subplot` on `Config.subplots`, `LayerRef` on `active_layer` |
 | Reference lines, spans, text boxes and arrows | `AnnotationLayer` on `annotations`, `Annotation`, `AnnotationKind`, `Anchor` |
 | Rich titles | `ChartTitleOptions` on `Config.chart_title` and `RadialChart::chart_title`; `BoundedTitleOptions` on the legacy documents' `chart_title`, which the readers turn into the `Config`'s title |
 
-## Chart classes
+## How data enters a chart
 
-A chart's per-element data enters in one of two ways, and that decides its
-class.
+A chart's per-element data enters in one of three ways.
 
-- **DataLess charts** are defined by their SSOT alone. They have no
-  `ColumnSource`, no column in the renderer's pool and no streaming, by
-  definition: every element is a configured entity, and its value is one of
-  its attributes beside its name, colour and the rest. The radial chart
-  (`RadialChart`: pie, donut and the detail ring of a split) is the
-  DataLess chart with a renderer of its own. A slice is named, coloured, exploded and labelled by the
-  host, its `value` is stored on it, and the chart is bounded by its nature
-  (`MAX_RADIAL_SLICES`, 64 slices, which `validate` enforces with the other
-  size limits). Its drawn label strings are SSOT strings too
-  (`RadialSlice::text`), written at edit time by `RadialChart::format_labels`;
-  the renderer draws them and formats nothing.
-  The energy-level series (`DataRenderType::EnergyLevels`, #203) is a
-  DataLess series inside a `Config`: its levels, ionization limits and
-  transitions are SSOT records following the NIST ASD exports, drawn on
-  the chart's categorical axis and value axis through the CPU sink, with
-  no column, no streaming and no count limit.
-  The Feynman series (`DataRenderType::Feynman`, #234) is another: its
-  vertices, propagators and particles are SSOT, vertex positions optional
-  (a deterministic layout places the rest, committed into the SSOT by
-  `auto_layout`), drawn through the CPU sink and written as vector curves.
-- **Column-backed charts** are the series kinds of `Config`, every other
-  chart: per-point data enters only through the renderer's `ColumnSource`
-  and lives in its column pool. Category bars (`CategoryBars`, one series
-  per bar series over a categorical axis), box plots (`BoxPlot`, whose
-  statistics are a record and whose outliers a ragged column of the pool)
-  and radar series (`Radar`, on a polar chart with a categorical angle
-  axis) are series kinds like lines, markers and fields, and so is a
-  triangle mesh (`TriMesh`, whose triangles are a triangle index column of
-  the pool and whose values a column per vertex or per triangle).
+- **Values stored in the model.** The radial chart (`RadialChart`: pie,
+  donut and the detail circle of a split) has no `ColumnSource` and no
+  streaming: each slice is named, coloured, exploded and labelled by the
+  host, and its `value` is a field of the slice. A ring holds at most 64
+  slices (`MAX_RADIAL_SLICES`, checked by `validate` with the other size
+  limits). The label strings it draws are stored too
+  (`RadialSlice::text`), written by `RadialChart::format_labels` when the
+  host edits the chart; the renderer draws them as written.
+  Two series kinds of `Config` work the same way. The energy-level series
+  (`DataRenderType::EnergyLevels`) holds its levels, ionization limits and
+  transitions as records following the NIST ASD exports, drawn on the
+  chart's categorical axis and value axis, with any number of levels and
+  transitions. The Feynman series (`DataRenderType::Feynman`) holds its
+  vertices, propagators and particles; vertex positions are optional, and
+  `auto_layout` writes positions for the vertices that have none. Neither
+  takes columns or streamed sources.
+- **Columns.** Every other series kind of `Config` reads its per-point data
+  through the renderer's `ColumnSource`. Category bars (`CategoryBars`, one
+  series per bar series over a categorical axis), box plots (`BoxPlot`,
+  whose statistics are a record and whose outliers a ragged column) and
+  radar series (`Radar`, on a polar chart with a categorical angle axis)
+  are series kinds like lines, markers and fields, and so is a triangle
+  mesh (`TriMesh`, whose triangles are a triangle index column and whose
+  values a column per vertex or per triangle).
+- **A lent source.** Monotonic-x lines (`DataRenderType::MonotonicLine`)
+  take their samples neither from the model nor through `ColumnSource`:
+  the host lends a `MonotonicSource` to each call that reads it, and the
+  renderer keeps only each pixel column's first, lowest, highest and last
+  sample (`monotonic::MonotonicEnvelope`). Their guarantees are in
+  [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
 
 ### Document readers
 
 The categorical bar, box plot and radar documents of releases up to 0.12
 (`CategoricalChart`, `BoxPlotChart`, `RadarChart`) are kept as readers for
 this release and are deprecated; they are removed in the next milestone.
-They parse, validate and turn into a column-backed chart:
+They parse, validate and turn into a `Config` with columns to upload:
 `Config::from_categorical`, `Config::from_boxplot` and `Config::from_radar`
 (in `bounded_sources`) return the `Config`, its series and the
-`SeriesUpload`s whose views borrow the document's values, so nothing is
-copied on the way into the pool. Their decoration state
+`SeriesUpload`s whose views borrow the document's values. Their decoration state
 (`DecorationLayout`) and title (`BoundedTitleOptions`) are read into the
 `Config`'s offsets and chart title.
 
-The renderer owns GPU resources, frame caches and its `ColumnSource` upload
-adapter; those are not part of this model crate. See the
+GPU resources, frame caches and the `ColumnSource` trait belong to the
+renderer, not to this model crate. See the
 [renderer interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 for applying model edits to displayed frames.
 

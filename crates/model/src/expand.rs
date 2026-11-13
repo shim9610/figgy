@@ -12,16 +12,26 @@
 //! - The base panel is the parent without its overlays. It draws the shared
 //!   decorations: X axes, the parent's Y axes, title, grid, merged legend and
 //!   colourbar.
-//! - Each overlay panel keeps the parent's X range for its data transform but
-//!   draws no X axis, no grid, no title and no colourbar. Its left Y axis is a
-//!   hidden copy of the parent's left axis carrying the overlay's range, so
-//!   the data transform uses the overlay's scale; its right Y axis is the
-//!   overlay's own axis. It draws the overlay's legend when it has one.
+//! - Each overlay panel draws no grid, no title and no colourbar. The data
+//!   transform reads `bottom_x` and `left_y`, so those carry the axes the
+//!   overlay follows, hidden:
+//!   - X: with `link_x` on, the panel keeps the parent's X axes, hidden (the
+//!     base panel draws them). With it off, its `top_x` is the overlay's own
+//!     `x_axis`, drawn, and its `bottom_x` a hidden copy of it carrying the
+//!     parent's bottom band.
+//!   - Y: its `left_y` is a hidden copy carrying the overlay's `y_axis`
+//!     range, or with `link_y` on the parent's `left_y` range, and the
+//!     parent's left band. Its `right_y` is the overlay's `y_axis`, drawn, or
+//!     with `link_y` on a hidden copy of the parent's `right_y`.
+//!
+//!   It draws the overlay's legend when it has one.
 //! - Every panel's margins are lifted to the group margins, so `data_area()`
 //!   returns the same rectangle for all of them. The group right margin is
-//!   the widest band of the parent and overlay axes (`Config::margins`).
+//!   the widest band of the parent's right axis and every overlay Y axis that
+//!   is drawn, and the group top margin likewise for the top axes
+//!   (`Config::margins`).
 //! - A panel's config depends only on what that panel draws. Hidden parts
-//!   (an overlay panel's X axes, title, grid, legend, colourbar) are
+//!   (an overlay panel's linked axes, title, grid, legend, colourbar) are
 //!   canonical defaults carrying just their margin and transform fields, and
 //!   each panel keeps only the picked references of its own series, so an
 //!   edit of one layer leaves every other panel's config, and with it the
@@ -50,10 +60,6 @@
 use crate::config::{
     AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
     TickVisibility,
-};
-use crate::default::{
-    default_axis_options_x, default_axis_options_y, default_chart_title_options,
-    default_colorbar_options, default_grid_options, default_legend,
 };
 use crate::layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer};
 use crate::layout::{DataArea, LayoutError, Margins, Rect, Side};
@@ -150,13 +156,16 @@ impl Config {
     /// axes, as `(x, y)`. `Annotations` fits the base axes.
     ///
     /// `Base` and `Subplot(i)` fit that chart's `bottom_x` and `left_y`. A
-    /// linked axis is one axis shared by its link group, so the X axis fits
-    /// every series drawn against it: the series of every chart in its X link
-    /// group, overlays included, since an overlay shares its chart's X axis.
-    /// The Y axis fits the base-layer series of every chart in its Y link
-    /// group; an overlay has a Y axis of its own. `Overlay(n)` and
-    /// `SubplotOverlay(i, n)` fit only that overlay's Y axis, from that
-    /// overlay's series.
+    /// linked axis is one axis shared by its link group, so each fits every
+    /// series drawn against it. The X axis fits the series of every chart in
+    /// its X link group, the series of overlays that follow it (`link_x` on)
+    /// included. The Y axis fits the base-layer series of every chart in its
+    /// Y link group and the series of overlays that follow it (`link_y` on).
+    ///
+    /// `Overlay(n)` and `SubplotOverlay(i, n)` fit the overlay's own axes
+    /// from that overlay's series: its own X axis when `link_x` is off (none
+    /// while it is on) and its own Y axis. With `link_y` on, the Y axis it
+    /// follows is its chart's `left_y`, fitted as that chart's layer fits it.
     pub fn series_fit_roles(&self, layer: LayerRef, series_id: &str) -> (bool, bool) {
         let cell = |layer: LayerRef| match layer {
             LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
@@ -169,13 +178,60 @@ impl Config {
             CellRef::Subplot(index) => self.subplot_link_root(index, x),
         };
         let own = self.layer_of_series(series_id);
+        let own_overlay = self.overlay_of_layer(own);
+        // Whether the series is drawn against its chart's X and Y axes.
+        let on_chart_x = own_overlay.is_none_or(|overlay| overlay.link_x);
+        let on_chart_y = own_overlay.is_none_or(|overlay| overlay.link_y);
+        let chart_y =
+            |layer: LayerRef| on_chart_y && root(cell(own), false) == root(cell(layer), false);
         match layer {
             LayerRef::Base | LayerRef::Subplot(_) | LayerRef::Annotations => (
-                root(cell(own), true) == root(cell(layer), true),
-                matches!(own, LayerRef::Base | LayerRef::Subplot(_))
-                    && root(cell(own), false) == root(cell(layer), false),
+                on_chart_x && root(cell(own), true) == root(cell(layer), true),
+                chart_y(layer),
             ),
-            LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..) => (false, own == layer),
+            LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..) => {
+                let overlay = self.overlay_of_layer(layer);
+                let own_x = overlay.is_some_and(|overlay| !overlay.link_x);
+                let linked_y = overlay.is_some_and(|overlay| overlay.link_y);
+                (
+                    own_x && own == layer,
+                    if linked_y {
+                        chart_y(layer)
+                    } else {
+                        own == layer
+                    },
+                )
+            }
+        }
+    }
+
+    /// The X and Y axes the series of this chart's overlay `overlay` are
+    /// scaled by (each its own or, linked, the chart's `bottom_x` /
+    /// `left_y`), or with `None` the chart's own `bottom_x` and `left_y`. An
+    /// index past the end reads as `None`.
+    pub fn scaling_axes(&self, overlay: Option<usize>) -> (&AxisOptions, &AxisOptions) {
+        let overlay = overlay.and_then(|index| self.overlays.get(index));
+        (
+            overlay
+                .and_then(OverlayLayer::own_x)
+                .unwrap_or(&self.bottom_x),
+            overlay
+                .and_then(OverlayLayer::own_y)
+                .unwrap_or(&self.left_y),
+        )
+    }
+
+    /// The overlay `layer` names: `Overlay(n)` of the document or
+    /// `SubplotOverlay(i, n)` of subplot `i`; `None` for any other layer and
+    /// for an index past the end.
+    pub fn overlay_of_layer(&self, layer: LayerRef) -> Option<&OverlayLayer> {
+        match layer {
+            LayerRef::Overlay(index) => self.overlays.get(index),
+            LayerRef::SubplotOverlay(index, overlay) => self
+                .subplots
+                .get(index)
+                .and_then(|subplot| subplot.config.overlays.get(overlay)),
+            _ => None,
         }
     }
 
@@ -367,7 +423,7 @@ impl Config {
             }
         }
         config.active_layer = LayerRef::Base;
-        config.annotations = AnnotationLayer::default();
+        config.annotations = AnnotationLayer::empty();
         Some(config)
     }
 
@@ -621,8 +677,7 @@ impl Config {
             top_x,
             bottom_x,
             left_y,
-            // The overlay's own axis takes the right side.
-            right_y: _,
+            right_y,
             chart_title,
             // Grid and legend are drawn once, by the base panel.
             grid: _,
@@ -644,16 +699,21 @@ impl Config {
             // their own; the overlay panel draws none of them.
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = self;
         let OverlayLayer {
             y_axis,
+            link_x,
+            x_axis,
+            link_y,
             // Which series the panel draws is decided by `layer_of_series`.
             series: _,
             legend: overlay_legend,
         } = &overlays[index];
-        // The hidden left axis carries the overlay's scale (the data
-        // transform reads `left_y`) and the parent's left band, so the left
-        // margin is unchanged.
+        // The hidden left axis carries the scale of the Y axis the overlay
+        // follows (the data transform reads `left_y`) and the parent's left
+        // band, so the left margin is unchanged.
+        let followed_y = if *link_y { left_y } else { y_axis };
         let left = {
             let AxisOptions {
                 scale: _,
@@ -684,11 +744,35 @@ impl Config {
                 // The hidden left axis maps the overlay's range, cut by the
                 // overlay's own breaks (`hidden_axis` below).
                 breaks: _,
+                // The hidden left axis prints no labels.
+                unit: _,
             } = left_y;
-            let mut left = hidden_axis(y_axis, default_axis_options_y());
+            let mut left = hidden_axis(followed_y, crate::defaults::axis_options_y());
             left.out_margin = *out_margin;
             left.major_tick_length = *major_tick_length;
             left
+        };
+        // The overlay's own Y axis takes the right side; a linked Y draws
+        // none and keeps the parent's right band.
+        let right = if *link_y {
+            hidden_axis(right_y, crate::defaults::axis_options_y())
+        } else {
+            y_axis.clone()
+        };
+        // The X axes: the parent's, hidden (the base panel draws them), or
+        // the overlay's own, drawn on the top side, with a hidden copy on the
+        // bottom for the transform (which reads `bottom_x`) carrying the
+        // parent's bottom band, so the bottom margin is unchanged.
+        let (top, bottom) = if *link_x {
+            (
+                hidden_axis(top_x, crate::defaults::axis_options_x()),
+                hidden_axis(bottom_x, crate::defaults::axis_options_x()),
+            )
+        } else {
+            let mut bottom = hidden_axis(x_axis, crate::defaults::axis_options_x());
+            bottom.out_margin = bottom_x.out_margin;
+            bottom.major_tick_length = bottom_x.major_tick_length;
+            (x_axis.clone(), bottom)
         };
         let grid = hidden_grid();
         // The title is hidden and keeps only the parent's band height.
@@ -696,7 +780,7 @@ impl Config {
         let legend = match overlay_legend {
             Some(legend) => legend.clone(),
             None => {
-                let mut legend = default_legend();
+                let mut legend = crate::defaults::legend();
                 legend.visible = false;
                 legend
             }
@@ -706,12 +790,10 @@ impl Config {
         let colorbar = colorbar.as_ref().map(hidden_colorbar);
         let mut panel = Config {
             chart_area: chart_area.clone(),
-            // The X range stays for the transform; the axes are drawn once,
-            // by the base panel.
-            top_x: hidden_axis(top_x, default_axis_options_x()),
-            bottom_x: hidden_axis(bottom_x, default_axis_options_x()),
+            top_x: top,
+            bottom_x: bottom,
             left_y: left,
-            right_y: y_axis.clone(),
+            right_y: right,
             chart_title: title,
             grid,
             legend,
@@ -722,10 +804,11 @@ impl Config {
             overlays: Vec::new(),
             subplots: Vec::new(),
             active_layer: LayerRef::Base,
-            annotations: AnnotationLayer::default(),
+            annotations: AnnotationLayer::empty(),
             bar_groups: bar_groups.clone(),
             line_offsets: None,
             plot_background: None,
+            background: None,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
@@ -768,6 +851,7 @@ impl Config {
             bar_groups,
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = owner;
         let [dx, dy] = self
             .line_offsets
@@ -779,15 +863,15 @@ impl Config {
             axis.out_margin = 0.0;
             axis
         };
-        let mut legend = default_legend();
+        let mut legend = crate::defaults::legend();
         legend.visible = false;
         let mut panel = Config {
             chart_area: chart_area.clone(),
-            top_x: hidden(top_x, default_axis_options_x(), 0.0),
+            top_x: hidden(top_x, crate::defaults::axis_options_x(), 0.0),
             // The transform reads `bottom_x` and `left_y`.
-            bottom_x: hidden(bottom_x, default_axis_options_x(), dx),
-            left_y: hidden(left_y, default_axis_options_y(), dy),
-            right_y: hidden(right_y, default_axis_options_y(), 0.0),
+            bottom_x: hidden(bottom_x, crate::defaults::axis_options_x(), dx),
+            left_y: hidden(left_y, crate::defaults::axis_options_y(), dy),
+            right_y: hidden(right_y, crate::defaults::axis_options_y(), 0.0),
             chart_title: hidden_title(chart_title),
             grid: hidden_grid(),
             legend,
@@ -798,10 +882,11 @@ impl Config {
             overlays: Vec::new(),
             subplots: Vec::new(),
             active_layer: LayerRef::Base,
-            annotations: AnnotationLayer::default(),
+            annotations: AnnotationLayer::empty(),
             bar_groups: bar_groups.clone(),
             line_offsets: None,
             plot_background: None,
+            background: None,
         };
         retain_picks(&mut panel, |id| id == series_id);
         align_margins(&mut panel, group, data_area)?;
@@ -865,7 +950,7 @@ fn shift_axis(axis: &mut AxisOptions, by: f64) {
 
 /// A grid that draws nothing.
 fn hidden_grid() -> crate::config::GridOptions {
-    let mut grid = default_grid_options();
+    let mut grid = crate::defaults::grid_options();
     grid.show_major_x = false;
     grid.show_major_y = false;
     grid.show_minor_x = false;
@@ -882,7 +967,7 @@ fn hidden_title(title: &ChartTitleOptions) -> ChartTitleOptions {
         offset_y: _,
         top_margin,
     } = title;
-    let mut hidden = default_chart_title_options();
+    let mut hidden = crate::defaults::chart_title_options();
     hidden.visible = false;
     hidden.top_margin = *top_margin;
     hidden
@@ -935,8 +1020,10 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         log_ticks: _,
         // A colourbar axis has no breaks (validation refuses them).
         breaks: _,
+        // The hidden colourbar prints no labels.
+        unit: _,
     } = axis;
-    let mut hidden = default_colorbar_options();
+    let mut hidden = crate::defaults::color_bar_options();
     hidden.visible = false;
     hidden.axis.scale = scale.clone();
     hidden.axis.min = *min;
@@ -981,6 +1068,9 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         // The cut ranges are part of the mapping, so a linked axis maps
         // exactly like its target.
         breaks,
+        // The spacing is read in shown units (#273), so the unit travels
+        // with it and the linked axes print the same ticks.
+        unit,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -993,6 +1083,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.category_groups.clone_from(category_groups);
     to.category_window = *category_window;
     to.breaks.clone_from(breaks);
+    to.unit = *unit;
 }
 
 /// Whether an axis keeps its range, scale and direction: what decides which
@@ -1039,6 +1130,8 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             log_ticks: _,
             // The cut ranges are part of the mapping.
             breaks,
+            // Printing only; it travels with the spacing (see above).
+            unit: _,
         } = axis;
         (
             scale.clone(),
@@ -1090,6 +1183,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         log_ticks: _,
         // The cut ranges are part of the transform the hidden axis carries.
         breaks,
+        // A hidden axis prints no labels.
+        unit: _,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -1115,6 +1210,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         cross_at: _,
         log_ticks,
         breaks: _,
+        unit: _,
     } = template;
     let (min, max) = axis.data_range();
     AxisOptions {
@@ -1141,6 +1237,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         cross_at: None,
         log_ticks,
         breaks: breaks.clone(),
+        unit: None,
     }
     .with_hidden_text()
 }
@@ -1186,6 +1283,7 @@ impl Config {
             bar_groups: _,
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -1240,6 +1338,7 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         bar_groups: _,
         line_offsets: _,
         plot_background: _,
+        background: _,
     } = panel;
     if let Some(picked) = picked_data.as_mut() {
         picked.refs.retain(|reference| keep(reference.series_id()));
@@ -1306,13 +1405,13 @@ mod tests {
     #[test]
     fn a_probability_axis_shifts_in_transformed_units() {
         let scale = crate::config::ProbabilityScale::Normal;
-        let mut axis = crate::default::default_config().left_y;
+        let mut axis = crate::defaults::config().left_y;
         axis.scale = AxisScale::Probability(scale);
         axis.min = 0.01;
         axis.max = 0.99;
         axis.breaks = Some(crate::config::AxisBreaks {
             ranges: vec![crate::config::AxisBreak::new(0.4, 0.6)],
-            ..Default::default()
+            ..crate::defaults::axis_breaks()
         });
         shift_axis(&mut axis, 0.5);
         let moved = |p: f64| scale.inverse(scale.forward(p).unwrap() - 0.5).unwrap();
@@ -1321,19 +1420,18 @@ mod tests {
         let cut = axis.breaks.as_ref().unwrap().ranges[0];
         assert!((cut.from - moved(0.4)).abs() < 1e-15 && (cut.to - moved(0.6)).abs() < 1e-15);
     }
-    use crate::default::default_config;
     use crate::layer::OverlayLayer;
     use crate::layout::ChartArea;
 
     fn two_layer_config() -> Config {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
             width: 640,
             height: 480,
         });
-        let mut overlay = OverlayLayer::default();
+        let mut overlay = crate::defaults::overlay_layer();
         overlay.y_axis.min = -5.0;
         overlay.y_axis.max = 5.0;
         overlay.y_axis.out_margin = 90.0;
@@ -1372,7 +1470,7 @@ mod tests {
         let mut shared = cfg.clone();
         shared.overlays.push(OverlayLayer {
             series: vec!["pressure".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         assert!(shared.validate_overlays().is_err());
         assert!(shared.expand().is_err());
@@ -1385,7 +1483,7 @@ mod tests {
     // no hidden axis, so every pixel of an existing chart is unchanged.
     #[test]
     fn a_single_layer_document_expands_to_itself() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.active_layer = LayerRef::Annotations;
         cfg.annotations.visible = false;
         let expansion = cfg.expand().unwrap();
@@ -1462,6 +1560,69 @@ mod tests {
         assert!(expansion.panel(LayerRef::Annotations).is_none());
     }
 
+    // With `link_x` off the overlay panel draws the overlay's own X axis on
+    // the top side and scales by it (the hidden `bottom_x` the transform
+    // reads), keeping the parent's bottom band; its band widens the shared
+    // top band. With `link_y` on the panel scales by the parent's `left_y`
+    // and draws no Y axis, and the overlay adds no right band.
+    #[test]
+    fn overlay_links_choose_the_axes_the_panel_scales_by_and_draws() {
+        let mut cfg = two_layer_config();
+        let parent = cfg.expand().unwrap().panels[0].config.clone();
+        let mut own_x = crate::defaults::axis_options_x();
+        own_x.min = 100.0;
+        own_x.max = 400.0;
+        own_x.out_margin = cfg.top_x.out_margin + 30.0;
+        cfg.overlays[0].link_x = false;
+        cfg.overlays[0].x_axis = own_x.clone();
+        let expansion = cfg.expand().unwrap();
+        let overlay = &expansion.panels[1].config;
+        assert_eq!((overlay.bottom_x.min, overlay.bottom_x.max), (100.0, 400.0));
+        assert!(!overlay.bottom_x.line_visible);
+        assert_eq!(overlay.bottom_x.out_margin, cfg.bottom_x.out_margin);
+        assert_eq!(overlay.top_x, own_x);
+        // The base panel keeps the parent's X; the top band is the group's.
+        let base = &expansion.panels[0].config;
+        assert_eq!(
+            (base.bottom_x.min, base.bottom_x.max),
+            (cfg.bottom_x.min, cfg.bottom_x.max)
+        );
+        assert_eq!(cfg.margins().top, parent.margins().top + 30.0);
+        assert_eq!(base.margins().top, cfg.margins().top);
+        assert_eq!(overlay.margins().top, cfg.margins().top);
+        assert_eq!(base.data_area().unwrap(), overlay.data_area().unwrap());
+        // Linked back, the panel is the linked one again and the stored axis
+        // stays.
+        let mut linked = cfg.clone();
+        linked.overlays[0].link_x = true;
+        let panel = &linked.expand().unwrap().panels[1].config;
+        assert_eq!(
+            (panel.bottom_x.min, panel.bottom_x.max),
+            (cfg.bottom_x.min, cfg.bottom_x.max)
+        );
+        assert!(!panel.top_x.line_visible);
+        assert_eq!(linked.overlays[0].x_axis, own_x);
+        assert_eq!(linked.margins().top, parent.margins().top);
+
+        // Y linked: the parent's left range scales the panel, no Y axis is
+        // drawn and the overlay's wider band no longer counts.
+        let mut cfg = two_layer_config();
+        cfg.left_y.min = -50.0;
+        cfg.left_y.max = 70.0;
+        let own_band = cfg.margins().right;
+        cfg.overlays[0].link_y = true;
+        let expansion = cfg.expand().unwrap();
+        let overlay = &expansion.panels[1].config;
+        assert_eq!((overlay.left_y.min, overlay.left_y.max), (-50.0, 70.0));
+        assert!(!overlay.right_y.line_visible);
+        assert!(!overlay.right_y.label_style.label_visible);
+        assert!(cfg.margins().right < own_band);
+        assert_eq!(
+            expansion.panels[0].config.data_area().unwrap(),
+            overlay.data_area().unwrap()
+        );
+    }
+
     // A panel's config depends only on what that panel draws: a base-layer
     // edit of hidden chrome leaves every overlay panel's config identical, an
     // overlay edit leaves the base panel identical, and each panel keeps the
@@ -1471,11 +1632,11 @@ mod tests {
         let mut cfg = two_layer_config();
         cfg.overlays.push(OverlayLayer {
             series: vec!["flow".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         cfg.chart_title.visible = true;
         cfg.legend.visible = true;
-        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        cfg.colorbar = Some(crate::defaults::color_bar_options());
         let before = cfg.expand().unwrap();
 
         let mut base_edit = cfg.clone();
@@ -1496,7 +1657,7 @@ mod tests {
 
         let mut overlay_edit = cfg.clone();
         overlay_edit.overlays[0].y_axis.line_offset = 7.0;
-        overlay_edit.overlays[0].legend = Some(crate::default::default_legend());
+        overlay_edit.overlays[0].legend = Some(crate::defaults::legend());
         let after = overlay_edit.expand().unwrap();
         assert_eq!(after.panels[0].config, before.panels[0].config);
         assert_ne!(after.panels[1].config, before.panels[1].config);
@@ -1523,7 +1684,7 @@ mod tests {
                     point_index: 2,
                 },
             ],
-            ..Default::default()
+            ..crate::defaults::data_selections_config()
         });
         let expansion = picks.expand().unwrap();
         let refs = |panel: &ExpandedPanel| {
@@ -1551,12 +1712,12 @@ mod tests {
                 series_id: "pressure".into(),
                 point_index: 2,
             }],
-            ..Default::default()
+            ..crate::defaults::data_selections_config()
         });
         let base_only = base_only.expand().unwrap();
         assert_eq!(
             base_only.panels[0].config.picked_data,
-            Some(crate::config::DataSelectionsConfig::default())
+            Some(crate::defaults::data_selections_config())
         );
         assert_eq!(
             base_only.panels[1].config.picked_data,
@@ -1578,7 +1739,7 @@ mod tests {
     #[test]
     fn a_per_layer_legend_is_drawn_by_its_panel() {
         let mut cfg = two_layer_config();
-        let mut legend = crate::default::default_legend();
+        let mut legend = crate::defaults::legend();
         legend.visible = true;
         legend.content = crate::text::RichText::plain("Pressure", crate::Color::BLACK, 12.0, "");
         cfg.overlays[0].legend = Some(legend.clone());
@@ -1590,7 +1751,7 @@ mod tests {
     #[test]
     fn a_hidden_colorbar_band_is_absorbed_by_the_overlay_margin() {
         let mut cfg = two_layer_config();
-        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        cfg.colorbar = Some(crate::defaults::color_bar_options());
         for side in [Side::Right, Side::Left, Side::Top, Side::Bottom] {
             cfg.colorbar.as_mut().unwrap().side = side.clone();
             let expansion = cfg.expand().unwrap();
@@ -1648,8 +1809,7 @@ mod tests {
     /// axes and an overlay, subplot 1 linked to the parent's X and to
     /// subplot 0's Y.
     fn subplot_document() -> Config {
-        use crate::layer::Subplot;
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -1658,7 +1818,7 @@ mod tests {
         });
         cfg.bottom_x.min = 0.0;
         cfg.bottom_x.max = 24.0;
-        let mut first = Subplot::default();
+        let mut first = crate::defaults::subplot();
         first.config.chart_area = ChartArea(Rect {
             x: 0,
             y: 240,
@@ -1672,9 +1832,9 @@ mod tests {
         first.series = vec!["flow".into()];
         first.config.overlays.push(OverlayLayer {
             series: vec!["level".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
-        let mut second = Subplot::default();
+        let mut second = crate::defaults::subplot();
         second.config.chart_area = ChartArea(Rect {
             x: 320,
             y: 240,
@@ -1731,7 +1891,10 @@ mod tests {
         forward.subplots[0].link_x = Some(CellRef::Subplot(1));
         assert!(forward.validate_subplots().is_err());
         let mut nested = cfg.clone();
-        nested.subplots[0].config.subplots.push(Default::default());
+        nested.subplots[0]
+            .config
+            .subplots
+            .push(crate::defaults::subplot());
         assert!(nested.validate_subplots().is_err());
         let mut annotated = cfg.clone();
         annotated.subplots[0].config.annotations.visible = false;
@@ -1740,7 +1903,7 @@ mod tests {
         let mut parent_overlay = cfg.clone();
         parent_overlay.overlays.push(OverlayLayer {
             series: vec!["rate".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         assert!(parent_overlay.validate_subplots().is_err());
     }
@@ -1754,30 +1917,30 @@ mod tests {
         // Parent: base `p`, overlay `po`. Subplot 0: own axes, base `s0`,
         // overlay `s0o`. Subplot 1: X linked to the parent, Y to subplot 0,
         // base `s1`. Subplot 2: X linked to subplot 1 (so to the parent).
-        let mut config = default_config();
-        let mut overlay = OverlayLayer::default();
+        let mut config = crate::defaults::config();
+        let mut overlay = crate::defaults::overlay_layer();
         overlay.series = vec!["po".into()];
         config.overlays.push(overlay);
-        let mut first = default_config();
-        let mut first_overlay = OverlayLayer::default();
+        let mut first = crate::defaults::config();
+        let mut first_overlay = crate::defaults::overlay_layer();
         first_overlay.series = vec!["s0o".into()];
         first.overlays.push(first_overlay);
         config.subplots = vec![
             Subplot {
                 config: first,
                 series: vec!["s0".into(), "s0o".into()],
-                ..Subplot::default()
+                ..crate::defaults::subplot()
             },
             Subplot {
                 series: vec!["s1".into()],
                 link_x: Some(CellRef::Parent),
                 link_y: Some(CellRef::Subplot(0)),
-                ..Subplot::default()
+                ..crate::defaults::subplot()
             },
             Subplot {
                 series: vec!["s2".into()],
                 link_x: Some(CellRef::Subplot(1)),
-                ..Subplot::default()
+                ..crate::defaults::subplot()
             },
         ];
         let roles = |fit, id| config.series_fit_roles(fit, id);
@@ -1807,6 +1970,25 @@ mod tests {
         assert_eq!(roles(LayerRef::Overlay(0), "po"), (false, true));
         assert_eq!(roles(LayerRef::Overlay(0), "p"), (false, false));
         assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0o"), (false, true));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0"), (false, false));
+
+        // An overlay with an X axis of its own fits it from its own series,
+        // which leave the parent's X group; one that follows the parent's Y
+        // joins the parent's Y group, and its layer fit fits that group.
+        let mut config = config.clone();
+        config.overlays[0].link_x = false;
+        config.overlays[0].link_y = true;
+        config.subplots[0].config.overlays[0].link_x = false;
+        let roles = |fit, id| config.series_fit_roles(fit, id);
+        assert_eq!(roles(LayerRef::Base, "po"), (false, true));
+        assert_eq!(roles(LayerRef::Base, "p"), (true, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "po"), (true, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "p"), (false, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "s0"), (false, false));
+        // Subplot 1 shares subplot 0's Y group, not the parent's.
+        assert_eq!(roles(LayerRef::Subplot(1), "po"), (false, false));
+        assert_eq!(roles(LayerRef::Subplot(0), "s0o"), (false, false));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0o"), (true, true));
         assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0"), (false, false));
     }
 
@@ -1864,6 +2046,37 @@ mod tests {
         stale.subplots[1].config.bottom_x.max = 99.0;
         stale.sync_subplot_links(None);
         assert_eq!(stale.subplots[1].config.bottom_x.max, 24.0);
+    }
+
+    // An axis unit (#273) travels with the tick spacing it is read in: a
+    // link group prints its root's unit, an overlay panel prints its
+    // overlay axis' own, and the hidden axes of a panel print none.
+    #[test]
+    fn the_axis_unit_travels_with_the_tick_spacing() {
+        use crate::config::AxisUnit;
+        let volts = Some(AxisUnit::new(5.0 / 32768.0, 0.0));
+        let mut cfg = subplot_document();
+        cfg.bottom_x.unit = volts;
+        cfg.sync_subplot_links(None);
+        assert_eq!(cfg.subplots[1].config.bottom_x.unit, volts);
+        assert_eq!(cfg.subplot_config(1).unwrap().bottom_x.unit, volts);
+        assert_eq!(cfg.subplots[0].config.bottom_x.unit, None);
+        // A unit edit of a member alone is not a range edit: the member
+        // follows its root again.
+        let mut alone = cfg.clone();
+        alone.subplots[1].config.bottom_x.unit = None;
+        alone.sync_subplot_links(Some(&cfg));
+        assert_eq!(alone.subplots[1].config.bottom_x.unit, volts);
+
+        let mut layered = two_layer_config();
+        layered.overlays[0].y_axis.unit = volts;
+        layered.bottom_x.unit = volts;
+        let expansion = layered.expand().unwrap();
+        let panel = &expansion.panels[1].config;
+        assert_eq!(panel.right_y.unit, volts);
+        for hidden in [&panel.left_y, &panel.bottom_x, &panel.top_x] {
+            assert_eq!(hidden.unit, None);
+        }
     }
 
     // The log tick policy is tick spacing: a link group shares it like
@@ -1981,7 +2194,7 @@ mod tests {
         });
         cfg.picked_data = Some(DataSelectionsConfig {
             refs,
-            ..Default::default()
+            ..crate::defaults::data_selections_config()
         });
         let expansion = cfg.expand().unwrap();
         let data: Vec<Vec<String>> = expansion
@@ -2012,7 +2225,7 @@ mod tests {
         let mut own = subplot_document();
         own.subplots[1].config.picked_data = Some(DataSelectionsConfig {
             refs: vec![point("rate")],
-            ..Default::default()
+            ..crate::defaults::data_selections_config()
         });
         let panels = own.expand().unwrap().panels;
         assert_eq!(panels[3].config.picked_data.as_ref().unwrap().refs.len(), 1);
@@ -2045,7 +2258,7 @@ mod tests {
         assert_eq!(cfg.chart_area.0.x, 5);
         assert_eq!(cfg.subplots[1].config.chart_area.0.x, 325);
         assert_eq!(cfg.subplots[1].config.chart_area.0.y, 247);
-        let plain = default_config();
+        let plain = crate::defaults::config();
         assert_eq!(plain.document_area(), plain.chart_area.0);
     }
 
@@ -2134,7 +2347,7 @@ mod tests {
                 pick("base"),
                 pick("pressure"),
             ],
-            ..Default::default()
+            ..crate::defaults::data_selections_config()
         });
         let expansion = cfg.expand().unwrap();
         let layers: Vec<LayerRef> = expansion.panels.iter().map(|p| p.layer).collect();
@@ -2196,7 +2409,7 @@ mod tests {
         assert_eq!(expansion.panel(LayerRef::Base).unwrap().config, *base);
         assert_eq!(cfg.set_active_layer(LayerRef::Overlay(1)), LayerRef::Base);
         // A group without members is a single-layer chart.
-        let mut empty = default_config();
+        let mut empty = crate::defaults::config();
         empty.line_offsets = Some(offsets(&[], 1.0, 0.0));
         assert!(!empty.has_offset_members());
         assert_eq!(empty.panel_layers(), [LayerRef::Base]);
@@ -2226,7 +2439,7 @@ mod tests {
             Some(AxisBreaks {
                 ranges: vec![AxisBreak::new(from, to)],
                 style,
-                ..AxisBreaks::default()
+                ..crate::defaults::axis_breaks()
             })
         };
         cfg.bottom_x.breaks = cut(3.0, 6.0, AxisBreakStyle::Continuous);
@@ -2315,7 +2528,6 @@ mod tests {
     /// entry of `subplots`, each with that many overlays of its own. Every
     /// layer draws one series: `base`, `po{k}`, `s{i}`, `s{i}o{n}`.
     fn layered(parent: usize, subplots: &[usize]) -> Config {
-        use crate::layer::Subplot;
         let categories = || {
             Some(
                 ["a", "b", "c"]
@@ -2324,14 +2536,14 @@ mod tests {
             )
         };
         let overlay = |id: String| {
-            let mut overlay = OverlayLayer::default();
+            let mut overlay = crate::defaults::overlay_layer();
             overlay.y_axis.min = 0.0;
             overlay.y_axis.max = 1.0;
             overlay.y_axis.out_margin = 2.0;
             overlay.series = vec![id];
             overlay
         };
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -2344,7 +2556,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, &count)| {
-                let mut subplot = Subplot::default();
+                let mut subplot = crate::defaults::subplot();
                 subplot.config.chart_area = ChartArea(Rect {
                     x: 200 * i as u32,
                     y: 480,
@@ -2375,8 +2587,7 @@ mod tests {
     /// A category bar, box plot and range bar series named `id`.
     fn indexed_series(id: &str) -> [crate::data_config::SeriesConfig; 3] {
         use crate::data_config::{
-            BoxPlotSeriesLabels, BoxPlotStyle, CategoryBarLabelFormat, CategoryBarSeriesLabels,
-            CategoryBarStyle, DataRenderType, RangeColor, SeriesConfig,
+            CategoryBarLabelFormat, DataRenderType, RangeColor, SeriesConfig,
         };
         let series = |render_type| SeriesConfig {
             series_id: id.into(),
@@ -2391,15 +2602,15 @@ mod tests {
         [
             series(DataRenderType::CategoryBars {
                 color,
-                style: CategoryBarStyle::default(),
-                labels: CategoryBarSeriesLabels::default(),
+                style: crate::defaults::category_bar_style(),
+                labels: crate::defaults::category_bar_series_labels(),
                 label_format: CategoryBarLabelFormat::Value,
                 overrides: None,
             }),
             series(DataRenderType::BoxPlot {
                 color,
-                style: BoxPlotStyle::default(),
-                labels: BoxPlotSeriesLabels::default(),
+                style: crate::defaults::box_plot_style(),
+                labels: crate::defaults::box_plot_series_labels(),
                 outliers: None,
                 overrides: None,
                 violin: None,
@@ -2407,14 +2618,14 @@ mod tests {
             }),
             series(DataRenderType::RangeBars {
                 color,
-                style: CategoryBarStyle::default(),
+                style: crate::defaults::category_bar_style(),
                 start: format!("{id}.start"),
                 whiskers: None,
                 color_by: RangeColor::Single,
                 progress: None,
                 connector: None,
                 slot_width: None,
-                labels: CategoryBarSeriesLabels::default(),
+                labels: crate::defaults::category_bar_series_labels(),
             }),
         ]
     }
@@ -2545,7 +2756,7 @@ mod tests {
             cfg.line_offsets = Some(offsets(&refs, 0.5, 0.0));
             cfg
         };
-        let mut documents = vec![default_config(), layered(0, &[]), layered(1, &[])];
+        let mut documents = vec![crate::defaults::config(), layered(0, &[]), layered(1, &[])];
         for count in [0, 1, 200] {
             documents.push(with_members(layered(0, &[]), count));
             documents.push(with_members(layered(3, &[]), count));
@@ -2691,12 +2902,12 @@ mod tests {
             for (k, x) in patterns.iter().enumerate() {
                 // Y uses the next pattern, so the axes' chains differ.
                 let y = &patterns[(k + 1) % patterns.len()];
-                let mut cfg = default_config();
+                let mut cfg = crate::defaults::config();
                 cfg.subplots = (0..n)
                     .map(|i| Subplot {
                         link_x: x[i],
                         link_y: y[i],
-                        ..Default::default()
+                        ..crate::defaults::subplot()
                     })
                     .collect();
                 documents.push(cfg);

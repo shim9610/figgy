@@ -454,7 +454,7 @@ impl Renderer {
             .await
     }
 
-    /// Exact tagged point/line/histogram replay; Pending is represented by the
+    /// Exact tagged point/line replay; Pending is represented by the
     /// operation, never by a fabricated miss.
     pub async fn begin_stream_pick_data(
         &mut self,
@@ -618,9 +618,6 @@ impl Renderer {
             surface_clear: None,
             display_dirty: false,
             display_serial: 0,
-            hist_envelope: None,
-            hist_series: None,
-            hist_overlay: false,
             mode: StreamExecutionMode::Explicit,
             auxiliary: Some(Arc::new(StreamAuxiliaryTarget {
                 snapshot: Arc::clone(&snapshot),
@@ -797,8 +794,6 @@ impl Renderer {
             pick.point
                 .chunk_bytes(desc, columns[0].len as usize)
                 .map_err(FiggyError::from)?
-        } else if phase == StreamDrawPhase::Histogram && pick.data.is_some() {
-            crate::gpu_data_pick::GpuStreamDataPick::CHUNK_BYTES
         } else {
             0
         };
@@ -863,44 +858,6 @@ impl Renderer {
                     } else {
                         0
                     },
-                )?);
-            }
-            if phase == StreamDrawPhase::Histogram
-                && let Some(data) = &mut pick.data
-            {
-                let bar = extract_bar(&cfg.render_type).ok_or_else(|| {
-                    StreamRequestError::from(StreamError::WrongState).into_figgy()
-                })?;
-                let horizontal = bar.orientation == crate::data_config::BarOrientation::Horizontal;
-                let (hi, lo) = crate::data::split_f64_to_f32_pair(bar.baseline);
-                let (edges, values) = if horizontal {
-                    (handles(&cfg.y_column)?, handles(&cfg.x_column)?)
-                } else {
-                    (handles(&cfg.x_column)?, handles(&cfg.y_column)?)
-                };
-                return Ok(data.encode_chunk(
-                    &mut encoder,
-                    &chunk.work,
-                    crate::gpu_data_pick::GpuDataPickSeries {
-                        source_id: cfg.source_id.clone(),
-                        series_id: cfg.series_id.clone(),
-                        paint_order: series_index as u32,
-                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Histogram {
-                            edges,
-                            values,
-                            bin_count: primitives as u32,
-                            baseline: [hi, lo],
-                            gap_px: bar.gap_px.max(0.0)
-                                * snapshot.styles.styles[series_index].display_scale,
-                            width_ratio: data_render::sanitize_bar_width_ratio(bar.width_ratio),
-                            horizontal,
-                            style_map: snapshot.styles.styles[series_index]
-                                .bar_map
-                                .as_ref()
-                                .map(|map| map.bind_group.clone()),
-                        },
-                    },
-                    offset as u32,
                 )?);
             }
             Ok(None)
@@ -1000,7 +957,9 @@ impl Renderer {
             ((original.height as f32) * scale).round().max(1.0) as u32,
         );
         validate_texture_extent(self.caps, "stream export dimensions", size.0, size.1)?;
-        let format = wgpu::TextureFormat::Rgba8Unorm;
+        // The resident export's target, so a streamed export blends and
+        // rounds exactly as the resident export of the same document.
+        let format = crate::renderer::EXPORT_FORMAT;
         let sample_count = preferred_msaa_sample_count(self.caps, format);
         validate_target_sample_count(self.caps, format, sample_count)?;
         let mut config = document_config.scaled(scale);
@@ -1046,7 +1005,7 @@ impl Renderer {
                     {
                         (total + 1).min(max_primitives).min(257)
                     } else {
-                        stream_phase_request_len(series, *phase, id, total.min(max_primitives))?
+                        stream_phase_request_len(*phase, total.min(max_primitives))?
                     };
                     input = input
                         .checked_add(
@@ -1164,7 +1123,7 @@ impl Renderer {
             &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view: &chart_view,
                 chart_config: &config,
                 series: &series,
@@ -1177,7 +1136,7 @@ impl Renderer {
             &self.style_bgl,
             &self.star_data_bgl,
             format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view: &chart_view,
                 chart_config: &config,
                 series: &series,
@@ -1285,9 +1244,6 @@ impl Renderer {
             surface_clear: None,
             display_dirty: false,
             display_serial: 0,
-            hist_envelope: None,
-            hist_series: None,
-            hist_overlay: false,
             mode: StreamExecutionMode::Explicit,
             auxiliary: Some(auxiliary),
             auxiliary_pick: None,
@@ -1602,7 +1558,9 @@ impl Renderer {
 
     async fn read_stream_export_rgba(&mut self, target: &wgpu::Texture) -> Result<RasterImage> {
         let (width, height) = (target.width(), target.height());
-        let row = u64::from(width) * 4;
+        // The target's rows (half-float texels) and the image's (RGBA8).
+        let row = u64::from(width) * crate::renderer::EXPORT_TEXEL_BYTES;
+        let out_row = u64::from(width) * 4;
         let padded = row.div_ceil(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
             * u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let remaining = self
@@ -1632,12 +1590,12 @@ impl Renderer {
                 "stream export readback",
             )?,
         );
-        let len = row
+        let len = out_row
             .checked_mul(u64::from(height))
             .and_then(|bytes| usize::try_from(bytes).ok())
             .ok_or(FiggyError::GpuResourceLimit {
                 resource: "stream export output",
-                requested: row.saturating_mul(u64::from(height)),
+                requested: out_row.saturating_mul(u64::from(height)),
                 limit: usize::MAX as u64,
             })?;
         let mut rgba = Vec::new();
@@ -1701,17 +1659,13 @@ impl Renderer {
             })?;
             for local in 0..count {
                 let src = &mapped[(u64::from(local) * padded) as usize..][..row as usize];
-                let dst = &mut rgba[(u64::from(y + local) * row) as usize..][..row as usize];
-                dst.copy_from_slice(src);
-                for pixel in dst.chunks_exact_mut(4) {
-                    let alpha = pixel[3];
-                    if alpha != 0 && alpha != 255 {
-                        let alpha = f32::from(alpha) / 255.0;
-                        for channel in &mut pixel[..3] {
-                            *channel =
-                                (f32::from(*channel) / alpha).round().clamp(0.0, 255.0) as u8;
-                        }
-                    }
+                let dst =
+                    &mut rgba[(u64::from(y + local) * out_row) as usize..][..out_row as usize];
+                let (texels, _) =
+                    src.as_chunks::<{ crate::renderer::EXPORT_TEXEL_BYTES as usize }>();
+                let (pixels, _) = dst.as_chunks_mut::<4>();
+                for (pixel, texel) in pixels.iter_mut().zip(texels) {
+                    *pixel = crate::renderer::straight_rgba8(texel);
                 }
             }
             drop(mapped);

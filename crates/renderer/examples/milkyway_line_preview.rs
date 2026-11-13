@@ -1,18 +1,10 @@
 //! README Milkyway preview: line-generated stars and nebula only.
 //! cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png
 //! Do not replace Line with ScatterLine/LineScatterErrorbar: those add planets/jets.
-use renderer::config::{DrawStyle, LegendCorner, LegendEntryKind, MilkywayOptions};
-use renderer::data::Column;
-use renderer::data_config::{DataLineStyleConfig, DataRenderType};
-use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
-use renderer::layout::{ChartArea, Rect};
-use renderer::line::LineStylePreset;
-use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};
+use renderer::config::{DrawStyle, LegendCorner, MilkywayOptions};
+use renderer::theme::{SubplotScope, Theme};
+use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
-
-fn column(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let output = PathBuf::from(
@@ -23,73 +15,46 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
-    let instance = create_instance();
-    let adapter = request_adapter_blocking(&instance)?;
-    eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_blocking(&adapter)?;
-    let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        8 * 1024 * 1024,
-    )?;
-    let mut cfg = renderer::default::default_config();
-    cfg.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: 1280,
-        height: 1024,
-    });
-    cfg.chart_title.top_margin = 60.0;
-    cfg.left_y.out_margin = 200.0;
-    cfg.bottom_x.out_margin = 145.0;
-    cfg.top_x.out_margin = 32.0;
-    cfg.right_y.out_margin = 64.0;
+    let mut r = Renderer::headless_blocking()?;
+    // Light ink on the deep-space backdrop the export clears to, at the
+    // style row's text sizes, without grid lines.
+    let bg = Color::from_rgb8(11, 15, 23);
+    let mut theme = Theme::dark();
+    theme.chrome.background = None;
+    theme.chrome.legend_fill = bg;
+    theme.chrome.tick_label_size = 25.0;
+    theme.chrome.axis_title_size = 32.0;
+    theme.chrome.legend_size = 23.0;
+    let grid = &mut theme.chrome.grid;
+    for line in [
+        &mut grid.major_x,
+        &mut grid.major_y,
+        &mut grid.minor_x,
+        &mut grid.minor_y,
+    ] {
+        line.show = false;
+    }
+    let mut chart = Chart::sized(1280, 1024);
+    theme.apply_chrome(chart.config_mut(), SubplotScope::All);
+    let cfg = chart.config_mut();
+    // After the theme, which writes the draw style too.
     cfg.draw_style = DrawStyle::Milkyway(MilkywayOptions {
         star_density: 70.0,
         ribbon_width_px: 24.0,
         ribbon_intensity: 0.08,
-        star_scale: 1.0,
         star_brightness: 0.32,
         spread_px: 8.0,
-        structure_scale: 1.0,
         faint_bias: 4.5,
         glow: 0.35,
         nebula: 0.6,
         dust: 0.7,
         planet_rim: 0.0,
-        seed: 0,
+        ..MilkywayOptions::default()
     });
-    let chrome = Color::from_rgb8(198, 207, 223);
-    for axis in [
-        &mut cfg.bottom_x,
-        &mut cfg.top_x,
-        &mut cfg.left_y,
-        &mut cfg.right_y,
-    ] {
-        axis.line_color = chrome;
-        axis.label_style.color = chrome;
-        axis.label_style.font_size = 25.0;
-        axis.title_option.text.color = chrome;
-        axis.title_option.text.font_size = 32.0;
-    }
-    cfg.grid.show_major_x = false;
-    cfg.grid.show_major_y = false;
-    cfg.grid.show_minor_x = false;
-    cfg.grid.show_minor_y = false;
-    let bg = Color::from_rgb8(11, 15, 23);
     cfg.legend.corner = LegendCorner::TopLeft;
-    cfg.legend.bg_color = bg;
-    cfg.legend.border_color = chrome;
-    cfg.legend.content.color = Color::from_rgb8(238, 241, 248);
-    cfg.legend.content.font_size = 23.0;
     cfg.legend.padding = 9.0;
-    let mut chart = Chart::new(cfg)
-        .with_x_title("Time [min]")
-        .with_y_title("Response mean");
-    chart.set_x_range(-6.0, 126.0);
-    chart.set_y_range(-0.05, 1.08);
     let ts: Vec<f64> = (0..=480).map(|i| i as f64 * 0.25).collect();
-    r.add_column("time", &column(ts.clone()))?;
+    r.add_column("time", &ts)?;
     let mut series = Vec::new();
     for (id, label, color, ceiling, tau) in [
         (
@@ -107,43 +72,35 @@ fn main() -> Result<(), Box<dyn Error>> {
             19.0,
         ),
     ] {
-        let values = ts
+        let values: Vec<f64> = ts
             .iter()
             .map(|t| 0.06 + (ceiling - 0.06) * (1.0 - (-t / tau).exp()))
             .collect();
-        r.add_column(id, &column(values))?;
+        r.add_column(id, &values)?;
         // Line is intentional: stars are generated along arc length by the
         // Milkyway line pipeline; no scatter planets or errorbar jets exist.
-        series.push(SeriesConfig {
-            series_id: id.into(),
-            source_id: None,
-            label: None,
-            x_column: "time".into(),
-            y_column: id.into(),
-            z_column: None,
-            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(DataLineStyleConfig {
-                    line_color: color,
-                    line_width: 2.0,
-                    line_style: LineStylePreset::Solid,
-                    fill: None,
-                    fill_color: None,
-                    interpolation: renderer::data_config::LineInterpolation::Linear,
-                }),
-                errors: None,
-                stem: None,
-            }),
-        });
-        chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);
+        series.push(
+            SeriesConfig::line(id, "time", id)
+                .label(label)
+                .color(color)
+                .width(2.0),
+        );
     }
+    let mut chart = chart
+        .with_x_title("Time [min]")
+        .with_y_title("Response mean")
+        .with_legend_from(&series);
+    chart.set_x_range(-6.0, 126.0);
+    chart.set_y_range(-0.05, 1.08);
+    // Fit the margins to the labels, titles and legend before export.
+    chart.fit_layout();
     let img = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &series),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &series),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let empty = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &[]),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &[]),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let changed = img
         .rgba
@@ -165,11 +122,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "missing line-generated star field: {changed}"
     );
     assert!(img.rgba.chunks_exact(4).all(|p| p[3] == 255));
-    std::fs::write(&output, encode_png(&img)?)?;
+    img.save_png(&output)?;
     println!(
         "{}: 1280x1024, {changed} data-dependent pixels; two Line series",
         output.display()
     );
-    r.wait_idle().unwrap();
+    r.wait_idle()?;
     Ok(())
 }

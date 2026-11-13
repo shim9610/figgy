@@ -20,7 +20,7 @@ use model::view3d::{Projection3d, View3d};
 use crate::config::{AxisScale, Config};
 
 /// The assembled surface module of a heatmap grid. The projection fragment
-/// is the layer a later 3D vector glyph reuses (rule 9).
+/// is the layer a later 3D vector glyph reuses.
 pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
@@ -41,8 +41,8 @@ pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_asse
 /// The assembled surface module of a triangle mesh (#210): the grid's list
 /// with the mesh input (`tri_mesh/mesh_input.wgsl`, the triangle reads the
 /// flat draw shares, and `surface_input_mesh.wgsl`, their placement through
-/// the camera) in place of the grid input. The layered input / entry split
-/// is what rule 9 keeps for reuse.
+/// the camera) in place of the grid input. The input and the entry are
+/// separate layers, so other modules can reuse them.
 pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
@@ -663,8 +663,7 @@ pub(crate) fn surface_params_gpu(
     picked: Option<(u32, u32)>,
     pick_id: u32,
 ) -> SurfaceParamsGpu {
-    let default = model::view3d::SurfaceStyle::default();
-    let style = style.unwrap_or(&default);
+    let style = model::view3d::SurfaceStyle::resolved(style);
     let mut flags = 0;
     if style.color_matrix.is_some() {
         flags |= SURFACE_FLAG_COLOR_GRID;

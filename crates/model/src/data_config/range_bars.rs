@@ -23,11 +23,10 @@ pub struct RangeWhiskers {
 }
 
 /// How the bars of a [`DataRenderType::RangeBars`] series are filled.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RangeColor {
     /// Every bar in the series colour.
-    #[default]
     Single,
     /// By the direction of the bar's given ends: `up` when end ≥ start,
     /// else `down`; a bar whose `total` flag column reads 1 takes the total
@@ -303,17 +302,16 @@ impl crate::config::Config {
                 LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
             };
             let chart = subplot.as_ref().unwrap_or(self);
-            let position_axis = if horizontal {
-                &chart.left_y
+            // The axes the layer's series are scaled by: an overlay's own
+            // or, linked, its chart's.
+            let (x_axis, y_axis) = chart.scaling_axes(match layer {
+                LayerRef::Overlay(index) | LayerRef::SubplotOverlay(_, index) => Some(index),
+                _ => None,
+            });
+            let (position_axis, value_axis) = if horizontal {
+                (y_axis, x_axis)
             } else {
-                &chart.bottom_x
-            };
-            let value_axis = match layer {
-                LayerRef::Overlay(index) | LayerRef::SubplotOverlay(_, index) => {
-                    &chart.overlays[index].y_axis
-                }
-                _ if horizontal => &chart.bottom_x,
-                _ => &chart.left_y,
+                (x_axis, y_axis)
             };
             if value_axis.categories.is_some() {
                 return Err(crate::RuleKind::RangeBarsValueAxis);

@@ -13,12 +13,12 @@ large image opens the example code: [lines](https://github.com/shim9610/figgy/bl
 [styles](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/styles.md). The
 [example index](examples/README.md#gallery-images) names the function for every
 image.
-[`readme_gallery.rs`](examples/readme_gallery.rs) runs the `error_bars`,
-`histogram`, `heatmap_contours` and `animated_lines` examples with one shared
-device. They use the native `Renderer` with an offscreen RGBA target, upload columns through
-the resident pool, and export through `export_rgba` and
-`encode_png`. No browser or window is needed. Axes, text, grid and legends follow
-the same CPU-raster/GPU-compositing path as other figgy charts.
+[`readme_gallery.rs`](examples/readme_gallery.rs) runs twelve examples with
+one shared device: `error_bars`, `histogram`, `heatmap_contours`,
+`animated_lines`, and the 0.19 scenes `ternary`, `surface_3d`, `trimesh`,
+`parallel`, `range_bars`, `stem`, `broken_axes` and `feynman`. They use the
+native `Renderer`, upload their columns, and export with
+`export_rgba` and `encode_png`. No browser or window is needed.
 
 All data is synthetic. These images demonstrate plotting features, not measured
 scientific results. The error bars are deliberately chosen widths, not confidence
@@ -41,8 +41,7 @@ intervals inferred from observations.
 | `gallery-polar.png` | `01-antenna-pattern.png` from `polar_plot.rs`: a filled line in polar coordinates with degree labels | 960 × 640 |
 | `gallery-polar-compass.png` | `02-compass-rose.png` from `polar_plot.rs`: a scatter-line clockwise from the top with arc segments, the radius labels on the 45° ray | 960 × 640 |
 
-`error_bars`, `histogram`, `heatmap_contours` and `animated_lines` also run on
-their own; `animated_lines` writes the wave and orbit frames. `line` is not part
+Each of the twelve also runs on its own; `animated_lines` writes the wave and orbit frames. `line` is not part
 of `readme_gallery` and runs only on its own.
 [support/gallery.rs](examples/support/gallery.rs) holds device setup,
 presentation defaults and PNG checks, not the chart definitions. To add an image
@@ -67,7 +66,7 @@ in each example.
 | `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
 | `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | Voltage on the left axis with a light fill, current on an overlay layer's right axis |
 | `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
-| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | Probability paper (#209): tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
+| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | Probability paper: tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
 
 `twin_axes` and `small_multiples` export with
 `export_rgba`: the panel export draws the base panel
@@ -80,7 +79,7 @@ inside a subplot.
 
 ## Charts new in 0.19
 
-Each 0.19 chart kind has a designed scene drawn by its example (#250), with the shared chrome of the feature scenes. The examples compute every value they draw (rule 1): bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
+Each 0.19 chart kind has a designed scene drawn by its example, with the shared chrome of the feature scenes. The examples compute every value they draw: bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
 
 | Output | Example and function | Scene |
 |---|---|---|
@@ -141,7 +140,7 @@ category bars of `revenue` included; the radial charts use their model's `backgr
 ## Math in text
 
 [`math_gallery.rs`](examples/math_gallery.rs) writes every construction of the
-math layout (#45) as annotation texts of an empty 1200 × 1600 chart, each formula
+math layout as annotation texts of an empty 1200 × 1600 chart, each formula
 with its TeX source beneath it in plain text: fractions and nested fractions,
 binomials, radicals with and without an index, big operators with side limits
 and with `\limits`, integrals, operator names, `\left`/`\middle`/`\right` and
@@ -176,10 +175,18 @@ mixed into an animation.
 cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery
 ```
 
-This writes four static PNGs (`gallery-errorbars.png`, `gallery-histogram.png`,
-`gallery-histogram-horizontal.png` and `gallery-contours.png`) and the frames
-`wave/000.png` … `wave/047.png` and `orbit/000.png` … `orbit/047.png`. The
-optional second argument selects 2–240 frames; the default is 48. Phases cover
+This writes 19 static PNGs and the frames `wave/000.png` … `wave/047.png` and
+`orbit/000.png` … `orbit/047.png`. The PNGs are:
+- `gallery-errorbars.png`, `gallery-histogram.png` and
+  `gallery-histogram-horizontal.png`;
+- `gallery-contours.png`, `gallery-hexbin.png` and `gallery-imshow.png`;
+- `gallery-ternary.png`, `gallery-surface.png` and `gallery-quiver3d.png`;
+- `gallery-trimesh.png`, `gallery-trisurf.png` and `gallery-parallel.png`;
+- `gallery-waterfall.png`, `gallery-candlestick.png` and `gallery-gantt.png`;
+- `gallery-stem.png`, `gallery-lollipop.png`, `gallery-broken-axes.png` and
+  `gallery-feynman.png`.
+
+The optional second argument selects 2–240 frames; the default is 48. Phases cover
 one period without repeating the endpoint. The example uses fixed axis ranges so
 the animation does not rescale each frame.
 
@@ -222,7 +229,7 @@ chosen for the README and says nothing about rendering throughput. If a differen
 frame count was requested, change `-frames:v` to match; duration is count / 12.
 
 To refresh the README, inspect the PNGs and the decoded animation frames, then
-copy those four static PNGs and the two `gallery-*.gif` files into
+copy the 19 static PNGs and the two `gallery-*.gif` files into
 [`assets/`](https://github.com/shim9610/figgy/tree/master/crates/renderer/assets). Keep the numbered intermediate frames outside source control.
 The source example is the authority for formulas, styles and export settings.
 
@@ -252,14 +259,13 @@ page. The case outputs of `radial_gallery`, `categorical_gallery`,
 `boxplot_gallery`, `radar_gallery` and `polar_plot` are renamed, for example
 `target/radial-gallery/ceramic.png` → `assets/gallery-donut.png`; the feature
 examples and `gallery_concepts` already write their final names. The
-radial example uses `RadialRenderer`; its small-data model does not use the
-Cartesian column pool. `categorical_gallery`, `boxplot_gallery` and
+radial example draws with `RadialRenderer`. `categorical_gallery`, `boxplot_gallery` and
 `radar_gallery` open their documents with `Config::from_categorical`,
 `Config::from_boxplot` and `Config::from_radar` and draw them with the
 Cartesian `Renderer`, value labels included (the documents' `labels`
 settings, written into `labels.text` by the readers). `categorical_gallery`
-leaves 12 % of the value range past the bars for outside labels, as the
-former chart did. `boxplot_gallery` labels every box with its median; the
+leaves 12 % of the value range past the bars for outside labels.
+`boxplot_gallery` labels every box with its median; the
 label past the highest outlier, which would cross the top of the data area,
 sits below that outlier instead.
 
@@ -286,8 +292,8 @@ cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/m
 
 [`milkyway_line_preview.rs`](examples/milkyway_line_preview.rs) exports a
 1280 × 1024 PNG containing two synthetic growth curves, each declared as
-`DataRenderType::Line`. The line pipeline generates the stars and nebula along
-arc length. There are no scatter planets or errorbar jets in this preview.
+`DataRenderType::Line`. The stars and nebula are spread along each line's
+length. There are no scatter planets or errorbar jets in this preview.
 The example also compares against an empty chart to verify visible data pixels.
 
 The selected parameters are explicit in the example: `star_density = 70`,
@@ -332,11 +338,11 @@ page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/render
 
 ## 한국어 사용법
 
-이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 GPU 풀에 데이터를 올리고, 데이터와 축·눈금·텍스트를 합성해 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
+이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 컬럼을 등록하고 데이터와 축·눈금·텍스트를 그려 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
 
-- **정지 이미지 4종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
+- **정지 이미지 19종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선, 그리고 육각 빈, 컬러 이미지, 삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 평행 좌표, 폭포·캔들스틱·간트, 줄기·롤리팝, 축 끊기, 파인만 도표 장면이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
-- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 4개와 애니메이션 프레임 96개를 만든다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
+- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 19개와 애니메이션 프레임 96개를 만든다. 오차 막대, 히스토그램, 등고선, 애니메이션 예제와 0.19 장면 예제 8개(삼각 좌표, 3D 곡면, 삼각 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표)를 장치 하나로 실행한다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
 - **재생 설정**: GIF 하나당 48프레임을 초당 12프레임으로 약 4초마다 반복한다. GIF는 색을 팔레트로 줄이므로 픽셀 검사는 원본 PNG로 한다. GIF의 재생 속도는 렌더링 성능을 나타내지 않는다.
 - **검증 환경**: 일반 장비에서는 기본 GPU 선택을 따른다. 이 이미지는 실제 GPU가 없는 Linux에서 Vulkan llvmpipe로 검증했다. 예제 자체가 소프트웨어 GPU를 강제하지는 않는다. 실제 GPU의 성능이나 다른 OS에서 같은 픽셀값이 나오는지는 확인하지 않았다.
 

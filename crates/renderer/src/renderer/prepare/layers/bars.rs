@@ -253,9 +253,8 @@ impl PrepareContext<'_> {
         // Bars: the edge column and the value column are picked from the
         // bar's own orientation — never from the column lengths (design
         // §B.3). `Vertical` reads x as edges, `Horizontal` reads y.
-        let bar = if primitives.bar
-            && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Histogram)
-        {
+        // A histogram is resident only (#284): no stream phase draws bars.
+        let bar = if primitives.bar && phase.is_none() {
             let bar_cfg = extract_bar(rt)
                 .ok_or(FiggyError::internal("primitives.bar implies a bar config"))?;
             let (edges, values) = match bar_cfg.orientation {
@@ -264,37 +263,33 @@ impl PrepareContext<'_> {
             };
             let style_map = series.style.bar_map.as_ref();
             Some(data_render::ColumnBarLayer {
-                envelope: if phase.is_none() {
-                    Some(
-                        pipelines
-                            .bar_envelope
-                            .as_ref()
-                            .ok_or(FiggyError::internal(
-                                "prepare ensured histogram envelope pipeline",
-                            ))?
-                            .prepare(
-                                &self.device,
-                                &self.queue,
-                                &self.gpu_ledger,
-                                column_buffer,
-                                edges,
-                                values,
-                                match bar_cfg.orientation {
-                                    crate::data_config::BarOrientation::Vertical => {
-                                        view.panel_rect.width
-                                    }
-                                    crate::data_config::BarOrientation::Horizontal => {
-                                        view.panel_rect.height
-                                    }
-                                },
-                                &view.transform_bg,
-                                &series.style.bar_bg,
-                                style_map.map(|map| &map.bind_group),
-                            )?,
-                    )
-                } else {
-                    None
-                },
+                envelope: Some(
+                    pipelines
+                        .bar_envelope
+                        .as_ref()
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured histogram envelope pipeline",
+                        ))?
+                        .prepare(
+                            &self.device,
+                            &self.queue,
+                            &self.gpu_ledger,
+                            column_buffer,
+                            edges,
+                            values,
+                            match bar_cfg.orientation {
+                                crate::data_config::BarOrientation::Vertical => {
+                                    view.panel_rect.width
+                                }
+                                crate::data_config::BarOrientation::Horizontal => {
+                                    view.panel_rect.height
+                                }
+                            },
+                            &view.transform_bg,
+                            &series.style.bar_bg,
+                            style_map.map(|map| &map.bind_group),
+                        )?,
+                ),
                 pipeline: match style_map {
                     None => pipelines
                         .bar

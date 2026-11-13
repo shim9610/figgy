@@ -570,7 +570,7 @@ pub(super) fn box_points_pick_descriptor(
     points: &crate::data_config::BoxPoints,
 ) -> OwnedGpuPickSeriesDescriptor {
     use crate::data_config::{BoxOutlierShape, CategoryBarDirection};
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let horizontal = groups.direction == CategoryBarDirection::Horizontal;
     let boxes = || series.iter().filter(|s| s.render_type.box_plot().is_some());
     let member = boxes()

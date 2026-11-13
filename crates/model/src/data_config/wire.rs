@@ -230,6 +230,7 @@ impl From<WireRenderType> for DataRenderType {
             WireRenderType::EnergyLevels(levels) => DataRenderType::EnergyLevels(levels),
             WireRenderType::TriMesh(mesh) => DataRenderType::TriMesh(mesh),
             WireRenderType::Feynman(diagram) => DataRenderType::Feynman(diagram),
+            WireRenderType::MonotonicLine(series) => DataRenderType::MonotonicLine(series),
         }
     }
 }
@@ -444,6 +445,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
             DataRenderType::EnergyLevels(levels) => WireRenderType::EnergyLevels(levels),
             DataRenderType::TriMesh(mesh) => WireRenderType::TriMesh(mesh),
             DataRenderType::Feynman(diagram) => WireRenderType::Feynman(diagram),
+            DataRenderType::MonotonicLine(series) => WireRenderType::MonotonicLine(series),
         })
     }
 }
@@ -591,7 +593,7 @@ pub(crate) enum WireRenderType {
         #[cfg_attr(
             feature = "serde",
             serde(
-                default = "default_image_range",
+                default = "crate::defaults::image_range",
                 skip_serializing_if = "is_default_image_range"
             )
         )]
@@ -599,7 +601,7 @@ pub(crate) enum WireRenderType {
         #[cfg_attr(
             feature = "serde",
             serde(
-                default = "default_image_shading",
+                default = "crate::defaults::image_shading",
                 skip_serializing_if = "is_default_image_shading"
             )
         )]
@@ -607,7 +609,7 @@ pub(crate) enum WireRenderType {
         #[cfg_attr(
             feature = "serde",
             serde(
-                default = "default_image_opacity",
+                default = "crate::defaults::image_opacity",
                 skip_serializing_if = "is_default_image_opacity"
             )
         )]
@@ -682,14 +684,23 @@ pub(crate) enum WireRenderType {
         color: Color,
         /// The look of the bars: material, corner radius, outline, texture,
         /// gloss and the brightness of a picked bar.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::category_bar_style")
+        )]
         style: CategoryBarStyle,
         /// Where the value labels go, how values are written and the drawn
         /// text of each bar.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::category_bar_series_labels")
+        )]
         labels: CategoryBarSeriesLabels,
         /// What a value label says.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::category_bar_label_format")
+        )]
         label_format: CategoryBarLabelFormat,
         /// Sparse per-bar overrides, keyed by category id and this series'
         /// id. At most one per bar; an override's `style` replaces the
@@ -737,11 +748,14 @@ pub(crate) enum WireRenderType {
         /// The fill colour of the series' boxes, opaque.
         color: Color,
         /// The look of the boxes and their parts.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "crate::defaults::box_plot_style"))]
         style: BoxPlotStyle,
         /// Which labels the boxes show, how a median is written and the
         /// drawn text of each box.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::box_plot_series_labels")
+        )]
         labels: BoxPlotSeriesLabels,
         /// The ragged column of the outliers, one group per category.
         #[cfg_attr(
@@ -817,7 +831,10 @@ pub(crate) enum WireRenderType {
         color: Color,
         /// The look of the bars: material, corner radius, outline, texture,
         /// gloss and the brightness of a picked bar.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::category_bar_style")
+        )]
         style: CategoryBarStyle,
         /// The column of the start values.
         start: ColumnId,
@@ -830,7 +847,10 @@ pub(crate) enum WireRenderType {
         /// How each bar's fill is chosen.
         #[cfg_attr(
             feature = "serde",
-            serde(default, skip_serializing_if = "RangeColor::is_single")
+            serde(
+                default = "crate::defaults::range_color",
+                skip_serializing_if = "RangeColor::is_single"
+            )
         )]
         color_by: RangeColor,
         /// The finished share of each bar (a Gantt task's progress).
@@ -855,7 +875,10 @@ pub(crate) enum WireRenderType {
         /// Where the value labels go and the drawn text of each bar. The
         /// renderer never writes the text; `decimals` and `value_suffix` are
         /// not read.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::category_bar_series_labels")
+        )]
         labels: CategoryBarSeriesLabels,
     },
     /// The polygon of a radar chart: one vertex per category of the polar
@@ -889,11 +912,17 @@ pub(crate) enum WireRenderType {
         color: Color,
         /// Outline width, fill and marker; unset fields take
         /// their defaults.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::radar_series_style")
+        )]
         style: RadarSeriesStyle,
         /// Which vertices carry value labels, how a value is written and
         /// the drawn text of each vertex.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default = "crate::defaults::radar_series_labels")
+        )]
         labels: RadarSeriesLabels,
     },
     /// A ternary series on a ternary chart (`Config.ternary`): markers and/or
@@ -981,7 +1010,7 @@ pub(crate) enum WireRenderType {
     /// Parallel coordinates (#141): one polyline per row across the axes of
     /// a parallel chart (`Config.parallel`), row `r` through
     /// `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, the
-    /// normalization only to place the sample (rule 1). `columns` names one
+    /// normalization only to place the sample. `columns` names one
     /// column per axis, in the axes' order; `x_column` and `y_column` are
     /// its first two. A row with a non-finite value breaks at that axis.
     /// With `color_column`, each row's polyline takes the colour of that
@@ -990,8 +1019,7 @@ pub(crate) enum WireRenderType {
     /// without a fill; the columns must be GPU resident. See
     /// [`Config::validate_parallel_series`](crate::config::Config::validate_parallel_series).
     Parallel {
-        /// One column id per axis of the parallel chart, in order (a `Vec`
-        /// of configuration: SSOT, rule 3).
+        /// One column id per axis of the parallel chart, in order.
         columns: Vec<ColumnId>,
         /// The rows' line: its colour (without `color_column`) and width.
         line: DataLineStyleConfig,
@@ -1005,4 +1033,5 @@ pub(crate) enum WireRenderType {
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
     TriMesh(crate::tri_mesh::TriMeshSeries),
     Feynman(crate::feynman::FeynmanSeries),
+    MonotonicLine(MonotonicLineSeries),
 }

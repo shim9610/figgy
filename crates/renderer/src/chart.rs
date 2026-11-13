@@ -19,12 +19,13 @@ use crate::data_config::{BarOrientation, DataRenderType, SeriesConfig};
 use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
-use crate::text::{RichText, rich_segments_from_text};
+use crate::text::{RichText, rich_segments_from_label};
 use crate::text_render::CpuTextMeasure;
 
 /// Apply min/max and scale-appropriate tick settings to one axis, for the
 /// tick plan of `scale` (the axis' own scale or, for a mirrored axis, its
-/// partner's).
+/// partner's). The spacing is chosen for the range the axis prints: its
+/// shown range with a unit (#273), where `major_spacing` is read.
 pub(crate) fn apply_axis_range(
     axis: &mut crate::config::AxisOptions,
     min: f64,
@@ -38,7 +39,6 @@ pub(crate) fn apply_axis_range(
     }
     axis.min = min;
     axis.max = max;
-    axis.major_spacing = crate::tick::axis_major_spacing(scale, min, max);
     match scale {
         AxisScale::Logarithmic => {
             axis.minor_count = 8;
@@ -60,6 +60,9 @@ pub(crate) fn apply_axis_range(
             axis.label_style.significant_digits = 3;
         }
     }
+    // After the label format, which decides whether the unit applies.
+    let (shown_min, shown_max) = axis.shown_range();
+    axis.major_spacing = crate::tick::axis_major_spacing(scale, shown_min, shown_max);
 }
 
 /// How a range reaches one axis: [`apply_view_range`] or
@@ -78,9 +81,10 @@ pub(crate) fn apply_view_range(axis: &mut AxisOptions, min: f64, max: f64, scale
     apply_axis_range(axis, min, max, scale);
 }
 
-/// Fill `rt.segments` with one plain RichSegment per char (all style flags off).
-fn fill_plain_segments(rt: &mut RichText, s: &str) {
-    rt.segments = rich_segments_from_text(s);
+/// Fill `rt.segments` with the label `s`: plain text with its `$…$` spans
+/// as TeX ([`rich_segments_from_label`]).
+fn fill_label_segments(rt: &mut RichText, s: &str) {
+    rt.segments = rich_segments_from_label(s);
 }
 
 pub(crate) use crate::layout::guarded_log_range;
@@ -275,6 +279,19 @@ fn fitted_axis_range(
         AxisScale::Linear => Chart::padded(ext.min, ext.max, padding_ratio),
     };
     (range.0.is_finite() && range.1.is_finite() && range.1 > range.0).then_some(range)
+}
+
+/// Fit one axis that has no partner, such as an overlay's y axis, to
+/// `ext` with the auto-fit rules ([`fitted_axis_range`], [`apply_axis_range`]).
+pub(crate) fn apply_axis_fit(
+    axis: &mut crate::config::AxisOptions,
+    ext: &FitExtent,
+    padding_ratio: f64,
+) {
+    if let Some((min, max)) = fitted_axis_range(axis, ext, padding_ratio) {
+        let scale = axis.scale.clone();
+        apply_axis_range(axis, min, max, &scale);
+    }
 }
 
 /// Apply GPU-reduced x/y fit bounds directly to an owned `Config`.
@@ -574,11 +591,40 @@ pub fn box_plot_value_extent(
     Ok((extent, groups.direction))
 }
 
-/// A single figgy chart panel: a `Config` plus dirty-flag tracking.
+/// A single figgy chart panel: a `Config`, the decoration selection its
+/// raster highlights, and dirty-flag tracking.
 pub struct Chart {
     config: Config,
     data_dirty: bool,
     raster_dirty: bool,
+    /// The element the raster draws selected, by its element id
+    /// (`Selectable::element_id`).
+    selected: Option<String>,
+    /// Moves on every raster-affecting change: [`Renderer::prepare`] redraws
+    /// a view drawn at another stamp (#265). Each value is an issued number
+    /// from one process-wide counter ([`issue_raster_stamp`]), so two charts
+    /// never share one and a view cannot mistake another chart for its own.
+    /// `None` once the counter is exhausted: an edit cannot fail, so
+    /// `prepare` reports `FiggyError::CounterExhausted` instead.
+    ///
+    /// [`Renderer::prepare`]: crate::Renderer::prepare
+    raster_stamp: Option<u64>,
+}
+
+/// The next chart raster stamp: an issued number from one process-wide
+/// counter, incremented with a check and never wrapped, so no stamp is
+/// reused. `None` once exhausted. See "Identity and staleness checks" in
+/// `ARCHITECTURE.md`.
+fn issue_raster_stamp() -> Option<u64> {
+    static NEXT_RASTER_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT_RASTER_STAMP
+        .try_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |current| current.checked_add(1),
+        )
+        .ok()
+        .map(|previous| previous + 1)
 }
 
 impl Chart {
@@ -588,6 +634,38 @@ impl Chart {
             config,
             data_dirty: true,
             raster_dirty: true,
+            selected: None,
+            raster_stamp: issue_raster_stamp(),
+        }
+    }
+
+    /// The raster changed: the dirty flag a host reads, and a new stamp for
+    /// [`Renderer::prepare`](crate::Renderer::prepare).
+    fn mark_raster(&mut self) {
+        self.raster_dirty = true;
+        self.raster_stamp = issue_raster_stamp();
+    }
+
+    /// The stamp of the chart's current raster content; `None` when the
+    /// stamp counter is exhausted.
+    pub(crate) fn raster_stamp(&self) -> Option<u64> {
+        self.raster_stamp
+    }
+
+    /// The element the raster draws selected, by its element id.
+    pub fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
+    /// Select the element `element_id` names (`Selectable::element_id`:
+    /// `"axis_bottom"`, `"legend"`, `"overlay_0:legend"`, ...), or none.
+    /// The next [`Renderer::prepare`](crate::Renderer::prepare) draws its
+    /// selection box, as [`Renderer::refresh_axis_with_selection`](crate::Renderer::refresh_axis_with_selection)
+    /// does. An id no element of the active layer has draws nothing.
+    pub fn select(&mut self, element_id: Option<&str>) {
+        if self.selected.as_deref() != element_id {
+            self.selected = element_id.map(str::to_owned);
+            self.mark_raster();
         }
     }
 
@@ -608,7 +686,7 @@ impl Chart {
     /// not fit ranges, choose ticks or fit the title band.
     pub fn config_mut(&mut self) -> &mut Config {
         self.data_dirty = true;
-        self.raster_dirty = true;
+        self.mark_raster();
         &mut self.config
     }
 
@@ -621,7 +699,7 @@ impl Chart {
     pub fn with_axis_range_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
         self.data_dirty = true;
-        self.raster_dirty = true;
+        self.mark_raster();
     }
 
     /// Decoration-only change (titles, colors, margins, …): raster only.
@@ -630,7 +708,7 @@ impl Chart {
     /// that band. The caller still refreshes the view before preparing.
     pub fn with_decoration_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
-        self.raster_dirty = true;
+        self.mark_raster();
     }
 
     // Dirty-flag interface.
@@ -660,9 +738,13 @@ impl Chart {
         self.data_dirty = true;
     }
 
-    // Text builders (raster only).
+    // Text builders (raster only). Each takes its text as a label, the way
+    // matplotlib does: `$…$`, `\(…\)` and `$$…$$` spans are TeX, `\$` is a
+    // dollar sign, and text whose TeX does not parse is shown as written
+    // ([`crate::text::rich_segments_from_label`]).
 
-    /// Set the chart title text as plain segments. For styled segments
+    /// Set the chart title text as a label (plain text with `$…$` spans as
+    /// TeX). For styled segments
     /// (bold, italic, …) edit `config_mut().chart_title.text` directly; a host
     /// that wants the same band fit then calls
     /// [`crate::layout::fit_chart_title_margin`] with
@@ -673,9 +755,9 @@ impl Chart {
     /// grows so the first line is not clipped at the top of the chart. A
     /// title that fits leaves the band unchanged.
     pub fn with_title(mut self, text: &str) -> Self {
-        fill_plain_segments(&mut self.config.chart_title.text, text);
+        fill_label_segments(&mut self.config.chart_title.text, text);
         self.fit_chart_title_margin();
-        self.raster_dirty = true;
+        self.mark_raster();
         self
     }
 
@@ -686,21 +768,23 @@ impl Chart {
     fn fit_chart_title_margin(&mut self) -> bool {
         let measure = CpuTextMeasure::for_style(&self.config.draw_style);
         let changed = crate::layout::fit_chart_title_margin(&mut self.config, &measure);
-        self.raster_dirty |= changed;
+        if changed {
+            self.mark_raster();
+        }
         changed
     }
 
-    /// Set the bottom X axis title text.
+    /// Set the bottom X axis title text, a label with `$…$` spans as TeX.
     pub fn with_x_title(mut self, text: &str) -> Self {
-        fill_plain_segments(&mut self.config.bottom_x.title_option.text, text);
-        self.raster_dirty = true;
+        fill_label_segments(&mut self.config.bottom_x.title_option.text, text);
+        self.mark_raster();
         self
     }
 
-    /// Set the left Y axis title text.
+    /// Set the left Y axis title text, a label with `$…$` spans as TeX.
     pub fn with_y_title(mut self, text: &str) -> Self {
-        fill_plain_segments(&mut self.config.left_y.title_option.text, text);
-        self.raster_dirty = true;
+        fill_label_segments(&mut self.config.left_y.title_option.text, text);
+        self.mark_raster();
         self
     }
 
@@ -710,7 +794,8 @@ impl Chart {
     /// override (`line_width` biases nothing today — the symbol glyph
     /// carries the look); entries are separated by explicit `'\n'` segments.
     /// For custom layouts (one-line legends, mid-text symbols) edit
-    /// `config_mut().legend.content.segments` directly.
+    /// `config_mut().legend.content.segments` directly. `label` is a label
+    /// with `$…$` spans as TeX.
     pub fn with_legend_entry(
         mut self,
         label: &str,
@@ -720,9 +805,13 @@ impl Chart {
     ) -> Self {
         let _ = line_width;
         let symbol = crate::config::symbol_segments(&kind, color);
-        crate::config::append_legend_entry(&mut self.config.legend.content, symbol, label);
+        crate::config::append_legend_entry_rich(
+            &mut self.config.legend.content,
+            symbol,
+            rich_segments_from_label(label),
+        );
         self.config.legend.visible = true;
-        self.raster_dirty = true;
+        self.mark_raster();
         self
     }
 
@@ -745,6 +834,9 @@ impl Chart {
     ///   (1 up to 6 decades, 2 up to 12, then `ceil(decades / 6)`),
     ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
     ///   superscript), `sig_digits = 1`.
+    ///
+    /// An axis with a [`crate::config::AxisOptions::unit`] (#273) gets the
+    /// spacing of its shown range, the units `major_spacing` is read in.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
         self.x_range(min, max, apply_view_range);
     }
@@ -777,7 +869,9 @@ impl Chart {
 
     /// Set overlay layer `layer`'s Y range and derive its tick/label settings,
     /// the overlay counterpart of [`Self::set_y_range`]. Log/linear branching
-    /// uses that axis' own scale. A `layer` past the overlay list is a no-op.
+    /// uses that axis' own scale. With the overlay's `link_y` on it follows
+    /// the chart's Y axes, so this sets them ([`Self::set_y_range`]). A
+    /// `layer` past the overlay list is a no-op.
     pub fn set_overlay_y_range(&mut self, layer: usize, min: f64, max: f64) {
         self.overlay_y_range(layer, min, max, apply_view_range);
     }
@@ -785,14 +879,13 @@ impl Chart {
     /// Overlay layer `layer`'s Y range through `apply` (see
     /// [`Self::x_range`]).
     fn overlay_y_range(&mut self, layer: usize, min: f64, max: f64, apply: ApplyRange) {
-        let Some(scale) = self
-            .config
-            .overlays
-            .get(layer)
-            .map(|overlay| overlay.y_axis.scale.clone())
-        else {
+        let Some(overlay) = self.config.overlays.get(layer) else {
             return;
         };
+        if overlay.link_y {
+            return self.y_range(min, max, apply);
+        }
+        let scale = overlay.y_axis.scale.clone();
         self.with_axis_range_change(|c| {
             if let Some(overlay) = c.overlays.get_mut(layer) {
                 apply(&mut overlay.y_axis, min, max, &scale);
@@ -800,19 +893,75 @@ impl Chart {
         });
     }
 
+    /// Set overlay layer `layer`'s own X range (`OverlayLayer::x_axis`) and
+    /// derive its tick/label settings, the overlay counterpart of
+    /// [`Self::set_x_range`]. With the overlay's `link_x` on it follows the
+    /// chart's X axes, so this sets them ([`Self::set_x_range`]). A `layer`
+    /// past the overlay list is a no-op.
+    pub fn set_overlay_x_range(&mut self, layer: usize, min: f64, max: f64) {
+        self.overlay_x_range(layer, min, max, apply_view_range);
+    }
+
+    /// Overlay layer `layer`'s X range through `apply` (see
+    /// [`Self::x_range`]).
+    fn overlay_x_range(&mut self, layer: usize, min: f64, max: f64, apply: ApplyRange) {
+        let Some(overlay) = self.config.overlays.get(layer) else {
+            return;
+        };
+        if overlay.link_x {
+            return self.x_range(min, max, apply);
+        }
+        let scale = overlay.x_axis.scale.clone();
+        self.with_axis_range_change(|c| {
+            if let Some(overlay) = c.overlays.get_mut(layer) {
+                apply(&mut overlay.x_axis, min, max, &scale);
+            }
+        });
+    }
+
     /// Fit overlay layer `layer`'s Y axis to a prepared [`FitExtent`] — see
-    /// [`Self::auto_fit_y_extent`]. A `layer` past the overlay list is a
-    /// no-op.
+    /// [`Self::auto_fit_y_extent`]: its own, or with `link_y` on the chart's
+    /// Y axes it follows. A `layer` past the overlay list is a no-op.
     pub fn auto_fit_overlay_y_extent(&mut self, layer: usize, ext: &FitExtent, padding_ratio: f64) {
-        let Some((min, max)) = self
-            .config
-            .overlays
-            .get(layer)
-            .and_then(|overlay| fitted_axis_range(&overlay.y_axis, ext, padding_ratio))
-        else {
+        let Some((min, max)) = self.config.overlays.get(layer).and_then(|overlay| {
+            let axis = overlay.own_y().unwrap_or(&self.config.left_y);
+            fitted_axis_range(axis, ext, padding_ratio)
+        }) else {
             return;
         };
         self.overlay_y_range(layer, min, max, apply_axis_range);
+    }
+
+    /// Fit overlay layer `layer`'s X axis to a prepared [`FitExtent`], the
+    /// X counterpart of [`Self::auto_fit_overlay_y_extent`]: its own, or
+    /// with `link_x` on the chart's X axes it follows. A `layer` past the
+    /// overlay list is a no-op.
+    pub fn auto_fit_overlay_x_extent(&mut self, layer: usize, ext: &FitExtent, padding_ratio: f64) {
+        let Some((min, max)) = self.config.overlays.get(layer).and_then(|overlay| {
+            let axis = overlay.own_x().unwrap_or(&self.config.bottom_x);
+            fitted_axis_range(axis, ext, padding_ratio)
+        }) else {
+            return;
+        };
+        self.overlay_x_range(layer, min, max, apply_axis_range);
+    }
+
+    /// Auto-fit overlay layer `layer`'s X axis to the union range of the
+    /// given columns' cached statistics — the X counterpart of
+    /// [`Self::auto_fit_overlay_y_union`].
+    pub fn auto_fit_overlay_x_union(
+        &mut self,
+        pool: &ColumnPool,
+        layer: usize,
+        x_ids: &[&str],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut ext = FitExtent::EMPTY;
+        for id in x_ids {
+            ext.union(&Self::slot_extent(pool, id)?);
+        }
+        self.auto_fit_overlay_x_extent(layer, &ext, padding_ratio);
+        Ok(())
     }
 
     /// Auto-fit overlay layer `layer`'s Y axis to the union range of the
@@ -997,7 +1146,7 @@ impl Chart {
     }
 
     /// Fit the chart's z axis to a prepared extent. The colourbar owns the
-    /// z scale, so a chart without one is intentionally left unchanged.
+    /// z scale, so a chart without one is left unchanged.
     /// A successful fit also chooses colourbar ticks and label formatting.
     /// To preserve them, directly edit only `colorbar.axis.min` / `max`.
     pub fn auto_fit_colorbar_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
@@ -1081,9 +1230,10 @@ impl Chart {
     /// Fit `layer`'s axes to prepared extents with proportional padding.
     ///
     /// `Base` (and `Annotations`, which draws on the base axes) and
-    /// `Subplot(i)` fit that chart's X and Y axes. An overlay layer fits only
-    /// its own Y axis and ignores `x`. A linked axis moves its whole link
-    /// group, and subplots linked to a fitted parent axis follow it. Choose
+    /// `Subplot(i)` fit that chart's X and Y axes. An overlay layer fits its
+    /// own Y axis, or with `link_y` on the chart's Y axes it follows, and its
+    /// own X axis while `link_x` is off; with `link_x` on it ignores `x`. A
+    /// linked axis moves its whole link group, and subplots linked to a fitted parent axis follow it. Choose
     /// the series whose extents to union with [`Config::series_fit_roles`];
     /// [`Self::auto_fit_layer_union`] does both from cached column
     /// statistics.
@@ -1102,23 +1252,57 @@ impl Chart {
                 apply_auto_fit_all(c, x, y, padding_ratio);
                 c.sync_subplot_links(None);
             }),
-            LayerRef::Overlay(index) => self.auto_fit_overlay_y_extent(index, y, padding_ratio),
+            LayerRef::Overlay(index) => {
+                let Some(overlay) = self.config.overlays.get(index) else {
+                    return;
+                };
+                let (own_x, linked_y) = (!overlay.link_x, overlay.link_y);
+                if own_x {
+                    self.auto_fit_overlay_x_extent(index, x, padding_ratio);
+                }
+                self.auto_fit_overlay_y_extent(index, y, padding_ratio);
+                // A followed Y axis is the parent's: subplots linked to it
+                // follow, as on a base fit.
+                if linked_y {
+                    self.with_axis_range_change(|c| c.sync_subplot_links(None));
+                }
+            }
             LayerRef::Subplot(index) => {
                 self.auto_fit_subplot_x_extent(index, x, padding_ratio);
                 self.auto_fit_subplot_y_extent(index, y, padding_ratio);
             }
             LayerRef::SubplotOverlay(index, overlay) => {
+                let Some(layer) = self
+                    .config
+                    .subplots
+                    .get(index)
+                    .and_then(|subplot| subplot.config.overlays.get(overlay))
+                else {
+                    return;
+                };
+                let (own_x, linked_y) = (!layer.link_x, layer.link_y);
+                // A linked Y is the subplot's, fitted with its link group.
+                if linked_y {
+                    self.auto_fit_subplot_y_extent(index, y, padding_ratio);
+                }
                 let Some(subplot) = self.config.subplots.get(index) else {
                     return;
                 };
                 let mut inner = Chart::new(subplot.config.clone());
-                inner.auto_fit_overlay_y_extent(overlay, y, padding_ratio);
+                if own_x {
+                    inner.auto_fit_overlay_x_extent(overlay, x, padding_ratio);
+                }
+                if !linked_y {
+                    inner.auto_fit_overlay_y_extent(overlay, y, padding_ratio);
+                }
                 let Some(fitted) = inner.config.overlays.get(overlay) else {
                     return;
                 };
-                let axis = fitted.y_axis.clone();
+                let (x_axis, y_axis) = (fitted.x_axis.clone(), fitted.y_axis.clone());
                 self.with_axis_range_change(|c| {
-                    c.subplots[index].config.overlays[overlay].y_axis = axis;
+                    let target = &mut c.subplots[index].config.overlays[overlay];
+                    target.x_axis = x_axis;
+                    target.y_axis = y_axis;
                 });
             }
         }
@@ -1258,7 +1442,7 @@ impl Chart {
     /// axis's range to the union of the cached statistics of the column
     /// every parallel series names for it, padded by `padding_ratio` (a
     /// logarithmic axis from the columns' smallest positive value): a
-    /// display parameter from column statistics (rule 1), nothing read back.
+    /// display parameter from column statistics, nothing read back.
     /// An axis no series names, or whose columns' extent is degenerate, is
     /// left as it is; a flat chart is left as it is.
     pub fn auto_fit_parallel_axes(
@@ -1301,7 +1485,7 @@ impl Chart {
     /// On a 3D chart (`Config.view_3d`), fit the z axis (`right_y`) to the
     /// union of the height columns' cached statistics of the layer's
     /// heatmaps and contours and of the `z_column` of its scatter and line
-    /// series (#132). A display parameter from column statistics (rule 1):
+    /// series (#132). A display parameter from column statistics:
     /// nothing is read back. A flat chart is left as it is.
     pub fn auto_fit_view_3d_z(
         &mut self,
@@ -1415,22 +1599,17 @@ impl Chart {
         let Some([dx, dy]) = config.line_offset_of(series_id) else {
             return (x, y);
         };
-        let (chart, y_axis) = match config.layer_of_series(series_id) {
-            LayerRef::Subplot(index) => {
-                let chart = &config.subplots[index].config;
-                (chart, &chart.left_y)
-            }
+        // The axes that draw the series: its chart's, or its overlay's own.
+        let (chart, overlay) = match config.layer_of_series(series_id) {
+            LayerRef::Subplot(index) => (&config.subplots[index].config, None),
             LayerRef::SubplotOverlay(index, overlay) => {
-                let chart = &config.subplots[index].config;
-                (chart, &chart.overlays[overlay].y_axis)
+                (&config.subplots[index].config, Some(overlay))
             }
-            LayerRef::Overlay(overlay) => (config, &config.overlays[overlay].y_axis),
-            LayerRef::Base | LayerRef::Annotations => (config, &config.left_y),
+            LayerRef::Overlay(overlay) => (config, Some(overlay)),
+            LayerRef::Base | LayerRef::Annotations => (config, None),
         };
-        (
-            x.shifted(dx, &chart.bottom_x.scale),
-            y.shifted(dy, &y_axis.scale),
-        )
+        let (x_axis, y_axis) = chart.scaling_axes(overlay);
+        (x.shifted(dx, &x_axis.scale), y.shifted(dy, &y_axis.scale))
     }
 }
 
@@ -1612,7 +1791,7 @@ mod tests {
     fn fit_chart_title_margin_marks_the_raster_dirty_only_when_it_grows() {
         let mut c = Chart::new(dummy_config());
         c.with_decoration_change(|cfg| {
-            cfg.chart_title.text.segments = rich_segments_from_text("one\ntwo\nthree");
+            cfg.chart_title.text.segments = crate::text::rich_segments_from_text("one\ntwo\nthree");
         });
         c.consume_data_dirty();
         c.consume_raster_dirty();

@@ -25,13 +25,13 @@ use super::*;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::line_offsets")
 )]
 pub struct LineOffsets {
     /// The member series ids in stacking order: member `k` is shifted by
     /// `k` steps. Line kinds only (`Line`, `ScatterLine` and the
-    /// `LineScatterErrorbar*` kinds), each id once, with no cap on the
-    /// number of members (#107): each is drawn as an internal panel of its
+    /// `LineScatterErrorbar*` kinds), each id once, with any number of
+    /// members: each is drawn as an internal panel of its
     /// own (`Config::expand`) with the textures of an overlay layer, and a
     /// member whose textures cannot be allocated fails with the GPU
     /// allocation error.
@@ -48,17 +48,6 @@ pub struct LineOffsets {
 #[cfg(feature = "serde")]
 pub(super) fn is_zero_step(step: &f64) -> bool {
     *step == 0.0
-}
-
-impl Default for LineOffsets {
-    /// No members and no steps.
-    fn default() -> Self {
-        Self {
-            series: Vec::new(),
-            step_y: 0.0,
-            step_x: 0.0,
-        }
-    }
 }
 
 impl LineOffsets {
@@ -105,6 +94,9 @@ impl DataRenderType {
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)
+            // A monotonic group's channels share its x grid, not offsets
+            // (#271).
+            | DataRenderType::MonotonicLine(_)
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }

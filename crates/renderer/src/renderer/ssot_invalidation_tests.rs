@@ -60,6 +60,12 @@ fn edits() -> Vec<Edit> {
         Some(crate::Color::from_rgb8(240, 244, 250)),
         Prefix
     );
+    // The chart fill (#265) is the grid raster's first part too.
+    edit!(
+        background,
+        Some(crate::Color::from_rgb8(250, 246, 236)),
+        Prefix
+    );
     cases.push(Edit {
         name: "identical config",
         apply: |_| {},
@@ -170,12 +176,33 @@ fn edits() -> Vec<Edit> {
             edit!($axis.major_tick_length, 8.0, Packed);
             // Only the axis line moves; the data area does not.
             edit!($axis.cross_at, Some(0.5), Prefix);
+            // The unit (#273) changes what the axis prints and where its
+            // ticks fall, not the data: the axis raster is redone.
+            edit!(
+                $axis.unit,
+                Some(crate::config::AxisUnit::new(2.0, 1.0)),
+                Prefix
+            );
             // A linear axis ignores the log tick policy: the axis raster is
             // redone (its config changed) and draws the same pixels. The
             // log axes of `log_tick_edits` draw new ones.
             cases.push(Edit {
                 name: concat!(stringify!($axis), ".log_ticks"),
                 apply: |c| c.$axis.log_ticks = LogTickPolicy::Adaptive,
+                work: Work::Prefix,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::Unchanged,
+                streams: true,
+            });
+            // The tick label clearance (#272) is a label style edit: the
+            // axis raster is redone. No label of the baseline overlaps a
+            // label across or a break mark, so `Keep` draws the same
+            // pixels; `label_clearance_edits` drops one.
+            cases.push(Edit {
+                name: concat!(stringify!($axis), ".label_style.clearance"),
+                apply: |c| c.$axis.label_style.clearance = crate::config::LabelClearanceMode::Keep,
                 work: Work::Prefix,
                 differs: true,
                 raster: true,
@@ -725,6 +752,13 @@ fn colorbar_edits() -> Vec<Edit> {
     bar!(axis.title_option.offset_y, 4.0, Prefix, Any);
     // The baseline bar is linear, which ignores the log tick policy.
     bar!(axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
+    // The colour ramp stays on the data; the labels print the unit (#273).
+    bar!(
+        axis.unit,
+        Some(crate::config::AxisUnit::new(2.0, 1.0)),
+        Prefix,
+        Changed
+    );
     cases
 }
 
@@ -865,6 +899,101 @@ fn break_edits() -> Vec<Edit> {
         Work::Prefix,
         Pixels::Changed,
     );
+    cases
+}
+
+/// The baseline with a corner where the labels meet (#272): `0.00` on
+/// both axes at the bottom-left corner, in fonts large enough that the
+/// lowest y label overlaps the first x label, which `Auto` then drops.
+fn baseline_with_crowded_corner() -> Config {
+    let mut c = baseline();
+    for (a, font) in [(&mut c.bottom_x, 24.0), (&mut c.left_y, 40.0)] {
+        a.min = 0.0;
+        a.label_style.font_size = font;
+        a.label_style.format =
+            crate::format::LabelFormat::Plain(crate::format::PlainNumberFormat {
+                decimals: Some(2),
+                trim_zeros: false,
+            });
+    }
+    // The corner drops a label as drawn, and `Keep` draws it.
+    let left = |c: &Config| {
+        let mut n = 0;
+        crate::select::emit_element(
+            c,
+            &crate::layout::Element::AxisLabel(Side::Left),
+            &crate::CpuTextMeasure::for_style(&c.draw_style),
+            &mut crate::sink::Parts(&mut |_| n += 1),
+        );
+        n
+    };
+    let mut keep = c.clone();
+    keep.left_y.label_style.clearance = crate::config::LabelClearanceMode::Keep;
+    assert_eq!(left(&c) + 1, left(&keep), "the corner y label yields");
+    c
+}
+
+/// Tick label clearance edits (#272) on a corner where the labels overlap:
+/// a `Keep` y axis draws the corner label `Auto` dropped; the x axis does
+/// not yield there, so its `Keep` draws the same pixels. Either way the
+/// axis raster is redone and the data is untouched.
+fn label_clearance_edits() -> Vec<Edit> {
+    use crate::config::LabelClearanceMode::Keep;
+    let mut cases = Vec::new();
+    for (name, apply, pixels) in [
+        (
+            "left_y.label_style.clearance (crowded corner)",
+            (|c: &mut Config| c.left_y.label_style.clearance = Keep) as fn(&mut Config),
+            Pixels::Changed,
+        ),
+        (
+            "bottom_x.label_style.clearance (crowded corner)",
+            |c| c.bottom_x.label_style.clearance = Keep,
+            Pixels::Unchanged,
+        ),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Prefix,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels,
+            streams: true,
+        });
+    }
+    cases
+}
+
+/// A unit on a logarithmic axis (#273): its decades are re-planned on the
+/// shown value, an axis chrome edit like the tick policy.
+fn log_unit_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    for (name, apply) in [
+        (
+            "top_x.unit (log axis)",
+            (|c: &mut Config| c.top_x.unit = Some(crate::config::AxisUnit::new(1e3, 0.0)))
+                as fn(&mut Config),
+        ),
+        ("right_y.unit (log axis)", |c| {
+            c.right_y.unit = Some(crate::config::AxisUnit::new(1e3, 0.0))
+        }),
+        ("colorbar.axis.unit (log axis)", |c| {
+            c.colorbar.as_mut().unwrap().axis.unit = Some(crate::config::AxisUnit::new(1e3, 0.0))
+        }),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Prefix,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            streams: true,
+        });
+    }
     cases
 }
 
@@ -1129,7 +1258,17 @@ fn overlay_edits() -> Vec<Edit> {
     overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
     // The baseline overlay axis is linear, which ignores the policy.
     overlay!(y_axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
+    overlay!(
+        y_axis.unit,
+        Some(crate::config::AxisUnit::new(2.0, 1.0)),
+        Prefix,
+        Changed
+    );
     overlay!(y_axis.breaks, Some(cut(0.6, 1.2)), Packed, Changed);
+    // The links choose the axes the overlay panel scales by and draws, so
+    // each is geometry of its own panel.
+    overlay!(link_x, false, Packed, Changed);
+    overlay!(link_y, true, Packed, Changed);
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
         apply: |c| {
@@ -1145,6 +1284,48 @@ fn overlay_edits() -> Vec<Edit> {
         pixels: Pixels::Changed,
         streams: false,
     });
+    cases
+}
+
+/// Edits of an overlay's own X axis run against [`baseline_with_overlay`]
+/// with `link_x` off, so the overlay draws its X axis on the top side and
+/// scales by it: its range, scale and direction are geometry of its panel,
+/// its band widens the shared top margin, and the rest is chrome of the
+/// overlay panel, as for its Y axis (`overlay_edits`).
+fn overlay_x_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    macro_rules! overlay {
+        ($($field:ident).+, $value:expr, $work:ident, $pixels:ident) => {
+            cases.push(Edit {
+                name: concat!("overlays[0].", stringify!($($field).+), " (own x)"),
+                apply: |c| c.overlays[0].$($field).+ = $value,
+                work: Work::$work,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::$pixels,
+                streams: false,
+            });
+        };
+    }
+    overlay!(link_x, true, Packed, Changed);
+    overlay!(x_axis.min, 0.2, Packed, Changed);
+    overlay!(x_axis.max, 1.4, Packed, Changed);
+    overlay!(x_axis.inverted, true, Packed, Changed);
+    overlay!(x_axis.out_margin, 70.0, Packed, Changed);
+    overlay!(x_axis.major_tick_length, 12.0, Packed, Changed);
+    overlay!(x_axis.breaks, Some(cut(0.6, 0.9)), Packed, Changed);
+    overlay!(x_axis.major_spacing, 0.25, Prefix, Changed);
+    overlay!(x_axis.line_width, 3.0, Prefix, Changed);
+    overlay!(x_axis.label_style.font_size, 13.0, Prefix, Changed);
+    overlay!(x_axis.label_style.label_offset_y, 4.0, Prefix, Changed);
+    overlay!(
+        x_axis.title_option.text,
+        RichText::plain("Top", Color::BLACK, 10.0, ""),
+        Prefix,
+        Changed
+    );
+    overlay!(x_axis.title_option.offset_y, 4.0, Prefix, Changed);
     cases
 }
 
@@ -1485,6 +1666,20 @@ fn baseline_with_overlay() -> Config {
     c
 }
 
+fn baseline_with_overlay_x() -> Config {
+    let mut c = baseline_with_overlay();
+    let overlay = &mut c.overlays[0];
+    overlay.link_x = false;
+    overlay.x_axis.min = 0.0;
+    overlay.x_axis.max = 1.6;
+    overlay.x_axis.major_spacing = 0.4;
+    overlay.x_axis.out_margin = 35.0;
+    overlay.x_axis.label_style.font_size = 10.0;
+    overlay.x_axis.title_option.visible = true;
+    overlay.x_axis.title_option.text = RichText::plain("Own x", Color::BLACK, 10.0, "");
+    c
+}
+
 fn values() -> (crate::Column<f32>, crate::Column<f32>) {
     (
         crate::Column {
@@ -1555,14 +1750,14 @@ fn frame_values(
     revision: u64,
 ) -> (Vec<u8>, usize) {
     let c = r.chart_config(id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(c.clone()), c.chart_area.0)
         .unwrap();
     if resident {
         let prepared = r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         return (paint_frame_pixels(r, &prepared, 1), 0);
@@ -1612,9 +1807,9 @@ fn frame_values(
         crate::StreamingSelectionRequest::Complete { .. }
     ));
     wait_stream_slots(r, 0);
-    r.prepare_registered(&[RegisteredChartDrawItem {
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
         chart_id: id,
-        view: &view,
+        view: &mut view,
     }])
     .unwrap();
     assert!(matches!(
@@ -1635,10 +1830,13 @@ fn matrix(resident: bool, cache: bool) {
         (baseline(), edits()),
         (baseline_with_colorbar(), colorbar_edits()),
         (baseline_with_overlay(), overlay_edits()),
+        (baseline_with_overlay_x(), overlay_x_edits()),
         (baseline_with_subplot(), subplot_edits()),
         (baseline_with_annotations(), annotation_edits()),
         (baseline_with_categories(), category_edits()),
         (baseline_with_log_axes(), log_tick_edits()),
+        (baseline_with_log_axes(), log_unit_edits()),
+        (baseline_with_crowded_corner(), label_clearance_edits()),
         (baseline_with_breaks(), break_edits()),
         (in_unit_interval(baseline()), probability_edits()),
         (
@@ -1825,6 +2023,7 @@ fn config_fields_are_classified() {
         bar_groups: _,      // "bar_groups (None -> Some)" + resident display mutations
         line_offsets: _,    // "line_offsets (None -> Some)" + resident display mutations
         plot_background: _, // edit!(plot_background): Prefix, raster
+        background: _,      // edit!(background): Prefix, raster
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,
@@ -1850,6 +2049,7 @@ fn config_fields_are_classified() {
         cross_at: _,   // axis!(...).cross_at: Prefix
         log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
         breaks: _, // breaks (None -> Some) + break_edits(): ranges/style/gap Packed, mark/frames Prefix
+        unit: _,   // axis!(...).unit + bar!/overlay! + log_unit_edits(): Prefix
     } = top_x;
     let LabelStyle {
         visible: _,
@@ -1861,6 +2061,7 @@ fn config_fields_are_classified() {
         label_offset_y: _,
         format: _,
         significant_digits: _,
+        clearance: _, // axis!(...).label_style.clearance + label_clearance_edits(): Prefix
     } = label_style;
     let AxisTitleOptions {
         text: _,
@@ -1927,6 +2128,9 @@ fn config_fields_are_classified() {
     } = crate::AnnotationLayer::default();
     let crate::OverlayLayer {
         y_axis: _, // every AxisOptions field, as overlay!(y_axis.*)
+        link_x: _, // overlays[0].link_x, both ways (overlay_x_edits)
+        x_axis: _, // overlay_x_edits(): x_axis.* as y_axis.* (own x)
+        link_y: _, // overlays[0].link_y
         series: _, // overlays[0].series
         legend: _, // overlays[0].legend (None -> Some)
     } = overlays.into_iter().next().unwrap_or_default();
@@ -3097,4 +3301,174 @@ fn feynman_edits_refresh_first_frame_without_reupload() {
         assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
         assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
     }
+}
+
+/// A monotonic series (#271). Its line's colour, width (a thin one and a
+/// wide one: the columns kept beyond the plot's edges are fixed) and dash
+/// are style: each edit draws from the envelope the last full call built,
+/// without the source and without writing its columns again, and the first
+/// frame equals a fresh renderer's. The x range moves the x-to-pixel
+/// mapping: the chart's document editor refuses it and changes nothing,
+/// and the full call sets it. The channel names other samples of the same group's
+/// data, so it needs no source; a group without data draws nothing until
+/// its full call. The y range is not mapping. No frame ever fails for a
+/// missing source.
+#[test]
+fn monotonic_edits_refresh_first_frame_or_go_through_the_full_call() {
+    use crate::monotonic::{MappingChange, MonotonicSlices};
+    use crate::renderer::{MonotonicChartId, MonotonicRange};
+    // A monotonic chart beside the fixture's columns (#271).
+    let monotonic = |config: &Config| {
+        let (mut r, _) = fixture(config, true, false);
+        let id = r
+            .register_monotonic_chart(config.clone(), Vec::new())
+            .unwrap()
+            .0;
+        (r, id)
+    };
+    let edit = |r: &mut Renderer, id: ChartId, config: Config| {
+        r.monotonic_chart(MonotonicChartId(id))
+            .unwrap()
+            .edit_config(|editor| editor.assign(config))
+            .unwrap()
+    };
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline();
+    config.legend.visible = false;
+    config.bottom_x.min = 0.0;
+    config.bottom_x.max = 19_999.0;
+    config.bottom_x.major_spacing = 5_000.0;
+    let a: Vec<f64> = (0..20_000)
+        .map(|i| 0.5 + 0.4 * (i as f64 * 1e-3).sin())
+        .collect();
+    let b: Vec<f64> = a.iter().map(|v| 1.1 - v).collect();
+    let channels = [a.as_slice(), b.as_slice()];
+    let source = MonotonicSlices::new(0.0, 1.0, &channels);
+    // The full call, at the x range the chart's document has.
+    let supply = |r: &mut Renderer, id: ChartId, group: &str| {
+        let (min, max) = r.chart_config(id).unwrap().bottom_x.data_range();
+        r.set_monotonic(id, group, &source, MonotonicRange::X { min, max })
+            .unwrap();
+    };
+    let fresh_frame = |config: &Config, series: &SeriesConfig, group: &str| {
+        let (mut fresh, fresh_id) = monotonic(config);
+        fresh
+            .set_chart_series_unreported(fresh_id, vec![series.clone()])
+            .unwrap();
+        supply(&mut fresh, fresh_id, group);
+        frame(&mut fresh, fresh_id, true).0
+    };
+    let (mut r, id) = monotonic(&config);
+    let mut series = SeriesConfig::monotonic_line("s", "g", 0);
+    r.set_chart_series_unreported(id, vec![series.clone()])
+        .unwrap();
+    // No data yet: the series draws nothing, and the frame draws.
+    assert_eq!(
+        r.needs_source(id).unwrap()[0].change,
+        MappingChange::NotBuilt
+    );
+    let empty = frame(&mut r, id, true).0;
+    supply(&mut r, id, "g");
+    let mut previous = frame(&mut r, id, true).0;
+    assert_ne!(previous, empty, "the full call draws the series");
+    let epoch = r.pool.allocation_epoch("s.monotonic.x");
+
+    // Style: drawn from the envelope as it is.
+    let styles: [(&str, fn(&mut crate::data_config::DataLineStyleConfig)); 4] = [
+        ("colour", |line| {
+            line.line_color = Color::new(0.8, 0.1, 0.1, 1.0)
+        }),
+        ("width", |line| line.line_width = 3.0),
+        ("wide width", |line| line.line_width = 40.0),
+        ("dash", |line| {
+            line.line_style = crate::line::LineStylePreset::Dash;
+        }),
+    ];
+    for (name, apply) in styles {
+        let DataRenderType::MonotonicLine(monotonic) = &mut series.render_type else {
+            unreachable!()
+        };
+        apply(&mut monotonic.line);
+        r.set_chart_series_unreported(id, vec![series.clone()])
+            .unwrap();
+        assert!(r.needs_source(id).unwrap().is_empty(), "{name}");
+        let actual = frame(&mut r, id, true).0;
+        assert_eq!(actual, fresh_frame(&config, &series, "g"), "{name}");
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        assert_eq!(
+            r.pool.allocation_epoch("s.monotonic.x"),
+            epoch,
+            "{name}: no column written"
+        );
+        previous = actual;
+    }
+
+    // The channel reads the group's other samples: no source. A group
+    // without data draws nothing until its full call.
+    let DataRenderType::MonotonicLine(monotonic) = &mut series.render_type else {
+        unreachable!()
+    };
+    monotonic.channel = 1;
+    r.set_chart_series_unreported(id, vec![series.clone()])
+        .unwrap();
+    let actual = frame(&mut r, id, true).0;
+    assert_eq!(actual, fresh_frame(&config, &series, "g"), "channel");
+    assert_ne!(actual, previous, "channel: the edit must be visible");
+    let DataRenderType::MonotonicLine(monotonic) = &mut series.render_type else {
+        unreachable!()
+    };
+    monotonic.group = "h".into();
+    r.set_chart_series_unreported(id, vec![series.clone()])
+        .unwrap();
+    assert_eq!(r.needs_source(id).unwrap().len(), 1, "group");
+    assert_eq!(frame(&mut r, id, true).0, empty, "a group without data");
+    supply(&mut r, id, "h");
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        fresh_frame(&config, &series, "h"),
+        "group"
+    );
+
+    // The config: the x range is mapping, the y range is not.
+    let mut edited = r.chart_config(id).unwrap().clone();
+    edited.left_y.max = 1.4;
+    edit(&mut r, id, edited.clone()).unwrap();
+    assert!(r.needs_source(id).unwrap().is_empty(), "y range");
+    let ranged = frame(&mut r, id, true).0;
+    assert_eq!(ranged, fresh_frame(&edited, &series, "h"), "y range");
+    edited.bottom_x.max = 9_999.0;
+    assert_eq!(
+        edit(&mut r, id, edited.clone()),
+        Err(crate::RuleKind::MonotonicMappingEdit),
+        "the editor refuses an x range"
+    );
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        ranged,
+        "a refused range draws as before"
+    );
+    r.set_monotonic(
+        id,
+        "h",
+        &source,
+        MonotonicRange::X {
+            min: 0.0,
+            max: 9_999.0,
+        },
+    )
+    .unwrap();
+    let x = &r.chart_config(id).unwrap().bottom_x;
+    assert_eq!(
+        (x.min, x.max),
+        (0.0, 9_999.0),
+        "the full call sets the range"
+    );
+    let edited = r.chart_config(id).unwrap().clone();
+    assert_eq!(
+        frame(&mut r, id, true).0,
+        fresh_frame(&edited, &series, "h"),
+        "x range"
+    );
 }

@@ -2230,18 +2230,18 @@ fn prepare_preflights_hidden_invalid_spacing_before_gpu_mutation() {
         config: &config,
         style: &style,
     }];
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
     let before = renderer
         .gpu_memory_usage()
         .creations_of(GpuResourceKind::ContourScratch);
-    assert_contour_spacing_error(renderer.prepare(&items), false);
+    assert_contour_spacing_error(renderer.prepare(&mut items), false);
     assert_eq!(
         renderer
             .gpu_memory_usage()
@@ -2348,16 +2348,16 @@ fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
         config: &config,
         style: &style,
     }];
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
 
-    let first = renderer.prepare(&items).unwrap();
+    let first = renderer.prepare(&mut items).unwrap();
     let before = renderer.contour_cache["label-cache"]
         .contour()
         .unwrap()
@@ -2377,7 +2377,7 @@ fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
         .unwrap()
         .font_generation = crate::text_render::font_generation().wrapping_add(1);
 
-    let second = renderer.prepare(&items).unwrap();
+    let second = renderer.prepare(&mut items).unwrap();
     let entry = renderer.contour_cache["label-cache"].contour().unwrap();
     let after = entry.label.as_ref().unwrap().atlas_identity();
     assert_ne!(before, after, "font generation drift reused a stale atlas");
@@ -2520,7 +2520,7 @@ fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
         let Some((mut renderer, chart, _)) = field_prepare_fixture() else {
             return;
         };
-        let view = renderer
+        let mut view = renderer
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         let accepted = state_test_contour_variant(
@@ -2536,12 +2536,12 @@ fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
             config: &accepted,
             style: &style,
         }];
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
-        drop(renderer.prepare(&items).unwrap());
+        drop(renderer.prepare(&mut items).unwrap());
         let creations = renderer
             .gpu_memory_usage()
             .creations_of(crate::gpu_memory::GpuResourceKind::FieldTable);
@@ -2561,12 +2561,12 @@ fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
             config: &rejected,
             style: &style,
         }];
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
-        assert_contour_limit_error(renderer.prepare(&items));
+        assert_contour_limit_error(renderer.prepare(&mut items));
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -3388,7 +3388,7 @@ fn prepared_frame_keeps_style_charge_after_style_owner_is_dropped() {
     add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
     let cfg = state_test_scatter("point", None, "x", "y");
     let chart = Chart::new(crate::default::default_config());
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let style_bytes = renderer.style_allocation_bytes(&cfg).unwrap();
@@ -3399,9 +3399,9 @@ fn prepared_frame_keeps_style_charge_after_style_owner_is_dropped() {
             style: &style,
         }];
         renderer
-            .prepare(&[ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
+            .prepare(&mut [ChartDrawItem {
+                view: &mut view,
+                chart: &chart,
                 series: &series,
             }])
             .unwrap()
@@ -4945,12 +4945,12 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
 fn empty_chart_items<'a>(
     renderer: &Renderer,
     chart: &'a Chart,
-    view: &'a ChartView,
+    view: &'a mut ChartView,
 ) -> [ChartDrawItem<'a>; 1] {
     let _ = renderer;
     [ChartDrawItem {
         view,
-        chart_config: chart.config(),
+        chart,
         series: &[],
     }]
 }
@@ -4968,11 +4968,11 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
         height: 240,
     });
     let chart = Chart::new(config);
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let items = empty_chart_items(&renderer, &chart, &view);
-    renderer.prepare(&items).unwrap();
+    let mut items = empty_chart_items(&renderer, &chart, &mut view);
+    renderer.prepare(&mut items).unwrap();
 
     assert!(renderer.line_pipeline().is_none());
     assert!(renderer.scatter_pipeline().is_none());
@@ -5078,7 +5078,7 @@ fn histogram_prepare_compiles_only_the_bar_pipeline() {
         height: 240,
     });
     let chart = Chart::new(config);
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let series_cfg = state_test_histogram(
@@ -5092,12 +5092,12 @@ fn histogram_prepare_compiles_only_the_bar_pipeline() {
         config: &series_cfg,
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
-    renderer.prepare(&items).unwrap();
+    renderer.prepare(&mut items).unwrap();
 
     assert!(renderer.bar_pipeline().is_some());
     assert!(renderer.line_pipeline().is_none());
@@ -5245,7 +5245,7 @@ fn line_prepare_compiles_only_the_line_pipeline() {
         height: 240,
     });
     let chart = Chart::new(config);
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let series_cfg = state_test_line("line", "lx", "ly");
@@ -5254,12 +5254,12 @@ fn line_prepare_compiles_only_the_line_pipeline() {
         config: &series_cfg,
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
-    renderer.prepare(&items).unwrap();
+    renderer.prepare(&mut items).unwrap();
     assert!(renderer.line_pipeline().is_some());
     assert!(renderer.scatter_pipeline().is_none());
     assert!(renderer.errorbar_pipeline().is_none());
@@ -5285,7 +5285,7 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
         height: 240,
     });
     let chart = Chart::new(config);
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let series_cfg = SeriesConfig {
@@ -5307,12 +5307,12 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
         config: &series_cfg,
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
-    renderer.prepare(&items).unwrap();
+    renderer.prepare(&mut items).unwrap();
     assert!(renderer.line_pipeline().is_none());
     assert!(renderer.scatter_pipeline().is_some());
     assert!(renderer.errorbar_pipeline().is_none());
@@ -5340,7 +5340,7 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
         height: 240,
     });
     let chart = Chart::new(config);
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let series_cfg = SeriesConfig {
@@ -5368,12 +5368,12 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
         config: &series_cfg,
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
-    renderer.prepare(&items).unwrap();
+    renderer.prepare(&mut items).unwrap();
     assert!(renderer.line_pipeline().is_none());
     assert!(renderer.scatter_pipeline().is_some());
     assert!(renderer.errorbar_pipeline().is_some());
@@ -5968,7 +5968,7 @@ fn render_mapped_style_case(
     let w = chart.config().chart_area.0.width;
     let h = chart.config().chart_area.0.height;
     let (screen, scatter_mapped, errorbar_mapped, pick_ring_mapped) = {
-        let view = renderer
+        let mut view = renderer
             .create_chart_view(chart, chart.config().chart_area.0)
             .unwrap();
         let series: Vec<Series<'_>> = series_cfgs
@@ -5976,12 +5976,12 @@ fn render_mapped_style_case(
             .zip(styles.iter())
             .map(|(cfg, style)| Series { config: cfg, style })
             .collect();
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
-        let prepared = renderer.prepare(&items).unwrap();
+        let prepared = renderer.prepare(&mut items).unwrap();
         let pipeline_state = (
             renderer.pipelines.scatter_mapped.is_some(),
             renderer.pipelines.errorbar_mapped.is_some(),
@@ -6524,20 +6524,20 @@ fn value_map_columns_must_cover_every_point() {
         Some(("s", SizeScale::Area)),
     )];
     let style = renderer.create_style_for_series(&series[0]).unwrap();
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let drawn = [Series {
         config: &series[0],
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &drawn,
     }];
     assert!(matches!(
-        renderer.prepare(&items),
+        renderer.prepare(&mut items),
         Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) if reason.to_string().contains("size map")
     ));
 }
@@ -6809,6 +6809,65 @@ fn streamed_series_reject_range_bars() {
         Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
             if reason.to_string().contains("range bar") && reason.to_string().contains("streamed sources are not supported")
     ));
+}
+
+/// A histogram's columns are the host's bins, one row per bin, so it is
+/// resident only (#284): a streamed one is rejected with an explicit reason
+/// before a cursor exists, in either orientation and with or without bar
+/// style overrides.
+#[test]
+fn streamed_series_reject_histograms() {
+    let config = basic_errorbar_chart().config().clone();
+    for orientation in [
+        crate::data_config::BarOrientation::Vertical,
+        crate::data_config::BarOrientation::Horizontal,
+    ] {
+        for overrides in [
+            None,
+            Some(vec![crate::data_config::DataBarStyleOverride {
+                index: 1,
+                style: Default::default(),
+            }]),
+        ] {
+            let series = SeriesConfig {
+                series_id: "stream".into(),
+                source_id: None,
+                label: None,
+                x_column: "x".into(),
+                y_column: "y".into(),
+                z_column: None,
+                render_type: DataRenderType::Histogram {
+                    bar: DataBarStyleConfig {
+                        fill_color: Color::BLACK,
+                        border_color: Color::BLACK,
+                        border_width: 1.0,
+                        baseline: 0.0,
+                        gap_px: 0.0,
+                        width_ratio: 1.0,
+                        orientation: orientation.clone(),
+                        bar_style_overrides: overrides,
+                    },
+                },
+            };
+            let refused = PrepareContext::validate_stream_series(&config, &series);
+            assert!(
+                matches!(
+                    &refused,
+                    Err(FiggyError::InvalidSeriesConfig {
+                        series_id,
+                        kind: crate::RuleKind::StreamedHistogram,
+                    }) if series_id == "stream"
+                ),
+                "{refused:?}"
+            );
+            let reason = refused.unwrap_err().to_string();
+            assert!(
+                reason.contains("histogram")
+                    && reason.contains("streamed sources are not supported"),
+                "{reason}"
+            );
+        }
+    }
 }
 
 /// Streaming is not extended to ternary series (CLAUDE.md rule 8): a
@@ -7576,15 +7635,15 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
             config: &series_configs[0],
             style: &style,
         }];
-        let view = r
+        let mut view = r
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &drawable,
         }];
-        r.prepare(&items)
+        r.prepare(&mut items)
             .expect("single-direction errorbar prepare");
     }
     assert!(r.pool().slot("__zero").is_none());
@@ -7702,23 +7761,23 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
         config: &config_b,
         style: &style_b,
     }];
-    let view_a = renderer
+    let mut view_a = renderer
         .create_chart_view(&chart_a, chart_a.config().chart_area.0)
         .unwrap();
-    let view_b = renderer
+    let mut view_b = renderer
         .create_chart_view(&chart_b, chart_b.config().chart_area.0)
         .unwrap();
     let prepared_a = renderer
-        .prepare(&[ChartDrawItem {
-            view: &view_a,
-            chart_config: chart_a.config(),
+        .prepare(&mut [ChartDrawItem {
+            view: &mut view_a,
+            chart: &chart_a,
             series: &series_a,
         }])
         .unwrap();
     let prepared_b = renderer
-        .prepare(&[ChartDrawItem {
-            view: &view_b,
-            chart_config: chart_b.config(),
+        .prepare(&mut [ChartDrawItem {
+            view: &mut view_b,
+            chart: &chart_b,
             series: &series_b,
         }])
         .unwrap();
@@ -8692,20 +8751,20 @@ fn arc_results_reuse_only_exact_compute_keys() {
         config: &series_cfg,
         style: &style,
     }];
-    let view_a = r
+    let mut view_a = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let view_b = r
+    let mut view_b = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let items_a = [ChartDrawItem {
-        view: &view_a,
-        chart_config: chart.config(),
+    let mut items_a = [ChartDrawItem {
+        view: &mut view_a,
+        chart: &chart,
         series: &series,
     }];
-    let items_b = [ChartDrawItem {
-        view: &view_b,
-        chart_config: chart.config(),
+    let mut items_b = [ChartDrawItem {
+        view: &mut view_b,
+        chart: &chart,
         series: &series,
     }];
 
@@ -8721,10 +8780,10 @@ fn arc_results_reuse_only_exact_compute_keys() {
             .clone()
     };
 
-    let p1 = r.prepare(&items_a).unwrap();
+    let p1 = r.prepare(&mut items_a).unwrap();
     let a1 = arc_of(&p1);
     let creations = r.gpu_memory_usage().creations_of(GpuResourceKind::ArcScan);
-    let p2 = r.prepare(&items_b).unwrap();
+    let p2 = r.prepare(&mut items_b).unwrap();
     let a2 = arc_of(&p2);
     assert!(
         a1 == a2,
@@ -8753,7 +8812,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
         .unwrap();
     let changed_arc = changed.prefix.0.clone();
     assert!(
-        arc_of(&r.prepare(&items_a).unwrap()) != changed_arc,
+        arc_of(&r.prepare(&mut items_a).unwrap()) != changed_arc,
         "a changed geometry transform must not overwrite the old result"
     );
     drop(changed);
@@ -8919,15 +8978,15 @@ fn contour_projection_matches_fixed_four_step_gpu_oracle() {
                 config: &config,
                 style: &style,
             }];
-            let view = renderer
+            let mut view = renderer
                 .create_chart_view(&chart, chart.config().chart_area.0)
                 .unwrap();
-            let items = [ChartDrawItem {
-                view: &view,
-                chart_config: chart.config(),
+            let mut items = [ChartDrawItem {
+                view: &mut view,
+                chart: &chart,
                 series: &series,
             }];
-            let prepared = renderer.prepare(&items).unwrap();
+            let prepared = renderer.prepare(&mut items).unwrap();
             let pixels = paint_prepared_rgba(&renderer, &prepared, 320, 240);
             let has_labels = pixels
                 .chunks_exact(4)
@@ -9008,15 +9067,15 @@ fn render_labelled_contour_for_test(
         config: &config,
         style: &style,
     }];
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
-    let prepared = renderer.prepare(&items).unwrap();
+    let prepared = renderer.prepare(&mut items).unwrap();
     paint_prepared_rgba(&renderer, &prepared, 320, 240)
 }
 
@@ -9141,20 +9200,20 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
         config: &automatic_b,
         style: &style_b,
     }];
-    let view_a = renderer
+    let mut view_a = renderer
         .create_chart_view(&chart_a, chart_a.config().chart_area.0)
         .unwrap();
-    let view_b = renderer
+    let mut view_b = renderer
         .create_chart_view(&chart_b, chart_b.config().chart_area.0)
         .unwrap();
-    let items_a = [ChartDrawItem {
-        view: &view_a,
-        chart_config: chart_a.config(),
+    let mut items_a = [ChartDrawItem {
+        view: &mut view_a,
+        chart: &chart_a,
         series: &series_a,
     }];
-    let items_b = [ChartDrawItem {
-        view: &view_b,
-        chart_config: chart_b.config(),
+    let mut items_b = [ChartDrawItem {
+        view: &mut view_b,
+        chart: &chart_b,
         series: &series_b,
     }];
     let placement_of = |prepared: &PreparedFrame| {
@@ -9167,9 +9226,9 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
             .placement_identity()
     };
 
-    let first = renderer.prepare(&items_a).unwrap();
+    let first = renderer.prepare(&mut items_a).unwrap();
     let first_id = placement_of(&first);
-    let second = renderer.prepare(&items_b).unwrap();
+    let second = renderer.prepare(&mut items_b).unwrap();
     let second_id = placement_of(&second);
     assert_ne!(
         first_id, second_id,
@@ -9192,7 +9251,7 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
         .gpu_memory_usage()
         .creations_of(GpuResourceKind::ContourScratch);
     drop((first, second));
-    let reused = renderer.prepare(&items_a).unwrap();
+    let reused = renderer.prepare(&mut items_a).unwrap();
     let reused_id = placement_of(&reused);
     assert_eq!(
         reused_id, first_id,
@@ -9212,11 +9271,11 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
     // command buffer must still read A's immutable anchors and indirect
     // count, while its evicted charge remains retired until submission.
     let baseline_a = {
-        let prepared = renderer.prepare(&items_a).unwrap();
+        let prepared = renderer.prepare(&mut items_a).unwrap();
         paint_prepared_rgba(&renderer, &prepared, 320, 240)
     };
     let delayed_a = {
-        let prepared = renderer.prepare(&items_a).unwrap();
+        let prepared = renderer.prepare(&mut items_a).unwrap();
         record_prepared_rgba(&renderer, &prepared, 320, 240)
     };
     let mut pixels_c = None;
@@ -9231,15 +9290,15 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
             },
             (min, 2.0 + f64::from(key) * 0.25),
         );
-        let view_c = renderer
+        let mut view_c = renderer
             .create_chart_view(&chart_c, chart_c.config().chart_area.0)
             .unwrap();
-        let items_c = [ChartDrawItem {
-            view: &view_c,
-            chart_config: chart_c.config(),
+        let mut items_c = [ChartDrawItem {
+            view: &mut view_c,
+            chart: &chart_c,
             series: &series_a,
         }];
-        let prepared = renderer.prepare(&items_c).unwrap();
+        let prepared = renderer.prepare(&mut items_c).unwrap();
         pixels_c = Some(paint_prepared_rgba(&renderer, &prepared, 320, 240));
     }
     assert_eq!(
@@ -9298,18 +9357,18 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
         config: &explicit,
         style: &explicit_style,
     }];
-    let explicit_a = [ChartDrawItem {
-        view: &view_a,
-        chart_config: chart_a.config(),
+    let mut explicit_a = [ChartDrawItem {
+        view: &mut view_a,
+        chart: &chart_a,
         series: &explicit_series,
     }];
-    let explicit_b = [ChartDrawItem {
-        view: &view_b,
-        chart_config: chart_b.config(),
+    let mut explicit_b = [ChartDrawItem {
+        view: &mut view_b,
+        chart: &chart_b,
         series: &explicit_series,
     }];
-    let first = renderer.prepare(&explicit_a).unwrap();
-    let second = renderer.prepare(&explicit_b).unwrap();
+    let first = renderer.prepare(&mut explicit_a).unwrap();
+    let second = renderer.prepare(&mut explicit_b).unwrap();
     assert_eq!(
         placement_of(&first),
         placement_of(&second),
@@ -9358,16 +9417,16 @@ fn automatic_contour_label_indirect_count_is_exactly_1024() {
         config: &config,
         style: &style,
     }];
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
 
-    let prepared = renderer.prepare(&items).unwrap();
+    let prepared = renderer.prepare(&mut items).unwrap();
     let count =
         crate::test_gpu::block_on(renderer.contour_label_instance_count_for_test(&prepared, 0, 0))
             .unwrap()
@@ -9396,12 +9455,12 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
         config: &old_config,
         style: &old_style,
     }];
-    let old_view = renderer
+    let mut old_view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let old_items = [ChartDrawItem {
-        view: &old_view,
-        chart_config: chart.config(),
+    let mut old_items = [ChartDrawItem {
+        view: &mut old_view,
+        chart: &chart,
         series: &old_series,
     }];
     let placement_of = |prepared: &PreparedFrame| {
@@ -9414,7 +9473,7 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
             .placement_identity()
     };
 
-    let old_prepared = renderer.prepare(&old_items).unwrap();
+    let old_prepared = renderer.prepare(&mut old_items).unwrap();
     let old_atlas = renderer.contour_cache["label-cache"]
         .contour()
         .unwrap()
@@ -9437,15 +9496,15 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
         config: &replacement_config,
         style: &replacement_style,
     }];
-    let replacement_view = renderer
+    let mut replacement_view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let replacement_items = [ChartDrawItem {
-        view: &replacement_view,
-        chart_config: chart.config(),
+    let mut replacement_items = [ChartDrawItem {
+        view: &mut replacement_view,
+        chart: &chart,
         series: &replacement_series,
     }];
-    let replacement_prepared = renderer.prepare(&replacement_items).unwrap();
+    let replacement_prepared = renderer.prepare(&mut replacement_items).unwrap();
     let replacement_atlas = renderer.contour_cache["label-cache"]
         .contour()
         .unwrap()
@@ -9570,55 +9629,55 @@ fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
         config: &config_c,
         style: &style_c,
     }];
-    let view_a = renderer
+    let mut view_a = renderer
         .create_chart_view(&chart_a, chart_a.config().chart_area.0)
         .unwrap();
-    let view_b = renderer
+    let mut view_b = renderer
         .create_chart_view(&chart_b, chart_b.config().chart_area.0)
         .unwrap();
-    let view_c = renderer
+    let mut view_c = renderer
         .create_chart_view(&chart_c, chart_c.config().chart_area.0)
         .unwrap();
-    let multi_items = [
+    let mut multi_items = [
         ChartDrawItem {
-            view: &view_a,
-            chart_config: chart_a.config(),
+            view: &mut view_a,
+            chart: &chart_a,
             series: &series_a,
         },
         ChartDrawItem {
-            view: &view_b,
-            chart_config: chart_b.config(),
+            view: &mut view_b,
+            chart: &chart_b,
             series: &series_b,
         },
     ];
-    let interleaved_items = [ChartDrawItem {
-        view: &view_c,
-        chart_config: chart_c.config(),
+    let mut interleaved_items = [ChartDrawItem {
+        view: &mut view_c,
+        chart: &chart_c,
         series: &series_c,
     }];
 
-    let multi = renderer.prepare(&multi_items).unwrap();
-    let interleaved = renderer.prepare(&interleaved_items).unwrap();
+    let multi = renderer.prepare(&mut multi_items).unwrap();
+    let interleaved = renderer.prepare(&mut interleaved_items).unwrap();
     assert!(renderer.validate_prepared(&multi).is_ok());
     let first = paint_prepared_rgba(&renderer, &multi, target_w, panel_h);
     let repeated = paint_prepared_rgba(&renderer, &multi, target_w, panel_h);
     assert_eq!(first, repeated, "repeat paint changed a prepared token");
     drop((interleaved, multi));
 
-    let only_a = [ChartDrawItem {
-        view: &view_a,
-        chart_config: chart_a.config(),
+    let mut only_a = [ChartDrawItem {
+        view: &mut view_a,
+        chart: &chart_a,
         series: &series_a,
     }];
-    let prepared_a = renderer.prepare(&only_a).unwrap();
+    let prepared_a = renderer.prepare(&mut only_a).unwrap();
     let baseline_a = paint_prepared_rgba(&renderer, &prepared_a, target_w, panel_h);
     drop(prepared_a);
-    let only_b = [ChartDrawItem {
-        view: &view_b,
-        chart_config: chart_b.config(),
+    let mut only_b = [ChartDrawItem {
+        view: &mut view_b,
+        chart: &chart_b,
         series: &series_b,
     }];
-    let prepared_b = renderer.prepare(&only_b).unwrap();
+    let prepared_b = renderer.prepare(&mut only_b).unwrap();
     let baseline_b = paint_prepared_rgba(&renderer, &prepared_b, target_w, panel_h);
 
     let crop = |rgba: &[u8], x: u32| {
@@ -9726,13 +9785,13 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
     let streamed_id = r
         .register_chart(chart.config().clone(), vec![stream_series])
         .unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let mut frame = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: resident_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     let expected = paint_prepared_rgba(&r, &frame, 320, 240);
@@ -9972,24 +10031,24 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
     let b = r
         .register_chart(chart.config().clone(), vec![series.clone()])
         .unwrap();
-    let view_a = r
+    let mut view_a = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let view_b = r
+    let mut view_b = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let view_b_only = r
+    let mut view_b_only = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let both = r
-        .prepare_registered(&[
+        .prepare_registered(&mut [
             RegisteredChartDrawItem {
                 chart_id: a,
-                view: &view_a,
+                view: &mut view_a,
             },
             RegisteredChartDrawItem {
                 chart_id: b,
-                view: &view_b,
+                view: &mut view_b,
             },
         ])
         .unwrap();
@@ -9997,9 +10056,9 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
     assert_eq!(both.registered_charts[1].chart_id, b);
     let before_a = paint_prepared_rgba(&r, &both, 320, 240);
     let b_only = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: b,
-            view: &view_b_only,
+            view: &mut view_b_only,
         }])
         .unwrap();
     let before_b = paint_prepared_rgba(&r, &b_only, 320, 240);
@@ -10030,9 +10089,9 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
     ));
     r.validate_prepared(&b_only).unwrap();
     let next_a = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: a,
-            view: &view_a,
+            view: &mut view_a,
         }])
         .unwrap();
     let after_a = paint_prepared_rgba(&r, &next_a, 320, 240);
@@ -10041,9 +10100,9 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
         "registered style must be regenerated from SSOT"
     );
     let b_again = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: b,
-            view: &view_b,
+            view: &mut view_b,
         }])
         .unwrap();
     assert_eq!(before_b, paint_prepared_rgba(&r, &b_again, 320, 240));
@@ -10070,9 +10129,9 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
     ));
     r.validate_prepared(&b_only).unwrap();
     let removal_token = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: a,
-            view: &view_a,
+            view: &mut view_a,
         }])
         .unwrap();
     r.remove_chart(a).unwrap();
@@ -10084,9 +10143,9 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
     assert_eq!(before_b, paint_prepared_rgba(&r, &b_only, 320, 240));
 
     let source_token = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: b,
-            view: &view_b_only,
+            view: &mut view_b_only,
         }])
         .unwrap();
     r.upsert_column("registered_y", &col_f64(vec![0.9, 0.5, 0.1]))
@@ -10118,38 +10177,54 @@ fn registered_prepare_preflight_failure_preserves_live_token() {
     let a = r.register_chart(chart.config().clone(), vec![]).unwrap();
     let removed = r.register_chart(chart.config().clone(), vec![]).unwrap();
     r.remove_chart(removed).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let token = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: a,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     let unprepared = r.register_chart(chart.config().clone(), vec![]).unwrap();
+    let mut unprepared_view = r
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    let mut removed_view = r
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    let unprepared_revision = unprepared_view
+        .content_revision
+        .load(std::sync::atomic::Ordering::Acquire);
     let stamp = r.chart_render_stamp(a).unwrap();
     let revision = view
         .content_revision
         .load(std::sync::atomic::Ordering::Acquire);
     assert!(matches!(
-        r.prepare_registered(&[
+        r.prepare_registered(&mut [
             RegisteredChartDrawItem {
                 chart_id: a,
-                view: &view
+                view: &mut view
             },
             RegisteredChartDrawItem {
                 chart_id: unprepared,
-                view: &view
+                view: &mut unprepared_view
             },
             RegisteredChartDrawItem {
                 chart_id: removed,
-                view: &view
+                view: &mut removed_view
             },
         ]),
         Err(FiggyError::UnknownChart { .. })
     ));
     assert!(r.chart_states[&unprepared].prepared_styles.is_none());
+    assert_eq!(
+        unprepared_view
+            .content_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        unprepared_revision,
+        "a failed prepare redraws no view"
+    );
     assert_eq!(r.chart_render_stamp(a).unwrap(), stamp);
     assert_eq!(
         view.content_revision
@@ -10215,7 +10290,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     };
     let (cfg_a, cfg_b) = (mk_cfg("st_a"), mk_cfg("st_b"));
     let style = r.create_style_for_series(&cfg_a).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let series_ab = [
@@ -10229,12 +10304,12 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         },
     ];
     let prepared = {
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series_ab,
         }];
-        let p = r.prepare(&items).unwrap();
+        let p = r.prepare(&mut items).unwrap();
         assert!(r.validate_prepared(&p).is_ok(), "fresh token validates");
         p
     };
@@ -10267,20 +10342,20 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let first_view_token = {
-        let items = [ChartDrawItem {
-            view: &view_reuse,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view_reuse,
+            chart: &chart,
             series: &series_ab,
         }];
-        r.prepare(&items).unwrap()
+        r.prepare(&mut items).unwrap()
     };
     let second_view_token = {
-        let items = [ChartDrawItem {
-            view: &view_reuse,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view_reuse,
+            chart: &chart,
             series: &series_ab,
         }];
-        r.prepare(&items).unwrap()
+        r.prepare(&mut items).unwrap()
     };
     assert!(matches!(
         r.validate_prepared(&first_view_token),
@@ -10334,12 +10409,12 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     }];
     r.add_column("st_unrelated", &col_f64(vec![9.0])).unwrap();
     let prepared_dash = {
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series_dash,
         }];
-        r.prepare(&items).unwrap()
+        r.prepare(&mut items).unwrap()
     };
     assert!(r.remove_column("st_unrelated").unwrap());
     assert!(r.validate_prepared(&prepared_dash).is_ok());
@@ -10362,12 +10437,12 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         Err(FiggyError::StalePreparedFrame { .. })
     ));
     let prepared_target = {
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series_ab,
         }];
-        r.prepare(&items).unwrap()
+        r.prepare(&mut items).unwrap()
     };
 
     // (4) Target-format switch rebuilds the pipeline cache → format stamp.
@@ -10450,25 +10525,25 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
         config: &series_cfg,
         style: &style,
     }];
-    let view_a = r
+    let mut view_a = r
         .create_chart_view(&chart_a, chart_a.config().chart_area.0)
         .unwrap();
-    let view_b = r
+    let mut view_b = r
         .create_chart_view(&chart_b, chart_b.config().chart_area.0)
         .unwrap();
-    let items_a = [ChartDrawItem {
-        view: &view_a,
-        chart_config: chart_a.config(),
+    let mut items_a = [ChartDrawItem {
+        view: &mut view_a,
+        chart: &chart_a,
         series: &series,
     }];
-    let items_b = [ChartDrawItem {
-        view: &view_b,
-        chart_config: chart_b.config(),
+    let mut items_b = [ChartDrawItem {
+        view: &mut view_b,
+        chart: &chart_b,
         series: &series,
     }];
 
     let baseline_a = {
-        let prepared = r.prepare(&items_a).unwrap();
+        let prepared = r.prepare(&mut items_a).unwrap();
         assert!(
             prepared.items[0].series[0].line_extra.is_some(),
             "milkyway line series must carry a star-pass snapshot"
@@ -10476,26 +10551,26 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
         paint_prepared_rgba(&r, &prepared, w, h)
     };
     let delayed_a = {
-        let prepared = r.prepare(&items_a).unwrap();
+        let prepared = r.prepare(&mut items_a).unwrap();
         record_prepared_rgba(&r, &prepared, w, h)
     };
     let pixels_b = {
-        let prepared = r.prepare(&items_b).unwrap();
+        let prepared = r.prepare(&mut items_b).unwrap();
         paint_prepared_rgba(&r, &prepared, w, h)
     };
     for key in 0..8 {
         let mut chart = Chart::new(chart_a.config().clone());
         chart.set_x_range(-2.0 - f64::from(key) * 0.25, 2.5 + f64::from(key) * 0.5);
         chart.set_y_range(-1.0 - f64::from(key) * 0.125, 1.75 + f64::from(key) * 0.25);
-        let view = r
+        let mut view = r
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
-        let prepared = r.prepare(&items).unwrap();
+        let prepared = r.prepare(&mut items).unwrap();
         let _ = paint_prepared_rgba(&r, &prepared, w, h);
     }
     assert_eq!(
@@ -11755,7 +11830,7 @@ fn prepared_view_keeps_panel_charges_after_chart_view_drop() {
         return;
     };
     let chart = Chart::new(panel_config(320, 240));
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let panel_bytes = renderer
@@ -11763,12 +11838,12 @@ fn prepared_view_keeps_panel_charges_after_chart_view_drop() {
         .live_bytes_of(GpuResourceKind::PanelTexture);
     let series: [Series<'_>; 0] = [];
     let prepared = {
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
-        renderer.prepare(&items).unwrap()
+        renderer.prepare(&mut items).unwrap()
     };
     drop(view);
 
@@ -12150,7 +12225,7 @@ fn a_steady_field_frame_rebuilds_no_group_two_buffers() {
     let Some((mut renderer, chart, series_cfg)) = field_prepare_fixture() else {
         return;
     };
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let style = renderer.create_style_for_series(&series_cfg).unwrap();
@@ -12158,13 +12233,13 @@ fn a_steady_field_frame_rebuilds_no_group_two_buffers() {
         config: &series_cfg,
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
 
-    let first = renderer.prepare(&items).unwrap();
+    let first = renderer.prepare(&mut items).unwrap();
     renderer.validate_prepared(&first).unwrap();
     let after_first = renderer
         .gpu_memory_usage()
@@ -12179,7 +12254,7 @@ fn a_steady_field_frame_rebuilds_no_group_two_buffers() {
     assert!(live > 0, "and charge them");
     assert_eq!(renderer.field_cache.len(), 1);
 
-    let second = renderer.prepare(&items).unwrap();
+    let second = renderer.prepare(&mut items).unwrap();
     renderer.validate_prepared(&second).unwrap();
     assert_eq!(
         renderer
@@ -12206,7 +12281,7 @@ fn a_replaced_grid_column_stales_the_token_and_rebuilds_the_scratch() {
     let Some((mut renderer, chart, series_cfg)) = field_prepare_fixture() else {
         return;
     };
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let style = renderer.create_style_for_series(&series_cfg).unwrap();
@@ -12214,13 +12289,13 @@ fn a_replaced_grid_column_stales_the_token_and_rebuilds_the_scratch() {
         config: &series_cfg,
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
 
-    let token = renderer.prepare(&items).unwrap();
+    let token = renderer.prepare(&mut items).unwrap();
     renderer.validate_prepared(&token).unwrap();
     let creations_before = renderer
         .gpu_memory_usage()
@@ -12244,7 +12319,7 @@ fn a_replaced_grid_column_stales_the_token_and_rebuilds_the_scratch() {
         other => panic!("expected StalePreparedFrame, got {other:?}"),
     }
 
-    let next = renderer.prepare(&items).unwrap();
+    let next = renderer.prepare(&mut items).unwrap();
     renderer.validate_prepared(&next).unwrap();
     assert!(
         renderer
@@ -12285,7 +12360,7 @@ fn a_growth_makes_a_live_prepared_frame_stale_and_the_next_one_valid() {
     renderer.add_column("lx", &col_f64(vec![0.0, 1.0])).unwrap();
     renderer.add_column("ly", &col_f64(vec![0.0, 1.0])).unwrap();
     let chart = Chart::new(panel_config(320, 240));
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let series_cfg = state_test_line("line", "lx", "ly");
@@ -12294,12 +12369,12 @@ fn a_growth_makes_a_live_prepared_frame_stale_and_the_next_one_valid() {
         config: &series_cfg,
         style: &style,
     }];
-    let items = [ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &series,
     }];
-    let prepared = renderer.prepare(&items).unwrap();
+    let prepared = renderer.prepare(&mut items).unwrap();
     renderer
         .validate_prepared(&prepared)
         .expect("a fresh token is valid");
@@ -12325,7 +12400,7 @@ fn a_growth_makes_a_live_prepared_frame_stale_and_the_next_one_valid() {
     );
 
     // Recovery is a fresh prepare, exactly as it is after a defragmentation.
-    let reprepared = renderer.prepare(&items).unwrap();
+    let reprepared = renderer.prepare(&mut items).unwrap();
     renderer
         .validate_prepared(&reprepared)
         .expect("the next frame prepares normally after a growth");
@@ -12743,13 +12818,13 @@ fn resident_demotion_commits_mixed_metadata_and_preserves_chart_authority() {
     let unrelated_before = revision_snapshot(&renderer, unrelated);
     let fit_before = renderer.begin_fit_commit(dependent).unwrap();
     let chart = Chart::new(config.clone());
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let prepared = renderer
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: dependent,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     renderer.enable_gpu_picking().unwrap();
@@ -15341,15 +15416,15 @@ fn contour_levels_cover_the_declared_count_at_every_producer() {
     let id = renderer
         .register_chart(chart.config().clone(), vec![heatmap.clone()])
         .unwrap();
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     for series in variants.iter().chain([&heatmap]) {
         renderer.set_chart_series(id, vec![series.clone()]).unwrap();
         let frame = renderer
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         paint_prepared_rgba(&renderer, &frame, rect.width, rect.height);
@@ -15510,11 +15585,11 @@ fn panel_storage_is_parallel_to_its_source_items() {
                     .unwrap()
             })
             .collect();
-        let source: Vec<ChartDrawItem<'_>> = configs
+        let source: Vec<PanelDraw<'_>> = configs
             .iter()
             .zip(&views)
             .zip(&series)
-            .map(|((chart_config, view), series)| ChartDrawItem {
+            .map(|((chart_config, view), series)| PanelDraw {
                 view,
                 chart_config,
                 series,

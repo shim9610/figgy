@@ -179,7 +179,11 @@ impl Renderer {
                         .chart_states
                         .get(&chart_id)
                         .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-                    let plan = PickChartPlan::for_active_layer(&state.config, &state.series)?;
+                    let plan = PickChartPlan::for_active_layer_in(
+                        defragment.pool(),
+                        &state.config,
+                        &state.series,
+                    )?;
                     self.picker.prepare_active_pool_mutation(
                         defragment.pool(),
                         chart_id,
@@ -276,7 +280,11 @@ impl Renderer {
                             .chart_states
                             .get(&chart_id)
                             .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-                        let plan = PickChartPlan::for_active_layer(&state.config, &state.series)?;
+                        let plan = PickChartPlan::for_active_layer_in(
+                            relayout.pool(),
+                            &state.config,
+                            &state.series,
+                        )?;
                         self.picker.prepare_active_pool_mutation(
                             relayout.pool(),
                             chart_id,
@@ -334,7 +342,7 @@ impl Renderer {
     /// Let uploads that do not fit enlarge the pool, or keep the fixed-capacity
     /// behavior.
     ///
-    /// `GrowthPolicy::OnAllocFailure` is the default (#107): an upload that
+    /// `GrowthPolicy::OnAllocFailure` is the default: an upload that
     /// does not fit relayouts the pool into a larger buffer first, which
     /// invalidates every live [`ColumnHandle`] and `PreparedFrame` exactly as a
     /// defragmentation does. Growth is bounded only by the device ceiling and

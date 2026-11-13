@@ -122,7 +122,7 @@ mod tests {
     fn the_legacy_radial_title_is_read_in_its_style_and_round_trips() {
         let mut old = serde_json::to_value(crate::RadialChart {
             font_size: 16.,
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         })
         .unwrap();
         assert!(old.get("title").is_none() && old.get("chart_title").is_none());

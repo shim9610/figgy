@@ -84,10 +84,13 @@ pub(in crate::renderer) struct ArcResultEntry {
 impl PrepareContext<'_> {
     pub(in crate::renderer) fn prepare_arc_items(
         &mut self,
-        items: &[ChartDrawItem<'_>],
-    ) -> Result<Vec<PreparedArcItem>> {
-        let mut prepared = Vec::with_capacity(items.len());
-        for item in items {
+        items: &[PanelDraw<'_>],
+        panels: &mut [PreparedPanelProducts],
+    ) -> Result<()> {
+        if items.len() != panels.len() {
+            return Err(FiggyError::internal("one prepared panel per draw item"));
+        }
+        for (item, products) in items.iter().zip(panels.iter_mut()) {
             let t = data_render::scatter_transform_from_config(item.chart_config);
             // Same snapshot for both GPU consumers of the transform: the
             // uniform the vertex shaders read and the arc dispatch below.
@@ -160,12 +163,12 @@ impl PrepareContext<'_> {
                 };
                 per_series.push(PreparedArcSeries { arc });
             }
-            prepared.push(PreparedArcItem {
+            products.arc = PreparedArcItem {
                 view_revision,
                 series: per_series,
-            });
+            };
         }
-        Ok(prepared)
+        Ok(())
     }
 
     /// The `(x_base, y_base, n)` source layout for an arc scan over these
