@@ -193,7 +193,6 @@ pub(crate) struct GpuStreamDataPick {
     bundle: Arc<DataPickPipelineBundle>,
     query: GpuDataPickQuery,
     identities: Arc<[DataPickIdentity]>,
-    transform_bg: wgpu::BindGroup,
     candidate: wgpu::Buffer,
     best: wgpu::Buffer,
     charge: SharedCharge,
@@ -215,24 +214,6 @@ impl DataPickPipelineBundle {
         identities: Vec<(Option<String>, String)>,
     ) -> Result<GpuStreamDataPick, crate::gpu_pick::GpuPickError> {
         let tally = ChargeTally::new();
-        let transform = charged_buffer_init(
-            &tally,
-            &self.device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("figgy stream typed pick transform"),
-                contents: bytemuck::bytes_of(&query.transform),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        )
-        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-        let transform_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("figgy stream typed pick transform bg"),
-            layout: &self.histogram.get_bind_group_layout(0),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: transform.as_entire_binding(),
-            }],
-        });
         let make_scalar = |label| {
             charged_buffer(
                 &tally,
@@ -278,7 +259,6 @@ impl DataPickPipelineBundle {
                     violin: false,
                 })
                 .collect(),
-            transform_bg,
             candidate,
             best,
             charge: shared_charge(tally, &self.ledger, GpuResourceKind::PickScratch),
@@ -339,15 +319,8 @@ impl GpuStreamDataPick {
     pub(crate) fn commit_field_candidate(&mut self) {
         self.has_chunks = true;
     }
-    pub(crate) const PERSISTENT_BYTES: u64 =
-        std::mem::size_of::<ScatterTransform>() as u64 + 2 * DATA_PICK_CANDIDATE_BYTES;
-    pub(crate) const CHUNK_BYTES: u64 = std::mem::size_of::<DataPickQueryGpu>() as u64;
+    pub(crate) const PERSISTENT_BYTES: u64 = 2 * DATA_PICK_CANDIDATE_BYTES;
     pub(crate) const READBACK_BYTES: u64 = DATA_PICK_CANDIDATE_BYTES;
-
-    #[cfg(test)]
-    pub(crate) fn charge(&self) -> SharedCharge {
-        self.charge.clone()
-    }
 
     fn accumulate(
         &mut self,
@@ -401,133 +374,6 @@ impl GpuStreamDataPick {
         {
             self.accumulate(encoder, buffer, true);
         }
-    }
-
-    /// Uses the resident histogram geometry function, with bounded local lane
-    /// bases and global override/bin identities. Retain the returned charge
-    /// and any supplied style-map charge until this submission completes.
-    pub(crate) fn encode_chunk(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        buffer: &wgpu::Buffer,
-        series: GpuDataPickSeries,
-        global_bin_start: u32,
-    ) -> Result<Option<SharedCharge>, crate::gpu_pick::GpuPickError> {
-        use crate::gpu_pick::GpuPickError;
-        if !self.enabled {
-            return Ok(None);
-        }
-        let identity = self.identities.get(series.paint_order as usize).ok_or(
-            GpuPickError::InvalidSeriesIndex {
-                index: series.paint_order as usize,
-                len: self.identities.len(),
-            },
-        )?;
-        if identity.source_id != series.source_id || identity.series_id != series.series_id {
-            return Err(GpuPickError::InvalidGpuResult);
-        }
-        let GpuDataPickGeometry::Histogram {
-            edges,
-            values,
-            bin_count,
-            baseline,
-            gap_px,
-            width_ratio,
-            horizontal,
-            style_map,
-        } = series.geometry
-        else {
-            return Err(GpuPickError::NoPickPrimitive(series.series_id));
-        };
-        if bin_count == 0 {
-            return Ok(None);
-        }
-        if bin_count as usize > values.len_values
-            || bin_count as usize >= edges.len_values
-            || global_bin_start.checked_add(bin_count - 1).is_none()
-        {
-            return Err(GpuPickError::TooManyValues {
-                series_id: series.series_id,
-                count: bin_count as usize,
-            });
-        }
-        for handle in [edges, values] {
-            crate::gpu_pick::validate_stream_handle(buffer, handle)?;
-        }
-        if buffer.size() > self.bundle.device.limits().max_storage_buffer_binding_size {
-            return Err(GpuPickError::DeviceLimit {
-                resource: "stream typed pick storage",
-                requested: buffer.size(),
-                limit: self.bundle.device.limits().max_storage_buffer_binding_size,
-            });
-        }
-        let [cx, cy] = self.query.canvas_position_px;
-        let [x, y, w, h] = self.query.chart_rect_px;
-        let tx = (cx - x) / w;
-        let nx = tx * 2.0 - 1.0;
-        let ny = 1.0 - ((cy - y) / h) * 2.0;
-        let params = DataPickQueryGpu {
-            cursor_ndc_t: [nx, ny, (nx + 1.0) * 0.5, (ny + 1.0) * 0.5],
-            limits: [self.query.max_distance_px, gap_px, width_ratio, 0.0],
-            data: [0, series.paint_order, bin_count, u32::from(horizontal)],
-            bases: [lane_base(edges)?, lane_base(values)?, global_bin_start, 0],
-            baseline: [baseline[0], baseline[1], 0.0, 0.0],
-        };
-        let tally = ChargeTally::new();
-        let uniform = charged_buffer_init(
-            &tally,
-            &self.bundle.device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("figgy stream typed pick chunk params"),
-                contents: bytemuck::bytes_of(&params),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        )
-        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-        let query_bg = self
-            .bundle
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("figgy stream typed pick query bg"),
-                layout: &self.bundle.query_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: uniform.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.candidate.as_entire_binding(),
-                    },
-                ],
-            });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("figgy stream histogram pick"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.bundle.histogram);
-            pass.set_bind_group(0, &self.transform_bg, &[]);
-            pass.set_bind_group(1, &query_bg, &[]);
-            pass.set_bind_group(
-                2,
-                style_map
-                    .as_ref()
-                    .unwrap_or(&self.bundle.empty_bar_style_map),
-                &[],
-            );
-            pass.dispatch_workgroups(1, 1, 1);
-        }
-        self.accumulate(encoder, &self.candidate.clone(), false);
-        Ok(Some(shared_charge(
-            tally,
-            &self.bundle.ledger,
-            GpuResourceKind::PickScratch,
-        )))
     }
 
     /// All source chunks and the optional point merge must already be submitted.
@@ -1657,15 +1503,6 @@ impl DataPickTicket {
         }
     }
 
-    /// Wait, then decode: the tests compare a streamed pick with this.
-    #[cfg(test)]
-    pub(crate) async fn resolve(
-        mut self,
-    ) -> Result<Option<RankedPickedData>, crate::gpu_pick::GpuPickError> {
-        self.wait().await?;
-        self.finish()
-    }
-
     async fn wait(&mut self) -> Result<(), crate::gpu_pick::GpuPickError> {
         if let DataPickTicketState::Pending { readback, .. } = &mut self.state {
             readback.wait().await?;
@@ -2120,8 +1957,7 @@ impl fmt::Debug for GpuDataPickTicket {
 #[cfg(test)]
 mod stream_tests {
     use super::*;
-    use crate::data::{Column, split_f64_to_f32_pair};
-    use crate::data_render::{self, BarStyleOverrideGpu, GpuAllocCtx};
+    use crate::data_render;
     use wgpu::util::DeviceExt;
 
     fn bundle(device: wgpu::Device, queue: wgpu::Queue) -> Arc<DataPickPipelineBundle> {
@@ -2176,7 +2012,7 @@ mod stream_tests {
         .unwrap()
     }
 
-    fn config(logarithmic: bool) -> crate::config::Config {
+    fn config() -> crate::config::Config {
         let mut config = crate::default::default_config();
         config.chart_area = crate::layout::ChartArea(crate::layout::Rect {
             x: 0,
@@ -2184,25 +2020,11 @@ mod stream_tests {
             width: 100,
             height: 100,
         });
-        config.bottom_x.min = if logarithmic {
-            1.0
-        } else {
-            1_000_000_000_000.0
-        };
-        config.bottom_x.max = if logarithmic {
-            100.0
-        } else {
-            1_000_000_000_004.0
-        };
-        config.bottom_x.scale = if logarithmic {
-            crate::config::AxisScale::Logarithmic
-        } else {
-            crate::config::AxisScale::Linear
-        };
-        config.bottom_x.inverted = logarithmic;
+        config.bottom_x.min = 1_000_000_000_000.0;
+        config.bottom_x.max = 1_000_000_000_004.0;
+        config.bottom_x.scale = crate::config::AxisScale::Linear;
         config.left_y.min = 0.0;
         config.left_y.max = 10.0;
-        config.left_y.inverted = logarithmic;
         config.chart_title.top_margin = 0.0;
         for axis in [
             &mut config.top_x,
@@ -2217,189 +2039,13 @@ mod stream_tests {
     }
 
     #[test]
-    fn streamed_histogram_matches_resident_global_bin_ties_and_mapped_styles() {
-        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
-        let Some((device, queue)) = data_render::shared_device() else {
-            return;
-        };
-        let bundle = bundle(device.clone(), queue.clone());
-        for logarithmic in [false, true] {
-            let origin = if logarithmic {
-                0.0
-            } else {
-                1_000_000_000_000.0
-            };
-            let edges = if logarithmic {
-                [1.0, 10.0, 5.0, 20.0, 100.0]
-            } else {
-                [0.0, 2.0, 1.0, 3.0, 4.0]
-            }
-            .map(|x| x + origin);
-            let values = [f64::NAN, 6.0, 7.0, 8.0];
-            let mut pool =
-                ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 4096).unwrap();
-            pool.add_hilo_column(
-                "edges".into(),
-                &Column {
-                    data: edges.to_vec(),
-                },
-                GpuAllocCtx::new(&device, &queue, &ledger),
-            )
-            .unwrap();
-            pool.add_hilo_column(
-                "values".into(),
-                &Column {
-                    data: values.to_vec(),
-                },
-                GpuAllocCtx::new(&device, &queue, &ledger),
-            )
-            .unwrap();
-            let config = config(logarithmic);
-            for mapped in [false, true] {
-                let style_map = mapped.then(|| {
-                    data_render::create_bar_style_map(
-                        &device,
-                        &bundle.histogram.get_bind_group_layout(2),
-                        &[BarStyleOverrideGpu {
-                            bin_index: 3,
-                            _pad: [0; 3],
-                            fill_color_premul: [0.0; 4],
-                            border_color_premul: [0.0; 4],
-                            params: [0.0, 0.0, 0.0, 16.0],
-                            material: [0.0; 4],
-                            finish: [0.0; 4],
-                        }],
-                    )
-                    .unwrap()
-                    .bind_group
-                });
-                let series = |order: u32, edges, values, bin_count| GpuDataPickSeries {
-                    source_id: None,
-                    series_id: format!("bars-{order}"),
-                    paint_order: order,
-                    geometry: GpuDataPickGeometry::Histogram {
-                        edges,
-                        values,
-                        bin_count,
-                        baseline: [0.0; 2],
-                        gap_px: 0.0,
-                        width_ratio: 1.0,
-                        horizontal: false,
-                        style_map: style_map.clone(),
-                    },
-                };
-                for cursor in [[50.0, 50.0], [80.0, 50.0], [20.0, 50.0], [50.0, 15.0]] {
-                    let query = GpuDataPickQuery {
-                        transform: data_render::scatter_transform_from_config(&config),
-                        chart_rect_px: [0.0, 0.0, 100.0, 100.0],
-                        data_area_px: None,
-                        canvas_position_px: cursor,
-                        max_distance_px: 5.0,
-                    };
-                    let resident = bundle
-                        .submit(
-                            &pool,
-                            query,
-                            (0..2)
-                                .map(|order| {
-                                    series(
-                                        order,
-                                        pool.handle_for("edges").unwrap(),
-                                        pool.handle_for("values").unwrap(),
-                                        4,
-                                    )
-                                })
-                                .collect(),
-                        )
-                        .unwrap();
-                    let expected = crate::test_gpu::block_on(resident.resolve())
-                        .unwrap()
-                        .map(|hit| hit.picked);
-                    for chunk_size in [1usize, 2, 3] {
-                        let mut stream = bundle
-                            .begin_stream(
-                                query,
-                                (0..2)
-                                    .map(|order| (None, format!("bars-{order}")))
-                                    .collect(),
-                            )
-                            .unwrap();
-                        let mut charges = vec![stream.charge()];
-                        assert_eq!(
-                            charges[0].charged_bytes(),
-                            GpuStreamDataPick::PERSISTENT_BYTES
-                        );
-                        for order in (0..2).rev() {
-                            let starts = (0..4).step_by(chunk_size).collect::<Vec<_>>();
-                            for start in starts.into_iter().rev() {
-                                let len = chunk_size.min(4 - start);
-                                let mut pairs = Vec::new();
-                                for value in &edges[start..=start + len] {
-                                    let (hi, lo) = split_f64_to_f32_pair(*value);
-                                    pairs.push([hi, lo]);
-                                }
-                                for value in &values[start..start + len] {
-                                    let (hi, lo) = split_f64_to_f32_pair(*value);
-                                    pairs.push([hi, lo]);
-                                }
-                                let buffer =
-                                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                        label: None,
-                                        contents: bytemuck::cast_slice(&pairs),
-                                        usage: wgpu::BufferUsages::STORAGE,
-                                    });
-                                let edges = ColumnHandle {
-                                    generation: 0,
-                                    offset: 0,
-                                    byte_size: (len as u64 + 1) * 8,
-                                    len_values: len + 1,
-                                };
-                                let values = ColumnHandle {
-                                    generation: 0,
-                                    offset: edges.byte_size,
-                                    byte_size: len as u64 * 8,
-                                    len_values: len,
-                                };
-                                let mut encoder =
-                                    device.create_command_encoder(&Default::default());
-                                if let Some(charge) = stream
-                                    .encode_chunk(
-                                        &mut encoder,
-                                        &buffer,
-                                        series(order, edges, values, len as u32),
-                                        start as u32,
-                                    )
-                                    .unwrap()
-                                {
-                                    assert_eq!(
-                                        charge.charged_bytes(),
-                                        GpuStreamDataPick::CHUNK_BYTES
-                                    );
-                                    charges.push(charge);
-                                }
-                                queue.submit([encoder.finish()]);
-                            }
-                        }
-                        let actual =
-                            crate::test_gpu::block_on(stream.finish().unwrap().resolve()).unwrap();
-                        assert_eq!(
-                            expected, actual,
-                            "histogram stream size={chunk_size}, mapped={mapped}, logarithmic={logarithmic}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
     fn stream_typed_reducer_keeps_point_and_paint_order_ties_on_gpu() {
         let Some((device, queue)) = data_render::shared_device() else {
             return;
         };
         let bundle = bundle(device.clone(), queue.clone());
         let query = GpuDataPickQuery {
-            transform: data_render::scatter_transform_from_config(&config(false)),
+            transform: data_render::scatter_transform_from_config(&config()),
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],
             data_area_px: None,
             canvas_position_px: [50.0; 2],

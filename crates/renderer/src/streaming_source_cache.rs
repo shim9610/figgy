@@ -1,6 +1,6 @@
 //! Bounded, chart-local GPU copies of original source pairs. Unlike packed
-//! visible rows these preserve adjacency and global indices for arc scans,
-//! histogram envelopes and heatmap lattices. No CPU payload is retained.
+//! visible rows these preserve adjacency and global indices for arc scans
+//! and heatmap lattices. No CPU payload is retained.
 //!
 //! Admission is deliberately conservative: all declared columns must fit one
 //! working-set buffer. Large sources continue through the bounded stream path.

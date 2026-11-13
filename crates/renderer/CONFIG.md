@@ -1158,7 +1158,9 @@ bin. Gap and positive width ratios do not cut holes in this envelope;
 list keyed by `index`; each record may independently replace `fill_color`,
 `border_color`, `border_width`, `gap_px`, or `width_ratio`. Baseline and
 orientation stay series-wide. The drawn bar, its pick region and its
-selection outline are the same rectangle.
+selection outline are the same rectangle. The edge and value columns hold one
+row per bin, so they are resident: a streamed source is refused with
+`RuleKind::StreamedHistogram` (#284).
 
 #### Matrix fields and contours
 
@@ -2110,7 +2112,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 
 구간 자체가 화면에서 1픽셀보다 좁으면 픽셀 열마다 겹치는 구간 중 최댓값을 골라 0까지 채운다. 가로 히스토그램은 픽셀 행을 기준으로 계산하며 표시 범위를 벗어난 부분은 자른다. 이렇게 최댓값으로 고른 구간의 외곽선 두께와 불투명도가 모두 양수이면 그 영역 전체를 외곽선 색으로, 그렇지 않으면 채움색으로 칠한다. 최댓값이 같으면 앞선 구간을 고른다. 이 경로에서는 `gap_px`나 양수인 `width_ratio`로 틈을 만들지 않는다. `width_ratio = 0`인 구간은 여기서도 그리지 않는다.
 
-`border_width = 0`이면 외곽선을 숨기며, 양수이면 지정한 두께와 `border_color`를 적용한다. `bar_style_overrides`에는 `index`로 특정 구간을 골라 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 바꿀 값만 넣는다. 기준선과 방향은 시리즈 전체에 적용된다. 그리기, 데이터 피킹, 선택 테두리는 모두 같은 최종 막대 경계를 사용한다.
+`border_width = 0`이면 외곽선을 숨기며, 양수이면 지정한 두께와 `border_color`를 적용한다. `bar_style_overrides`에는 `index`로 특정 구간을 골라 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 바꿀 값만 넣는다. 기준선과 방향은 시리즈 전체에 적용된다. 그리기, 데이터 피킹, 선택 테두리는 모두 같은 최종 막대 경계를 사용한다. 경계와 값 컬럼은 구간마다 한 행이라 상주 컬럼을 쓰며, 스트리밍 원본은 `RuleKind::StreamedHistogram`으로 거부한다(#284).
 
 <a id="행렬-필드와-등고선"></a>
 

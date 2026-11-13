@@ -188,11 +188,11 @@ enters through `ColumnSource`, except that monotonic-x lines lend their samples
 through a `MonotonicSource`, and energy-level and Feynman diagrams are records
 in the chart's configuration. Overlay axes and subplots work with these charts,
 except that a polar chart takes no overlay axes. Streamed, non-resident
-sources draw lines, scatter, error bars, histograms and heatmaps in a
-single-panel document. Contours, fills and step lines, vector fields, colour and
-size maps, polar plots, and documents with overlays or subplots reject streamed
-sources with an explicit error, and so do categorical bars, box plots, range
-bars and radar series. Pies and donuts keep their values in their own model
+sources draw lines, scatter, error bars and heatmaps in a single-panel
+document. Contours, fills and step lines, vector fields, colour and size maps,
+polar plots, and documents with overlays or subplots reject streamed sources
+with an explicit error, and so do histograms, categorical bars, box plots,
+range bars and radar series. Pies and donuts keep their values in their own model
 (`RadialChart`), with no `ColumnSource`, and are drawn by `RadialRenderer`. The
 annotation layer works with both renderers.
 

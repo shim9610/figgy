@@ -5,6 +5,8 @@
 edges and values from columns uploaded through `ColumnSource`, as the
 [category bars](CATEGORICAL.md) read their positions and values. The
 host supplies bin edges and values. The renderer does not bin raw observations.
+The columns hold one row per bin, so they are always resident: a streamed
+source is refused with `RuleKind::StreamedHistogram` (#284).
 
 | Orientation | `x_column` | `y_column` | X axis | Y axis |
 |---|---|---|---|---|
@@ -80,6 +82,8 @@ The example uploads the data once and reuses those columns for both directions.
 구간이 N개면 경계는 N+1개, 빈도는 N개를 전달한다. 길이가 맞지 않으면 경계와 빈도가
 모두 있는 구간만 그리고, `renderer.series_draw_info(chart_id, series_id)?.truncated`가
 `true`가 된다. 집계는 호스트가 담당하며, 일반 컬럼 데이터 소스를 그대로 사용한다.
+컬럼은 구간마다 한 행이라 언제나 상주 컬럼으로 충분하므로, 스트리밍 원본은
+`RuleKind::StreamedHistogram`으로 거부한다(#284).
 범주형 막대도 같은 방식으로 위치와 값 컬럼을 읽는다.
 방향 변경이 자동 맞춤을 요청하지는 않는다. 축 눈금·로그 설정·뒤집기·그리드도
 용도에 맞게 호스트에서 지정한다. 보조 축을 표시한다면 해당 축도 함께 설정한다.

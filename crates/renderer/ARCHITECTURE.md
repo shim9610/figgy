@@ -131,7 +131,7 @@ work and releases job-owned resources after submitted GPU work settles. GPU poin
 available and returns original row indices without source replay. Other streamed
 charts do not support immediate picking. Scaled PNG export uses replayable
 original ranges in a separate GPU path, so the source must remain available.
-Dashed lines, histograms, heatmaps and supported styled streams can also reuse
+Dashed lines, heatmaps and supported styled streams can also reuse
 an original-source GPU cache. This cache preserves ordering and adjacency, and
 is admitted only when all referenced columns fit the per-chart working-set cap,
 the device buffer limit and the total GPU budget. It copies uploaded pairs on
@@ -736,7 +736,7 @@ lines, split connectors and annotation overlay through the same sink
 
 스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 앞서 그린 데이터 이미지를 새 범위로 리스케일하고 새 청크를 이어 그린다. 중간 화면의 선 두께·선명도는 잠시 달라질 수 있다. 전체 범위가 확정되면 원본을 한 번 더 읽어 정밀하게 그리며, 새 청크가 반영된 화면 구역부터 정밀 결과로 교체한다. 나머지 구역은 미리보기를 유지하고, 두 데이터 이미지를 겹쳐 합성하지 않는다. 같은 구역에 겹친 미처리 도형의 중간 모습은 잠시 달라질 수 있지만, 완료 시에는 정밀 결과만 사용한다. 화면 크기에 비례하는 임시 자원이 GPU 예산에 들어오지 않으면 미리보기를 유지했다가 완료 후 한꺼번에 교체한다. 축 범위와 눈금 설정은 완료 때 함께 확정한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](WASM.md#streaming-fit)을 참고한다.
 
-점선·히스토그램·히트맵과 지원되는 스타일 스트림은 원본 순서와 인접 관계를 보존하는 GPU 캐시도 사용할 수 있다. 참조 컬럼 전체의 hi/lo 인코딩 크기가 차트별 상주 한도·장치의 단일 버퍼 한도·전체 GPU 예산에 들어올 때만 사용한다. 청크를 올리면서 GPU 안에서 복사하며 CPU 데이터 복사본은 남기지 않는다. 크기·DPR·축·그리드·히트맵 색상 매핑이 바뀌면 새 설정으로 다시 계산한다. 데이터 리비전이 바뀌면 이전 캐시를 사용하지 않고, 빠진 구간이나 한도보다 큰 원본은 일반 스트리밍으로 처리한다. 이 캐시는 즉시 피킹을 추가하지 않으며 `view_residency`는 기존의 패킹된 뷰 상태를 나타낸다. 출력과 캐시 미적중에 대비해 원본 공급자는 계속 보관해야 한다.
+점선·히트맵과 지원되는 스타일 스트림은 원본 순서와 인접 관계를 보존하는 GPU 캐시도 사용할 수 있다. 참조 컬럼 전체의 hi/lo 인코딩 크기가 차트별 상주 한도·장치의 단일 버퍼 한도·전체 GPU 예산에 들어올 때만 사용한다. 청크를 올리면서 GPU 안에서 복사하며 CPU 데이터 복사본은 남기지 않는다. 크기·DPR·축·그리드·히트맵 색상 매핑이 바뀌면 새 설정으로 다시 계산한다. 데이터 리비전이 바뀌면 이전 캐시를 사용하지 않고, 빠진 구간이나 한도보다 큰 원본은 일반 스트리밍으로 처리한다. 이 캐시는 즉시 피킹을 추가하지 않으며 `view_residency`는 기존의 패킹된 뷰 상태를 나타낸다. 출력과 캐시 미적중에 대비해 원본 공급자는 계속 보관해야 한다.
 
 지원 범위와 웹 API는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다. 원본을 빠짐없이 처리하더라도 GPU 백엔드나 렌더 패스 경계에 따라 안티앨리어싱 픽셀값은 달라질 수 있다.
 

@@ -697,8 +697,15 @@ fn six_distinct_errorbar_columns_obey_request_column_limit_before_job_start() {
     assert_eq!(renderer.stream_request_usage(), (0, 0, 0));
 }
 
+/// A histogram's columns are the host's bins, one row per bin, so it is
+/// resident only (#284). Over streamed edges and values, in either
+/// orientation and with the edges and values in one column, the capability
+/// check names the refusal and neither the explicit nor the automatic stream
+/// begins. The capability check and the explicit begin create no GPU
+/// resource at all; the automatic request keeps none (no live bytes), and
+/// neither takes a slot, job or reservation.
 #[test]
-fn histogram_cursor_requests_one_extra_edge_but_not_one_extra_value() {
+fn a_streamed_histogram_is_refused_before_anything_is_allocated() {
     for (orientation, alias) in [
         (crate::data_config::BarOrientation::Vertical, false),
         (crate::data_config::BarOrientation::Horizontal, false),
@@ -750,490 +757,62 @@ fn histogram_cursor_requests_one_extra_edge_but_not_one_extra_value() {
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         let target = draw_target(&renderer, 1);
-        let job = renderer
-            .begin_chart_stream_draw(chart, &view, &target, 3)
-            .unwrap();
-        let ticket = match renderer.request_chart_stream_draw(job).unwrap() {
-            StreamDrawRequestStatus::Ready(ticket) => ticket,
-            other => panic!("expected histogram ticket, got {other:?}"),
-        };
-        let columns = renderer.stream_request_columns(ticket).unwrap();
-        let edge_id = if orientation == crate::data_config::BarOrientation::Vertical {
-            x_id
-        } else {
-            y_id
-        };
-        assert_eq!(columns.len(), if alias { 1 } else { 2 });
-        assert!(columns.iter().all(|column| {
-            column.range.offset == 0
-                && column.range.len == if column.column == edge_id { 4 } else { 3 }
-        }));
-        renderer.cancel_chart_stream(chart).unwrap();
-    }
-}
-
-#[test]
-fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
-    let _font_registration = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .expect("font registration test lock poisoned");
-    // Fifteen narrow bins share a handful of screen columns; the final bin is
-    // wide enough to exercise the ordinary bar draw as well as the envelope.
-    let edges: Vec<f32> = (0..16)
-        .map(|i| i as f32 * 0.25)
-        .chain(std::iter::once(12.0))
-        .collect();
-    let values: Vec<f32> = (0..16)
-        .map(|i| {
-            if i == 5 {
-                f32::NAN
-            } else {
-                1.0 + ((i * 7) % 9) as f32
-            }
-        })
-        .collect();
-    for orientation in [
-        crate::data_config::BarOrientation::Vertical,
-        crate::data_config::BarOrientation::Horizontal,
-    ] {
-        for mapped in [false, true] {
-            for samples in [1, 4] {
-                let (device, queue) =
-                    crate::data_render::shared_device().expect("stream GPU required");
-                let mut r = Renderer::try_new_with_sample_count(
-                    RendererDevice::new(device, queue).expect("figgy poll thread"),
-                    wgpu::TextureFormat::Rgba8Unorm,
-                    4096,
-                    samples,
-                )
-                .unwrap();
-                r.configure_streaming_runtime(limits(2)).unwrap();
-                let (x, y, rx, ry) = match orientation {
-                    crate::data_config::BarOrientation::Vertical => {
-                        ("edge", "value", "redge", "rvalue")
-                    }
-                    crate::data_config::BarOrientation::Horizontal => {
-                        ("value", "edge", "rvalue", "redge")
-                    }
-                };
-                let mut edge_source = source("edge", 1);
-                edge_source.len = edges.len() as u64;
-                let mut value_source = source("value", 1);
-                value_source.len = values.len() as u64;
-                r.register_streamed_columns(vec![edge_source, value_source])
-                    .unwrap();
-                for (id, data) in [("redge", &edges), ("rvalue", &values)] {
-                    r.add_column(id, &crate::Column { data: data.clone() })
-                        .unwrap();
-                }
-                let mut config = crate::default::default_config();
-                config.chart_area = crate::layout::ChartArea(Rect {
-                    x: 0,
-                    y: 0,
-                    width: 320,
-                    height: 240,
-                });
-                let mut chart = Chart::new(config);
-                match orientation {
-                    crate::data_config::BarOrientation::Vertical => {
-                        chart.set_x_range(0.0, 100.0);
-                        chart.set_y_range(0.0, 10.0);
-                    }
-                    crate::data_config::BarOrientation::Horizontal => {
-                        chart.set_x_range(0.0, 10.0);
-                        chart.set_y_range(0.0, 100.0);
-                    }
-                }
-                let declarations: Vec<_> = [
-                    ("first", Color::new(0.0, 0.7, 0.2, 0.55)),
-                    ("second", Color::new(0.2, 0.1, 0.8, 0.35)),
-                ]
-                .into_iter()
-                .map(|(id, fill)| {
-                    let mut series = declaration(id, x, y);
-                    series.render_type = DataRenderType::Histogram {
-                        bar: DataBarStyleConfig {
-                            fill_color: fill,
-                            border_color: Color::new(0.0, 0.0, 0.0, 0.8),
-                            border_width: 1.0,
-                            baseline: 0.0,
-                            gap_px: 0.0,
-                            width_ratio: 1.0,
-                            orientation: orientation.clone(),
-                            bar_style_overrides: mapped.then(|| {
-                                vec![
-                                    crate::data_config::DataBarStyleOverride {
-                                        index: 2,
-                                        style: crate::data_config::DataBarBinStyleConfig {
-                                            border_color: Some(Color::new(1.0, 0.0, 0.0, 0.9)),
-                                            ..Default::default()
-                                        },
-                                    },
-                                    crate::data_config::DataBarStyleOverride {
-                                        index: 12,
-                                        style: crate::data_config::DataBarBinStyleConfig {
-                                            fill_color: Some(Color::new(1.0, 0.8, 0.0, 0.6)),
-                                            ..Default::default()
-                                        },
-                                    },
-                                ]
-                            }),
-                        },
-                    };
-                    series
-                })
-                .collect();
-                let mut resident = declarations.clone();
-                for series in &mut resident {
-                    series.x_column = rx.into();
-                    series.y_column = ry.into();
-                }
-                r.add_column(
-                    "pedge",
-                    &crate::Column {
-                        data: edges[..5].to_vec(),
-                    },
-                )
-                .unwrap();
-                r.add_column(
-                    "pvalue",
-                    &crate::Column {
-                        data: values[..4].to_vec(),
-                    },
-                )
-                .unwrap();
-                let mut prefix_series = declarations[0].clone();
-                match orientation {
-                    crate::data_config::BarOrientation::Vertical => {
-                        prefix_series.x_column = "pedge".into();
-                        prefix_series.y_column = "pvalue".into();
-                    }
-                    crate::data_config::BarOrientation::Horizontal => {
-                        prefix_series.x_column = "pvalue".into();
-                        prefix_series.y_column = "pedge".into();
-                    }
-                }
-                let resident_id = r.register_chart(chart.config().clone(), resident).unwrap();
-                let prefix_id = r
-                    .register_chart(chart.config().clone(), vec![prefix_series])
-                    .unwrap();
-                let stream_id = r
-                    .register_chart(chart.config().clone(), declarations)
-                    .unwrap();
-                let mut view = r
-                    .create_chart_view(&chart, chart.config().chart_area.0)
-                    .unwrap();
-                let frame = r
-                    .prepare_registered(&mut [RegisteredChartDrawItem {
-                        chart_id: resident_id,
-                        view: &mut view,
-                    }])
-                    .unwrap();
-                let expected = paint_frame_pixels(&r, &frame, samples);
-                let prefix_frame = r
-                    .prepare_registered(&mut [RegisteredChartDrawItem {
-                        chart_id: prefix_id,
-                        view: &mut view,
-                    }])
-                    .unwrap();
-                let expected_prefix = paint_frame_pixels(&r, &prefix_frame, samples);
-                assert!(expected.chunks_exact(4).any(|p| p != [255, 255, 255, 255]));
-                for chunk_size in [1, 2, 4] {
-                    let job = r
-                        .begin_chart_stream_surface(
-                            stream_id,
-                            &view,
-                            (320, 240),
-                            wgpu::Color::WHITE,
-                            chunk_size,
-                        )
-                        .unwrap();
-                    let mut submissions = 0;
-                    assert!(r.refresh_chart_stream_display(job, &view).unwrap());
-                    loop {
-                        wait_stream_slots(&mut r, 0);
-                        let ticket = match r.request_chart_stream_draw(job).unwrap() {
-                            StreamDrawRequestStatus::Ready(ticket) => ticket,
-                            StreamDrawRequestStatus::AllSubmitted => break,
-                            StreamDrawRequestStatus::Backpressure => panic!("slots drained"),
-                        };
-                        let columns: Vec<_> = r
-                            .stream_request_columns(ticket)
-                            .unwrap()
-                            .iter()
-                            .map(|column| (column.column.clone(), column.range))
-                            .collect();
-                        assert_eq!(columns.len(), 2);
-                        let inputs: Vec<_> = columns
-                            .iter()
-                            .map(|(id, range)| {
-                                let data = if id == "edge" { &edges } else { &values };
-                                StreamInput {
-                                    column: id,
-                                    bytes: bytemuck::cast_slice(
-                                        &data[range.offset as usize
-                                            ..(range.offset + range.len) as usize],
-                                    ),
-                                }
-                            })
-                            .collect();
-                        r.submit_chart_stream_surface(ticket, &inputs, &view)
-                            .unwrap_or_else(|error| panic!("orientation={orientation:?}, mapped={mapped}, samples={samples}, chunk={chunk_size}, columns={columns:?}: {error:?}"));
-                        assert!(r.refresh_chart_stream_display(job, &view).unwrap());
-                        assert!(!r.refresh_chart_stream_display(job, &view).unwrap());
-                        if chunk_size == 4 && submissions == 0 {
-                            let display =
-                                wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
-                            assert_stream_composite_pixels(
-                                &read_draw_target(&r, &display),
-                                &expected_prefix,
-                            );
-                        }
-                        submissions += 1;
-                    }
-                    assert_eq!(submissions, 2 * 16usize.div_ceil(chunk_size as usize));
-                    let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
-                    assert_stream_composite_pixels(&read_draw_target(&r, &display), &expected);
-                    r.cancel_chart_stream(stream_id).unwrap();
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn streamed_histogram_same_id_edges_and_values_match_resident() {
-    let _font_registration = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .expect("font registration test lock poisoned");
-    let values: Vec<f32> = (0..17).map(|i| i as f32 * 0.25).collect();
-    let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
-    let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4096,
-    )
-    .unwrap();
-    r.configure_streaming_runtime(limits(2)).unwrap();
-    let mut source = source("same", 1);
-    source.len = values.len() as u64;
-    r.register_streamed_columns(vec![source]).unwrap();
-    r.add_column(
-        "rsame",
-        &crate::Column {
-            data: values.clone(),
-        },
-    )
-    .unwrap();
-    let mut config = crate::default::default_config();
-    config.chart_area = crate::layout::ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: 320,
-        height: 240,
-    });
-    let mut chart = Chart::new(config);
-    chart.set_x_range(0.0, 100.0);
-    chart.set_y_range(0.0, 10.0);
-    let mut series = declaration("alias", "same", "same");
-    series.render_type = DataRenderType::Histogram {
-        bar: DataBarStyleConfig {
-            fill_color: Color::new(0.0, 0.6, 0.0, 0.5),
-            border_color: Color::new(0.0, 0.0, 0.0, 0.9),
-            border_width: 1.0,
-            baseline: 0.0,
-            gap_px: 0.0,
-            width_ratio: 1.0,
-            orientation: crate::data_config::BarOrientation::Vertical,
-            bar_style_overrides: None,
-        },
-    };
-    let stream_id = r
-        .register_chart(chart.config().clone(), vec![series.clone()])
-        .unwrap();
-    series.x_column = "rsame".into();
-    series.y_column = "rsame".into();
-    let resident_id = r
-        .register_chart(chart.config().clone(), vec![series])
-        .unwrap();
-    let mut view = r
-        .create_chart_view(&chart, chart.config().chart_area.0)
-        .unwrap();
-    let frame = r
-        .prepare_registered(&mut [RegisteredChartDrawItem {
-            chart_id: resident_id,
-            view: &mut view,
-        }])
-        .unwrap();
-    let expected = paint_frame_pixels(&r, &frame, 1);
-    for chunk_size in [1, 2, 4] {
-        let job = r
-            .begin_chart_stream_surface(
-                stream_id,
-                &view,
-                (320, 240),
-                wgpu::Color::WHITE,
-                chunk_size,
-            )
-            .unwrap();
-        loop {
-            wait_stream_slots(&mut r, 0);
-            let ticket = match r.request_chart_stream_draw(job).unwrap() {
-                StreamDrawRequestStatus::Ready(ticket) => ticket,
-                StreamDrawRequestStatus::AllSubmitted => break,
-                StreamDrawRequestStatus::Backpressure => panic!("slots drained"),
-            };
-            let requested = r.stream_request_columns(ticket).unwrap();
-            assert_eq!(requested.len(), 1);
-            let range = requested[0].range;
-            let input = StreamInput {
-                column: "same",
-                bytes: bytemuck::cast_slice(
-                    &values[range.offset as usize..(range.offset + range.len) as usize],
-                ),
-            };
-            r.submit_chart_stream_surface(ticket, &[input], &view)
-                .unwrap();
-            r.refresh_chart_stream_display(job, &view).unwrap();
-        }
-        let display = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
-        assert_eq!(
-            read_draw_target(&r, &display),
-            expected,
-            "alias chunk={chunk_size}"
-        );
-        r.cancel_chart_stream(stream_id).unwrap();
-    }
-}
-
-#[test]
-fn malformed_first_histogram_supply_is_allocation_free_and_retryable_at_cap() {
-    let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
-    let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4096,
-    )
-    .unwrap();
-    r.configure_streaming_runtime(limits(2)).unwrap();
-    let edges: Vec<f32> = (0..9).map(|i| i as f32 * 0.25).collect();
-    let values: Vec<f32> = (0..8).map(|i| (i + 1) as f32).collect();
-    let mut edge_source = source("edge", 1);
-    edge_source.len = edges.len() as u64;
-    r.register_streamed_columns(vec![edge_source, source("value", 1)])
-        .unwrap();
-    let mut series = declaration("h", "edge", "value");
-    series.render_type = DataRenderType::Histogram {
-        bar: DataBarStyleConfig {
-            fill_color: Color::new(0.0, 0.8, 0.0, 1.0),
-            border_color: Color::BLACK,
-            border_width: 1.0,
-            baseline: 0.0,
-            gap_px: 0.0,
-            width_ratio: 1.0,
-            orientation: crate::data_config::BarOrientation::Vertical,
-            bar_style_overrides: None,
-        },
-    };
-    let mut config = crate::default::default_config();
-    config.chart_area = crate::layout::ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: 320,
-        height: 240,
-    });
-    let mut chart = Chart::new(config);
-    chart.set_x_range(0.0, 100.0);
-    chart.set_y_range(0.0, 10.0);
-    let chart_id = r
-        .register_chart(chart.config().clone(), vec![series])
-        .unwrap();
-    let view = r
-        .create_chart_view(&chart, chart.config().chart_area.0)
-        .unwrap();
-    let target = draw_target(&r, 1);
-    clear_draw_target(&r, &target);
-    let job = r
-        .begin_chart_stream_draw(chart_id, &view, &target, 3)
-        .unwrap();
-    let ticket = match r.request_chart_stream_draw(job).unwrap() {
-        StreamDrawRequestStatus::Ready(ticket) => ticket,
-        other => panic!("expected ticket, got {other:?}"),
-    };
-    let before = r.gpu_memory_usage();
-    assert_eq!(r.set_memory_budget(Some(before.total_bytes() + 8000)), None);
-    assert!(
-        r.submit_chart_stream_draw(ticket, &[], &view, &target)
-            .is_err()
-    );
-    assert_eq!(r.gpu_memory_usage(), before);
-    assert_eq!(
-        r.request_chart_stream_draw(job).unwrap(),
-        StreamDrawRequestStatus::Ready(ticket)
-    );
-    let columns: Vec<_> = r
-        .stream_request_columns(ticket)
-        .unwrap()
-        .iter()
-        .map(|column| (column.column.clone(), column.range))
-        .collect();
-    let inputs: Vec<_> = columns
-        .iter()
-        .map(|(id, range)| {
-            let data = if id == "edge" { &edges } else { &values };
-            StreamInput {
-                column: id,
-                bytes: bytemuck::cast_slice(
-                    &data[range.offset as usize..(range.offset + range.len) as usize],
-                ),
-            }
-        })
-        .collect();
-    r.submit_chart_stream_draw(ticket, &inputs, &view, &target)
-        .unwrap();
-    wait_stream_slots(&mut r, 0);
-    let retirement_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while r.gpu_memory_usage().retired_bytes() != before.retired_bytes() {
-        r.service_gpu_completions().unwrap();
+        renderer.wait_idle().unwrap();
+        let before = renderer.gpu_memory_usage();
+        let refused = renderer.inspect_streaming_capability(chart);
         assert!(
-            std::time::Instant::now() < retirement_deadline,
-            "stream retirement callback timeout"
+            matches!(
+                &refused,
+                Err(FiggyError::InvalidSeriesConfig {
+                    series_id,
+                    kind: crate::RuleKind::StreamedHistogram,
+                }) if series_id == "h"
+            ),
+            "{refused:?}"
         );
-        std::thread::yield_now();
+        let begun = renderer.begin_chart_stream_draw(chart, &view, &target, 3);
+        assert!(
+            matches!(
+                &begun,
+                Err(StreamRequestError::State(FiggyError::InvalidSeriesConfig {
+                    kind: crate::RuleKind::StreamedHistogram,
+                    ..
+                }))
+            ),
+            "{begun:?}"
+        );
+        assert_eq!(renderer.gpu_memory_usage(), before);
+        assert_eq!(renderer.stream_request_usage(), (0, 0, 0));
+        // The automatic request builds its owned display view before the
+        // shared stream preflight refuses the series, as it does for every
+        // refused kind; that view is released at once.
+        let automatic = renderer.request_auto_streaming_chart(
+            chart,
+            &view,
+            crate::StreamingChartOptions {
+                size: (config.chart_area.0.width, config.chart_area.0.height),
+                clear_color: Color::WHITE,
+                max_primitives_per_chunk: 3,
+            },
+        );
+        assert!(
+            matches!(
+                &automatic,
+                Err(FiggyError::InvalidSeriesConfig {
+                    kind: crate::RuleKind::StreamedHistogram,
+                    ..
+                })
+            ),
+            "{automatic:?}"
+        );
+        assert!(renderer.active_stream_job(chart).is_none());
+        assert!(!renderer.is_streaming_chart(chart));
+        assert_eq!(
+            renderer.gpu_memory_usage().live_bytes(),
+            before.live_bytes()
+        );
+        assert_eq!(renderer.stream_request_usage(), (0, 0, 0));
     }
-    assert_eq!(r.gpu_memory_usage().retired_bytes(), before.retired_bytes());
-    assert!(r.gpu_memory_usage().live_bytes() > before.live_bytes());
-    loop {
-        let ticket = match r.request_chart_stream_draw(job).unwrap() {
-            StreamDrawRequestStatus::Ready(ticket) => ticket,
-            StreamDrawRequestStatus::AllSubmitted => break,
-            StreamDrawRequestStatus::Backpressure => panic!("completed slot remained occupied"),
-        };
-        let columns: Vec<_> = r
-            .stream_request_columns(ticket)
-            .unwrap()
-            .iter()
-            .map(|column| (column.column.clone(), column.range))
-            .collect();
-        let inputs: Vec<_> = columns
-            .iter()
-            .map(|(id, range)| {
-                let data = if id == "edge" { &edges } else { &values };
-                StreamInput {
-                    column: id,
-                    bytes: bytemuck::cast_slice(
-                        &data[range.offset as usize..(range.offset + range.len) as usize],
-                    ),
-                }
-            })
-            .collect();
-        r.submit_chart_stream_draw(ticket, &inputs, &view, &target)
-            .unwrap();
-        wait_stream_slots(&mut r, 0);
-    }
-    wait_stream_retirement(&r);
-    assert_eq!(r.gpu_memory_usage().total_bytes(), before.total_bytes());
-    assert_eq!(r.gpu_memory_usage().retired_bytes(), before.retired_bytes());
 }
 
 fn renderer(slots: usize) -> (Renderer, ChartId, ChartId) {
@@ -5950,7 +5529,7 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
             crate::ColumnSource::write_pair_range(&self.column, start, dst)
         }
     }
-    for (samples, histogram) in [(1, false), (4, false), (1, true), (4, true)] {
+    for samples in [1, 4] {
         let (device, queue) = crate::data_render::shared_device().unwrap();
         let mut r = Renderer::try_new_with_sample_count(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
@@ -5983,20 +5562,6 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
         config.chart_area.0.width = 320;
         config.chart_area.0.height = 240;
         let mut series = declaration("line", "x", "a");
-        if histogram {
-            series.render_type = DataRenderType::Histogram {
-                bar: DataBarStyleConfig {
-                    fill_color: Color::new(1.0, 0.0, 0.0, 1.0),
-                    border_color: Color::new(1.0, 0.0, 0.0, 1.0),
-                    border_width: 1.0,
-                    baseline: 0.0,
-                    gap_px: 0.0,
-                    width_ratio: 1.0,
-                    orientation: crate::data_config::BarOrientation::Vertical,
-                    bar_style_overrides: None,
-                },
-            };
-        }
         let chart = r
             .register_chart(config.clone(), vec![series.clone()])
             .unwrap();
@@ -6064,7 +5629,7 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
                 .unwrap();
             let pixels = paint_frame_pixels(&r, &frame, samples);
             let calls = x.offsets.borrow().len();
-            if samples == 1 && !histogram && calls >= 8 {
+            if samples == 1 && calls >= 8 {
                 if let Some(directory) = std::env::var_os("FIGGY_REPLAY_CAPTURE_DIR") {
                     let directory = std::path::PathBuf::from(directory);
                     std::fs::create_dir_all(&directory).unwrap();
@@ -6142,7 +5707,7 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
         // another rounding. Bound the difference to two 8-bit channel steps.
         assert!(
             max_channel_error <= 2,
-            "final frame differs from resident: error={max_channel_error}, samples={samples}, histogram={histogram}"
+            "final frame differs from resident: error={max_channel_error}, samples={samples}"
         );
     }
 }

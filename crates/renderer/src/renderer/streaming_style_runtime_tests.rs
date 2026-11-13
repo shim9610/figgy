@@ -1333,7 +1333,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
 }
 
 #[test]
-fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
+fn styled_stream_suppressed_fields_are_exact_noops() {
     let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
         .unwrap();
@@ -1373,7 +1373,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                 .unwrap();
             let empty = r.register_chart(config.clone(), Vec::new()).unwrap();
             let blank = draw_registered(&mut r, empty, &mut view, samples);
-            for kind in 0..4 {
+            for kind in 1..4 {
                 let matrix = MatrixRef {
                     columns: vec!["z".into()],
                     orientation: MatrixOrientation::ColumnsAreX,
@@ -1399,18 +1399,6 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                 };
                 let mut stream = declaration("suppressed", "x", "y");
                 stream.render_type = match kind {
-                    0 => DataRenderType::Histogram {
-                        bar: DataBarStyleConfig {
-                            fill_color: Color::BLACK,
-                            border_color: Color::BLACK,
-                            border_width: 1.0,
-                            baseline: 0.0,
-                            gap_px: 1.0,
-                            width_ratio: 1.0,
-                            orientation: crate::data_config::BarOrientation::Vertical,
-                            bar_style_overrides: None,
-                        },
-                    },
                     1 => DataRenderType::Field(crate::data_config::FieldSeries {
                         matrix,
                         fill: Some(fill),

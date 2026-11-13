@@ -189,6 +189,14 @@ impl PrepareContext<'_> {
                 kind: crate::RuleKind::StreamedBoxPlot,
             });
         }
+        // Histograms are refused (#284): their columns are the host's bins,
+        // one row per bin, which never need streaming.
+        if matches!(series.render_type, DataRenderType::Histogram { .. }) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_HISTOGRAM_REASON.into(),
+            });
+        }
         // Nor to range bars: a bar reads its start, whiskers, colour and
         // progress columns by their pool lanes.
         if series.render_type.range_bars().is_some() {
@@ -343,30 +351,12 @@ impl PrepareContext<'_> {
                 series_id: series.config.series_id.clone(),
                 kind: crate::RuleKind::StreamedPrimitiveColumns,
             })?;
-        let bins = if phase == streaming_runtime::StreamDrawPhase::Histogram {
-            if streaming_runtime::histogram_edge_column(series.config)
-                == Some(series.config.x_column.as_str())
-            {
-                first.len.saturating_sub(1)
-            } else {
-                first.len
-            }
-        } else {
-            first.len.saturating_sub(phase.halo())
-        };
+        let primitives = first.len.saturating_sub(phase.halo());
         if columns.len() != expected.count
             || columns.iter().enumerate().any(|(index, column)| {
                 column.column != index as u64
                     || column.offset != first.offset
-                    || column.len
-                        != if phase == streaming_runtime::StreamDrawPhase::Histogram {
-                            bins.saturating_add(u64::from(
-                                streaming_runtime::histogram_edge_column(series.config)
-                                    == Some(expected.ids[index]),
-                            ))
-                        } else {
-                            bins.saturating_add(phase.halo())
-                        }
+                    || column.len != primitives.saturating_add(phase.halo())
             })
         {
             return Err(FiggyError::InvalidSeriesConfig {
