@@ -3404,6 +3404,13 @@ entries above describe the changes.
   calls. `SceneKind::Monotonic` (four channels of 200 000 samples) puts the
   series into the decoration oracle, vector export and `auto_layout`
   sweeps, exported through `ExportSource::Monotonic`.
+- **Monotonic-x cost probe** ([#271](https://github.com/shim9610/figgy/issues/271)).
+  `examples/monotonic_bench.rs` times a monotonic chart on the native GPU
+  through `set_monotonic`, `append_monotonic`, `prepare_monotonic` and
+  `paint_prepared`: one full call of N samples, sliding appends to a
+  window, and a 1x export check that the drawn line covers each pixel
+  column's data range and keeps every one-sample spike. The data is f64,
+  or i16 counts on a y axis printed in volts.
 - **Released documents are checked by what they draw** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `tests/released_documents.rs` requires each released document to parse,
   read back as the same value after a save and re-serialize unchanged from
