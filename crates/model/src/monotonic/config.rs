@@ -98,6 +98,18 @@ impl<'a> MonotonicConfig<'a> {
             })
     }
 
+    /// Overlay `index`'s own x axis (`OverlayLayer::x_axis`). Its range is
+    /// the monotonic calls', as the chart's x axes' are.
+    pub fn overlay_x_axis(&mut self, index: usize) -> Option<MonotonicAxis<'_>> {
+        self.config
+            .overlays
+            .get_mut(index)
+            .map(|overlay| MonotonicAxis {
+                axis: &mut overlay.x_axis,
+                is_x: true,
+            })
+    }
+
     /// Overlay `index`'s own legend.
     pub fn overlay_legend(&mut self, index: usize) -> Option<&mut Option<Legend>> {
         self.config
@@ -218,7 +230,8 @@ impl MonotonicAxis<'_> {
 /// Whether `a` and `b` map x to the same device pixels on every panel
 /// (#271): the same document size (the display scale follows it), and per
 /// panel (the chart and each subplot) the same plot width and the same x
-/// range, scale, breaks, direction and categories. Where the plot lies does
+/// range, scale, breaks, direction and categories, for the chart's x axis
+/// and for each overlay's, with the same link flag. Where the plot lies does
 /// not matter: a moved plot keeps its mapping. What a [`MonotonicConfig`]
 /// edit must keep.
 pub fn same_mapping(a: &Config, b: &Config) -> bool {
@@ -234,9 +247,17 @@ pub fn same_mapping(a: &Config, b: &Config) -> bool {
 
 fn panel_mapping_eq(a: &Config, b: &Config) -> bool {
     let width = |config: &Config| config.data_area().ok().map(|area| area.0.width);
-    let (x, y) = (&a.bottom_x, &b.bottom_x);
     width(a) == width(b)
-        && x.min.to_bits() == y.min.to_bits()
+        && x_mapping_eq(&a.bottom_x, &b.bottom_x)
+        && a.overlays.len() == b.overlays.len()
+        && a.overlays
+            .iter()
+            .zip(&b.overlays)
+            .all(|(a, b)| a.link_x == b.link_x && (a.link_x || x_mapping_eq(&a.x_axis, &b.x_axis)))
+}
+
+fn x_mapping_eq(x: &AxisOptions, y: &AxisOptions) -> bool {
+    x.min.to_bits() == y.min.to_bits()
         && x.max.to_bits() == y.max.to_bits()
         && x.scale == y.scale
         && x.inverted == y.inverted

@@ -92,7 +92,8 @@ impl FiggyChart {
 
     /// Fit overlay layer `layer`'s Y axis to a column's cached statistics
     /// with proportional padding, the overlay counterpart of `auto_fit_y`.
-    /// A layer index past the overlay list is an error.
+    /// With the overlay's `link_y` on it fits the chart's Y axes it
+    /// follows. A layer index past the overlay list is an error.
     /// JS: `chart.auto_fit_overlay_y(0, "pressure", 0.05)`
     pub fn auto_fit_overlay_y(
         &mut self,
@@ -106,6 +107,29 @@ impl FiggyChart {
         let mut chart = Chart::new(self.chart_config()?.clone());
         chart
             .auto_fit_overlay_y_union(self.renderer.pool(), layer, &[column], padding)
+            .map_err(js_err)?;
+        self.replace_chart_config(chart.config().clone())?;
+        Ok(())
+    }
+
+    /// Fit overlay layer `layer`'s own X axis (`OverlayLayer::x_axis`) to a
+    /// column's cached statistics with proportional padding, the X
+    /// counterpart of `auto_fit_overlay_y`. With the overlay's `link_x` on
+    /// it fits the chart's X axes it follows. A layer index past the
+    /// overlay list is an error.
+    /// JS: `chart.auto_fit_overlay_x(0, "time_b", 0.05)`
+    pub fn auto_fit_overlay_x(
+        &mut self,
+        layer: usize,
+        column: &str,
+        padding: f64,
+    ) -> Result<(), JsValue> {
+        if layer >= self.chart_config()?.overlays.len() {
+            return Err(js_err("overlay layer index is out of range"));
+        }
+        let mut chart = Chart::new(self.chart_config()?.clone());
+        chart
+            .auto_fit_overlay_x_union(self.renderer.pool(), layer, &[column], padding)
             .map_err(js_err)?;
         self.replace_chart_config(chart.config().clone())?;
         Ok(())
@@ -148,14 +172,15 @@ impl FiggyChart {
     /// The active layer (`set_active_layer`) decides which axes move:
     /// `Base` and `Annotations` fit the parent's `bottom_x` and `left_y`,
     /// `Subplot(i)` fits subplot `i`'s, and `Overlay(n)` /
-    /// `SubplotOverlay(i, n)` fit that overlay's Y axis only. An axis fits
-    /// every series drawn against it (`Config::layer_of_series`). A linked
-    /// axis (`link_x`, `link_y`) is one axis shared by its link group: it
-    /// fits the series of every chart in the group and the range moves
-    /// the whole group, whichever member is active. X and Y links are
-    /// followed separately. An overlay shares its chart's X axis and has
-    /// its own Y axis, so its series count towards that X axis and not
-    /// towards `left_y`. An axis that is not linked fits its own chart's
+    /// `SubplotOverlay(i, n)` fit that overlay's own axes: its Y axis, and
+    /// its X axis while its `link_x` is off. An axis fits every series
+    /// drawn against it (`Config::layer_of_series`). A linked axis
+    /// (`link_x`, `link_y` of a subplot or an overlay) is one axis shared
+    /// by its link group: it fits the series of every chart and overlay in
+    /// the group and the range moves the whole group, whichever member is
+    /// active. X and Y links are followed separately. By default an overlay
+    /// follows its chart's X axis and has its own Y axis, so its series
+    /// count towards that X axis and not towards `left_y`. An axis that is not linked fits its own chart's
     /// series only; to fit every layer, set each layer active in turn and
     /// call this again.
     ///

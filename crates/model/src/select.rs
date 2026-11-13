@@ -757,11 +757,15 @@ impl HitMap<Config> {
     /// The registration set for the layer `cfg.active_layer()` addresses.
     ///
     /// `Base` is exactly [`Self::standard_chart`]. For any other layer the
-    /// shared elements come first — data area, the two X axes with their
-    /// label bands and titles, the merged legend, the chart title and the
-    /// colourbar chrome — and the active layer's own elements last, so the
-    /// reverse-order hit test puts them on top: for `Overlay(i)` its right
-    /// Y axis, that axis' label band and title, and its per-layer legend
+    /// shared elements come first — data area, the parent's axes the layer
+    /// shares with their label bands and titles, the merged legend, the
+    /// chart title and the colourbar chrome — and the active layer's own
+    /// elements last, so the reverse-order hit test puts them on top. An
+    /// `Overlay(i)` shares the parent's two X axes, or only the bottom one
+    /// while it has an X axis of its own (`link_x` off), and the parent's
+    /// left Y axis while it follows it (`link_y` on). Its own elements are
+    /// its own X axis on the top side, its own Y axis on the right, each with
+    /// its label band and title, and its per-layer legend
     /// (`DecorationId::Overlay { layer: i, .. }` ids, `overlay_<i>:…`).
     /// The inactive layers' elements are not registered at all, so a click
     /// on them passes through to the active layer; the base panel's Y axes
@@ -777,9 +781,9 @@ impl HitMap<Config> {
     /// [`SubplotElement`]s (`subplot_<i>:…` ids); the parent's elements are
     /// not registered then, since a subplot shares none of them.
     ///
-    /// The set depends only on the active layer, the overlay count and the
-    /// active subplot's overlay count, so a host rebuilds the map when any
-    /// of them changes; `HitId`s from a previous map are not valid in the new
+    /// The set depends only on the active layer, the overlay count, the
+    /// active subplot's overlay count and the active overlay's link flags, so
+    /// a host rebuilds the map when any of them changes; `HitId`s from a previous map are not valid in the new
     /// one.
     pub fn for_active_layer(cfg: &Config) -> Self {
         let layer = cfg.active_layer();
@@ -798,16 +802,31 @@ impl HitMap<Config> {
         if let LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) = layer {
             return Self::for_subplot(cfg, index, layer);
         }
+        // The parent's axes this layer shares: both X axes unless an
+        // overlay has an X axis of its own (its top side is then the
+        // overlay's), and the left Y axis when an overlay follows it.
+        let overlay = match layer {
+            LayerRef::Overlay(index) => cfg.overlays.get(index),
+            _ => None,
+        };
+        let own_x = overlay.is_some_and(|overlay| !overlay.link_x);
+        let linked_y = overlay.is_some_and(|overlay| overlay.link_y);
+        let shared: &[Side] = match (own_x, linked_y) {
+            (false, false) => &[Side::Top, Side::Bottom],
+            (false, true) => &[Side::Top, Side::Bottom, Side::Left],
+            (true, false) => &[Side::Bottom],
+            (true, true) => &[Side::Bottom, Side::Left],
+        };
         let mut map = Self::new();
         map.register(DataAreaElement);
-        for side in [Side::Top, Side::Bottom] {
-            map.register(AxisElement { side });
+        for side in shared {
+            map.register(AxisElement { side: side.clone() });
         }
-        for side in [Side::Top, Side::Bottom] {
-            map.register(AxisLabelElement { side });
+        for side in shared {
+            map.register(AxisLabelElement { side: side.clone() });
         }
-        for side in [Side::Top, Side::Bottom] {
-            map.register(AxisTitleElement { side });
+        for side in shared {
+            map.register(AxisTitleElement { side: side.clone() });
         }
         map.register(LegendElement);
         map.register(ChartTitleElement);
@@ -815,14 +834,24 @@ impl HitMap<Config> {
         map.register(ColorBarAxisElement);
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
-        // The x axes are shared, and so are their group headers (#203).
-        for side in [Side::Top, Side::Bottom] {
-            map.register(CategoryGroupLabelElement { side });
+        // The shared x axes' group headers are shared too (#203).
+        for side in shared
+            .iter()
+            .filter(|side| matches!(side, Side::Top | Side::Bottom))
+        {
+            map.register(CategoryGroupLabelElement { side: side.clone() });
         }
         if let LayerRef::Overlay(index) = layer {
-            map.register(OverlayAxisElement { layer: index });
-            map.register(OverlayAxisLabelElement { layer: index });
-            map.register(OverlayAxisTitleElement { layer: index });
+            if own_x {
+                map.register(OverlayXAxisElement { layer: index });
+                map.register(OverlayXAxisLabelElement { layer: index });
+                map.register(OverlayXAxisTitleElement { layer: index });
+            }
+            if !linked_y {
+                map.register(OverlayAxisElement { layer: index });
+                map.register(OverlayAxisLabelElement { layer: index });
+                map.register(OverlayAxisTitleElement { layer: index });
+            }
             map.register(OverlayLegendElement { layer: index });
         }
         map
@@ -1270,6 +1299,27 @@ pub struct OverlayAxisLabelElement {
 /// The title of overlay layer `layer`'s Y axis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayAxisTitleElement {
+    pub layer: usize,
+}
+
+/// The top X axis of overlay layer `layer` — line plus tick band — drawn
+/// while the overlay has an X axis of its own (`link_x` off). A drag is
+/// written back into `overlays[layer].x_axis` only, as
+/// [`OverlayAxisElement`]'s is into its `y_axis`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayXAxisElement {
+    pub layer: usize,
+}
+
+/// The tick-label band of overlay layer `layer`'s own X axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayXAxisLabelElement {
+    pub layer: usize,
+}
+
+/// The title of overlay layer `layer`'s own X axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayXAxisTitleElement {
     pub layer: usize,
 }
 
@@ -1879,7 +1929,7 @@ fn overlay_id(layer: usize, inner: DecorationId) -> String {
     .element_id()
 }
 
-/// Copy the drag-owned fields of a panel's right axis back to the overlay.
+/// Copy the drag-owned fields of a panel's axis back to the overlay's.
 /// `out_margin` is group geometry and never moves through these elements.
 fn adopt_overlay_axis(target: &mut AxisOptions, panel: &AxisOptions) {
     target.line_offset = panel.line_offset;
@@ -1889,9 +1939,13 @@ fn adopt_overlay_axis(target: &mut AxisOptions, panel: &AxisOptions) {
     target.title_option.offset_y = panel.title_option.offset_y;
 }
 
+/// Drag `element` of overlay `layer`'s axis on `side` (its Y axis on the
+/// right, its X axis on the top) on the overlay's panel, and copy the moved
+/// fields back into that axis of the overlay.
 fn drag_overlay_axis_element(
     cfg: &mut Config,
     layer: usize,
+    side: Side,
     element: Element,
     measure: &dyn MeasureText,
     dx: f32,
@@ -1902,7 +1956,11 @@ fn drag_overlay_axis_element(
     };
     let result = panel.nudge(element, measure, dx, dy);
     if result == NudgeResult::Moved {
-        adopt_overlay_axis(&mut cfg.overlays[layer].y_axis, &panel.right_y);
+        let overlay = &mut cfg.overlays[layer];
+        match side {
+            Side::Top => adopt_overlay_axis(&mut overlay.x_axis, &panel.top_x),
+            _ => adopt_overlay_axis(&mut overlay.y_axis, &panel.right_y),
+        }
     }
     result
 }
@@ -1954,7 +2012,15 @@ impl Draggable for OverlayAxisElement {
         dx: f32,
         dy: f32,
     ) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
+        drag_overlay_axis_element(
+            cfg,
+            self.layer,
+            Side::Right,
+            self.nudge_element(),
+            measure,
+            dx,
+            dy,
+        )
     }
 }
 
@@ -1990,7 +2056,15 @@ impl Draggable for OverlayAxisLabelElement {
         dx: f32,
         dy: f32,
     ) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
+        drag_overlay_axis_element(
+            cfg,
+            self.layer,
+            Side::Right,
+            self.nudge_element(),
+            measure,
+            dx,
+            dy,
+        )
     }
 }
 
@@ -2026,7 +2100,147 @@ impl Draggable for OverlayAxisTitleElement {
         dx: f32,
         dy: f32,
     ) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
+        drag_overlay_axis_element(
+            cfg,
+            self.layer,
+            Side::Right,
+            self.nudge_element(),
+            measure,
+            dx,
+            dy,
+        )
+    }
+}
+
+impl Selectable for OverlayXAxisElement {
+    fn element_id(&self) -> String {
+        overlay_id(self.layer, DecorationId::Axis(Side::Top))
+    }
+
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisElement { side: Side::Top },
+            measure,
+            sink,
+        )
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Draggable for OverlayXAxisElement {
+    fn nudge_element(&self) -> Element {
+        Element::Axis(Side::Top)
+    }
+
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(
+            cfg,
+            self.layer,
+            Side::Top,
+            self.nudge_element(),
+            measure,
+            dx,
+            dy,
+        )
+    }
+}
+
+impl Selectable for OverlayXAxisLabelElement {
+    fn element_id(&self) -> String {
+        overlay_id(self.layer, DecorationId::AxisLabel(Side::Top))
+    }
+
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisLabelElement { side: Side::Top },
+            measure,
+            sink,
+        )
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Draggable for OverlayXAxisLabelElement {
+    fn nudge_element(&self) -> Element {
+        Element::AxisLabel(Side::Top)
+    }
+
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(
+            cfg,
+            self.layer,
+            Side::Top,
+            self.nudge_element(),
+            measure,
+            dx,
+            dy,
+        )
+    }
+}
+
+impl Selectable for OverlayXAxisTitleElement {
+    fn element_id(&self) -> String {
+        overlay_id(self.layer, DecorationId::AxisTitle(Side::Top))
+    }
+
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisTitleElement { side: Side::Top },
+            measure,
+            sink,
+        )
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Draggable for OverlayXAxisTitleElement {
+    fn nudge_element(&self) -> Element {
+        Element::AxisTitle(Side::Top)
+    }
+
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(
+            cfg,
+            self.layer,
+            Side::Top,
+            self.nudge_element(),
+            measure,
+            dx,
+            dy,
+        )
     }
 }
 
@@ -2285,6 +2499,79 @@ pub(crate) mod tests {
             ids_of(&HitMap::for_active_layer(&cfg)),
             ids_of(&HitMap::standard_chart())
         );
+    }
+
+    /// An overlay with an X axis of its own registers it on the top side in
+    /// place of the parent's top axis; one that follows the parent's Y axis
+    /// registers the parent's left axis in place of an axis of its own.
+    #[test]
+    fn overlay_links_choose_the_registered_axes() {
+        let mut cfg = cfg_with_overlay();
+        cfg.set_active_layer(LayerRef::Overlay(0));
+        cfg.overlays[0].link_x = false;
+        cfg.overlays[0].link_y = true;
+        let ids = ids_of(&HitMap::for_active_layer(&cfg));
+        assert_eq!(
+            ids,
+            [
+                "data_area",
+                "axis_bottom",
+                "axis_left",
+                "tick_labels_bottom",
+                "tick_labels_left",
+                "axis_title_bottom",
+                "axis_title_left",
+                "legend",
+                "chart_title",
+                "colorbar",
+                "colorbar_axis",
+                "colorbar_tick_labels",
+                "colorbar_title",
+                "category_groups_bottom",
+                "overlay_0:axis_top",
+                "overlay_0:tick_labels_top",
+                "overlay_0:axis_title_top",
+                "overlay_0:legend",
+            ]
+        );
+        cfg.overlays[0].link_y = false;
+        let ids = ids_of(&HitMap::for_active_layer(&cfg));
+        assert!(ids.iter().any(|id| id == "overlay_0:axis_right"));
+        assert!(!ids.iter().any(|id| id == "axis_left" || id == "axis_top"));
+    }
+
+    /// A drag of the overlay's own X axis title or labels moves them on the
+    /// overlay's `x_axis` only: the parent's top axis and the overlay's Y
+    /// axis stay.
+    #[test]
+    fn overlay_x_axis_elements_drag_the_overlay_x_axis_only() {
+        let mut cfg = cfg_with_overlay();
+        cfg.overlays[0].link_x = false;
+        cfg.overlays[0].x_axis.title_option.visible = true;
+        cfg.overlays[0].x_axis.title_option.text.segments =
+            crate::text::rich_segments_from_label("own x");
+        let top = cfg.top_x.clone();
+        let y = cfg.overlays[0].y_axis.clone();
+        let title = OverlayXAxisTitleElement { layer: 0 };
+        assert_eq!(
+            title.drag_by(&mut cfg, &FixedMeasure, 7.0, -4.0),
+            NudgeResult::Moved
+        );
+        let moved = &cfg.overlays[0].x_axis.title_option;
+        assert!(moved.offset_x != 0.0 || moved.offset_y != 0.0);
+        let labels = OverlayXAxisLabelElement { layer: 0 };
+        assert_eq!(
+            labels.drag_by(&mut cfg, &FixedMeasure, 0.0, -3.0),
+            NudgeResult::Moved
+        );
+        assert_ne!(cfg.overlays[0].x_axis.label_style.label_offset_y, 0.0);
+        assert_eq!(cfg.top_x, top);
+        assert_eq!(cfg.overlays[0].y_axis, y);
+        // The element measures where the overlay panel draws the axis: in
+        // the top band, above the data area.
+        let bounds = title.bounds(&cfg, &FixedMeasure).expect("drawn");
+        let area = cfg.data_area().unwrap().0;
+        assert!(bounds.y + bounds.height <= area.y as f32);
     }
 
     /// The 800x600 parent and below it a subplot with its own axes, an

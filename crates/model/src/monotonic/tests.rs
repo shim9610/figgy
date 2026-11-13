@@ -1580,3 +1580,37 @@ fn the_source_carries_its_grid() {
     assert_eq!((grid.start(), grid.interval()), (10.0, 0.25));
     assert_eq!(update.len, 2_010);
 }
+
+// ---------------------------------------------------------------------------
+// Overlay x axes (#283)
+
+/// An overlay with an X axis of its own maps x to pixels by it, so its
+/// range is part of the mapping a [`MonotonicConfig`] edit must keep and a
+/// range write through its axis is refused; its style is free. A linked
+/// overlay's stored X axis maps nothing.
+#[test]
+fn an_overlay_x_axis_is_part_of_the_mapping() {
+    let mut config = crate::defaults::config();
+    config.overlays.push(crate::defaults::overlay_layer());
+    let linked = config.clone();
+    let mut moved = linked.clone();
+    moved.overlays[0].x_axis.max = 9.0;
+    assert!(same_mapping(&linked, &moved));
+    let mut own = linked.clone();
+    own.overlays[0].link_x = false;
+    assert!(!same_mapping(&linked, &own));
+    let mut own_moved = own.clone();
+    own_moved.overlays[0].x_axis.max = 9.0;
+    assert!(!same_mapping(&own, &own_moved));
+
+    let mut edited = own.clone();
+    let mut editor = MonotonicConfig::new(&mut edited);
+    let mut axis = editor.overlay_x_axis(0).expect("overlay");
+    assert_eq!(
+        axis.set_range(0.0, 2.0),
+        Err(crate::RuleKind::MonotonicMappingEdit)
+    );
+    axis.title().visible = true;
+    assert!(editor.overlay_x_axis(1).is_none());
+    assert!(same_mapping(&own, &edited));
+}

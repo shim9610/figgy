@@ -530,8 +530,10 @@ impl Theme {
         chrome.grid.major_y = grid_line(true, rgb(226, 230, 236), 1.0, LineStylePreset::Solid);
         chrome.grid.minor_x.show = false;
         chrome.grid.minor_y.show = false;
-        chrome.legend_fill = bg;
-        chrome.legend_border = bg;
+        // A legend inside the plot sits on the data: a translucent card with
+        // a grid-coloured edge, so a trace under it stays in view.
+        chrome.legend_fill = rgba(250, 251, 253, 0.85);
+        chrome.legend_border = rgb(226, 230, 236);
         chrome.colorbar_border = rgba(36, 41, 51, 0.25);
         let series = &mut theme.series;
         series.cycle = ColorCycle::Balanced;
@@ -839,6 +841,7 @@ impl Theme {
         self.style_legend(&mut config.legend, series, colormap.as_ref());
         for overlay in &mut config.overlays {
             self.style_axis(&mut overlay.y_axis);
+            self.style_axis(&mut overlay.x_axis);
             if let Some(legend) = &mut overlay.legend {
                 self.style_legend(legend, series, colormap.as_ref());
             }

@@ -266,9 +266,16 @@ impl FiggyChart {
                     | renderer::LayerRef::Overlay(_)
                     | renderer::LayerRef::Annotations => config,
                 };
+                // The axes the layer scales by: an overlay's own or, linked,
+                // its chart's.
+                let (x_axis, y_axis) = panel.scaling_axes(match layer {
+                    renderer::LayerRef::Overlay(index)
+                    | renderer::LayerRef::SubplotOverlay(_, index) => Some(index),
+                    _ => None,
+                });
                 let categories = match groups.direction {
-                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
-                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                    renderer::CategoryBarDirection::Vertical => &x_axis.categories,
+                    renderer::CategoryBarDirection::Horizontal => &y_axis.categories,
                 };
                 let category = (values[0].is_finite() && values[0] >= 0.0)
                     .then(|| values[0].round() as usize)
@@ -427,9 +434,16 @@ impl FiggyChart {
                     | renderer::LayerRef::Overlay(_)
                     | renderer::LayerRef::Annotations => config,
                 };
+                // The axes the layer scales by: an overlay's own or, linked,
+                // its chart's.
+                let (x_axis, y_axis) = panel.scaling_axes(match layer {
+                    renderer::LayerRef::Overlay(index)
+                    | renderer::LayerRef::SubplotOverlay(_, index) => Some(index),
+                    _ => None,
+                });
                 let categories = match groups.direction {
-                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
-                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                    renderer::CategoryBarDirection::Vertical => &x_axis.categories,
+                    renderer::CategoryBarDirection::Horizontal => &y_axis.categories,
                 };
                 let category = categories
                     .as_deref()
@@ -521,9 +535,16 @@ impl FiggyChart {
                     | renderer::LayerRef::Overlay(_)
                     | renderer::LayerRef::Annotations => config,
                 };
+                // The axes the layer scales by: an overlay's own or, linked,
+                // its chart's.
+                let (x_axis, y_axis) = panel.scaling_axes(match layer {
+                    renderer::LayerRef::Overlay(index)
+                    | renderer::LayerRef::SubplotOverlay(_, index) => Some(index),
+                    _ => None,
+                });
                 let categories = match groups.direction {
-                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
-                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                    renderer::CategoryBarDirection::Vertical => &x_axis.categories,
+                    renderer::CategoryBarDirection::Horizontal => &y_axis.categories,
                 };
                 let at = values
                     .first()
@@ -557,9 +578,16 @@ impl FiggyChart {
                     | renderer::LayerRef::Overlay(_)
                     | renderer::LayerRef::Annotations => config,
                 };
+                // The axes the layer scales by: an overlay's own or, linked,
+                // its chart's.
+                let (x_axis, y_axis) = panel.scaling_axes(match layer {
+                    renderer::LayerRef::Overlay(index)
+                    | renderer::LayerRef::SubplotOverlay(_, index) => Some(index),
+                    _ => None,
+                });
                 let categories = match groups.direction {
-                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
-                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                    renderer::CategoryBarDirection::Vertical => &x_axis.categories,
+                    renderer::CategoryBarDirection::Horizontal => &y_axis.categories,
                 };
                 let category = categories
                     .as_deref()
@@ -720,12 +748,19 @@ impl FiggyChart {
                     | renderer::LayerRef::Overlay(_)
                     | renderer::LayerRef::Annotations => config,
                 };
+                // The axes the layer scales by: an overlay's own or, linked,
+                // its chart's.
+                let (x_axis, y_axis) = panel.scaling_axes(match layer {
+                    renderer::LayerRef::Overlay(index)
+                    | renderer::LayerRef::SubplotOverlay(_, index) => Some(index),
+                    _ => None,
+                });
                 let categories = if series.render_type.radar().is_some() {
                     &panel.bottom_x.categories
                 } else {
                     match config.bar_groups_of(layer).direction {
-                        renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
-                        renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                        renderer::CategoryBarDirection::Vertical => &x_axis.categories,
+                        renderer::CategoryBarDirection::Horizontal => &y_axis.categories,
                     }
                 };
                 let category = categories

@@ -128,6 +128,9 @@ pub(in crate::renderer) fn validate_chart_view_state(view: &ChartViewState) -> R
     for axis in &view.overlay_y {
         validate_axis_view_state("overlays.y_axis", axis)?;
     }
+    for axis in &view.overlay_x {
+        validate_axis_view_state("overlays.x_axis", axis)?;
+    }
     for subplot in &view.subplots {
         validate_chart_view_state(subplot)?;
     }

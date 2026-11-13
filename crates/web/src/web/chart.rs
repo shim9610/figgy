@@ -123,7 +123,7 @@ pub(super) async fn create_chart_kernel(
         legend_auto_managed: true,
         color_seq: 0,
         hitmap: HitMap::standard_chart(),
-        hitmap_layer: (renderer::LayerRef::Base, 0, None, 0),
+        hitmap_layer: (renderer::LayerRef::Base, 0, None, 0, None),
         dragging: false,
         drag_pointer: [0.0; 2],
         resizing: None,
@@ -233,9 +233,16 @@ pub struct FiggyChart {
     pub(super) color_seq: usize,
     pub(super) hitmap: HitMap,
     /// The (active layer, overlay count, active subplot's overlay count,
-    /// subplot count) the hit map was registered for. Any change rebuilds
-    /// it with `HitMap::for_active_layer`.
-    pub(super) hitmap_layer: (renderer::LayerRef, usize, Option<usize>, usize),
+    /// subplot count, active overlay's `link_x` / `link_y`) the hit map was
+    /// registered for. Any change rebuilds it with
+    /// `HitMap::for_active_layer`.
+    pub(super) hitmap_layer: (
+        renderer::LayerRef,
+        usize,
+        Option<usize>,
+        usize,
+        Option<(bool, bool)>,
+    ),
     pub(super) dragging: bool,
     /// The pointer in document coordinates while a chart element drags:
     /// the press point advanced by every move. Polar axes and tick
@@ -387,8 +394,10 @@ impl FiggyChart {
     }
 
     /// The hit map's registration set depends only on the active layer,
-    /// the overlay count, the active subplot's overlay count and the
-    /// subplot count (every subplot registers on the base layer). Rebuild
+    /// the overlay count, the active subplot's overlay count, the subplot
+    /// count (every subplot registers on the base layer) and the active
+    /// overlay's links (an own X axis registers on the top side, a followed
+    /// Y axis registers the chart's left one). Rebuild
     /// it when any of them changed; the registry has already dropped any
     /// `HitId` of the previous map. A layer change also clears the
     /// annotation selection: it is the element selection of the
@@ -411,6 +420,9 @@ impl FiggyChart {
             config.overlays.len(),
             subplot_overlays,
             config.subplots.len(),
+            config
+                .overlay_of_layer(layer)
+                .map(|overlay| (overlay.link_x, overlay.link_y)),
         );
         if key != self.hitmap_layer {
             let layer_changed = key.0 != self.hitmap_layer.0;

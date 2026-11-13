@@ -123,14 +123,19 @@ impl crate::config::Config {
             if self.ternary().is_some() || self.parallel().is_some() || self.view_3d().is_some() {
                 return Err(crate::RuleKind::MonotonicChartKind);
             }
-            let x_axis = match self.layer_of_series(&item.series_id) {
-                crate::layer::LayerRef::Subplot(i)
-                | crate::layer::LayerRef::SubplotOverlay(i, _) => {
-                    self.subplots.get(i).map(|subplot| &subplot.config.bottom_x)
+            // The x axis the series is drawn against: its subplot's, and
+            // within that chart its overlay's own while `link_x` is off.
+            let (chart, overlay) = match self.layer_of_series(&item.series_id) {
+                crate::layer::LayerRef::Subplot(i) => {
+                    (self.subplots.get(i).map(|subplot| &subplot.config), None)
                 }
-                _ => None,
-            }
-            .unwrap_or(&self.bottom_x);
+                crate::layer::LayerRef::SubplotOverlay(i, j) => {
+                    (self.subplots.get(i).map(|subplot| &subplot.config), Some(j))
+                }
+                crate::layer::LayerRef::Overlay(j) => (None, Some(j)),
+                _ => (None, None),
+            };
+            let (x_axis, _) = chart.unwrap_or(self).scaling_axes(overlay);
             if x_axis.scale != crate::config::AxisScale::Linear
                 || x_axis.categories.is_some()
                 || x_axis

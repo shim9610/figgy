@@ -13,10 +13,15 @@ pub struct ChartViewState {
     pub bottom_x: AxisViewState,
     pub left_y: AxisViewState,
     pub right_y: AxisViewState,
-    /// One entry per overlay layer, in `Config::overlays` order. A view state
-    /// applied to a chart must carry exactly as many entries as the chart has
-    /// overlays; the X range is shared, so one call moves every layer.
+    /// One entry per overlay layer, in `Config::overlays` order: its own Y
+    /// axis (`OverlayLayer::y_axis`). A view state applied to a chart must
+    /// carry exactly as many entries as the chart has overlays.
     pub overlay_y: Vec<AxisViewState>,
+    /// One entry per overlay layer, in `Config::overlays` order: its own X
+    /// axis (`OverlayLayer::x_axis`), which scales its series while its
+    /// `link_x` is off. As many entries as `overlay_y`. A linked overlay
+    /// follows `bottom_x`, so one call moves every linked layer.
+    pub overlay_x: Vec<AxisViewState>,
     /// One entry per subplot, in `Config::subplots` order, each the view
     /// state of that subplot's chart (its own `subplots` empty). A linked
     /// axis reads as its target's range; writing a new range to it moves the
@@ -134,13 +139,21 @@ impl ChartViewState {
             right_y: AxisViewState::from_axis(right_y),
             overlay_y: overlays
                 .iter()
+                .map(|overlay| AxisViewState::from_axis(&overlay.y_axis))
+                .collect(),
+            overlay_x: overlays
+                .iter()
                 .map(|overlay| {
                     let OverlayLayer {
-                        y_axis,
+                        y_axis: _,
+                        // The links are layer structure, not a range.
+                        link_x: _,
+                        x_axis,
+                        link_y: _,
                         series: _,
                         legend: _,
                     } = overlay;
-                    AxisViewState::from_axis(y_axis)
+                    AxisViewState::from_axis(x_axis)
                 })
                 .collect(),
             // Each subplot as it draws, its linked axes following their
@@ -160,6 +173,7 @@ impl ChartViewState {
             left_y,
             right_y,
             overlay_y,
+            overlay_x,
             subplots,
         } = self;
         let Config {
@@ -190,13 +204,17 @@ impl ChartViewState {
         bottom_x.apply_to(config_bottom_x);
         left_y.apply_to(config_left_y);
         right_y.apply_to(config_right_y);
-        for (state, overlay) in overlay_y.iter().zip(config_overlays) {
+        for ((y_state, x_state), overlay) in overlay_y.iter().zip(overlay_x).zip(config_overlays) {
             let OverlayLayer {
                 y_axis,
+                link_x: _,
+                x_axis,
+                link_y: _,
                 series: _,
                 legend: _,
             } = overlay;
-            state.apply_to(y_axis);
+            y_state.apply_to(y_axis);
+            x_state.apply_to(x_axis);
         }
         for (state, subplot) in subplots.iter().zip(config_subplots) {
             let Subplot {

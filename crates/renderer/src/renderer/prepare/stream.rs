@@ -95,7 +95,12 @@ impl PrepareContext<'_> {
         // Streaming is not extended to broken axes (rule 8, #200).
         if [&config.bottom_x, &config.left_y]
             .into_iter()
-            .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+            .chain(
+                config
+                    .overlays
+                    .iter()
+                    .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+            )
             .any(|axis| axis.breaks.as_ref().is_some_and(|b| !b.ranges.is_empty()))
         {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -106,7 +111,12 @@ impl PrepareContext<'_> {
         // Nor to probability axes (rule 8, #209).
         if [&config.bottom_x, &config.left_y]
             .into_iter()
-            .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+            .chain(
+                config
+                    .overlays
+                    .iter()
+                    .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+            )
             .any(|axis| matches!(axis.scale, crate::config::AxisScale::Probability(_)))
         {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -129,7 +139,12 @@ impl PrepareContext<'_> {
             &config.right_y,
         ]
         .into_iter()
-        .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+        .chain(
+            config
+                .overlays
+                .iter()
+                .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+        )
         .any(|axis| axis.categories.is_some())
         {
             return Err(FiggyError::InvalidSeriesConfig {

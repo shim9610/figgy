@@ -87,6 +87,7 @@ fn without_layout(mut out: Config, input: &Config) -> Config {
         axis(&mut out.right_y, &input.right_y);
         for (to, from) in out.overlays.iter_mut().zip(&input.overlays) {
             axis(&mut to.y_axis, &from.y_axis);
+            axis(&mut to.x_axis, &from.x_axis);
         }
         if let (Some(to), Some(from)) = (out.colorbar.as_mut(), input.colorbar.as_ref()) {
             axis(&mut to.axis, &from.axis);

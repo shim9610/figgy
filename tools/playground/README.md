@@ -112,6 +112,11 @@ tab labels.
     at the new width. An edit that would change how x maps to pixels, such as
     a new x range or plot width, is refused. Pick a kept point and step with
     the arrows.
+  - *Monotonic x (two clocks)*: a 10 kHz vibration channel and a 400 Hz
+    temperature logger that started on a clock of its own. The logger is an
+    overlay with an X axis of its own (`link_x` off) on the top side, so each
+    recording keeps its own time axis over one plot and each group is
+    reduced at its own mapping. Like *Monotonic x*, it does not pan or zoom.
 - **Categories and ranges**
   - *Categorical bars*: a categorical document opened as category bars on a
     categorical axis; switch grouped, stacked and percent in the chart's bar
@@ -166,9 +171,10 @@ be tried in every layer kind.
   only).
 - **Right or middle drag**: pan.
 
-Wheel zoom and pan work in the scenes of the Cartesian group, except
-*Monotonic x*, whose x range does not move. They act on the active layer's
-chart: the parent, an overlay's Y axis, or a subplot. In the 3D scenes a drag
+Wheel zoom and pan work in the scenes of the Cartesian group, except the two
+*Monotonic x* scenes, whose x ranges do not move. They act on the active
+layer's chart: the parent, an overlay's axes (its Y axis, and its own X axis
+when its `link_x` is off; a linked side moves the parent's), or a subplot. In the 3D scenes a drag
 on the data area orbits the camera.
 
 ## Panel
@@ -177,8 +183,10 @@ on the data area orbits the camera.
 - **Chart**: draw style, axis presets, colour cycle, titles, grid, log and
   inverted axes, legend, colourbar.
 - **Layers**:
-  - Add and remove overlays (an extra Y axis on the same plot) and subplots
-    (separate charts with optional X/Y links, re-tiled on a grid).
+  - Add and remove overlays (extra axes on the same plot: a Y axis of their
+    own, or the base Y with *follow base Y*, and with *own X axis (top)* an
+    X axis of their own) and subplots (separate charts with optional X/Y
+    links, re-tiled on a grid).
   - Move each series between layers. Series joined by a band fill
     (`LineFill::ToSeries`) move together, because both ends of a band must be
     in the same chart.

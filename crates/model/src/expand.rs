@@ -12,16 +12,26 @@
 //! - The base panel is the parent without its overlays. It draws the shared
 //!   decorations: X axes, the parent's Y axes, title, grid, merged legend and
 //!   colourbar.
-//! - Each overlay panel keeps the parent's X range for its data transform but
-//!   draws no X axis, no grid, no title and no colourbar. Its left Y axis is a
-//!   hidden copy of the parent's left axis carrying the overlay's range, so
-//!   the data transform uses the overlay's scale; its right Y axis is the
-//!   overlay's own axis. It draws the overlay's legend when it has one.
+//! - Each overlay panel draws no grid, no title and no colourbar. The data
+//!   transform reads `bottom_x` and `left_y`, so those carry the axes the
+//!   overlay follows, hidden:
+//!   - X: with `link_x` on, the panel keeps the parent's X axes, hidden (the
+//!     base panel draws them). With it off, its `top_x` is the overlay's own
+//!     `x_axis`, drawn, and its `bottom_x` a hidden copy of it carrying the
+//!     parent's bottom band.
+//!   - Y: its `left_y` is a hidden copy carrying the overlay's `y_axis`
+//!     range, or with `link_y` on the parent's `left_y` range, and the
+//!     parent's left band. Its `right_y` is the overlay's `y_axis`, drawn, or
+//!     with `link_y` on a hidden copy of the parent's `right_y`.
+//!
+//!   It draws the overlay's legend when it has one.
 //! - Every panel's margins are lifted to the group margins, so `data_area()`
 //!   returns the same rectangle for all of them. The group right margin is
-//!   the widest band of the parent and overlay axes (`Config::margins`).
+//!   the widest band of the parent's right axis and every overlay Y axis that
+//!   is drawn, and the group top margin likewise for the top axes
+//!   (`Config::margins`).
 //! - A panel's config depends only on what that panel draws. Hidden parts
-//!   (an overlay panel's X axes, title, grid, legend, colourbar) are
+//!   (an overlay panel's linked axes, title, grid, legend, colourbar) are
 //!   canonical defaults carrying just their margin and transform fields, and
 //!   each panel keeps only the picked references of its own series, so an
 //!   edit of one layer leaves every other panel's config, and with it the
@@ -146,13 +156,16 @@ impl Config {
     /// axes, as `(x, y)`. `Annotations` fits the base axes.
     ///
     /// `Base` and `Subplot(i)` fit that chart's `bottom_x` and `left_y`. A
-    /// linked axis is one axis shared by its link group, so the X axis fits
-    /// every series drawn against it: the series of every chart in its X link
-    /// group, overlays included, since an overlay shares its chart's X axis.
-    /// The Y axis fits the base-layer series of every chart in its Y link
-    /// group; an overlay has a Y axis of its own. `Overlay(n)` and
-    /// `SubplotOverlay(i, n)` fit only that overlay's Y axis, from that
-    /// overlay's series.
+    /// linked axis is one axis shared by its link group, so each fits every
+    /// series drawn against it. The X axis fits the series of every chart in
+    /// its X link group, the series of overlays that follow it (`link_x` on)
+    /// included. The Y axis fits the base-layer series of every chart in its
+    /// Y link group and the series of overlays that follow it (`link_y` on).
+    ///
+    /// `Overlay(n)` and `SubplotOverlay(i, n)` fit the overlay's own axes
+    /// from that overlay's series: its own X axis when `link_x` is off (none
+    /// while it is on) and its own Y axis. With `link_y` on, the Y axis it
+    /// follows is its chart's `left_y`, fitted as that chart's layer fits it.
     pub fn series_fit_roles(&self, layer: LayerRef, series_id: &str) -> (bool, bool) {
         let cell = |layer: LayerRef| match layer {
             LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
@@ -165,13 +178,60 @@ impl Config {
             CellRef::Subplot(index) => self.subplot_link_root(index, x),
         };
         let own = self.layer_of_series(series_id);
+        let own_overlay = self.overlay_of_layer(own);
+        // Whether the series is drawn against its chart's X and Y axes.
+        let on_chart_x = own_overlay.is_none_or(|overlay| overlay.link_x);
+        let on_chart_y = own_overlay.is_none_or(|overlay| overlay.link_y);
+        let chart_y =
+            |layer: LayerRef| on_chart_y && root(cell(own), false) == root(cell(layer), false);
         match layer {
             LayerRef::Base | LayerRef::Subplot(_) | LayerRef::Annotations => (
-                root(cell(own), true) == root(cell(layer), true),
-                matches!(own, LayerRef::Base | LayerRef::Subplot(_))
-                    && root(cell(own), false) == root(cell(layer), false),
+                on_chart_x && root(cell(own), true) == root(cell(layer), true),
+                chart_y(layer),
             ),
-            LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..) => (false, own == layer),
+            LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..) => {
+                let overlay = self.overlay_of_layer(layer);
+                let own_x = overlay.is_some_and(|overlay| !overlay.link_x);
+                let linked_y = overlay.is_some_and(|overlay| overlay.link_y);
+                (
+                    own_x && own == layer,
+                    if linked_y {
+                        chart_y(layer)
+                    } else {
+                        own == layer
+                    },
+                )
+            }
+        }
+    }
+
+    /// The X and Y axes the series of this chart's overlay `overlay` are
+    /// scaled by (each its own or, linked, the chart's `bottom_x` /
+    /// `left_y`), or with `None` the chart's own `bottom_x` and `left_y`. An
+    /// index past the end reads as `None`.
+    pub fn scaling_axes(&self, overlay: Option<usize>) -> (&AxisOptions, &AxisOptions) {
+        let overlay = overlay.and_then(|index| self.overlays.get(index));
+        (
+            overlay
+                .and_then(OverlayLayer::own_x)
+                .unwrap_or(&self.bottom_x),
+            overlay
+                .and_then(OverlayLayer::own_y)
+                .unwrap_or(&self.left_y),
+        )
+    }
+
+    /// The overlay `layer` names: `Overlay(n)` of the document or
+    /// `SubplotOverlay(i, n)` of subplot `i`; `None` for any other layer and
+    /// for an index past the end.
+    pub fn overlay_of_layer(&self, layer: LayerRef) -> Option<&OverlayLayer> {
+        match layer {
+            LayerRef::Overlay(index) => self.overlays.get(index),
+            LayerRef::SubplotOverlay(index, overlay) => self
+                .subplots
+                .get(index)
+                .and_then(|subplot| subplot.config.overlays.get(overlay)),
+            _ => None,
         }
     }
 
@@ -617,8 +677,7 @@ impl Config {
             top_x,
             bottom_x,
             left_y,
-            // The overlay's own axis takes the right side.
-            right_y: _,
+            right_y,
             chart_title,
             // Grid and legend are drawn once, by the base panel.
             grid: _,
@@ -644,13 +703,17 @@ impl Config {
         } = self;
         let OverlayLayer {
             y_axis,
+            link_x,
+            x_axis,
+            link_y,
             // Which series the panel draws is decided by `layer_of_series`.
             series: _,
             legend: overlay_legend,
         } = &overlays[index];
-        // The hidden left axis carries the overlay's scale (the data
-        // transform reads `left_y`) and the parent's left band, so the left
-        // margin is unchanged.
+        // The hidden left axis carries the scale of the Y axis the overlay
+        // follows (the data transform reads `left_y`) and the parent's left
+        // band, so the left margin is unchanged.
+        let followed_y = if *link_y { left_y } else { y_axis };
         let left = {
             let AxisOptions {
                 scale: _,
@@ -684,10 +747,32 @@ impl Config {
                 // The hidden left axis prints no labels.
                 unit: _,
             } = left_y;
-            let mut left = hidden_axis(y_axis, crate::defaults::axis_options_y());
+            let mut left = hidden_axis(followed_y, crate::defaults::axis_options_y());
             left.out_margin = *out_margin;
             left.major_tick_length = *major_tick_length;
             left
+        };
+        // The overlay's own Y axis takes the right side; a linked Y draws
+        // none and keeps the parent's right band.
+        let right = if *link_y {
+            hidden_axis(right_y, crate::defaults::axis_options_y())
+        } else {
+            y_axis.clone()
+        };
+        // The X axes: the parent's, hidden (the base panel draws them), or
+        // the overlay's own, drawn on the top side, with a hidden copy on the
+        // bottom for the transform (which reads `bottom_x`) carrying the
+        // parent's bottom band, so the bottom margin is unchanged.
+        let (top, bottom) = if *link_x {
+            (
+                hidden_axis(top_x, crate::defaults::axis_options_x()),
+                hidden_axis(bottom_x, crate::defaults::axis_options_x()),
+            )
+        } else {
+            let mut bottom = hidden_axis(x_axis, crate::defaults::axis_options_x());
+            bottom.out_margin = bottom_x.out_margin;
+            bottom.major_tick_length = bottom_x.major_tick_length;
+            (x_axis.clone(), bottom)
         };
         let grid = hidden_grid();
         // The title is hidden and keeps only the parent's band height.
@@ -705,12 +790,10 @@ impl Config {
         let colorbar = colorbar.as_ref().map(hidden_colorbar);
         let mut panel = Config {
             chart_area: chart_area.clone(),
-            // The X range stays for the transform; the axes are drawn once,
-            // by the base panel.
-            top_x: hidden_axis(top_x, crate::defaults::axis_options_x()),
-            bottom_x: hidden_axis(bottom_x, crate::defaults::axis_options_x()),
+            top_x: top,
+            bottom_x: bottom,
             left_y: left,
-            right_y: y_axis.clone(),
+            right_y: right,
             chart_title: title,
             grid,
             legend,
@@ -1477,6 +1560,69 @@ mod tests {
         assert!(expansion.panel(LayerRef::Annotations).is_none());
     }
 
+    // With `link_x` off the overlay panel draws the overlay's own X axis on
+    // the top side and scales by it (the hidden `bottom_x` the transform
+    // reads), keeping the parent's bottom band; its band widens the shared
+    // top band. With `link_y` on the panel scales by the parent's `left_y`
+    // and draws no Y axis, and the overlay adds no right band.
+    #[test]
+    fn overlay_links_choose_the_axes_the_panel_scales_by_and_draws() {
+        let mut cfg = two_layer_config();
+        let parent = cfg.expand().unwrap().panels[0].config.clone();
+        let mut own_x = crate::defaults::axis_options_x();
+        own_x.min = 100.0;
+        own_x.max = 400.0;
+        own_x.out_margin = cfg.top_x.out_margin + 30.0;
+        cfg.overlays[0].link_x = false;
+        cfg.overlays[0].x_axis = own_x.clone();
+        let expansion = cfg.expand().unwrap();
+        let overlay = &expansion.panels[1].config;
+        assert_eq!((overlay.bottom_x.min, overlay.bottom_x.max), (100.0, 400.0));
+        assert!(!overlay.bottom_x.line_visible);
+        assert_eq!(overlay.bottom_x.out_margin, cfg.bottom_x.out_margin);
+        assert_eq!(overlay.top_x, own_x);
+        // The base panel keeps the parent's X; the top band is the group's.
+        let base = &expansion.panels[0].config;
+        assert_eq!(
+            (base.bottom_x.min, base.bottom_x.max),
+            (cfg.bottom_x.min, cfg.bottom_x.max)
+        );
+        assert_eq!(cfg.margins().top, parent.margins().top + 30.0);
+        assert_eq!(base.margins().top, cfg.margins().top);
+        assert_eq!(overlay.margins().top, cfg.margins().top);
+        assert_eq!(base.data_area().unwrap(), overlay.data_area().unwrap());
+        // Linked back, the panel is the linked one again and the stored axis
+        // stays.
+        let mut linked = cfg.clone();
+        linked.overlays[0].link_x = true;
+        let panel = &linked.expand().unwrap().panels[1].config;
+        assert_eq!(
+            (panel.bottom_x.min, panel.bottom_x.max),
+            (cfg.bottom_x.min, cfg.bottom_x.max)
+        );
+        assert!(!panel.top_x.line_visible);
+        assert_eq!(linked.overlays[0].x_axis, own_x);
+        assert_eq!(linked.margins().top, parent.margins().top);
+
+        // Y linked: the parent's left range scales the panel, no Y axis is
+        // drawn and the overlay's wider band no longer counts.
+        let mut cfg = two_layer_config();
+        cfg.left_y.min = -50.0;
+        cfg.left_y.max = 70.0;
+        let own_band = cfg.margins().right;
+        cfg.overlays[0].link_y = true;
+        let expansion = cfg.expand().unwrap();
+        let overlay = &expansion.panels[1].config;
+        assert_eq!((overlay.left_y.min, overlay.left_y.max), (-50.0, 70.0));
+        assert!(!overlay.right_y.line_visible);
+        assert!(!overlay.right_y.label_style.label_visible);
+        assert!(cfg.margins().right < own_band);
+        assert_eq!(
+            expansion.panels[0].config.data_area().unwrap(),
+            overlay.data_area().unwrap()
+        );
+    }
+
     // A panel's config depends only on what that panel draws: a base-layer
     // edit of hidden chrome leaves every overlay panel's config identical, an
     // overlay edit leaves the base panel identical, and each panel keeps the
@@ -1824,6 +1970,25 @@ mod tests {
         assert_eq!(roles(LayerRef::Overlay(0), "po"), (false, true));
         assert_eq!(roles(LayerRef::Overlay(0), "p"), (false, false));
         assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0o"), (false, true));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0"), (false, false));
+
+        // An overlay with an X axis of its own fits it from its own series,
+        // which leave the parent's X group; one that follows the parent's Y
+        // joins the parent's Y group, and its layer fit fits that group.
+        let mut config = config.clone();
+        config.overlays[0].link_x = false;
+        config.overlays[0].link_y = true;
+        config.subplots[0].config.overlays[0].link_x = false;
+        let roles = |fit, id| config.series_fit_roles(fit, id);
+        assert_eq!(roles(LayerRef::Base, "po"), (false, true));
+        assert_eq!(roles(LayerRef::Base, "p"), (true, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "po"), (true, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "p"), (false, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "s0"), (false, false));
+        // Subplot 1 shares subplot 0's Y group, not the parent's.
+        assert_eq!(roles(LayerRef::Subplot(1), "po"), (false, false));
+        assert_eq!(roles(LayerRef::Subplot(0), "s0o"), (false, false));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0o"), (true, true));
         assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0"), (false, false));
     }
 

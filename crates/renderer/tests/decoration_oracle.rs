@@ -1159,6 +1159,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::TriSurface => "TriSurface",
         SceneKind::AxisUnits => "AxisUnits",
         SceneKind::Monotonic => "Monotonic",
+        SceneKind::MonotonicClocks => "MonotonicClocks",
     }
 }
 
@@ -1288,17 +1289,14 @@ fn standard_names(prefix: &str) -> Vec<String> {
 }
 
 /// The shared elements a non-base layer registers first, as
-/// `HitMap::for_active_layer` documents them: the data area, the X axes
-/// with their labels and titles, the legend, the chart title and the
-/// colourbar chrome.
-fn shared_names(prefix: &str) -> Vec<String> {
+/// `HitMap::for_active_layer` documents them: the data area, the parent's
+/// axes the layer shares (`sides`, in top, bottom, left order) with their
+/// labels and titles, the legend, the chart title, the colourbar chrome and
+/// the shared x axes' group headers.
+fn shared_names(prefix: &str, sides: &[&str]) -> Vec<String> {
     let mut names = vec![format!("{prefix}data_area")];
     for kind in ["axis_", "tick_labels_", "axis_title_"] {
-        names.extend(
-            ["top", "bottom"]
-                .iter()
-                .map(|s| format!("{prefix}{kind}{s}")),
-        );
+        names.extend(sides.iter().map(|s| format!("{prefix}{kind}{s}")));
     }
     for name in [
         "legend",
@@ -1307,24 +1305,49 @@ fn shared_names(prefix: &str) -> Vec<String> {
         "colorbar_axis",
         "colorbar_tick_labels",
         "colorbar_title",
-        "category_groups_top",
-        "category_groups_bottom",
     ] {
         names.push(format!("{prefix}{name}"));
     }
+    names.extend(
+        sides
+            .iter()
+            .filter(|s| matches!(**s, "top" | "bottom"))
+            .map(|s| format!("{prefix}category_groups_{s}")),
+    );
     names
 }
 
-fn overlay_names(prefix: &str, overlay: usize) -> Vec<String> {
-    [
-        "axis_right",
-        "tick_labels_right",
-        "axis_title_right",
-        "legend",
-    ]
-    .iter()
-    .map(|n| format!("{prefix}overlay_{overlay}:{n}"))
-    .collect()
+/// The parent's axes an overlay layer shares (#283): both x axes, or only
+/// the bottom one while it has an x axis of its own, and the left one while
+/// it follows the parent's y axis.
+fn overlay_shared_sides(overlay: Option<&OverlayLayer>) -> &'static [&'static str] {
+    let own_x = overlay.is_some_and(|o| !o.link_x);
+    let linked_y = overlay.is_some_and(|o| o.link_y);
+    match (own_x, linked_y) {
+        (false, false) => &["top", "bottom"],
+        (false, true) => &["top", "bottom", "left"],
+        (true, false) => &["bottom"],
+        (true, true) => &["bottom", "left"],
+    }
+}
+
+/// An overlay layer's own elements: its own x axis on the top side, its own
+/// y axis on the right, then its legend.
+fn overlay_names(prefix: &str, index: usize, overlay: Option<&OverlayLayer>) -> Vec<String> {
+    let own_x = overlay.is_some_and(|o| !o.link_x);
+    let linked_y = overlay.is_some_and(|o| o.link_y);
+    let mut names = Vec::new();
+    if own_x {
+        names.extend(["axis_top", "tick_labels_top", "axis_title_top"]);
+    }
+    if !linked_y {
+        names.extend(["axis_right", "tick_labels_right", "axis_title_right"]);
+    }
+    names.push("legend");
+    names
+        .iter()
+        .map(|n| format!("{prefix}overlay_{index}:{n}"))
+        .collect()
 }
 
 /// The code of a parallel chart's axis lines and ticks, drawn in `left_y`'s
@@ -1349,17 +1372,19 @@ const PARALLEL_AXIS_LABELS: &str = "parallel_axis_labels";
 fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
     let mut names = match layer {
         LayerRef::Base => standard_names(""),
-        LayerRef::Annotations => shared_names(""),
+        LayerRef::Annotations => shared_names("", &["top", "bottom"]),
         LayerRef::Overlay(i) => {
-            let mut names = shared_names("");
-            names.extend(overlay_names("", i));
+            let overlay = cfg.overlays.get(i);
+            let mut names = shared_names("", overlay_shared_sides(overlay));
+            names.extend(overlay_names("", i, overlay));
             names
         }
         LayerRef::Subplot(i) => standard_names(&format!("subplot_{i}:")),
         LayerRef::SubplotOverlay(i, j) => {
             let prefix = format!("subplot_{i}:");
-            let mut names = shared_names(&prefix);
-            names.extend(overlay_names(&prefix, j));
+            let overlay = cfg.overlay_of_layer(layer);
+            let mut names = shared_names(&prefix, overlay_shared_sides(overlay));
+            names.extend(overlay_names(&prefix, j, overlay));
             names
         }
     };
@@ -1860,15 +1885,30 @@ impl Painter {
         }
     }
 
+    /// The axes the overlay draws, each in its own codes: its own x axis
+    /// on the top side while `link_x` is off (#283), its own y axis on the
+    /// right while `link_y` is off.
     fn overlay(&mut self, overlay: &mut OverlayLayer, prefix: &str, panel: LayerRef) {
-        let axis = &mut overlay.y_axis;
-        axis.line_color = self.code(format!("{prefix}axis_right"), panel);
-        axis.label_style.color = self.code(format!("{prefix}tick_labels_right"), panel);
-        self.text(
-            &mut axis.title_option.text,
-            format!("{prefix}axis_title_right"),
-            panel,
-        );
+        if !overlay.link_x {
+            let axis = &mut overlay.x_axis;
+            axis.line_color = self.code(format!("{prefix}axis_top"), panel);
+            axis.label_style.color = self.code(format!("{prefix}tick_labels_top"), panel);
+            self.text(
+                &mut axis.title_option.text,
+                format!("{prefix}axis_title_top"),
+                panel,
+            );
+        }
+        if !overlay.link_y {
+            let axis = &mut overlay.y_axis;
+            axis.line_color = self.code(format!("{prefix}axis_right"), panel);
+            axis.label_style.color = self.code(format!("{prefix}tick_labels_right"), panel);
+            self.text(
+                &mut axis.title_option.text,
+                format!("{prefix}axis_title_right"),
+                panel,
+            );
+        }
         if let Some(legend) = overlay.legend.as_mut() {
             self.legend(legend, format!("{prefix}legend"), panel);
         }
@@ -3101,19 +3141,23 @@ fn overlap_pairs(cfg: &Config, prefix: &str) -> Vec<(String, String)> {
             pairs.push((n("legend"), n(a)));
         }
     }
-    for i in 0..cfg.overlays.len() {
-        let own = [
-            n(&format!("overlay_{i}:tick_labels_right")),
-            n(&format!("overlay_{i}:axis_title_right")),
-        ];
-        pairs.push((own[0].clone(), own[0].clone()));
-        pairs.push((own[0].clone(), own[1].clone()));
-        for a in &own {
-            pairs.push((a.clone(), n("tick_labels_right")));
-            pairs.push((a.clone(), n("axis_title_right")));
-            for j in i + 1..cfg.overlays.len() {
-                pairs.push((a.clone(), n(&format!("overlay_{j}:tick_labels_right"))));
-                pairs.push((a.clone(), n(&format!("overlay_{j}:axis_title_right"))));
+    // Overlay axes against the parent's axis on their side and each other's
+    // (#283: an own x axis on the top side as an own y axis on the right).
+    for side in ["right", "top"] {
+        for i in 0..cfg.overlays.len() {
+            let own = [
+                n(&format!("overlay_{i}:tick_labels_{side}")),
+                n(&format!("overlay_{i}:axis_title_{side}")),
+            ];
+            pairs.push((own[0].clone(), own[0].clone()));
+            pairs.push((own[0].clone(), own[1].clone()));
+            for a in &own {
+                pairs.push((a.clone(), n(&format!("tick_labels_{side}"))));
+                pairs.push((a.clone(), n(&format!("axis_title_{side}"))));
+                for j in i + 1..cfg.overlays.len() {
+                    pairs.push((a.clone(), n(&format!("overlay_{j}:tick_labels_{side}"))));
+                    pairs.push((a.clone(), n(&format!("overlay_{j}:axis_title_{side}"))));
+                }
             }
         }
     }

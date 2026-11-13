@@ -90,12 +90,12 @@ A categorical Cartesian axis (`AxisOptions::categories`) draws its category
 labels as the same `AxisLabel(Side)` group as numeric tick labels: they are hit,
 selected, highlighted and dragged (along and across the axis, through
 `label_offset_x` / `label_offset_y`) together, and the axis line drag moves
-them with the line. This holds on overlay Y axes and in subplots.
+them with the line. This holds on overlay axes and in subplots.
 
 The labels an adaptive logarithmic axis (`AxisOptions::log_ticks`, #42)
 keeps on its 1..9 or 1-2-5 ladder are the same `AxisLabel(Side)` group: a
 2·10^k label is inside the group's bounds, hits as it and drags with it, on
-overlay Y axes, in subplots, on the polar ray and on the colourbar. Which
+overlay axes, in subplots, on the polar ray and on the colourbar. Which
 labels the axis keeps depends on the range and the pixels only; a drag
 moves the kept labels and does not change the set.
 
@@ -560,28 +560,37 @@ A highlight → B data → B highlight", and on every layer the decoration is
 above the data, as on a single-layer chart: an overlay's data never covers
 the base panel's axes and labels, nor a subplot overlay's data its
 subplot's. Overlay panels draw
-no grid, X axis, title or colourbar and, in the Milkyway style, no backdrop.
-`ChartView::render_warnings` merges every panel's tick warnings, overlay ones
-tagged `WarningAxis::OverlayY(index)`.
+no grid, title or colourbar and, in the Milkyway style, no backdrop; they draw
+only the overlay's own axes (its Y axis on the right, and its X axis on the
+top side while its `link_x` is off). `ChartView::render_warnings` merges every
+panel's tick warnings, overlay ones tagged `WarningAxis::OverlayY(index)` and
+`WarningAxis::OverlayX(index)`.
 
 **Interaction target.** `Renderer::set_active_layer(chart, LayerRef)` and
 `active_layer(chart)` choose the layer the hit map addresses; the model has the
 same `Config::set_active_layer` / `active_layer()` for low-level hosts and the
 WASM wrapper exposes `set_active_layer(json)` / `active_layer()`. Build the hit
 map with `HitMap::for_active_layer(&config)`: `Base` is exactly
-`standard_chart()`; an active overlay registers the shared elements first (data
-area, both X axes with their label bands and titles, the merged legend, chart
-title, colourbar) and its own elements last — `overlay_<n>:axis_right`,
-`overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right` and
-`overlay_<n>:legend` — so the reverse-order test puts the active layer on
-top. Inactive layers' elements are not registered, so clicks pass through: the
-base Y axes do not answer while an overlay or the annotation layer is active.
-The set depends only on the active layer and the overlay count; rebuild the map
-when either changes. Overlay elements measure against the overlay's panel and
-write a drag back into `overlays[n].y_axis` (line offset, label and title
-offsets) or `overlays[n].legend` only. The data area is group geometry: its
-drag and its eight handles move the shared rectangle through the parent's
-margins and pull every overlay band along.
+`standard_chart()`. An active overlay registers the shared elements first: the
+data area, the parent's axes it shares with their label bands and titles,
+the merged legend, the chart title and the colourbar. It shares both X axes,
+or only the bottom one while it has an X axis of its own (`link_x` off), and
+the parent's left Y axis while it follows it (`link_y` on). Its own elements
+come last, so the reverse-order test puts the active layer on top:
+`overlay_<n>:axis_top`, `overlay_<n>:tick_labels_top` and
+`overlay_<n>:axis_title_top` for its own X axis, `overlay_<n>:axis_right`,
+`overlay_<n>:tick_labels_right` and `overlay_<n>:axis_title_right` for its own
+Y axis, and `overlay_<n>:legend`. Inactive layers' elements are not
+registered, so clicks pass through: the base Y axes do not answer while an
+overlay with its own Y axis or the annotation layer is active. The set
+depends only on the active layer, the overlay count and the active overlay's
+links; rebuild the map when any of them changes. The renderer clears the
+element selection when the active layer or its links change. Overlay elements measure against the overlay's panel
+and write a drag back into `overlays[n].x_axis` or `overlays[n].y_axis` (line
+offset, label and title offsets) or `overlays[n].legend` only. The data area
+is group geometry: its drag and its eight handles move the shared rectangle
+through the parent's margins and pull every overlay band along, on the top
+side as on the right.
 
 Changing the layer clears the element selection — a `HitId` belongs to the
 previous layer's map — and advances the raster revision when there was one, so
@@ -589,25 +598,31 @@ the selection chrome is redrawn; the data revision is untouched. An `Overlay`
 index past the overlay list is stored as `Base` by the setter and by every
 config replacement, so deleting the active overlay recovers to `Base`. GPU
 data picking (`pick_chart`, `pick_chart_data`) addresses the active layer: it
-uses that layer's panel (its Y range, the group data area) and only the series
-it scales; the base layer answers while the annotation layer is active.
+uses that layer's panel (the ranges it scales by, the group data area) and
+only the series it scales; the base layer answers while the annotation layer is active.
 
-**Linked axes.** X is shared by construction, so one `set_chart_config` or
-`set_chart_view_state` call moves every layer; `ChartViewState::overlay_y`
-carries one Y range per overlay and must have exactly as many entries as the
-document has overlays. Every panel takes its ranges from the same
-configuration in the same `prepare`, so no frame shows the base moved and an
-overlay not. Overlay axes are fitted from the registered columns' statistics: `Chart::auto_fit_overlay_y_extent` /
-`auto_fit_overlay_y_union` / `set_overlay_y_range` natively,
-`auto_fit_overlay_y(layer, column, padding)` in the WASM wrapper.
+**Linked axes.** Each overlay links or unlinks its X and Y axes
+(`OverlayLayer::link_x`, `link_y`). A linked side follows the parent's axis,
+so one `set_chart_config` or `set_chart_view_state` call moves every layer
+linked to it; an unlinked side moves on its own. `ChartViewState::overlay_y`
+and `overlay_x` carry each overlay's own Y and X range and must each have
+exactly as many entries as the document has overlays. Every panel takes its
+ranges from the same configuration in the same `prepare`, so no frame shows
+the base moved and an overlay not. Overlay axes are fitted from the
+registered columns' statistics: `Chart::auto_fit_overlay_y_extent` /
+`auto_fit_overlay_y_union` / `set_overlay_y_range` and their `_x_` twins
+natively (a linked side fits or sets the parent's axis),
+`auto_fit_overlay_y(layer, column, padding)` and `auto_fit_overlay_x` in the
+WASM wrapper.
 The WASM `auto_fit_all(padding)` (also on `<figgy-chart>`) fits only the axes
 of the active layer, each from the series drawn against it
 (`Config::layer_of_series`). With `Base` or `Annotations` active (the
 annotation layer draws on the base axes) it fits the parent's `bottom_x` and
-`left_y`: an overlay shares the parent's X axis, so the overlays' series count
-towards `bottom_x`, but each overlay has its own Y axis, so they do not count
-towards `left_y`. With `Overlay(n)` active it fits only that overlay's Y axis,
-from its series. Series of a subplot count only where an axis is linked (see
+`left_y`, each from the series drawn against it: an overlay's series count
+towards `bottom_x` while its `link_x` is on and towards `left_y` while its
+`link_y` is on. With `Overlay(n)` active it fits that overlay's own axes from
+its series: its Y axis (or, with `link_y` on, the parent's Y axes with every
+series drawn against them) and its X axis while `link_x` is off. Series of a subplot count only where an axis is linked (see
 "Subplots"). To fit every layer, a host sets each layer active in turn
 (`set_active_layer`, then `auto_fit_all`) or calls `auto_fit_overlay_y` /
 `auto_fit_subplot` with explicit columns.
@@ -625,8 +640,9 @@ panel's data and its overlay above the topmost panel's decoration, so text
 boxes and arrows sit above every layer. Annotation edits re-rasterize no
 panel's axes.
 
-**Limits.** Polar charts take no overlay layers; overlays own no X axis (no
-twiny); nesting is one level (overlays have no layers of their own); the
+**Limits.** Polar charts take no overlay layers; nesting is one level
+(overlays have no layers of their own); several overlay axes on one side
+share its band and only `line_offset` separates them; the
 radial chart cannot be an overlay layer; an overlay cannot list a
 nonresident streaming series, and streaming rejects a document with
 overlays as a whole. Subplots are charts of

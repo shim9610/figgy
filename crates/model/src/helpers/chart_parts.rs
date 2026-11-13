@@ -128,6 +128,20 @@ impl AxisOptions {
         axis
     }
 
+    /// The top x axis of an overlay layer with an X axis of its own
+    /// (`OverlayLayer::link_x` off): the default x axis with `title` shown
+    /// and the title and tick labels in `color`, the colour of the series it
+    /// scales. `$…$` spans in `title` are TeX
+    /// ([`crate::text::rich_segments_from_label`]).
+    pub fn overlay_x(title: &str, color: Color) -> AxisOptions {
+        let mut axis = crate::defaults::axis_options_x();
+        axis.title_option.text.segments = crate::text::rich_segments_from_label(title);
+        axis.title_option.text.color = color;
+        axis.title_option.visible = true;
+        axis.label_style.color = color;
+        axis
+    }
+
     /// The axis printing its values as `scale * value + offset` (#273):
     /// raw counts as volts (`unit(5.0 / 32768.0, 0.0)`), kelvin as degrees
     /// Celsius (`unit(1.0, -273.15)`). The data, `min` and `max` stay in

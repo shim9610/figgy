@@ -1719,12 +1719,19 @@ impl Config {
         for overlay in overlays {
             let OverlayLayer {
                 y_axis,
+                // Link flags.
+                link_x: _,
+                x_axis,
+                link_y: _,
                 // Series ids.
                 series: _,
                 legend,
             } = overlay;
             scale_axis_in_place(y_axis, s);
             scale_label_gap(y_axis, &Side::Right, false, s);
+            // Scaled whether or not it is drawn, so unlinking keeps the scale.
+            scale_axis_in_place(x_axis, s);
+            scale_label_gap(x_axis, &Side::Top, false, s);
             if let Some(legend) = legend.as_mut() {
                 scale_legend_in_place(legend, s);
             }
@@ -3509,8 +3516,7 @@ mod axis_unit_tests {
                 y.unit = Some(AxisUnit::new(0.0, 0.0));
                 c.overlays.push(crate::layer::OverlayLayer {
                     y_axis: y,
-                    series: Vec::new(),
-                    legend: None,
+                    ..crate::defaults::overlay_layer()
                 });
             },
             "overlays.y_axis",

@@ -1423,6 +1423,35 @@ mod category_bar_tests {
         );
     }
 
+    /// Bars on an overlay with an X axis of its own take their categories
+    /// from that axis, not the parent's, and bars on an overlay that follows
+    /// the parent's Y axis take their values on it.
+    #[test]
+    fn overlay_bars_read_the_axes_their_overlay_links_choose() {
+        let mut config = crate::defaults::config();
+        let mut overlay = crate::defaults::overlay_layer();
+        overlay.series = vec!["b".into()];
+        config.overlays.push(overlay);
+        // Neither the parent nor the linked overlay has categories.
+        assert!(config.validate_category_bars(&[bars("b")]).is_err());
+        config.overlays[0].link_x = false;
+        config.overlays[0].x_axis.categories = Some(categories(4));
+        assert_eq!(config.validate_category_bars(&[bars("b")]), Ok(()));
+        // A parent series still needs the parent's categories.
+        assert!(
+            config
+                .validate_category_bars(&[bars("a"), bars("b")])
+                .is_err()
+        );
+        // With Y linked, the value axis is the parent's left axis: a
+        // categorical one cannot hold values.
+        config.overlays[0].link_y = true;
+        config.left_y.categories = Some(categories(2));
+        assert!(config.validate_category_bars(&[bars("b")]).is_err());
+        config.left_y.categories = None;
+        assert_eq!(config.validate_category_bars(&[bars("b")]), Ok(()));
+    }
+
     /// A polar chart draws its category bars as a rose (#133): vertical
     /// groups over the categorical angle axis; a horizontal group is named.
     #[test]
@@ -2967,9 +2996,8 @@ mod step_selection_tests {
         let mut config = selected(bin("a", 0));
         // Series `c` sits on an overlay, another bar group.
         config.overlays.push(crate::layer::OverlayLayer {
-            y_axis: crate::defaults::axis_options_y(),
             series: vec!["c".into()],
-            legend: None,
+            ..crate::defaults::overlay_layer()
         });
         assert_eq!(
             step(&mut config, &series, &columns, 2, 0),

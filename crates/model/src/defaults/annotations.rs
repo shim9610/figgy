@@ -95,6 +95,9 @@ pub(crate) const fn note_align() -> NoteAlign {
 pub(crate) fn overlay_layer() -> OverlayLayer {
     OverlayLayer {
         y_axis: axis_options_y(),
+        link_x: true,
+        x_axis: axis_options_x(),
+        link_y: false,
         series: Vec::new(),
         legend: None,
     }

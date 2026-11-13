@@ -294,8 +294,9 @@ impl Renderer {
         let changed = state.config != config;
         // Element selection lives one level below the layer: a `HitId` names
         // an entry of the hit map registered for the previous layer, so a
-        // layer change clears it, and its selection chrome must be redrawn.
-        let layer_changed = state.config.active_layer() != config.active_layer();
+        // change of the registered set (the layer, or the active overlay's
+        // links) clears it, and its selection chrome must be redrawn.
+        let layer_changed = registration_changed(&state.config, &config);
         let clear_selection = layer_changed && state.selected.is_some();
         let ChartRevisions {
             desired: desired_before,

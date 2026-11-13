@@ -48,11 +48,13 @@ fn read_side(cfg: &Config, side: &Side) -> SideComponents {
     };
     let axis = super::axis_ref(cfg, side);
     SideComponents {
-        // The right band is group geometry when overlays exist; fit and
-        // resize read and write the group through the parent axis.
+        // The right and top bands are group geometry when overlays draw
+        // axes there; fit and resize read and write the group through the
+        // parent axis.
         out_margin: match side {
             Side::Right => super::right_out_margin_effective(cfg),
-            Side::Top | Side::Bottom | Side::Left => axis.out_margin,
+            Side::Top => super::top_out_margin_effective(cfg),
+            Side::Bottom | Side::Left => axis.out_margin,
         },
         chart_title: match side {
             Side::Top => Some(chart_title_contribution(&cfg.chart_title)),
@@ -82,8 +84,10 @@ fn write_side(cfg: &mut Config, side: &Side, c: &SideComponents) {
     if let (Side::Top, Some(v)) = (side, c.chart_title) {
         cfg.chart_title.top_margin = v;
     }
-    if *side == Side::Right {
-        super::sync_overlay_right_margins(cfg);
+    match side {
+        Side::Right => super::sync_overlay_right_margins(cfg),
+        Side::Top => super::sync_overlay_top_margins(cfg),
+        Side::Bottom | Side::Left => {}
     }
 }
 

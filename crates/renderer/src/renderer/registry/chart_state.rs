@@ -62,7 +62,7 @@ impl Renderer {
         let config_changed = state.config != config;
         let series_changed = state.series != series;
         let clear_selection =
-            state.config.active_layer() != config.active_layer() && state.selected.is_some();
+            registration_changed(&state.config, &config) && state.selected.is_some();
         let ChartRevisions {
             desired: desired_before,
             config: config_before,
@@ -458,7 +458,9 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        if view.overlay_y.len() != state.config.overlays.len() {
+        if view.overlay_y.len() != state.config.overlays.len()
+            || view.overlay_x.len() != state.config.overlays.len()
+        {
             return Err(FiggyError::InvalidConfig {
                 field: "overlays",
                 kind: crate::RuleKind::ViewStateOverlayRanges,
@@ -472,6 +474,7 @@ impl Renderer {
                 .any(|(view, subplot)| {
                     !view.subplots.is_empty()
                         || view.overlay_y.len() != subplot.config.overlays.len()
+                        || view.overlay_x.len() != subplot.config.overlays.len()
                 })
         {
             return Err(FiggyError::InvalidConfig {
