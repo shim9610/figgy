@@ -208,6 +208,7 @@ images are not in the README.
 | [constellation_demo.rs](constellation_demo.rs) | Despite its name, renders the Milkyway style: parameter sweeps of the line stars and ribbon, spectrum and sampling checks, scatter planets and errorbar jets, into `target/constellation_demo/` | `cargo run --locked -p figgy-renderer --example constellation_demo` |
 | [sketch_demo.rs](sketch_demo.rs) | Precise and Sketch exports of one chart, and a Sketch tour with line, scatter-line and errorbar series, into `target/sketch_demo/` | `cargo run --locked -p figgy-renderer --example sketch_demo` |
 | [raster_bench.rs](raster_bench.rs) | Prints the CPU raster time of the grid and decoration layers for Precise and Milkyway at two sizes; needs no GPU | `cargo run --locked --release -p figgy-renderer --example raster_bench` |
+| [monotonic_bench.rs](monotonic_bench.rs) | Times a monotonic-x chart on the native GPU: one full call of N samples, sliding appends to a window, and a 1x export check that the line covers each pixel column's data range; f64 data or i16 counts on a volts axis | `cargo run --locked --release -p figgy-renderer --example monotonic_bench -- once --samples 100000000` |
 
 ## 한국어 안내
 
@@ -229,5 +230,5 @@ images are not in the README.
   평행 좌표, 바이올린·레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위,
   파인만 도표 그림은 위 [0.19 표](#charts-new-in-019)의 예제가 그린다. 그리는 값은 모두 예제가 계산한다.
 - **창 예제와 도구**: 편집 예제는 실제 창을 열어 선택·이동·영역 조정을 보여준다.
-  `constellation_demo`, `sketch_demo`, `raster_bench`는 렌더러를 바꿀 때 출력과 비용을
+  `constellation_demo`, `sketch_demo`, `raster_bench`, `monotonic_bench`는 렌더러를 바꿀 때 출력과 비용을
   확인하는 도구다.
