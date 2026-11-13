@@ -4,6 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
+Each entry names the built-in theme its example applies
+([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+palette order or a fill opacity.
 
 ## Waterfall
 
@@ -12,6 +15,8 @@ the images are native renderer output.
 A profit bridge: the host's running totals as start and end columns, increases and decreases coloured by direction, subtotal and totals flagged, connectors between the steps.
 
 **Code:** [range_bars.rs](../examples/range_bars.rs), `waterfall`
+
+**Theme:** `range-bars` theme `warm-neutral`
 
 **Run:** `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars`
 
@@ -23,6 +28,8 @@ A profit bridge: the host's running totals as start and end columns, increases a
 
 **Code:** [range_bars.rs](../examples/range_bars.rs), `candlestick`
 
+**Theme:** `range-bars` theme `midnight`
+
 **Run:** `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars`
 
 ## Gantt chart
@@ -32,5 +39,7 @@ A profit bridge: the host's running totals as start and end columns, increases a
 A release plan on six rows over a date axis: a state column colours each task and a progress column shades its finished part.
 
 **Code:** [range_bars.rs](../examples/range_bars.rs), `gantt`
+
+**Theme:** `range-bars` theme `cool-slate`
 
 **Run:** `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars`

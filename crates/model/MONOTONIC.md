@@ -322,8 +322,8 @@ Compared with a chart that draws the same samples as an ordinary line:
 - **The picked highlight** rings the kept point with the selected sample
   index. A sample the envelope does not keep has no ring.
 - **`step_selection`** steps through the kept points.
-- **The legend** shows a line swatch in the series' colour, and the theme
-  cycle recolours it.
+- **The legend** shows a line swatch in the series' colour, and a theme's
+  palette recolours it.
 - **Layers**: overlays and subplots (their own x range and width) both
   work. An overlay follows the parent's x axis by default; with its
   `link_x` off it has an x axis of its own, so a group recorded on another

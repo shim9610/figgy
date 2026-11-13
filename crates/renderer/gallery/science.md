@@ -5,6 +5,9 @@
 Click an image to open the example code that draws it. All data is synthetic
 except the energy-level diagram, which draws the bundled NIST ASD exports for
 He I; the images are native renderer output.
+Each entry names the built-in theme its example applies
+([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+palette order.
 
 ## Energy levels
 
@@ -13,6 +16,8 @@ He I; the images are native renderer output.
 A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis.
 
 **Code:** [nist_grotrian_gallery.rs](../examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](../examples/support/grotrian_sets.rs)
+
+**Theme:** `energy-levels` theme `grotrian`
 
 **Run:** `cargo run --locked -p figgy-renderer --example nist_grotrian_gallery -- target/nist-grotrian-gallery`
 
@@ -24,6 +29,8 @@ Six processes on cards: annihilation, Compton scattering, gluon fusion through a
 
 **Code:** [feynman.rs](../examples/feynman.rs), `render`
 
+**Theme:** `feynman` theme `parchment`
+
 **Run:** `cargo run --locked -p figgy-renderer --example feynman -- target/feynman`
 
 ## Ternary plot
@@ -33,6 +40,8 @@ Six processes on cards: annihilation, Compton scattering, gluon fusion through a
 The USDA soil texture triangle: twelve texture classes as filled region polygons named by text annotations, and three soil cores sampled every 10 cm as lines whose markers grow with depth (`point_size_map`).
 
 **Code:** [ternary.rs](../examples/ternary.rs), `render`
+
+**Theme:** `ternary` theme `warm-paper`
 
 **Run:** `cargo run --locked -p figgy-renderer --example ternary -- target/ternary`
 
@@ -44,6 +53,8 @@ Normal and Weibull probability axes (#209), the Weibull panel over a log time ax
 
 **Code:** [probability_paper.rs](../examples/probability_paper.rs), `probability_paper`
 
+**Theme:** `probability` theme `warm-neutral`
+
 **Run:** `cargo run --locked -p figgy-renderer --example probability_paper -- target/probability`
 
 ## Parallel coordinates
@@ -53,5 +64,7 @@ Normal and Weibull probability axes (#209), the Weibull panel over a log time ax
 A 120-run hyperparameter sweep across six axes (two of them logarithmic), each run coloured by its validation accuracy through the colourbar, the best drawn last.
 
 **Code:** [parallel.rs](../examples/parallel.rs), `render`
+
+**Theme:** `parallel` theme `midnight`
 
 **Run:** `cargo run --locked -p figgy-renderer --example parallel -- target/parallel`

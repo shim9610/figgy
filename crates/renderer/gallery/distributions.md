@@ -4,6 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
+Each entry names the built-in theme its example applies
+([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+palette order or a fill opacity.
 
 ## Grouped bars
 
@@ -12,6 +15,8 @@ the images are native renderer output.
 Two series across four categories, a value label past every bar.
 
 **Code:** [categorical_gallery.rs](../examples/categorical_gallery.rs), case `grouped-matte`
+
+**Theme:** `category-bars` theme `document`
 
 **Run:** `cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`
 
@@ -23,6 +28,8 @@ Two series across four categories, a value label past every bar.
 
 **Code:** [histogram.rs](../examples/histogram.rs), `render`
 
+**Theme:** `histogram` theme `gallery`
+
 **Run:** `cargo run --locked -p figgy-renderer --example histogram -- target/histogram`
 
 ## Horizontal histogram
@@ -32,6 +39,8 @@ Two series across four categories, a value label past every bar.
 The same bins with horizontal bars.
 
 **Code:** [histogram.rs](../examples/histogram.rs), `render`
+
+**Theme:** `histogram` theme `gallery`
 
 **Run:** `cargo run --locked -p figgy-renderer --example histogram -- target/histogram`
 
@@ -43,6 +52,8 @@ Supplied five-number summaries and outliers, the median above every box.
 
 **Code:** [boxplot_gallery.rs](../examples/boxplot_gallery.rs), case `01-classic-matte`
 
+**Theme:** `distribution` theme `document`
+
 **Run:** `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery`
 
 ## Split violins
@@ -53,6 +64,8 @@ Split violins: reaction times under four memory loads, rested on the left half a
 
 **Code:** [boxplot_gallery.rs](../examples/boxplot_gallery.rs), `violins`
 
+**Theme:** `distribution` theme `cool-slate`
+
 **Run:** `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery`
 
 ## Raincloud plot
@@ -62,5 +75,7 @@ Split violins: reaction times under four memory loads, rested on the left half a
 Horizontal rainclouds of commute time by mode: the host's half violin above a quartile box, the raw samples jittered below.
 
 **Code:** [boxplot_gallery.rs](../examples/boxplot_gallery.rs), `raincloud`
+
+**Theme:** `distribution` theme `warm-paper`
 
 **Run:** `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery`

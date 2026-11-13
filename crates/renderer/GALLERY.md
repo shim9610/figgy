@@ -44,8 +44,18 @@ the example, not intervals estimated from observations.
 
 Each of the twelve also runs on its own; `animated_lines` writes the wave and orbit frames. `line` is not part
 of `readme_gallery` and runs only on its own.
-[support/gallery.rs](examples/support/gallery.rs) holds device setup,
-presentation defaults and PNG checks, not the chart definitions. To add an image
+[support/gallery.rs](examples/support/gallery.rs) holds device setup, the
+theme helpers (`theme_named`, `themed`) and PNG checks, not the chart
+definitions. Each image is drawn in a built-in theme of its chart's kind
+([Themes](USAGE.md#themes)): `gallery-errorbars.png` in the `error-bars` theme
+`gallery`, the histograms in the `histogram` theme `gallery`,
+`gallery-contours.png` in the `field` theme `gallery`, the wave and the orbit
+in the `line` theme `gallery`, `gallery-donut.png` in the radial theme
+`ceramic`, `gallery-categorical.png` in the `category-bars` theme `document`,
+`gallery-boxplot.png` in the `distribution` theme `document`, the radars in
+the `radar` theme `document`, the two polar plots in the `polar` theme
+`gallery`, and `gallery-line.png` in the `line` theme `default` with a blue,
+heavier line. The category pages in `gallery/` name the theme of every image. To add an image
 to the gallery, write its thumbnail (see [Thumbnails](#thumbnails)), add an entry
 on its category page in `gallery/`, and add a cell to that category's README
 table: five per row, `<td align="center" width="20%">`, a `width="160"`
@@ -54,22 +64,25 @@ thumbnail linking to the page anchor.
 ## Feature scenes
 
 The Cartesian feature examples draw the designed 1200 × 800 scenes in the
-README. [support/styled.rs](examples/support/styled.rs) holds their shared
-chrome: no axis lines or ticks, a horizontal grid and a quiet legend. Some scenes
-hide the legend or the grid, or add vertical grid lines; the data and series stay
-in each example.
+README. Each scene applies a built-in theme of its chart's kind, named in the
+table; the scene themes share one chrome: no axis lines or ticks, a horizontal
+grid, large text and a quiet legend on an opaque background. Some themes hide
+the grid or add vertical grid lines, and an example may edit a copy of its
+theme (the palette order, a fill opacity). The data and series stay in each
+example; [support/styled.rs](examples/support/styled.rs) holds the scene size,
+`scene_chart` (a titled chart with a top-left legend), `export` and `save`.
 
-| Output | Example and function | Scene |
-|---|---|---|
-| `gallery-wind.png` | [vector_field.rs](examples/vector_field.rs), `wind` | A sea breeze: speed as a smooth field on a custom ramp, direction as white arrows on a coarser grid of the same coordinates |
-| `gallery-currents.png` | [vector_field.rs](examples/vector_field.rs), `currents` | Surface currents at jittered drifter positions; arrow length follows the (u, v) components, arrow colour follows a host-supplied speed column through the colourbar |
-| `gallery-colormap.png` | [value_maps.rs](examples/value_maps.rs), `colormap_scatter` | 1400 particles along two spiral arms, coloured by an age column |
-| `gallery-bubbles.png` | [value_maps.rs](examples/value_maps.rs), `bubbles` | Three regions of cities; marker area follows population over one shared domain, translucent fills |
-| `gallery-forecast.png` | [area_step.rs](examples/area_step.rs), `forecast` | History solid, forecast dashed, 80% and 95% bands filled between their edge series; samples outside each part are NaN |
-| `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
-| `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | Voltage on the left axis with a light fill, current on an overlay layer's right axis |
-| `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
-| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | Probability paper: tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
+| Output | Example and function | Theme | Scene |
+|---|---|---|---|
+| `gallery-wind.png` | [vector_field.rs](examples/vector_field.rs), `wind` | `vector-field` `midnight` | A sea breeze: speed as a smooth field on a custom ramp, direction as white arrows on a coarser grid of the same coordinates |
+| `gallery-currents.png` | [vector_field.rs](examples/vector_field.rs), `currents` | `vector-field` `ocean` | Surface currents at jittered drifter positions; arrow length follows the (u, v) components, arrow colour follows a host-supplied speed column through the colourbar |
+| `gallery-colormap.png` | [value_maps.rs](examples/value_maps.rs), `colormap_scatter` | `scatter` `cool-slate` | 1400 particles along two spiral arms, coloured by an age column |
+| `gallery-bubbles.png` | [value_maps.rs](examples/value_maps.rs), `bubbles` | `scatter` `warm-paper` | Three regions of cities; marker area follows population over one shared domain, translucent fills |
+| `gallery-forecast.png` | [area_step.rs](examples/area_step.rs), `forecast` | `line` `cool-slate` | History solid, forecast dashed, 80% and 95% bands filled between their edge series; samples outside each part are NaN |
+| `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | `line` `cool-slate` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
+| `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | `line` `midnight` | Voltage on the left axis with a light fill, current on an overlay layer's right axis |
+| `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | `line` `cool-slate` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
+| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | `probability` `warm-neutral` | Probability paper: tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
 
 `twin_axes`, `small_multiples` and `probability_paper` export with
 `ExportOptions::document`: the panel export draws the base panel only, without
@@ -82,32 +95,32 @@ inside a subplot.
 
 ## Charts new in 0.19
 
-Each 0.19 chart kind has a designed scene drawn by its example, most with the shared chrome of the feature scenes; the energy-level diagram uses the plain gallery chart, and the violins and rainclouds are 960 × 640. The examples compute every value they draw: bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
+Each 0.19 chart kind has a designed scene drawn by its example in a built-in theme of its kind, most with the shared chrome of the feature scenes; the energy-level diagram is in the `grotrian` theme on white paper, and the violins and rainclouds are 960 × 640. The examples compute every value they draw: bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
 
-| Output | Example and function | Scene |
-|---|---|---|
-| `gallery-ternary.png` | [ternary.rs](examples/ternary.rs), `render` | The USDA soil texture triangle: twelve texture classes as filled region polygons named by text annotations, and three soil cores sampled every 10 cm as lines whose markers grow with depth (`point_size_map`) |
-| `gallery-surface.png` | [surface_3d.rs](examples/surface_3d.rs), `terrain` | Two summits and a saddle as a lit, wireframed 3D surface on a 61 × 61 grid (`view_3d`), floor contours in the ramp's colours, and a trail with waypoints as 3D line and marker series with a `z_column` |
-| `gallery-quiver3d.png` | [surface_3d.rs](examples/surface_3d.rs), `vortex` | A Burgers vortex sampled on a 9 × 9 × 3 lattice: one arrow per sample along (u, v, w), coloured by a host speed column through the colourbar |
-| `gallery-trimesh.png` | [trimesh.rs](examples/trimesh.rs), `plate` | Von Mises stress around a hole in a plate under tension (Kirsch's solution) on the host's graded mesh: interpolated fill, contour lines and the mesh edges as a faint line series |
-| `gallery-trisurf.png` | [trimesh.rs](examples/trimesh.rs), `drum` | The (2, 2) mode of a circular drum on a disc mesh, a lit and wireframed 3D triangle surface on a diverging ramp, with floor contours |
-| `gallery-hexbin.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `hexbin` | 100,000 taxi pickups the host bins into counts on a hexagonal lattice (`GridLayout::Hexagonal`), on a log colourbar; empty cells are NaN |
-| `gallery-imshow.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `imshow` | A planetary nebula as one `RgbImage`: three host-composited channel grids on one lattice of square pixels, interpolated, with field stars |
-| `gallery-polar-heatmap.png` | [polar_plot.rs](examples/polar_plot.rs), `wave_spectrum` | A directional wave spectrum as annular cells: direction on a compass axis, frequency outward, energy in dB, with labelled polar contours |
-| `gallery-rose.png` | [polar_plot.rs](examples/polar_plot.rs), `wind_rose` | A wind rose: a year's hours from 16 directions as category bars stacked outward in four speed bands |
-| `gallery-sunburst.png` | [radial_gallery.rs](examples/radial_gallery.rs), `sunburst` | A sunburst of electricity generation: groups at the centre, sources on the middle ring and technologies outside, each share relative to its parent |
-| `gallery-parallel.png` | [parallel.rs](examples/parallel.rs), `render` | A 120-run hyperparameter sweep across six axes (two of them logarithmic), each run coloured by its validation accuracy through the colourbar, the best drawn last |
-| `gallery-violin.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `violins` | Split violins: reaction times under four memory loads, rested on the left half and after 24 h awake on the right; each half is the host's density curve as a ragged column |
-| `gallery-raincloud.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `raincloud` | Horizontal rainclouds of commute time by mode: the host's half violin above a quartile box, the raw samples jittered below |
-| `gallery-waterfall.png` | [range_bars.rs](examples/range_bars.rs), `waterfall` | A profit bridge: the host's running totals as start and end columns, increases and decreases coloured by direction, subtotal and totals flagged, connectors between the steps |
-| `gallery-candlestick.png` | [range_bars.rs](examples/range_bars.rs), `candlestick` | 64 days of synthetic prices on a date axis: open–close bodies, low–high wicks and the host's 20-day moving average |
-| `gallery-gantt.png` | [range_bars.rs](examples/range_bars.rs), `gantt` | A release plan on six rows over a date axis: a state column colours each task and a progress column shades its finished part |
-| `gallery-shapes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `shapes` | 4000 flow cytometry events with shape annotations as gates: an ellipse, a rectangle, a polygon and a dashed outline, labelled in text boxes |
-| `gallery-stem.png` | [stem.rs](examples/stem.rs), `impulse_response` | The 41 taps of a windowed-sinc low-pass filter as stems from zero, over the ideal sinc they approximate |
-| `gallery-lollipop.png` | [stem.rs](examples/stem.rs), `lollipop` | A ranked lollipop chart of tree canopy change in twelve districts: horizontal stems from zero on a categorical axis |
-| `gallery-broken-axes.png` | [broken_axes.rs](examples/broken_axes.rs), `gamma_spectrum` | A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 and 1080 keV, so both peak groups keep a readable scale |
-| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](examples/support/grotrian_sets.rs) | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis |
-| `gallery-feynman.png` | [feynman.rs](examples/feynman.rs), `render` | Six processes on cards: annihilation, Compton scattering, gluon fusion through a top loop, beta decay through a W, the electron's one-loop vertex and a three-jet event |
+| Output | Example and function | Theme | Scene |
+|---|---|---|---|
+| `gallery-ternary.png` | [ternary.rs](examples/ternary.rs), `render` | `ternary` `warm-paper` | The USDA soil texture triangle: twelve texture classes as filled region polygons named by text annotations, and three soil cores sampled every 10 cm as lines whose markers grow with depth (`point_size_map`) |
+| `gallery-surface.png` | [surface_3d.rs](examples/surface_3d.rs), `terrain` | `surface-3d` `warm-terrain` | Two summits and a saddle as a lit, wireframed 3D surface on a 61 × 61 grid (`view_3d`), floor contours in the ramp's colours, and a trail with waypoints as 3D line and marker series with a `z_column` |
+| `gallery-quiver3d.png` | [surface_3d.rs](examples/surface_3d.rs), `vortex` | `surface-3d` `midnight` | A Burgers vortex sampled on a 9 × 9 × 3 lattice: one arrow per sample along (u, v, w), coloured by a host speed column through the colourbar |
+| `gallery-trimesh.png` | [trimesh.rs](examples/trimesh.rs), `plate` | `tri-mesh` `midnight` | Von Mises stress around a hole in a plate under tension (Kirsch's solution) on the host's graded mesh: interpolated fill, contour lines and the mesh edges as a faint line series |
+| `gallery-trisurf.png` | [trimesh.rs](examples/trimesh.rs), `drum` | `surface-3d` `warm-diverging` | The (2, 2) mode of a circular drum on a disc mesh, a lit and wireframed 3D triangle surface on a diverging ramp, with floor contours |
+| `gallery-hexbin.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `hexbin` | `field` `warm-neutral` | 100,000 taxi pickups the host bins into counts on a hexagonal lattice (`GridLayout::Hexagonal`), on a log colourbar; empty cells are NaN |
+| `gallery-imshow.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `imshow` | `field` `deep-space` | A planetary nebula as one `RgbImage`: three host-composited channel grids on one lattice of square pixels, interpolated, with field stars |
+| `gallery-polar-heatmap.png` | [polar_plot.rs](examples/polar_plot.rs), `wave_spectrum` | `polar` `cool-slate` | A directional wave spectrum as annular cells: direction on a compass axis, frequency outward, energy in dB, with labelled polar contours |
+| `gallery-rose.png` | [polar_plot.rs](examples/polar_plot.rs), `wind_rose` | `polar` `warm-paper` | A wind rose: a year's hours from 16 directions as category bars stacked outward in four speed bands |
+| `gallery-sunburst.png` | [radial_gallery.rs](examples/radial_gallery.rs), `sunburst` | radial `sunburst` | A sunburst of electricity generation: groups at the centre, sources on the middle ring and technologies outside, each share relative to its parent |
+| `gallery-parallel.png` | [parallel.rs](examples/parallel.rs), `render` | `parallel` `midnight` | A 120-run hyperparameter sweep across six axes (two of them logarithmic), each run coloured by its validation accuracy through the colourbar, the best drawn last |
+| `gallery-violin.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `violins` | `distribution` `cool-slate` | Split violins: reaction times under four memory loads, rested on the left half and after 24 h awake on the right; each half is the host's density curve as a ragged column |
+| `gallery-raincloud.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `raincloud` | `distribution` `warm-paper` | Horizontal rainclouds of commute time by mode: the host's half violin above a quartile box, the raw samples jittered below |
+| `gallery-waterfall.png` | [range_bars.rs](examples/range_bars.rs), `waterfall` | `range-bars` `warm-neutral` | A profit bridge: the host's running totals as start and end columns, increases and decreases coloured by direction, subtotal and totals flagged, connectors between the steps |
+| `gallery-candlestick.png` | [range_bars.rs](examples/range_bars.rs), `candlestick` | `range-bars` `midnight` | 64 days of synthetic prices on a date axis: open–close bodies, low–high wicks and the host's 20-day moving average |
+| `gallery-gantt.png` | [range_bars.rs](examples/range_bars.rs), `gantt` | `range-bars` `cool-slate` | A release plan on six rows over a date axis: a state column colours each task and a progress column shades its finished part |
+| `gallery-shapes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `shapes` | `scatter` `cool-slate` | 4000 flow cytometry events with shape annotations as gates: an ellipse, a rectangle, a polygon and a dashed outline, labelled in text boxes |
+| `gallery-stem.png` | [stem.rs](examples/stem.rs), `impulse_response` | `stem` `cool-slate` | The 41 taps of a windowed-sinc low-pass filter as stems from zero, over the ideal sinc they approximate |
+| `gallery-lollipop.png` | [stem.rs](examples/stem.rs), `lollipop` | `stem` `warm-paper` | A ranked lollipop chart of tree canopy change in twelve districts: horizontal stems from zero on a categorical axis |
+| `gallery-broken-axes.png` | [broken_axes.rs](examples/broken_axes.rs), `gamma_spectrum` | `line` `midnight` | A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 and 1080 keV, so both peak groups keep a readable scale |
+| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](examples/support/grotrian_sets.rs) | `energy-levels` `grotrian` | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis |
+| `gallery-feynman.png` | [feynman.rs](examples/feynman.rs), `render` | `feynman` `parchment` | Six processes on cards: annihilation, Compton scattering, gluon fusion through a top loop, beta decay through a W, the electron's one-loop vertex and a three-jet event |
 
 `readme_gallery` writes the hexbin, colour image, ternary, 3D, mesh, parallel, range-bar, stem, broken-axis and Feynman images with the other images; the rest come from `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper` and `nist_grotrian_gallery`. Each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
 
@@ -115,23 +128,24 @@ Each 0.19 chart kind has a designed scene drawn by its example, most with the sh
 
 [`gallery_concepts.rs`](examples/gallery_concepts.rs) renders six complete chart
 images at **1200 × 800**. Each named function contains its data and styling choices;
-[`support/styled.rs`](examples/support/styled.rs) supplies `cartesian` (the
-built-in `dashboard` theme in the scene's colours), `export` and `save`, which
-checks and encodes the output. The scenes are recipes to adapt, not extra
-built-in theme names; `revenue` reads a legacy categorical document.
+[`support/styled.rs`](examples/support/styled.rs) supplies `scene_chart`,
+`export` and `save`, which checks and encodes the output. Every image is drawn
+in a built-in theme ([Themes](USAGE.md#themes)), named in the table; `revenue`
+reads a legacy categorical document and takes the `category-bars` theme
+`revenue`.
 
 ```bash
 cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
 ```
 
-| Image / function | Concept | Settings to try |
-|---|---|---|
-| `concept-observability.png` / `observability` | Dark service-monitoring card; two synthetic request-rate curves | Navy clear color, mint/lavender lines, horizontal grid only, hidden axis lines and ticks |
-| `concept-revenue.png` / `revenue` | Light product-analytics card; four regional revenue stacks | `Horizontal` + `Stacked`, inside value labels, rounded exposed ends, matte bars, no grid |
-| `concept-editorial.png` / `editorial` | Warm editorial chart; two community-growth series | `DrawStyle::Sketch`, fixed wobble seed, paper-colored background, sparse round markers |
-| `concept-pop-art.png` / `radial_concepts` | Bright, outlined pie; time allocation | `Toon`, 45° tilt, shallow extrusion, rim/separator outlines, small slice gaps |
-| `concept-portfolio.png` / `radial_concepts` | Dark presentation chart; asset allocation | `Pearl`, 55° tilt, 0.57 hole ratio, rounded corners, bevel, soft highlights |
-| `concept-terrain.png` / `terrain` | Topographic color study; an imaginary landscape | A custom forest-to-sand `ColorMap`, interpolated matrix fill and 17 fine isolines |
+| Image / function | Theme | Concept | Settings to try |
+|---|---|---|---|
+| `concept-observability.png` / `observability` | `line` `midnight` | Dark service-monitoring card; two synthetic request-rate curves | Navy clear color, mint/lavender lines, horizontal grid only, hidden axis lines and ticks |
+| `concept-revenue.png` / `revenue` | `category-bars` `revenue` | Light product-analytics card; four regional revenue stacks | `Horizontal` + `Stacked`, inside value labels, rounded exposed ends, matte bars, no grid |
+| `concept-editorial.png` / `editorial` | `line` `editorial` | Warm editorial chart; two community-growth series | `DrawStyle::Sketch`, fixed wobble seed, paper-colored background, sparse round markers |
+| `concept-pop-art.png` / `radial_concepts` | radial `pop-art` | Bright, outlined pie; time allocation | `Toon`, 45° tilt, shallow extrusion, rim/separator outlines, small slice gaps |
+| `concept-portfolio.png` / `radial_concepts` | radial `portfolio` | Dark presentation chart; asset allocation | `Pearl`, 55° tilt, 0.57 hole ratio, rounded corners, bevel, soft highlights |
+| `concept-terrain.png` / `terrain` | `field` `topographic` | Topographic color study; an imaginary landscape | A custom forest-to-sand `ColorMap`, interpolated matrix fill and 17 fine isolines |
 
 The dashboard examples are chart images suitable for embedding in a card. Page
 layout, KPI widgets and application controls belong to the host. The example
@@ -365,6 +379,8 @@ page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/render
 수식 갤러리(`math_gallery.rs`)는 `RichText::from_tex`로 쓴 모든 수식 구성(분수, 근호, 큰 연산자와 극한, 구분 기호, 악센트, 위아래 괄호와 화살표, 첨자, 그리스 문자)을 1200 × 1600 차트의 주석 텍스트로 그리고, 각 수식 아래에 TeX 원문을 적는다. 출력은 `math-gallery.png`, `math-gallery@2x.png`, 스케치 스타일의 `math-gallery-sketch.png`, `math-gallery-sketch@2x.png`이다. 스케치 스타일에서도 수식은 내장 수식 글꼴로 그린다.
 
 0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. 육각 빈, 컬러 이미지, 삼각 좌표, 3D, 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표 그림은 `readme_gallery`가 다른 그림과 함께 만들고, 나머지는 `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper`, `nist_grotrian_gallery`가 만든다. 예제마다 따로 실행할 수도 있다.
+
+갤러리 그림은 모두 차트 종류에 속한 내장 테마로 그린다([테마](USAGE.md#테마)). 예제는 `Theme::named(kind, name)`(원형 차트는 `RadialTheme::named(name)`)으로 테마를 찾아 `Chart::apply_theme`으로 적용하며, 팔레트 순서나 채움 불투명도처럼 그림에 맞춰 복사본을 조금 고치는 예제도 있다. 그림마다 쓴 테마 이름은 위의 표와 종류별 페이지에 적었다.
 
 README는 갤러리 그림을 종류별로 묶어 작은 그림(썸네일)으로 보여 준다. 썸네일을 누르면 그 종류의 페이지([`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery))에서 큰 그림과 설명, 실행 명령을 볼 수 있고, 큰 그림을 누르면 그림을 그린 예제 코드가 열린다. 썸네일은 `assets/thumbs/`에 있는 폭 320픽셀짜리 사본이다. 그림을 새로 만들거나 다시 만든 뒤에는 저장소 루트에서 `python3 ci/gallery_thumbs.py`(Pillow 필요)를 실행해 썸네일을 다시 쓴다. 새 그림은 해당 종류 페이지와 README 표에도 추가한다.
 
