@@ -1484,8 +1484,9 @@ pub struct Config {
     /// [`Config::polar`] / [`Config::set_polar`] and their siblings.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub coordinates: crate::coordinates::Coordinates,
-    /// Overlay layers: secondary Y axes drawn on the right side of the shared
-    /// data area, each scaling the series it lists. Empty (key absent in
+    /// Overlay layers over the shared data area, each scaling the series it
+    /// lists by axes of its own (a Y axis on the right and, with `link_x`
+    /// off, an X axis on the top) or by the parent's. Empty (key absent in
     /// JSON) is the single-layer chart every document had before the field.
     /// The renderer expands the document into one internal panel per layer
     /// with [`Config::expand`]; see [`OverlayLayer`].

@@ -18,11 +18,12 @@ one shared device: `error_bars`, `histogram`, `heatmap_contours`,
 `animated_lines`, and the 0.19 scenes `ternary`, `surface_3d`, `trimesh`,
 `parallel`, `range_bars`, `stem`, `broken_axes` and `feynman`. They use the
 native `Renderer`, upload their columns, and export with
-`export_rgba` and `encode_png`. No browser or window is needed.
+`export_rgba_blocking` and `encode_png`. No browser or window is needed.
 
-All data is synthetic. These images demonstrate plotting features, not measured
-scientific results. The error bars are deliberately chosen widths, not confidence
-intervals inferred from observations.
+All data is synthetic except the energy-level diagram, which draws the bundled
+NIST ASD exports for He I. These images demonstrate plotting features, not
+measured scientific results. The error bars are synthetic ±1σ widths chosen for
+the example, not intervals estimated from observations.
 
 | Output | Data and rendering | Size |
 |---|---|---|
@@ -45,8 +46,10 @@ Each of the twelve also runs on its own; `animated_lines` writes the wave and or
 of `readme_gallery` and runs only on its own.
 [support/gallery.rs](examples/support/gallery.rs) holds device setup,
 presentation defaults and PNG checks, not the chart definitions. To add an image
-to a README gallery row, keep four images per row (`width="23%" align="top"`, no
-fixed height) and link the image to the example that writes it.
+to the gallery, write its thumbnail (see [Thumbnails](#thumbnails)), add an entry
+on its category page in `gallery/`, and add a cell to that category's README
+table: five per row, `<td align="center" width="20%">`, a `width="160"`
+thumbnail linking to the page anchor.
 
 ## Feature scenes
 
@@ -68,9 +71,9 @@ in each example.
 | `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
 | `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | Probability paper: tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
 
-`twin_axes` and `small_multiples` export with
-`export_rgba`: the panel export draws the base panel
-only, without overlay layers or subplots.
+`twin_axes`, `small_multiples` and `probability_paper` export with
+`ExportOptions::document`: the panel export draws the base panel only, without
+overlay layers or subplots.
 
 The same examples also write plain feature checks that are not in the README:
 `steps.png` compares the three step modes, `gradient.png` draws grid arrows in
@@ -79,7 +82,7 @@ inside a subplot.
 
 ## Charts new in 0.19
 
-Each 0.19 chart kind has a designed scene drawn by its example, with the shared chrome of the feature scenes. The examples compute every value they draw: bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
+Each 0.19 chart kind has a designed scene drawn by its example, most with the shared chrome of the feature scenes; the energy-level diagram uses the plain gallery chart, and the violins and rainclouds are 960 × 640. The examples compute every value they draw: bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
 
 | Output | Example and function | Scene |
 |---|---|---|
@@ -103,17 +106,19 @@ Each 0.19 chart kind has a designed scene drawn by its example, with the shared 
 | `gallery-stem.png` | [stem.rs](examples/stem.rs), `impulse_response` | The 41 taps of a windowed-sinc low-pass filter as stems from zero, over the ideal sinc they approximate |
 | `gallery-lollipop.png` | [stem.rs](examples/stem.rs), `lollipop` | A ranked lollipop chart of tree canopy change in twelve districts: horizontal stems from zero on a categorical axis |
 | `gallery-broken-axes.png` | [broken_axes.rs](examples/broken_axes.rs), `gamma_spectrum` | A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 and 1080 keV, so both peak groups keep a readable scale |
-| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), `main` | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis |
+| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](examples/support/grotrian_sets.rs) | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis |
 | `gallery-feynman.png` | [feynman.rs](examples/feynman.rs), `render` | Six processes on cards: annihilation, Compton scattering, gluon fusion through a top loop, beta decay through a W, the electron's one-loop vertex and a three-jet event |
 
-`readme_gallery` writes them with the other images; each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
+`readme_gallery` writes the hexbin, colour image, ternary, 3D, mesh, parallel, range-bar, stem, broken-axis and Feynman images with the other images; the rest come from `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper` and `nist_grotrian_gallery`. Each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
 
 ## Visual concepts
 
 [`gallery_concepts.rs`](examples/gallery_concepts.rs) renders six complete chart
 images at **1200 × 800**. Each named function contains its data and styling choices;
-`cartesian` shares the axis/legend setup and `save` checks and encodes the output.
-These are examples to adapt, not additional built-in theme names.
+[`support/styled.rs`](examples/support/styled.rs) supplies `cartesian` (the
+built-in `dashboard` theme in the scene's colours), `export` and `save`, which
+checks and encodes the output. The scenes are recipes to adapt, not extra
+built-in theme names; `revenue` reads a legacy categorical document.
 
 ```bash
 cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
@@ -130,12 +135,15 @@ cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concep
 
 The dashboard examples are chart images suitable for embedding in a card. Page
 layout, KPI widgets and application controls belong to the host. The example
-uses only the public Cartesian, categorical and radial APIs. See
+uses only public APIs: the Cartesian, categorical and radial charts and the
+built-in themes. See
 [configuration](CONFIG.md), [categorical bars](CATEGORICAL.md) and
 [radial materials](RADIAL.md) to adapt the recipes.
 
-The PNGs are the native export, written without resizing or post-processing. The export clear color supplies the Cartesian background, the
-category bars of `revenue` included; the radial charts use their model's `background` field.
+The PNGs are the native export, written without resizing or post-processing. The themed scenes fill their chart area
+from `Config::background` (the scene colour, also the clear colour); the category
+bars of `revenue` take the export clear colour, and the radial charts use their
+model's `background` field.
 
 ## Math in text
 
@@ -190,10 +198,11 @@ The optional second argument selects 2–240 frames; the default is 48. Phases c
 one period without repeating the endpoint. The example uses fixed axis ranges so
 the animation does not rescale each frame.
 
-The example reports the selected adapter, dimensions and coloured-pixel count.
-Each export must succeed, be fully opaque on its white background, and contain
-at least 500 coloured pixels. Adapter, allocation and export failures return an
-error; missing GPU support is not treated as a successful run. These checks catch
+Each export prints its path and coloured-pixel count. Each export must succeed,
+be fully opaque and contain coloured chart pixels: at least 500 on white for the
+960-wide charts, more than 2000 against the scene background for the 1200 × 800
+scenes. Adapter, allocation and export failures and a failed check stop the run;
+missing GPU support is not treated as a successful run. These checks catch
 blank exports; visual review is still needed for layout.
 
 Normal native adapter selection is used, and the example does not force a
@@ -252,12 +261,15 @@ cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
 cargo run --locked -p figgy-renderer --example area_step -- target/area-step
 cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
 cargo run --locked -p figgy-renderer --example subplots -- target/subplots
+cargo run --locked -p figgy-renderer --example probability_paper -- target/probability
+cargo run --locked -p figgy-renderer --example nist_grotrian_gallery -- target/nist_grotrian_gallery
 ```
 
 Copy each output into `assets/` under its name in the table at the top of this
 page. The case outputs of `radial_gallery`, `categorical_gallery`,
 `boxplot_gallery`, `radar_gallery` and `polar_plot` are renamed, for example
-`target/radial-gallery/ceramic.png` → `assets/gallery-donut.png`; the feature
+`target/radial-gallery/ceramic.png` → `assets/gallery-donut.png` and
+`target/nist_grotrian_gallery/he-i-1x.png` → `assets/gallery-grotrian.png`; the feature
 examples and `gallery_concepts` already write their final names. The
 radial example draws with `RadialRenderer`. `categorical_gallery`, `boxplot_gallery` and
 `radar_gallery` open their documents with `Config::from_categorical`,
@@ -279,7 +291,7 @@ cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/
 two growth curves with ten samples each in Precise and Sketch mode. Sketch uses
 `amplitude_px = 2.2`, `wavelength_px = 55` and `seed = 1` for reproducible hand-drawn
 lines, axes and lettering. Both PNGs are 1280 × 1024, matching the Milkyway and
-Constellation thumbnails in the four-column draw-style row. Copy the two
+Constellation previews. Copy the two
 `style-growth-response-*.png` outputs into `assets/` after inspection.
 
 ## Milkyway line-only preview
@@ -296,11 +308,11 @@ cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/m
 length. There are no scatter planets or errorbar jets in this preview.
 The example also compares against an empty chart to verify visible data pixels.
 
-The selected parameters are explicit in the example: `star_density = 70`,
-`star_scale = 1`, `star_brightness = 0.32`, `spread_px = 8`,
-`ribbon_width_px = 24`, `ribbon_intensity = 0.08`, `structure_scale = 1`,
-`faint_bias = 4.5`, `glow = 0.35`, `nebula = 0.6`, `dust = 0.7`,
-`planet_rim = 0`, and `seed = 0`. These are presentation settings for this
+The example sets `star_density = 70`, `star_brightness = 0.32`,
+`spread_px = 8`, `ribbon_width_px = 24`, `ribbon_intensity = 0.08`,
+`faint_bias = 4.5`, `glow = 0.35`, `nebula = 0.6`, `dust = 0.7` and
+`planet_rim = 0`, and leaves the others at their defaults (`star_scale = 1`,
+`structure_scale = 1`, `seed = 0`). These are presentation settings for this
 preview; they do not change the renderer's default options. Planet removal
 comes from choosing `Line`, not from setting `planet_rim` to zero.
 
@@ -315,7 +327,7 @@ cargo run --locked -p figgy-renderer --example constellation_preview -- target/c
 [`constellation_preview.rs`](examples/constellation_preview.rs) renders two
 synthetic growth curves with ten samples each as `DataRenderType::ScatterLine`.
 Stars occupy those original sample positions, with translucent connecting lines.
-The example sets `star_opacity = 1` and `line_opacity = 0.45`, exports a
+The example uses the default `ConstellationOptions` (`star_opacity = 1`, `line_opacity = 0.45`), exports a
 1280 × 1024 PNG, and checks for visible data against an empty chart.
 
 After inspection, copy the output to `assets/style-growth-response-constellation.png`.
@@ -340,19 +352,19 @@ page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/render
 
 이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 컬럼을 등록하고 데이터와 축·눈금·텍스트를 그려 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
 
-- **정지 이미지 19종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선, 그리고 육각 빈, 컬러 이미지, 삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 평행 좌표, 폭포·캔들스틱·간트, 줄기·롤리팝, 축 끊기, 파인만 도표 장면이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
+- **정지 이미지 19종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선, 그리고 육각 빈, 컬러 이미지, 삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 평행 좌표, 폭포·캔들스틱·간트, 줄기·롤리팝, 축 끊기, 파인만 도표 장면이다. 모두 예제용으로 생성한 데이터이며, 오차 막대는 예제용으로 정한 ±1σ 폭이다. 에너지 준위 도표만 저장소에 포함한 NIST ASD의 He I 자료를 그린다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
 - **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 19개와 애니메이션 프레임 96개를 만든다. 오차 막대, 히스토그램, 등고선, 애니메이션 예제와 0.19 장면 예제 8개(삼각 좌표, 3D 곡면, 삼각 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표)를 장치 하나로 실행한다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
 - **재생 설정**: GIF 하나당 48프레임을 초당 12프레임으로 약 4초마다 반복한다. GIF는 색을 팔레트로 줄이므로 픽셀 검사는 원본 PNG로 한다. GIF의 재생 속도는 렌더링 성능을 나타내지 않는다.
 - **검증 환경**: 일반 장비에서는 기본 GPU 선택을 따른다. 이 이미지는 실제 GPU가 없는 Linux에서 Vulkan llvmpipe로 검증했다. 예제 자체가 소프트웨어 GPU를 강제하지는 않는다. 실제 GPU의 성능이나 다른 OS에서 같은 픽셀값이 나오는지는 확인하지 않았다.
 
-갤러리를 갱신할 때는 출력 오류 여부, 불투명 배경과 유효한 색상 픽셀, 축 제목·눈금·범례·색상 막대 배치를 확인한다. GIF도 디코딩해 프레임 수, 프레임 간 변화, 반복 설정을 검사한다. 나머지 정지 이미지는 `line`, `radial_gallery`, `categorical_gallery`, `boxplot_gallery`, `radar_gallery`, `polar_plot`, `vector_field`, `value_maps`, `area_step`, `overlay_axes`, `subplots`, `gallery_concepts`, `precise_sketch_preview`, `milkyway_line_preview`, `constellation_preview` 예제로 만든다. 출력 파일은 각 표와 절에 적힌 이름으로 `assets/`에 복사하고, 중간 프레임은 소스 관리에 넣지 않는다.
+갤러리를 갱신할 때는 출력 오류 여부, 불투명 배경과 유효한 색상 픽셀, 축 제목·눈금·범례·색상 막대 배치를 확인한다. GIF도 디코딩해 프레임 수, 프레임 간 변화, 반복 설정을 검사한다. 나머지 정지 이미지는 `line`, `radial_gallery`, `categorical_gallery`, `boxplot_gallery`, `radar_gallery`, `polar_plot`, `vector_field`, `value_maps`, `area_step`, `overlay_axes`, `subplots`, `probability_paper`, `nist_grotrian_gallery`, `gallery_concepts`, `precise_sketch_preview`, `milkyway_line_preview`, `constellation_preview` 예제로 만든다. 출력 파일은 각 표와 절에 적힌 이름으로 `assets/`에 복사하고, 중간 프레임은 소스 관리에 넣지 않는다.
 
 은하수 미리보기는 두 곡선을 `Line`으로 등록하므로 곡선을 따라 별과 성운 띠만 그린다. 산점도 기호가 없어 행성이 나타나지 않고, 오차 막대가 없어 제트도 나타나지 않는다. `planet_rim = 0`은 행성을 없애는 설정이 아니다. 예제의 옵션 값은 이 미리보기에만 적용되며 렌더러 기본값은 바꾸지 않는다.
 
 수식 갤러리(`math_gallery.rs`)는 `RichText::from_tex`로 쓴 모든 수식 구성(분수, 근호, 큰 연산자와 극한, 구분 기호, 악센트, 위아래 괄호와 화살표, 첨자, 그리스 문자)을 1200 × 1600 차트의 주석 텍스트로 그리고, 각 수식 아래에 TeX 원문을 적는다. 출력은 `math-gallery.png`, `math-gallery@2x.png`, 스케치 스타일의 `math-gallery-sketch.png`, `math-gallery-sketch@2x.png`이다. 스케치 스타일에서도 수식은 내장 수식 글꼴로 그린다.
 
-0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. `readme_gallery`가 다른 그림과 함께 이 그림들도 만들고, 예제마다 따로 실행할 수도 있다.
+0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. 육각 빈, 컬러 이미지, 삼각 좌표, 3D, 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표 그림은 `readme_gallery`가 다른 그림과 함께 만들고, 나머지는 `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper`, `nist_grotrian_gallery`가 만든다. 예제마다 따로 실행할 수도 있다.
 
 README는 갤러리 그림을 종류별로 묶어 작은 그림(썸네일)으로 보여 준다. 썸네일을 누르면 그 종류의 페이지([`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery))에서 큰 그림과 설명, 실행 명령을 볼 수 있고, 큰 그림을 누르면 그림을 그린 예제 코드가 열린다. 썸네일은 `assets/thumbs/`에 있는 폭 320픽셀짜리 사본이다. 그림을 새로 만들거나 다시 만든 뒤에는 저장소 루트에서 `python3 ci/gallery_thumbs.py`(Pillow 필요)를 실행해 썸네일을 다시 쓴다. 새 그림은 해당 종류 페이지와 README 표에도 추가한다.
 

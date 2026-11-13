@@ -745,7 +745,8 @@ unshifted: the shift is a display setting, like an axis range.
 | `step_x` | f64 | The step along x for a skewed waterfall, in the same units on `bottom_x`. Omitted from JSON at `0.0` |
 
 The members are series of the chart's base layer or of its overlays; a
-member an overlay scales moves on that overlay's Y axis. A subplot has its
+member an overlay scales moves on the axes that overlay scales by
+(`Config::scaling_axes`). A subplot has its
 own `line_offsets` in its `config`. `Config::line_offset_of(id)` returns a
 member's shift as `[dx, dy]`. The registry rejects an unknown or duplicate
 id, a member of another kind, a non-finite step, a polar chart, a member
@@ -1463,7 +1464,7 @@ pub struct Config {
     pub colorbar: Option<ColorBarOptions>,   // 색상 막대이자 차트의 Z 스케일
     pub draw_style: DrawStyle,
     pub coordinates: Coordinates,            // Cartesian(기본값), Polar, Ternary, View3d, Parallel 중 하나. JSON에는 polar / ternary / view_3d / parallel 키 하나로 쓴다
-    pub overlays: Vec<OverlayLayer>,         // 오른쪽 보조 Y축. 각 축은 나열한 시리즈의 스케일을 맡는다
+    pub overlays: Vec<OverlayLayer>,         // 같은 플롯 위의 레이어. 각 레이어는 나열한 시리즈를 자기 축이나 부모의 축으로 스케일한다
     pub subplots: Vec<Subplot>,              // 같은 문서에 그리는 추가 차트. 차트마다 축을 따로 가진다
     pub active_layer: LayerRef,              // 포인터 상호작용 대상 레이어. 기본값 `Base`는 차트 자체의 시리즈와 장식
     pub annotations: AnnotationLayer,        // 전용 주석 레이어: 표시 여부와 항목
@@ -1857,8 +1858,8 @@ pub struct Config {
 | `step_y` | f64 | 이웃한 구성원 사이의 y 간격(데이터 단위). 로그 Y 축에서는 데케이드 단위다(`10^step_y`배) |
 | `step_x` | f64 | 비스듬한 폭포형 그래프를 위한 x 간격. `bottom_x`에서 같은 단위를 쓰며 `0.0`이면 JSON에서 생략한다 |
 
-구성원은 차트의 기본 레이어나 오버레이의 시리즈다. 오버레이가 스케일하는 구성원은 그 오버레이의
-Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_offsets`를 둔다.
+구성원은 차트의 기본 레이어나 오버레이의 시리즈다. 오버레이가 스케일하는 구성원은 그 오버레이가
+쓰는 축(`Config::scaling_axes`) 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_offsets`를 둔다.
 `Config::line_offset_of(id)`는 구성원이 밀린 양을 `[dx, dy]`로 돌려준다. 레지스트리는 모르는 id나
 중복 id, 다른 종류의 구성원, 유한하지 않은 간격, 극좌표 차트, 다른 차트가
 그리는 구성원, 구성원과 다른 시리즈를 잇는 `ToSeries` 채우기, 스트리밍(비상주) 구성원을

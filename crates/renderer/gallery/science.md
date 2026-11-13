@@ -2,8 +2,9 @@
 
 [← Gallery](../../../README.md#gallery) · [Lines, areas and stems](lines.md) · [Bars and distributions](distributions.md) · [Ranges and timelines](ranges.md) · [Fields and maps](fields.md) · [3D](3d.md) · [Polar and radial](polar.md) · **Science diagrams** · [Layouts and annotations](layouts.md) · [Styles and visual concepts](styles.md)
 
-Click an image to open the example code that draws it. All data is synthetic;
-the images are native renderer output.
+Click an image to open the example code that draws it. All data is synthetic
+except the energy-level diagram, which draws the bundled NIST ASD exports for
+He I; the images are native renderer output.
 
 ## Energy levels
 
@@ -11,7 +12,7 @@ the images are native renderer output.
 
 A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis.
 
-**Code:** [nist_grotrian_gallery.rs](../examples/nist_grotrian_gallery.rs), case `he-i-1x`
+**Code:** [nist_grotrian_gallery.rs](../examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](../examples/support/grotrian_sets.rs)
 
 **Run:** `cargo run --locked -p figgy-renderer --example nist_grotrian_gallery -- target/nist-grotrian-gallery`
 

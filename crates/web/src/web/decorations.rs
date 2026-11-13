@@ -384,7 +384,8 @@ impl FiggyChart {
 
     // ---- presets ----
 
-    /// Apply an axis frame preset to all four axes (decoration-only).
+    /// Apply an axis frame preset to all four axes and every overlay's own
+    /// axes (decoration-only).
     pub fn apply_axis_preset(&mut self, preset: AxisPreset) -> Result<(), JsValue> {
         let p: renderer::AxisPreset = preset.into();
         let mut config = self.chart_config()?.clone();

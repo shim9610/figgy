@@ -1,8 +1,8 @@
 //! Parallel coordinates: one polyline per row across axes with their own
 //! ranges, every row coloured by a value column through the colourbar.
 //! - `render` writes `gallery-parallel.png`: 120 runs of a hyperparameter
-//!   sweep across six axes (learning rate, batch size and weight decay on
-//!   logarithmic axes), each run coloured by its validation accuracy. The
+//!   sweep across six axes (learning rate and batch size on logarithmic
+//!   axes, and dropout among the linear ones), each run coloured by its validation accuracy. The
 //!   host orders the rows by accuracy so the best runs draw on top.
 //!
 //! cargo run --locked -p figgy-renderer --example parallel -- target/parallel

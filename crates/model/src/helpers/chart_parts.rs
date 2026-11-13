@@ -1,6 +1,6 @@
 //! Constructors for the parts a host adds to a chart (#265): a colour with
-//! another alpha, annotation items, a right-hand overlay axis, an axis
-//! unit (#273) and a subplot.
+//! another alpha, annotation items, overlay axes (a right-hand Y axis and a
+//! top X axis), an axis unit (#273) and a subplot.
 //!
 //! Each builds the part's documented default and then assigns the fields it
 //! names, so a field added to a type later takes its default here too.

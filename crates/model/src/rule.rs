@@ -830,9 +830,9 @@ pub enum RuleKind {
     FeynmanLabelDrag,
     /// drag\_feynman names a Feynman series of the chart
     DragFeynmanNotFeynman,
-    /// a view state must carry one Y range per overlay layer
+    /// a view state must carry one Y and one X range per overlay layer
     ViewStateOverlayRanges,
-    /// a view state must carry one view per subplot, each with one Y range per overlay layer
+    /// a view state must carry one view per subplot, each with one Y and one X range per overlay layer
     ViewStateSubplots,
     /// rebased selection needs a global-index style map binding
     RebasedSelectionStyleMap,
@@ -2430,9 +2430,11 @@ impl std::fmt::Display for RuleKind {
                 "a Feynman label moves through FeynmanSeries::drag_label, the value-label drag"
             }
             Self::DragFeynmanNotFeynman => "drag_feynman names a Feynman series of the chart",
-            Self::ViewStateOverlayRanges => "a view state must carry one Y range per overlay layer",
+            Self::ViewStateOverlayRanges => {
+                "a view state must carry one Y and one X range per overlay layer"
+            }
             Self::ViewStateSubplots => {
-                "a view state must carry one view per subplot, each with one Y range per overlay layer"
+                "a view state must carry one view per subplot, each with one Y and one X range per overlay layer"
             }
             Self::RebasedSelectionStyleMap => {
                 "rebased selection needs a global-index style map binding"
@@ -4411,11 +4413,11 @@ mod tests {
             ),
             (
                 RuleKind::ViewStateOverlayRanges,
-                "a view state must carry one Y range per overlay layer",
+                "a view state must carry one Y and one X range per overlay layer",
             ),
             (
                 RuleKind::ViewStateSubplots,
-                "a view state must carry one view per subplot, each with one Y range per overlay layer",
+                "a view state must carry one view per subplot, each with one Y and one X range per overlay layer",
             ),
             (
                 RuleKind::RebasedSelectionStyleMap,

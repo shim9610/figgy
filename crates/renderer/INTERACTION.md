@@ -625,7 +625,7 @@ its series: its Y axis (or, with `link_y` on, the parent's Y axes with every
 series drawn against them) and its X axis while `link_x` is off. Series of a subplot count only where an axis is linked (see
 "Subplots"). To fit every layer, a host sets each layer active in turn
 (`set_active_layer`, then `auto_fit_all`) or calls `auto_fit_overlay_y` /
-`auto_fit_subplot` with explicit columns.
+`auto_fit_overlay_x` / `auto_fit_subplot` with explicit columns.
 
 **Export.** `export_rgba` / `export_png`
 (and their `_with_clear` and blocking native variants) render the whole group
@@ -730,14 +730,17 @@ whole link group: `Chart::auto_fit_subplot_{x,y}_{extent,union}` natively,
 `auto_fit_subplot(index, axis, columns, padding)` in the WASM wrapper, fitted
 to the columns the host names. The WASM `auto_fit_all(padding)` chooses the
 series itself. With `Subplot(i)` active it fits subplot `i`'s X and Y axes;
-with `SubplotOverlay(i, n)` active, only that overlay's Y axis. A linked axis
+with `SubplotOverlay(i, n)` active, that overlay's Y axis (with `link_y` on,
+the subplot's `left_y`) and its own X axis while its `link_x` is off. A linked axis
 is one axis shared by its link group, so it fits the series of every chart in
 the group, the parent included when the group's root is the parent, and the
 range moves every member, whichever member is active. X and Y links are
 followed separately: with subplot 1's `link_y` on subplot 0 and no `link_x`,
 fitting either subplot gives both the Y range of their combined series, and
-each keeps an X range fitted to its own series. A chart's overlays share its X
-axis and count towards it, but not towards its `left_y`. An axis that is not
+each keeps an X range fitted to its own series. By default a chart's overlays
+share its X axis and count towards it, but not towards its `left_y`; an overlay
+with `link_x` off leaves the X axis, and one with `link_y` on counts towards
+`left_y`. An axis that is not
 linked fits its own chart's series only. A base fit also moves the subplots
 linked to the parent's axes. Natively, `Chart::auto_fit_layer_union(pool,
 layer, series, padding)` applies the same rule (`Config::series_fit_roles`)
