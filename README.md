@@ -11,144 +11,143 @@ export PNGs, or embed interactive charts in your own application.
 
 ## Gallery
 
-**Each image links to the example file that draws it.** The
-[example index](crates/renderer/examples/README.md#gallery-images) names the
-function and the command for every image. All data is synthetic; the images are
-actual native renderer output. GIFs show exported animation frames.
+Charts are grouped by kind. **Click a thumbnail** to open its category page
+with the large image, a short description and the command that draws it;
+**click the large image** to open the example code. All data is synthetic; the
+images are actual native renderer output. GIFs show exported animation frames.
 
-**Dashboards · Sketch · Pop art**
+### [Lines, areas and stems](crates/renderer/gallery/lines.md)
 
-<p>
-  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-observability.png" alt="Dark service dashboard with mint and lavender traffic curves" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-revenue.png" alt="Light revenue dashboard with horizontal rounded stacks" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-editorial.png" alt="Warm paper-colored sketch chart with hand-drawn lines and lettering" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-pop-art.png" alt="Bright toon-shaded pie with dark outlines and shallow extrusion" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#sine-curve"><img src="crates/renderer/assets/thumbs/gallery-line.png" alt="Sine curve" width="160"></a><br><sub>Sine curve</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#error-bars"><img src="crates/renderer/assets/thumbs/gallery-errorbars.png" alt="Response curves with error bars" width="160"></a><br><sub>Error bars</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#forecast-bands"><img src="crates/renderer/assets/thumbs/gallery-forecast.png" alt="Forecast bands" width="160"></a><br><sub>Forecast bands</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#step-schedule"><img src="crates/renderer/assets/thumbs/gallery-thermostat.png" alt="Step schedule" width="160"></a><br><sub>Step schedule</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#stem-plot"><img src="crates/renderer/assets/thumbs/gallery-stem.png" alt="Stem plot of a filter impulse response" width="160"></a><br><sub>Stem plot</sub></td>
+</tr>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#lollipop-chart"><img src="crates/renderer/assets/thumbs/gallery-lollipop.png" alt="Ranked lollipop chart" width="160"></a><br><sub>Lollipop chart</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#travelling-waves"><img src="crates/renderer/assets/thumbs/gallery-wave.gif" alt="Travelling waves" width="160"></a><br><sub>Travelling waves</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/lines.md#animated-orbit"><img src="crates/renderer/assets/thumbs/gallery-orbit.gif" alt="Lissajous orbit" width="160"></a><br><sub>Animated orbit</sub></td>
+</tr>
+</table>
 
-**Pearl · Terrain · Contours · Box plot**
+### [Bars and distributions](crates/renderer/gallery/distributions.md)
 
-<p>
-  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-portfolio.png" alt="Oblique pearl-material donut on a dark background" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/gallery_concepts.rs"><img src="crates/renderer/assets/concept-terrain.png" alt="Synthetic terrain with a forest-to-sand color ramp and fine isolines" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/heatmap_contours.rs"><img src="crates/renderer/assets/gallery-contours.png" alt="Heatmap with labeled contours" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/boxplot_gallery.rs"><img src="crates/renderer/assets/gallery-boxplot.png" alt="Box plot with outliers" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/distributions.md#grouped-bars"><img src="crates/renderer/assets/thumbs/gallery-categorical.png" alt="Grouped bars" width="160"></a><br><sub>Grouped bars</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/distributions.md#histogram"><img src="crates/renderer/assets/thumbs/gallery-histogram.png" alt="Vertical histogram" width="160"></a><br><sub>Histogram</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/distributions.md#horizontal-histogram"><img src="crates/renderer/assets/thumbs/gallery-histogram-horizontal.png" alt="Horizontal histogram" width="160"></a><br><sub>Horizontal histogram</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/distributions.md#box-plot"><img src="crates/renderer/assets/thumbs/gallery-boxplot.png" alt="Box plot" width="160"></a><br><sub>Box plot</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/distributions.md#split-violins"><img src="crates/renderer/assets/thumbs/gallery-violin.png" alt="Split violins of reaction times" width="160"></a><br><sub>Split violins</sub></td>
+</tr>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/distributions.md#raincloud-plot"><img src="crates/renderer/assets/thumbs/gallery-raincloud.png" alt="Raincloud plot of commute times" width="160"></a><br><sub>Raincloud plot</sub></td>
+</tr>
+</table>
 
-**Lines · Error bars · Histograms**
+### [Ranges and timelines](crates/renderer/gallery/ranges.md)
 
-<p>
-  <a href="crates/renderer/examples/line.rs"><img src="crates/renderer/assets/gallery-line.png" alt="A sine wave" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/error_bars.rs"><img src="crates/renderer/assets/gallery-errorbars.png" alt="Response curves with error bars" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/histogram.rs"><img src="crates/renderer/assets/gallery-histogram.png" alt="Vertical histogram" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/histogram.rs"><img src="crates/renderer/assets/gallery-histogram-horizontal.png" alt="Horizontal histogram" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/ranges.md#waterfall"><img src="crates/renderer/assets/thumbs/gallery-waterfall.png" alt="Profit bridge waterfall" width="160"></a><br><sub>Waterfall</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/ranges.md#candlesticks"><img src="crates/renderer/assets/thumbs/gallery-candlestick.png" alt="Candlestick chart with a moving average" width="160"></a><br><sub>Candlesticks</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/ranges.md#gantt-chart"><img src="crates/renderer/assets/thumbs/gallery-gantt.png" alt="Gantt chart of a release plan" width="160"></a><br><sub>Gantt chart</sub></td>
+</tr>
+</table>
 
-**Bars · Donut · Animated curves**
+### [Fields and maps](crates/renderer/gallery/fields.md)
 
-<p>
-  <a href="crates/renderer/examples/categorical_gallery.rs"><img src="crates/renderer/assets/gallery-categorical.png" alt="Grouped categorical bars" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/radial_gallery.rs"><img src="crates/renderer/assets/gallery-donut.png" alt="Ceramic 3D donut" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-wave.gif" alt="Travelling waves" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/animated_lines.rs"><img src="crates/renderer/assets/gallery-orbit.gif" alt="Animated phase portrait" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#heatmap-with-contours"><img src="crates/renderer/assets/thumbs/gallery-contours.png" alt="Heatmap with labelled contours" width="160"></a><br><sub>Heatmap with contours</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#hexbin"><img src="crates/renderer/assets/thumbs/gallery-hexbin.png" alt="Hexbin of taxi pickups" width="160"></a><br><sub>Hexbin</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#colour-image"><img src="crates/renderer/assets/thumbs/gallery-imshow.png" alt="Planetary nebula as an RGB image" width="160"></a><br><sub>Colour image</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#triangle-mesh"><img src="crates/renderer/assets/thumbs/gallery-trimesh.png" alt="Stress around a hole on a triangle mesh" width="160"></a><br><sub>Triangle mesh</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#wind-field"><img src="crates/renderer/assets/thumbs/gallery-wind.png" alt="Wind field over a heatmap" width="160"></a><br><sub>Wind field</sub></td>
+</tr>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#surface-currents"><img src="crates/renderer/assets/thumbs/gallery-currents.png" alt="Surface currents" width="160"></a><br><sub>Surface currents</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#colour-mapped-points"><img src="crates/renderer/assets/thumbs/gallery-colormap.png" alt="Colour-mapped particles" width="160"></a><br><sub>Colour-mapped points</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/fields.md#bubble-chart"><img src="crates/renderer/assets/thumbs/gallery-bubbles.png" alt="Bubble chart" width="160"></a><br><sub>Bubble chart</sub></td>
+</tr>
+</table>
 
-**Radar · Radar with value labels · Polar · Compass rose**
+### [3D](crates/renderer/gallery/3d.md)
 
-<p>
-  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar.png" alt="Radar chart comparing two releases over six categories on a spider-web grid" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/radar_gallery.rs"><img src="crates/renderer/assets/gallery-radar-circle.png" alt="Radar chart on a circular grid with a value label at every vertex" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar.png" alt="Antenna pattern filled to the centre in polar coordinates" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-compass.png" alt="Compass rose: a polar scatter-line, clockwise from the top, with arc segments" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/3d.md#3d-surface"><img src="crates/renderer/assets/thumbs/gallery-surface.png" alt="3D terrain surface with a trail" width="160"></a><br><sub>3D surface</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/3d.md#3d-triangle-surface"><img src="crates/renderer/assets/thumbs/gallery-trisurf.png" alt="Drum vibration mode as a 3D triangle surface" width="160"></a><br><sub>3D triangle surface</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/3d.md#3d-vector-field"><img src="crates/renderer/assets/thumbs/gallery-quiver3d.png" alt="3D vector field of a vortex" width="160"></a><br><sub>3D vector field</sub></td>
+</tr>
+</table>
 
-**Wind field · Surface currents · Colour-mapped points · Bubble chart**
+### [Polar and radial](crates/renderer/gallery/polar.md)
 
-<p>
-  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-wind.png" alt="A sea breeze: wind speed as a smooth field with direction arrows on a grid" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/vector_field.rs"><img src="crates/renderer/assets/gallery-currents.png" alt="Surface currents at scattered drifters, arrow length and colour by speed" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-colormap.png" alt="Particles along two spiral arms coloured by age through the colourbar" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/value_maps.rs"><img src="crates/renderer/assets/gallery-bubbles.png" alt="Bubble chart of income and life expectancy for three regions, area by population" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#polar-plot"><img src="crates/renderer/assets/thumbs/gallery-polar.png" alt="Antenna pattern in polar coordinates" width="160"></a><br><sub>Polar plot</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#compass-rose"><img src="crates/renderer/assets/thumbs/gallery-polar-compass.png" alt="Compass rose" width="160"></a><br><sub>Compass rose</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#polar-heatmap"><img src="crates/renderer/assets/thumbs/gallery-polar-heatmap.png" alt="Directional wave spectrum on polar axes" width="160"></a><br><sub>Polar heatmap</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#wind-rose"><img src="crates/renderer/assets/thumbs/gallery-rose.png" alt="Wind rose" width="160"></a><br><sub>Wind rose</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#radar-chart"><img src="crates/renderer/assets/thumbs/gallery-radar.png" alt="Radar chart" width="160"></a><br><sub>Radar chart</sub></td>
+</tr>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#radar-with-value-labels"><img src="crates/renderer/assets/thumbs/gallery-radar-circle.png" alt="Radar chart with value labels" width="160"></a><br><sub>Radar with value labels</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#donut"><img src="crates/renderer/assets/thumbs/gallery-donut.png" alt="Ceramic donut" width="160"></a><br><sub>Donut</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/polar.md#sunburst"><img src="crates/renderer/assets/thumbs/gallery-sunburst.png" alt="Sunburst of electricity generation" width="160"></a><br><sub>Sunburst</sub></td>
+</tr>
+</table>
 
-**Forecast bands · Step schedule · Twin axes · Small multiples**
+### [Science diagrams](crates/renderer/gallery/science.md)
 
-<p>
-  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-forecast.png" alt="A demand forecast: the history solid, the forecast dashed inside 80 and 95 percent bands" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/area_step.rs"><img src="crates/renderer/assets/gallery-thermostat.png" alt="A thermostat schedule as a filled step line under the measured room temperature" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-twin-axes.png" alt="A battery discharge: voltage on the left axis, current on a right overlay axis" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/subplots.rs"><img src="crates/renderer/assets/gallery-subplots.png" alt="Four sensors as a 2 by 2 grid of subplots sharing the hour axis" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/science.md#energy-levels"><img src="crates/renderer/assets/thumbs/gallery-grotrian.png" alt="Grotrian diagram of He I" width="160"></a><br><sub>Energy levels</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/science.md#feynman-diagrams"><img src="crates/renderer/assets/thumbs/gallery-feynman.png" alt="Six Feynman diagrams" width="160"></a><br><sub>Feynman diagrams</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/science.md#ternary-plot"><img src="crates/renderer/assets/thumbs/gallery-ternary.png" alt="Soil texture triangle with three cores" width="160"></a><br><sub>Ternary plot</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/science.md#probability-paper"><img src="crates/renderer/assets/thumbs/gallery-probability.png" alt="Probability paper" width="160"></a><br><sub>Probability paper</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/science.md#parallel-coordinates"><img src="crates/renderer/assets/thumbs/gallery-parallel.png" alt="Parallel coordinates of a hyperparameter sweep" width="160"></a><br><sub>Parallel coordinates</sub></td>
+</tr>
+</table>
 
-**Draw styles: Precise · Sketch (hand-drawn) · Milkyway · Constellation**
+### [Layouts and annotations](crates/renderer/gallery/layouts.md)
 
-<p>
-  <a href="crates/renderer/examples/precise_sketch_preview.rs"><img src="crates/renderer/assets/style-growth-response-precise.png" alt="Precise growth curves with clean lines and markers" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/precise_sketch_preview.rs"><img src="crates/renderer/assets/style-growth-response-sketch.png" alt="Sketch growth curves with hand-drawn lines, axes and lettering" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/milkyway_line_preview.rs"><img src="crates/renderer/assets/style-growth-response-milkyway.png" alt="Milkyway line-only growth curves with stars and nebula" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/constellation_preview.rs"><img src="crates/renderer/assets/style-growth-response-constellation.png" alt="Constellation growth curves with stars at the source samples" width="23%" align="top"></a>
-</p>
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/layouts.md#twin-axes"><img src="crates/renderer/assets/thumbs/gallery-twin-axes.png" alt="Twin Y axes" width="160"></a><br><sub>Twin axes</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/layouts.md#small-multiples"><img src="crates/renderer/assets/thumbs/gallery-subplots.png" alt="Small multiples" width="160"></a><br><sub>Small multiples</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/layouts.md#broken-axis"><img src="crates/renderer/assets/thumbs/gallery-broken-axes.png" alt="Gamma spectrum on a broken axis" width="160"></a><br><sub>Broken axis</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/layouts.md#shape-annotations"><img src="crates/renderer/assets/thumbs/gallery-shapes.png" alt="Flow cytometry gates as shape annotations" width="160"></a><br><sub>Shape annotations</sub></td>
+</tr>
+</table>
 
-Milkyway uses line-only series; Constellation places stars at the source samples.
+### [Styles and visual concepts](crates/renderer/gallery/styles.md)
 
-**Charts new in 0.19**
-
-**Ternary · 3D surface · 3D vectors · Triangle mesh**
-
-<p>
-  <a href="crates/renderer/examples/ternary.rs"><img src="crates/renderer/assets/gallery-ternary.png" alt="Soil texture triangle with three cores" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/surface_3d.rs"><img src="crates/renderer/assets/gallery-surface.png" alt="3D terrain surface with a trail" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/surface_3d.rs"><img src="crates/renderer/assets/gallery-quiver3d.png" alt="3D vector field of a vortex" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/trimesh.rs"><img src="crates/renderer/assets/gallery-trimesh.png" alt="Stress around a hole on a triangle mesh" width="23%" align="top"></a>
-</p>
-
-**Triangle surface · Hexbin · Colour image · Polar heatmap**
-
-<p>
-  <a href="crates/renderer/examples/trimesh.rs"><img src="crates/renderer/assets/gallery-trisurf.png" alt="Drum vibration mode as a 3D triangle surface" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/heatmap_contours.rs"><img src="crates/renderer/assets/gallery-hexbin.png" alt="Hexbin of taxi pickups" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/heatmap_contours.rs"><img src="crates/renderer/assets/gallery-imshow.png" alt="Planetary nebula as an RGB image" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-heatmap.png" alt="Directional wave spectrum on polar axes" width="23%" align="top"></a>
-</p>
-
-**Wind rose · Sunburst · Parallel coordinates · Split violins**
-
-<p>
-  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-rose.png" alt="Wind rose" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/radial_gallery.rs"><img src="crates/renderer/assets/gallery-sunburst.png" alt="Sunburst of electricity generation" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/parallel.rs"><img src="crates/renderer/assets/gallery-parallel.png" alt="Parallel coordinates of a hyperparameter sweep" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/boxplot_gallery.rs"><img src="crates/renderer/assets/gallery-violin.png" alt="Split violins of reaction times" width="23%" align="top"></a>
-</p>
-
-**Raincloud · Waterfall · Candlesticks · Gantt**
-
-<p>
-  <a href="crates/renderer/examples/boxplot_gallery.rs"><img src="crates/renderer/assets/gallery-raincloud.png" alt="Raincloud plot of commute times" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-waterfall.png" alt="Profit bridge waterfall" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-candlestick.png" alt="Candlestick chart with a moving average" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-gantt.png" alt="Gantt chart of a release plan" width="23%" align="top"></a>
-</p>
-
-**Shapes · Stems · Lollipop · Broken axis**
-
-<p>
-  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-shapes.png" alt="Flow cytometry gates as shape annotations" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/stem.rs"><img src="crates/renderer/assets/gallery-stem.png" alt="Stem plot of a filter impulse response" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/stem.rs"><img src="crates/renderer/assets/gallery-lollipop.png" alt="Ranked lollipop chart" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/broken_axes.rs"><img src="crates/renderer/assets/gallery-broken-axes.png" alt="Gamma spectrum on a broken axis" width="23%" align="top"></a>
-</p>
-
-**Energy levels · Feynman diagrams · Probability paper**
-
-<p>
-  <a href="crates/renderer/examples/nist_grotrian_gallery.rs"><img src="crates/renderer/assets/gallery-grotrian.png" alt="Grotrian diagram of He I" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/feynman.rs"><img src="crates/renderer/assets/gallery-feynman.png" alt="Six Feynman diagrams" width="23%" align="top"></a>
-  <a href="crates/renderer/examples/probability_paper.rs"><img src="crates/renderer/assets/gallery-probability.png" alt="Probability paper" width="23%" align="top"></a>
-</p>
-
+<table>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#precise-style"><img src="crates/renderer/assets/thumbs/style-growth-response-precise.png" alt="Precise style" width="160"></a><br><sub>Precise style</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#sketch-style"><img src="crates/renderer/assets/thumbs/style-growth-response-sketch.png" alt="Sketch style" width="160"></a><br><sub>Sketch style</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#milkyway-style"><img src="crates/renderer/assets/thumbs/style-growth-response-milkyway.png" alt="Milkyway style" width="160"></a><br><sub>Milkyway style</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#constellation-style"><img src="crates/renderer/assets/thumbs/style-growth-response-constellation.png" alt="Constellation style" width="160"></a><br><sub>Constellation style</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#dark-dashboard"><img src="crates/renderer/assets/thumbs/concept-observability.png" alt="Dark dashboard" width="160"></a><br><sub>Dark dashboard</sub></td>
+</tr>
+<tr>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#revenue-stacks"><img src="crates/renderer/assets/thumbs/concept-revenue.png" alt="Revenue stacks" width="160"></a><br><sub>Revenue stacks</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#editorial-sketch"><img src="crates/renderer/assets/thumbs/concept-editorial.png" alt="Editorial sketch" width="160"></a><br><sub>Editorial sketch</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#toon-pie"><img src="crates/renderer/assets/thumbs/concept-pop-art.png" alt="Toon pie" width="160"></a><br><sub>Toon pie</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#pearl-donut"><img src="crates/renderer/assets/thumbs/concept-portfolio.png" alt="Pearl donut" width="160"></a><br><sub>Pearl donut</sub></td>
+<td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#terrain"><img src="crates/renderer/assets/thumbs/concept-terrain.png" alt="Terrain" width="160"></a><br><sub>Terrain</sub></td>
+</tr>
+</table>
 [Six editable visual recipes](crates/renderer/GALLERY.md#visual-concepts) show how
 palettes, axes, materials and labels restyle charts built with the same APIs.
-
-[More styles and reproduction commands](crates/renderer/GALLERY.md).
+The [example index](crates/renderer/examples/README.md#gallery-images) lists
+every image with its function, and [the gallery notes](crates/renderer/GALLERY.md)
+give the reproduction commands.
 
 ## Chart types
 

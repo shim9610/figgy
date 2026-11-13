@@ -1,6 +1,16 @@
 # Native chart gallery
 
-Each README image links to the example file that draws it. The
+The README groups these images by kind (#250). Each thumbnail opens a category
+page with the large image, a description and the command that draws it, and the
+large image opens the example code: [lines](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/lines.md),
+[bars and distributions](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/distributions.md),
+[ranges](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/ranges.md),
+[fields](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/fields.md),
+[3D](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/3d.md),
+[polar and radial](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/polar.md),
+[science](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/science.md),
+[layouts](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/layouts.md) and
+[styles](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/styles.md). The
 [example index](examples/README.md#gallery-images) names the function for every
 image.
 [`readme_gallery.rs`](examples/readme_gallery.rs) runs twelve examples with
@@ -310,6 +320,22 @@ The example sets `star_opacity = 1` and `line_opacity = 0.45`, exports a
 
 After inspection, copy the output to `assets/style-growth-response-constellation.png`.
 
+## Thumbnails
+
+The README shows a 320-pixel-wide copy of every gallery image from
+`assets/thumbs/`, so the page loads about 2 MB instead of the full images.
+After copying a new or regenerated image into `assets/`, write its thumbnail
+from the workspace root with
+[`ci/gallery_thumbs.py`](https://github.com/shim9610/figgy/blob/master/ci/gallery_thumbs.py) (Pillow required):
+
+```sh
+python3 ci/gallery_thumbs.py
+```
+
+It rewrites the thumbnail of every `gallery-*`, `concept-*` and `style-*`
+image; a GIF keeps its frames. A new image also needs an entry on its category
+page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery) and a cell in the README grid.
+
 ## 한국어 사용법
 
 이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 컬럼을 등록하고 데이터와 축·눈금·텍스트를 그려 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
@@ -327,6 +353,8 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 수식 갤러리(`math_gallery.rs`)는 `RichText::from_tex`로 쓴 모든 수식 구성(분수, 근호, 큰 연산자와 극한, 구분 기호, 악센트, 위아래 괄호와 화살표, 첨자, 그리스 문자)을 1200 × 1600 차트의 주석 텍스트로 그리고, 각 수식 아래에 TeX 원문을 적는다. 출력은 `math-gallery.png`, `math-gallery@2x.png`, 스케치 스타일의 `math-gallery-sketch.png`, `math-gallery-sketch@2x.png`이다. 스케치 스타일에서도 수식은 내장 수식 글꼴로 그린다.
 
 0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. `readme_gallery`가 다른 그림과 함께 이 그림들도 만들고, 예제마다 따로 실행할 수도 있다.
+
+README는 갤러리 그림을 종류별로 묶어 작은 그림(썸네일)으로 보여 준다. 썸네일을 누르면 그 종류의 페이지([`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery))에서 큰 그림과 설명, 실행 명령을 볼 수 있고, 큰 그림을 누르면 그림을 그린 예제 코드가 열린다. 썸네일은 `assets/thumbs/`에 있는 폭 320픽셀짜리 사본이다. 그림을 새로 만들거나 다시 만든 뒤에는 저장소 루트에서 `python3 ci/gallery_thumbs.py`(Pillow 필요)를 실행해 썸네일을 다시 쓴다. 새 그림은 해당 종류 페이지와 README 표에도 추가한다.
 
 가로 히스토그램 PNG는 방향 설정을 보여주는 추가 예제다. 컬럼 연결과 축 설정, 기존 차트의 방향 변경은 [히스토그램 사용법](HISTOGRAM.md)을 참고한다.
 
