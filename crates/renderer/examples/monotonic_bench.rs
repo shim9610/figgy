@@ -88,7 +88,13 @@ fn parse(args: &[String]) -> Options {
             "--window" => o.window = number(i) as usize,
             "--step" => o.step = number(i) as usize,
             "--frames" => o.frames = number(i) as usize,
-            "--type" => o.i16 = value(i) == "i16",
+            "--type" => {
+                o.i16 = match value(i) {
+                    "i16" => true,
+                    "f64" => false,
+                    other => panic!("--type takes f64 or i16, not {other}"),
+                }
+            }
             "--scale" => o.scale = number(i) as f32,
             "--sine" => o.sine = number(i),
             "--noise" => o.noise = number(i) as i64,
@@ -145,6 +151,9 @@ fn ms(since: Instant) -> f64 {
 }
 
 fn summary(v: &[f64]) -> String {
+    if v.is_empty() {
+        return "no frames".to_owned();
+    }
     let mut s = v.to_vec();
     s.sort_by(f64::total_cmp);
     let at = |p: f64| s[((s.len() - 1) as f64 * p).round() as usize];
@@ -380,6 +389,13 @@ fn slide<T: MonotonicElement>(data: &[T], o: &Options) {
 /// is looked for in the column and its two neighbours, away from the plot
 /// frame), and that every spike is a kept point.
 fn check(data: &[i16], o: &Options) {
+    // The 1x export reuses the screen's envelope only at the screen's own
+    // scale; at another scale it would need the source.
+    assert!(
+        o.scale == 1.0,
+        "check exports at 1x and takes --scale 1 only, not {}",
+        o.scale
+    );
     let mut b = Bench::new(o);
     let update = b.set(data);
     let config = b.r.monotonic_config(b.id).expect("config").clone();
