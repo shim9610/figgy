@@ -169,9 +169,18 @@ pub struct LineTheme {
     /// keeps each fill's own colour.
     pub fill_opacity: Option<f32>,
     pub marker_size: f32,
+    /// The opacity of every marker, in its colour; `None` keeps each
+    /// marker's own alpha. A marker coloured through the colourbar takes
+    /// its alpha from the map.
+    pub marker_opacity: Option<f32>,
     pub stem_width: f32,
+    /// The opacity of every stem, in its colour; `None` keeps each stem's
+    /// own alpha.
+    pub stem_opacity: Option<f32>,
     pub error_bar_width: f32,
     pub error_cap_width: f32,
+    /// The length of an error bar's cap, logical pixels.
+    pub error_cap_size: f32,
 }
 
 /// Histogram bars and category bars.
@@ -359,6 +368,15 @@ fn grid_line(show: bool, color: Color, width: f32, style: LineStylePreset) -> Gr
     }
 }
 
+/// A series' markers: their size, and their opacity when the theme sets
+/// one.
+fn style_markers(scatter: &mut crate::data_config::DataScatterStyleConfig, lines: &LineTheme) {
+    scatter.point_size = lines.marker_size;
+    if let Some(opacity) = lines.marker_opacity {
+        scatter.point_color.a = opacity;
+    }
+}
+
 impl Theme {
     /// The names in `kind`'s catalogue, `default` first.
     pub fn names(kind: ChartKind) -> &'static [&'static str] {
@@ -385,6 +403,7 @@ impl Theme {
         let radar = crate::defaults::radar_series_style();
         let bar = crate::defaults::color_bar_options();
         let vector = crate::data_config::VectorStyle::default();
+        let errors = crate::data_config::DataErrorBarStyleConfig::default();
         Self {
             kind,
             chrome: ChromeTheme {
@@ -455,9 +474,12 @@ impl Theme {
                     line_width: 1.0,
                     fill_opacity: None,
                     marker_size: 6.0,
+                    marker_opacity: None,
                     stem_width: 1.0,
+                    stem_opacity: None,
                     error_bar_width: 1.0,
                     error_cap_width: 1.0,
+                    error_cap_size: errors.error_bar_cap_size,
                 },
                 bars: BarTheme {
                     border_color: Color::BLACK,
@@ -631,21 +653,25 @@ impl Theme {
         match &mut series.render_type {
             DataRenderType::Xy(xy) => {
                 if let Some(scatter) = &mut xy.scatter {
-                    scatter.point_size = lines.marker_size;
+                    style_markers(scatter, lines);
                 }
                 if let Some(stem) = &mut xy.stem {
                     stem.width = lines.stem_width;
+                    if let Some(opacity) = lines.stem_opacity {
+                        stem.color.a = opacity;
+                    }
                 }
                 if let Some(errors) = &mut xy.errors {
                     errors.style.error_bar_width = lines.error_bar_width;
                     errors.style.cap_width = lines.error_cap_width;
+                    errors.style.error_bar_cap_size = lines.error_cap_size;
                 }
             }
             DataRenderType::Ternary {
                 scatter, region, ..
             } => {
                 if let Some(scatter) = scatter {
-                    scatter.point_size = lines.marker_size;
+                    style_markers(scatter, lines);
                 }
                 if let Some(region) = region {
                     region.opacity = theme.ternary.region_opacity;

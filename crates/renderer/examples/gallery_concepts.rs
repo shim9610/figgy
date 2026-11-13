@@ -21,24 +21,18 @@ use gallery::Result;
 use renderer::{
     Color, ColorMap, Material, Renderer, SeriesConfig,
     categorical::*,
-    config::{DrawStyle, SketchOptions},
-    data_config::{MatrixRef, ScatterShape, Shading},
+    data_config::{MatrixRef, Shading},
     radial::*,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{SIZE, cartesian, export, rgb, save};
+use styled::{SIZE, background, cartesian, export, rgb, save, scene_chart, theme_named, themed};
 
 // 1. A dashboard card: restrained chrome and two high-contrast service metrics.
 fn observability(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(14, 22, 38);
-    let mut chart = cartesian(
-        "Traffic / last 24 hours",
-        "Hour (UTC)",
-        "Requests / s",
-        bg,
-        rgb(182, 199, 222),
-        rgb(36, 49, 70),
-    );
+    let theme = theme_named(ChartKind::Line, "midnight")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart("Traffic / last 24 hours", "Hour (UTC)", "Requests / s");
     chart.set_x_range(0., 24.);
     chart.set_y_range(0., 1000.);
     chart.config_mut().bottom_x.major_spacing = 4.;
@@ -46,10 +40,7 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
     let x: Vec<f64> = (0..=288).map(|i| i as f64 / 12.).collect();
     r.add_column("hour", &x)?;
     let mut specs = Vec::new();
-    for (id, label, color, scale, shift) in [
-        ("edge", "Edge", rgb(65, 227, 194), 1., 0.),
-        ("origin", "Origin", rgb(139, 154, 255), 0.58, 0.7),
-    ] {
+    for (id, label, scale, shift) in [("edge", "Edge", 1., 0.), ("origin", "Origin", 0.58, 0.7)] {
         let data: Vec<f64> = x
             .iter()
             .map(|t| {
@@ -59,13 +50,9 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
             })
             .collect();
         r.add_column(id, &data)?;
-        specs.push(
-            SeriesConfig::line(id, "hour", id)
-                .label(label)
-                .color(color)
-                .width(3.5),
-        );
+        specs.push(SeriesConfig::line(id, "hour", id).label(label));
     }
+    themed(&mut chart, &theme, &mut specs)?;
     let mut chart = chart.with_legend_from(&specs);
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-observability.png"))
@@ -73,20 +60,13 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
 
 // 2. A warm editorial figure, with deterministic path wobble and sparse markers.
 fn editorial(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(250, 245, 232);
-    let mut chart = cartesian(
+    let theme = theme_named(ChartKind::Line, "editorial")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Small habits, lasting growth",
         "Week",
         "Weekly active members",
-        bg,
-        rgb(78, 67, 56),
-        rgb(225, 215, 195),
     );
-    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions {
-        amplitude_px: 1.5,
-        wavelength_px: 64.,
-        seed: 7,
-    });
     chart.set_x_range(-0.3, 12.3);
     chart.set_y_range(0., 1200.);
     chart.config_mut().bottom_x.major_spacing = 2.;
@@ -94,23 +74,18 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
     let x: Vec<f64> = (0..=12).map(|i| i as f64).collect();
     r.add_column("week", &x)?;
     let mut specs = Vec::new();
-    for (id, label, color, base, gain) in [
-        ("community", "Community", rgb(190, 81, 51), 100., 70.),
-        ("newsletter", "Newsletter", rgb(49, 121, 107), 80., 39.),
+    for (id, label, base, gain) in [
+        ("community", "Community", 100., 70.),
+        ("newsletter", "Newsletter", 80., 39.),
     ] {
         let data: Vec<f64> = x
             .iter()
             .map(|t| base + gain * t + 20. * (t * 1.6).sin())
             .collect();
         r.add_column(id, &data)?;
-        specs.push(
-            SeriesConfig::scatter_line(id, "week", id)
-                .label(label)
-                .color(color)
-                .width(3.)
-                .marker(ScatterShape::CircleFilled, 7.),
-        );
+        specs.push(SeriesConfig::scatter_line(id, "week", id).label(label));
     }
+    themed(&mut chart, &theme, &mut specs)?;
     let mut chart = chart.with_legend_from(&specs);
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-editorial.png"))

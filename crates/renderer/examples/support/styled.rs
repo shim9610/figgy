@@ -105,16 +105,9 @@ pub fn scene_chart(title: &str, x: &str, y: &str) -> Chart {
     chart
 }
 
-/// The built-in theme `name` of `kind` (#291).
-pub fn theme_named(kind: ChartKind, name: &str) -> Result<Theme> {
-    Ok(Theme::named(kind, name).ok_or_else(|| format!("no {kind} theme {name:?}"))?)
-}
-
-/// Apply `theme` to the chart and its series ([`Chart::apply_theme`]).
-pub fn themed(chart: &mut Chart, theme: &Theme, series: &mut [renderer::SeriesConfig]) -> Result {
-    chart.apply_theme(theme, series, SubplotScope::All)?;
-    Ok(())
-}
+// Not every scene uses them.
+#[allow(unused_imports)]
+pub use crate::gallery::{theme_named, themed};
 
 /// The scene colour of `theme`: its chart-area fill.
 pub fn background(theme: &Theme) -> Color {

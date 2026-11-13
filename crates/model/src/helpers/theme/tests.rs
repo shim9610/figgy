@@ -1,19 +1,27 @@
 use super::*;
 use crate::annotation::{Annotation, AnnotationAxis, AnnotationKind};
-use crate::config::{Category, PickedDataRef, TickVisibility};
+use crate::config::{AxisScale, Category, PickedDataRef, ProbabilityScale, TickVisibility};
 use crate::data_config::MatrixRef;
 use crate::layer::{OverlayLayer, Subplot};
 use crate::layout::{ChartArea, Rect};
 use crate::legend::{append_legend_entry_rich, series_symbol_segments};
 
-fn themes() -> [Theme; 5] {
-    [
-        Theme::light(),
-        Theme::dark(),
-        Theme::paper(),
-        Theme::dashboard(),
-        Theme::sketch(),
-    ]
+/// Every built-in theme of `kind`, `default` first.
+fn themes(kind: ChartKind) -> Vec<Theme> {
+    Theme::names(kind)
+        .iter()
+        .map(|name| Theme::named(kind, name).expect("a listed name"))
+        .collect()
+}
+
+fn named(kind: ChartKind, name: &str) -> Theme {
+    Theme::named(kind, name).expect("a built-in theme")
+}
+
+/// The palette colour of series `index`.
+fn palette_color(theme: &Theme, index: usize) -> Color {
+    let palette = &theme.series.palette;
+    palette[index % palette.len()]
 }
 
 fn grid(prefix: &str) -> MatrixRef {
@@ -120,18 +128,23 @@ fn line_color(series: &SeriesConfig) -> Color {
     }
 }
 
-// The light theme is the documented default look: applying it to a default
-// document changes nothing, at any subplot scope.
+// Every kind's `default` is the documented default look: applying it to a
+// default document changes nothing, at any subplot scope.
 #[test]
-fn light_on_a_default_document_changes_nothing() {
-    for scope in [SubplotScope::None, SubplotScope::All] {
-        let mut config = Config::default();
-        Theme::light().apply_chrome(&mut config, scope);
-        assert_eq!(config, Config::default());
+fn default_on_a_default_document_changes_nothing() {
+    for kind in ChartKind::ALL {
+        assert_eq!(named(kind, "default"), Theme::documented(kind));
+        for scope in [SubplotScope::None, SubplotScope::All] {
+            let mut config = Config::default();
+            named(kind, "default")
+                .apply_chrome(&mut config, &[], scope)
+                .unwrap();
+            assert_eq!(config, Config::default(), "{kind}");
+        }
     }
     let mut radial = crate::defaults::radial_chart();
     let before = radial.clone();
-    Theme::light().apply_radial(&mut radial);
+    RadialTheme::named("default").unwrap().apply(&mut radial);
     assert_eq!(radial, before);
 }
 
@@ -140,11 +153,13 @@ fn light_on_a_default_document_changes_nothing() {
 // structure, and the selection's refs.
 #[test]
 fn a_theme_keeps_the_content() {
-    for theme in themes() {
+    for theme in themes(ChartKind::Line) {
         let (before, series_before) = rich_chart();
         let mut config = before.clone();
         let mut series = series_before.clone();
-        theme.apply(&mut config, &mut series, SubplotScope::All);
+        theme
+            .apply(&mut config, &mut series, SubplotScope::All)
+            .unwrap();
 
         assert_eq!(config.chart_area, before.chart_area);
         for (axis, kept) in [
@@ -210,10 +225,12 @@ fn a_theme_keeps_the_content() {
 // the series drawn there; the legend symbols follow the new series colours.
 #[test]
 fn a_theme_writes_the_look_where_it_applies() {
-    let theme = Theme::dark();
+    let theme = named(ChartKind::Line, "midnight");
     let (mut config, mut series) = rich_chart();
     let untouched = series[2].clone();
-    theme.apply(&mut config, &mut series, SubplotScope::Only(&[1]));
+    theme
+        .apply(&mut config, &mut series, SubplotScope::Only(&[1]))
+        .unwrap();
     let chrome = &theme.chrome;
     assert_eq!(config.background, chrome.background);
     assert_eq!(config.draw_style, chrome.draw_style);
@@ -235,10 +252,10 @@ fn a_theme_writes_the_look_where_it_applies() {
     assert_eq!(config.subplots[0].config.background, None);
     assert_eq!(config.subplots[0].config.bottom_x.line_color, Color::BLACK);
     assert_eq!(series[2], untouched, "a series of an unchosen subplot");
-    assert_eq!(line_color(&series[3]), theme.series.cycle.color(3));
-    // Series take the cycle by their place in the list.
-    assert_eq!(line_color(&series[0]), theme.series.cycle.color(0));
-    assert_eq!(line_color(&series[1]), theme.series.cycle.color(1));
+    assert_eq!(line_color(&series[3]), palette_color(&theme, 3));
+    // Series take the palette by their place in the list.
+    assert_eq!(line_color(&series[0]), palette_color(&theme, 0));
+    assert_eq!(line_color(&series[1]), palette_color(&theme, 1));
     // The highlight look changes; the refs stay.
     let picked = config.picked_data.as_ref().unwrap();
     assert_eq!(picked.highlight_color, chrome.highlight.color);
@@ -251,15 +268,70 @@ fn a_theme_writes_the_look_where_it_applies() {
         .filter(|segment| segment.series_id.is_some())
         .filter_map(|segment| segment.color)
         .collect();
-    assert!(symbol_colors.contains(&theme.series.cycle.color(0)));
-    assert!(symbol_colors.contains(&theme.series.cycle.color(1)));
+    assert!(symbol_colors.contains(&palette_color(&theme, 0)));
+    assert!(symbol_colors.contains(&palette_color(&theme, 1)));
+}
+
+// A theme refuses a chart of another kind, and a subplot in scope of another
+// kind, and changes nothing; a chart without series takes any theme.
+#[test]
+fn a_theme_refuses_a_chart_of_another_kind() {
+    let theme = named(ChartKind::Scatter, "default");
+    let (before, series_before) = rich_chart();
+    let (mut config, mut series) = (before.clone(), series_before.clone());
+    assert_eq!(
+        theme.apply(&mut config, &mut series, SubplotScope::None),
+        Err(ThemeError::Kind {
+            theme: ChartKind::Scatter,
+            chart: ChartKind::Line,
+            layer: LayerRef::Base,
+        })
+    );
+    assert_eq!((config, series), (before, series_before));
+
+    // Only the stems' subplot is of another kind.
+    let mut config = Config::default();
+    config.subplots.push(Subplot {
+        series: vec!["b".into()],
+        ..Subplot::default()
+    });
+    let mut series = [
+        SeriesConfig::line("a", "x", "y"),
+        SeriesConfig::stem("b", "x", "y"),
+    ];
+    let line = named(ChartKind::Line, "default");
+    assert!(
+        line.apply(&mut config, &mut series, SubplotScope::None)
+            .is_ok()
+    );
+    assert_eq!(
+        line.apply(&mut config, &mut series, SubplotScope::All),
+        Err(ThemeError::Kind {
+            theme: ChartKind::Line,
+            chart: ChartKind::Stem,
+            layer: LayerRef::Subplot(0),
+        })
+    );
+
+    let mut empty = Config::default();
+    for kind in ChartKind::ALL {
+        assert!(
+            named(kind, "default")
+                .apply_chrome(&mut empty, &[], SubplotScope::All)
+                .is_ok()
+        );
+    }
 }
 
 // The family parts write widths and sizes: lines, markers, stems and error
-// bars on an x-y series.
+// bars on an x-y series, and their opacities when the theme sets them.
 #[test]
 fn the_line_family_takes_widths_and_marker_sizes() {
-    let theme = Theme::dashboard();
+    let mut theme = named(ChartKind::Line, "midnight");
+    let lines = &mut theme.series.lines;
+    lines.marker_opacity = Some(0.5);
+    lines.stem_opacity = Some(0.75);
+    lines.error_cap_size = 9.0;
     let mut series = SeriesConfig::scatter_line("a", "x", "y").y_errors("e");
     if let DataRenderType::Xy(xy) = &mut series.render_type {
         xy.stem = Some(crate::data_config::Stem::default());
@@ -270,11 +342,24 @@ fn the_line_family_takes_widths_and_marker_sizes() {
     };
     let lines = &theme.series.lines;
     assert_eq!(xy.line.as_ref().unwrap().line_width, lines.line_width);
-    assert_eq!(xy.scatter.as_ref().unwrap().point_size, lines.marker_size);
-    assert_eq!(xy.stem.as_ref().unwrap().width, lines.stem_width);
+    let scatter = xy.scatter.as_ref().unwrap();
+    assert_eq!(scatter.point_size, lines.marker_size);
+    assert_eq!(scatter.point_color.a, 0.5);
+    let stem = xy.stem.as_ref().unwrap();
+    assert_eq!(stem.width, lines.stem_width);
+    assert_eq!(
+        stem.color,
+        Color {
+            a: 0.75,
+            ..palette_color(&theme, 0)
+        }
+    );
     let errors = &xy.errors.as_ref().unwrap().style;
     assert_eq!(errors.error_bar_width, lines.error_bar_width);
     assert_eq!(errors.cap_width, lines.error_cap_width);
+    assert_eq!(errors.error_bar_cap_size, 9.0);
+    // The line keeps its colour opaque.
+    assert_eq!(line_color(&series), palette_color(&theme, 0));
 }
 
 // Every built-in theme leaves every family's series valid on its chart, and
@@ -322,12 +407,28 @@ fn every_theme_keeps_every_family_valid() {
         (ternary, vec![SeriesConfig::ternary("a", "p", "q", "r")]),
         (parallel, vec![SeriesConfig::parallel("a", ["p", "q"])]),
     ];
-    for theme in themes() {
-        for (config, series) in &cases {
-            for item in series {
+    let mut probability = Config::default();
+    probability.left_y.scale = AxisScale::Probability(ProbabilityScale::Normal);
+    let cases: Vec<(Config, Vec<SeriesConfig>)> = cases
+        .into_iter()
+        .chain([(
+            probability,
+            vec![
+                SeriesConfig::scatter("a", "x", "p"),
+                SeriesConfig::line("b", "x", "p"),
+            ],
+        )])
+        .collect();
+    for (config, series) in &cases {
+        for item in series {
+            let list = vec![item.clone()];
+            let kind = ChartKind::of(config, &list, LayerRef::Base).expect("a chart with a series");
+            for theme in themes(kind) {
                 let mut config = config.clone();
-                let mut list = vec![item.clone()];
-                theme.apply(&mut config, &mut list, SubplotScope::All);
+                let mut list = list.clone();
+                theme
+                    .apply(&mut config, &mut list, SubplotScope::All)
+                    .unwrap();
                 valid_on(&config, &list);
                 assert!(config.validate().is_ok(), "{:?}", item.render_type);
             }
@@ -339,23 +440,30 @@ fn every_theme_keeps_every_family_valid() {
 // the hidden one, whatever the chrome's frame.
 #[test]
 fn a_family_with_its_own_frame_keeps_it() {
-    let theme = Theme::dashboard();
+    let mut theme = named(ChartKind::Feynman, "default");
+    theme.chrome.axis_preset = AxisPreset::Minimal;
     let mut config = Config::default();
     let mut series = [SeriesConfig::feynman_diagram(
         "f",
         crate::defaults::feynman_series(),
     )];
-    theme.apply(&mut config, &mut series, SubplotScope::All);
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
     assert!(!config.bottom_x.line_visible);
     assert!(!config.bottom_x.label_style.label_visible);
     assert!(!config.grid.show_major_x || theme.chrome.grid.major_x.show);
 
+    let mut theme = named(ChartKind::EnergyLevels, "default");
+    theme.chrome.axis_preset = AxisPreset::Minimal;
     let mut config = Config::default();
     let mut series = [SeriesConfig::energy_diagram(
         "e",
         crate::defaults::energy_level_series(),
     )];
-    theme.apply(&mut config, &mut series, SubplotScope::All);
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
     assert!(config.bottom_x.line_visible && config.top_x.line_visible);
     assert_eq!(config.bottom_x.tick, TickVisibility::Outside);
     let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
@@ -372,63 +480,116 @@ fn a_family_with_its_own_frame_keeps_it() {
 #[test]
 fn the_highlight_look_reaches_a_chart_without_a_selection() {
     let mut config = Config::default();
-    Theme::light().apply_chrome(&mut config, SubplotScope::All);
+    named(ChartKind::Line, "default")
+        .apply_chrome(&mut config, &[], SubplotScope::All)
+        .unwrap();
     assert!(config.picked_data.is_none());
-    let theme = Theme::paper();
-    theme.apply_chrome(&mut config, SubplotScope::All);
+    let theme = named(ChartKind::Line, "milkyway");
+    theme
+        .apply_chrome(&mut config, &[], SubplotScope::All)
+        .unwrap();
     let picked = config.picked_data.as_ref().unwrap();
     assert!(picked.refs.is_empty());
     assert_eq!(picked.highlight_color, theme.chrome.highlight.color);
 }
 
-// Applying a theme twice is applying it once.
+// Applying a theme twice is applying it once, opacities included.
 #[test]
 fn applying_a_theme_again_changes_nothing() {
-    for theme in themes() {
-        let (mut config, mut series) = rich_chart();
-        theme.apply(&mut config, &mut series, SubplotScope::All);
-        let (once, once_series) = (config.clone(), series.clone());
-        theme.apply(&mut config, &mut series, SubplotScope::All);
-        assert_eq!(config, once);
-        assert_eq!(series, once_series);
+    let mut probability = Config::default();
+    probability.left_y.scale = AxisScale::Probability(ProbabilityScale::Normal);
+    let cases = [
+        rich_chart(),
+        (
+            Config::default(),
+            vec![
+                SeriesConfig::scatter("a", "x", "y"),
+                SeriesConfig::scatter("b", "x", "y"),
+            ],
+        ),
+        (
+            Config::default(),
+            vec![SeriesConfig::scatter_line("a", "x", "y").y_errors("e")],
+        ),
+        (
+            Config::default(),
+            vec![
+                SeriesConfig::line("a", "x", "y"),
+                SeriesConfig::stem("b", "x", "y"),
+            ],
+        ),
+        (
+            probability,
+            vec![
+                SeriesConfig::scatter("a", "x", "p"),
+                SeriesConfig::line("b", "x", "p"),
+            ],
+        ),
+    ];
+    for (config, series) in cases {
+        let kind = ChartKind::of(&config, &series, LayerRef::Base).unwrap();
+        for theme in themes(kind) {
+            let (mut config, mut series) = (config.clone(), series.clone());
+            theme
+                .apply(&mut config, &mut series, SubplotScope::All)
+                .unwrap();
+            let (once, once_series) = (config.clone(), series.clone());
+            theme
+                .apply(&mut config, &mut series, SubplotScope::All)
+                .unwrap();
+            assert_eq!(config, once, "{kind}");
+            assert_eq!(series, once_series, "{kind}");
+        }
     }
 }
 
-// The radial chart takes its part: background, label look, material and
-// the cycle on its top-level slices; values and labels stay.
+// The radial chart takes its theme: background, label look, material and
+// the palette on its top-level slices; values and labels stay.
 #[test]
 fn the_radial_chart_takes_its_part() {
-    let theme = Theme::dark();
+    let mut theme = RadialTheme::named("default").unwrap();
+    theme.palette = vec![
+        Color::new(1.0, 0.0, 0.0, 1.0),
+        Color::new(0.0, 0.0, 1.0, 1.0),
+    ];
+    theme.background = Color::new(0.1, 0.1, 0.1, 1.0);
     let mut chart = crate::defaults::radial_chart();
     chart.slices = vec![
         crate::radial::RadialSlice::new("A", 1.0, Color::BLACK),
         crate::radial::RadialSlice::new("B", 2.0, Color::BLACK),
     ];
-    theme.apply_radial(&mut chart);
-    assert_eq!(chart.background, theme.series.radial.background);
-    assert_eq!(chart.label_color, theme.series.radial.label_color);
-    assert_eq!(chart.slices[1].color, theme.series.cycle.color(1));
+    theme.apply(&mut chart);
+    assert_eq!(chart.background, theme.background);
+    assert_eq!(chart.label_color, theme.label_color);
+    assert_eq!(chart.slices[1].color, theme.palette[1]);
     assert_eq!(
         (chart.slices[1].label.as_str(), chart.slices[1].value),
         ("B", 2.0)
     );
 }
 
+// Every kind lists `default` first, every listed name is a theme of that
+// kind, and other names are none.
 #[test]
 fn the_built_in_themes_have_names() {
-    for name in ["light", "dark", "paper", "dashboard", "sketch"] {
-        assert!(Theme::named(name).is_some(), "{name}");
+    for kind in ChartKind::ALL {
+        let names = Theme::names(kind);
+        assert_eq!(names.first(), Some(&"default"), "{kind}");
+        for name in names {
+            assert_eq!(named(kind, name).kind, kind, "{kind} {name}");
+        }
+        assert!(Theme::named(kind, "neon").is_none());
     }
-    assert_eq!(Theme::named("dark"), Some(Theme::dark()));
-    assert!(Theme::named("neon").is_none());
+    assert_eq!(RadialTheme::names().first(), Some(&"default"));
+    assert!(RadialTheme::named("neon").is_none());
 }
 
 // An overlay's own axes take the theme's frame like the chart's data axes,
-// so the dashboard draws no line or tick on an overlay's top or right axis
+// so a scene theme draws no line or tick on an overlay's top or right axis
 // either (#283).
 #[test]
 fn an_overlay_s_own_axes_take_the_theme_frame() {
-    let theme = Theme::dashboard();
+    let theme = named(ChartKind::Line, "midnight");
     let mut config = Config::default();
     config.overlays.push(OverlayLayer {
         series: vec!["b".into()],
@@ -439,7 +600,9 @@ fn an_overlay_s_own_axes_take_the_theme_frame() {
         SeriesConfig::line("a", "x", "y"),
         SeriesConfig::line("b", "u", "v"),
     ];
-    theme.apply(&mut config, &mut series, SubplotScope::All);
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
     for axis in [
         &config.bottom_x,
         &config.overlays[0].x_axis,

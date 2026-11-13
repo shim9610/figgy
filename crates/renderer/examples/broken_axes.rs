@@ -20,9 +20,10 @@ use renderer::{
     config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark},
     format::{LabelFormat, PlainNumberFormat},
     text::RichText,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{cartesian, export, rgb, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
 
 /// The counts per 2 keV channel at `energy` (keV), before noise: three
 /// Gaussian photopeaks whose width grows as the square root of the energy
@@ -48,16 +49,16 @@ fn jitter(i: u32) -> f64 {
 
 // A gamma-ray spectrum with the energy axis broken between the two sources.
 fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(19, 23, 37);
-    let ink = rgb(192, 199, 222);
-    let cyan = rgb(96, 208, 232);
-    let mut chart = cartesian(
+    let mut theme = theme_named(ChartKind::Line, "midnight")?;
+    // The spectrum and its source names in the theme's cyan.
+    let cyan = theme.series.palette[2];
+    theme.series.palette = vec![cyan];
+    let bg = background(&theme);
+    let ink = theme.chrome.ink;
+    let mut chart = scene_chart(
         "Gamma spectrum / Cs-137 and Co-60",
         "Energy (keV)",
         "Counts per 2 keV",
-        bg,
-        ink,
-        rgb(40, 46, 70),
     );
     let energy: Vec<f64> = (0..=475).map(|i| 500. + 2. * f64::from(i)).collect();
     // Counting noise: about one standard deviation of a Poisson count.
@@ -71,16 +72,11 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_column("gamma-energy", &energy)?;
     r.add_column("gamma-counts", &counts)?;
-    let specs = [
-        SeriesConfig::line("spectrum", "gamma-energy", "gamma-counts")
-            .color(cyan)
-            .width(2.5)
-            .fill_to(0.)
-            .fill_color(Color::from_rgba(cyan.r, cyan.g, cyan.b, 0.14)),
-    ];
+    let mut specs = [SeriesConfig::line("spectrum", "gamma-energy", "gamma-counts").fill_to(0.)];
     chart.config_mut().legend.visible = false;
     chart.set_x_range(500., 1450.);
     chart.set_y_range(0., 6000.);
+    themed(&mut chart, &theme, &mut specs)?;
     let config = chart.config_mut();
     config.bottom_x.major_spacing = 50.;
     config.left_y.major_spacing = 1000.;
@@ -89,7 +85,6 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
     }
     // The cut and its marks need the axis line they sit on.
     config.bottom_x.line_visible = true;
-    config.bottom_x.line_color = Color::from_rgba(ink.r, ink.g, ink.b, 0.6);
     config.bottom_x.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(760., 1080.)],
         style: AxisBreakStyle::Continuous,

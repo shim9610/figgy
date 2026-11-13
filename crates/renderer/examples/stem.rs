@@ -20,13 +20,13 @@ use renderer::{
     Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, Chart, Color, Renderer,
     SeriesConfig,
     config::{Category, LegendCorner},
-    data_config::ScatterShape,
     format::{LabelFormat, PlainNumberFormat},
     line::LineStylePreset,
+    theme::ChartKind,
 };
 use std::f64::consts::PI;
 use std::path::Path;
-use styled::{cartesian, export, rgb, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
 
 /// `color` with alpha `a`.
 fn faded(color: Color, a: f32) -> Color {
@@ -45,18 +45,12 @@ fn sinc(x: f64) -> f64 {
 // A stem plot: the impulse response h[n] of a 41-tap low-pass FIR filter
 // (cutoff 0.2 of the sample rate, Hamming window), the ideal sinc behind it.
 fn impulse_response(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(248, 249, 252);
-    let ink = rgb(44, 52, 78);
-    let teal = rgb(22, 128, 140);
-    let sand = rgb(214, 148, 72);
-    let mut chart = cartesian(
-        "Low-pass FIR filter / impulse response",
-        "Tap n",
-        "h[n]",
-        bg,
-        ink,
-        rgb(228, 232, 240),
-    );
+    let mut theme = theme_named(ChartKind::Stem, "cool-slate")?;
+    // The ideal curve draws first, under the taps, in the second colour.
+    theme.series.palette.swap(0, 1);
+    let bg = background(&theme);
+    let ink = theme.chrome.ink;
+    let mut chart = scene_chart("Low-pass FIR filter / impulse response", "Tap n", "h[n]");
     let (half, cutoff) = (20i32, 0.2);
     let taps: Vec<f64> = (-half..=half).map(f64::from).collect();
     let window = |n: f64| 0.54 + 0.46 * (PI * n / f64::from(half)).cos();
@@ -75,21 +69,15 @@ fn impulse_response(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("stem-ideal", &ideal)?;
     let ideal = SeriesConfig::line("ideal", "stem-fine-n", "stem-ideal")
         .label("Ideal sinc")
-        .color(faded(sand, 0.9))
-        .width(2.)
         .dash(LineStylePreset::Dash);
-    let taps = SeriesConfig::stem("taps", "stem-n", "stem-h")
-        .label("Taps h[n], Hamming window")
-        .color(teal)
-        .width(2.5)
-        .marker(ScatterShape::CircleFilled, 10.)
-        .style_stem(|stem| stem.color = faded(teal, 0.75));
-    let specs = [ideal, taps];
+    let taps = SeriesConfig::stem("taps", "stem-n", "stem-h").label("Taps h[n], Hamming window");
+    let mut specs = [ideal, taps];
     chart.set_x_range(-21.5, 21.5);
     chart.set_y_range(-0.1, 0.45);
     chart.config_mut().bottom_x.major_spacing = 5.;
     chart.config_mut().left_y.major_spacing = 0.1;
     plain_labels(&mut chart);
+    themed(&mut chart, &theme, &mut specs)?;
     chart.config_mut().legend.corner = LegendCorner::TopRight;
     // The taps lead the legend but draw over the ideal curve.
     chart = chart
@@ -125,18 +113,13 @@ fn baseline(axis: AnnotationAxis, ink: Color) -> Annotation {
 // A ranked lollipop chart: the change in tree canopy of twelve districts,
 // sorted, gains and losses as two series of one categorical axis.
 fn lollipop(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(251, 249, 245);
-    let ink = rgb(62, 56, 52);
-    let green = rgb(46, 140, 96);
-    let rust = rgb(204, 88, 64);
-    let grid = rgb(234, 228, 218);
-    let mut chart = cartesian(
+    let theme = theme_named(ChartKind::Stem, "warm-paper")?;
+    let bg = background(&theme);
+    let ink = theme.chrome.ink;
+    let mut chart = scene_chart(
         "Tree canopy change / 2015 to 2025",
         "Change in canopy cover (percentage points)",
         "",
-        bg,
-        ink,
-        grid,
     );
     // Ranked from the largest loss (row 0, at the bottom) to the largest
     // gain (at the top).
@@ -159,14 +142,9 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
         .map(|(id, label, _)| Category::new(*id, *label))
         .collect();
     chart.config_mut().left_y.categories = Some(categories);
-    chart.config_mut().grid.show_major_y = false;
-    chart.config_mut().grid.show_major_x = true;
-    chart.config_mut().legend.corner = LegendCorner::TopLeft;
     let mut specs = Vec::new();
-    for (id, label, color, gains) in [
-        ("gains", "Gain", green, true),
-        ("losses", "Loss", rust, false),
-    ] {
+    // Gains in the first colour, losses in the second.
+    for (id, label, gains) in [("gains", "Gain", true), ("losses", "Loss", false)] {
         let (mut rows, mut change) = (Vec::new(), Vec::new());
         for (row, (_, _, value)) in districts.iter().enumerate() {
             if (*value > 0.) == gains {
@@ -182,16 +160,19 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
             format!("lollipop-{id}-row"),
         )
         .label(label)
-        .color(color)
-        .width(4.)
-        .marker(ScatterShape::CircleFilled, 18.)
         .horizontal();
         specs.push(lollipops);
     }
-    chart = chart.with_legend_from(&specs);
     chart.set_x_range(-5., 8.);
     chart.config_mut().bottom_x.major_spacing = 1.;
     plain_labels(&mut chart);
+    themed(&mut chart, &theme, &mut specs)?;
+    // The stems run along x: the grid marks the values on x, not the rows.
+    let grid = &mut chart.config_mut().grid;
+    grid.show_major_y = false;
+    grid.show_major_x = true;
+    chart = chart.with_legend_from(&specs);
+    chart.config_mut().legend.corner = LegendCorner::TopLeft;
     chart.config_mut().annotations.items = vec![baseline(AnnotationAxis::X, ink)];
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-lollipop.png"))
