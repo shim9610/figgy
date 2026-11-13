@@ -831,6 +831,17 @@ impl EnergyLevelSeries {
             .collect()
     }
 
+    /// Whether `annotation_id` is the id [`Self::continuum_annotations`]
+    /// gives the continuum of one of this series' limits, the series being
+    /// `series_id`.
+    pub fn is_continuum_id(&self, series_id: &str, annotation_id: &str) -> bool {
+        annotation_id
+            .strip_prefix(series_id)
+            .and_then(|rest| rest.strip_prefix("/limit/"))
+            .and_then(|rest| rest.strip_suffix("/continuum"))
+            .is_some_and(|id| self.limits.iter().any(|limit| limit.id == id))
+    }
+
     /// Write [`Self::continuum_annotations`] into `layer`: an item whose id
     /// it writes is replaced in place, a new one is appended. Rejected,
     /// with `layer` unchanged, when the layer would then fail its own

@@ -25,15 +25,18 @@
 //! `Chart::apply_theme` refits the layout after applying; a host that applies
 //! a theme to a bare [`Config`] calls `layout::auto_layout` itself.
 
+use crate::annotation::AnnotationKind;
 use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::config::{
     AxisOptions, Config, DataSelectionsConfig, DrawStyle, GridOptions, TickVisibility,
 };
 use crate::data_config::{
-    BoxPoints, DataRenderType, FieldSeries, RangeColor, SeriesConfig, Violin, ViolinBody,
+    BoxPlotOverride, BoxPlotTarget, BoxPoints, CategoryBarDirection, CategoryBarOverride,
+    CategoryBarTarget, DataRenderType, FieldSeries, RangeColor, SeriesConfig, Violin, ViolinBody,
     ViolinHalf,
 };
+use crate::feynman::{ParticleLine, Wiggle};
 use crate::layer::LayerRef;
 use crate::legend::Legend;
 use crate::line::LineStylePreset;
@@ -42,7 +45,7 @@ use crate::preset::{AxisPreset, ColorCycle};
 
 mod catalog;
 mod kind;
-use crate::radial::RadialChart;
+use crate::radial::{RadialChart, RadialOutline, RadialSlice};
 use crate::text::RichText;
 pub use kind::ChartKind;
 
@@ -70,6 +73,10 @@ pub struct ChromeTheme {
     /// family with a frame of its own replaces it
     /// ([`EnergyLevelTheme::axis_preset`], [`FeynmanTheme::axis_preset`]).
     pub axis_preset: AxisPreset,
+    /// Whether the frame's ticks are drawn. `false` hides the ticks of
+    /// every side the frame gives some and keeps their length, so the tick
+    /// labels sit where they would beside drawn ticks.
+    pub ticks: bool,
     /// The chart title and the axis titles.
     pub ink: Color,
     /// Axis lines and ticks.
@@ -206,6 +213,11 @@ pub struct BarTheme {
     pub outline: bool,
     pub outline_width: f32,
     pub outline_color: Color,
+    /// Whether the bars of a chart with one category-bar series take one
+    /// palette colour per category ([`Theme::apply`] writes them as the
+    /// series' per-bar colours), in reading order: left to right, and top
+    /// to bottom for horizontal bars. `false` keeps the per-bar colours.
+    pub color_by_category: bool,
 }
 
 /// Box plots, violins and the raw points beside them.
@@ -233,6 +245,19 @@ pub struct BoxTheme {
     /// The opacity of the raw points, in [`Self::ink`]; `None` keeps each
     /// series' own alpha.
     pub point_opacity: Option<f32>,
+    /// Whether the boxes of a chart with one box plot series take one
+    /// palette colour per category ([`Theme::apply`] writes them as the
+    /// series' per-box colours), in reading order: left to right, and top
+    /// to bottom for horizontal boxes. A violin half without a fill of its
+    /// own follows its box. `false` keeps the per-box colours.
+    pub color_by_category: bool,
+}
+
+/// A text's colour and size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextLook {
+    pub color: Color,
+    pub size: f32,
 }
 
 /// Heatmaps, contours, hexbins and meshes: the colourbar's map, the colour
@@ -352,34 +377,100 @@ pub struct EnergyLevelTheme {
     pub transition_color: Color,
     pub transition_width: f32,
     pub band_fill: Color,
+    /// The level labels; `None`, here and below, keeps each text's own
+    /// colour and size.
+    pub level_labels: Option<TextLook>,
+    /// The transitions' labels: the host's, and the ones the renderer
+    /// writes from the wavelengths.
+    pub transition_labels: Option<TextLook>,
+    /// The ionization limits' labels.
+    pub limit_labels: Option<TextLook>,
+    /// The level bands' labels.
+    pub band_labels: Option<TextLook>,
+    /// The headers over groups of term columns: the category groups of an
+    /// [`ChartKind::EnergyLevels`] chart's column axis.
+    pub group_headers: Option<TextLook>,
+    /// The term columns' rich labels on that axis. A plain label is a tick
+    /// label and takes the chrome's.
+    pub column_labels: Option<TextLook>,
+    /// The fill of the continuum above each ionization limit: the spans
+    /// `EnergyLevelSeries::write_continuum` wrote into the chart's
+    /// annotation layer, which [`Theme::apply`] recolours. `None` keeps
+    /// their fill.
+    pub continuum_fill: Option<Color>,
 }
 
-/// Feynman diagrams. The lines take the cycle colour.
+/// Feynman diagrams. The lines take the cycle colour unless their particle
+/// has a colour of its own here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FeynmanTheme {
     /// The frame a chart of these series takes.
     pub axis_preset: AxisPreset,
     pub width: f32,
+    /// A photon's and a boson's wave.
+    pub wave: Wiggle,
+    /// A gluon's coil.
+    pub coil: Wiggle,
+    /// The arrowheads' length and width, logical pixels.
+    pub head_length: f32,
+    pub head_width: f32,
+    pub dot_radius: f32,
+    /// The colour of photon and graviton lines; `None`, here and below,
+    /// keeps each line's own colour.
+    pub photon: Option<Color>,
+    pub gluon: Option<Color>,
+    /// The colour of charged boson lines (a W).
+    pub boson: Option<Color>,
+    /// The colour of scalar and charged scalar lines.
+    pub scalar: Option<Color>,
+    /// The vertices' labels; `None` keeps each label's own colour and
+    /// size.
+    pub vertex_labels: Option<TextLook>,
+    /// The propagators' labels and their momentum arrows' labels; `None`
+    /// keeps each label's own colour and size.
+    pub line_labels: Option<TextLook>,
 }
 
 /// A radial (pie, donut, sunburst) chart's look (#291). The radial chart is
 /// a model of its own, so its themes are too: [`RadialTheme::named`] looks
 /// one up and [`RadialTheme::apply`] writes it. Its top-level slices take
-/// the palette; values, labels, the slice structure and the font family
-/// stay.
+/// the palette; values, labels, the slice structure, the kind (pie or
+/// donut, and the hole), the light, the hover response and the font family
+/// stay, and so does a slice's own style.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RadialTheme {
     /// Slice `i` of the top level takes `palette[i % palette.len()]`;
     /// empty keeps every slice colour.
     pub palette: Vec<Color>,
+    /// The colours below the top level: child `i` of a slice (a sunburst's
+    /// nested rings, the detail chart of a split slice) takes its parent's
+    /// colour moved towards the background, keeping `(1 - child_tint)`
+    /// to the power `i + 1` of it, so each ring is paler than the one
+    /// inside it and siblings step apart. `None` keeps every child colour.
+    pub child_tint: Option<f32>,
     pub background: Color,
+    /// The labels and the chart title.
     pub label_color: Color,
     pub font_size: f32,
     /// The chart title's size.
     pub title_size: f32,
     pub material: Material,
     pub gloss: f32,
+    pub roughness: f32,
+    pub texture_strength: f32,
+    pub texture_scale: f32,
     pub shadow: bool,
+    /// The camera's tilt, degrees; zero is a flat top view.
+    pub tilt_degrees: f32,
+    /// The extrusion height as a share of the radius.
+    pub depth: f32,
+    pub bevel: f32,
+    /// The gap between slices, degrees.
+    pub gap_degrees: f32,
+    pub inner_corner: f32,
+    pub outer_corner: f32,
+    /// The rim and separator lines, their width and colour.
+    pub outline: RadialOutline,
 }
 
 /// Why a theme was not applied. Nothing is changed.
@@ -458,6 +549,58 @@ fn style_markers(scatter: &mut crate::data_config::DataScatterStyleConfig, lines
     }
 }
 
+/// The base chart and the subplots in scope.
+fn charts_in_scope(config: &Config, subplots: SubplotScope) -> impl Iterator<Item = LayerRef> {
+    std::iter::once(LayerRef::Base).chain(
+        (0..config.subplots.len())
+            .filter(move |&index| subplots.includes(index))
+            .map(LayerRef::Subplot),
+    )
+}
+
+/// Whether series `id` is drawn on the chart `layer` names (the base chart
+/// or a subplot) or on one of its overlays.
+fn drawn_on(config: &Config, layer: LayerRef, id: &str) -> bool {
+    match (layer, config.layer_of_series(id)) {
+        (LayerRef::Subplot(i), LayerRef::Subplot(j) | LayerRef::SubplotOverlay(j, _)) => i == j,
+        (LayerRef::Subplot(_), _) => false,
+        (_, LayerRef::Subplot(_) | LayerRef::SubplotOverlay(..)) => false,
+        _ => true,
+    }
+}
+
+/// [`EnergyLevelTheme::continuum_fill`]: the continuum spans of the
+/// energy-level series in scope, found by the ids
+/// `EnergyLevelSeries::write_continuum` gives them, filled with `fill`.
+fn fill_continuum(
+    config: &mut Config,
+    series: &[SeriesConfig],
+    subplots: SubplotScope,
+    fill: Color,
+) {
+    for item in series {
+        let DataRenderType::EnergyLevels(levels) = &item.render_type else {
+            continue;
+        };
+        let chart = match config.layer_of_series(&item.series_id) {
+            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => {
+                if !subplots.includes(i) {
+                    continue;
+                }
+                &mut config.subplots[i].config
+            }
+            _ => &mut *config,
+        };
+        for annotation in &mut chart.annotations.items {
+            if let AnnotationKind::Span { fill: old, .. } = &mut annotation.kind
+                && levels.is_continuum_id(&item.series_id, &annotation.id)
+            {
+                *old = fill;
+            }
+        }
+    }
+}
+
 impl Theme {
     /// The names in `kind`'s catalogue, `default` first.
     pub fn names(kind: ChartKind) -> &'static [&'static str] {
@@ -480,6 +623,7 @@ impl Theme {
         let boxes = crate::defaults::box_plot_style();
         let bars = crate::defaults::category_bar_style();
         let levels = crate::defaults::energy_level_style();
+        let feynman = crate::defaults::feynman_style();
         let surface = crate::defaults::surface_style();
         let radar = crate::defaults::radar_series_style();
         let bar = crate::defaults::color_bar_options();
@@ -493,6 +637,7 @@ impl Theme {
                 plot_background: None,
                 draw_style: DrawStyle::Precise,
                 axis_preset: AxisPreset::BoxedInward,
+                ticks: true,
                 ink: config.chart_title.text.color,
                 frame_ink: config.bottom_x.line_color,
                 label_ink: config.bottom_x.label_style.color,
@@ -575,6 +720,7 @@ impl Theme {
                     outline: bars.outline,
                     outline_width: bars.outline_width,
                     outline_color: bars.outline_color,
+                    color_by_category: false,
                 },
                 boxes: BoxTheme {
                     material: boxes.material,
@@ -590,6 +736,7 @@ impl Theme {
                     outlier_color: boxes.outlier_color,
                     point_size: crate::defaults::box_points_style().size,
                     point_opacity: None,
+                    color_by_category: false,
                 },
                 fields: FieldTheme {
                     colormap: crate::defaults::color_bar_options().colormap,
@@ -645,10 +792,28 @@ impl Theme {
                     transition_color: levels.transition.color,
                     transition_width: levels.transition.width,
                     band_fill: levels.band.fill,
+                    level_labels: None,
+                    transition_labels: None,
+                    limit_labels: None,
+                    band_labels: None,
+                    group_headers: None,
+                    column_labels: None,
+                    continuum_fill: None,
                 },
                 feynman: FeynmanTheme {
                     axis_preset: AxisPreset::Hidden,
-                    width: crate::defaults::feynman_style().width,
+                    width: feynman.width,
+                    wave: feynman.wave,
+                    coil: feynman.coil,
+                    head_length: feynman.head_length,
+                    head_width: feynman.head_width,
+                    dot_radius: feynman.dot_radius,
+                    photon: None,
+                    gluon: None,
+                    boson: None,
+                    scalar: None,
+                    vertex_labels: None,
+                    line_labels: None,
                 },
             },
         }
@@ -682,11 +847,106 @@ impl Theme {
                 self.style_series(item, index);
             }
         }
+        self.color_categories(config, series, subplots);
         self.write_chrome(config, series, subplots);
         if let Some(shade) = self.series.fields.contour_shade {
             self.shade_contours(config, series, subplots, shade);
         }
+        if let Some(fill) = self.series.energy_levels.continuum_fill {
+            fill_continuum(config, series, subplots, fill);
+        }
         Ok(())
+    }
+
+    /// [`BoxTheme::color_by_category`] and [`BarTheme::color_by_category`]:
+    /// on every chart in scope that draws exactly one box plot series, or
+    /// exactly one category-bar series, that series' per-category colours
+    /// from the palette, in reading order.
+    fn color_categories(
+        &self,
+        config: &Config,
+        series: &mut [SeriesConfig],
+        subplots: SubplotScope,
+    ) {
+        let palette = &self.series.palette;
+        if palette.is_empty() {
+            return;
+        }
+        let boxes = |rt: &DataRenderType| matches!(rt, DataRenderType::BoxPlot { .. });
+        let bars = |rt: &DataRenderType| matches!(rt, DataRenderType::CategoryBars { .. });
+        let families: [(bool, &dyn Fn(&DataRenderType) -> bool); 2] = [
+            (self.series.boxes.color_by_category, &boxes),
+            (self.series.bars.color_by_category, &bars),
+        ];
+        for layer in charts_in_scope(config, subplots) {
+            let chart = match layer {
+                LayerRef::Subplot(i) => &config.subplots[i].config,
+                _ => config,
+            };
+            let horizontal =
+                config.bar_groups_of(layer).direction == CategoryBarDirection::Horizontal;
+            let axis = if horizontal {
+                &chart.left_y
+            } else {
+                &chart.bottom_x
+            };
+            let Some(categories) = &axis.categories else {
+                continue;
+            };
+            // The first category of a vertical axis is the bottom row.
+            let reversed = horizontal != axis.inverted;
+            for (enabled, family) in families {
+                let mut drawn = series.iter_mut().filter(|item| {
+                    family(&item.render_type) && drawn_on(config, layer, &item.series_id)
+                });
+                let (Some(item), None, true) = (drawn.next(), drawn.next(), enabled) else {
+                    continue;
+                };
+                for (index, category) in categories.iter().enumerate() {
+                    let place = if reversed {
+                        categories.len() - 1 - index
+                    } else {
+                        index
+                    };
+                    let color = Some(palette[place % palette.len()]);
+                    match &mut item.render_type {
+                        DataRenderType::BoxPlot { overrides, .. } => {
+                            let overrides = overrides.get_or_insert_with(Vec::new);
+                            match overrides
+                                .iter_mut()
+                                .find(|o| o.target.category_id == category.id)
+                            {
+                                Some(o) => o.color = color,
+                                None => overrides.push(BoxPlotOverride {
+                                    color,
+                                    ..BoxPlotOverride::new(BoxPlotTarget::new(
+                                        category.id.as_str(),
+                                        item.series_id.as_str(),
+                                    ))
+                                }),
+                            }
+                        }
+                        DataRenderType::CategoryBars { overrides, .. } => {
+                            let overrides = overrides.get_or_insert_with(Vec::new);
+                            match overrides
+                                .iter_mut()
+                                .find(|o| o.target.category_id == category.id)
+                            {
+                                Some(o) => o.color = color,
+                                None => overrides.push(CategoryBarOverride {
+                                    color,
+                                    ..CategoryBarOverride::new(CategoryBarTarget::new(
+                                        category.id.as_str(),
+                                        item.series_id.as_str(),
+                                    ))
+                                }),
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     /// [`FieldTheme::contour_shade`]: every contour level of the series in
@@ -750,12 +1010,7 @@ impl Theme {
         series: &[SeriesConfig],
         subplots: SubplotScope,
     ) -> Result<(), ThemeError> {
-        let charts = std::iter::once(LayerRef::Base).chain(
-            (0..config.subplots.len())
-                .filter(|&index| subplots.includes(index))
-                .map(LayerRef::Subplot),
-        );
-        for layer in charts {
+        for layer in charts_in_scope(config, subplots) {
             if let Some(chart) = ChartKind::of(config, series, layer)
                 && chart != self.kind
             {
@@ -952,9 +1207,72 @@ impl Theme {
                 style.transition.color = energy.transition_color;
                 style.transition.width = energy.transition_width;
                 style.band.fill = energy.band_fill;
+                if let (Some(look), Some(labels)) =
+                    (energy.transition_labels, &mut style.wavelength_labels)
+                {
+                    self.style_text(&mut labels.text, look.color, look.size);
+                }
+                let texts = (levels.levels.iter_mut())
+                    .filter_map(|level| level.label.as_mut())
+                    .map(|text| (text, energy.level_labels))
+                    .chain(
+                        (levels.transitions.iter_mut())
+                            .filter_map(|line| line.label.as_mut())
+                            .map(|text| (text, energy.transition_labels)),
+                    )
+                    .chain(
+                        (levels.limits.iter_mut())
+                            .filter_map(|limit| limit.label.as_mut())
+                            .map(|text| (text, energy.limit_labels)),
+                    )
+                    .chain(
+                        (levels.bands.iter_mut())
+                            .filter_map(|band| band.label.as_mut())
+                            .map(|text| (text, energy.band_labels)),
+                    );
+                for (text, look) in texts {
+                    if let Some(look) = look {
+                        self.style_text(text, look.color, look.size);
+                    }
+                }
             }
             DataRenderType::Feynman(diagram) => {
-                diagram.style.width = theme.feynman.width;
+                let feynman = &theme.feynman;
+                let style = &mut diagram.style;
+                style.width = feynman.width;
+                style.wave = feynman.wave;
+                style.coil = feynman.coil;
+                style.head_length = feynman.head_length;
+                style.head_width = feynman.head_width;
+                style.dot_radius = feynman.dot_radius;
+                if let Some(look) = feynman.vertex_labels {
+                    for label in (diagram.vertices.iter_mut()).filter_map(|v| v.label.as_mut()) {
+                        self.style_text(label, look.color, look.size);
+                    }
+                }
+                for line in &mut diagram.propagators {
+                    let own = match line.particle {
+                        ParticleLine::Photon | ParticleLine::Graviton => feynman.photon,
+                        ParticleLine::Gluon => feynman.gluon,
+                        ParticleLine::ChargedBoson => feynman.boson,
+                        ParticleLine::Scalar | ParticleLine::ChargedScalar => feynman.scalar,
+                        ParticleLine::Plain
+                        | ParticleLine::Fermion
+                        | ParticleLine::AntiFermion
+                        | ParticleLine::Ghost
+                        | ParticleLine::Majorana
+                        | ParticleLine::DoubleLine => None,
+                    };
+                    if own.is_some() {
+                        line.color = own;
+                    }
+                    if let Some(look) = feynman.line_labels {
+                        let momentum = line.momentum.as_mut().map(|arrow| &mut arrow.label);
+                        for label in line.label.as_mut().into_iter().chain(momentum) {
+                            self.style_text(label, look.color, look.size);
+                        }
+                    }
+                }
             }
             // The line width is set above; a streamline's arrowheads keep
             // their size, which follows its spacing.
@@ -1060,13 +1378,7 @@ impl Theme {
     /// The frame of the chart `layer` names: a family's own frame when the
     /// chart draws one, the chrome's otherwise.
     fn frame_for(&self, config: &Config, series: &[SeriesConfig], layer: LayerRef) -> AxisPreset {
-        let on_layer = |item: &&SeriesConfig| match (layer, config.layer_of_series(&item.series_id))
-        {
-            (LayerRef::Subplot(i), LayerRef::Subplot(j) | LayerRef::SubplotOverlay(j, _)) => i == j,
-            (LayerRef::Subplot(_), _) => false,
-            (_, LayerRef::Subplot(_) | LayerRef::SubplotOverlay(..)) => false,
-            _ => true,
-        };
+        let on_layer = |item: &&SeriesConfig| drawn_on(config, layer, &item.series_id);
         for item in series.iter().filter(on_layer) {
             match item.render_type {
                 DataRenderType::Feynman(_) => return self.series.feynman.axis_preset,
@@ -1085,6 +1397,21 @@ impl Theme {
         config.plot_background = chrome.plot_background;
         config.draw_style = chrome.draw_style;
         config.apply_axis_preset(preset);
+        if !chrome.ticks {
+            let overlays = (config.overlays.iter_mut())
+                .flat_map(|overlay| [&mut overlay.x_axis, &mut overlay.y_axis]);
+            for axis in [
+                &mut config.top_x,
+                &mut config.bottom_x,
+                &mut config.left_y,
+                &mut config.right_y,
+            ]
+            .into_iter()
+            .chain(overlays)
+            {
+                axis.tick = TickVisibility::None;
+            }
+        }
         // A ternary chart's third component and a 3D chart's height are read
         // on `right_y`: a data axis, framed as the labelled sides are.
         if config.ternary().is_some() || config.view_3d().is_some() {
@@ -1110,6 +1437,23 @@ impl Theme {
             names.line_visible = config.top_x.line_visible;
             names.tick = config.top_x.tick.clone();
             names.label_style.font_size = self.series.parallel.name_size;
+        }
+        // An energy-level chart names its term columns on `bottom_x`.
+        if self.kind == ChartKind::EnergyLevels {
+            let energy = &self.series.energy_levels;
+            let columns = config.bottom_x.categories.iter_mut().flatten();
+            if let Some(look) = energy.column_labels {
+                for label in columns.filter_map(|column| column.rich_label.as_mut()) {
+                    self.style_text(label, look.color, look.size);
+                }
+            }
+            if let (Some(look), Some(groups)) =
+                (energy.group_headers, &mut config.bottom_x.category_groups)
+            {
+                for group in &mut groups.groups {
+                    self.style_text(&mut group.label, look.color, look.size);
+                }
+            }
         }
         self.style_text(&mut config.chart_title.text, chrome.ink, chrome.title_size);
         self.style_grid(&mut config.grid);
@@ -1261,36 +1605,88 @@ impl RadialTheme {
     /// The documented default look.
     pub(crate) fn documented() -> Self {
         let radial = crate::defaults::radial_chart();
+        let style = &radial.style;
         Self {
             palette: Vec::new(),
+            child_tint: None,
             background: radial.background,
             label_color: radial.label_color,
             font_size: radial.font_size,
             title_size: crate::defaults::config().chart_title.text.font_size,
-            material: radial.style.material,
-            gloss: radial.style.gloss,
-            shadow: radial.style.shadow,
+            material: style.material,
+            gloss: style.gloss,
+            roughness: style.roughness,
+            texture_strength: style.texture_strength,
+            texture_scale: style.texture_scale,
+            shadow: style.shadow,
+            tilt_degrees: style.tilt_degrees,
+            depth: style.depth,
+            bevel: style.bevel,
+            gap_degrees: style.gap_degrees,
+            inner_corner: style.inner_corner,
+            outer_corner: style.outer_corner,
+            outline: style.outline,
         }
     }
 
     /// Apply the theme to a radial chart: its background, label look,
-    /// material and title, and the palette on its top-level slices.
-    /// Values, labels, the slice structure and the font family stay.
+    /// material, view, slice shape, outline and title, the palette on its
+    /// top-level slices and [`Self::child_tint`] on the slices below them.
+    /// Values, labels, the slice structure, the kind and the font family
+    /// stay.
     pub fn apply(&self, chart: &mut RadialChart) {
         chart.background = self.background;
         chart.label_color = self.label_color;
         chart.font_size = self.font_size;
-        chart.style.material = self.material;
-        chart.style.gloss = self.gloss;
-        chart.style.shadow = self.shadow;
+        let style = &mut chart.style;
+        style.material = self.material;
+        style.gloss = self.gloss;
+        style.roughness = self.roughness;
+        style.texture_strength = self.texture_strength;
+        style.texture_scale = self.texture_scale;
+        style.shadow = self.shadow;
+        style.tilt_degrees = self.tilt_degrees;
+        style.depth = self.depth;
+        style.bevel = self.bevel;
+        style.gap_degrees = self.gap_degrees;
+        style.inner_corner = self.inner_corner;
+        style.outer_corner = self.outer_corner;
+        style.outline = self.outline;
         if !self.palette.is_empty() {
             for (index, slice) in chart.slices.iter_mut().enumerate() {
                 slice.color = self.palette[index % self.palette.len()];
             }
         }
+        if let Some(tint) = self.child_tint {
+            for slice in &mut chart.slices {
+                self.tint_children(&mut slice.children, slice.color, tint);
+            }
+            if let Some(split) = &mut chart.split
+                && let Some(parent) = chart.slices.get(split.slice_index)
+            {
+                self.tint_children(&mut split.children, parent.color, tint);
+            }
+        }
         if let Some(title) = &mut chart.chart_title {
             title.text.color = self.label_color;
             title.text.font_size = self.title_size;
+        }
+    }
+
+    /// [`Self::child_tint`]: each of `children` in `parent`'s colour moved
+    /// towards the background, and its own children after it.
+    fn tint_children(&self, children: &mut [RadialSlice], parent: Color, tint: f32) {
+        let mut keep = 1.0;
+        for child in children {
+            keep *= 1.0 - tint;
+            let mix = |from: f32, to: f32| to + (from - to) * keep;
+            child.color = Color::new(
+                mix(parent.r, self.background.r),
+                mix(parent.g, self.background.g),
+                mix(parent.b, self.background.b),
+                parent.a,
+            );
+            self.tint_children(&mut child.children, child.color, tint);
         }
     }
 }

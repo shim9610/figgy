@@ -40,6 +40,7 @@ fn histogram_gallery() -> Theme {
 
 /// A categorical document: matte blue, orange and teal bars with rounded
 /// ends on a transparent background, the open frame and the text in navy.
+/// A single series takes one colour per category.
 fn category_bars_document() -> Theme {
     let mut theme = document(ChartKind::CategoryBars, rgb(35, 45, 65));
     theme.series.palette = vec![
@@ -48,7 +49,9 @@ fn category_bars_document() -> Theme {
         rgb(63, 169, 167),
         rgb(98, 194, 192),
     ];
-    theme.series.bars.material = Material::Matte;
+    let bars = &mut theme.series.bars;
+    bars.material = Material::Matte;
+    bars.color_by_category = true;
     theme
 }
 
@@ -77,10 +80,12 @@ fn category_bars_revenue() -> Theme {
 }
 
 /// A box plot document: matte blue, teal and amber boxes with navy
-/// outlines, medians and whiskers on a transparent background.
+/// outlines, medians and whiskers on a transparent background. A single
+/// series takes one colour per category.
 fn distribution_document() -> Theme {
     let mut theme = document(ChartKind::Distribution, rgb(32, 46, 60));
     theme.series.palette = vec![rgb(65, 144, 208), rgb(42, 168, 162), rgb(230, 169, 64)];
+    theme.series.boxes.color_by_category = true;
     theme
 }
 
@@ -107,8 +112,9 @@ fn distribution_cool_slate() -> Theme {
 }
 
 /// The warm raincloud scene: brown ink on cream paper with a vertical
-/// grid, unoutlined clouds in teal, coral, violet, green and amber, slim
-/// boxes without caps, a bold median and translucent raw points.
+/// grid, unoutlined clouds in teal, coral, violet, green and amber, one
+/// colour per category of a single series, slim boxes without caps, a bold
+/// median and translucent raw points.
 fn distribution_warm_paper() -> Theme {
     let ink = rgb(70, 60, 56);
     let mut theme = distribution_scene(rgb(252, 249, 244), ink, rgb(235, 228, 216));
@@ -129,6 +135,7 @@ fn distribution_warm_paper() -> Theme {
     boxes.caps = false;
     boxes.violin_outline = false;
     boxes.point_opacity = Some(0.55);
+    boxes.color_by_category = true;
     theme
 }
 

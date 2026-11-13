@@ -156,11 +156,10 @@ fn scene(kind: ChartKind, bg: Color, ink: Color, grid: Color) -> Theme {
 fn document(kind: ChartKind, text: Color) -> Theme {
     let mut theme = Theme::documented(kind);
     let chrome = &mut theme.chrome;
-    // An open frame whose ticks have no length: lines on the labelled
-    // sides only.
+    // An open frame without its ticks: lines on the labelled sides only,
+    // the tick labels where the hidden ticks leave them.
     chrome.axis_preset = AxisPreset::OpenOutward;
-    chrome.major_tick_length = 0.0;
-    chrome.minor_tick_length = 0.0;
+    chrome.ticks = false;
     chrome.axis_width = 1.0;
     chrome.ink = text;
     chrome.frame_ink = text;

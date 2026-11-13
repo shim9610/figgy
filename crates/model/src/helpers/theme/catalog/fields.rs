@@ -422,14 +422,9 @@ fn polar_warm_paper() -> Theme {
 fn radar_document() -> Theme {
     let rings = rgb(224, 229, 235);
     let mut theme = document(ChartKind::Radar, rgb(32, 46, 60));
-    let documented = Theme::documented(ChartKind::Radar).chrome;
     let chrome = &mut theme.chrome;
-    // No axis lines: the rings and spokes are the grid's, and the ticks
-    // keep their documented length, which the layout leaves around the
-    // disc.
+    // No axis lines: the rings and spokes are the grid's.
     chrome.axis_preset = AxisPreset::Minimal;
-    chrome.major_tick_length = documented.major_tick_length;
-    chrome.minor_tick_length = documented.minor_tick_length;
     chrome.frame_ink = rings;
     chrome.grid.major_x.show = true;
     chrome.grid.major_x.color = rgb(200, 206, 214);
