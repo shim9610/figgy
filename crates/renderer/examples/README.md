@@ -171,7 +171,7 @@ helpers (`theme_named`, `themed`), a plain chart frame and PNG checks.
 export of the 1200 × 800 designed scenes. Each chart's data, series and
 settings are in its own example file, and its look is a built-in theme of
 its kind ([Themes](../USAGE.md#themes)); the
-[gallery pages](../gallery/lines.md) name the theme of every image.
+[gallery pages](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/lines.md) name the theme of every image.
 
 ## Interactive examples
 

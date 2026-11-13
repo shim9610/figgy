@@ -8,8 +8,9 @@ use std::{error::Error, path::Path};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
-/// The gallery look: the light theme with a navy title, a slate frame, a
-/// pale major grid and smaller text.
+/// The gallery chrome for a chart whose series are styled by hand: the
+/// documented default look with a navy title, a slate frame, a pale major
+/// grid and smaller text.
 pub fn theme() -> Theme {
     let mut theme = Theme::named(ChartKind::Line, "default").expect("every kind has a default");
     let chrome = &mut theme.chrome;
