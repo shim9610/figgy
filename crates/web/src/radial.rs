@@ -391,9 +391,11 @@ impl FiggyRadialChart {
         Ok(true)
     }
     /// Apply the built-in radial theme `name` (#291; the names are in
-    /// [`Self::theme_names`]): the background, label look, material and
-    /// the palette on the top-level slices. Values, labels and the slice
-    /// structure stay. An unknown name changes nothing and errors.
+    /// [`Self::theme_names`]): the background, label look, material, view,
+    /// slice shape and outline, the palette on the top-level slices and the
+    /// theme's tint on the slices below them. Values, labels, the slice
+    /// structure and the kind stay. An unknown name changes nothing and
+    /// errors.
     pub fn apply_theme(&mut self, name: &str) -> Result<(), JsValue> {
         let theme = crate::web::radial_theme_named(name)?;
         let mut next = self.chart.clone();
