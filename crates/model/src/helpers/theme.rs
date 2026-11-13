@@ -31,7 +31,8 @@ use crate::config::{
     AxisOptions, Config, DataSelectionsConfig, DrawStyle, GridOptions, TickVisibility,
 };
 use crate::data_config::{
-    BoxPoints, DataRenderType, FieldSeries, SeriesConfig, Violin, ViolinBody, ViolinHalf,
+    BoxPoints, DataRenderType, FieldSeries, RangeColor, SeriesConfig, Violin, ViolinBody,
+    ViolinHalf,
 };
 use crate::layer::LayerRef;
 use crate::legend::Legend;
@@ -183,13 +184,20 @@ pub struct LineTheme {
     pub error_cap_size: f32,
 }
 
-/// Histogram bars and category bars.
+/// Histogram bars, category bars and the bars of range series.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarTheme {
     /// A histogram bar's border.
     pub border_color: Color,
     pub border_width: f32,
+    /// The space between neighbouring histogram bars, logical pixels.
+    pub gap: f32,
     pub material: Material,
+    /// A category or range bar's corner radius, logical pixels; only the
+    /// exposed end of a stack is rounded.
+    pub corner_radius: f32,
+    /// The strength of a category or range bar's material texture, `0..=1`.
+    pub texture_strength: f32,
     pub gloss: f32,
     pub outline: bool,
     pub outline_width: f32,
@@ -200,13 +208,27 @@ pub struct BarTheme {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoxTheme {
     pub material: Material,
+    pub gloss: f32,
+    /// The outlines, medians, whiskers and raw points.
     pub ink: Color,
+    /// Whether a box is outlined.
+    pub outline: bool,
     pub outline_width: f32,
     pub median_width: f32,
     pub whisker_width: f32,
+    /// Whether a whisker ends in a cap.
+    pub caps: bool,
+    /// Whether a violin half is outlined, in [`Self::ink`] at
+    /// [`Self::outline_width`]. A half with a fill of its own takes the
+    /// series' palette colour, and the high half of a violin with two
+    /// such halves the colour after it.
+    pub violin_outline: bool,
     pub mean_color: Color,
     pub outlier_color: Color,
     pub point_size: f32,
+    /// The opacity of the raw points, in [`Self::ink`]; `None` keeps each
+    /// series' own alpha.
+    pub point_opacity: Option<f32>,
 }
 
 /// Heatmaps, contours, hexbins and meshes: the colourbar's map, the colour
@@ -235,13 +257,31 @@ pub struct RadarTheme {
     pub fill_opacity: Option<f32>,
 }
 
-/// Range bars: the bars take [`BarTheme`]'s material; these are the
-/// whiskers and the connector.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Range bars: the bars take [`BarTheme`]'s material and corners; these
+/// are the colours that carry a bar's meaning, the whiskers, the connector
+/// and the unfinished part of a bar with progress. The theme never chooses
+/// how a series is coloured ([`crate::data_config::RangeColor`]): it
+/// recolours the colouring the series has.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RangeBarTheme {
+    /// The rising bars of a series coloured by direction; `None` keeps the
+    /// series' own.
+    pub up: Option<Color>,
+    /// The falling bars of a series coloured by direction; `None` keeps the
+    /// series' own.
+    pub down: Option<Color>,
+    /// The total bars of a series coloured by direction with a total flag;
+    /// `None` keeps the series' own.
+    pub total: Option<Color>,
+    /// The state colours of a series coloured by state: state `k` takes
+    /// `states[k % states.len()]`. Empty keeps every state colour.
+    pub states: Vec<Color>,
     pub whisker_width: f32,
     pub connector_color: Color,
     pub connector_width: f32,
+    /// The opacity of a bar's unfinished part; `None` keeps the series'
+    /// own.
+    pub remaining_opacity: Option<f32>,
 }
 
 /// Ternary region fills.
@@ -484,7 +524,10 @@ impl Theme {
                 bars: BarTheme {
                     border_color: Color::BLACK,
                     border_width: 1.0,
+                    gap: crate::data_config::DataBarStyleConfig::default().gap_px,
                     material: bars.material,
+                    corner_radius: bars.corner_radius,
+                    texture_strength: bars.texture_strength,
                     gloss: bars.gloss,
                     outline: bars.outline,
                     outline_width: bars.outline_width,
@@ -492,13 +535,18 @@ impl Theme {
                 },
                 boxes: BoxTheme {
                     material: boxes.material,
+                    gloss: boxes.gloss,
                     ink: boxes.outline_color,
+                    outline: boxes.outline,
                     outline_width: boxes.outline_width,
                     median_width: boxes.median_width,
                     whisker_width: boxes.whisker_width,
+                    caps: boxes.caps,
+                    violin_outline: crate::defaults::violin_style().outline,
                     mean_color: boxes.mean_color,
                     outlier_color: boxes.outlier_color,
                     point_size: crate::defaults::box_points_style().size,
+                    point_opacity: None,
                 },
                 fields: FieldTheme {
                     colormap: crate::defaults::color_bar_options().colormap,
@@ -517,9 +565,14 @@ impl Theme {
                     fill_opacity: radar.fill_opacity,
                 },
                 range_bars: RangeBarTheme {
+                    up: None,
+                    down: None,
+                    total: None,
+                    states: Vec::new(),
                     whisker_width: 1.0,
                     connector_color: Color::BLACK,
                     connector_width: 1.0,
+                    remaining_opacity: None,
                 },
                 ternary: TernaryTheme {
                     region_opacity: crate::defaults::ternary_region_style().opacity,
@@ -680,10 +733,13 @@ impl Theme {
             DataRenderType::Histogram { bar } => {
                 bar.border_color = theme.bars.border_color;
                 bar.border_width = theme.bars.border_width;
+                bar.gap_px = theme.bars.gap;
             }
             DataRenderType::CategoryBars { style, .. }
             | DataRenderType::RangeBars { style, .. } => {
                 style.material = theme.bars.material;
+                style.corner_radius = theme.bars.corner_radius;
+                style.texture_strength = theme.bars.texture_strength;
                 style.gloss = theme.bars.gloss;
                 style.outline = theme.bars.outline;
                 style.outline_width = theme.bars.outline_width;
@@ -697,28 +753,54 @@ impl Theme {
             } => {
                 let boxes = &theme.boxes;
                 style.material = boxes.material;
+                style.gloss = boxes.gloss;
+                style.outline = boxes.outline;
                 style.outline_width = boxes.outline_width;
                 style.outline_color = boxes.ink;
                 style.median_width = boxes.median_width;
                 style.median_color = boxes.ink;
                 style.whisker_width = boxes.whisker_width;
                 style.whisker_color = boxes.ink;
+                style.caps = boxes.caps;
                 style.mean_color = boxes.mean_color;
                 style.outlier_color = boxes.outlier_color;
                 if let Some(Violin { body, .. }) = violin {
                     let half = |half: &mut ViolinHalf| {
+                        half.style.outline = boxes.violin_outline;
                         half.style.outline_width = boxes.outline_width;
                         half.style.outline_color = boxes.ink;
                     };
+                    // A half with a fill of its own is recoloured, as the
+                    // series is; of two such halves, two conditions side
+                    // by side, the high one takes the next colour.
+                    let own = |half: &mut ViolinHalf, index: usize| {
+                        if let (Some(fill), false) = (&mut half.style.fill, palette.is_empty()) {
+                            *fill = palette[index % palette.len()];
+                        }
+                    };
                     match body {
-                        ViolinBody::Symmetric(one) => half(one),
+                        ViolinBody::Symmetric(one) => {
+                            half(one);
+                            own(one, index);
+                        }
                         ViolinBody::Split { low, high } => {
-                            low.iter_mut().chain(high.iter_mut()).for_each(half);
+                            let next = index + usize::from(low.is_some());
+                            if let Some(low) = low {
+                                half(low);
+                                own(low, index);
+                            }
+                            if let Some(high) = high {
+                                half(high);
+                                own(high, next);
+                            }
                         }
                     }
                 }
                 if let Some(BoxPoints { style, .. }) = points {
                     style.color = boxes.ink;
+                    if let Some(opacity) = boxes.point_opacity {
+                        style.color.a = opacity;
+                    }
                     style.size = boxes.point_size;
                 }
             }
@@ -762,16 +844,43 @@ impl Theme {
         }
         if let DataRenderType::RangeBars {
             whiskers,
+            color_by,
+            progress,
             connector,
             ..
         } = &mut series.render_type
         {
+            let range = &theme.range_bars;
+            match color_by {
+                RangeColor::Single => {}
+                RangeColor::Direction { up, down, total } => {
+                    if let Some(color) = range.up {
+                        *up = color;
+                    }
+                    if let Some(color) = range.down {
+                        *down = color;
+                    }
+                    if let (Some(color), Some(total)) = (range.total, total) {
+                        total.color = color;
+                    }
+                }
+                RangeColor::State { styles, .. } => {
+                    if !range.states.is_empty() {
+                        for (k, style) in styles.iter_mut().enumerate() {
+                            style.color = range.states[k % range.states.len()];
+                        }
+                    }
+                }
+            }
+            if let (Some(opacity), Some(progress)) = (range.remaining_opacity, progress) {
+                progress.remaining_opacity = opacity;
+            }
             if let Some(whiskers) = whiskers {
-                whiskers.width = theme.range_bars.whisker_width;
+                whiskers.width = range.whisker_width;
             }
             if let Some(connector) = connector {
-                connector.color = theme.range_bars.connector_color;
-                connector.width = theme.range_bars.connector_width;
+                connector.color = range.connector_color;
+                connector.width = range.connector_width;
             }
         }
     }

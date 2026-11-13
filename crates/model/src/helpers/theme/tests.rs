@@ -613,3 +613,244 @@ fn an_overlay_s_own_axes_take_the_theme_frame() {
         assert!(axis.label_style.label_visible);
     }
 }
+
+// The bar part writes a histogram's border and gap and a category or range
+// bar's material, corners and texture.
+#[test]
+fn the_bar_family_takes_borders_corners_and_materials() {
+    let theme = named(ChartKind::Histogram, "gallery");
+    let mut series = SeriesConfig::histogram("a", "edges", "counts");
+    theme.style_series(&mut series, 0);
+    let DataRenderType::Histogram { bar } = &series.render_type else {
+        panic!("a histogram");
+    };
+    let bars = &theme.series.bars;
+    assert_eq!(bar.fill_color, palette_color(&theme, 0));
+    assert_eq!(bar.border_color, bars.border_color);
+    assert_eq!(bar.border_width, bars.border_width);
+    assert_eq!(bar.gap_px, 2.0);
+
+    let theme = named(ChartKind::CategoryBars, "revenue");
+    let mut series = SeriesConfig::category_bars("a", "i", "v", Color::BLACK);
+    theme.style_series(&mut series, 1);
+    let DataRenderType::CategoryBars { color, style, .. } = &series.render_type else {
+        panic!("category bars");
+    };
+    assert_eq!(*color, palette_color(&theme, 1));
+    assert_eq!(style.material, crate::material::Material::Matte);
+    assert_eq!(style.corner_radius, 12.0);
+    assert_eq!(style.texture_strength, 0.0);
+}
+
+// The box part writes the finish, which parts are drawn and the raw points'
+// opacity; a violin half with a fill of its own takes a palette colour, the
+// high one of two the next, and a half without one keeps following its box.
+#[test]
+fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
+    use crate::data_config::{BoxPointsStyle, ViolinStyle};
+    let half = |fill: Option<Color>| ViolinHalf {
+        curve: "curve".into(),
+        density: "density".into(),
+        density_scale: 1.0,
+        style: ViolinStyle {
+            fill,
+            ..ViolinStyle::default()
+        },
+    };
+    let split = |low: Option<Color>, high: Option<Color>| {
+        SeriesConfig::box_plot("a", "i", "records", Color::BLACK)
+            .violin(Violin {
+                body: ViolinBody::Split {
+                    low: Some(half(low)),
+                    high: Some(half(high)),
+                },
+                box_width: 0.1,
+            })
+            .style_box_plot(|parts| {
+                *parts.points = Some(BoxPoints {
+                    positions: "cat".into(),
+                    values: "value".into(),
+                    style: BoxPointsStyle::default(),
+                });
+            })
+    };
+    let fills = |series: &SeriesConfig| {
+        let DataRenderType::BoxPlot {
+            violin: Some(violin),
+            ..
+        } = &series.render_type
+        else {
+            panic!("a violin");
+        };
+        let ViolinBody::Split {
+            low: Some(low),
+            high: Some(high),
+        } = &violin.body
+        else {
+            panic!("a split violin");
+        };
+        (low.style.clone(), high.style.clone())
+    };
+
+    let theme = named(ChartKind::Distribution, "warm-paper");
+    let mut series = split(None, None);
+    theme.style_series(&mut series, 0);
+    let (low, high) = fills(&series);
+    assert_eq!((low.fill, high.fill), (None, None));
+    assert!(!low.outline && !high.outline);
+    let DataRenderType::BoxPlot { style, points, .. } = &series.render_type else {
+        panic!("a box plot");
+    };
+    let boxes = &theme.series.boxes;
+    assert!(!style.caps);
+    assert_eq!(style.median_width, 2.0);
+    assert_eq!(style.whisker_color, boxes.ink);
+    let points = &points.as_ref().unwrap().style;
+    assert_eq!(
+        points.color,
+        Color {
+            a: 0.55,
+            ..boxes.ink
+        }
+    );
+    assert_eq!(points.size, boxes.point_size);
+
+    let theme = named(ChartKind::Distribution, "cool-slate");
+    let mut series = split(Some(Color::BLACK), Some(Color::BLACK));
+    theme.style_series(&mut series, 0);
+    let (low, high) = fills(&series);
+    assert_eq!(low.fill, Some(palette_color(&theme, 0)));
+    assert_eq!(high.fill, Some(palette_color(&theme, 1)));
+    assert!(low.outline && high.outline);
+    assert_eq!(low.outline_color, theme.series.boxes.ink);
+
+    // A finish varied on the part reaches the boxes.
+    let mut theme = named(ChartKind::Distribution, "document");
+    theme.series.boxes.gloss = 0.6;
+    theme.series.boxes.outline = false;
+    let mut series = SeriesConfig::box_plot("a", "i", "records", Color::BLACK);
+    theme.style_series(&mut series, 0);
+    let DataRenderType::BoxPlot { style, .. } = &series.render_type else {
+        panic!("a box plot");
+    };
+    assert_eq!(style.gloss, 0.6);
+    assert!(!style.outline);
+}
+
+// The range-bar part recolours the colouring a series has (direction or
+// state colours, never which one), writes the unfinished part's opacity,
+// the whiskers and the connector; a theme without those colours keeps the
+// series' own.
+#[test]
+fn the_range_bar_family_recolours_directions_and_states() {
+    use crate::data_config::{
+        RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers,
+    };
+    let ink = Color::BLACK;
+    let directed = || {
+        SeriesConfig::range_bars("a", "i", "start", "end", ink).style_range_bars(|parts| {
+            *parts.color_by = RangeColor::Direction {
+                up: ink,
+                down: ink,
+                total: Some(RangeTotal {
+                    column: "total".into(),
+                    color: ink,
+                }),
+            };
+            *parts.connector = Some(RangeConnector {
+                color: ink,
+                width: 1.0,
+            });
+            *parts.whiskers = Some(RangeWhiskers {
+                low: "low".into(),
+                high: "high".into(),
+                width: 1.0,
+                color: None,
+            });
+        })
+    };
+    let theme = named(ChartKind::RangeBars, "warm-neutral");
+    let range = &theme.series.range_bars;
+    let mut series = directed();
+    theme.style_series(&mut series, 0);
+    let DataRenderType::RangeBars {
+        style,
+        color_by,
+        connector,
+        whiskers,
+        ..
+    } = &series.render_type
+    else {
+        panic!("range bars");
+    };
+    let RangeColor::Direction { up, down, total } = color_by else {
+        panic!("the colouring stays by direction");
+    };
+    assert_eq!(Some(*up), range.up);
+    assert_eq!(Some(*down), range.down);
+    assert_eq!(total.as_ref().map(|total| total.color), range.total);
+    assert_eq!(total.as_ref().unwrap().column, "total");
+    assert_eq!(style.corner_radius, 3.0);
+    let connector = connector.as_ref().unwrap();
+    assert_eq!(connector.color, range.connector_color);
+    assert_eq!(connector.width, 1.5);
+    assert_eq!(whiskers.as_ref().unwrap().width, range.whisker_width);
+
+    // The default theme names no direction colour.
+    let mut series = directed();
+    named(ChartKind::RangeBars, "default").style_series(&mut series, 0);
+    let DataRenderType::RangeBars { color_by, .. } = &series.render_type else {
+        panic!("range bars");
+    };
+    assert!(matches!(
+        color_by,
+        RangeColor::Direction { up, down, .. } if *up == ink && *down == ink
+    ));
+
+    // More states than the theme has colours wrap around.
+    let theme = named(ChartKind::RangeBars, "cool-slate");
+    let states = &theme.series.range_bars.states;
+    let mut series =
+        SeriesConfig::range_bars("a", "i", "start", "end", ink).style_range_bars(|parts| {
+            *parts.color_by = RangeColor::State {
+                column: "state".into(),
+                styles: vec![RangeStateStyle { color: ink }; states.len() + 1],
+            };
+            *parts.progress = Some(RangeProgress {
+                column: "progress".into(),
+                remaining_opacity: 1.0,
+            });
+        });
+    theme.style_series(&mut series, 0);
+    let DataRenderType::RangeBars {
+        color_by: RangeColor::State { styles, .. },
+        progress,
+        ..
+    } = &series.render_type
+    else {
+        panic!("range bars by state");
+    };
+    for (k, style) in styles.iter().enumerate() {
+        assert_eq!(style.color, states[k % states.len()]);
+    }
+    assert_eq!(progress.as_ref().unwrap().remaining_opacity, 0.35);
+}
+
+// The document base: a transparent background, an open frame without tick
+// marks in the text colour, and the value grid only.
+#[test]
+fn the_document_themes_draw_an_open_frame_without_ticks() {
+    for kind in [ChartKind::CategoryBars, ChartKind::Distribution] {
+        let theme = named(kind, "document");
+        let mut config = categorical();
+        theme
+            .apply(&mut config, &mut [], SubplotScope::All)
+            .unwrap();
+        assert_eq!(config.background, None);
+        assert!(config.bottom_x.line_visible && config.left_y.line_visible);
+        assert!(!config.top_x.line_visible && !config.right_y.line_visible);
+        assert_eq!(config.left_y.major_tick_length, 0.0);
+        assert_eq!(config.left_y.line_color, theme.chrome.ink);
+        assert!(config.grid.show_major_y && !config.grid.show_major_x);
+    }
+}

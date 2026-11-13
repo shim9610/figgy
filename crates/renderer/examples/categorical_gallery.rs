@@ -1,7 +1,9 @@
 //! Categorical bar documents drawn as Cartesian category bars: each
 //! `CategoricalChart` is opened with `Config::from_categorical`, its columns
 //! uploaded from the borrowed values, and exported by the Cartesian renderer
-//! at 900 x 620 without post-render scaling.
+//! at 900 x 620 without post-render scaling, in the `document` theme.
+//! Each case shows one finish: it varies the theme's bar material before
+//! applying it.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
 #[allow(dead_code)]
@@ -10,14 +12,24 @@ mod gallery;
 use gallery::Result;
 use renderer::{
     Chart, Color, ColumnSource, ExportOptions, ExportSource, LayerRef, Material, Renderer,
-    categorical::*, config::Config,
+    categorical::*,
+    config::Config,
+    theme::{ChartKind, SubplotScope, Theme},
 };
 use std::path::Path;
 
-/// `document` as a Cartesian chart of category bars, exported to `name.png`.
-fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &str) -> Result {
+/// `document` as a Cartesian chart of category bars in `theme`, exported
+/// to `name.png`.
+fn save(
+    r: &mut Renderer,
+    document: &CategoricalChart,
+    theme: &Theme,
+    directory: &Path,
+    name: &str,
+) -> Result {
     document.validate()?;
-    let (config, series, uploads) = Config::from_categorical(document);
+    let horizontal = document.direction == CategoryBarDirection::Horizontal;
+    let (config, mut series, uploads) = Config::from_categorical(document);
     // The previous document's columns go; the positions come first, then
     // the value columns as one batch.
     for upload in &uploads {
@@ -32,7 +44,6 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
     r.add_columns(&columns)?;
     // Fit the value axis to the bars; the fit resets the label format, so
     // the document's is put back before the ticks are rounded.
-    let horizontal = document.direction == CategoryBarDirection::Horizontal;
     let value_format = |c: &Config| {
         if horizontal {
             c.bottom_x.label_style.format.clone()
@@ -49,6 +60,13 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
             || (document.labels == CategoryBarLabels::Auto
                 && document.mode == CategoryBarMode::Grouped));
     let mut chart = Chart::new(config).with_area(0, 0, 900, 620);
+    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    // The grid marks the value axis, which runs along x for horizontal
+    // bars.
+    let grid = &mut chart.config_mut().grid;
+    if horizontal {
+        (grid.show_major_x, grid.show_major_y) = (grid.show_major_y, grid.show_major_x);
+    }
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
     let config = chart.config_mut();
     let value = if horizontal {
@@ -85,6 +103,8 @@ fn main() -> Result {
 }
 
 fn render(renderer: &mut Renderer, directory: &Path) -> Result {
+    let document = gallery::theme_named(ChartKind::CategoryBars, "document")?;
+    let palette = document.series.palette.clone();
     let mut chart = CategoricalChart {
         title: "Grouped · Matte".into(),
         categories: ["A", "B", "C", "D"]
@@ -96,21 +116,19 @@ fn render(renderer: &mut Renderer, directory: &Path) -> Result {
                 "before",
                 "Before",
                 [12., 18., 9., 15.].map(Some).into(),
-                Color::from_rgb8(85, 143, 211),
+                Color::BLACK,
             ),
             BarSeries::new(
                 "after",
                 "After",
                 [18., 24., 14., 21.].map(Some).into(),
-                Color::from_rgb8(255, 166, 105),
+                Color::BLACK,
             ),
         ],
         value_title: "Value".into(),
-        font_size: 18.0,
         ..Default::default()
     };
-    chart.style.material = Material::Matte;
-    save(renderer, &chart, directory, "grouped-matte")?;
+    save(renderer, &chart, &document, directory, "grouped-matte")?;
     chart.title = "Horizontal · Satin".into();
     chart.direction = CategoryBarDirection::Horizontal;
     chart.legend = false;
@@ -122,20 +140,18 @@ fn render(renderer: &mut Renderer, directory: &Path) -> Result {
         "share",
         "Share",
         [72., 58., 43., 29.].map(Some).into(),
-        Color::from_rgb8(61, 125, 205),
+        Color::BLACK,
     )];
-    chart.style.material = Material::SatinMetal;
-    chart.style.gloss = 0.65;
-    for (id, color) in [
-        ("Beta", Color::from_rgb8(67, 153, 211)),
-        ("Gamma", Color::from_rgb8(48, 171, 174)),
-        ("Delta", Color::from_rgb8(98, 194, 192)),
-    ] {
+    // Each category in its own palette colour, the first the series'.
+    for (k, id) in ["Beta", "Gamma", "Delta"].into_iter().enumerate() {
         let mut edit = CategoryBarOverride::new(CategoryBarTarget::new(id, "share"));
-        edit.color = Some(color);
+        edit.color = Some(palette[(k + 1) % palette.len()]);
         chart.overrides.push(edit);
     }
-    save(renderer, &chart, directory, "horizontal-satin")?;
+    let mut satin = document.clone();
+    satin.series.bars.material = Material::SatinMetal;
+    satin.series.bars.gloss = 0.65;
+    save(renderer, &chart, &satin, directory, "horizontal-satin")?;
     chart = CategoricalChart {
         title: "Stacked · Enamel".into(),
         categories: ["A", "B", "C"]
@@ -147,42 +163,43 @@ fn render(renderer: &mut Renderer, directory: &Path) -> Result {
                 "core",
                 "Core",
                 [12., 18., 9.].map(Some).into(),
-                Color::from_rgb8(66, 133, 208),
+                Color::BLACK,
             ),
             BarSeries::new(
                 "extra",
                 "Extra",
                 [8., 6., 12.].map(Some).into(),
-                Color::from_rgb8(63, 169, 167),
+                Color::BLACK,
             ),
             BarSeries::new(
                 "other",
                 "Other",
                 [5., 6., 4.].map(Some).into(),
-                Color::from_rgb8(255, 170, 113),
+                Color::BLACK,
             ),
         ],
         mode: CategoryBarMode::Stacked,
         value_title: "Value".into(),
-        font_size: 18.,
         ..Default::default()
     };
-    chart.style.material = Material::Enamel;
-    save(renderer, &chart, directory, "stacked-enamel")?;
+    let mut enamel = document.clone();
+    enamel.series.bars.material = Material::Enamel;
+    save(renderer, &chart, &enamel, directory, "stacked-enamel")?;
     chart.title = "100% Stacked · Outline".into();
     chart.direction = CategoryBarDirection::Horizontal;
     chart.mode = CategoryBarMode::PercentStacked;
     chart.label_format = CategoryBarLabelFormat::Percent;
     chart.value_title = "Share".into();
-    chart.style.material = Material::Flat;
-    chart.style.outline = true;
-    save(renderer, &chart, directory, "percent-outline")?;
+    let mut outlined = document.clone();
+    outlined.series.bars.material = Material::Flat;
+    outlined.series.bars.outline = true;
+    save(renderer, &chart, &outlined, directory, "percent-outline")?;
     chart.title = "Positive and negative values".into();
     chart.mode = CategoryBarMode::Stacked;
     chart.direction = CategoryBarDirection::Vertical;
     chart.label_format = CategoryBarLabelFormat::Value;
     chart.value_title = "Change".into();
     chart.series[1].values = vec![Some(-8.), Some(-6.), Some(-12.)];
-    save(renderer, &chart, directory, "signed-stacked")?;
+    save(renderer, &chart, &outlined, directory, "signed-stacked")?;
     Ok(())
 }

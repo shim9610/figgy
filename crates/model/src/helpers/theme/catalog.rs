@@ -5,7 +5,9 @@
 //! palette and their family's part:
 //! - [`gallery`]: white paper, a navy title, a slate frame and a pale grid;
 //! - [`scene`]: the designed scenes' chrome, an opaque background with no
-//!   axis lines or ticks, a horizontal grid and large text.
+//!   axis lines or ticks, a horizontal grid and large text;
+//! - [`document`]: the legacy documents' chrome, a transparent background,
+//!   an open frame without ticks in the text colour and a pale value grid.
 
 use super::{ChartKind, RadialTheme, Theme};
 use crate::color::Color;
@@ -143,5 +145,36 @@ fn scene(kind: ChartKind, bg: Color, ink: Color, grid: Color) -> Theme {
     bar.gap = 24.0;
     bar.ticks = crate::config::TickVisibility::None;
     bar.label_size = 18.0;
+    theme
+}
+
+/// The legacy documents' chrome (`Config::from_categorical`,
+/// `Config::from_boxplot`) in `text`: a transparent background, the left
+/// and bottom axis lines in the text colour without ticks, every text in
+/// the text colour at 18 px with a title half as large again, and a pale
+/// horizontal grid.
+fn document(kind: ChartKind, text: Color) -> Theme {
+    let mut theme = Theme::documented(kind);
+    let chrome = &mut theme.chrome;
+    // An open frame whose ticks have no length: lines on the labelled
+    // sides only.
+    chrome.axis_preset = AxisPreset::OpenOutward;
+    chrome.major_tick_length = 0.0;
+    chrome.minor_tick_length = 0.0;
+    chrome.axis_width = 1.0;
+    chrome.ink = text;
+    chrome.frame_ink = text;
+    chrome.label_ink = text;
+    chrome.title_size = 27.0;
+    chrome.axis_title_size = 18.0;
+    chrome.tick_label_size = 18.0;
+    chrome.legend_size = 18.0;
+    let grid = &mut chrome.grid;
+    grid.major_x.show = false;
+    grid.major_x.color = rgb(224, 229, 235);
+    grid.major_y.show = true;
+    grid.major_y.color = rgb(224, 229, 235);
+    grid.minor_x.show = false;
+    grid.minor_y.show = false;
     theme
 }

@@ -1,12 +1,13 @@
 //! Box plot documents drawn as Cartesian box plot series: each
 //! `BoxPlotChart` is opened with `Config::from_boxplot`, its positions,
 //! records and outliers uploaded from the borrowed summaries, and exported by
-//! the Cartesian renderer at 960 x 640 without post-render scaling. Every
-//! case labels each box with its median (`BoxPlotLabels::Median`, written
-//! into `labels.text` by the reader).
+//! the Cartesian renderer at 960 x 640 without post-render scaling, in the
+//! `document` theme. Every case labels each box with its median
+//! (`BoxPlotLabels::Median`, written into `labels.text` by the reader); the
+//! cases that show a finish vary the theme's box part before applying it.
 //!
 //! Two designed scenes build their box plot series directly, also at
-//! 960 x 640:
+//! 960 x 640, in the `cool-slate` and `warm-paper` themes:
 //! - `violins` writes `gallery-violin.png`: split violins, two conditions per
 //!   category as the two halves of one series, each half the host's density
 //!   curve uploaded as a ragged column.
@@ -38,10 +39,10 @@ use renderer::{
         BarGroups, BoxPoints, BoxPointsStyle, CategoryBarDirection, Violin, ViolinBody, ViolinHalf,
         ViolinStyle,
     },
-    theme::SubplotScope,
+    theme::{ChartKind, SubplotScope, Theme},
 };
 use std::path::Path;
-use styled::{rgb, rgba};
+use styled::{background, theme_named, themed};
 
 fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Option<BoxSummary> {
     let mut v = BoxSummary::new(low, q1, med, q3, high);
@@ -52,11 +53,17 @@ fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Opt
     Some(v)
 }
 
-/// `document` as a Cartesian chart of box plot series, exported to
-/// `name.png`.
-fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str) -> Result {
+/// `document` as a Cartesian chart of box plot series in `theme`, exported
+/// to `name.png`.
+fn save(
+    r: &mut Renderer,
+    document: &BoxPlotChart,
+    theme: &Theme,
+    directory: &Path,
+    name: &str,
+) -> Result {
     document.validate()?;
-    let (config, series, uploads) = Config::from_boxplot(document);
+    let (config, mut series, uploads) = Config::from_boxplot(document);
     for upload in &uploads {
         match &upload.values {
             UploadValues::BoxRecord(_) => {
@@ -91,6 +98,13 @@ fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str)
     // The fixed `value_range` of the documents is the value axis; a
     // document without one fits the records' and outliers' statistics.
     let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
+    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    // The grid marks the value axis, which runs along x for horizontal
+    // boxes.
+    if document.direction == BoxPlotDirection::Horizontal {
+        let grid = &mut chart.config_mut().grid;
+        (grid.show_major_x, grid.show_major_y) = (grid.show_major_y, grid.show_major_x);
+    }
     if document.value_range.is_none() {
         chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
     }
@@ -213,20 +227,14 @@ fn upload_groups(r: &mut Renderer, id: &str, groups: &[Vec<f64>], grid: usize) -
     Ok(peak)
 }
 
-/// The shared gallery chrome (`support/styled.rs`) scaled to 960 x 640:
-/// the scene's theme with smaller text. The margins are fitted to the
-/// labels when the scene is exported.
-fn designed(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -> Chart {
-    let mut chart = gallery::chart(title, x, y, SCENE);
-    let config = chart.config_mut();
-    styled::chrome(config, bg, ink, grid);
-    let mut theme = styled::theme(bg, ink, grid);
-    theme.chrome.title_size = 28.;
-    theme.chrome.axis_title_size = 19.;
-    theme.chrome.tick_label_size = 18.;
-    theme.chrome.legend_size = 18.;
-    theme.apply_chrome(config, SubplotScope::All);
-    config.legend.padding = 12.;
+/// A designed scene of [`SCENE`] with its titles and a visible top-left
+/// legend, for a built-in theme applied with its series. The margins are
+/// fitted to the labels when the scene is exported.
+fn designed(title: &str, x: &str, y: &str) -> Chart {
+    let mut chart = gallery::titled(title, x, y, SCENE);
+    let legend = &mut chart.config_mut().legend;
+    legend.visible = true;
+    legend.corner = LegendCorner::TopLeft;
     chart
 }
 
@@ -238,17 +246,15 @@ fn violin_series(id: &str, color: Color, violin: Violin) -> SeriesConfig {
 
 /// A density half over `{id}.curve` and `{id}.density`, its widest point
 /// `peak` filling the half slot. A `None` fill takes the series colour or
-/// a box override's; a `None` outline draws none.
-fn half(id: &str, peak: f64, fill: Option<Color>, outline: Option<Color>) -> ViolinHalf {
+/// a box override's. The theme draws its outline.
+fn half(id: &str, peak: f64, fill: Option<Color>) -> ViolinHalf {
     let mut half = ViolinHalf {
         curve: format!("{id}.curve"),
         density: format!("{id}.density"),
         density_scale: 1.0,
         style: ViolinStyle {
             fill,
-            outline: outline.is_some(),
-            outline_width: 1.2,
-            outline_color: outline.unwrap_or(Color::BLACK),
+            ..ViolinStyle::default()
         },
     };
     half.fit_density_scale(peak);
@@ -282,10 +288,14 @@ fn save_scene(
 // left half and after a night without sleep on the right. Both halves are
 // the host's density curves on one shared scale, so their widths compare.
 fn violins(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(250, 250, 252);
-    let ink = rgb(44, 50, 72);
-    let rested = rgb(86, 136, 204);
-    let tired = rgb(234, 130, 100);
+    let theme = theme_named(ChartKind::Distribution, "cool-slate")?;
+    let bg = background(&theme);
+    // The two conditions' legend swatches, in the theme's first two
+    // colours as the halves are.
+    let (rested, tired) = match theme.series.palette.as_slice() {
+        [rested, tired, ..] => (*rested, *tired),
+        _ => return Err("the theme has fewer than two colours".into()),
+    };
     let loads = ["1-back", "2-back", "3-back", "4-back"];
     let n = 220;
     let rested_samples: Vec<Vec<f64>> = (0..loads.len())
@@ -327,9 +337,6 @@ fn violins(r: &mut Renderer, out: &Path) -> Result {
         "Reaction time by memory load",
         "Working-memory task",
         "Reaction time (ms)",
-        bg,
-        ink,
-        rgb(232, 234, 242),
     );
     let config = chart.config_mut();
     config.bottom_x.categories = Some(
@@ -342,56 +349,54 @@ fn violins(r: &mut Renderer, out: &Path) -> Result {
         group_width: 0.9,
         ..BarGroups::default()
     });
-    config.legend.corner = LegendCorner::TopLeft;
     // One series holds both conditions as the halves of its violins and
     // draws no box (no record): a box would summarise one condition only.
-    let outline = rgb(58, 64, 88);
     let mut split = violin_series(
         "rt",
-        rested,
+        Color::BLACK,
         Violin {
             body: ViolinBody::Split {
-                low: Some(half("rt-rested", peak, Some(rested), Some(outline))),
-                high: Some(half("rt-tired", peak, Some(tired), Some(outline))),
+                // Each half has a fill of its own, which the theme
+                // colours: the series' colour and the one after it.
+                low: Some(half("rt-rested", peak, Some(Color::BLACK))),
+                high: Some(half("rt-tired", peak, Some(Color::BLACK))),
             },
             box_width: 0.0,
         },
     );
     split.y_column.clear();
-    chart = chart
-        .with_legend_swatch("Rested", rested)
-        .with_legend_swatch("After 24 h awake", tired);
     chart.set_y_range(200., 1000.);
     chart.config_mut().left_y.major_spacing = 200.;
     chart.config_mut().left_y.auto_significant_digits();
-    save_scene(r, &mut chart, &[split], bg, &out.join("gallery-violin.png"))
+    let mut specs = [split];
+    themed(&mut chart, &theme, &mut specs)?;
+    chart = chart
+        .with_legend_swatch("Rested", rested)
+        .with_legend_swatch("After 24 h awake", tired);
+    save_scene(r, &mut chart, &specs, bg, &out.join("gallery-violin.png"))
 }
 
 // Rainclouds: door-to-door commute times by mode, each a half violin of the
 // host's density above a narrow box of its quartiles, with every sample
 // jittered below.
 fn raincloud(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(252, 249, 244);
-    let ink = rgb(70, 60, 56);
-    // (id, label, colour, sample generator), listed top-down: the first
-    // category of a horizontal axis is the bottom row, so the axis and the
-    // positions take them in reverse.
-    let modes: [(&str, &str, Color, &dyn Fn(usize) -> f64); 5] = [
-        ("bike", "Bike", rgb(56, 158, 168), &|i| {
-            19.0 + 3.5 * normal(72, i)
-        }),
-        ("car", "Car", rgb(214, 104, 88), &|i| {
+    let theme = theme_named(ChartKind::Distribution, "warm-paper")?;
+    let bg = background(&theme);
+    // (id, label, sample generator), listed top-down: the first category
+    // of a horizontal axis is the bottom row, so the axis and the positions
+    // take them in reverse. Mode `k` takes the theme's colour `k`.
+    let modes: [(&str, &str, &dyn Fn(usize) -> f64); 5] = [
+        ("bike", "Bike", &|i| 19.0 + 3.5 * normal(72, i)),
+        ("car", "Car", &|i| {
             // Congestion stretches the right tail.
             let u = ((noise(79, i) + 1.0) * 0.5).max(1e-3);
             18.0 + 3.0 * normal(78, i) - 9.0 * u.ln()
         }),
-        ("train", "Train", rgb(124, 112, 196), &|i| {
+        ("train", "Train", &|i| {
             27.0 + 4.0 * normal(76, i) + 9.0 * ((noise(77, i) + 1.0) * 0.5).powi(4)
         }),
-        ("walk", "Walk", rgb(118, 170, 104), &|i| {
-            31.0 + 6.5 * normal(71, i)
-        }),
-        ("bus", "Bus", rgb(232, 168, 64), &|i| {
+        ("walk", "Walk", &|i| 31.0 + 6.5 * normal(71, i)),
+        ("bus", "Bus", &|i| {
             // One route, or two with a transfer.
             if noise(73, i) > -0.2 {
                 34.0 + 5.0 * normal(74, i)
@@ -404,25 +409,18 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     let samples: Vec<Vec<f64>> = modes
         .iter()
         .rev()
-        .map(|m| (0..n).map(m.3).collect())
+        .map(|m| (0..n).map(m.2).collect())
         .collect();
     let positions: Vec<f64> = (0..modes.len()).map(|k| k as f64).collect();
     r.add_column("commute.pos", &positions)?;
     let peak = upload_groups(r, "commute", &samples, 160)?;
-    let mut chart = designed(
-        "Commute time by mode",
-        "Door-to-door time (min)",
-        "",
-        bg,
-        ink,
-        rgb(235, 228, 216),
-    );
+    let mut chart = designed("Commute time by mode", "Door-to-door time (min)", "");
     let config = chart.config_mut();
     config.left_y.categories = Some(
         modes
             .iter()
             .rev()
-            .map(|&(id, label, _, _)| Category::new(id, label))
+            .map(|&(id, label, _)| Category::new(id, label))
             .collect(),
     );
     config.bar_groups = Some(BarGroups {
@@ -430,47 +428,41 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
         group_width: 0.92,
         ..BarGroups::default()
     });
-    config.grid.show_major_x = true;
-    config.grid.show_major_y = false;
     config.legend.visible = false;
+    let palette = &theme.series.palette;
     let cloud = violin_series(
         "commute",
-        modes[0].2,
+        Color::BLACK,
         Violin {
             body: ViolinBody::Split {
                 low: None,
                 // No fill of its own: each category takes its box colour.
-                high: Some(half("commute", peak, None, None)),
+                high: Some(half("commute", peak, None)),
             },
             box_width: 0.1,
         },
     )
     .style_box_plot(|parts| {
-        let style = parts.style;
-        style.caps = false;
-        style.show_outliers = false;
-        style.outline_color = ink;
-        style.median_color = ink;
-        style.median_width = 2.0;
-        style.whisker_color = ink;
-        style.whisker_width = 1.4;
+        parts.style.show_outliers = false;
+        // Each mode after the first in its own palette colour; the first
+        // takes the series'.
         *parts.overrides = Some(
             modes
                 .iter()
+                .enumerate()
                 .skip(1)
-                .map(|&(id, _, color, _)| {
+                .map(|(k, &(id, _, _))| {
                     let mut o = BoxPlotOverride::new(BoxPlotTarget::new(id, "commute"));
-                    o.color = Some(color);
+                    o.color = Some(palette[k % palette.len()]);
                     o
                 })
                 .collect(),
         );
+        // The samples jittered in a band below each box.
         *parts.points = Some(BoxPoints {
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle {
-                color: rgba(70, 60, 56, 0.55),
-                size: 4.0,
                 jitter: 0.4,
                 offset: -0.45,
                 ..BoxPointsStyle::default()
@@ -480,10 +472,12 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     chart.set_x_range(0., 80.);
     chart.config_mut().bottom_x.major_spacing = 10.;
     chart.config_mut().bottom_x.auto_significant_digits();
+    let mut specs = [cloud];
+    themed(&mut chart, &theme, &mut specs)?;
     save_scene(
         r,
         &mut chart,
-        &[cloud],
+        &specs,
         bg,
         &out.join("gallery-raincloud.png"),
     )
@@ -495,6 +489,8 @@ fn main() -> Result {
 }
 
 fn render(r: &mut Renderer, dir: &Path) -> Result {
+    let document = theme_named(ChartKind::Distribution, "document")?;
+    let palette = document.series.palette.clone();
     let mut c = BoxPlotChart {
         title: "Classic matte".into(),
         categories: ["Control", "Low", "High"]
@@ -509,33 +505,31 @@ fn render(r: &mut Renderer, dir: &Path) -> Result {
                 summary(20., 42., 55., 68., 85., 96.),
                 summary(8., 24., 36., 49., 67., 82.),
             ],
-            Color::from_rgb8(65, 144, 208),
+            Color::BLACK,
         )],
         value_range: Some([0., 100.]),
         value_title: "Response".into(),
-        font_size: 18.,
         legend: false,
         // The median above every box, in every case below.
         labels: BoxPlotLabels::Median,
         ..Default::default()
     };
-    for (id, color) in [
-        ("Low", Color::from_rgb8(42, 168, 162)),
-        ("High", Color::from_rgb8(230, 169, 64)),
-    ] {
+    // Each category after the first in its own palette colour; the first
+    // takes the series'.
+    for (k, id) in ["Low", "High"].into_iter().enumerate() {
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new(id, "response"));
-        o.color = Some(color);
+        o.color = Some(palette[(k + 1) % palette.len()]);
         c.overrides.push(o);
     }
-    save(r, &c, dir, "01-classic-matte")?;
+    save(r, &c, &document, dir, "01-classic-matte")?;
     c.title = "Satin finish".into();
-    c.style.material = Material::SatinMetal;
-    c.style.gloss = 0.6;
-    save(r, &c, dir, "02-satin")?;
+    let mut satin = document.clone();
+    satin.series.boxes.material = Material::SatinMetal;
+    satin.series.boxes.gloss = 0.6;
+    save(r, &c, &satin, dir, "02-satin")?;
     c.title = "Horizontal comparison".into();
     c.direction = BoxPlotDirection::Horizontal;
-    c.style.material = Material::Matte;
-    save(r, &c, dir, "03-horizontal")?;
+    save(r, &c, &document, dir, "03-horizontal")?;
     c.title = "Grouped + notch".into();
     c.direction = BoxPlotDirection::Vertical;
     c.style.notched = true;
@@ -555,14 +549,15 @@ fn render(r: &mut Renderer, dir: &Path) -> Result {
             summary(12., 30., 44., 58., 74., 88.),
             summary(9., 27., 40., 52., 69., 80.),
         ],
-        Color::from_rgb8(42, 168, 162),
+        Color::BLACK,
     ));
-    save(r, &c, dir, "04-grouped-notch")?;
+    save(r, &c, &document, dir, "04-grouped-notch")?;
     c.title = "Mean and individual styling".into();
     c.style.show_mean = true;
-    c.style.outline = false;
     c.selected = Some(BoxPlotTarget::new("B", "after"));
-    save(r, &c, dir, "05-mean-selection")?;
+    let mut unoutlined = document.clone();
+    unoutlined.series.boxes.outline = false;
+    save(r, &c, &unoutlined, dir, "05-mean-selection")?;
     violins(r, dir)?;
     raincloud(r, dir)?;
     Ok(())

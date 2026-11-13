@@ -94,7 +94,8 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
 // 3. A product analytics card: horizontal stacks and rounded ends, a
 // categorical document opened as a Cartesian chart of category bars.
 fn revenue(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(247, 248, 253);
+    let theme = theme_named(ChartKind::CategoryBars, "revenue")?;
+    let bg = background(&theme);
     let chart = CategoricalChart {
         title: "Revenue mix / by region".into(),
         categories: ["North America", "Europe", "Asia Pacific", "Latin America"]
@@ -107,19 +108,19 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
                 "team",
                 "Team",
                 vec![Some(42.), Some(36.), Some(28.), Some(16.)],
-                rgb(98, 86, 225),
+                Color::BLACK,
             ),
             BarSeries::new(
                 "business",
                 "Business",
                 vec![Some(28.), Some(23.), Some(19.), Some(14.)],
-                rgb(157, 141, 242),
+                Color::BLACK,
             ),
             BarSeries::new(
                 "enterprise",
                 "Enterprise",
                 vec![Some(19.), Some(17.), Some(12.), Some(9.)],
-                rgb(37, 181, 167),
+                Color::BLACK,
             ),
         ],
         direction: CategoryBarDirection::Horizontal,
@@ -128,19 +129,9 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         label_decimals: 0,
         value_title: "Monthly revenue (USD thousands)".into(),
         group_width: 0.55,
-        font_size: 20.,
-        background: bg,
-        text_color: rgb(52, 57, 85),
-        grid: false,
-        style: CategoryBarStyle {
-            material: Material::Matte,
-            corner_radius: 12.,
-            texture_strength: 0.,
-            ..Default::default()
-        },
         ..Default::default()
     };
-    let (config, specs, uploads) = renderer::config::Config::from_categorical(&chart);
+    let (config, mut specs, uploads) = renderer::config::Config::from_categorical(&chart);
     // The positions, then the value columns as one batch.
     let (positions, values) = uploads.split_first().expect("the positions column");
     r.add_column(positions.column.clone(), &positions.values)?;
@@ -150,6 +141,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_columns(&columns)?;
     let mut cartesian = renderer::Chart::new(config).with_area(0, 0, SIZE.0, SIZE.1);
+    themed(&mut cartesian, &theme, &mut specs)?;
     // The value axis runs 0 to 100 (the largest stack is 89) in steps of 20,
     // printed in the document's integer format, which a range change resets.
     let format = cartesian.config().bottom_x.label_style.format.clone();
@@ -157,13 +149,10 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
     let value_axis = &mut cartesian.config_mut().bottom_x;
     value_axis.major_spacing = 20.;
     value_axis.label_style.format = format;
-    // The legend as the design draws it: no box, a filled square for each
-    // part of the stacks, the entries close together in one row centred
-    // under the x title. The squares are the only fielded segments.
+    // The legend as the design draws it: a filled square for each part of
+    // the stacks, the entries close together in one row centred under the
+    // x title. The squares are the only fielded segments.
     let legend = &mut cartesian.config_mut().legend;
-    legend.bg_color = Color::new(0., 0., 0., 0.);
-    legend.border_color = Color::new(0., 0., 0., 0.);
-    legend.padding = 4.;
     let size = legend.content.font_size;
     for mark in legend
         .content
