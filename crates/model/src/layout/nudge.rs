@@ -458,11 +458,13 @@ impl Config {
             }
         }
         if dy != 0.0 {
-            let new_top = self.top_x.out_margin + dy;
+            // The top band is group geometry too (overlay X axes share it).
+            let new_top = super::top_out_margin_effective(self) + dy;
             let new_bottom = self.bottom_x.out_margin - dy;
             if new_top >= 0.0 && new_bottom >= 0.0 {
                 self.top_x.out_margin = new_top;
                 self.bottom_x.out_margin = new_bottom;
+                super::sync_overlay_top_margins(self);
                 moved = true;
             }
         }
@@ -928,9 +930,11 @@ impl Config {
             return NudgeResult::Moved;
         }
         let old = match side {
-            // The right band is group geometry shared with the overlay axes.
+            // The right and top bands are group geometry shared with the
+            // overlay axes.
             Side::Right => super::right_out_margin_effective(self),
-            Side::Top | Side::Bottom | Side::Left => axis_ref(self, &side).out_margin,
+            Side::Top => super::top_out_margin_effective(self),
+            Side::Bottom | Side::Left => axis_ref(self, &side).out_margin,
         };
         let new = old + dm;
         if new < 0.0 {
@@ -938,8 +942,10 @@ impl Config {
         }
         let backup = self.clone();
         axis_mut(self, &side).out_margin = new;
-        if side == Side::Right {
-            super::sync_overlay_right_margins(self);
+        match side {
+            Side::Right => super::sync_overlay_right_margins(self),
+            Side::Top => super::sync_overlay_top_margins(self),
+            Side::Bottom | Side::Left => {}
         }
         // The shifted margin must still leave a valid data area.
         if self.data_area().is_err() {

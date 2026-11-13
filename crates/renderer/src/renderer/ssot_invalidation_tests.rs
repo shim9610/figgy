@@ -1265,6 +1265,10 @@ fn overlay_edits() -> Vec<Edit> {
         Changed
     );
     overlay!(y_axis.breaks, Some(cut(0.6, 1.2)), Packed, Changed);
+    // The links choose the axes the overlay panel scales by and draws, so
+    // each is geometry of its own panel.
+    overlay!(link_x, false, Packed, Changed);
+    overlay!(link_y, true, Packed, Changed);
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
         apply: |c| {
@@ -1280,6 +1284,48 @@ fn overlay_edits() -> Vec<Edit> {
         pixels: Pixels::Changed,
         streams: false,
     });
+    cases
+}
+
+/// Edits of an overlay's own X axis run against [`baseline_with_overlay`]
+/// with `link_x` off, so the overlay draws its X axis on the top side and
+/// scales by it: its range, scale and direction are geometry of its panel,
+/// its band widens the shared top margin, and the rest is chrome of the
+/// overlay panel, as for its Y axis (`overlay_edits`).
+fn overlay_x_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    macro_rules! overlay {
+        ($($field:ident).+, $value:expr, $work:ident, $pixels:ident) => {
+            cases.push(Edit {
+                name: concat!("overlays[0].", stringify!($($field).+), " (own x)"),
+                apply: |c| c.overlays[0].$($field).+ = $value,
+                work: Work::$work,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::$pixels,
+                streams: false,
+            });
+        };
+    }
+    overlay!(link_x, true, Packed, Changed);
+    overlay!(x_axis.min, 0.2, Packed, Changed);
+    overlay!(x_axis.max, 1.4, Packed, Changed);
+    overlay!(x_axis.inverted, true, Packed, Changed);
+    overlay!(x_axis.out_margin, 70.0, Packed, Changed);
+    overlay!(x_axis.major_tick_length, 12.0, Packed, Changed);
+    overlay!(x_axis.breaks, Some(cut(0.6, 0.9)), Packed, Changed);
+    overlay!(x_axis.major_spacing, 0.25, Prefix, Changed);
+    overlay!(x_axis.line_width, 3.0, Prefix, Changed);
+    overlay!(x_axis.label_style.font_size, 13.0, Prefix, Changed);
+    overlay!(x_axis.label_style.label_offset_y, 4.0, Prefix, Changed);
+    overlay!(
+        x_axis.title_option.text,
+        RichText::plain("Top", Color::BLACK, 10.0, ""),
+        Prefix,
+        Changed
+    );
+    overlay!(x_axis.title_option.offset_y, 4.0, Prefix, Changed);
     cases
 }
 
@@ -1620,6 +1666,20 @@ fn baseline_with_overlay() -> Config {
     c
 }
 
+fn baseline_with_overlay_x() -> Config {
+    let mut c = baseline_with_overlay();
+    let overlay = &mut c.overlays[0];
+    overlay.link_x = false;
+    overlay.x_axis.min = 0.0;
+    overlay.x_axis.max = 1.6;
+    overlay.x_axis.major_spacing = 0.4;
+    overlay.x_axis.out_margin = 35.0;
+    overlay.x_axis.label_style.font_size = 10.0;
+    overlay.x_axis.title_option.visible = true;
+    overlay.x_axis.title_option.text = RichText::plain("Own x", Color::BLACK, 10.0, "");
+    c
+}
+
 fn values() -> (crate::Column<f32>, crate::Column<f32>) {
     (
         crate::Column {
@@ -1770,6 +1830,7 @@ fn matrix(resident: bool, cache: bool) {
         (baseline(), edits()),
         (baseline_with_colorbar(), colorbar_edits()),
         (baseline_with_overlay(), overlay_edits()),
+        (baseline_with_overlay_x(), overlay_x_edits()),
         (baseline_with_subplot(), subplot_edits()),
         (baseline_with_annotations(), annotation_edits()),
         (baseline_with_categories(), category_edits()),
@@ -2067,6 +2128,9 @@ fn config_fields_are_classified() {
     } = crate::AnnotationLayer::default();
     let crate::OverlayLayer {
         y_axis: _, // every AxisOptions field, as overlay!(y_axis.*)
+        link_x: _, // overlays[0].link_x, both ways (overlay_x_edits)
+        x_axis: _, // overlay_x_edits(): x_axis.* as y_axis.* (own x)
+        link_y: _, // overlays[0].link_y
         series: _, // overlays[0].series
         legend: _, // overlays[0].legend (None -> Some)
     } = overlays.into_iter().next().unwrap_or_default();

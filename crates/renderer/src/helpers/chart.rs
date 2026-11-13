@@ -51,7 +51,26 @@ impl Chart {
         self.config_mut().overlays.push(crate::OverlayLayer {
             y_axis,
             series: series.iter().map(|id| (*id).to_owned()).collect(),
-            legend: None,
+            ..crate::OverlayLayer::default()
+        });
+        self
+    }
+
+    /// The chart with an overlay layer that has an X axis of its own as
+    /// well: `x_axis` drawn on the top side and `y_axis` on the right, both
+    /// scaling the series `series` names (`OverlayLayer::link_x` off).
+    pub fn with_overlay_xy(
+        mut self,
+        x_axis: crate::config::AxisOptions,
+        y_axis: crate::config::AxisOptions,
+        series: &[&str],
+    ) -> Self {
+        self.config_mut().overlays.push(crate::OverlayLayer {
+            y_axis,
+            link_x: false,
+            x_axis,
+            series: series.iter().map(|id| (*id).to_owned()).collect(),
+            ..crate::OverlayLayer::default()
         });
         self
     }

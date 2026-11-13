@@ -147,7 +147,7 @@ impl Config {
             }
         }
         // Breaks (#200) cut the data axes of a rectangular chart: the x and
-        // y the data is placed on, and an overlay's own y. The secondary
+        // y the data is placed on, and an overlay's own x and y. The secondary
         // axes and the colourbar draw no data of their own to cut, and the
         // other coordinate systems have no straight value axis.
         for (field, axis) in [("top_x", &self.top_x), ("right_y", &self.right_y)]
@@ -160,22 +160,32 @@ impl Config {
         }
         let broken = self.bottom_x.breaks.is_some()
             || self.left_y.breaks.is_some()
-            || self.overlays.iter().any(|o| o.y_axis.breaks.is_some());
+            || self
+                .overlays
+                .iter()
+                .any(|o| o.y_axis.breaks.is_some() || o.x_axis.breaks.is_some());
         if broken && !matches!(self.coordinates, crate::coordinates::Coordinates::Cartesian) {
             return Err(ConfigError::chart(
                 "coordinates",
                 crate::RuleKind::BreaksChart,
             ));
         }
-        // Overlay y axes are ranges of the same kind, and the layer
-        // membership must be unambiguous before a series is drawn on a panel.
+        // Overlay axes are ranges of the same kind, linked or not (a later
+        // edit may unlink them), and the layer membership must be
+        // unambiguous before a series is drawn on a panel. Group headers are
+        // drawn by the parent's x axes only.
         for overlay in &self.overlays {
-            validate_axis_range("overlays.y_axis", &overlay.y_axis)?;
-            if overlay.y_axis.category_groups.is_some() {
-                return Err(ConfigError::chart(
-                    "overlays.y_axis",
-                    crate::RuleKind::CategoryGroupsAxis,
-                ));
+            for (field, axis) in [
+                ("overlays.y_axis", &overlay.y_axis),
+                ("overlays.x_axis", &overlay.x_axis),
+            ] {
+                validate_axis_range(field, axis)?;
+                if axis.category_groups.is_some() {
+                    return Err(ConfigError::chart(
+                        field,
+                        crate::RuleKind::CategoryGroupsAxis,
+                    ));
+                }
             }
         }
         self.validate_overlays()
@@ -204,14 +214,17 @@ impl Config {
         .chain(axes.map(|(field, axis)| (field, &axis.title_option.text)))
         .chain(colorbar_axis.map(|axis| ("colorbar.axis", &axis.title_option.text)))
         .chain(self.overlays.iter().flat_map(|overlay| {
-            [("overlays.y_axis", &overlay.y_axis.title_option.text)]
-                .into_iter()
-                .chain(
-                    overlay
-                        .legend
-                        .as_ref()
-                        .map(|legend| ("overlays.legend", &legend.content)),
-                )
+            [
+                ("overlays.y_axis", &overlay.y_axis.title_option.text),
+                ("overlays.x_axis", &overlay.x_axis.title_option.text),
+            ]
+            .into_iter()
+            .chain(
+                overlay
+                    .legend
+                    .as_ref()
+                    .map(|legend| ("overlays.legend", &legend.content)),
+            )
         }));
         for (field, text) in texts {
             text.validate_math().map_err(|error| {
@@ -443,6 +456,50 @@ mod tests {
                 stem: None,
             }),
         }
+    }
+
+    // An overlay's own X axis is held to the rules of its Y axis, linked or
+    // not: a bad range, a group-header row or a malformed title is refused
+    // and named `overlays.x_axis`; breaks are allowed on it, as on the Y.
+    #[test]
+    fn an_overlay_x_axis_is_validated_like_its_y_axis() {
+        let base = || {
+            let mut config = crate::defaults::config();
+            config.overlays.push(crate::defaults::overlay_layer());
+            config
+        };
+        assert_eq!(base().validate_chart(), Ok(()));
+        for link_x in [true, false] {
+            let mut config = base();
+            config.overlays[0].link_x = link_x;
+            config.overlays[0].x_axis.scale = AxisScale::Logarithmic;
+            config.overlays[0].x_axis.min = -1.0;
+            assert_eq!(
+                config.validate_chart().map_err(|e| e.field),
+                Err("overlays.x_axis")
+            );
+        }
+        let mut config = base();
+        config.overlays[0].link_x = false;
+        config.overlays[0].x_axis.categories = Some(vec![crate::config::Category::new("a", "A")]);
+        config.overlays[0].x_axis.category_groups = Some(crate::config::CategoryGroups {
+            groups: Vec::new(),
+            offset: [0.0, 0.0],
+        });
+        let error = config.validate_chart().unwrap_err();
+        assert_eq!(
+            (error.field, error.kind),
+            ("overlays.x_axis", crate::RuleKind::CategoryGroupsAxis)
+        );
+        let mut config = base();
+        config.overlays[0].link_x = false;
+        config.overlays[0].x_axis.min = 0.0;
+        config.overlays[0].x_axis.max = 10.0;
+        config.overlays[0].x_axis.breaks = Some(crate::config::AxisBreaks {
+            ranges: vec![crate::config::AxisBreak::new(2.0, 4.0)],
+            ..Default::default()
+        });
+        assert_eq!(config.validate_chart(), Ok(()));
     }
 
     #[test]

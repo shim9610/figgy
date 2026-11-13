@@ -839,6 +839,7 @@ impl Theme {
         self.style_legend(&mut config.legend, series, colormap.as_ref());
         for overlay in &mut config.overlays {
             self.style_axis(&mut overlay.y_axis);
+            self.style_axis(&mut overlay.x_axis);
             if let Some(legend) = &mut overlay.legend {
                 self.style_legend(legend, series, colormap.as_ref());
             }

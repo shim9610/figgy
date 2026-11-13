@@ -108,16 +108,23 @@ impl AnnotationLayer {
     }
 }
 
-/// One overlay layer of a Cartesian document: a second Y axis drawn on the
-/// right side of the shared data area, with the series that are scaled by it.
+/// One overlay layer of a Cartesian document: series drawn over the shared
+/// data area, scaled by axes of their own or by the parent's.
 ///
-/// An overlay holds only what may differ from the parent `Config`: its Y
-/// axis, the ids of the series it owns and an optional legend of its own. The
-/// chart area, both X axes, the chart title, the shared legend, the grid, the
-/// colourbar and `draw_style` exist exactly once, on the parent, so the type
-/// itself guarantees that a document has one X range and one plot rectangle.
-/// Expansion (`Config::expand`) turns the parent and its overlays into one
-/// internal panel each; those panels are never serialized.
+/// Each side is linked or the overlay's own. By default the overlay follows
+/// the parent's X axis (`link_x`) and has a Y axis of its own, drawn on the
+/// right (`y_axis`). With `link_x` off it has an X axis of its own too,
+/// `x_axis`, drawn on the top side; with `link_y` on it follows the parent's
+/// left Y axis and draws none. A linked side keeps the overlay's own axis
+/// settings, so unlinking it again restores them.
+///
+/// An overlay holds only what may differ from the parent `Config`: its axes,
+/// the ids of the series it owns and an optional legend of its own. The
+/// chart area, the chart title, the shared legend, the grid, the colourbar
+/// and `draw_style` exist exactly once, on the parent, so a document has one
+/// plot rectangle. Expansion (`Config::expand`) turns the parent and its
+/// overlays into one internal panel each; those panels are never
+/// serialized.
 ///
 /// Series are referenced by `series_id` from the chart's single series list,
 /// so the series declarations, their styles, column references and picking
@@ -134,8 +141,26 @@ pub struct OverlayLayer {
     /// Its `min` / `max` / `scale` / `inverted` are the data-to-pixel mapping
     /// of the overlay's series. `out_margin` contributes to the shared right
     /// margin; the group takes the widest band of the parent and every
-    /// overlay (`Config::margins`).
+    /// overlay (`Config::margins`). Unused while `link_y` is on.
     pub y_axis: crate::config::AxisOptions,
+    /// `true` (default, omitted): the overlay's series are scaled by the
+    /// parent's `bottom_x`. `false`: by `x_axis`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_true"))]
+    pub link_x: bool,
+    /// The overlay's own X axis, drawn on the top side of the data area while
+    /// `link_x` is off, as `y_axis` is on the right. `out_margin` contributes
+    /// to the shared top margin, as `y_axis`'s does to the right one. Omitted
+    /// from JSON while it is the default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "OverlayLayer::x_axis_is_default")
+    )]
+    pub x_axis: crate::config::AxisOptions,
+    /// `false` (default, omitted): the overlay's series are scaled by
+    /// `y_axis`. `true`: by the parent's `left_y`, and the overlay draws no Y
+    /// axis.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_false"))]
+    pub link_y: bool,
     /// Ids of the series this layer scales. Each id may appear in at most one
     /// overlay; ids with no matching series declaration are ignored.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
@@ -151,6 +176,33 @@ impl OverlayLayer {
     pub fn owns_series(&self, series_id: &str) -> bool {
         self.series.iter().any(|id| id == series_id)
     }
+
+    /// The X axis the overlay's series are scaled by: `x_axis`, or `None`
+    /// while `link_x` is on (the parent's `bottom_x`).
+    pub fn own_x(&self) -> Option<&crate::config::AxisOptions> {
+        (!self.link_x).then_some(&self.x_axis)
+    }
+
+    /// The Y axis the overlay's series are scaled by: `y_axis`, or `None`
+    /// while `link_y` is on (the parent's `left_y`).
+    pub fn own_y(&self) -> Option<&crate::config::AxisOptions> {
+        (!self.link_y).then_some(&self.y_axis)
+    }
+
+    #[cfg(feature = "serde")]
+    fn x_axis_is_default(axis: &crate::config::AxisOptions) -> bool {
+        *axis == crate::defaults::axis_options_x()
+    }
+}
+
+#[cfg(feature = "serde")]
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+#[cfg(feature = "serde")]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A chart of the document that a link can point at: the parent (the
@@ -458,6 +510,48 @@ mod tests {
         let partial: OverlayLayer = serde_json::from_str(r#"{"series":["a"]}"#).unwrap();
         assert_eq!(partial.y_axis, crate::defaults::overlay_layer().y_axis);
         assert_eq!(partial.series, vec!["a".to_string()]);
+    }
+
+    // The link keys are omitted while they hold their defaults, so a
+    // document written before they existed re-serializes unchanged, and each
+    // round-trips once set.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn overlay_links_are_omitted_by_default_and_round_trip() {
+        let json = serde_json::to_value(crate::defaults::overlay_layer()).unwrap();
+        for key in ["link_x", "x_axis", "link_y"] {
+            assert!(json.get(key).is_none(), "{key}: {json}");
+        }
+        let old = r#"{"series":["a"]}"#;
+        let parsed: OverlayLayer = serde_json::from_str(old).unwrap();
+        assert!(parsed.link_x && !parsed.link_y);
+        assert_eq!(parsed.x_axis, crate::defaults::axis_options_x());
+        assert!(parsed.own_x().is_none());
+        assert_eq!(parsed.own_y(), Some(&parsed.y_axis));
+
+        let mut layer = crate::defaults::overlay_layer();
+        layer.link_x = false;
+        layer.x_axis.min = 10.0;
+        layer.x_axis.max = 20.0;
+        layer.link_y = true;
+        let json = serde_json::to_value(&layer).unwrap();
+        assert_eq!(json["link_x"], serde_json::json!(false));
+        assert_eq!(json["link_y"], serde_json::json!(true));
+        assert_eq!(json["x_axis"]["min"], serde_json::json!(10.0));
+        let back: OverlayLayer = serde_json::from_value(json).unwrap();
+        assert_eq!(back, layer);
+        assert_eq!(back.own_x(), Some(&layer.x_axis));
+        assert!(back.own_y().is_none());
+        // A linked side keeps its own axis in the document.
+        let mut relinked = layer.clone();
+        relinked.link_x = true;
+        let json = serde_json::to_value(&relinked).unwrap();
+        assert!(json.get("link_x").is_none());
+        assert_eq!(json["x_axis"]["min"], serde_json::json!(10.0));
+        assert_eq!(
+            serde_json::from_value::<OverlayLayer>(json).unwrap(),
+            relinked
+        );
     }
 
     #[cfg(feature = "serde")]

@@ -874,7 +874,7 @@ pub enum RuleKind {
     ColorbarProbabilityAxis,
     /// category groups are drawn on a categorical top\_x or bottom\_x
     CategoryGroupsAxis,
-    /// breaks go on bottom\_x, left\_y or an overlay's y\_axis
+    /// breaks go on bottom\_x, left\_y or an overlay's x\_axis or y\_axis
     BreaksAxis,
     /// a broken axis needs a rectangular chart
     BreaksChart,
@@ -2479,7 +2479,7 @@ impl std::fmt::Display for RuleKind {
             Self::CategoryGroupsAxis => {
                 "category groups are drawn on a categorical top_x or bottom_x"
             }
-            Self::BreaksAxis => "breaks go on bottom_x, left_y or an overlay's y_axis",
+            Self::BreaksAxis => "breaks go on bottom_x, left_y or an overlay's x_axis or y_axis",
             Self::BreaksChart => "a broken axis needs a rectangular chart",
             Self::LayoutDataAreaEmpty => {
                 "margins and visual dimensions must produce a non-empty data area"
@@ -4484,7 +4484,7 @@ mod tests {
             ),
             (
                 RuleKind::BreaksAxis,
-                "breaks go on bottom_x, left_y or an overlay's y_axis",
+                "breaks go on bottom_x, left_y or an overlay's x_axis or y_axis",
             ),
             (
                 RuleKind::BreaksChart,

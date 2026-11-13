@@ -1576,7 +1576,8 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   selection follow it.
 /// - **Overlays and the colourbar.** Each overlay axis' band is set the same
 ///   way from its own labels and title (the right margin is the widest band
-///   of the group), and so is the colourbar's `axis.out_margin`, measured
+///   of the group's Y axes, the top margin of its X axes), and so is the
+///   colourbar's `axis.out_margin`, measured
 ///   from the strip; [`colorbar_title_placement`] puts its title half the
 ///   label font past its labels.
 /// - **Chart title.** `chart_title.top_margin` is set to the title's line
@@ -1627,7 +1628,7 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   fit, and a widening that would leave a cell no data area is not made.
 ///
 /// Not covered: overlay axes drawn over each other or over the parent's
-/// right axis (only `line_offset` separates them; a polar chart's radius
+/// right or top axis (only `line_offset` separates them; a polar chart's radius
 /// labels keep their gap from its angle labels by themselves, #272), an
 /// overlay axis' title against a legend right of the plot, and labels that
 /// collide with each other along an axis or at a corner.
@@ -1682,13 +1683,16 @@ fn auto_layout_pass(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
             changed |= fit_band(cfg, &band, drawn, side, BandOwner::Axis(side));
         }
     }
-    for layer in 0..cfg.overlays.len() {
+    for (layer, side) in overlay_axes(cfg) {
+        if !overlay_draws(cfg, layer, side) {
+            continue;
+        }
         let measured = cfg.overlay_panel(layer).and_then(|panel| {
-            let labels = Probe::of(&panel, &Element::AxisLabel(Side::Right), measure);
-            axis_band_measure(None, &panel, &Side::Right, &labels, measure)
+            let labels = Probe::of(&panel, &Element::AxisLabel(side.clone()), measure);
+            axis_band_measure(None, &panel, side, &labels, measure)
         });
         if let Some((band, drawn)) = measured {
-            changed |= fit_band(cfg, &band, drawn, &Side::Right, BandOwner::Overlay(layer));
+            changed |= fit_band(cfg, &band, drawn, side, BandOwner::Overlay(layer, side));
         }
     }
     let measured =
@@ -1751,17 +1755,35 @@ fn switch_long_labels(
         bar.axis.label_style.format = LabelFormat::Power;
         changed = true;
     }
-    for layer in 0..cfg.overlays.len() {
+    for (layer, side) in overlay_axes(cfg) {
+        if !overlay_draws(cfg, layer, side) {
+            continue;
+        }
         let long = cfg.overlay_panel(layer).is_some_and(|panel| {
-            let labels = Probe::of(&panel, &Element::AxisLabel(Side::Right), measure);
-            labels_too_long(&panel.right_y, &labels)
+            let labels = Probe::of(&panel, &Element::AxisLabel(side.clone()), measure);
+            labels_too_long(axis_ref(&panel, side), &labels)
         });
-        if long {
-            cfg.overlays[layer].y_axis.label_style.format = LabelFormat::Power;
+        if long && let Some(axis) = BandOwner::Overlay(layer, side).axis(cfg) {
+            axis.label_style.format = LabelFormat::Power;
             changed = true;
         }
     }
     changed
+}
+
+/// Every (layer, side) an overlay of `cfg` may draw an axis on: the top
+/// side (its own X axis) and the right side (its own Y axis). It borrows
+/// nothing, so the loop body may edit `cfg`; [`overlay_draws`] says which of
+/// them are drawn.
+fn overlay_axes(cfg: &Config) -> impl Iterator<Item = (usize, &'static Side)> + use<> {
+    (0..cfg.overlays.len()).flat_map(|layer| [(layer, &Side::Top), (layer, &Side::Right)])
+}
+
+/// Whether overlay `layer` of `cfg` draws an axis of its own on `side`.
+fn overlay_draws(cfg: &Config, layer: usize, side: &Side) -> bool {
+    cfg.overlays
+        .get(layer)
+        .is_some_and(|overlay| super::overlay_axis_on(overlay, side).is_some())
 }
 
 /// Whether the drawn panel `panel` places its axis titles along its own
@@ -1874,8 +1896,9 @@ fn colorbar_band_measure(
 enum BandOwner<'a> {
     /// One of the chart's four axes.
     Axis(&'a Side),
-    /// Overlay layer `i`'s Y axis.
-    Overlay(usize),
+    /// The axis overlay layer `i` draws on a side: its own Y axis on the
+    /// right, its own X axis on the top.
+    Overlay(usize, &'a Side),
     /// The colourbar's axis.
     ColorBar,
 }
@@ -1884,20 +1907,31 @@ impl BandOwner<'_> {
     fn axis<'c>(self, cfg: &'c mut Config) -> Option<&'c mut AxisOptions> {
         match self {
             BandOwner::Axis(side) => Some(axis_mut(cfg, side)),
-            BandOwner::Overlay(layer) => cfg.overlays.get_mut(layer).map(|o| &mut o.y_axis),
+            BandOwner::Overlay(layer, side) => {
+                cfg.overlays.get_mut(layer).and_then(|overlay| match side {
+                    Side::Top if !overlay.link_x => Some(&mut overlay.x_axis),
+                    Side::Right if !overlay.link_y => Some(&mut overlay.y_axis),
+                    _ => None,
+                })
+            }
             BandOwner::ColorBar => cfg.colorbar.as_mut().map(|bar| &mut bar.axis),
         }
     }
 }
 
 /// The band `owner`'s axis is drawn in, as an `out_margin`: its own, or
-/// for the parent's right axis and an overlay axis the right band of the
-/// group ([`super::right_out_margin_effective`]).
+/// for the parent's right and top axes and the overlay axes the band of the
+/// group ([`super::right_out_margin_effective`],
+/// [`super::top_out_margin_effective`]).
 fn drawn_band(cfg: &Config, owner: BandOwner<'_>) -> f32 {
     match owner {
-        BandOwner::Axis(Side::Right) | BandOwner::Overlay(_) => {
+        BandOwner::Axis(Side::Right) | BandOwner::Overlay(_, Side::Right) => {
             super::right_out_margin_effective(cfg)
         }
+        BandOwner::Axis(Side::Top) | BandOwner::Overlay(_, Side::Top) => {
+            super::top_out_margin_effective(cfg)
+        }
+        BandOwner::Overlay(_, _) => 0.0,
         BandOwner::Axis(side) => axis_ref(cfg, side).out_margin,
         BandOwner::ColorBar => cfg.colorbar.as_ref().map_or(0.0, |bar| bar.axis.out_margin),
     }
@@ -1923,7 +1957,7 @@ fn fit_band(
     // (`colorbar_title_placement`); an axis title is placed by its offset.
     let pushed = match owner {
         BandOwner::ColorBar => owner.axis(cfg).as_deref().map(colorbar_title_gaps),
-        BandOwner::Axis(_) | BandOwner::Overlay(_) => None,
+        BandOwner::Axis(_) | BandOwner::Overlay(..) => None,
     };
     let mut changed = false;
     let mut width = drawn;
@@ -2290,8 +2324,10 @@ fn align_cells(doc: &mut Config, measure: &dyn MeasureText) {
 
 /// Raise the bands of one cell to `to`, never lower them: the chart title
 /// band to its own, then each axis band by what its plot margin lacks (the
-/// right one through the group band, [`super::right_out_margin_effective`],
-/// so overlay axes and a colourbar count). Nothing changes when that leaves
+/// right and top ones through the group bands,
+/// [`super::right_out_margin_effective`] and
+/// [`super::top_out_margin_effective`], so overlay axes and a colourbar
+/// count). Nothing changes when that leaves
 /// a chart that had a data area without one.
 fn raise_bands(chart: &mut Config, to: CellBands) {
     let had_data_area = chart.data_area().is_ok();
@@ -2311,7 +2347,8 @@ fn raise_bands(chart: &mut Config, to: CellBands) {
         if by > 0.0 {
             let band = match side {
                 Side::Right => super::right_out_margin_effective(chart),
-                _ => axis_ref(chart, side).out_margin,
+                Side::Top => super::top_out_margin_effective(chart),
+                Side::Bottom | Side::Left => axis_ref(chart, side).out_margin,
             };
             axis_mut(chart, side).out_margin = band + by;
         }
@@ -2348,13 +2385,16 @@ fn place_widened_titles(chart: &mut Config, measure: &dyn MeasureText) -> bool {
             changed |= place_beside(chart, &band, side, BandOwner::Axis(side));
         }
     }
-    for layer in 0..chart.overlays.len() {
+    for (layer, side) in overlay_axes(chart) {
+        if !overlay_draws(chart, layer, side) {
+            continue;
+        }
         let measured = chart.overlay_panel(layer).and_then(|panel| {
-            let labels = Probe::of(&panel, &Element::AxisLabel(Side::Right), measure);
-            axis_band_measure(None, &panel, &Side::Right, &labels, measure)
+            let labels = Probe::of(&panel, &Element::AxisLabel(side.clone()), measure);
+            axis_band_measure(None, &panel, side, &labels, measure)
         });
         if let Some((band, _)) = measured {
-            changed |= place_beside(chart, &band, &Side::Right, BandOwner::Overlay(layer));
+            changed |= place_beside(chart, &band, side, BandOwner::Overlay(layer, side));
         }
     }
     changed
@@ -2392,6 +2432,7 @@ fn adopt_chart_layout(stored: &mut Config, chart: &Config) {
     adopt_axis_layout(&mut stored.right_y, &chart.right_y);
     for (to, from) in stored.overlays.iter_mut().zip(&chart.overlays) {
         adopt_axis_layout(&mut to.y_axis, &from.y_axis);
+        adopt_axis_layout(&mut to.x_axis, &from.x_axis);
     }
     if let (Some(to), Some(from)) = (stored.colorbar.as_mut(), chart.colorbar.as_ref()) {
         adopt_axis_layout(&mut to.axis, &from.axis);
