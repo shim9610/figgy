@@ -31,6 +31,15 @@ fn grotrian() -> Theme {
     // Read at a column's width: ticks at 18, titles at 20.
     chrome.axis_title_size = 20.0;
     chrome.tick_label_size = 18.0;
+    let grid = &mut chrome.grid;
+    for line in [
+        &mut grid.major_x,
+        &mut grid.major_y,
+        &mut grid.minor_x,
+        &mut grid.minor_y,
+    ] {
+        line.show = false;
+    }
     theme.series.palette = vec![rgb(34, 52, 88)];
     let label = rgb(70, 76, 90);
     let levels = &mut theme.series.energy_levels;
@@ -59,6 +68,7 @@ fn parchment() -> Theme {
     chrome.legend_fill = Color::WHITE;
     chrome.legend_border = rgb(222, 216, 204);
     chrome.legend_size = 20.0;
+    chrome.grid.major_y.show = false;
     theme.series.palette = vec![ink];
     let feynman = &mut theme.series.feynman;
     feynman.width = 2.2;

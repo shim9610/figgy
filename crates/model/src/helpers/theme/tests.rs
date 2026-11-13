@@ -849,7 +849,14 @@ fn the_document_themes_draw_an_open_frame_without_ticks() {
         assert_eq!(config.background, None);
         assert!(config.bottom_x.line_visible && config.left_y.line_visible);
         assert!(!config.top_x.line_visible && !config.right_y.line_visible);
-        assert_eq!(config.left_y.major_tick_length, 0.0);
+        // The ticks are hidden, not shortened: the labels keep their place.
+        for axis in [&config.bottom_x, &config.left_y] {
+            assert_eq!(axis.tick, TickVisibility::None);
+        }
+        assert_eq!(
+            config.left_y.major_tick_length,
+            Config::default().left_y.major_tick_length
+        );
         assert_eq!(config.left_y.line_color, theme.chrome.ink);
         assert!(config.grid.show_major_y && !config.grid.show_major_x);
     }
@@ -1256,4 +1263,451 @@ fn a_colourbar_takes_the_field_part_s_map() {
         assert_eq!(bar.axis.label_style.color, theme.chrome.label_ink);
         assert_eq!(bar.axis.title_option.text.color, theme.chrome.ink);
     }
+}
+
+fn override_colors(series: &SeriesConfig) -> Vec<(String, Option<Color>)> {
+    match &series.render_type {
+        DataRenderType::BoxPlot { overrides, .. } => (overrides.iter().flatten())
+            .map(|o| (o.target.category_id.clone(), o.color))
+            .collect(),
+        DataRenderType::CategoryBars { overrides, .. } => (overrides.iter().flatten())
+            .map(|o| (o.target.category_id.clone(), o.color))
+            .collect(),
+        _ => panic!("boxes or category bars"),
+    }
+}
+
+// A theme that colours by category gives the one box plot or category-bar
+// series of a chart a palette colour per category, in reading order: left
+// to right, and top to bottom for horizontal bars (a category axis that is
+// not inverted lists its bottom row first). Two series keep one colour
+// each, and a theme without the flag writes no per-category colour.
+#[test]
+fn a_single_series_takes_one_palette_colour_per_category() {
+    use crate::data_config::{BarGroups, CategoryBarDirection};
+    type Make = fn() -> SeriesConfig;
+    let boxes: Make = || SeriesConfig::box_plot("s", "pos", "rec", Color::BLACK);
+    let bars: Make = || SeriesConfig::category_bars("s", "pos", "v", Color::BLACK);
+    for (kind, name, make) in [
+        (ChartKind::Distribution, "warm-paper", boxes),
+        (ChartKind::Distribution, "document", boxes),
+        (ChartKind::CategoryBars, "document", bars),
+    ] {
+        let theme = named(kind, name);
+        let palette = |k: usize| Some(palette_color(&theme, k));
+        let mut config = categorical();
+        let mut series = [make()];
+        theme
+            .apply(&mut config, &mut series, SubplotScope::All)
+            .unwrap();
+        assert_eq!(
+            override_colors(&series[0]),
+            [
+                ("c0".to_string(), palette(0)),
+                ("c1".to_string(), palette(1)),
+                ("c2".to_string(), palette(2)),
+            ],
+            "{kind} {name}"
+        );
+        valid_on(&config, &series);
+        // Applied again, the colours are rewritten in place.
+        let once = series.clone();
+        theme
+            .apply(&mut config, &mut series, SubplotScope::All)
+            .unwrap();
+        assert_eq!(series, once);
+
+        // Horizontal: the axis' first category is the bottom row, unless
+        // the axis is inverted.
+        for inverted in [false, true] {
+            let mut config = Config::default();
+            config.left_y.categories = categorical().bottom_x.categories;
+            config.left_y.inverted = inverted;
+            config.bar_groups = Some(BarGroups {
+                direction: CategoryBarDirection::Horizontal,
+                ..crate::defaults::bar_groups()
+            });
+            let mut series = [make()];
+            theme
+                .apply(&mut config, &mut series, SubplotScope::All)
+                .unwrap();
+            let top_down: Vec<_> = if inverted {
+                vec![0, 1, 2]
+            } else {
+                vec![2, 1, 0]
+            };
+            let colors: Vec<_> = (override_colors(&series[0]).into_iter())
+                .map(|(_, color)| color)
+                .collect();
+            let expected: Vec<_> = top_down.into_iter().map(palette).collect();
+            assert_eq!(colors, expected, "{kind} {name} inverted {inverted}");
+        }
+
+        // Two series: one colour each.
+        let mut config = categorical();
+        let mut series = [make(), make()];
+        series[1].series_id = "t".into();
+        theme
+            .apply(&mut config, &mut series, SubplotScope::All)
+            .unwrap();
+        assert!(override_colors(&series[0]).is_empty(), "{kind} {name}");
+        assert!(override_colors(&series[1]).is_empty(), "{kind} {name}");
+
+        // Without the flag nothing is written.
+        let mut plain = theme.clone();
+        plain.series.boxes.color_by_category = false;
+        plain.series.bars.color_by_category = false;
+        let mut series = [make()];
+        plain
+            .apply(&mut categorical(), &mut series, SubplotScope::All)
+            .unwrap();
+        assert!(override_colors(&series[0]).is_empty(), "{kind} {name}");
+    }
+}
+
+// The Grotrian theme writes the texts a diagram owns (level, transition,
+// limit and band labels, the wavelength labels' look, the column labels
+// and group headers on the column axis) and fills the continuum the series
+// wrote; the axis breaks stay as the host sized them.
+#[test]
+fn the_grotrian_theme_writes_the_diagram_s_texts_and_continuum() {
+    use crate::config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, PieceSizing};
+    use crate::config::{CategoryGroup, CategoryGroups};
+    use crate::energy_levels::{
+        EnergyLevel, IonizationLimit, LevelBand, LevelRole, Transition, WavelengthLabels,
+    };
+    let theme = named(ChartKind::EnergyLevels, "grotrian");
+    let energy = theme.series.energy_levels;
+    let text = |s: &str| RichText::plain(s, Color::BLACK, 9.0, "");
+    let level = |id: &str, energy: f64| EnergyLevel {
+        id: id.into(),
+        column: "S".into(),
+        configuration: String::new(),
+        term: String::new(),
+        j: String::new(),
+        g: None,
+        prefix: String::new(),
+        energy,
+        suffix: String::new(),
+        uncertainty: None,
+        reference: String::new(),
+        role: LevelRole::Level,
+        label: Some(text("level")),
+        label_offset: [0.0; 2],
+    };
+    let mut levels = crate::defaults::energy_level_series();
+    levels.levels = vec![level("low", 0.0), level("mid", 3.0), level("high", 4.0)];
+    levels.transitions = vec![Transition {
+        id: "line".into(),
+        lower: "low".into(),
+        upper: "mid".into(),
+        label: Some(text("line")),
+        label_offset: [0.0; 2],
+        value: None,
+        x_offset: 0.0,
+        wavelength: Some(500.0),
+        wavelength_uncertainty: None,
+        intensity: String::new(),
+        aki: None,
+        accuracy: String::new(),
+        line_type: String::new(),
+        tp_reference: String::new(),
+        line_reference: String::new(),
+    }];
+    levels.limits = vec![IonizationLimit {
+        id: "ion".into(),
+        energy: 5.0,
+        label: Some(text("limit")),
+        label_offset: [0.0; 2],
+        uncertainty: None,
+        reference: String::new(),
+    }];
+    levels.bands = vec![LevelBand {
+        id: "band".into(),
+        column: "S".into(),
+        first: "mid".into(),
+        last: "high".into(),
+        label: Some(text("band")),
+        label_offset: [0.0; 2],
+    }];
+    assert_eq!(levels.validate(), Ok(()));
+    levels.style.wavelength_labels = Some(WavelengthLabels {
+        text: text(""),
+        ..crate::defaults::wavelength_labels()
+    });
+    let mut config = Config::default();
+    let column = levels.levels[0].column.clone();
+    let mut category = Category::new(column.clone(), "");
+    category.rich_label = Some(text("column"));
+    config.bottom_x.categories = Some(vec![category, Category::new("plain", "Plain")]);
+    config.bottom_x.category_groups = Some(CategoryGroups {
+        groups: vec![CategoryGroup {
+            label: text("group"),
+            first: column.clone(),
+            last: column,
+            bracket: true,
+        }],
+        offset: [0.0; 2],
+    });
+    let breaks = AxisBreaks {
+        ranges: vec![AxisBreak::new(1.0, 2.0)],
+        style: AxisBreakStyle::Continuous,
+        gap_px: 12.0,
+        mark: BreakMark::default(),
+        frame_each_panel: true,
+        sizing: PieceSizing::Weights(vec![9.0, 1.0]),
+    };
+    config.left_y.breaks = Some(breaks.clone());
+    let grey = Color::new(0.5, 0.5, 0.5, 0.2);
+    levels
+        .write_continuum(&mut config.annotations, "e", 100.0, grey)
+        .unwrap();
+    // A span that is not the series' continuum keeps its fill.
+    config.annotations.items.push(Annotation {
+        id: "host".into(),
+        visible: true,
+        kind: AnnotationKind::Span {
+            axis: AnnotationAxis::Y,
+            from: 0.0,
+            to: 1.0,
+            fill: grey,
+        },
+    });
+    let mut series = [SeriesConfig::energy_diagram("e", levels)];
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
+
+    let look = |text: &RichText| {
+        Some(TextLook {
+            color: text.color,
+            size: text.font_size,
+        })
+    };
+    let levels = series[0].energy_levels().unwrap();
+    assert_eq!(levels.style.level.color, palette_color(&theme, 0));
+    assert_eq!(levels.style.level.width, energy.level_width);
+    for level in &levels.levels {
+        assert_eq!(look(level.label.as_ref().unwrap()), energy.level_labels);
+    }
+    for line in &levels.transitions {
+        assert_eq!(look(line.label.as_ref().unwrap()), energy.transition_labels);
+    }
+    for limit in &levels.limits {
+        assert_eq!(look(limit.label.as_ref().unwrap()), energy.limit_labels);
+    }
+    for band in &levels.bands {
+        assert_eq!(look(band.label.as_ref().unwrap()), energy.band_labels);
+    }
+    let wavelengths = levels.style.wavelength_labels.as_ref().unwrap();
+    assert_eq!(look(&wavelengths.text), energy.transition_labels);
+    let columns = config.bottom_x.categories.as_ref().unwrap();
+    assert_eq!(
+        look(columns[0].rich_label.as_ref().unwrap()),
+        energy.column_labels
+    );
+    assert_eq!(columns[1].rich_label, None);
+    let groups = config.bottom_x.category_groups.as_ref().unwrap();
+    assert_eq!(look(&groups.groups[0].label), energy.group_headers);
+    assert_eq!(groups.groups[0].label.segments, text("group").segments);
+    assert_eq!(config.left_y.breaks, Some(breaks));
+    let fills: Vec<Color> = (config.annotations.items.iter())
+        .filter_map(|item| match item.kind {
+            AnnotationKind::Span { fill, .. } => Some(fill),
+            _ => None,
+        })
+        .collect();
+    let (host, continuum) = fills.split_last().unwrap();
+    assert!(!continuum.is_empty());
+    assert!(
+        continuum
+            .iter()
+            .all(|fill| Some(*fill) == energy.continuum_fill)
+    );
+    assert_eq!(*host, grey);
+    assert!(!config.grid.show_major_x && !config.grid.show_major_y);
+    valid_on(&config, &series);
+}
+
+// The parchment theme colours each propagator by its particle, leaves the
+// fermions in the series colour, and writes the strokes and the label ink.
+#[test]
+fn the_parchment_theme_colours_lines_by_particle() {
+    use crate::feynman::{FeynmanSeries, FeynmanVertex, MomentumArrow, Propagator, VertexRole};
+    let theme = named(ChartKind::Feynman, "parchment");
+    let feynman = theme.series.feynman;
+    let text = |s: &str| RichText::plain(s, Color::BLACK, 9.0, "");
+    let line = |id: &str, particle| Propagator {
+        label: Some(text(id)),
+        ..Propagator::new(id, "a", "b", particle)
+    };
+    let mut diagram = FeynmanSeries {
+        vertices: vec![
+            FeynmanVertex {
+                label: Some(text("a")),
+                ..FeynmanVertex::new("a", VertexRole::Incoming)
+            },
+            FeynmanVertex::new("b", VertexRole::Outgoing),
+        ],
+        propagators: vec![
+            line("fermion", ParticleLine::Fermion),
+            line("photon", ParticleLine::Photon),
+            line("gluon", ParticleLine::Gluon),
+            line("boson", ParticleLine::ChargedBoson),
+            line("scalar", ParticleLine::Scalar),
+        ],
+        ..crate::defaults::feynman_series()
+    };
+    diagram.propagators[1].momentum = Some(MomentumArrow {
+        label: text("k"),
+        side: crate::defaults::momentum_side(),
+        reversed: false,
+        label_offset: [0.0; 2],
+    });
+    let mut series = [SeriesConfig::feynman_diagram("f", diagram)];
+    let mut config = Config::default();
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
+    let DataRenderType::Feynman(diagram) = &series[0].render_type else {
+        panic!("a Feynman series");
+    };
+    let colors: Vec<_> = diagram.propagators.iter().map(|line| line.color).collect();
+    assert_eq!(
+        colors,
+        [
+            None,
+            feynman.photon,
+            feynman.gluon,
+            feynman.boson,
+            feynman.scalar
+        ]
+    );
+    assert!(colors[1..].iter().all(Option::is_some));
+    let style = &diagram.style;
+    assert_eq!(style.color, palette_color(&theme, 0));
+    assert_eq!(
+        (style.width, style.wave, style.coil),
+        (feynman.width, feynman.wave, feynman.coil)
+    );
+    assert_eq!(
+        (style.head_length, style.head_width, style.dot_radius),
+        (feynman.head_length, feynman.head_width, feynman.dot_radius)
+    );
+    let look = |text: &RichText| {
+        Some(TextLook {
+            color: text.color,
+            size: text.font_size,
+        })
+    };
+    assert_eq!(
+        look(diagram.vertices[0].label.as_ref().unwrap()),
+        feynman.vertex_labels
+    );
+    for line in &diagram.propagators {
+        assert_eq!(look(line.label.as_ref().unwrap()), feynman.line_labels);
+    }
+    let momentum = diagram.propagators[1].momentum.as_ref().unwrap();
+    assert_eq!(look(&momentum.label), feynman.line_labels);
+    assert_eq!(config.background, theme.chrome.background);
+    assert!(!config.bottom_x.line_visible && !config.grid.show_major_y);
+    valid_on(&config, &series);
+}
+
+// Every radial theme writes the whole look into a plain chart: the view,
+// the slice shape, the material and the outline; a slice's own style, the
+// kind and the values stay. The sunburst theme steps each ring paler than
+// the one inside it, and each sibling paler than the one before.
+#[test]
+fn the_radial_themes_write_the_view_shape_and_ring_tints() {
+    use crate::radial::{RadialKind, RadialSlice};
+    let slice = |label: &str| RadialSlice::new(label, 1.0, Color::BLACK);
+    for name in RadialTheme::names() {
+        let theme = RadialTheme::named(name).unwrap();
+        let mut chart = crate::defaults::radial_chart().with_title("Title");
+        chart.kind = RadialKind::Donut { inner_radius: 0.4 };
+        chart.slices = vec![slice("A"), slice("B")];
+        let own = crate::radial::RadialStyle::three_dimensional();
+        chart.slices[1].style = Some(own.clone());
+        theme.apply(&mut chart);
+        let style = &chart.style;
+        assert_eq!(
+            (style.material, style.gloss, style.roughness, style.shadow),
+            (theme.material, theme.gloss, theme.roughness, theme.shadow),
+            "{name}"
+        );
+        assert_eq!(
+            (
+                style.tilt_degrees,
+                style.depth,
+                style.bevel,
+                style.gap_degrees
+            ),
+            (
+                theme.tilt_degrees,
+                theme.depth,
+                theme.bevel,
+                theme.gap_degrees
+            ),
+            "{name}"
+        );
+        assert_eq!(
+            (style.inner_corner, style.outer_corner, style.outline),
+            (theme.inner_corner, theme.outer_corner, theme.outline),
+            "{name}"
+        );
+        assert_eq!(
+            (style.texture_strength, style.texture_scale),
+            (theme.texture_strength, theme.texture_scale),
+            "{name}"
+        );
+        let title = &chart.chart_title.as_ref().unwrap().text;
+        assert_eq!(
+            (title.color, title.font_size),
+            (theme.label_color, theme.title_size)
+        );
+        assert_eq!(chart.slices[1].style, Some(own));
+        assert_eq!(chart.kind, RadialKind::Donut { inner_radius: 0.4 });
+        assert_eq!(chart.validate(), Ok(()), "{name}");
+        if *name != "default" {
+            assert_eq!(chart.slices[0].color, theme.palette[0], "{name}");
+            assert_ne!(theme, RadialTheme::named("default").unwrap(), "{name}");
+        }
+    }
+    // The default look on a titled default chart changes nothing.
+    let mut chart = crate::defaults::radial_chart().with_title("Title");
+    let before = chart.clone();
+    RadialTheme::named("default").unwrap().apply(&mut chart);
+    assert_eq!(chart, before);
+
+    let theme = RadialTheme::named("sunburst").unwrap();
+    let mut chart = crate::defaults::radial_chart();
+    chart.slices = vec![RadialSlice {
+        children: vec![
+            RadialSlice {
+                children: vec![slice("leaf")],
+                ..slice("first")
+            },
+            slice("second"),
+        ],
+        ..slice("root")
+    }];
+    theme.apply(&mut chart);
+    // On a white background a paler colour has a larger sum.
+    let light = |color: Color| color.r + color.g + color.b;
+    let root = &chart.slices[0];
+    let (first, second) = (&root.children[0], &root.children[1]);
+    assert_eq!(root.color, theme.palette[0]);
+    assert!(light(first.color) > light(root.color));
+    assert!(light(second.color) > light(first.color));
+    assert!(light(first.children[0].color) > light(first.color));
+    assert!(light(second.color) < 3.0);
+    // A theme without a tint keeps the children's colours.
+    let mut chart = crate::defaults::radial_chart();
+    chart.slices = vec![RadialSlice {
+        children: vec![slice("child")],
+        ..slice("root")
+    }];
+    RadialTheme::named("ceramic").unwrap().apply(&mut chart);
+    assert_eq!(chart.slices[0].children[0].color, Color::BLACK);
 }

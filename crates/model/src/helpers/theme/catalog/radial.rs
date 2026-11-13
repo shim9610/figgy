@@ -29,7 +29,6 @@ fn ceramic() -> RadialTheme {
         rgb(255, 151, 62),
         rgb(48, 192, 230),
     ];
-    theme.title_size = theme.font_size;
     theme.material = Material::Ceramic;
     theme.tilt_degrees = 55.0;
     theme.depth = 0.16;
@@ -50,7 +49,6 @@ fn sunburst() -> RadialTheme {
     theme.palette = vec![rgb(38, 140, 112), rgb(196, 112, 64), rgb(128, 110, 196)];
     theme.child_tint = Some(0.22);
     theme.label_color = rgb(40, 44, 52);
-    theme.title_size = theme.font_size;
     theme.material = Material::Flat;
     theme.gloss = 0.15;
     theme.gap_degrees = 0.6;
@@ -73,7 +71,7 @@ fn pop_art() -> RadialTheme {
     theme.background = rgb(255, 248, 237);
     theme.label_color = ink;
     theme.font_size = 23.0;
-    theme.title_size = 23.0;
+    theme.title_size = 34.5;
     theme.material = Material::Toon;
     theme.tilt_degrees = 45.0;
     theme.depth = 0.14;
@@ -104,7 +102,7 @@ fn portfolio() -> RadialTheme {
     theme.background = rgb(19, 22, 39);
     theme.label_color = rgb(218, 224, 241);
     theme.font_size = 23.0;
-    theme.title_size = 23.0;
+    theme.title_size = 34.5;
     theme.material = Material::Pearl;
     theme.gloss = 0.65;
     theme.roughness = 0.3;

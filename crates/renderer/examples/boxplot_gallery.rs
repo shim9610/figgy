@@ -384,7 +384,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     let bg = background(&theme);
     // (id, label, sample generator), listed top-down: the first category
     // of a horizontal axis is the bottom row, so the axis and the positions
-    // take them in reverse. Mode `k` takes the theme's colour `k`.
+    // take them in reverse. The theme colours each mode, top-down.
     let modes: [(&str, &str, &dyn Fn(usize) -> f64); 5] = [
         ("bike", "Bike", &|i| 19.0 + 3.5 * normal(72, i)),
         ("car", "Car", &|i| {
@@ -429,7 +429,6 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
         ..BarGroups::default()
     });
     config.legend.visible = false;
-    let palette = &theme.series.palette;
     let cloud = violin_series(
         "commute",
         Color::BLACK,
@@ -444,20 +443,6 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     )
     .style_box_plot(|parts| {
         parts.style.show_outliers = false;
-        // Each mode after the first in its own palette colour; the first
-        // takes the series'.
-        *parts.overrides = Some(
-            modes
-                .iter()
-                .enumerate()
-                .skip(1)
-                .map(|(k, &(id, _, _))| {
-                    let mut o = BoxPlotOverride::new(BoxPlotTarget::new(id, "commute"));
-                    o.color = Some(palette[k % palette.len()]);
-                    o
-                })
-                .collect(),
-        );
         // The samples jittered in a band below each box.
         *parts.points = Some(BoxPoints {
             positions: "commute.cat".into(),
@@ -490,7 +475,6 @@ fn main() -> Result {
 
 fn render(r: &mut Renderer, dir: &Path) -> Result {
     let document = theme_named(ChartKind::Distribution, "document")?;
-    let palette = document.series.palette.clone();
     let mut c = BoxPlotChart {
         title: "Classic matte".into(),
         categories: ["Control", "Low", "High"]
@@ -514,13 +498,7 @@ fn render(r: &mut Renderer, dir: &Path) -> Result {
         labels: BoxPlotLabels::Median,
         ..Default::default()
     };
-    // Each category after the first in its own palette colour; the first
-    // takes the series'.
-    for (k, id) in ["Low", "High"].into_iter().enumerate() {
-        let mut o = BoxPlotOverride::new(BoxPlotTarget::new(id, "response"));
-        o.color = Some(palette[(k + 1) % palette.len()]);
-        c.overrides.push(o);
-    }
+    // One series: the theme colours each category.
     save(r, &c, &document, dir, "01-classic-matte")?;
     c.title = "Satin finish".into();
     let mut satin = document.clone();
@@ -538,7 +516,6 @@ fn render(r: &mut Renderer, dir: &Path) -> Result {
         .into_iter()
         .map(|s| Category::new(s, s))
         .collect();
-    c.overrides.clear();
     c.series[0].id = "before".into();
     c.series[0].label = "Before".into();
     c.series.push(BoxPlotSeries::new(

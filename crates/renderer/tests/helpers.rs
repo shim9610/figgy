@@ -212,19 +212,21 @@ fn the_chart_background_is_an_additive_key() {
 // theme's background and series colours.
 #[test]
 fn a_themed_chart_exports_with_its_look() {
-    use renderer::theme::{SubplotScope, Theme};
+    use renderer::theme::{ChartKind, SubplotScope, Theme};
     let mut renderer = Renderer::headless_blocking().expect("headless renderer");
     let (x, y) = sine();
     renderer.add_column("x", &x).unwrap();
     renderer.add_column("y", &y).unwrap();
-    let theme = Theme::dark();
+    let theme = Theme::named(ChartKind::Line, "midnight").expect("the line kind's midnight");
     let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
     let mut chart = Chart::sized(480, 320)
         .with_title("A sine wave")
         .with_legend_from(&series);
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
-    chart.apply_theme(&theme, &mut series, SubplotScope::All);
+    chart
+        .apply_theme(&theme, &mut series, SubplotScope::All)
+        .expect("a line theme on a line chart");
 
     let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
     let fitted = renderer::layout::auto_layout(chart.config(), &measure);
@@ -258,8 +260,8 @@ fn a_themed_chart_exports_with_its_look() {
         let info = reader.next_frame(&mut rgba).unwrap();
         let corner = (2 * info.width as usize + 2) * 4;
         assert_eq!(rgba[corner..corner + 3], expected, "{scale}x");
-        // The series draws in its cycle colour somewhere on the chart.
-        let line = theme.series.cycle.color(0);
+        // The series draws in its palette colour somewhere on the chart.
+        let line = theme.series.palette[0];
         let target = [line.r, line.g, line.b].map(|c| (c * 255.0).round() as i32);
         assert!(
             rgba.chunks_exact(4)
@@ -267,6 +269,51 @@ fn a_themed_chart_exports_with_its_look() {
             "{scale}x: no pixel in the series colour"
         );
     }
+}
+
+// A theme is refused, changing neither the chart nor its series, when its
+// draw style cannot draw a series (Constellation draws lines only with
+// their markers) and when it is made for another kind of chart.
+#[test]
+fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
+    use renderer::theme::{ChartKind, SubplotScope, Theme, ThemeError};
+    let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+    let mut chart = Chart::sized(480, 320)
+        .with_title("A sine wave")
+        .with_legend_from(&series);
+    let (config, declared) = (chart.config().clone(), series.clone());
+
+    let constellation =
+        Theme::named(ChartKind::Line, "constellation").expect("the line kind's constellation");
+    assert_eq!(
+        chart.apply_theme(&constellation, &mut series, SubplotScope::All),
+        Err(ThemeError::DrawStyle {
+            series_id: "sine".into()
+        })
+    );
+    assert_eq!(chart.config(), &config);
+    assert_eq!(series, declared);
+
+    let histogram =
+        Theme::named(ChartKind::Histogram, "gallery").expect("the histogram kind's gallery");
+    assert_eq!(
+        chart.apply_theme(&histogram, &mut series, SubplotScope::All),
+        Err(ThemeError::Kind {
+            theme: ChartKind::Histogram,
+            chart: ChartKind::Line,
+            layer: renderer::LayerRef::Base,
+        })
+    );
+    assert_eq!(chart.config(), &config);
+    assert_eq!(series, declared);
+
+    // The same chart takes a theme of its kind that its series can draw in.
+    let gallery = Theme::named(ChartKind::Line, "gallery").expect("the line kind's gallery");
+    assert_eq!(
+        chart.apply_theme(&gallery, &mut series, SubplotScope::All),
+        Ok(())
+    );
+    assert_eq!(chart.config().chart_title.text.color, gallery.chrome.ink);
 }
 
 // A placed chart, a resized document chart, an overlay and a swatch entry

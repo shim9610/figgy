@@ -2,8 +2,8 @@
 //! `CategoricalChart` is opened with `Config::from_categorical`, its columns
 //! uploaded from the borrowed values, and exported by the Cartesian renderer
 //! at 900 x 620 without post-render scaling, in the `document` theme.
-//! Each case shows one finish: it varies the theme's bar material before
-//! applying it.
+//! Each case shows one finish: it varies the theme's bar material, and
+//! where the case has colours of its own its palette, before applying it.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
 #[allow(dead_code)]
@@ -60,13 +60,6 @@ fn save(
             || (document.labels == CategoryBarLabels::Auto
                 && document.mode == CategoryBarMode::Grouped));
     let mut chart = Chart::new(config).with_area(0, 0, 900, 620);
-    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
-    // The grid marks the value axis, which runs along x for horizontal
-    // bars.
-    let grid = &mut chart.config_mut().grid;
-    if horizontal {
-        (grid.show_major_x, grid.show_major_y) = (grid.show_major_y, grid.show_major_x);
-    }
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
     let config = chart.config_mut();
     let value = if horizontal {
@@ -86,6 +79,14 @@ fn save(
     value
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
+    // The theme last: it fits the layout to the axes' final labels.
+    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    // The grid marks the value axis, which runs along x for horizontal
+    // bars.
+    let grid = &mut chart.config_mut().grid;
+    if horizontal {
+        (grid.show_major_x, grid.show_major_y) = (grid.show_major_y, grid.show_major_x);
+    }
     chart.fit_layout();
     let path = directory.join(format!("{name}.png"));
     r.save_blocking(
@@ -104,7 +105,6 @@ fn main() -> Result {
 
 fn render(renderer: &mut Renderer, directory: &Path) -> Result {
     let document = gallery::theme_named(ChartKind::CategoryBars, "document")?;
-    let palette = document.series.palette.clone();
     let mut chart = CategoricalChart {
         title: "Grouped · Matte".into(),
         categories: ["A", "B", "C", "D"]
@@ -142,13 +142,15 @@ fn render(renderer: &mut Renderer, directory: &Path) -> Result {
         [72., 58., 43., 29.].map(Some).into(),
         Color::BLACK,
     )];
-    // Each category in its own palette colour, the first the series'.
-    for (k, id) in ["Beta", "Gamma", "Delta"].into_iter().enumerate() {
-        let mut edit = CategoryBarOverride::new(CategoryBarTarget::new(id, "share"));
-        edit.color = Some(palette[(k + 1) % palette.len()]);
-        chart.overrides.push(edit);
-    }
+    // One series: the theme colours each category, here down a ramp from
+    // blue to teal.
     let mut satin = document.clone();
+    satin.series.palette = vec![
+        Color::from_rgb8(61, 125, 205),
+        Color::from_rgb8(67, 153, 211),
+        Color::from_rgb8(48, 171, 174),
+        Color::from_rgb8(98, 194, 192),
+    ];
     satin.series.bars.material = Material::SatinMetal;
     satin.series.bars.gloss = 0.65;
     save(renderer, &chart, &satin, directory, "horizontal-satin")?;
@@ -182,7 +184,14 @@ fn render(renderer: &mut Renderer, directory: &Path) -> Result {
         value_title: "Value".into(),
         ..Default::default()
     };
+    // The stacks' three parts: blue, teal and orange.
+    let stack = vec![
+        Color::from_rgb8(66, 133, 208),
+        Color::from_rgb8(63, 169, 167),
+        Color::from_rgb8(255, 170, 113),
+    ];
     let mut enamel = document.clone();
+    enamel.series.palette.clone_from(&stack);
     enamel.series.bars.material = Material::Enamel;
     save(renderer, &chart, &enamel, directory, "stacked-enamel")?;
     chart.title = "100% Stacked · Outline".into();
@@ -191,6 +200,7 @@ fn render(renderer: &mut Renderer, directory: &Path) -> Result {
     chart.label_format = CategoryBarLabelFormat::Percent;
     chart.value_title = "Share".into();
     let mut outlined = document.clone();
+    outlined.series.palette = stack;
     outlined.series.bars.material = Material::Flat;
     outlined.series.bars.outline = true;
     save(renderer, &chart, &outlined, directory, "percent-outline")?;

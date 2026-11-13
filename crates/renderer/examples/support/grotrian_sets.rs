@@ -17,11 +17,13 @@
 //!   591.5 nm first step of laser isotope separation.
 //!
 //! The host chooses the columns, the labels and the lines; the renderer
-//! draws them. The including module declares `gallery` (for `chart` and
-//! `Result`) and `nist_csv` beside this one.
+//! draws them. Every colour, width and text size is the `grotrian`
+//! energy-level theme's (#291): a builder gives each text its content and
+//! applies the theme last. The including module declares `gallery` (for
+//! `titled`, `theme_named` and `Result`) and `nist_csv` beside this one.
 
 pub use super::gallery::Result;
-use super::gallery::chart;
+use super::gallery::{theme_named, titled};
 use super::nist_csv::{self, LevelRow, Levels, LineRow};
 use renderer::config::{
     AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Category, CategoryGroup, CategoryGroups,
@@ -32,13 +34,18 @@ use renderer::energy_levels::{
 };
 use renderer::format::PlainNumberFormat;
 use renderer::text::RichText;
+use renderer::theme::{ChartKind, SubplotScope, Theme};
 use renderer::{Chart, Color, DataRenderType, SeriesConfig};
 
-const LEVEL: Color = Color::from_rgb8(34, 52, 88);
-const ARROW: Color = Color::from_rgb8(214, 120, 20);
-const LABEL: Color = Color::from_rgb8(70, 76, 90);
-const WAVELENGTH: Color = Color::from_rgb8(150, 90, 0);
-const HEADER: Color = Color::from_rgb8(24, 39, 63);
+/// The diagrams' look: the `grotrian` energy-level theme.
+fn theme() -> Result<Theme> {
+    theme_named(ChartKind::EnergyLevels, "grotrian")
+}
+
+/// A text of the diagram: its content, in the look the theme gives it.
+fn plain(text: &str) -> RichText {
+    RichText::plain(text, Color::BLACK, 16.0, "")
+}
 
 /// A bundled NIST export, embedded so every crate that includes this
 /// module (the gallery, the playground, the tests) reads the same bytes.
@@ -57,8 +64,9 @@ fn data(name: &str) -> Result<String> {
     .to_string())
 }
 
-fn tex(text: &str, size: f32, color: Color) -> Result<RichText> {
-    Ok(RichText::from_tex(text, color, size, "")?)
+/// [`plain`] from TeX.
+fn tex(text: &str) -> Result<RichText> {
+    Ok(RichText::from_tex(text, Color::BLACK, 16.0, "")?)
 }
 
 fn level(row: &LevelRow, column: &str, label: Option<RichText>) -> EnergyLevel {
@@ -105,12 +113,7 @@ fn limit(row: &LevelRow, text: &str) -> IonizationLimit {
     IonizationLimit {
         id: row.configuration.clone(),
         energy: row.energy,
-        label: Some(RichText::plain(
-            text,
-            Color::from_rgb8(40, 50, 120),
-            16.0,
-            "",
-        )),
+        label: Some(plain(text)),
         label_offset: [0.0; 2],
         uncertainty: row.uncertainty,
         reference: row.reference.clone(),
@@ -181,30 +184,27 @@ fn band(series: &mut EnergyLevelSeries, column: &str, low: f64, high: f64, label
         column: column.into(),
         first,
         last,
-        label: Some(RichText::plain(label, LABEL, 16.0, "")),
+        label: Some(plain(label)),
         label_offset: [0.0; 2],
     });
 }
 
-/// A Grotrian chart: no grid, no mirrored ticks, the term columns named.
+/// A Grotrian chart with its term columns named. Each diagram adds and
+/// sizes its own break; the theme gives it the Grotrian frame (#205).
 fn grotrian(title: &str, y_title: &str, categories: Vec<Category>) -> Chart {
-    let mut c = chart(title, "", y_title, (1100, 780));
-    let config = c.config_mut();
-    // Read at a column's width, as in a paper: ticks at 18, titles at 20.
-    for axis in [
-        &mut config.bottom_x,
-        &mut config.left_y,
-        &mut config.top_x,
-        &mut config.right_y,
-    ] {
-        axis.label_style.font_size = 18.0;
-        axis.title_option.text.font_size = 20.0;
-    }
-    // The Grotrian preset (#205): no grid, no mirrored ticks. Each diagram
-    // adds and sizes its own break afterwards.
-    config.apply_axis_preset(renderer::AxisPreset::Grotrian);
-    config.bottom_x.categories = Some(categories);
+    let mut c = titled(title, "", y_title, (1100, 780));
+    c.config_mut().bottom_x.categories = Some(categories);
     c
+}
+
+/// The chart and its series in `theme`: the last step of every builder.
+fn themed(
+    mut c: Chart,
+    mut series: Vec<SeriesConfig>,
+    theme: &Theme,
+) -> Result<(Chart, Vec<SeriesConfig>)> {
+    c.apply_theme(theme, &mut series, SubplotScope::All)?;
+    Ok((c, series))
 }
 
 fn groups(c: &mut Chart, groups: &[(&str, &str, &str)]) {
@@ -212,7 +212,7 @@ fn groups(c: &mut Chart, groups: &[(&str, &str, &str)]) {
         groups: groups
             .iter()
             .map(|(label, first, last)| CategoryGroup {
-                label: RichText::plain(label, HEADER, 19.0, ""),
+                label: plain(label),
                 first: (*first).into(),
                 last: (*last).into(),
                 bracket: true,
@@ -268,31 +268,39 @@ fn spec(id: &str, series: EnergyLevelSeries) -> SeriesConfig {
     }
 }
 
-/// The diagrams' look. The lines are labelled with their wavelengths in nm
-/// to one decimal, written by the renderer from each transition's
-/// `wavelength`; the unit is shown once, in a corner note (#258).
-fn styled(mut series: EnergyLevelSeries) -> EnergyLevelSeries {
-    series.style.level.color = LEVEL;
-    series.style.level.width = 2.2;
-    series.style.transition.color = ARROW;
-    series.style.transition.width = 1.3;
+/// The lines labelled with their wavelengths in nm to one decimal, written
+/// by the renderer from each transition's `wavelength`; the unit is shown
+/// once, in a corner note (#258).
+fn labelled(mut series: EnergyLevelSeries) -> EnergyLevelSeries {
     series.style.wavelength_labels = Some(WavelengthLabels {
         format: PlainNumberFormat {
             decimals: Some(1),
             trim_zeros: false,
         },
         unit: None,
-        text: RichText::plain("", WAVELENGTH, 15.0, ""),
+        text: plain(""),
     });
     series
 }
 
+/// The continuum above the series' limits up to `top`: annotations, which
+/// the theme fills.
+fn continuum(c: &mut Chart, series: &EnergyLevelSeries, id: &str, top: f64) -> Result {
+    let fill = Color::from_rgba8(128, 128, 128, 36);
+    series.write_continuum(&mut c.config_mut().annotations, id, top, fill)?;
+    Ok(())
+}
+
 /// The wavelengths' unit at the plot's `corner`, ten pixels in from it, in
-/// the wavelength labels' colour: a text note that owns its text (#258).
-fn unit_note(c: &mut Chart, corner: renderer::NoteAlign) {
+/// the look the theme gives the wavelength labels: a text note that owns
+/// its text (#258).
+fn unit_note(c: &mut Chart, corner: renderer::NoteAlign, theme: &Theme) {
     let plot = c.config().data_area().map(|area| area.0);
     let config = c.config_mut();
-    let text = RichText::plain("Wavelengths in nm", WAVELENGTH, 15.0, "");
+    let mut text = plain("Wavelengths in nm");
+    if let Some(look) = theme.series.energy_levels.transition_labels {
+        (text.color, text.font_size) = (look.color, look.size);
+    }
     let index = config.annotations.add_corner_note(text, corner);
     if let renderer::AnnotationKind::Text { anchor, .. } = &mut config.annotations.items[index].kind
     {
@@ -332,7 +340,7 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
             .unwrap_or(1);
         // A triplet keeps one labelled row per term: J = 1 (³S has one).
         let shown = !row.term.starts_with('3') || row.term == "3S" || row.j == "1";
-        let label = (n <= 4 && shown).then(|| RichText::plain(outer, LABEL, 16.0, ""));
+        let label = (n <= 4 && shown).then(|| plain(outer));
         series.levels.push(level(row, &row.term, label));
     }
     for l in &limits {
@@ -418,14 +426,10 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
             let (m, rest) = id.split_at(1);
             let (l, odd) = rest.split_at(1);
             category.label = id.into();
-            category.rich_label = Some(tex(
-                &format!(
-                    "$^{m}\\mathrm{{{l}}}{}$",
-                    if odd == "*" { "^o" } else { "" }
-                ),
-                20.0,
-                Color::from_rgb8(30, 30, 30),
-            )?);
+            category.rich_label = Some(tex(&format!(
+                "$^{m}\\mathrm{{{l}}}{}$",
+                if odd == "*" { "^o" } else { "" }
+            ))?);
         }
         categories.push(category);
     }
@@ -438,15 +442,11 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
         ],
     );
     break_below(&mut c, -0.15, 25.2, 0.25, 19.6);
-    let series = styled(series);
-    series.write_continuum(
-        &mut c.config_mut().annotations,
-        "he",
-        25.2,
-        Color::from_rgba8(80, 100, 220, 36),
-    )?;
-    unit_note(&mut c, renderer::NoteAlign::BottomRight);
-    Ok((c, vec![spec("he", series)]))
+    let series = labelled(series);
+    let theme = theme()?;
+    continuum(&mut c, &series, "he", 25.2)?;
+    unit_note(&mut c, renderer::NoteAlign::BottomRight, &theme);
+    themed(c, vec![spec("he", series)], &theme)
 }
 
 // Ar I -----------------------------------------------------------------
@@ -483,11 +483,11 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
             continue;
         };
         let label = match paschen(row) {
-            Some(p) => Some(RichText::plain(&p, LABEL, 16.0, "")),
-            None if col == "ground" => Some(tex("$3p^6$", 16.0, LABEL)?),
+            Some(p) => Some(plain(&p)),
+            None if col == "ground" => Some(tex("$3p^6$")?),
             None => {
                 let k = row.term.trim_start_matches('2').trim_end_matches('*');
-                Some(tex(&format!("${k}_{{{}}}$", row.j), 16.0, LABEL)?)
+                Some(tex(&format!("${k}_{{{}}}$", row.j))?)
             }
         };
         series.levels.push(level(row, &col, label));
@@ -533,14 +533,10 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
             let mut c = Category::new(*id, "");
             if *id != "gap" {
                 c.label = (*id).into();
-                c.rich_label = tex(
-                    &match *id {
-                        "ground" => "$3p^6$".to_string(),
-                        id => format!("$\\mathrm{{{}}}$", id.replace('\'', "'")),
-                    },
-                    20.0,
-                    Color::from_rgb8(30, 30, 30),
-                )
+                c.rich_label = tex(&match *id {
+                    "ground" => "$3p^6$".to_string(),
+                    id => format!("$\\mathrm{{{}}}$", id.replace('\'', "'")),
+                })
                 .ok();
             }
             c
@@ -555,15 +551,11 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
         ],
     );
     break_below(&mut c, -0.2, 16.0, 0.3, 11.3);
-    let series = styled(series);
-    series.write_continuum(
-        &mut c.config_mut().annotations,
-        "ar",
-        16.0,
-        Color::from_rgba8(80, 100, 220, 36),
-    )?;
-    unit_note(&mut c, renderer::NoteAlign::BottomRight);
-    Ok((c, vec![spec("ar", series)]))
+    let series = labelled(series);
+    let theme = theme()?;
+    continuum(&mut c, &series, "ar", 16.0)?;
+    unit_note(&mut c, renderer::NoteAlign::BottomRight, &theme);
+    themed(c, vec![spec("ar", series)], &theme)
 }
 
 // Ar I, every level --------------------------------------------------
@@ -589,8 +581,7 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
         if !columns.contains(&column) {
             columns.push(column.clone());
         }
-        let label = RichText::plain(row.outer(), LABEL, 15.0, "");
-        let mut l = level(row, &column, Some(label));
+        let mut l = level(row, &column, Some(plain(row.outer())));
         l.id = format!("{} {}", row.id(), row.energy);
         series.levels.push(l);
     }
@@ -636,10 +627,15 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
     c.config_mut().chart_area.0.width = 2000;
     c.config_mut().chart_area.0.height = 900;
     break_below(&mut c, -0.2, 16.3, 0.3, 11.3);
-    let mut series = styled(series);
+    let mut series = labelled(series);
     // Narrow slots leave lanes for the labels of fourteen columns.
     series.style.level.slot_fraction = 0.45;
-    Ok((c, vec![spec("ar-all", series)]))
+    // Five hundred labels: a size smaller than the theme's.
+    let mut theme = theme()?;
+    if let Some(look) = &mut theme.series.energy_levels.level_labels {
+        look.size = 15.0;
+    }
+    themed(c, vec![spec("ar-all", series)], &theme)
 }
 
 // Cu I -----------------------------------------------------------------
@@ -661,7 +657,7 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
             .replace(".(3P*)", "")
             .replace(".(1P*)", "")
             .replace('.', "");
-        let label = tex(&format!("$\\mathrm{{{shell}}}_{{{}}}$", row.j), 16.0, LABEL)?;
+        let label = tex(&format!("$\\mathrm{{{shell}}}_{{{}}}$", row.j))?;
         series.levels.push(level(row, &row.term, Some(label)));
     }
     // The 3d⁹4s4p quartets as bands, one per term.
@@ -703,14 +699,10 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
                 let (m, rest) = id.split_at(1);
                 let (l, odd) = rest.split_at(1);
                 c.label = (*id).into();
-                c.rich_label = tex(
-                    &format!(
-                        "$^{m}\\mathrm{{{l}}}{}$",
-                        if odd == "*" { "^o" } else { "" }
-                    ),
-                    20.0,
-                    Color::from_rgb8(30, 30, 30),
-                )
+                c.rich_label = tex(&format!(
+                    "$^{m}\\mathrm{{{l}}}{}$",
+                    if odd == "*" { "^o" } else { "" }
+                ))
                 .ok();
             }
             c
@@ -726,15 +718,11 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
     );
     c.set_y_range(-0.2, 8.2);
     c.config_mut().left_y.minor_count = 1;
-    let series = styled(series);
-    series.write_continuum(
-        &mut c.config_mut().annotations,
-        "cu",
-        8.2,
-        Color::from_rgba8(80, 100, 220, 36),
-    )?;
-    unit_note(&mut c, renderer::NoteAlign::BottomRight);
-    Ok((c, vec![spec("cu", series)]))
+    let series = labelled(series);
+    let theme = theme()?;
+    continuum(&mut c, &series, "cu", 8.2)?;
+    unit_note(&mut c, renderer::NoteAlign::BottomRight, &theme);
+    themed(c, vec![spec("cu", series)], &theme)
 }
 
 // U I ------------------------------------------------------------------
@@ -753,15 +741,11 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
         let label = (!row.term.is_empty() && row.term != "*").then(|| {
             let t = row.term.trim_end_matches('*');
             let (m, l) = t.split_at(1);
-            tex(
-                &format!(
-                    "$^{m}\\mathrm{{{l}}}{}_{{{}}}$",
-                    if row.odd() { "^o" } else { "" },
-                    row.j
-                ),
-                16.0,
-                LABEL,
-            )
+            tex(&format!(
+                "$^{m}\\mathrm{{{l}}}{}_{{{}}}$",
+                if row.odd() { "^o" } else { "" },
+                row.j
+            ))
         });
         let label = label.transpose()?;
         let mut l = level(row, &column(row), label);
@@ -843,7 +827,7 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
     let last_even = order.last().cloned().unwrap_or_default();
     let mut c = grotrian("U I", "Energy (cm⁻¹)", categories);
     c.config_mut().bottom_x.title_option.visible = true;
-    c.config_mut().bottom_x.title_option.text = RichText::plain("J", HEADER, 20.0, "");
+    c.config_mut().bottom_x.title_option.text = plain("J");
     groups(
         &mut c,
         &[
@@ -860,13 +844,9 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
         49_000.0,
         renderer::config::PieceSizing::Weights(vec![9.0, 1.0]),
     );
-    let series = styled(series);
-    series.write_continuum(
-        &mut c.config_mut().annotations,
-        "u",
-        52_000.0,
-        Color::from_rgba8(80, 100, 220, 36),
-    )?;
-    unit_note(&mut c, renderer::NoteAlign::BottomRight);
-    Ok((c, vec![spec("u", series)]))
+    let series = labelled(series);
+    let theme = theme()?;
+    continuum(&mut c, &series, "u", 52_000.0)?;
+    unit_note(&mut c, renderer::NoteAlign::BottomRight, &theme);
+    themed(c, vec![spec("u", series)], &theme)
 }

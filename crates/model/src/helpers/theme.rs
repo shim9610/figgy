@@ -1396,7 +1396,11 @@ impl Theme {
         config.background = chrome.background;
         config.plot_background = chrome.plot_background;
         config.draw_style = chrome.draw_style;
+        // The theme keeps the axis breaks, which the Grotrian frame would
+        // size.
+        let breaks = config.left_y.breaks.take();
         config.apply_axis_preset(preset);
+        config.left_y.breaks = breaks;
         if !chrome.ticks {
             let overlays = (config.overlays.iter_mut())
                 .flat_map(|overlay| [&mut overlay.x_axis, &mut overlay.y_axis]);
@@ -1612,7 +1616,8 @@ impl RadialTheme {
             background: radial.background,
             label_color: radial.label_color,
             font_size: radial.font_size,
-            title_size: crate::defaults::config().chart_title.text.font_size,
+            // A plain radial title is half as large again as the labels.
+            title_size: radial.font_size * 1.5,
             material: style.material,
             gloss: style.gloss,
             roughness: style.roughness,

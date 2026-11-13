@@ -19,14 +19,14 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Color, Material, Renderer, SeriesConfig,
+    Color, Renderer, SeriesConfig,
     categorical::*,
     data_config::{MatrixRef, Shading},
     radial::*,
-    theme::ChartKind,
+    theme::{ChartKind, RadialTheme},
 };
 use std::path::Path;
-use styled::{SIZE, background, export, rgb, save, scene_chart, theme_named, themed};
+use styled::{SIZE, background, export, save, scene_chart, theme_named, themed};
 
 // 1. A dashboard card: restrained chrome and two high-contrast service metrics.
 fn observability(r: &mut Renderer, out: &Path) -> Result {
@@ -172,69 +172,35 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
 fn radial_concepts(out: &Path) -> Result {
     // The radial renderer takes a device of its own making.
     let mut r = RadialRenderer::headless_blocking()?;
+    let slice = |label: &str, value: f64| RadialSlice::new(label, value, Color::BLACK);
+    let theme = RadialTheme::named("pop-art").ok_or("no pop-art radial theme")?;
     let mut chart = RadialChart {
         slices: vec![
-            RadialSlice::new("Design", 38., rgb(245, 103, 87)),
-            RadialSlice::new("Build", 32., rgb(111, 126, 241)),
-            RadialSlice::new("Explore", 18., rgb(247, 191, 65)),
-            RadialSlice::new("Share", 12., rgb(95, 196, 170)),
+            slice("Design", 38.),
+            slice("Build", 32.),
+            slice("Explore", 18.),
+            slice("Share", 12.),
         ],
-        font_size: 23.,
         label_decimals: 0,
-        label_color: rgb(49, 43, 59),
-        background: rgb(255, 248, 237),
-        style: RadialStyle {
-            material: Material::Toon,
-            tilt_degrees: 45.,
-            depth: 0.14,
-            bevel: 0.,
-            gap_degrees: 2.,
-            inner_corner: 0.,
-            outer_corner: 0.02,
-            shadow: false,
-            texture_strength: 0.,
-            outline: RadialOutline {
-                rim: true,
-                separators: true,
-                width: 2.,
-                color: rgb(49, 43, 59),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
         ..Default::default()
     }
     .with_title("Studio time / a creative week");
+    theme.apply(&mut chart);
     chart.format_labels();
     let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
 
+    let theme = RadialTheme::named("portfolio").ok_or("no portfolio radial theme")?;
     chart.kind = RadialKind::Donut { inner_radius: 0.57 };
-    chart.background = rgb(19, 22, 39);
-    chart.label_color = rgb(218, 224, 241);
     chart.set_title_text("Portfolio / a different perspective");
     chart.slices = vec![
-        RadialSlice::new("Equities", 42., rgb(145, 159, 244)),
-        RadialSlice::new("Bonds", 28., rgb(99, 204, 192)),
-        RadialSlice::new("Real assets", 18., rgb(236, 166, 187)),
-        RadialSlice::new("Cash", 12., rgb(218, 200, 146)),
+        slice("Equities", 42.),
+        slice("Bonds", 28.),
+        slice("Real assets", 18.),
+        slice("Cash", 12.),
     ];
-    chart.style = RadialStyle {
-        material: Material::Pearl,
-        tilt_degrees: 55.,
-        depth: 0.19,
-        bevel: 0.025,
-        gap_degrees: 2.,
-        inner_corner: 0.06,
-        outer_corner: 0.045,
-        texture_strength: 0.45,
-        texture_scale: 1.,
-        roughness: 0.3,
-        gloss: 0.65,
-        shadow: true,
-        ..Default::default()
-    };
+    theme.apply(&mut chart);
     chart.format_labels();
     let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
