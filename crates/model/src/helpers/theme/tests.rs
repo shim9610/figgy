@@ -1710,4 +1710,22 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
     }];
     RadialTheme::named("ceramic").unwrap().apply(&mut chart);
     assert_eq!(chart.slices[0].children[0].color, Color::BLACK);
+    // A sunburst draws flat, so it keeps its top view under a tilted theme
+    // and stays a valid document under every theme.
+    for name in RadialTheme::names() {
+        let theme = RadialTheme::named(name).unwrap();
+        let mut chart = crate::defaults::radial_chart();
+        chart.slices = vec![RadialSlice {
+            children: vec![slice("child")],
+            ..slice("root")
+        }];
+        theme.apply(&mut chart);
+        assert_eq!(
+            (chart.style.tilt_degrees, chart.style.depth),
+            (0.0, 0.0),
+            "{name}"
+        );
+        assert_eq!(chart.style.material, theme.material, "{name}");
+        assert_eq!(chart.validate(), Ok(()), "{name}");
+    }
 }

@@ -403,8 +403,9 @@ fn polar_warm_paper() -> Theme {
         rgb(70, 60, 56),
         rgb(229, 221, 209),
     ));
+    // The palest bar still stands off the paper (a contrast of 1.5).
     theme.series.palette = vec![
-        rgb(253, 212, 140),
+        rgb(247, 196, 112),
         rgb(250, 152, 72),
         rgb(222, 88, 44),
         rgb(140, 36, 30),

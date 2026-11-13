@@ -1638,8 +1638,11 @@ impl RadialTheme {
     /// material, view, slice shape, outline and title, the palette on its
     /// top-level slices and [`Self::child_tint`] on the slices below them.
     /// Values, labels, the slice structure, the kind and the font family
-    /// stay.
+    /// stay. A sunburst stays flat: its rings share one centre only without
+    /// a tilt or a depth (`RuleKind::SunburstTilt`), so it takes the rest of
+    /// a tilted theme and keeps its top view.
     pub fn apply(&self, chart: &mut RadialChart) {
+        let flat = chart.is_sunburst();
         chart.background = self.background;
         chart.label_color = self.label_color;
         chart.font_size = self.font_size;
@@ -1650,8 +1653,8 @@ impl RadialTheme {
         style.texture_strength = self.texture_strength;
         style.texture_scale = self.texture_scale;
         style.shadow = self.shadow;
-        style.tilt_degrees = self.tilt_degrees;
-        style.depth = self.depth;
+        style.tilt_degrees = if flat { 0.0 } else { self.tilt_degrees };
+        style.depth = if flat { 0.0 } else { self.depth };
         style.bevel = self.bevel;
         style.gap_degrees = self.gap_degrees;
         style.inner_corner = self.inner_corner;
