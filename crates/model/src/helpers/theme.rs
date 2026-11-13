@@ -658,7 +658,9 @@ impl Theme {
     /// its overlays and the subplots `subplots` names, and every series
     /// drawn on one of those. The legend symbols follow the new series
     /// look. The frame is the chrome's [`AxisPreset`] unless a chart draws
-    /// a family with a frame of its own.
+    /// a family with a frame of its own. A theme with a
+    /// [`FieldTheme::contour_shade`] then colours every contour level from
+    /// its chart's colourbar.
     ///
     /// Refused, changing nothing, when the base chart or a subplot in
     /// scope is of another kind than [`Self::kind`] ([`ChartKind::of`]); a
@@ -783,7 +785,8 @@ impl Theme {
 
     /// Style one series as the `index`-th of its chart: the palette colour,
     /// then its family's widths, sizes and materials. Ids, columns, labels
-    /// and the series' structure stay.
+    /// and the series' structure stay, and so do a contour's per-level
+    /// colours, which need the chart's colourbar ([`Self::apply`]).
     pub fn style_series(&self, series: &mut SeriesConfig, index: usize) {
         let palette = &self.series.palette;
         if !palette.is_empty() {

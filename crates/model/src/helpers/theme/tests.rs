@@ -854,3 +854,406 @@ fn the_document_themes_draw_an_open_frame_without_ticks() {
         assert!(config.grid.show_major_y && !config.grid.show_major_x);
     }
 }
+
+fn field_contour(series: &SeriesConfig) -> &crate::data_config::ContourConfig {
+    match &series.render_type {
+        DataRenderType::Field(FieldSeries {
+            contour: Some(contour),
+            ..
+        }) => contour,
+        _ => panic!("a field with contours"),
+    }
+}
+
+fn field_surface(series: &SeriesConfig) -> Option<&crate::view3d::SurfaceStyle> {
+    match &series.render_type {
+        DataRenderType::Field(field) => field.surface.as_ref(),
+        _ => panic!("a field"),
+    }
+}
+
+// The field part writes the fill's opacity and the contour lines' colour,
+// width and label look; the levels, the labels' spacing and their presence
+// stay. Without a contour colour the lines take the palette's.
+#[test]
+fn the_field_family_takes_fills_contours_and_labels() {
+    use crate::data_config::ContourLabelConfig;
+    let labelled = || {
+        SeriesConfig::contours("a", "x", "y", grid("z"), vec![0.25, 0.5])
+            .filled()
+            .contour_labels(ContourLabelConfig {
+                spacing_px: 140.0,
+                ..Default::default()
+            })
+    };
+    let theme = named(ChartKind::Field, "gallery");
+    let fields = &theme.series.fields;
+    let mut series = labelled();
+    theme.style_series(&mut series, 0);
+    let contour = field_contour(&series);
+    assert_eq!(contour.levels, vec![0.25, 0.5]);
+    assert_eq!(Some(contour.line.line_color), fields.contour_color);
+    assert_eq!(contour.line.line_width, 1.3);
+    assert_eq!(contour.per_level_color, None);
+    let labels = contour.labels.as_ref().unwrap();
+    assert_eq!(labels.color, Color::WHITE);
+    assert_eq!(labels.font_size, 13.0);
+    assert_eq!(labels.bg_padding_px, 3.0);
+    assert_eq!(labels.spacing_px, 140.0);
+
+    // No contour colour: the palette's, at the field part's width.
+    let theme = named(ChartKind::TriMesh, "midnight");
+    assert_eq!(theme.series.fields.contour_color, None);
+    let mut series = labelled();
+    theme.style_series(&mut series, 0);
+    let contour = field_contour(&series);
+    assert_eq!(contour.line.line_color, palette_color(&theme, 0));
+    assert_eq!(contour.line.line_width, theme.series.fields.contour_width);
+    assert_ne!(contour.line.line_width, theme.series.lines.line_width);
+
+    // The fill's opacity, where the theme sets one.
+    let opacity = |series: &SeriesConfig| match &series.render_type {
+        DataRenderType::Field(FieldSeries {
+            fill: Some(fill), ..
+        }) => fill.opacity,
+        _ => panic!("a filled field"),
+    };
+    let mut series = SeriesConfig::heatmap("a", "x", "y", grid("z")).opacity(0.6);
+    named(ChartKind::VectorField, "midnight").style_series(&mut series, 0);
+    assert_eq!(opacity(&series), 0.6);
+    named(ChartKind::VectorField, "gallery").style_series(&mut series, 0);
+    assert_eq!(opacity(&series), 0.35);
+}
+
+// A theme with a contour shade colours every level from the chart's
+// colourbar, which carries the theme's map: the map's colour at the level,
+// darkened. A chart without a colourbar, and a series styled alone, keep
+// their per-level colours.
+#[test]
+fn a_contour_shade_colours_each_level_from_the_colourbar() {
+    let theme = named(ChartKind::Surface3d, "warm-terrain");
+    let shade = theme.series.fields.contour_shade.unwrap();
+    let levels = vec![1.0, 2.0, 3.0];
+    let contours = || SeriesConfig::contours("a", "x", "y", grid("z"), levels.clone()).filled();
+    let mut config = Config::default();
+    config.set_view_3d(Some(crate::defaults::view3d()));
+    let mut bar = crate::defaults::color_bar_options();
+    bar.axis.min = 0.0;
+    bar.axis.max = 4.0;
+    config.colorbar = Some(bar);
+
+    let mut series = [contours()];
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
+    let bar = config.colorbar.as_ref().unwrap();
+    assert_eq!(bar.colormap, theme.series.fields.colormap);
+    let colors = field_contour(&series[0]).per_level_color.clone().unwrap();
+    assert_eq!(colors.len(), levels.len());
+    for (level, color) in levels.iter().zip(&colors) {
+        let map = bar.color_for_z(*level);
+        assert_eq!(
+            *color,
+            Color::new(map.r * shade, map.g * shade, map.b * shade, map.a)
+        );
+    }
+    assert_ne!(colors[0], colors[2]);
+    valid_on(&config, &series);
+
+    // Applied again, the same colours.
+    let before = series.clone();
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
+    assert_eq!(series, before);
+
+    let mut alone = contours();
+    theme.style_series(&mut alone, 0);
+    assert_eq!(field_contour(&alone).per_level_color, None);
+
+    let mut config = Config::default();
+    config.set_view_3d(Some(crate::defaults::view3d()));
+    let mut series = [contours()];
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
+    assert_eq!(field_contour(&series[0]).per_level_color, None);
+}
+
+// A 3D theme decides the wireframe of every filled field, which its chart
+// draws as a surface; a field without a fill draws none and gets no surface
+// look. A theme of another kind leaves a wireframe as the series has it.
+#[test]
+fn a_3d_theme_decides_the_surface_and_its_wireframe() {
+    use crate::material::Material;
+    use crate::view3d::{SurfaceStyle, SurfaceWireframe};
+    let filled = || SeriesConfig::heatmap("a", "x", "y", grid("z"));
+    let wired = || {
+        filled().style_surface(|surface| {
+            surface.wireframe = Some(SurfaceWireframe {
+                color: Color::BLACK,
+                width: 3.0,
+            })
+        })
+    };
+    let mut config = Config::default();
+    config.set_view_3d(Some(crate::defaults::view3d()));
+
+    let theme = named(ChartKind::Surface3d, "warm-terrain");
+    let surfaces = &theme.series.surfaces;
+    let mut series = filled();
+    theme.style_series(&mut series, 0);
+    let surface = field_surface(&series).expect("a surface look");
+    assert_eq!(surface.material, Material::Matte);
+    assert_eq!(
+        surface.wireframe,
+        Some(SurfaceWireframe {
+            color: surfaces.wireframe_color,
+            width: surfaces.wireframe_width,
+        })
+    );
+    valid_on(&config, std::slice::from_ref(&series));
+
+    let mut lines = SeriesConfig::contours("a", "x", "y", grid("z"), vec![0.5]);
+    theme.style_series(&mut lines, 0);
+    assert_eq!(field_surface(&lines), None);
+    valid_on(&config, std::slice::from_ref(&lines));
+
+    // A 3D theme without a wireframe removes one, and writes no surface
+    // look where the documented one is drawn anyway.
+    let theme = named(ChartKind::Surface3d, "midnight");
+    assert!(!theme.series.surfaces.wireframe);
+    let mut series = wired();
+    theme.style_series(&mut series, 0);
+    assert_eq!(
+        field_surface(&series),
+        Some(&SurfaceStyle {
+            wireframe: None,
+            ..crate::defaults::surface_style()
+        })
+    );
+    let mut series = filled();
+    theme.style_series(&mut series, 0);
+    assert_eq!(field_surface(&series), None);
+
+    // A flat chart's theme keeps the wireframe and recolours it.
+    let theme = named(ChartKind::Field, "gallery");
+    let mut series = wired();
+    theme.style_series(&mut series, 0);
+    let wireframe = field_surface(&series).unwrap().wireframe.clone().unwrap();
+    assert_eq!(wireframe.width, theme.series.surfaces.wireframe_width);
+    let mut series = filled();
+    theme.style_series(&mut series, 0);
+    assert_eq!(field_surface(&series), None);
+}
+
+// The vector part writes the arrows' width and head, and the palette their
+// colour; the scale, the pivot and the colour map stay.
+#[test]
+fn the_vector_family_takes_widths_and_heads() {
+    use crate::data_config::{VectorPivot, VectorScale};
+    let theme = named(ChartKind::VectorField, "ocean");
+    let mut series = SeriesConfig::vectors("a", "x", "y", "u", "v")
+        .pivot(VectorPivot::Middle)
+        .vector_scale(VectorScale::Pixels { px_per_unit: 16.0 });
+    theme.style_series(&mut series, 0);
+    let DataRenderType::Vector { style, .. } = &series.render_type else {
+        panic!("vectors");
+    };
+    assert_eq!(style.color, palette_color(&theme, 0));
+    assert_eq!(
+        (style.width_px, style.head_length_px, style.head_width_px),
+        (2.2, 8.0, 7.0)
+    );
+    assert_eq!(style.pivot, VectorPivot::Middle);
+    assert_eq!(style.scale, VectorScale::Pixels { px_per_unit: 16.0 });
+}
+
+// The radar part writes what it names and keeps the rest: the default
+// theme names nothing, the document theme the outline, the markers and the
+// fill.
+#[test]
+fn the_radar_part_keeps_what_it_does_not_name() {
+    let own = || {
+        let mut series = SeriesConfig::radar("a", "i", "v", Color::BLACK);
+        if let DataRenderType::Radar { style, .. } = &mut series.render_type {
+            style.line_width_px = Some(1.5);
+            style.fill_opacity = Some(0.1);
+        }
+        series
+    };
+    let mut series = own();
+    let before = series.clone();
+    let mut default = named(ChartKind::Radar, "default");
+    default.series.palette.clear();
+    default.style_series(&mut series, 0);
+    assert_eq!(series, before);
+
+    let theme = named(ChartKind::Radar, "document");
+    let mut series = own();
+    theme.style_series(&mut series, 3);
+    let DataRenderType::Radar { color, style, .. } = &series.render_type else {
+        panic!("a radar series");
+    };
+    assert_eq!(*color, palette_color(&theme, 3));
+    assert_eq!(style.line_width_px, Some(2.0));
+    assert_eq!(style.marker_size_px, Some(7.0));
+    assert_eq!(style.fill_opacity, Some(0.25));
+
+    // The radar document's frame: no axis lines, rings and spokes from the
+    // grid, the ticks' documented length.
+    let mut polar = categorical();
+    polar.set_polar(Some(crate::defaults::polar_options()));
+    let documented = polar.left_y.major_tick_length;
+    theme.apply(&mut polar, &mut [], SubplotScope::All).unwrap();
+    assert!(!polar.bottom_x.line_visible && !polar.left_y.line_visible);
+    assert_eq!(polar.left_y.major_tick_length, documented);
+    assert!(polar.grid.show_major_x && polar.grid.show_major_y);
+    assert_ne!(polar.grid.major_x_color, polar.grid.major_y_color);
+}
+
+// The ternary part colours a region series' fill by its index and outlines
+// it; a series without a region takes the palette and the line part. On a
+// ternary chart `right_y`, the third component, is framed as the labelled
+// sides are, and the legend text takes its own ink.
+#[test]
+fn the_ternary_part_colours_regions_and_frames_the_third_axis() {
+    use crate::ternary::TernaryRegionStyle;
+    let theme = named(ChartKind::Ternary, "warm-paper");
+    let ternary = &theme.series.ternary;
+    let (outline, outline_width) = ternary.region_outline.unwrap();
+    let region = || {
+        SeriesConfig::of_kind(
+            "a",
+            "p",
+            "q",
+            DataRenderType::Ternary {
+                c_column: "r".into(),
+                scatter: None,
+                line: Some(Default::default()),
+                region: Some(TernaryRegionStyle::default()),
+            },
+        )
+    };
+    let mut series = region();
+    theme.style_series(&mut series, 13);
+    let DataRenderType::Ternary { line, region, .. } = &series.render_type else {
+        panic!("a ternary series");
+    };
+    let region = region.as_ref().unwrap();
+    assert_eq!(region.color, ternary.regions[13 % ternary.regions.len()]);
+    assert_eq!(region.opacity, 0.75);
+    let line = line.as_ref().unwrap();
+    assert_eq!((line.line_color, line.line_width), (outline, outline_width));
+
+    let mut series = SeriesConfig::ternary("a", "p", "q", "r").with_line(1.0);
+    theme.style_series(&mut series, 1);
+    let DataRenderType::Ternary { line, scatter, .. } = &series.render_type else {
+        panic!("a ternary series");
+    };
+    let line = line.as_ref().unwrap();
+    assert_eq!(line.line_color, palette_color(&theme, 1));
+    assert_eq!(line.line_width, theme.series.lines.line_width);
+    assert_eq!(
+        scatter.as_ref().unwrap().point_color,
+        palette_color(&theme, 1)
+    );
+
+    let mut config = Config::default();
+    config.set_ternary(Some(crate::defaults::ternary_options()));
+    config.legend.visible = true;
+    theme
+        .apply(&mut config, &mut [], SubplotScope::All)
+        .unwrap();
+    for axis in [&config.bottom_x, &config.left_y, &config.right_y] {
+        assert!(axis.line_visible);
+        assert_eq!(axis.tick, TickVisibility::Outside);
+        assert!(axis.label_style.label_visible);
+        assert_eq!(axis.label_style.color, theme.chrome.label_ink);
+    }
+    assert!(!config.top_x.line_visible);
+    assert_eq!(Some(config.legend.content.color), theme.chrome.legend_ink);
+    assert_ne!(config.legend.content.color, theme.chrome.label_ink);
+
+    // The same on a 3D chart, whose height is read on `right_y`; a flat
+    // chart keeps `right_y` an unlabelled side.
+    let scene = named(ChartKind::Surface3d, "midnight");
+    let mut config = Config::default();
+    config.set_view_3d(Some(crate::defaults::view3d()));
+    scene
+        .apply(&mut config, &mut [], SubplotScope::All)
+        .unwrap();
+    assert!(config.right_y.label_style.label_visible);
+    assert!(!config.right_y.line_visible);
+    let mut config = Config::default();
+    scene
+        .apply(&mut config, &mut [], SubplotScope::All)
+        .unwrap();
+    assert!(!config.right_y.label_style.label_visible);
+}
+
+// A parallel chart reads its values on the parallel axes, drawn in the
+// left axis' style, and names them in the category axis' labels: an open
+// frame draws the axes with their ticks and no line under the names, which
+// take the parallel part's size.
+#[test]
+fn a_parallel_chart_frames_its_axes_and_sizes_their_names() {
+    let theme = named(ChartKind::Parallel, "midnight");
+    let mut config = categorical();
+    let mut options = crate::defaults::parallel_options();
+    options.axes = vec![crate::parallel::ParallelAxis::new(0.0, 1.0); 3];
+    config.set_parallel(Some(options));
+    let mut series = [SeriesConfig::parallel("a", ["p", "q", "r"])];
+    theme
+        .apply(&mut config, &mut series, SubplotScope::All)
+        .unwrap();
+    assert!(config.left_y.line_visible);
+    assert_eq!(config.left_y.tick, TickVisibility::Outside);
+    assert_eq!(config.left_y.line_color, theme.chrome.frame_ink);
+    assert_eq!(config.left_y.label_style.font_size, 16.0);
+    assert!(!config.bottom_x.line_visible);
+    assert_eq!(config.bottom_x.tick, TickVisibility::None);
+    assert!(config.bottom_x.label_style.label_visible);
+    assert_eq!(config.bottom_x.label_style.font_size, 20.0);
+    let DataRenderType::Parallel { line, .. } = &series[0].render_type else {
+        panic!("a parallel series");
+    };
+    assert_eq!(line.line_color, palette_color(&theme, 0));
+    assert_eq!(line.line_width, 1.2);
+    valid_on(&config, &series);
+
+    // The documented look changes nothing on a default parallel chart.
+    let mut config = categorical();
+    let mut options = crate::defaults::parallel_options();
+    options.axes = vec![crate::parallel::ParallelAxis::new(0.0, 1.0); 3];
+    config.set_parallel(Some(options));
+    let before = config.clone();
+    named(ChartKind::Parallel, "default")
+        .apply(&mut config, &mut [], SubplotScope::All)
+        .unwrap();
+    assert_eq!(config, before);
+}
+
+// Every field-family theme draws a colourbar in its map and look.
+#[test]
+fn a_colourbar_takes_the_field_part_s_map() {
+    for (kind, name) in [
+        (ChartKind::Field, "warm-neutral"),
+        (ChartKind::Field, "topographic"),
+        (ChartKind::VectorField, "ocean"),
+        (ChartKind::TriMesh, "midnight"),
+    ] {
+        let theme = named(kind, name);
+        let mut config = Config::default();
+        config.colorbar = Some(crate::defaults::color_bar_options());
+        theme
+            .apply(&mut config, &mut [], SubplotScope::All)
+            .unwrap();
+        let bar = config.colorbar.as_ref().unwrap();
+        assert_eq!(bar.colormap, theme.series.fields.colormap, "{kind} {name}");
+        assert_ne!(bar.colormap, crate::defaults::color_bar_options().colormap);
+        assert_eq!(bar.thickness_px, theme.chrome.colorbar.thickness);
+        assert_eq!(bar.axis.label_style.color, theme.chrome.label_ink);
+        assert_eq!(bar.axis.title_option.text.color, theme.chrome.ink);
+    }
+}

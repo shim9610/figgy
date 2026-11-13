@@ -52,6 +52,14 @@ fn ramp<const N: usize>(stops: [Color; N]) -> ColorMap {
     }
 }
 
+/// The scene chrome ([`scene`]) with contour labels in its ink: the
+/// documented black is unreadable on the dark scenes.
+fn inked_scene(kind: ChartKind, bg: Color, ink: Color, grid: Color) -> Theme {
+    let mut theme = scene(kind, bg, ink, grid);
+    theme.series.fields.contour_label_color = ink;
+    theme
+}
+
 /// A scene whose field covers the plot: no grid over it.
 fn covered(mut theme: Theme) -> Theme {
     theme.chrome.grid.major_x.show = false;
@@ -85,7 +93,7 @@ fn field_gallery() -> Theme {
 /// The hexbin density map: slate ink on a warm off-white, a mint to
 /// indigo ramp, empty cells unpainted.
 fn field_warm_neutral() -> Theme {
-    let mut theme = covered(scene(
+    let mut theme = covered(inked_scene(
         ChartKind::Field,
         rgb(250, 250, 247),
         rgb(48, 52, 66),
@@ -109,7 +117,7 @@ fn field_warm_neutral() -> Theme {
 /// without a box, and a red and a cyan for the channels a legend names.
 fn field_deep_space() -> Theme {
     let bg = rgb(8, 10, 18);
-    let mut theme = covered(scene(ChartKind::Field, bg, rgb(170, 180, 202), bg));
+    let mut theme = covered(inked_scene(ChartKind::Field, bg, rgb(170, 180, 202), bg));
     let chrome = &mut theme.chrome;
     chrome.legend_fill = alpha(bg, 0.0);
     chrome.legend_border = alpha(bg, 0.0);
@@ -124,7 +132,7 @@ fn field_deep_space() -> Theme {
 /// colours.
 fn field_topographic() -> Theme {
     let bg = rgb(12, 40, 43);
-    let mut theme = covered(scene(ChartKind::Field, bg, rgb(222, 230, 197), bg));
+    let mut theme = covered(inked_scene(ChartKind::Field, bg, rgb(222, 230, 197), bg));
     let chrome = &mut theme.chrome;
     // The colourbar's axis line and ticks.
     chrome.frame_ink = rgb(164, 185, 120);
@@ -165,7 +173,12 @@ fn vector_field_gallery() -> Theme {
 /// pale ink on midnight, no grid.
 fn vector_field_midnight() -> Theme {
     let bg = rgb(14, 22, 38);
-    let mut theme = covered(scene(ChartKind::VectorField, bg, rgb(182, 199, 222), bg));
+    let mut theme = covered(inked_scene(
+        ChartKind::VectorField,
+        bg,
+        rgb(182, 199, 222),
+        bg,
+    ));
     theme.chrome.colorbar.title_size = 19.0;
     theme.series.palette = vec![alpha(rgb(240, 246, 255), 0.9)];
     theme.series.fields.colormap = ramp([
@@ -186,7 +199,7 @@ fn vector_field_midnight() -> Theme {
 /// sea-green ink on dark teal with a full grid.
 fn vector_field_ocean() -> Theme {
     let ink = rgb(170, 205, 205);
-    let mut theme = gridded(scene(
+    let mut theme = gridded(inked_scene(
         ChartKind::VectorField,
         rgb(9, 30, 40),
         ink,
@@ -212,7 +225,7 @@ fn vector_field_ocean() -> Theme {
 /// with round waypoints, slate ink on warm paper with a floor grid.
 fn surface_3d_warm_terrain() -> Theme {
     let ink = rgb(58, 62, 72);
-    let mut theme = gridded(scene(
+    let mut theme = gridded(inked_scene(
         ChartKind::Surface3d,
         rgb(248, 247, 243),
         ink,
@@ -248,7 +261,7 @@ fn surface_3d_warm_terrain() -> Theme {
 /// slate ink on warm paper with a floor grid.
 fn surface_3d_warm_diverging() -> Theme {
     let ink = rgb(56, 60, 74);
-    let mut theme = gridded(scene(
+    let mut theme = gridded(inked_scene(
         ChartKind::Surface3d,
         rgb(248, 247, 244),
         ink,
@@ -279,7 +292,7 @@ fn surface_3d_warm_diverging() -> Theme {
 /// orange, pale ink on midnight with a floor grid.
 fn surface_3d_midnight() -> Theme {
     let ink = rgb(186, 198, 220);
-    let mut theme = gridded(scene(
+    let mut theme = gridded(inked_scene(
         ChartKind::Surface3d,
         rgb(14, 20, 34),
         ink,
@@ -305,7 +318,7 @@ fn surface_3d_midnight() -> Theme {
 /// edges as hairlines, pale ink on midnight, no grid.
 fn tri_mesh_midnight() -> Theme {
     let bg = rgb(16, 18, 30);
-    let mut theme = covered(scene(ChartKind::TriMesh, bg, rgb(192, 198, 220), bg));
+    let mut theme = covered(inked_scene(ChartKind::TriMesh, bg, rgb(192, 198, 220), bg));
     theme.chrome.colorbar.title_size = 19.0;
     // The isolines, then the mesh edges drawn over them.
     theme.series.palette = vec![alpha(Color::WHITE, 0.55), alpha(Color::WHITE, 0.16)];
@@ -340,6 +353,8 @@ fn polar_gallery() -> Theme {
     lines.line_width = 2.5;
     lines.fill_opacity = Some(0.25);
     lines.marker_size = 7.0;
+    // A disc leaves the bar room: the documented gap, not the gallery's.
+    theme.chrome.colorbar.gap = Theme::documented(ChartKind::Polar).chrome.colorbar.gap;
     let fields = &mut theme.series.fields;
     fields.contour_color = Some(dark);
     fields.contour_width = 1.2;
@@ -353,7 +368,7 @@ fn polar_gallery() -> Theme {
 /// rings over the field.
 fn polar_cool_slate() -> Theme {
     let dark = rgb(20, 28, 48);
-    let mut theme = gridded(scene(
+    let mut theme = gridded(inked_scene(
         ChartKind::Polar,
         rgb(249, 250, 252),
         rgb(44, 56, 78),
@@ -382,7 +397,7 @@ fn polar_cool_slate() -> Theme {
 /// The wind rose: flat bars from sand through orange to dark red with
 /// small round corners, brown ink on cream paper, spokes and rings.
 fn polar_warm_paper() -> Theme {
-    let mut theme = gridded(scene(
+    let mut theme = gridded(inked_scene(
         ChartKind::Polar,
         rgb(252, 249, 244),
         rgb(70, 60, 56),
@@ -407,8 +422,14 @@ fn polar_warm_paper() -> Theme {
 fn radar_document() -> Theme {
     let rings = rgb(224, 229, 235);
     let mut theme = document(ChartKind::Radar, rgb(32, 46, 60));
+    let documented = Theme::documented(ChartKind::Radar).chrome;
     let chrome = &mut theme.chrome;
-    // The outer ring is the angle axis' line.
+    // No axis lines: the rings and spokes are the grid's, and the ticks
+    // keep their documented length, which the layout leaves around the
+    // disc.
+    chrome.axis_preset = AxisPreset::Minimal;
+    chrome.major_tick_length = documented.major_tick_length;
+    chrome.minor_tick_length = documented.minor_tick_length;
     chrome.frame_ink = rings;
     chrome.grid.major_x.show = true;
     chrome.grid.major_x.color = rgb(200, 206, 214);
@@ -432,7 +453,7 @@ fn radar_document() -> Theme {
 fn parallel_midnight() -> Theme {
     let bg = rgb(15, 18, 30);
     let ink = rgb(186, 194, 216);
-    let mut theme = covered(scene(ChartKind::Parallel, bg, ink, bg));
+    let mut theme = covered(inked_scene(ChartKind::Parallel, bg, ink, bg));
     let chrome = &mut theme.chrome;
     chrome.axis_preset = AxisPreset::OpenOutward;
     chrome.frame_ink = rgb(96, 104, 130);
@@ -461,7 +482,7 @@ fn parallel_midnight() -> Theme {
 fn ternary_warm_paper() -> Theme {
     let bg = rgb(252, 250, 245);
     let ink = rgb(62, 56, 50);
-    let mut theme = gridded(scene(ChartKind::Ternary, bg, ink, rgb(226, 220, 208)));
+    let mut theme = gridded(inked_scene(ChartKind::Ternary, bg, ink, rgb(226, 220, 208)));
     let chrome = &mut theme.chrome;
     chrome.axis_preset = AxisPreset::OpenOutward;
     chrome.frame_ink = rgb(150, 140, 128);
