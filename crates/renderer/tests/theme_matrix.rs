@@ -9,7 +9,9 @@
 //! radial scenes take the radial catalogue (`RadialTheme`). After a theme
 //! is applied:
 //! - the document validates with its series;
-//! - it exports at 1x and at 2x;
+//! - it serializes and reads back as the same document (`serde` feature);
+//! - it exports at 1x and at 2x, and its image is not the image of a theme
+//!   applied before it, so no frame is left stale;
 //! - the data is drawn: the 1x export differs from the export of the same
 //!   themed chart without its series at [`MIN_DATA_PIXELS`] pixels or more
 //!   inside the data areas, so no theme paints its series away.
@@ -180,6 +182,53 @@ fn changed_in_data_areas(config: &Config, a: &RasterImage, b: &RasterImage) -> u
     changed
 }
 
+/// A themed document is plain values: it parses, and once saved it
+/// serializes unchanged, as every document does. The JSON of the saved
+/// document is compared with the JSON it reads back to.
+#[cfg(feature = "serde")]
+fn round_trip(at: &str, config: &Config, series: &[SeriesConfig]) {
+    fn same(at: &str, what: &str, first: &str, second: &str) {
+        if first != second {
+            let from = first
+                .bytes()
+                .zip(second.bytes())
+                .position(|(a, b)| a != b)
+                .unwrap_or(first.len().min(second.len()));
+            let cut = |text: &str| {
+                let start = from.saturating_sub(80);
+                String::from_utf8_lossy(&text.as_bytes()[start..(from + 80).min(text.len())])
+                    .into_owned()
+            };
+            panic!(
+                "{at}: the themed {what} does not round trip:\n{}\n{}",
+                cut(first),
+                cut(second)
+            );
+        }
+    }
+    // The first save: its JSON may print a host `f64` (a fitted range, a
+    // wavelength) one digit shorter than the value it was read from.
+    let saved = |json: String| -> (Config, String) {
+        let back: Config =
+            serde_json::from_str(&json).unwrap_or_else(|error| panic!("{at}: {error}"));
+        let json = serde_json::to_string(&back).expect("it serialized once");
+        (back, json)
+    };
+    let (_, first) = saved(serde_json::to_string(config).expect("a chart serializes"));
+    let (_, second) = saved(first.clone());
+    same(at, "chart", &first, &second);
+    let saved = |json: String| -> String {
+        let back: Vec<SeriesConfig> =
+            serde_json::from_str(&json).unwrap_or_else(|error| panic!("{at}: {error}"));
+        serde_json::to_string(&back).expect("it serialized once")
+    };
+    let first = saved(serde_json::to_string(series).expect("the series serialize"));
+    same(at, "series", &first, &saved(first.clone()));
+}
+
+#[cfg(not(feature = "serde"))]
+fn round_trip(_: &str, _: &Config, _: &[SeriesConfig]) {}
+
 /// One row of the matrix: every theme of `chart_kind` on the chart, which
 /// must be of that kind.
 fn sweep_chart(
@@ -196,6 +245,9 @@ fn sweep_chart(
         Some(chart_kind),
         "{what}"
     );
+    // The themed 1x exports so far: a theme that left a stale frame behind
+    // would repeat the image of the one before it.
+    let mut looks: Vec<(&str, RasterImage)> = Vec::new();
     for name in Theme::names(chart_kind) {
         let at = format!("{what}: {chart_kind} theme {name:?}");
         let theme = Theme::named(chart_kind, name).unwrap_or_else(|| panic!("{at}: not found"));
@@ -243,6 +295,7 @@ fn sweep_chart(
         assert_eq!(themed.draw_style, theme.chrome.draw_style, "{at}");
         assert_eq!(themed.validate_chart(), Ok(()), "{at}");
         assert_eq!(themed.validate_series(&series), Ok(()), "{at}");
+        round_trip(&at, themed, &series);
 
         let drawn = export(r, &chart, &series, monotonic, 1.0);
         let doubled = export(r, &chart, &series, monotonic, 2.0);
@@ -261,6 +314,13 @@ fn sweep_chart(
             data >= MIN_DATA_PIXELS,
             "{at}: the series change {data} pixels of the data areas"
         );
+        for (other, look) in &looks {
+            assert!(
+                look.rgba != drawn.rgba,
+                "{at}: drawn as the theme {other:?} before it"
+            );
+        }
+        looks.push((name, drawn));
         tally.applied += 1;
         if scope == SubplotScope::None {
             tally.base_only += 1;
@@ -367,6 +427,12 @@ fn radial_scenes_take_their_themes() {
             chart.format_labels();
             assert_eq!(chart.validate(), Ok(()), "{at}");
             assert_eq!(chart.background, theme.background, "{at}");
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::to_string(&chart).expect("a radial document");
+                let back: renderer::RadialChart = serde_json::from_str(&json).expect("it parses");
+                assert_eq!(back, chart, "{at}: the themed chart round trip");
+            }
             // Values, labels and the structure stay.
             assert_eq!(chart.slices.len(), declared.slices.len(), "{at}");
             for (themed, slice) in chart.slices.iter().zip(&declared.slices) {
