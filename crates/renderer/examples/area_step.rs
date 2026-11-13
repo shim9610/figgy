@@ -18,25 +18,29 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ChartKind;
 use renderer::{
     Color, Renderer, SeriesConfig, data_config::LineInterpolation, line::LineStylePreset,
 };
 use std::path::Path;
-use styled::{cartesian, export, rgb, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
 
 // A forecast: the history as a solid line, the forecast dashed, with 80% and
 // 95% bands filled between their edge series.
 fn forecast(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(247, 248, 253);
-    let ink = rgb(52, 57, 85);
-    let teal = rgb(37, 150, 160);
-    let mut chart = cartesian(
+    let mut theme = theme_named(ChartKind::Line, "cool-slate")?;
+    let ink = theme.chrome.ink;
+    let teal = theme.series.palette[0];
+    // The colours carry meaning here: the history in ink, the forecast and
+    // its bands in one hue at three strengths. The series take them by role,
+    // so the theme keeps their colours and fills.
+    theme.series.palette.clear();
+    theme.series.lines.fill_opacity = None;
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Demand forecast / next three weeks",
         "Day",
         "Orders per day",
-        bg,
-        ink,
-        rgb(228, 231, 240),
     );
     chart.set_x_range(0., 49.);
     chart.set_y_range(0., 1600.);
@@ -109,21 +113,24 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
     };
     // The labels in TeX: the observations y and the forecast ŷ with its
     // intervals.
-    let specs = [
+    let mut specs = [
         band("up95", "lo95", 0.14),
         edge("lo95"),
         band("up80", "lo80", 0.22),
         edge("lo80"),
         SeriesConfig::line("history", "day", "history")
             .label(r"Actual $y_t$")
-            .color(ink)
-            .width(3.),
+            .color(ink),
         SeriesConfig::line("forecast", "day", "forecast")
             .label(r"Forecast $\hat{y}_t \pm 1.28\,\sigma_t$ (80%) and $\pm 1.96\,\sigma_t$ (95%)")
             .color(teal)
-            .width(3.)
             .dash(LineStylePreset::Dash),
     ];
+    themed(&mut chart, &theme, &mut specs)?;
+    // The band edges are invisible hairlines.
+    for edge in &mut specs[..4] {
+        *edge = edge.clone().width(0.5);
+    }
     chart = chart.with_legend_from(&specs);
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-forecast.png"))
@@ -132,18 +139,12 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
 // A thermostat schedule: the setpoint as a step line with a filled area, the
 // measured room temperature as a smooth line over it.
 fn thermostat(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(248, 247, 252);
-    let ink = rgb(58, 54, 82);
-    let violet = rgb(112, 92, 212);
-    let coral = rgb(232, 104, 84);
-    let mut chart = cartesian(
-        "Thermostat / a winter day",
-        "Hour",
-        "Temperature (°C)",
-        bg,
-        ink,
-        rgb(230, 228, 240),
-    );
+    let mut theme = theme_named(ChartKind::Line, "cool-slate")?;
+    // The setpoint in violet over a stronger fill, the room in coral.
+    theme.series.palette = vec![theme.series.palette[2], theme.series.palette[1]];
+    theme.series.lines.fill_opacity = Some(0.16);
+    let bg = background(&theme);
+    let mut chart = scene_chart("Thermostat / a winter day", "Hour", "Temperature (°C)");
     chart.set_x_range(0., 24.);
     chart.set_y_range(14., 24.);
     chart.config_mut().bottom_x.major_spacing = 3.;
@@ -186,16 +187,11 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("room", &room)?;
     let schedule = SeriesConfig::line("setpoint", "hour", "setpoint")
         .label("Setpoint schedule")
-        .color(violet)
-        .width(2.5)
         .interpolation(LineInterpolation::StepPost)
-        .fill_to(14.)
-        .fill_color(Color::from_rgba(violet.r, violet.g, violet.b, 0.16));
-    let measured = SeriesConfig::line("room", "minute", "room")
-        .label("Room temperature")
-        .color(coral)
-        .width(3.5);
-    let specs = [schedule, measured];
+        .fill_to(14.);
+    let measured = SeriesConfig::line("room", "minute", "room").label("Room temperature");
+    let mut specs = [schedule, measured];
+    themed(&mut chart, &theme, &mut specs)?;
     chart = chart.with_legend_from(&specs);
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-thermostat.png"))

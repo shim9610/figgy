@@ -9,7 +9,7 @@ use renderer::{
     encode_png,
     layout::Side,
     text::RichSegment,
-    theme::{SubplotScope, Theme},
+    theme::{ChartKind, SubplotScope, Theme},
 };
 use std::path::Path;
 
@@ -56,26 +56,69 @@ pub fn save(image: &RasterImage, background: Color, path: &Path) -> Result {
 /// The designed scenes' look: the dashboard theme in the scene's background,
 /// ink and grid colours.
 pub fn theme(bg: Color, ink: Color, grid: Color) -> Theme {
-    let mut theme = Theme::dashboard();
+    let mut theme = Theme::named(ChartKind::Line, "default").expect("every kind has a default");
     let chrome = &mut theme.chrome;
     chrome.background = Some(bg);
+    chrome.axis_preset = renderer::AxisPreset::Minimal;
     chrome.ink = ink;
     chrome.frame_ink = ink;
     chrome.label_ink = ink;
+    chrome.title_size = 34.0;
+    chrome.axis_title_size = 23.0;
+    chrome.tick_label_size = 21.0;
+    chrome.legend_size = 22.0;
+    chrome.grid.major_x.show = false;
     chrome.grid.major_x.color = grid;
+    chrome.grid.major_y.show = true;
     chrome.grid.major_y.color = grid;
+    chrome.grid.major_y.width = 1.0;
+    chrome.grid.major_y.style = renderer::line::LineStylePreset::Solid;
+    chrome.grid.minor_x.show = false;
+    chrome.grid.minor_y.show = false;
     chrome.legend_fill = bg;
     chrome.legend_border = bg;
+    chrome.colorbar.border = Color::from_rgba(36. / 255., 41. / 255., 51. / 255., 0.25);
     theme
 }
 
 /// The shared chrome: the scene's theme and a top-left legend. The margins
 /// are fitted to the labels when the chart is exported.
 pub fn chrome(config: &mut Config, bg: Color, ink: Color, grid: Color) {
-    theme(bg, ink, grid).apply_chrome(config, SubplotScope::All);
+    theme(bg, ink, grid)
+        .apply_chrome(config, &[], SubplotScope::All)
+        .expect("a chart without series takes any theme");
     config.legend.visible = true;
     config.legend.corner = LegendCorner::TopLeft;
     config.legend.padding = 15.;
+}
+
+/// A scene chart of [`SIZE`] with its titles and a top-left legend, for a
+/// built-in theme applied with its series ([`themed`]).
+pub fn scene_chart(title: &str, x: &str, y: &str) -> Chart {
+    let mut chart = Chart::sized(SIZE.0, SIZE.1)
+        .with_title(title)
+        .with_x_title(x)
+        .with_y_title(y);
+    let legend = &mut chart.config_mut().legend;
+    legend.visible = true;
+    legend.corner = LegendCorner::TopLeft;
+    chart
+}
+
+/// The built-in theme `name` of `kind` (#291).
+pub fn theme_named(kind: ChartKind, name: &str) -> Result<Theme> {
+    Ok(Theme::named(kind, name).ok_or_else(|| format!("no {kind} theme {name:?}"))?)
+}
+
+/// Apply `theme` to the chart and its series ([`Chart::apply_theme`]).
+pub fn themed(chart: &mut Chart, theme: &Theme, series: &mut [renderer::SeriesConfig]) -> Result {
+    chart.apply_theme(theme, series, SubplotScope::All)?;
+    Ok(())
+}
+
+/// The scene colour of `theme`: its chart-area fill.
+pub fn background(theme: &Theme) -> Color {
+    theme.chrome.background.unwrap_or(Color::WHITE)
 }
 
 pub fn cartesian(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -> Chart {

@@ -315,107 +315,118 @@ impl ColorCycle {
     /// Rebuild the series' GPU style afterwards
     /// (`Renderer::create_style_for_series`).
     pub fn apply_to_series(self, series: &mut SeriesConfig, index: usize) {
-        let c = self.color(index);
-        match &mut series.render_type {
-            // Markers, line, error bars and stems all take the cycle colour.
-            DataRenderType::Xy(xy) => {
-                if let Some(scatter) = &mut xy.scatter {
-                    scatter.point_color = c;
-                }
-                if let Some(line) = &mut xy.line {
-                    line.line_color = c;
-                }
-                if let Some(errors) = &mut xy.errors {
-                    errors.style.error_bar_color = c;
-                }
-                if let Some(stem) = &mut xy.stem {
-                    stem.color = c;
-                }
-            }
-            DataRenderType::Histogram { bar } => {
-                bar.fill_color = c;
-            }
-            // The level strokes take the cycle colour; the arrows keep theirs
-            // (#203).
-            DataRenderType::EnergyLevels(levels) => {
-                levels.style.level.color = c;
-            }
-            // The lines take the cycle colour; per-line overrides stay
-            // (#234).
-            DataRenderType::Feynman(diagram) => {
-                diagram.style.color = c;
-            }
-            // The contour line joins the cycle like any other line. The fill
-            // does not: its colours come from the colormap, and overwriting one
-            // of them with a cycle entry would make the colourbar lie.
-            DataRenderType::Field(crate::data_config::FieldSeries {
-                contour: Some(contour),
-                ..
-            }) => {
-                contour.line.line_color = c;
-            }
-            // A mesh's contour line joins the cycle as a field's does (#210).
-            DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
-                contour: Some(contour),
-                ..
-            }) => {
-                contour.line.line_color = c;
-            }
-            DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
-            | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. })
-            | DataRenderType::RgbImage { .. } => {}
-            // The arrow colour joins the cycle; a colour map, when set, still
-            // draws from the colourbar.
-            DataRenderType::Vector { style, .. } => {
-                style.color = c;
-            }
-            // The bar fill joins the cycle; per-bar override colours stay.
-            DataRenderType::CategoryBars { color, .. } => {
-                *color = c;
-            }
-            // The box fill joins the cycle; per-box override colours stay.
-            DataRenderType::BoxPlot { color, .. } => {
-                *color = c;
-            }
-            // The series fill joins the cycle; direction and state colours
-            // stay, since they carry the bars' meaning.
-            DataRenderType::RangeBars { color, .. } => {
-                *color = c;
-            }
-            // The outline and markers join the cycle, and the fill follows
-            // them unless the style names its own.
-            DataRenderType::Radar { color, .. } => {
-                *color = c;
-            }
-            DataRenderType::Ternary { scatter, line, .. } => {
-                if let Some(scatter) = scatter {
-                    scatter.point_color = c;
-                }
-                if let Some(line) = line {
-                    line.line_color = c;
-                }
-            }
-            // The line and its arrowheads join the cycle; a colour map, when
-            // set, still draws from the colourbar.
-            DataRenderType::Streamlines { line, .. } => {
-                line.line_color = c;
-            }
-            // The rows join the cycle; a colour column, when set, still
-            // draws from the colourbar.
-            DataRenderType::Parallel { line, .. } => {
-                line.line_color = c;
-            }
-            // Each channel of a monotonic group joins the cycle (#271).
-            DataRenderType::MonotonicLine(series) => {
-                series.line.line_color = c;
-            }
-        }
+        recolor_series(series, self.color(index));
     }
 
     /// Recolor a whole series list in order: series `i` gets `color(i)`.
     pub fn apply_to_all(self, series: &mut [SeriesConfig]) {
         for (i, s) in series.iter_mut().enumerate() {
             self.apply_to_series(s, i);
+        }
+    }
+}
+
+/// Give `series` the colour `c` where a palette colours it: the line,
+/// marker, error bar and stem colour of an x-y series, a histogram's fill,
+/// the series colour of a category, box, range or radar series, a contour
+/// line, the arrows and streamlines, a parallel series' rows, a monotonic
+/// channel, an energy diagram's level strokes and a Feynman diagram's
+/// lines. A field fill and an RGB image keep their colours, which come
+/// from the colour map or the image; per-item overrides stay. Shared by
+/// [`ColorCycle::apply_to_series`] and the themes.
+pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
+    match &mut series.render_type {
+        // Markers, line, error bars and stems all take the cycle colour.
+        DataRenderType::Xy(xy) => {
+            if let Some(scatter) = &mut xy.scatter {
+                scatter.point_color = c;
+            }
+            if let Some(line) = &mut xy.line {
+                line.line_color = c;
+            }
+            if let Some(errors) = &mut xy.errors {
+                errors.style.error_bar_color = c;
+            }
+            if let Some(stem) = &mut xy.stem {
+                stem.color = c;
+            }
+        }
+        DataRenderType::Histogram { bar } => {
+            bar.fill_color = c;
+        }
+        // The level strokes take the cycle colour; the arrows keep theirs
+        // (#203).
+        DataRenderType::EnergyLevels(levels) => {
+            levels.style.level.color = c;
+        }
+        // The lines take the cycle colour; per-line overrides stay
+        // (#234).
+        DataRenderType::Feynman(diagram) => {
+            diagram.style.color = c;
+        }
+        // The contour line joins the cycle like any other line. The fill
+        // does not: its colours come from the colormap, and overwriting one
+        // of them with a cycle entry would make the colourbar lie.
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(contour),
+            ..
+        }) => {
+            contour.line.line_color = c;
+        }
+        // A mesh's contour line joins the cycle as a field's does (#210).
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            contour: Some(contour),
+            ..
+        }) => {
+            contour.line.line_color = c;
+        }
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
+        | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. })
+        | DataRenderType::RgbImage { .. } => {}
+        // The arrow colour joins the cycle; a colour map, when set, still
+        // draws from the colourbar.
+        DataRenderType::Vector { style, .. } => {
+            style.color = c;
+        }
+        // The bar fill joins the cycle; per-bar override colours stay.
+        DataRenderType::CategoryBars { color, .. } => {
+            *color = c;
+        }
+        // The box fill joins the cycle; per-box override colours stay.
+        DataRenderType::BoxPlot { color, .. } => {
+            *color = c;
+        }
+        // The series fill joins the cycle; direction and state colours
+        // stay, since they carry the bars' meaning.
+        DataRenderType::RangeBars { color, .. } => {
+            *color = c;
+        }
+        // The outline and markers join the cycle, and the fill follows
+        // them unless the style names its own.
+        DataRenderType::Radar { color, .. } => {
+            *color = c;
+        }
+        DataRenderType::Ternary { scatter, line, .. } => {
+            if let Some(scatter) = scatter {
+                scatter.point_color = c;
+            }
+            if let Some(line) = line {
+                line.line_color = c;
+            }
+        }
+        // The line and its arrowheads join the cycle; a colour map, when
+        // set, still draws from the colourbar.
+        DataRenderType::Streamlines { line, .. } => {
+            line.line_color = c;
+        }
+        // The rows join the cycle; a colour column, when set, still
+        // draws from the colourbar.
+        DataRenderType::Parallel { line, .. } => {
+            line.line_color = c;
+        }
+        // Each channel of a monotonic group joins the cycle (#271).
+        DataRenderType::MonotonicLine(series) => {
+            series.line.line_color = c;
         }
     }
 }

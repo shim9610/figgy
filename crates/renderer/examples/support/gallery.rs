@@ -2,7 +2,7 @@
 //! Chart data and series definitions live in each example, not in this module.
 use renderer::{
     Chart, Color, Renderer, SeriesConfig, encode_png,
-    theme::{SubplotScope, Theme},
+    theme::{ChartKind, SubplotScope, Theme},
 };
 use std::{error::Error, path::Path};
 
@@ -11,7 +11,7 @@ pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 /// The gallery look: the light theme with a navy title, a slate frame, a
 /// pale major grid and smaller text.
 pub fn theme() -> Theme {
-    let mut theme = Theme::light();
+    let mut theme = Theme::named(ChartKind::Line, "default").expect("every kind has a default");
     let chrome = &mut theme.chrome;
     chrome.ink = Color::from_rgb8(24, 39, 63);
     chrome.frame_ink = Color::from_rgb8(88, 102, 123);
@@ -27,7 +27,9 @@ pub fn theme() -> Theme {
 /// margins are fitted to the labels when the chart is saved.
 pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
     let mut chart = Chart::sized(size.0, size.1);
-    theme().apply_chrome(chart.config_mut(), SubplotScope::All);
+    theme()
+        .apply_chrome(chart.config_mut(), &[], SubplotScope::All)
+        .expect("a chart without series takes any theme");
     chart
         .with_title(title)
         .with_x_title(x_title)

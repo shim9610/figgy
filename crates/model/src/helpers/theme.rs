@@ -1,13 +1,18 @@
-//! Themes (#265): presets that write a chart's look into the document once.
+//! Themes (#265, #291): looks written into the document once, each made for
+//! one kind of chart.
 //!
 //! A [`Theme`] is a value, not a name stored in the document: applying one
 //! writes exactly the fields it owns and keeps everything the user set as
-//! content or layout. It owns:
+//! content or layout. It is made for one [`ChartKind`]: applying it to a
+//! chart of another kind is refused ([`ThemeError::Kind`]) and changes
+//! nothing. [`Theme::named`] looks one up in a kind's catalogue
+//! ([`Theme::names`]). The radial chart has its own ([`RadialTheme`]). A
+//! theme owns:
 //! - the chrome ([`ChromeTheme`]): the chart and plot fills, the draw style,
 //!   the axis frame, the text look, the grid, the legend box and the
 //!   selection highlight;
 //! - one part per series family ([`SeriesTheme`]): colours through a
-//!   [`ColorCycle`], stroke widths, marker sizes and each family's materials.
+//!   palette, stroke widths, marker sizes and each family's materials.
 //!
 //! It keeps axis ranges, scales, tick spacing, label formats, categories,
 //! axis breaks, the chart area, every offset, all text content, the
@@ -22,7 +27,9 @@
 
 use crate::color::Color;
 use crate::colormap::ColorMap;
-use crate::config::{AxisOptions, Config, DataSelectionsConfig, DrawStyle, GridOptions};
+use crate::config::{
+    AxisOptions, Config, DataSelectionsConfig, DrawStyle, GridOptions, TickVisibility,
+};
 use crate::data_config::{
     BoxPoints, DataRenderType, FieldSeries, SeriesConfig, Violin, ViolinBody, ViolinHalf,
 };
@@ -31,13 +38,21 @@ use crate::legend::Legend;
 use crate::line::LineStylePreset;
 use crate::material::Material;
 use crate::preset::{AxisPreset, ColorCycle};
+
+mod catalog;
+mod kind;
 use crate::radial::RadialChart;
 use crate::text::RichText;
+pub use kind::ChartKind;
 
-/// A chart look: the chrome and one part per series family. Every built-in
-/// theme defines every part; a host edits any field before applying.
+/// A chart look made for one kind of chart: the chrome and one part per
+/// series family. Every built-in theme defines every part; a host edits any
+/// field before applying.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
+    /// The kind of chart the theme is made for; [`Theme::apply`] refuses
+    /// a chart of another kind.
+    pub kind: ChartKind,
     pub chrome: ChromeTheme,
     pub series: SeriesTheme,
 }
@@ -72,9 +87,29 @@ pub struct ChromeTheme {
     pub grid: GridTheme,
     pub legend_fill: Color,
     pub legend_border: Color,
-    /// The colourbar's outline.
-    pub colorbar_border: Color,
+    /// The space between the legend box and its text, logical pixels.
+    pub legend_padding: f32,
+    pub colorbar: ColorbarTheme,
     pub highlight: HighlightTheme,
+}
+
+/// The colourbar's look; its map is the field part's
+/// ([`FieldTheme::colormap`]). Its side, alignment, range and offsets stay.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorbarTheme {
+    pub border: Color,
+    pub border_width: f32,
+    /// The bar's thickness, logical pixels.
+    pub thickness: f32,
+    /// The bar's length as a share of the plot's side.
+    pub length: f32,
+    /// The gap between the plot and the bar, logical pixels.
+    pub gap: f32,
+    pub ticks: TickVisibility,
+    /// The size of the bar's tick labels, in the chrome's label ink.
+    pub label_size: f32,
+    /// The size of the bar's title, in the chrome's ink.
+    pub title_size: f32,
 }
 
 /// One kind of grid line: whether it is drawn and how.
@@ -108,8 +143,10 @@ pub struct HighlightTheme {
 /// One part per series family.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SeriesTheme {
-    /// Series `i` takes `cycle.color(i)` ([`ColorCycle::apply_to_series`]).
-    pub cycle: ColorCycle,
+    /// Series `i` takes `palette[i % palette.len()]`, on every part a
+    /// palette colours ([`ColorCycle::apply_to_series`] names them). Empty
+    /// keeps every series colour.
+    pub palette: Vec<Color>,
     pub lines: LineTheme,
     pub bars: BarTheme,
     pub boxes: BoxTheme,
@@ -121,7 +158,6 @@ pub struct SeriesTheme {
     pub surfaces: SurfaceTheme,
     pub energy_levels: EnergyLevelTheme,
     pub feynman: FeynmanTheme,
-    pub radial: RadialTheme,
 }
 
 /// Lines, markers, stems and error bars of x-y and ternary series, and the
@@ -129,6 +165,9 @@ pub struct SeriesTheme {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LineTheme {
     pub line_width: f32,
+    /// The opacity of a filled line's fill, in the line's colour; `None`
+    /// keeps each fill's own colour.
+    pub fill_opacity: Option<f32>,
     pub marker_size: f32,
     pub stem_width: f32,
     pub error_bar_width: f32,
@@ -233,17 +272,62 @@ pub struct FeynmanTheme {
     pub width: f32,
 }
 
-/// The radial (pie, donut, sunburst) chart. Its top-level slices take the
-/// cycle colours; the chart's own font family stays.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A radial (pie, donut, sunburst) chart's look (#291). The radial chart is
+/// a model of its own, so its themes are too: [`RadialTheme::named`] looks
+/// one up and [`RadialTheme::apply`] writes it. Its top-level slices take
+/// the palette; values, labels, the slice structure and the font family
+/// stay.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RadialTheme {
+    /// Slice `i` of the top level takes `palette[i % palette.len()]`;
+    /// empty keeps every slice colour.
+    pub palette: Vec<Color>,
     pub background: Color,
     pub label_color: Color,
     pub font_size: f32,
+    /// The chart title's size.
+    pub title_size: f32,
     pub material: Material,
     pub gloss: f32,
     pub shadow: bool,
 }
+
+/// Why a theme was not applied. Nothing is changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThemeError {
+    /// A chart in scope is of another kind than the theme is made for.
+    Kind {
+        theme: ChartKind,
+        chart: ChartKind,
+        /// The chart: [`LayerRef::Base`] or a [`LayerRef::Subplot`].
+        layer: LayerRef,
+    },
+    /// The theme's draw style cannot draw a series in scope: the renderer
+    /// would drop it (`renderer::draw_style_supports`). The model cannot
+    /// tell; the renderer's `Chart::apply_theme` and the web wrappers
+    /// check it before applying.
+    DrawStyle { series_id: String },
+}
+
+impl std::fmt::Display for ThemeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kind {
+                theme,
+                chart,
+                layer,
+            } => write!(
+                f,
+                "a {theme} theme does not apply to a {chart} chart ({layer:?})"
+            ),
+            Self::DrawStyle { series_id } => {
+                write!(f, "the theme's draw style cannot draw series {series_id:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ThemeError {}
 
 /// Which subplots take a theme. The chart's own layers and its overlays
 /// always do.
@@ -256,21 +340,14 @@ pub enum SubplotScope<'a> {
 }
 
 impl SubplotScope<'_> {
-    fn includes(self, index: usize) -> bool {
+    /// Whether the subplot at `index` is in scope.
+    pub fn includes(self, index: usize) -> bool {
         match self {
             Self::None => false,
             Self::All => true,
             Self::Only(indices) => indices.contains(&index),
         }
     }
-}
-
-const fn rgb(r: u8, g: u8, b: u8) -> Color {
-    Color::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-}
-
-const fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
-    Color::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a)
 }
 
 fn grid_line(show: bool, color: Color, width: f32, style: LineStylePreset) -> GridLine {
@@ -283,9 +360,20 @@ fn grid_line(show: bool, color: Color, width: f32, style: LineStylePreset) -> Gr
 }
 
 impl Theme {
-    /// The documented default look: applying it to a default document
-    /// changes nothing.
-    pub fn light() -> Self {
+    /// The names in `kind`'s catalogue, `default` first.
+    pub fn names(kind: ChartKind) -> &'static [&'static str] {
+        catalog::names(kind)
+    }
+
+    /// The theme `name` of `kind`'s catalogue ([`Self::names`]), or `None`.
+    /// Every kind has `default`, the documented default look: applying it
+    /// to a default document changes nothing.
+    pub fn named(kind: ChartKind, name: &str) -> Option<Self> {
+        catalog::named(kind, name)
+    }
+
+    /// The documented default look of `kind`.
+    pub(crate) fn documented(kind: ChartKind) -> Self {
         let config = crate::defaults::config();
         let grid = &config.grid;
         let legend = &config.legend;
@@ -294,10 +382,11 @@ impl Theme {
         let bars = crate::defaults::category_bar_style();
         let levels = crate::defaults::energy_level_style();
         let surface = crate::defaults::surface_style();
-        let radial = crate::defaults::radial_chart();
         let radar = crate::defaults::radar_series_style();
+        let bar = crate::defaults::color_bar_options();
         let vector = crate::data_config::VectorStyle::default();
         Self {
+            kind,
             chrome: ChromeTheme {
                 background: None,
                 plot_background: None,
@@ -342,7 +431,17 @@ impl Theme {
                 },
                 legend_fill: legend.bg_color,
                 legend_border: legend.border_color,
-                colorbar_border: crate::defaults::color_bar_options().border_color,
+                legend_padding: legend.padding,
+                colorbar: ColorbarTheme {
+                    border: bar.border_color,
+                    border_width: bar.border_width,
+                    thickness: bar.thickness_px,
+                    length: bar.length_frac,
+                    gap: bar.gap_px,
+                    ticks: bar.axis.tick.clone(),
+                    label_size: bar.axis.label_style.font_size,
+                    title_size: bar.axis.title_option.text.font_size,
+                },
                 highlight: HighlightTheme {
                     color: highlight.highlight_color,
                     outline_width_px: highlight.outline_width_px,
@@ -351,9 +450,10 @@ impl Theme {
                 },
             },
             series: SeriesTheme {
-                cycle: ColorCycle::Balanced,
+                palette: ColorCycle::Balanced.colors().to_vec(),
                 lines: LineTheme {
                     line_width: 1.0,
+                    fill_opacity: None,
                     marker_size: 6.0,
                     stem_width: 1.0,
                     error_bar_width: 1.0,
@@ -421,186 +521,7 @@ impl Theme {
                     axis_preset: AxisPreset::Hidden,
                     width: crate::defaults::feynman_style().width,
                 },
-                radial: RadialTheme {
-                    background: radial.background,
-                    label_color: radial.label_color,
-                    font_size: radial.font_size,
-                    material: radial.style.material,
-                    gloss: radial.style.gloss,
-                    shadow: radial.style.shadow,
-                },
             },
-        }
-    }
-
-    /// Light ink on a dark chart area, for screens.
-    pub fn dark() -> Self {
-        let mut theme = Self::light();
-        let bg = rgb(28, 30, 36);
-        let ink = rgb(225, 228, 235);
-        let soft = rgb(190, 195, 205);
-        let chrome = &mut theme.chrome;
-        chrome.background = Some(bg);
-        chrome.ink = ink;
-        chrome.frame_ink = soft;
-        chrome.label_ink = soft;
-        chrome.grid.major_x.color = rgb(66, 70, 80);
-        chrome.grid.major_y.color = rgb(66, 70, 80);
-        chrome.grid.minor_x.color = rgb(48, 51, 59);
-        chrome.grid.minor_y.color = rgb(48, 51, 59);
-        chrome.legend_fill = rgba(28, 30, 36, 0.85);
-        chrome.legend_border = rgb(90, 95, 106);
-        chrome.colorbar_border = rgb(140, 145, 155);
-        chrome.highlight.color = rgb(255, 214, 10);
-        let series = &mut theme.series;
-        series.cycle = ColorCycle::ColorblindSafe;
-        series.lines.line_width = 1.5;
-        series.bars.border_color = bg;
-        series.bars.outline_color = ink;
-        series.boxes.ink = ink;
-        series.boxes.mean_color = ink;
-        series.boxes.outlier_color = soft;
-        series.fields.colormap = ColorMap::Magma;
-        series.fields.contour_label_color = ink;
-        series.range_bars.connector_color = soft;
-        series.surfaces.wireframe_color = ink;
-        series.energy_levels.limit_color = rgb(140, 160, 255);
-        series.energy_levels.transition_color = rgb(255, 170, 60);
-        series.energy_levels.band_fill = rgba(140, 160, 255, 0.18);
-        series.radial.background = bg;
-        series.radial.label_color = ink;
-        theme
-    }
-
-    /// Publication figures: an open frame with outward ticks, no grid, a
-    /// white chart area, grayscale-safe ink and a perceptually uniform map.
-    pub fn paper() -> Self {
-        let mut theme = Self::light();
-        let chrome = &mut theme.chrome;
-        chrome.background = Some(Color::WHITE);
-        chrome.axis_preset = AxisPreset::OpenOutward;
-        chrome.grid.major_x.show = false;
-        chrome.grid.major_y.show = false;
-        chrome.grid.minor_x.show = false;
-        chrome.grid.minor_y.show = false;
-        chrome.legend_fill = rgba(255, 255, 255, 0.0);
-        chrome.legend_border = rgba(255, 255, 255, 0.0);
-        chrome.colorbar_border = Color::BLACK;
-        chrome.highlight.color = rgb(213, 94, 0);
-        let series = &mut theme.series;
-        series.cycle = ColorCycle::Monochrome;
-        series.lines.line_width = 1.5;
-        series.lines.marker_size = 5.0;
-        series.bars.material = Material::Flat;
-        series.bars.outline = true;
-        series.bars.outline_color = Color::BLACK;
-        series.boxes.material = Material::Flat;
-        series.boxes.ink = Color::BLACK;
-        series.boxes.mean_color = Color::BLACK;
-        series.boxes.outlier_color = Color::BLACK;
-        series.fields.colormap = ColorMap::Viridis;
-        series.fields.contour_label_color = Color::BLACK;
-        series.surfaces.material = Material::Matte;
-        series.energy_levels.limit_color = Color::BLACK;
-        series.energy_levels.transition_color = rgb(80, 80, 80);
-        series.energy_levels.band_fill = rgba(0, 0, 0, 0.12);
-        series.radial.background = Color::WHITE;
-        series.radial.label_color = Color::BLACK;
-        theme
-    }
-
-    /// A web dashboard: no axis lines or ticks, horizontal grid lines only,
-    /// large text and thick lines on a soft chart area.
-    pub fn dashboard() -> Self {
-        let mut theme = Self::light();
-        let bg = rgb(250, 251, 253);
-        let ink = rgb(36, 41, 51);
-        let soft = rgb(96, 104, 118);
-        let chrome = &mut theme.chrome;
-        chrome.background = Some(bg);
-        chrome.axis_preset = AxisPreset::Minimal;
-        chrome.ink = ink;
-        chrome.frame_ink = soft;
-        chrome.label_ink = soft;
-        chrome.title_size = 34.0;
-        chrome.axis_title_size = 23.0;
-        chrome.tick_label_size = 21.0;
-        chrome.legend_size = 22.0;
-        chrome.grid.major_x.show = false;
-        chrome.grid.major_y = grid_line(true, rgb(226, 230, 236), 1.0, LineStylePreset::Solid);
-        chrome.grid.minor_x.show = false;
-        chrome.grid.minor_y.show = false;
-        // A legend inside the plot sits on the data: a translucent card with
-        // a grid-coloured edge, so a trace under it stays in view.
-        chrome.legend_fill = rgba(250, 251, 253, 0.85);
-        chrome.legend_border = rgb(226, 230, 236);
-        chrome.colorbar_border = rgba(36, 41, 51, 0.25);
-        let series = &mut theme.series;
-        series.cycle = ColorCycle::Balanced;
-        series.lines.line_width = 2.5;
-        series.lines.marker_size = 8.0;
-        series.lines.stem_width = 2.0;
-        series.bars.border_color = bg;
-        series.bars.material = Material::Flat;
-        series.bars.outline = false;
-        series.boxes.ink = ink;
-        series.fields.colormap = ColorMap::Viridis;
-        series.fields.contour_width = 1.5;
-        series.vectors.width_px = 2.0;
-        series.radar.line_width_px = Some(2.5);
-        series.range_bars.connector_color = soft;
-        series.radial.background = bg;
-        series.radial.label_color = ink;
-        series.radial.font_size = 18.0;
-        theme
-    }
-
-    /// Hand-drawn strokes and the handwritten face on a cream chart area.
-    pub fn sketch() -> Self {
-        let mut theme = Self::light();
-        let bg = rgb(253, 250, 241);
-        let ink = rgb(45, 42, 38);
-        let chrome = &mut theme.chrome;
-        chrome.background = Some(bg);
-        chrome.draw_style = DrawStyle::Sketch(crate::defaults::sketch_options());
-        chrome.axis_preset = AxisPreset::OpenOutward;
-        chrome.ink = ink;
-        chrome.frame_ink = ink;
-        chrome.label_ink = ink;
-        chrome.axis_width = 1.5;
-        chrome.grid.major_x.show = false;
-        chrome.grid.major_y.color = rgb(222, 214, 196);
-        chrome.legend_fill = bg;
-        chrome.legend_border = ink;
-        chrome.colorbar_border = ink;
-        let series = &mut theme.series;
-        series.cycle = ColorCycle::Vivid;
-        series.lines.line_width = 2.0;
-        series.lines.marker_size = 7.0;
-        series.bars.border_color = ink;
-        series.bars.material = Material::Paper;
-        series.bars.outline = true;
-        series.bars.outline_color = ink;
-        series.boxes.material = Material::Paper;
-        series.boxes.ink = ink;
-        series.fields.contour_label_color = ink;
-        series.surfaces.material = Material::Paper;
-        series.radial.background = bg;
-        series.radial.label_color = ink;
-        series.radial.material = Material::Paper;
-        theme
-    }
-
-    /// The built-in theme named `name`: `light`, `dark`, `paper`,
-    /// `dashboard` or `sketch`.
-    pub fn named(name: &str) -> Option<Self> {
-        match name {
-            "light" => Some(Self::light()),
-            "dark" => Some(Self::dark()),
-            "paper" => Some(Self::paper()),
-            "dashboard" => Some(Self::dashboard()),
-            "sketch" => Some(Self::sketch()),
-            _ => None,
         }
     }
 
@@ -609,7 +530,17 @@ impl Theme {
     /// drawn on one of those. The legend symbols follow the new series
     /// look. The frame is the chrome's [`AxisPreset`] unless a chart draws
     /// a family with a frame of its own.
-    pub fn apply(&self, config: &mut Config, series: &mut [SeriesConfig], subplots: SubplotScope) {
+    ///
+    /// Refused, changing nothing, when the base chart or a subplot in
+    /// scope is of another kind than [`Self::kind`] ([`ChartKind::of`]); a
+    /// chart with no series yet takes any theme.
+    pub fn apply(
+        &self,
+        config: &mut Config,
+        series: &mut [SeriesConfig],
+        subplots: SubplotScope,
+    ) -> Result<(), ThemeError> {
+        self.check_kind(config, series, subplots)?;
         // Series are styled before the legends, which show their marks.
         for (index, item) in series.iter_mut().enumerate() {
             let themed = match config.layer_of_series(&item.series_id) {
@@ -620,6 +551,52 @@ impl Theme {
                 self.style_series(item, index);
             }
         }
+        self.write_chrome(config, series, subplots);
+        Ok(())
+    }
+
+    /// Apply the chrome alone, to a chart whose series are styled elsewhere
+    /// ([`Self::style_series`]). The legend symbols follow `series`. Refused
+    /// as [`Self::apply`] is.
+    pub fn apply_chrome(
+        &self,
+        config: &mut Config,
+        series: &[SeriesConfig],
+        subplots: SubplotScope,
+    ) -> Result<(), ThemeError> {
+        self.check_kind(config, series, subplots)?;
+        self.write_chrome(config, series, subplots);
+        Ok(())
+    }
+
+    /// Whether every chart in scope takes a theme of [`Self::kind`].
+    fn check_kind(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+        subplots: SubplotScope,
+    ) -> Result<(), ThemeError> {
+        let charts = std::iter::once(LayerRef::Base).chain(
+            (0..config.subplots.len())
+                .filter(|&index| subplots.includes(index))
+                .map(LayerRef::Subplot),
+        );
+        for layer in charts {
+            if let Some(chart) = ChartKind::of(config, series, layer)
+                && chart != self.kind
+            {
+                return Err(ThemeError::Kind {
+                    theme: self.kind,
+                    chart,
+                    layer,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The chrome of the chart, its overlays and the subplots in scope.
+    fn write_chrome(&self, config: &mut Config, series: &[SeriesConfig], subplots: SubplotScope) {
         let preset = self.frame_for(config, series, LayerRef::Base);
         self.apply_chart_chrome(config, preset, series);
         for index in 0..config.subplots.len() {
@@ -632,20 +609,25 @@ impl Theme {
         }
     }
 
-    /// Apply the chrome alone, to a chart whose series are styled elsewhere
-    /// ([`Self::style_series`]): the frame is the chrome's [`AxisPreset`].
-    pub fn apply_chrome(&self, config: &mut Config, subplots: SubplotScope) {
-        self.apply(config, &mut [], subplots);
-    }
-
-    /// Style one series as the `index`-th of its chart: the cycle colour,
+    /// Style one series as the `index`-th of its chart: the palette colour,
     /// then its family's widths, sizes and materials. Ids, columns, labels
     /// and the series' structure stay.
     pub fn style_series(&self, series: &mut SeriesConfig, index: usize) {
-        self.series.cycle.apply_to_series(series, index);
+        let palette = &self.series.palette;
+        if !palette.is_empty() {
+            crate::preset::recolor_series(series, palette[index % palette.len()]);
+        }
         let theme = &self.series;
         let lines = &theme.lines;
-        series.for_each_line(|line| line.line_width = lines.line_width);
+        series.for_each_line(|line| {
+            line.line_width = lines.line_width;
+            if let (Some(opacity), Some(_)) = (lines.fill_opacity, &line.fill) {
+                line.fill_color = Some(Color {
+                    a: line.line_color.a * opacity,
+                    ..line.line_color
+                });
+            }
+        });
         match &mut series.render_type {
             DataRenderType::Xy(xy) => {
                 if let Some(scatter) = &mut xy.scatter {
@@ -832,8 +814,16 @@ impl Theme {
             Some(bar) => {
                 bar.colormap = self.series.fields.colormap.clone();
                 bar.nan_color = self.series.fields.nan_color;
-                bar.border_color = chrome.colorbar_border;
+                let look = &chrome.colorbar;
+                bar.border_color = look.border;
+                bar.border_width = look.border_width;
+                bar.thickness_px = look.thickness;
+                bar.length_frac = look.length;
+                bar.gap_px = look.gap;
                 self.style_axis_look(&mut bar.axis);
+                bar.axis.tick = look.ticks.clone();
+                bar.axis.label_style.font_size = look.label_size;
+                bar.axis.title_option.text.font_size = look.title_size;
                 Some(bar.colormap.clone())
             }
             None => None,
@@ -922,6 +912,7 @@ impl Theme {
         let chrome = &self.chrome;
         legend.bg_color = chrome.legend_fill;
         legend.border_color = chrome.legend_border;
+        legend.padding = chrome.legend_padding;
         self.style_text(&mut legend.content, chrome.label_ink, chrome.legend_size);
         crate::legend::update_legend_symbols_preserving_text(&mut legend.content, series, colormap);
     }
@@ -948,23 +939,54 @@ impl Theme {
         selection.point_radius_extra_px = look.point_radius_extra_px;
         selection.contour_width_extra_px = look.contour_width_extra_px;
     }
+}
+
+impl RadialTheme {
+    /// The names in the radial catalogue, `default` first.
+    pub fn names() -> &'static [&'static str] {
+        catalog::radial_names()
+    }
+
+    /// The radial theme `name` ([`Self::names`]), or `None`. `default` is
+    /// the documented default look: applying it to a default radial chart
+    /// changes nothing.
+    pub fn named(name: &str) -> Option<Self> {
+        catalog::radial_named(name)
+    }
+
+    /// The documented default look.
+    pub(crate) fn documented() -> Self {
+        let radial = crate::defaults::radial_chart();
+        Self {
+            palette: Vec::new(),
+            background: radial.background,
+            label_color: radial.label_color,
+            font_size: radial.font_size,
+            title_size: crate::defaults::config().chart_title.text.font_size,
+            material: radial.style.material,
+            gloss: radial.style.gloss,
+            shadow: radial.style.shadow,
+        }
+    }
 
     /// Apply the theme to a radial chart: its background, label look,
-    /// material and title, and the cycle colours on its top-level slices.
+    /// material and title, and the palette on its top-level slices.
     /// Values, labels, the slice structure and the font family stay.
-    pub fn apply_radial(&self, chart: &mut RadialChart) {
-        let radial = &self.series.radial;
-        chart.background = radial.background;
-        chart.label_color = radial.label_color;
-        chart.font_size = radial.font_size;
-        chart.style.material = radial.material;
-        chart.style.gloss = radial.gloss;
-        chart.style.shadow = radial.shadow;
-        for (index, slice) in chart.slices.iter_mut().enumerate() {
-            slice.color = self.series.cycle.color(index);
+    pub fn apply(&self, chart: &mut RadialChart) {
+        chart.background = self.background;
+        chart.label_color = self.label_color;
+        chart.font_size = self.font_size;
+        chart.style.material = self.material;
+        chart.style.gloss = self.gloss;
+        chart.style.shadow = self.shadow;
+        if !self.palette.is_empty() {
+            for (index, slice) in chart.slices.iter_mut().enumerate() {
+                slice.color = self.palette[index % self.palette.len()];
+            }
         }
         if let Some(title) = &mut chart.chart_title {
-            self.style_text(&mut title.text, radial.label_color, self.chrome.title_size);
+            title.text.color = self.label_color;
+            title.text.font_size = self.title_size;
         }
     }
 }

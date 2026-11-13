@@ -60,11 +60,34 @@ impl JsErrorSource for wgpu::RequestDeviceError {}
 impl JsErrorSource for wgpu::RequestAdapterError {}
 impl JsErrorSource for wgpu::CreateSurfaceError {}
 
-/// The built-in theme `name` (#265), or an error naming the choices.
-pub(crate) fn theme_named(name: &str) -> Result<renderer::theme::Theme, JsValue> {
-    renderer::theme::Theme::named(name).ok_or_else(|| {
+impl JsErrorSource for renderer::theme::ThemeError {}
+
+/// The theme `name` of the chart's kind (#291), or an error naming the
+/// kind's themes. A chart that draws no series yet has no kind.
+pub(crate) fn theme_named(
+    config: &renderer::Config,
+    series: &[renderer::SeriesConfig],
+    name: &str,
+) -> Result<renderer::theme::Theme, JsValue> {
+    use renderer::theme::{ChartKind, Theme};
+    let kind = ChartKind::of(config, series, renderer::LayerRef::Base).ok_or_else(|| {
+        js_err("the chart draws no series yet, so it has no kind to take a theme of")
+    })?;
+    Theme::named(kind, name).ok_or_else(|| {
         js_err(format!(
-            "no theme {name:?}: use light, dark, paper, dashboard or sketch"
+            "no {kind} theme {name:?}: use {}",
+            Theme::names(kind).join(", ")
+        ))
+    })
+}
+
+/// The radial theme `name` (#291), or an error naming the radial themes.
+pub(crate) fn radial_theme_named(name: &str) -> Result<renderer::theme::RadialTheme, JsValue> {
+    use renderer::theme::RadialTheme;
+    RadialTheme::named(name).ok_or_else(|| {
+        js_err(format!(
+            "no radial theme {name:?}: use {}",
+            RadialTheme::names().join(", ")
         ))
     })
 }
