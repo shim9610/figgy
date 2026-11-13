@@ -50,8 +50,11 @@ impl Chart {
     pub fn with_overlay(mut self, y_axis: crate::config::AxisOptions, series: &[&str]) -> Self {
         self.config_mut().overlays.push(crate::OverlayLayer {
             y_axis,
+            link_x: true,
+            x_axis: crate::default::default_axis_options_x(),
+            link_y: false,
             series: series.iter().map(|id| (*id).to_owned()).collect(),
-            ..crate::OverlayLayer::default()
+            legend: None,
         });
         self
     }
@@ -69,8 +72,9 @@ impl Chart {
             y_axis,
             link_x: false,
             x_axis,
+            link_y: false,
             series: series.iter().map(|id| (*id).to_owned()).collect(),
-            ..crate::OverlayLayer::default()
+            legend: None,
         });
         self
     }
