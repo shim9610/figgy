@@ -11,7 +11,7 @@ the images are native renderer output.
 
 An interpolated matrix fill, labelled isolines with line gaps, a colourbar.
 
-**Code:** [heatmap_contours.rs](../examples/heatmap_contours.rs), `render`
+**Code:** [heatmap_contours.rs](../examples/heatmap_contours.rs), `contours`
 
 **Run:** `cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours`
 

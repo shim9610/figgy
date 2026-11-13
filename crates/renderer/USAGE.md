@@ -741,8 +741,8 @@ let series = vec![
 // its handle: no general chart call takes it.
 let id = renderer.register_monotonic_chart(chart.config().clone(), series)?;
 // The source carries the samples, start and interval. The full call reduces
-// them in full; `Autoscale` fits the x range to the samples and the y range
-// to what this reduction keeps, `X { min, max }` sets the x range.
+// them in full; `Autoscale` fits the x range to the samples and each y axis
+// to what every monotonic series on it keeps, `X { min, max }` sets the x range.
 let channels = [ch0.as_slice(), ch1.as_slice()];
 let source = MonotonicSlices::new(0.0, 1e-3, &channels);
 let mut daq = renderer.monotonic_chart(id)?;
@@ -1627,7 +1627,8 @@ let series = vec![
 // 단조 시리즈가 있는 차트는 단조 차트이며 그 핸들로만 닿는다. 일반 차트 호출은 받지 않는다.
 let id = renderer.register_monotonic_chart(chart.config().clone(), series)?;
 // 소스가 샘플과 start, interval을 담는다. 전체 호출은 전체를 축약한다. `Autoscale`은 x 범위를
-// 샘플에, y 범위를 이번 축약이 남긴 값에 맞추고, `X { min, max }`는 x 범위를 정한다.
+// 샘플에, y 축마다 그 축에 그려지는 모든 단조 시리즈(다른 묶음 포함)가 남긴 값에 맞추고,
+// `X { min, max }`는 x 범위를 정한다.
 let channels = [ch0.as_slice(), ch1.as_slice()];
 let source = MonotonicSlices::new(0.0, 1e-3, &channels);
 let mut daq = renderer.monotonic_chart(id)?;

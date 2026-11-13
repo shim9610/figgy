@@ -1142,7 +1142,8 @@ fn layer_config(config: &Config, layer: crate::LayerRef) -> Option<&Config> {
 impl Renderer {
     /// Begin fitting the active layer's axes to the data it draws: a ternary
     /// layer is left as it is, a parallel chart fits each axis to its columns,
-    /// and every other layer fits its x and y axes to the union of its series'
+    /// and every other layer fits the x and y axes it scales by (an overlay
+    /// follows its links) to the union of its series'
     /// drawn extents (histograms from their columns' statistics, everything
     /// else from a GPU reduction, reused when the series' columns are
     /// unchanged since the last fit), and a 3D layer's z axis to its height

@@ -200,8 +200,9 @@ impl MonotonicChart<'_> {
     /// and `interval`) at the mapping it is drawn at, and its envelope
     /// uploaded. The only call that sets the x range of the group's axes:
     /// [`MonotonicRange::X`] writes it (the rest of the axis stays),
-    /// [`MonotonicRange::Autoscale`] fits it to the samples' span and the y
-    /// range, padded by 5 %, to the values this reduction keeps. Reads only
+    /// [`MonotonicRange::Autoscale`] fits it to the samples' span and each y
+    /// axis the group draws on, padded by 5 %, to the values every monotonic
+    /// series on that axis keeps (this group's and any other's). Reads only
     /// the visible samples and one on each side; keeps no reference to the
     /// source.
     pub fn set_monotonic<S: MonotonicSource + ?Sized>(

@@ -1,8 +1,8 @@
 //! Layer addressing, the annotation layer container, overlay layers and
 //! subplots.
 //!
-//! This module defines the public SSOT types that overlay layers (secondary
-//! Y axes), subplots and the dedicated annotation layer share: the layer
+//! This module defines the public SSOT types that overlay layers (axes of
+//! their own or the parent's over the shared plot), subplots and the dedicated annotation layer share: the layer
 //! address ([`LayerRef`]), the annotation container ([`AnnotationLayer`]),
 //! the overlay layer ([`OverlayLayer`]) and the subplot ([`Subplot`], whose
 //! axis links name a chart by [`CellRef`]). Expansion into internal panels
@@ -32,8 +32,8 @@ pub enum LayerRef {
     /// A subplot by index into the document's subplot list: its own chart
     /// with its own axes. Out of range, it reads as `Base`.
     Subplot(usize),
-    /// Overlay `overlay` of subplot `subplot` (a secondary Y axis inside that
-    /// subplot). An overlay index past the subplot's list reads as the
+    /// Overlay `overlay` of subplot `subplot` (an overlay layer inside that
+    /// subplot, with its own or linked X and Y axes). An overlay index past the subplot's list reads as the
     /// subplot itself; a subplot index past the list reads as `Base`.
     SubplotOverlay(usize, usize),
 }
@@ -220,7 +220,7 @@ pub enum CellRef {
 ///
 /// A subplot is a complete Cartesian chart of its own: its `config` carries
 /// its own `chart_area` (in the parent's surface coordinates), all four
-/// axes, title, grid, legend, colourbar, style and secondary Y axes
+/// axes, title, grid, legend, colourbar, style and overlay layers
 /// (`config.overlays`). Nothing is shared with the parent or the other
 /// subplots unless a link says so: `link_x` / `link_y` make this subplot's
 /// `bottom_x` / `left_y` range, scale, direction and tick spacing follow

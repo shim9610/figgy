@@ -572,7 +572,8 @@ pub fn rich_segments_from_text(text: &str) -> Vec<RichSegment> {
 /// one conversion every wrapper shares (#272): `Chart::with_title`,
 /// `with_x_title`, `with_y_title`, `with_colorbar_title`,
 /// `with_legend_entry`, `with_legend_swatch`, `SeriesConfig::label`,
-/// `Annotation::text`, `AxisOptions::overlay_y`, `RadialChart::with_title`
+/// `Annotation::text`, `AxisOptions::overlay_y`, `AxisOptions::overlay_x`,
+/// `RadialChart::with_title`
 /// and the WASM text setters.
 ///
 /// As in matplotlib, `$…$`, `\(…\)` and `$$…$$` spans are TeX

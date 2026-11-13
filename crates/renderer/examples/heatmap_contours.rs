@@ -2,7 +2,7 @@
 //! synthetic. `render` writes three images:
 //! - `contours` writes `gallery-contours.png`: a sampled matrix with
 //!   interpolated color, labeled isolines and a colorbar.
-//! - `hexbin` writes `gallery-hexbin.png`: 30,000 samples binned by the host
+//! - `hexbin` writes `gallery-hexbin.png`: 100,000 samples binned by the host
 //!   into counts on a hexagonal lattice (`GridLayout::Hexagonal`), empty
 //!   cells left unpainted, in the shared 1200 x 800 gallery chrome.
 //! - `imshow` writes `gallery-imshow.png`: a colour image

@@ -86,9 +86,13 @@ impl FiggyChart {
     /// change: the renderer's own layout answers, so hosts don't have to
     /// re-derive box positions for hover cursors / context UI. The set of
     /// registered elements follows the active layer: while an overlay is
-    /// active its elements answer as `"overlay_<n>:axis_right"`,
-    /// `"overlay_<n>:tick_labels_right"`, `"overlay_<n>:axis_title_right"`
-    /// and `"overlay_<n>:legend"`, and the base Y axes do not answer.
+    /// active its own Y axis answers as `"overlay_<n>:axis_right"`,
+    /// `"overlay_<n>:tick_labels_right"` and `"overlay_<n>:axis_title_right"`
+    /// (with `link_y` on, the parent's left axis, labels and title answer
+    /// instead), its own X axis, while `link_x` is off, as
+    /// `"overlay_<n>:axis_top"`, `"overlay_<n>:tick_labels_top"` and
+    /// `"overlay_<n>:axis_title_top"` in place of the parent's top axis, and
+    /// its legend as `"overlay_<n>:legend"`.
     /// While the annotation layer is active (and shown) its drawn items
     /// sit on top and answer as `"annotation_<n>"`; on every other layer
     /// they are not registered and clicks pass through them.

@@ -446,8 +446,9 @@ impl FiggyChart {
     /// `Float64Array`, `Float32Array`, `Int32Array`, `Int16Array`,
     /// `Uint16Array` and `Uint8Array`. `range` sets the x range of the
     /// group's axes, the only call that does: `[x_min, x_max]`, or
-    /// `"autoscale"` to fit the x range to the samples' span and the y range
-    /// to the values this call reduces (the general auto-fit refuses the
+    /// `"autoscale"` to fit the x range to the samples' span and each y axis
+    /// the group draws on to the values every monotonic series on that axis
+    /// keeps, this group's and any other's (the general auto-fit refuses the
     /// chart). Returns `{ len, truncated, dropped, x_range, pixel_offset }`
     /// as JSON.
     /// JS: `chart.set_monotonic("daq", 0, 1e-3, [ch0, ch1], "autoscale")`

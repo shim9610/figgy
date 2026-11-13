@@ -201,7 +201,8 @@ source reduces from whatever source you lend it.
   the first one, which the line runs to.
 - With `sliding: true`, the window keeps its length and the x range moves
   by exactly `new.len() × interval`, which the call writes to the x axis
-  (the panel's `bottom_x`, or a subplot's own x axis at the root of its
+  (the panel's `bottom_x`, the overlay's own `x_axis` for a group on an
+  overlay with `link_x` off, or a subplot's own x axis at the root of its
   link chain). The pixel columns stay on the grid of the last full call:
   columns that leave the window on the left are dropped and new samples
   join at the right. A slide by part of a column therefore differs from a
@@ -599,7 +600,7 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
 - `sliding`이 아니면 창은 그대로다. 창 안에 들어오는 새 샘플은 그리고, 창 오른쪽 끝을 넘는
   샘플은 세기만 하고 남기지 않는다. 다만 선이 이어지는 첫 샘플 하나는 남긴다.
 - `sliding: true`이면 창 길이를 유지한 채 x 범위를 정확히 `new.len() × interval`만큼 옮기고, 그
-  범위를 x 축(패널의 `bottom_x`, 또는 서브플롯 자신의 축이면 연결의 맨 처음 축)에 쓴다. 픽셀 열은
+  범위를 x 축(패널의 `bottom_x`, `link_x`를 끈 오버레이의 묶음이면 그 오버레이 자기 `x_axis`, 서브플롯 자신의 축이면 연결의 맨 처음 축)에 쓴다. 픽셀 열은
   마지막 전체 호출의 격자에 고정된다. 창 왼쪽으로 벗어난 열은 버리고 새 샘플은 오른쪽에 합친다.
   그래서 열보다 작게 밀면 다음 전체 호출이 다시 맞출 때까지 전체 호출과 픽셀 한 열 미만만큼
   다를 수 있다.

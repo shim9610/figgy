@@ -239,7 +239,8 @@ Every interaction of a Cartesian chart applies
   and resizes without re-uploading any data. On a 3D chart the data-area drag orbits the camera.
 - **Annotations, overlays and subplots.** The annotation layer places data
   and ratio anchors over the mesh and draws above it; a mesh on an overlay
-  `y_axis` draws and picks against that axis; a mesh in a subplot cell
+  draws and picks against the axes that overlay scales by (its own `y_axis`,
+  or `left_y` with `link_y`; its own `x_axis` with `link_x` off); a mesh in a subplot cell
   draws and picks in that cell. 3D meshes follow the 3D chart's rules:
   ratio anchors only, a camera per subplot, no overlays.
 - **Export and documents.** PNG at any scale (`Config::scaled` scales the

@@ -47,7 +47,8 @@ pub struct ChartView {
     /// Tick-guard substitutions in the current axis raster, derived from the
     /// chart that `create_chart_view` or the last successful `refresh_axis*`
     /// rasterized. On a layered view this is the merged list of every panel,
-    /// overlay warnings tagged `WarningAxis::OverlayY(index)`.
+    /// overlay warnings tagged `WarningAxis::OverlayY(index)` or
+    /// `WarningAxis::OverlayX(index)`.
     pub(in crate::renderer) tick_warnings: Vec<crate::RenderWarning>,
     /// `tick_warnings` followed by the annotation layer's skipped items.
     pub(in crate::renderer) render_warnings: Vec<crate::RenderWarning>,

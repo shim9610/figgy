@@ -13,7 +13,8 @@ export PNGs, or embed interactive charts in your own application.
 
 Charts are grouped by kind. **Click a thumbnail** to open its category page
 with the large image, a short description and the command that draws it;
-**click the large image** to open the example code. All data is synthetic; the
+**click the large image** to open the example code. All data is synthetic
+except the energy-level diagram (the bundled NIST ASD exports for He I); the
 images are actual native renderer output. GIFs show exported animation frames.
 
 ### [Lines, areas and stems](crates/renderer/gallery/lines.md)
@@ -143,6 +144,7 @@ images are actual native renderer output. GIFs show exported animation frames.
 <td align="center" width="20%"><a href="crates/renderer/gallery/styles.md#terrain"><img src="crates/renderer/assets/thumbs/concept-terrain.png" alt="Terrain" width="160"></a><br><sub>Terrain</sub></td>
 </tr>
 </table>
+
 [Six editable visual recipes](crates/renderer/GALLERY.md#visual-concepts) show how
 palettes, axes, materials and labels restyle charts built with the same APIs.
 The [example index](crates/renderer/examples/README.md#gallery-images) lists
