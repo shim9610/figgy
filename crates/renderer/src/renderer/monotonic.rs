@@ -498,13 +498,21 @@ const MONOTONIC_AUTOSCALE_Y_PADDING: f64 = 0.05;
 /// the plot's own columns (not its margins): every column's extremes are
 /// kept points, so this is the extent of the samples the reduction read
 /// there.
-/// The x axis series `series_id` of `config` is drawn against: its panel's
-/// `bottom_x`, or the one a linked subplot's x follows.
+/// The x axis series `series_id` of `config` is drawn against: its
+/// overlay's own (`link_x` off), its panel's `bottom_x`, or the one a linked
+/// subplot's x follows.
 fn x_axis_mut<'c>(
     config: &'c mut Config,
     series_id: &str,
 ) -> Option<&'c mut crate::config::AxisOptions> {
-    match config.layer_of_series(series_id) {
+    let layer = config.layer_of_series(series_id);
+    if config
+        .overlay_of_layer(layer)
+        .is_some_and(|overlay| !overlay.link_x)
+    {
+        return overlay_mut(config, layer).map(|overlay| &mut overlay.x_axis);
+    }
+    match layer {
         crate::LayerRef::Subplot(index) | crate::LayerRef::SubplotOverlay(index, _) => {
             match config.subplot_link_root(index, true) {
                 crate::CellRef::Subplot(root) => config
@@ -586,6 +594,34 @@ fn plot_extent(envelope: &MonotonicEnvelope, channel: usize) -> crate::chart::Fi
         }
     }
     extent
+}
+
+/// The overlay `layer` names, editable (see `Config::overlay_of_layer`).
+fn overlay_mut(config: &mut Config, layer: crate::LayerRef) -> Option<&mut crate::OverlayLayer> {
+    match layer {
+        crate::LayerRef::Overlay(index) => config.overlays.get_mut(index),
+        crate::LayerRef::SubplotOverlay(index, overlay) => config
+            .subplots
+            .get_mut(index)
+            .and_then(|subplot| subplot.config.overlays.get_mut(overlay)),
+        _ => None,
+    }
+}
+
+/// The layer whose y axis series of `layer` are drawn against: `layer`
+/// itself, or for an overlay with `link_y` on the chart it follows (`Base`
+/// or `Subplot(i)`). Members with the same one share one axis and one fit.
+fn y_axis_layer(config: &Config, layer: crate::LayerRef) -> crate::LayerRef {
+    if !config
+        .overlay_of_layer(layer)
+        .is_some_and(|overlay| overlay.link_y)
+    {
+        return layer;
+    }
+    match layer {
+        crate::LayerRef::SubplotOverlay(index, _) => crate::LayerRef::Subplot(index),
+        _ => crate::LayerRef::Base,
+    }
 }
 
 /// The config of the panel layer `layer` is drawn on: the document's, or
@@ -1311,7 +1347,15 @@ impl Renderer {
         };
         let mut config = state.config.clone();
         for (series_id, layer) in &members {
-            if autoscale {
+            let own_x = config
+                .overlay_of_layer(*layer)
+                .is_some_and(|overlay| !overlay.link_x);
+            if autoscale && own_x {
+                // An overlay's own x axis, fitted alone (it has no partner).
+                if let Some(axis) = x_axis_mut(&mut config, series_id) {
+                    crate::chart::apply_axis_fit(axis, &x_extent, 0.0);
+                }
+            } else if autoscale {
                 // Fitted as the general auto-fit fits an axis, its tick
                 // plan with it.
                 if let Some(panel) = panel_config_mut(&mut config, *layer) {
@@ -1352,22 +1396,31 @@ impl Renderer {
             .get(&chart)
             .ok_or(FiggyError::UnknownChart { id: chart })?;
         let mut config = state.config.clone();
-        // One fit per y axis, over every member drawn on it: fitting member
-        // by member would leave the axis at the last member's range.
+        // One fit per y axis the group draws on, over every monotonic series
+        // drawn on it, this group's and any other group's: fitting member by
+        // member would leave the axis at the last member's range, and an
+        // axis two groups share (an overlay that follows its chart's y axis)
+        // must keep both in view. Another group's envelope is at its
+        // current mapping: a call that moved it was refused above.
+        let axis_of = |layer: &crate::LayerRef| y_axis_layer(&state.config, *layer);
         for (index, (_, layer)) in members.iter().enumerate() {
-            if members[..index].iter().any(|(_, seen)| seen == layer) {
+            let axis = axis_of(layer);
+            if members[..index]
+                .iter()
+                .any(|(_, seen)| axis_of(seen) == axis)
+            {
                 continue;
             }
             let mut extent = crate::chart::FitExtent::EMPTY;
-            for (series_id, _) in members[index..].iter().filter(|(_, l)| l == layer) {
-                let Some(cfg) = state.series.iter().find(|cfg| cfg.series_id == *series_id) else {
-                    continue;
-                };
+            for cfg in state.series.iter().filter(|cfg| {
+                cfg.monotonic().is_some()
+                    && axis_of(&state.config.layer_of_series(&cfg.series_id)) == axis
+            }) {
                 if let Some((envelope, channel)) = self.monotonic.envelope_of(cfg) {
                     extent.union(&plot_extent(envelope, channel));
                 }
             }
-            fit_y_axis(&mut config, *layer, &extent);
+            fit_y_axis(&mut config, axis, &extent);
         }
         self.set_chart_config_unreported(chart, config)?;
         Ok(update)

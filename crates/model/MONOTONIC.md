@@ -167,13 +167,15 @@ call that sets the x range. `range` is one of:
   stay as they are. A zoom or a pan is a full call with the new range.
 - `MonotonicRange::Autoscale`: the x range is set to the samples' span,
   `start ..= start + (len - 1) × interval`, with the tick plan an auto-fit
-  uses. Each y axis is fitted to the lowest and highest values that every
-  series drawn on it keeps in the plot, padded by 5 % of the span on each
-  side, so two channels on one axis both stay in view. A
+  uses. Each y axis the group draws on is fitted to the lowest and highest
+  values that every monotonic series drawn on it keeps in the plot, of this
+  group and of any other, padded by 5 % of the span on each side, so two
+  channels, or two groups, on one axis both stay in view. A
   series on the base layer fits the panel's `left_y` (and its
-  partner axis), an overlay series fits its overlay's own axis, and a
-  subplot series fits its subplot's axes (its x axis through the root of
-  its link chain). An extent with no width, such as one sample or a
+  partner axis), an overlay series fits its overlay's own axes (its own x
+  axis too while the overlay's `link_x` is off; the panel's `left_y` while
+  its `link_y` is on), and a subplot series fits its subplot's axes (its x
+  axis through the root of its link chain). An extent with no width, such as one sample or a
   constant channel, leaves its axis as it is. The general auto-fit calls do
   not reach a monotonic chart, so this is how you fit one.
 
@@ -239,8 +241,10 @@ document. `config()` reads the whole `Config`, and the editor changes
 everything that leaves the mapping alone: the legend, the chart title, the
 grid, annotations, the data selection (`picked_data`), the active layer,
 the backgrounds, each axis (`MonotonicAxis`: title, tick labels and their
-format, ticks, spacing, axis line, and a y axis' range), overlay y axes and
-legends, and subplots under the same rules. It has no setter for the x
+format, ticks, spacing, axis line, and a y axis' range), overlay axes
+(`overlay_axis`, and `overlay_x_axis` for an overlay's own x axis, whose
+range is the monotonic calls') and legends, and subplots under the same
+rules. It has no setter for the x
 range, x scale, breaks, direction, chart area or plot area.
 
 Decoration drags go through `nudge` and `drag`, which reject a move that
@@ -319,8 +323,13 @@ Compared with a chart that draws the same samples as an ordinary line:
 - **`step_selection`** steps through the kept points.
 - **The legend** shows a line swatch in the series' colour, and the theme
   cycle recolours it.
-- **Layers**: overlays (the parent's x axis, the overlay's y axis) and
-  subplots (their own x range and width) both work.
+- **Layers**: overlays and subplots (their own x range and width) both
+  work. An overlay follows the parent's x axis by default; with its
+  `link_x` off it has an x axis of its own, so a group recorded on another
+  clock or at another rate shares the plot and each group's full call,
+  append and Autoscale move only its own x axis (the playground's
+  "Monotonic x (two clocks)" scene). Groups that share one x axis are moved
+  together, so a call that moves it needs every group's source.
 - **Decorations and the plot**: dragging the title, legend, axis titles,
   tick labels or the plot goes through the editor's `nudge` and `drag`. A
   plot-area resize is a `resize` with a plot rect, so it takes the
@@ -565,9 +574,11 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
   나머지 설정과 y 범위는 그대로 둔다. 확대와 이동은 새 범위로 하는 전체 호출이다.
 - `MonotonicRange::Autoscale`: x 범위를 샘플이 차지하는 구간
   `start ..= start + (len - 1) × interval`로 정하고, 눈금 계획은 자동 맞춤과 같은 방식으로 맞춘다.
-  y 축마다 그 축에 그려지는 모든 시리즈가 플롯 안에 남긴 가장 낮은 값과 가장 높은 값에 맞추고,
-  양쪽에 폭의 5 %씩 여유를 둔다. 그래서 한 축에 채널이 둘이면 둘 다 화면 안에 들어온다. 기본
-  레이어 시리즈는 패널의 `left_y`(짝 축 포함)를, 오버레이 시리즈는 오버레이 자신의 축을,
+  묶음이 그리는 y 축마다, 그 축에 그려지는 모든 단조 시리즈(이 묶음과 다른 묶음 모두)가 플롯
+  안에 남긴 가장 낮은 값과 가장 높은 값에 맞추고, 양쪽에 폭의 5 %씩 여유를 둔다. 그래서 한 축에
+  채널이나 묶음이 둘이면 둘 다 화면 안에 들어온다. 기본
+  레이어 시리즈는 패널의 `left_y`(짝 축 포함)를, 오버레이 시리즈는 오버레이 자신의 축을(오버레이의
+  `link_x`가 꺼져 있으면 자기 x 축도, `link_y`가 켜져 있으면 패널의 `left_y`를),
   서브플롯 시리즈는 서브플롯의 축(x 축은 연결의 맨 처음 축)을 맞춘다. 샘플이 하나뿐이거나 채널
   값이 일정해 폭이 없으면 그 축은 그대로 둔다. 일반 자동 맞춤 호출은 단조 차트에 닿지 않으므로
   단조 차트는 이 방법으로 맞춘다.
@@ -619,8 +630,9 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
 `edit_config(|editor| ..)`는 문서 사본 위의 `MonotonicConfig`를 빌려준다. `config()`로 `Config`
 전체를 읽을 수 있고, 편집기로는 매핑에 영향이 없는 것을 모두 바꿀 수 있다. 범례, 차트 제목, 격자,
 주석, 데이터 선택(`picked_data`), 활성 레이어, 배경, 각 축(`MonotonicAxis`: 제목, 눈금 라벨과
-형식, 눈금, 간격, 축선, y 축이면 범위), 오버레이 y 축과 범례, 같은 규칙을 따르는 서브플롯이
-여기에 속한다. x 범위, x 스케일, 끊기, 방향, 차트 영역, 플롯 영역을 바꾸는 메서드는 없다.
+형식, 눈금, 간격, 축선, y 축이면 범위), 오버레이 축(`overlay_axis`, 오버레이 자기 x 축은
+`overlay_x_axis`이며 그 범위는 단조 호출이 정한다)과 범례, 같은 규칙을 따르는 서브플롯이 여기에
+속한다. x 범위, x 스케일, 끊기, 방향, 차트 영역, 플롯 영역을 바꾸는 메서드는 없다.
 
 꾸밈 요소 끌기는 `nudge`와 `drag`로 하며, 플롯 너비를 바꾸는 축이나 플롯 가장자리, 서브플롯 틀처럼
 매핑을 바꿀 움직임은 거절한다. `assign(config)`는 데이터로 편집한 문서 전체를 바꾸며, 매핑을
@@ -682,8 +694,11 @@ x 축 스케일·끊기·방향이 여기에 속한다. 차트는 엔벌로프�
   고리가 없다.
 - **`step_selection`**은 남긴 점을 따라 이동한다.
 - **범례**에는 시리즈 색의 선 기호가 나오며, 테마 색 순환이 색을 바꾼다.
-- **레이어**: 오버레이(부모의 x 축, 오버레이의 y 축)와 서브플롯(자기 x 범위와 너비)을 모두
-  지원한다.
+- **레이어**: 오버레이와 서브플롯(자기 x 범위와 너비)을 모두 지원한다. 오버레이는 기본으로 부모의
+  x 축을 따르고, `link_x`를 끄면 자기 x 축을 가진다. 그래서 다른 시계나 다른 간격으로 기록한
+  묶음도 같은 플롯에 겹치고, 묶음마다 전체 호출·추가·Autoscale이 자기 x 축만 움직인다(플레이그라운드의
+  "Monotonic x (two clocks)" 장면). 한 x 축을 함께 쓰는 묶음은 함께 움직이므로, 그 축을 움직이는
+  호출에는 모든 묶음의 소스가 필요하다.
 - **꾸밈 요소와 플롯**: 제목, 범례, 축 제목, 눈금 라벨, 플롯 끌기는 편집기의 `nudge`와 `drag`로
   한다. 데이터 영역 크기 조정은 플롯 사각형을 넘기는 `resize`이므로 소스를 받는다.
 - **내보내기**: PNG, SVG, PDF를 어떤 배율로도 내보낸다. 매핑이 화면과 다르면 소스를 함께 넘긴다.

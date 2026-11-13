@@ -497,7 +497,7 @@ mod tests {
         config.overlays[0].x_axis.max = 10.0;
         config.overlays[0].x_axis.breaks = Some(crate::config::AxisBreaks {
             ranges: vec![crate::config::AxisBreak::new(2.0, 4.0)],
-            ..Default::default()
+            ..crate::defaults::axis_breaks()
         });
         assert_eq!(config.validate_chart(), Ok(()));
     }

@@ -869,7 +869,9 @@ impl Chart {
 
     /// Set overlay layer `layer`'s Y range and derive its tick/label settings,
     /// the overlay counterpart of [`Self::set_y_range`]. Log/linear branching
-    /// uses that axis' own scale. A `layer` past the overlay list is a no-op.
+    /// uses that axis' own scale. With the overlay's `link_y` on it follows
+    /// the chart's Y axes, so this sets them ([`Self::set_y_range`]). A
+    /// `layer` past the overlay list is a no-op.
     pub fn set_overlay_y_range(&mut self, layer: usize, min: f64, max: f64) {
         self.overlay_y_range(layer, min, max, apply_view_range);
     }
@@ -877,14 +879,13 @@ impl Chart {
     /// Overlay layer `layer`'s Y range through `apply` (see
     /// [`Self::x_range`]).
     fn overlay_y_range(&mut self, layer: usize, min: f64, max: f64, apply: ApplyRange) {
-        let Some(scale) = self
-            .config
-            .overlays
-            .get(layer)
-            .map(|overlay| overlay.y_axis.scale.clone())
-        else {
+        let Some(overlay) = self.config.overlays.get(layer) else {
             return;
         };
+        if overlay.link_y {
+            return self.y_range(min, max, apply);
+        }
+        let scale = overlay.y_axis.scale.clone();
         self.with_axis_range_change(|c| {
             if let Some(overlay) = c.overlays.get_mut(layer) {
                 apply(&mut overlay.y_axis, min, max, &scale);
@@ -892,19 +893,75 @@ impl Chart {
         });
     }
 
+    /// Set overlay layer `layer`'s own X range (`OverlayLayer::x_axis`) and
+    /// derive its tick/label settings, the overlay counterpart of
+    /// [`Self::set_x_range`]. With the overlay's `link_x` on it follows the
+    /// chart's X axes, so this sets them ([`Self::set_x_range`]). A `layer`
+    /// past the overlay list is a no-op.
+    pub fn set_overlay_x_range(&mut self, layer: usize, min: f64, max: f64) {
+        self.overlay_x_range(layer, min, max, apply_view_range);
+    }
+
+    /// Overlay layer `layer`'s X range through `apply` (see
+    /// [`Self::x_range`]).
+    fn overlay_x_range(&mut self, layer: usize, min: f64, max: f64, apply: ApplyRange) {
+        let Some(overlay) = self.config.overlays.get(layer) else {
+            return;
+        };
+        if overlay.link_x {
+            return self.x_range(min, max, apply);
+        }
+        let scale = overlay.x_axis.scale.clone();
+        self.with_axis_range_change(|c| {
+            if let Some(overlay) = c.overlays.get_mut(layer) {
+                apply(&mut overlay.x_axis, min, max, &scale);
+            }
+        });
+    }
+
     /// Fit overlay layer `layer`'s Y axis to a prepared [`FitExtent`] — see
-    /// [`Self::auto_fit_y_extent`]. A `layer` past the overlay list is a
-    /// no-op.
+    /// [`Self::auto_fit_y_extent`]: its own, or with `link_y` on the chart's
+    /// Y axes it follows. A `layer` past the overlay list is a no-op.
     pub fn auto_fit_overlay_y_extent(&mut self, layer: usize, ext: &FitExtent, padding_ratio: f64) {
-        let Some((min, max)) = self
-            .config
-            .overlays
-            .get(layer)
-            .and_then(|overlay| fitted_axis_range(&overlay.y_axis, ext, padding_ratio))
-        else {
+        let Some((min, max)) = self.config.overlays.get(layer).and_then(|overlay| {
+            let axis = overlay.own_y().unwrap_or(&self.config.left_y);
+            fitted_axis_range(axis, ext, padding_ratio)
+        }) else {
             return;
         };
         self.overlay_y_range(layer, min, max, apply_axis_range);
+    }
+
+    /// Fit overlay layer `layer`'s X axis to a prepared [`FitExtent`], the
+    /// X counterpart of [`Self::auto_fit_overlay_y_extent`]: its own, or
+    /// with `link_x` on the chart's X axes it follows. A `layer` past the
+    /// overlay list is a no-op.
+    pub fn auto_fit_overlay_x_extent(&mut self, layer: usize, ext: &FitExtent, padding_ratio: f64) {
+        let Some((min, max)) = self.config.overlays.get(layer).and_then(|overlay| {
+            let axis = overlay.own_x().unwrap_or(&self.config.bottom_x);
+            fitted_axis_range(axis, ext, padding_ratio)
+        }) else {
+            return;
+        };
+        self.overlay_x_range(layer, min, max, apply_axis_range);
+    }
+
+    /// Auto-fit overlay layer `layer`'s X axis to the union range of the
+    /// given columns' cached statistics — the X counterpart of
+    /// [`Self::auto_fit_overlay_y_union`].
+    pub fn auto_fit_overlay_x_union(
+        &mut self,
+        pool: &ColumnPool,
+        layer: usize,
+        x_ids: &[&str],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut ext = FitExtent::EMPTY;
+        for id in x_ids {
+            ext.union(&Self::slot_extent(pool, id)?);
+        }
+        self.auto_fit_overlay_x_extent(layer, &ext, padding_ratio);
+        Ok(())
     }
 
     /// Auto-fit overlay layer `layer`'s Y axis to the union range of the
@@ -1173,9 +1230,10 @@ impl Chart {
     /// Fit `layer`'s axes to prepared extents with proportional padding.
     ///
     /// `Base` (and `Annotations`, which draws on the base axes) and
-    /// `Subplot(i)` fit that chart's X and Y axes. An overlay layer fits only
-    /// its own Y axis and ignores `x`. A linked axis moves its whole link
-    /// group, and subplots linked to a fitted parent axis follow it. Choose
+    /// `Subplot(i)` fit that chart's X and Y axes. An overlay layer fits its
+    /// own Y axis, or with `link_y` on the chart's Y axes it follows, and its
+    /// own X axis while `link_x` is off; with `link_x` on it ignores `x`. A
+    /// linked axis moves its whole link group, and subplots linked to a fitted parent axis follow it. Choose
     /// the series whose extents to union with [`Config::series_fit_roles`];
     /// [`Self::auto_fit_layer_union`] does both from cached column
     /// statistics.
@@ -1194,23 +1252,57 @@ impl Chart {
                 apply_auto_fit_all(c, x, y, padding_ratio);
                 c.sync_subplot_links(None);
             }),
-            LayerRef::Overlay(index) => self.auto_fit_overlay_y_extent(index, y, padding_ratio),
+            LayerRef::Overlay(index) => {
+                let Some(overlay) = self.config.overlays.get(index) else {
+                    return;
+                };
+                let (own_x, linked_y) = (!overlay.link_x, overlay.link_y);
+                if own_x {
+                    self.auto_fit_overlay_x_extent(index, x, padding_ratio);
+                }
+                self.auto_fit_overlay_y_extent(index, y, padding_ratio);
+                // A followed Y axis is the parent's: subplots linked to it
+                // follow, as on a base fit.
+                if linked_y {
+                    self.with_axis_range_change(|c| c.sync_subplot_links(None));
+                }
+            }
             LayerRef::Subplot(index) => {
                 self.auto_fit_subplot_x_extent(index, x, padding_ratio);
                 self.auto_fit_subplot_y_extent(index, y, padding_ratio);
             }
             LayerRef::SubplotOverlay(index, overlay) => {
+                let Some(layer) = self
+                    .config
+                    .subplots
+                    .get(index)
+                    .and_then(|subplot| subplot.config.overlays.get(overlay))
+                else {
+                    return;
+                };
+                let (own_x, linked_y) = (!layer.link_x, layer.link_y);
+                // A linked Y is the subplot's, fitted with its link group.
+                if linked_y {
+                    self.auto_fit_subplot_y_extent(index, y, padding_ratio);
+                }
                 let Some(subplot) = self.config.subplots.get(index) else {
                     return;
                 };
                 let mut inner = Chart::new(subplot.config.clone());
-                inner.auto_fit_overlay_y_extent(overlay, y, padding_ratio);
+                if own_x {
+                    inner.auto_fit_overlay_x_extent(overlay, x, padding_ratio);
+                }
+                if !linked_y {
+                    inner.auto_fit_overlay_y_extent(overlay, y, padding_ratio);
+                }
                 let Some(fitted) = inner.config.overlays.get(overlay) else {
                     return;
                 };
-                let axis = fitted.y_axis.clone();
+                let (x_axis, y_axis) = (fitted.x_axis.clone(), fitted.y_axis.clone());
                 self.with_axis_range_change(|c| {
-                    c.subplots[index].config.overlays[overlay].y_axis = axis;
+                    let target = &mut c.subplots[index].config.overlays[overlay];
+                    target.x_axis = x_axis;
+                    target.y_axis = y_axis;
                 });
             }
         }
@@ -1507,22 +1599,17 @@ impl Chart {
         let Some([dx, dy]) = config.line_offset_of(series_id) else {
             return (x, y);
         };
-        let (chart, y_axis) = match config.layer_of_series(series_id) {
-            LayerRef::Subplot(index) => {
-                let chart = &config.subplots[index].config;
-                (chart, &chart.left_y)
-            }
+        // The axes that draw the series: its chart's, or its overlay's own.
+        let (chart, overlay) = match config.layer_of_series(series_id) {
+            LayerRef::Subplot(index) => (&config.subplots[index].config, None),
             LayerRef::SubplotOverlay(index, overlay) => {
-                let chart = &config.subplots[index].config;
-                (chart, &chart.overlays[overlay].y_axis)
+                (&config.subplots[index].config, Some(overlay))
             }
-            LayerRef::Overlay(overlay) => (config, &config.overlays[overlay].y_axis),
-            LayerRef::Base | LayerRef::Annotations => (config, &config.left_y),
+            LayerRef::Overlay(overlay) => (config, Some(overlay)),
+            LayerRef::Base | LayerRef::Annotations => (config, None),
         };
-        (
-            x.shifted(dx, &chart.bottom_x.scale),
-            y.shifted(dy, &y_axis.scale),
-        )
+        let (x_axis, y_axis) = chart.scaling_axes(overlay);
+        (x.shifted(dx, &x_axis.scale), y.shifted(dy, &y_axis.scale))
     }
 }
 

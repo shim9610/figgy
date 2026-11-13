@@ -397,6 +397,7 @@ fn hide_decorations(config: &mut Config) {
     config.background = None;
     for overlay in &mut config.overlays {
         hide_axis(&mut overlay.y_axis);
+        hide_axis(&mut overlay.x_axis);
     }
     for subplot in &mut config.subplots {
         // A subplot has no annotation layer of its own to hide.

@@ -739,6 +739,32 @@ fn render_warnings_are_merged_with_a_layer_tag() {
     assert_eq!(short.overlay_count(), 2);
 }
 
+/// An overlay's own X axis reports its tick warnings tagged with its layer,
+/// while it is drawn (`link_x` off); a linked X axis is not drawn and
+/// reports nothing.
+#[test]
+fn an_overlay_x_axis_reports_its_warnings_while_it_is_drawn() {
+    let mut config = two_overlay_config();
+    config.overlays[0].x_axis.major_spacing = f64::NAN;
+    let r = renderer();
+    let axes = |config: &Config| -> Vec<WarningAxis> {
+        r.create_chart_view(&Chart::new(config.clone()), PANEL)
+            .unwrap()
+            .render_warnings()
+            .iter()
+            .filter_map(|w| w.axis())
+            .collect()
+    };
+    assert!(axes(&config).is_empty());
+    config.overlays[0].link_x = false;
+    assert_eq!(axes(&config), vec![WarningAxis::OverlayX(0)]);
+    let view = r.create_chart_view(&Chart::new(config), PANEL).unwrap();
+    assert_eq!(
+        view.render_warnings()[0].to_string().split(' ').next(),
+        Some("overlays[0].x_axis.major_spacing")
+    );
+}
+
 // Offset spectra (`Config::line_offsets`, #50): each member is a panel of its
 // own. The pixel oracle is the same picture drawn by a host that shifted the
 // data itself: columns `a + k * step` on a document without line offsets.

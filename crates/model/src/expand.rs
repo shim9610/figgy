@@ -209,7 +209,7 @@ impl Config {
     /// scaled by (each its own or, linked, the chart's `bottom_x` /
     /// `left_y`), or with `None` the chart's own `bottom_x` and `left_y`. An
     /// index past the end reads as `None`.
-    pub(crate) fn scaling_axes(&self, overlay: Option<usize>) -> (&AxisOptions, &AxisOptions) {
+    pub fn scaling_axes(&self, overlay: Option<usize>) -> (&AxisOptions, &AxisOptions) {
         let overlay = overlay.and_then(|index| self.overlays.get(index));
         (
             overlay

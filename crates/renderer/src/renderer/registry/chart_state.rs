@@ -62,7 +62,7 @@ impl Renderer {
         let config_changed = state.config != config;
         let series_changed = state.series != series;
         let clear_selection =
-            state.config.active_layer() != config.active_layer() && state.selected.is_some();
+            registration_changed(&state.config, &config) && state.selected.is_some();
         let ChartRevisions {
             desired: desired_before,
             config: config_before,

@@ -104,10 +104,13 @@ pub enum SceneKind {
     /// Four channels of an evenly sampled recording as monotonic-x lines
     /// (#271).
     Monotonic,
+    /// Two recordings on different clocks, one on an overlay with an X axis
+    /// of its own (#283).
+    MonotonicClocks,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 48] = [
+    pub const ALL: [SceneKind; 49] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -156,6 +159,7 @@ impl SceneKind {
         SceneKind::TriSurface,
         SceneKind::AxisUnits,
         SceneKind::Monotonic,
+        SceneKind::MonotonicClocks,
     ];
 
     pub fn label(self) -> &'static str {
@@ -208,6 +212,7 @@ impl SceneKind {
             SceneKind::TriSurface => "3D triangle mesh surface",
             SceneKind::AxisUnits => "Axis units (raw counts in volts)",
             SceneKind::Monotonic => "Monotonic x (recorded channels)",
+            SceneKind::MonotonicClocks => "Monotonic x (two clocks)",
         }
     }
 
@@ -381,6 +386,14 @@ impl SceneKind {
                  (no wheel zoom or pan); resize the window and the series is \
                  reduced again from its samples. Pick a kept point and step with \
                  the arrows."
+            }
+            SceneKind::MonotonicClocks => {
+                "A 10 kHz vibration channel and a 400 Hz temperature logger that \
+                 started on a clock of its own. The logger is an overlay whose X \
+                 axis is its own (link_x off), drawn on the top side, so each \
+                 recording keeps its own time axis over one plot, and each group \
+                 is reduced at its own mapping. Make the overlay the active layer \
+                 to drag its top axis; pick a kept point of either trace."
             }
             SceneKind::EnergyLevels => {
                 "A Grotrian diagram of He I from NIST ASD values: term columns \
@@ -710,6 +723,7 @@ pub fn build(
         SceneKind::Quiver3d => quiver_3d(r),
         SceneKind::ProbabilityPaper => probability_paper(r),
         SceneKind::Monotonic => Ok(monotonic()),
+        SceneKind::MonotonicClocks => Ok(monotonic_clocks()),
         SceneKind::EnergyLevelsAr => grotrian_scene(grotrian_sets::argon()),
         SceneKind::EnergyLevelsCu => grotrian_scene(grotrian_sets::copper()),
         SceneKind::EnergyLevelsU => grotrian_scene(grotrian_sets::uranium()),
@@ -1053,6 +1067,79 @@ fn monotonic() -> CartesianScene {
             interval: INTERVAL,
             channels,
         }],
+    }
+}
+
+/// Two recordings on different clocks (#283): a 10 kHz vibration channel
+/// over 2 s on the base layer, and a 400 Hz temperature logger over 3 s on
+/// an overlay with an X axis and a Y axis of its own, its time axis drawn on
+/// the top side. Each is a monotonic group with its own grid; the host lends
+/// both.
+fn monotonic_clocks() -> CartesianScene {
+    const FAST: usize = 20_000;
+    const FAST_INTERVAL: f64 = 1e-4;
+    const SLOW: usize = 1_200;
+    const SLOW_INTERVAL: f64 = 2.5e-3;
+    let tau = std::f64::consts::TAU;
+    let vibration: Vec<f64> = (0..FAST)
+        .map(|i| {
+            let t = i as f64 * FAST_INTERVAL;
+            (0.4 + 0.5 * (tau * 0.5 * t).sin().abs()) * (tau * 50.0 * t).sin()
+                + 0.05 * noise(283, i)
+        })
+        .collect();
+    let temperature: Vec<f64> = (0..SLOW)
+        .map(|i| {
+            let t = i as f64 * SLOW_INTERVAL;
+            24.0 + 3.0 * (1.0 - (-t / 1.2).exp()) + 0.08 * noise(284, i)
+        })
+        .collect();
+    let orange = Color::from_rgb8(230, 120, 20);
+    let series = vec![
+        SeriesConfig::monotonic_line("vibration", "daq", 0)
+            .color(Color::from_rgb8(31, 119, 180))
+            .width(1.0),
+        SeriesConfig::monotonic_line("temperature", "logger", 0)
+            .color(orange)
+            .width(2.0),
+    ];
+    let mut config = base_config("Two clocks (monotonic x)", "daq time (s)", "vibration (g)");
+    // The overlay's axes take the top and right sides.
+    config.top_x.line_visible = false;
+    config.top_x.tick = renderer::config::TickVisibility::None;
+    config.right_y.line_visible = false;
+    config.right_y.tick = renderer::config::TickVisibility::None;
+    let mut x_axis = renderer::config::AxisOptions::overlay_x("logger time (s)", orange);
+    x_axis.out_margin = 70.0;
+    x_axis.line_color = orange;
+    let mut y_axis = renderer::config::AxisOptions::overlay_y("temperature (°C)", orange);
+    y_axis.out_margin = 120.0;
+    y_axis.line_color = orange;
+    let mut chart = Chart::new(config).with_overlay_xy(x_axis, y_axis, &["temperature"]);
+    chart.set_x_range(0.0, (FAST - 1) as f64 * FAST_INTERVAL);
+    chart.set_y_range(-1.2, 1.2);
+    chart.set_overlay_x_range(0, 0.0, (SLOW - 1) as f64 * SLOW_INTERVAL);
+    chart.set_overlay_y_range(0, 23.5, 27.5);
+    // The legend stays clear of the overlay's axes on the top and right.
+    let mut config = with_legend(chart.config().clone(), &series);
+    config.legend.corner = renderer::config::LegendCorner::BottomLeft;
+    CartesianScene {
+        config,
+        series,
+        monotonic: vec![
+            MonotonicData {
+                group: "daq".into(),
+                start: 0.0,
+                interval: FAST_INTERVAL,
+                channels: vec![vibration],
+            },
+            MonotonicData {
+                group: "logger".into(),
+                start: 0.0,
+                interval: SLOW_INTERVAL,
+                channels: vec![temperature],
+            },
+        ],
     }
 }
 

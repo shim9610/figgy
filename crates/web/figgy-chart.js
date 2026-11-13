@@ -2314,6 +2314,9 @@ export class FiggyChartElement extends HTMLElement {
   auto_fit_overlay_y(layer, column, padding) {
     return this.#mutateChart("auto_fit_overlay_y", layer, column, padding);
   }
+  auto_fit_overlay_x(layer, column, padding) {
+    return this.#mutateChart("auto_fit_overlay_x", layer, column, padding);
+  }
   set_active_layer(json) { return JSON.parse(this.#mutateChart("set_active_layer", json)); }
   active_layer() { return JSON.parse(this.#kernelForCall().active_layer()); }
   auto_fit_colorbar(padding) { return this.#mutateChart("auto_fit_colorbar", padding); }

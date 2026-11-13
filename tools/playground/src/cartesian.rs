@@ -350,14 +350,28 @@ impl CartesianHost {
         let HostChart::Monotonic(id) = self.id else {
             return Ok(());
         };
-        // The first full call keeps the x range the scene's document sets.
-        let (min, max) = self.config(r).bottom_x.data_range();
+        // The first full call keeps the x range the scene's document sets
+        // on the x axis each group is drawn against: the parent's, or an
+        // overlay's own (`link_x` off).
+        let config = self.config(r);
+        let series = self.series(r);
+        let range_of = |group: &str| {
+            let overlay = series
+                .iter()
+                .find(|s| s.monotonic().is_some_and(|m| m.group == group))
+                .and_then(|s| match config.layer_of_series(&s.series_id) {
+                    LayerRef::Overlay(i) => Some(i),
+                    _ => None,
+                });
+            config.scaling_axes(overlay).0.data_range()
+        };
         r.monotonic_chart(id)?
             .resize(area, None, Some((vp.width, vp.height)), &refs)?;
         let needs = r.monotonic_needs_source(id)?;
         let mut chart = r.monotonic_chart(id)?;
         for (group, source) in self.monotonic.iter().zip(&slices) {
             if needs.iter().any(|need| need.group == group.group) {
+                let (min, max) = range_of(&group.group);
                 let range = renderer::renderer::MonotonicRange::X { min, max };
                 chart.set_monotonic(&group.group, source, range)?;
             }
@@ -861,11 +875,9 @@ impl CartesianHost {
         Some(match target {
             ViewTarget::Parent { overlay } => {
                 let area = d.config.data_area().ok()?.0;
-                let y = match overlay {
-                    Some(i) => config.overlays.get(i)?.y_axis.clone(),
-                    None => config.left_y.clone(),
-                };
-                (target, area, config.bottom_x.clone(), y)
+                // An overlay's own axes, or the parent's where it is linked.
+                let (x, y) = config.scaling_axes(overlay);
+                (target, area, x.clone(), y.clone())
             }
             ViewTarget::Subplot(i) => {
                 let area = d.config.subplot_config(i)?.data_area().ok()?.0;
@@ -902,8 +914,12 @@ impl CartesianHost {
         let mut chart = Chart::new(self.config(r));
         match target {
             ViewTarget::Parent { overlay } => {
+                // A linked overlay axis moves the parent's.
                 if let Some(x) = x.filter(ok) {
-                    chart.set_x_range(x.0, x.1);
+                    match overlay {
+                        Some(i) => chart.set_overlay_x_range(i, x.0, x.1),
+                        None => chart.set_x_range(x.0, x.1),
+                    }
                 }
                 if let Some(y) = y.filter(ok) {
                     match overlay {
@@ -1798,6 +1814,7 @@ fn reset_ranges(config: &mut Config, initial: &Config) {
     copy(&mut config.right_y, &initial.right_y);
     for (o, i) in config.overlays.iter_mut().zip(&initial.overlays) {
         copy(&mut o.y_axis, &i.y_axis);
+        copy(&mut o.x_axis, &i.x_axis);
     }
     for (s, i) in config.subplots.iter_mut().zip(&initial.subplots) {
         copy(&mut s.config.bottom_x, &i.config.bottom_x);
@@ -1806,6 +1823,7 @@ fn reset_ranges(config: &mut Config, initial: &Config) {
         copy(&mut s.config.right_y, &i.config.right_y);
         for (o, i) in s.config.overlays.iter_mut().zip(&i.config.overlays) {
             copy(&mut o.y_axis, &i.y_axis);
+            copy(&mut o.x_axis, &i.x_axis);
         }
     }
 }
@@ -2583,7 +2601,16 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
     let pool = r.pool();
     let mut chart = Chart::new(config.clone());
     let result = match layer {
-        LayerRef::Overlay(i) => chart.auto_fit_overlay_y_union(pool, i, &ys, PADDING),
+        LayerRef::Overlay(i) => {
+            // Its own X axis too, while it has one.
+            let own_x = config.overlays.get(i).is_some_and(|o| !o.link_x);
+            (if own_x {
+                chart.auto_fit_overlay_x_union(pool, i, &xs, PADDING)
+            } else {
+                Ok(())
+            })
+            .and_then(|_| chart.auto_fit_overlay_y_union(pool, i, &ys, PADDING))
+        }
         LayerRef::Subplot(j) => chart
             .auto_fit_subplot_x_union(pool, j, &xs, PADDING)
             .and_then(|_| chart.auto_fit_subplot_y_union(pool, j, &ys, PADDING)),
@@ -2592,11 +2619,22 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
             let Some(sub) = config.subplots.get(j) else {
                 return;
             };
+            let own_x = sub.config.overlays.get(k).is_some_and(|o| !o.link_x);
             let mut inner = Chart::new(sub.config.clone());
-            let fitted = inner.auto_fit_overlay_y_union(pool, k, &ys, PADDING);
+            let fitted = (if own_x {
+                inner.auto_fit_overlay_x_union(pool, k, &xs, PADDING)
+            } else {
+                Ok(())
+            })
+            .and_then(|_| inner.auto_fit_overlay_y_union(pool, k, &ys, PADDING));
             if fitted.is_ok() {
-                let axis = inner.config().overlays[k].y_axis.clone();
-                chart.with_axis_range_change(|c| c.subplots[j].config.overlays[k].y_axis = axis);
+                let fitted = &inner.config().overlays[k];
+                let (x_axis, y_axis) = (fitted.x_axis.clone(), fitted.y_axis.clone());
+                chart.with_axis_range_change(|c| {
+                    let target = &mut c.subplots[j].config.overlays[k];
+                    target.x_axis = x_axis;
+                    target.y_axis = y_axis;
+                });
             }
             fitted
         }
@@ -2619,6 +2657,28 @@ fn fit_link_group(config: &mut Config, series: &[SeriesConfig], r: &Renderer, la
     {
         *config = chart.config().clone();
     }
+}
+
+/// An overlay's own X axis when it is first unlinked: the parent's range and
+/// tick plan, titled and coloured like the overlay's Y axis, with a band of
+/// its own on the top side.
+fn own_x_axis(parent: &AxisOptions, y_axis: &AxisOptions, n: usize) -> AxisOptions {
+    let mut x = OverlayLayer::default().x_axis;
+    x.scale = parent.scale.clone();
+    x.min = parent.min;
+    x.max = parent.max;
+    x.major_spacing = parent.major_spacing;
+    x.minor_count = parent.minor_count;
+    x.out_margin = 60.0;
+    x.title_option.visible = true;
+    x.title_option.text = RichText::plain(
+        &format!("overlay {n} x"),
+        y_axis.title_option.text.color,
+        16.0,
+        "",
+    );
+    axis_color(&mut x, y_axis.line_color);
+    x
 }
 
 fn new_overlay(n: usize) -> OverlayLayer {
@@ -2815,9 +2875,10 @@ fn layers_controls(
     let mut status = None;
 
     // ---- parent overlays ----
-    ui.label(egui::RichText::new("Overlays (extra Y axis on the same plot)").strong());
+    ui.label(egui::RichText::new("Overlays (extra axes on the same plot)").strong());
     let mut remove_overlay = None;
     let mut fit_overlay = None;
+    let parent_x = config.bottom_x.clone();
     for i in 0..config.overlays.len() {
         ui.push_id(("ov", i), |ui| {
             let o = &mut config.overlays[i];
@@ -2835,6 +2896,34 @@ fn layers_controls(
                 }
             });
             slider(ui, "axis margin", &mut o.y_axis.out_margin, 30.0..=200.0);
+            ui.horizontal(|ui| {
+                let mut own_x = !o.link_x;
+                if ui
+                    .checkbox(&mut own_x, "own X axis (top)")
+                    .on_hover_text(
+                        "Unlink X: the overlay's series are scaled by an X axis of its own",
+                    )
+                    .changed()
+                {
+                    o.link_x = !own_x;
+                    if own_x && o.x_axis == OverlayLayer::default().x_axis {
+                        // Start from the parent's range, styled like the
+                        // overlay's Y axis.
+                        o.x_axis = own_x_axis(&parent_x, &o.y_axis, i);
+                    }
+                }
+                ui.checkbox(&mut o.link_y, "follow base Y").on_hover_text(
+                    "Link Y: the overlay's series are scaled by the parent's left Y axis",
+                );
+            });
+            if !o.link_x {
+                slider(
+                    ui,
+                    "top axis margin",
+                    &mut o.x_axis.out_margin,
+                    20.0..=200.0,
+                );
+            }
             let mut legend = o.legend.is_some();
             if ui.checkbox(&mut legend, "own legend").changed() {
                 o.legend = legend.then(legend_template);

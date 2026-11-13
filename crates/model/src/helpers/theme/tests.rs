@@ -422,3 +422,31 @@ fn the_built_in_themes_have_names() {
     assert_eq!(Theme::named("dark"), Some(Theme::dark()));
     assert!(Theme::named("neon").is_none());
 }
+
+// An overlay's own axes take the theme's frame like the chart's data axes,
+// so the dashboard draws no line or tick on an overlay's top or right axis
+// either (#283).
+#[test]
+fn an_overlay_s_own_axes_take_the_theme_frame() {
+    let theme = Theme::dashboard();
+    let mut config = Config::default();
+    config.overlays.push(OverlayLayer {
+        series: vec!["b".into()],
+        link_x: false,
+        ..crate::defaults::overlay_layer()
+    });
+    let mut series = [
+        SeriesConfig::line("a", "x", "y"),
+        SeriesConfig::line("b", "u", "v"),
+    ];
+    theme.apply(&mut config, &mut series, SubplotScope::All);
+    for axis in [
+        &config.bottom_x,
+        &config.overlays[0].x_axis,
+        &config.overlays[0].y_axis,
+    ] {
+        assert!(!axis.line_visible);
+        assert_eq!(axis.tick, TickVisibility::None);
+        assert!(axis.label_style.label_visible);
+    }
+}

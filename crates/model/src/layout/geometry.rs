@@ -4070,6 +4070,34 @@ mod tests {
         assert_eq!(auto_layout(&out, &measure), out);
     }
 
+    /// An overlay with an X axis of its own gets its top band fitted like
+    /// its Y axis' right band, and its title clears its labels there; with
+    /// its Y linked it gets no right band of its own. A second pass changes
+    /// nothing.
+    #[test]
+    fn auto_layout_fits_an_overlay_x_band_on_the_top() {
+        let measure = Labels;
+        let mut cfg = crate::defaults::config();
+        cfg.chart_title.visible = false;
+        let mut overlay = crate::defaults::overlay_layer();
+        overlay.link_x = false;
+        overlay.link_y = true;
+        overlay.x_axis.title_option.visible = true;
+        overlay.x_axis.title_option.text.segments = crate::text::rich_segments_from_text("t");
+        overlay.y_axis.out_margin = 300.0;
+        cfg.overlays.push(overlay);
+        let out = auto_layout(&cfg, &measure);
+        let axis = &out.overlays[0].x_axis;
+        let gap = title_gap(axis.label_style.font_size);
+        assert!(axis.out_margin > LABEL_GAP + gap, "{}", axis.out_margin);
+        let panel = out.overlay_panel(0).unwrap();
+        assert!(title_clearance(&panel, Side::Top, &measure) >= gap - 1e-3);
+        // The linked Y axis is not drawn: its stored band does not count.
+        assert!(out.margins().right < 300.0);
+        assert_eq!(out.overlays[0].y_axis.out_margin, 300.0);
+        assert_eq!(auto_layout(&out, &measure), out);
+    }
+
     /// A cell of a grid at `(x, y)`, 480 x 420 like the `mixed_axes`
     /// example's, titled `title` (none when empty) with a left title.
     fn grid_cell(x: u32, y: u32, title: &str) -> Config {

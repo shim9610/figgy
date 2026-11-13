@@ -305,9 +305,9 @@ pub(in crate::renderer) fn checked_panel_raster_size(
 }
 
 /// Every panel's tick warnings as one list. An overlay panel reports only
-/// its own Y axis (right, or left for the first layer of an area of its
-/// own), tagged with its layer; its other axes are copies of the base
-/// panel's and would repeat the base warnings.
+/// the axes it draws, tagged with its layer: its own Y axis on the right
+/// and, with `link_x` off, its own X axis on the top. Its other axes are
+/// hidden copies and would repeat the base warnings.
 pub(in crate::renderer) fn merged_render_warnings(
     config: &Config,
     panels: &[Config],
@@ -326,6 +326,11 @@ pub(in crate::renderer) fn merged_render_warnings(
                 (crate::LayerRef::Overlay(index), Some(crate::WarningAxis::RightY)) => {
                     Some(warning.with_axis(crate::WarningAxis::OverlayY(index)))
                 }
+                (crate::LayerRef::Overlay(index), Some(crate::WarningAxis::TopX))
+                    if config.overlays.get(index).is_some_and(|o| !o.link_x) =>
+                {
+                    Some(warning.with_axis(crate::WarningAxis::OverlayX(index)))
+                }
                 // A subplot is a chart of its own: all of its own warnings,
                 // tagged with the subplot.
                 (crate::LayerRef::Subplot(index), Some(axis)) => {
@@ -339,6 +344,18 @@ pub(in crate::renderer) fn merged_render_warnings(
                     index,
                     axis: crate::SubplotAxis::OverlayY(overlay),
                 })),
+                (
+                    crate::LayerRef::SubplotOverlay(index, overlay),
+                    Some(crate::WarningAxis::TopX),
+                ) if config
+                    .overlay_of_layer(crate::LayerRef::SubplotOverlay(index, overlay))
+                    .is_some_and(|o| !o.link_x) =>
+                {
+                    Some(warning.with_axis(crate::WarningAxis::Subplot {
+                        index,
+                        axis: crate::SubplotAxis::OverlayX(overlay),
+                    }))
+                }
                 _ => None,
             };
             merged.extend(tagged);

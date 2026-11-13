@@ -40,6 +40,9 @@ pub enum WarningAxis {
     /// `Config::overlays[index]`. A layered view merges every panel's
     /// warnings into one list, and this tag says which layer one is about.
     OverlayY(usize),
+    /// The own X axis of overlay layer `index`, `OverlayLayer::x_axis` of
+    /// `Config::overlays[index]`, drawn while its `link_x` is off.
+    OverlayX(usize),
     /// An axis of subplot `index`: `axis` names it inside
     /// `Config::subplots[index].config`.
     Subplot { index: usize, axis: SubplotAxis },
@@ -56,6 +59,8 @@ pub enum SubplotAxis {
     ColorBar,
     /// The Y axis of the subplot's overlay `index`.
     OverlayY(usize),
+    /// The own X axis of the subplot's overlay `index`.
+    OverlayX(usize),
 }
 
 impl SubplotAxis {
@@ -69,6 +74,7 @@ impl SubplotAxis {
             WarningAxis::RightY => Self::RightY,
             WarningAxis::ColorBar => Self::ColorBar,
             WarningAxis::OverlayY(index) => Self::OverlayY(index),
+            WarningAxis::OverlayX(index) => Self::OverlayX(index),
             WarningAxis::Subplot { .. } => return None,
         })
     }
@@ -83,6 +89,7 @@ impl fmt::Display for SubplotAxis {
             Self::RightY => f.write_str("right_y"),
             Self::ColorBar => f.write_str("colorbar.axis"),
             Self::OverlayY(index) => write!(f, "overlays[{index}].y_axis"),
+            Self::OverlayX(index) => write!(f, "overlays[{index}].x_axis"),
         }
     }
 }
@@ -96,6 +103,7 @@ impl fmt::Display for WarningAxis {
             Self::RightY => f.write_str("right_y"),
             Self::ColorBar => f.write_str("colorbar.axis"),
             Self::OverlayY(index) => write!(f, "overlays[{index}].y_axis"),
+            Self::OverlayX(index) => write!(f, "overlays[{index}].x_axis"),
             Self::Subplot { index, axis } => write!(f, "subplots[{index}].config.{axis}"),
         }
     }

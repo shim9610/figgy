@@ -2352,3 +2352,200 @@ fn three_hundred_channels_draw_as_three_hundred_series() {
         assert!(near, "channel {c} is drawn");
     }
 }
+
+/// Two groups sampled on different grids, one on the base layer and one on
+/// an overlay with an X axis of its own (#283): each group's full call,
+/// slide and Autoscale move only its own X axis, so neither needs the
+/// other's source, and the chart draws what a fresh renderer draws after one
+/// full call per group at the same ranges.
+#[test]
+fn groups_on_an_overlay_with_its_own_x_zoom_and_slide_independently() {
+    let a = signal_values(0..10_000);
+    let b: Vec<f64> = (0..4_000).map(|i| 0.5 * signal(i * 3)).collect();
+    let (ca, cb) = ([a.as_slice()], [b.as_slice()]);
+    let (sa, sb) = (
+        MonotonicSlices::new(0.0, 1.0, &ca),
+        MonotonicSlices::new(0.0, 2.5, &cb),
+    );
+    let mut config = bare_config(600, 300, (0.0, 10_000.0), (-2.0, 2.0));
+    config.overlays.push(renderer::OverlayLayer {
+        link_x: false,
+        series: vec!["o".to_string()],
+        ..Default::default()
+    });
+    config.overlays[0].x_axis.min = 0.0;
+    config.overlays[0].x_axis.max = 10_000.0;
+    config.overlays[0].x_axis.out_margin = 30.0;
+    config.overlays[0].y_axis.min = -2.0;
+    config.overlays[0].y_axis.max = 2.0;
+    let series = vec![
+        SeriesConfig::monotonic_line("m", "g", 0).color(BLUE),
+        SeriesConfig::monotonic_line("o", "h", 0).color(BLUE),
+    ];
+    let mut r = renderer();
+    let id = r
+        .register_monotonic_chart(config.clone(), series.clone())
+        .expect("chart");
+    let mut chart = r.monotonic_chart(id).expect("monotonic chart");
+    chart
+        .set_monotonic(
+            "g",
+            &sa,
+            MonotonicRange::X {
+                min: 0.0,
+                max: 10_000.0,
+            },
+        )
+        .expect("base group");
+    chart
+        .set_monotonic(
+            "h",
+            &sb,
+            MonotonicRange::X {
+                min: 0.0,
+                max: 10_000.0,
+            },
+        )
+        .expect("overlay group");
+    // Each zoom moves its own axis only and needs only its own source.
+    chart
+        .set_monotonic(
+            "g",
+            &sa,
+            MonotonicRange::X {
+                min: 0.0,
+                max: 5_000.0,
+            },
+        )
+        .expect("base zoom");
+    // The overlay's window ends where its samples do, as a sliding host's
+    // does.
+    let end = (b.len() - 1) as f64 * 2.5;
+    chart
+        .set_monotonic(
+            "h",
+            &sb,
+            MonotonicRange::X {
+                min: 6_000.0,
+                max: end,
+            },
+        )
+        .expect("overlay zoom");
+    let fitted = r.monotonic_config(id).expect("config").clone();
+    assert_eq!((fitted.bottom_x.min, fitted.bottom_x.max), (0.0, 5_000.0));
+    let own = &fitted.overlays[0].x_axis;
+    assert_eq!((own.min, own.max), (6_000.0, end));
+    // A slide of one group needs only its own new samples.
+    let tail = [&b[..200]];
+    r.monotonic_chart(id)
+        .expect("monotonic chart")
+        .append_monotonic(
+            "h",
+            &MonotonicSlices::new(0.0, 2.5, &tail),
+            MonotonicAppend { sliding: true },
+        )
+        .expect("overlay slide");
+    let slid = r.monotonic_config(id).expect("config").clone();
+    assert_eq!((slid.bottom_x.min, slid.bottom_x.max), (0.0, 5_000.0));
+    let own = &slid.overlays[0].x_axis;
+    assert_eq!((own.min, own.max), (6_000.0 + 500.0, end + 500.0));
+    // Autoscale fits the overlay's own X to its group's grid, with its own
+    // tick plan, and leaves the parent's.
+    let grown: Vec<f64> = b.iter().chain(&b[..200]).copied().collect();
+    let cg = [grown.as_slice()];
+    let sg = MonotonicSlices::new(0.0, 2.5, &cg);
+    r.monotonic_chart(id)
+        .expect("monotonic chart")
+        .set_monotonic("h", &sg, MonotonicRange::Autoscale)
+        .expect("overlay autoscale");
+    let auto = r.monotonic_config(id).expect("config").clone();
+    let own = &auto.overlays[0].x_axis;
+    assert_eq!((own.min, own.max), (0.0, (grown.len() - 1) as f64 * 2.5));
+    assert_eq!((auto.bottom_x.min, auto.bottom_x.max), (0.0, 5_000.0));
+    // The image is what one full call per group draws at these ranges.
+    let mut fresh = renderer();
+    let plain = fresh
+        .register_monotonic_chart(auto.clone(), series)
+        .expect("fresh");
+    let mut chart = fresh.monotonic_chart(plain).expect("monotonic chart");
+    chart
+        .set_monotonic(
+            "g",
+            &sa,
+            MonotonicRange::X {
+                min: 0.0,
+                max: 5_000.0,
+            },
+        )
+        .expect("fresh base");
+    chart
+        .set_monotonic(
+            "h",
+            &sg,
+            MonotonicRange::X {
+                min: own.min,
+                max: own.max,
+            },
+        )
+        .expect("fresh overlay");
+    let document = |r: &mut Renderer, id: MonotonicChartId| {
+        r.export_rgba(id.source(), ExportOptions::document(1.0))
+            .block_on()
+            .expect("export")
+    };
+    assert_identical(
+        &document(&mut r, id),
+        &document(&mut fresh, plain),
+        "groups on an overlay with its own x",
+    );
+}
+
+/// Autoscale fits each y axis to every monotonic series drawn on it, of any
+/// group (#283): a group on an overlay with its own x axis that follows the
+/// parent's y axis (`link_y`) shares `left_y` with the base group, so an
+/// Autoscale of either keeps both in view, and the other group is not
+/// reduced again (its x axis did not move).
+#[test]
+fn autoscale_keeps_every_group_on_a_shared_y_axis_in_view() {
+    let low: Vec<f64> = (0..8_000).map(|i| -1.0 + (i % 9) as f64 * 0.25).collect();
+    let high: Vec<f64> = (0..3_000).map(|i| 5.0 + (i % 5) as f64 * 0.25).collect();
+    let (cl, ch) = ([low.as_slice()], [high.as_slice()]);
+    let (sl, sh) = (
+        MonotonicSlices::new(0.0, 1.0, &cl),
+        MonotonicSlices::new(0.0, 3.0, &ch),
+    );
+    let mut config = bare_config(600, 300, (0.0, 8_000.0), (-9.0, 9.0));
+    config.overlays.push(renderer::OverlayLayer {
+        link_x: false,
+        link_y: true,
+        series: vec!["o".to_string()],
+        ..Default::default()
+    });
+    config.overlays[0].x_axis.max = 9_000.0;
+    let series = vec![
+        SeriesConfig::monotonic_line("m", "g", 0).color(BLUE),
+        SeriesConfig::monotonic_line("o", "h", 0).color(BLUE),
+    ];
+    let mut r = renderer();
+    let id = r.register_monotonic_chart(config, series).expect("chart");
+    let mut chart = r.monotonic_chart(id).expect("monotonic chart");
+    chart
+        .set_monotonic("g", &sl, MonotonicRange::Autoscale)
+        .expect("base group");
+    chart
+        .set_monotonic("h", &sh, MonotonicRange::Autoscale)
+        .expect("overlay group");
+    let y = r.monotonic_config(id).expect("config").left_y.clone();
+    assert!(y.min < -1.0 && y.max > 6.0, "both groups in view: {y:?}");
+    // The other order fits the same axis.
+    r.monotonic_chart(id)
+        .expect("monotonic chart")
+        .set_monotonic("g", &sl, MonotonicRange::Autoscale)
+        .expect("base group again");
+    let again = r.monotonic_config(id).expect("config").left_y.clone();
+    assert_eq!((again.min, again.max), (y.min, y.max));
+    // The overlay's own x is its group's grid; the parent's, the base's.
+    let config = r.monotonic_config(id).expect("config");
+    assert_eq!(config.overlays[0].x_axis.max, 2_999.0 * 3.0);
+    assert_eq!(config.bottom_x.max, 7_999.0);
+}

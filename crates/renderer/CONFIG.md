@@ -28,7 +28,7 @@ pub struct Config {
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
     pub coordinates: Coordinates,            // Cartesian (default), Polar, Ternary, View3d or Parallel; written as the one key polar / ternary / view_3d / parallel
-    pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
+    pub overlays: Vec<OverlayLayer>,         // layers over the same plot, each scaling the series it lists by its own or the parent's axes
     pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` (default) = the chart's own series and decorations
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
@@ -65,7 +65,7 @@ pub struct Config {
 | `category_groups` | `Option<CategoryGroups>` | Group headers over runs of a categorical `top_x` or `bottom_x` ([#203](https://github.com/shim9610/figgy/issues/203)): `CategoryGroups { groups: Vec<CategoryGroup { label: RichText, first, last, bracket }>, offset: [f32; 2] }`. Each header is centred past the tick labels (below the outermost staggered row, #205) under (over, on a top axis) the run from category `first` to `last`, with a bracket along the run when `bracket`; runs are in axis order and do not overlap, with no count limit. The headers are one element (`Element::CategoryGroupLabel`), dragged into `offset`. Refused on a numeric axis and on the y axes |
 | `cross_at` | `Option<f64>` | Where the axis line crosses the perpendicular axis, as a value of that axis (`left_y` for the top and bottom axes, `bottom_x` for the left and right ones), clamped to the plot. Only the line and its hit region move; ticks, labels and the title stay at the plot edge. Must be finite; ignored on polar charts. `None` (default, omitted from JSON) keeps the line on its edge |
 | `log_ticks` | `LogTickPolicy` | Which major ticks a logarithmic axis draws ([#42](https://github.com/shim9610/figgy/issues/42)). `Decades` (default, omitted from JSON) draws every `major_spacing`-th decade. `Adaptive` ignores `major_spacing` and plans the majors from the range alone (`tick::log_ladder`): every n-th decade over more than six decades (`n` is `tick::axis_major_spacing`), otherwise the first of whole decades, 1, 2 and 5 × 10^k, and 1 to 9 × 10^k that puts at least `tick::LOG_LADDER_MIN_MAJORS` (4) majors inside the range, or 1 to 9 × 10^k when none does. The minors are the multiples 2 to 9 that are not majors. When the labels crowd, they are demoted 1..9 → 1, 2, 5 → decades while at least two remain, then thinned to every 2nd, 5th, 10th… label; ticks and grid lines stay. No `LogDecadeStepAdjusted` warning is raised for it. Ignored on linear and categorical axes. The range helpers and a view state keep it, so a zoom re-plans the ticks; a subplot link copies it with the tick spacing |
-| `breaks` | `Option<AxisBreaks>` | Ranges cut out of the axis ([#200](https://github.com/shim9610/figgy/issues/200)): see [`AxisBreaks`](#axisbreaks). `None` (default, omitted from JSON) draws the axis whole. Allowed on `bottom_x`, `left_y` and an overlay's `y_axis` of a rectangular chart; `top_x` and `right_y` take their partner's cuts at the same fractions of their own range when drawn (`layout::mirrored_breaks`), and a colourbar axis, a polar, ternary, 3D or parallel chart refuse them. The range helpers and a view state keep it, and a subplot link copies it with the range |
+| `breaks` | `Option<AxisBreaks>` | Ranges cut out of the axis ([#200](https://github.com/shim9610/figgy/issues/200)): see [`AxisBreaks`](#axisbreaks). `None` (default, omitted from JSON) draws the axis whole. Allowed on `bottom_x`, `left_y` and an overlay's `x_axis` and `y_axis` of a rectangular chart; `top_x` and `right_y` take their partner's cuts at the same fractions of their own range when drawn (`layout::mirrored_breaks`), and a colourbar axis, a polar, ternary, 3D or parallel chart refuse them. The range helpers and a view state keep it, and a subplot link copies it with the range |
 | `unit` | `Option<AxisUnit>` | The unit the axis prints its values in ([#273](https://github.com/shim9610/figgy/issues/273)): `AxisUnit { scale, offset }`, a tick label reads `scale * value + offset`, so 16-bit ADC counts print as volts (`scale = 5/32768`) or kelvin as degrees Celsius (`offset = -273.15`) while the data stays raw. `min`, `max`, `breaks`, `cross_at`, annotations and picks stay in data units. The ticks are planned in shown units over `[scale·min + offset, scale·max + offset]` (`AxisOptions::shown_range`), so the labels are round numbers after the conversion (`0, 0.5, 1.0 V`), and each tick sits at `(shown − offset) / scale`; a negative scale prints values that decrease along the axis. `major_spacing` is read in shown units, and the range helpers, `auto_ticks` and a view state choose it for the shown range. The label format applies to the shown value; a log axis walks decades of the shown value. `scale` must be finite and non-zero and `offset` finite; a log axis takes only `offset = 0` and `scale > 0`; a probability axis, an axis with `Timestamp` labels and a categorical axis refuse a unit (`RuleKind::AxisUnit*`). A subplot link copies it with the tick spacing. `None` (default, omitted from JSON) prints the data values. `AxisOptions::unit(scale, offset)` (`helpers`) sets it |
 
 <a id="axisbreaks"></a>
@@ -485,42 +485,62 @@ the plot) and the automatic label placer never nudges them.
 
 ### `OverlayLayer` (`Config::overlays`)
 
-An overlay layer is a second Y axis drawn on the right side of the shared data
-area, scaling the series it lists. `overlays` is empty (key absent in JSON) by
-default; a layered document is still one
-`Config`: the chart area, both X axes, the title, the grid, the merged legend,
-the colourbar and `draw_style` exist once, on the parent, and only the fields
-below exist per layer. The radial chart has
-no overlays, and nonresident streaming rejects a document that has any.
+An overlay layer draws the series it lists over the shared data area, scaled
+by axes of its own or by the parent's. By default it follows the parent's X
+axis and has a Y axis of its own on the right: a twin Y axis. Turn `link_x`
+off and it has an X axis of its own on the top side too, for series recorded
+on another grid or clock; turn `link_y` on and it follows the parent's left
+Y axis and draws none. `overlays` is empty (key absent in JSON) by default.
+A layered document is still one `Config`: the chart area, the title, the
+grid, the merged legend, the colourbar and `draw_style` exist once, on the
+parent, and only the fields below exist per layer. The radial chart has no
+overlays, and nonresident streaming rejects a document that has any.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `y_axis` | `AxisOptions` | The overlay's Y axis, drawn on the right. `min` / `max` / `scale` / `inverted` map the overlay's series to pixels; `out_margin + major_tick_length` is its band in the shared right margin, which is the widest band of the parent `right_y` and every overlay (`Config::margins`). Defaults to the default left-axis options (labels and line visible). |
+| `y_axis` | `AxisOptions` | The overlay's own Y axis, drawn on the right. `min` / `max` / `scale` / `inverted` map the overlay's series to pixels; `out_margin + major_tick_length` is its band in the shared right margin, which is the widest band of the parent `right_y` and every overlay Y axis that is drawn (`Config::margins`). Defaults to the default left-axis options (labels and line visible). Unused while `link_y` is on. |
+| `link_x` | `bool` | `true` (default, omitted from JSON): the overlay's series are scaled by the parent's `bottom_x`. `false`: by `x_axis`. |
+| `x_axis` | `AxisOptions` | The overlay's own X axis, drawn on the top side while `link_x` is off. Its band joins the shared top margin as `y_axis`'s joins the right one. Omitted from JSON while it is the default. `AxisOptions::overlay_x(title, color)` (`helpers`) builds one. |
+| `link_y` | `bool` | `false` (default, omitted from JSON): the overlay's series are scaled by `y_axis`. `true`: by the parent's `left_y`, and the overlay draws no Y axis and adds no right band. |
 | `series` | `Vec<String>` | Ids of the series this layer scales, from the chart's single series list. An id may belong to at most one overlay (`Config::validate_overlays`); an id with no declaration is ignored; a series that no overlay or subplot lists belongs to the base layer. Omitted from JSON when empty. |
 | `legend` | `Option<Legend>` | A legend drawn in this layer's panel. `None` (omitted) keeps the single merged legend on the parent for every layer's series. |
 
+A linked side keeps the overlay's own axis in the document, so turning the
+link off again restores it. Both own axes are validated like the parent's,
+linked or not (`overlays.x_axis`, `overlays.y_axis`); either may be
+logarithmic, probability, categorical or broken, and neither takes group
+headers (`category_groups`). `OverlayLayer::own_x()` / `own_y()` return the
+own axis or `None` where it is linked, and `Config::scaling_axes(Some(i))`
+returns the X and Y axes overlay `i` scales by.
+
 The renderer draws the document as one internal panel per layer through
-`Config::expand()`: the base panel is the parent without its overlays; each
-overlay panel keeps the parent's X range for its transform but draws no X axis,
-grid, title or colourbar, carries the overlay's range on a hidden left axis and
-draws the overlay's `y_axis` on the right. Every panel's margins are lifted to
-the group's, so `data_area()` is the same rectangle for all of them and for
-the parent; `Expansion { panels, data_area }` returns them. `Config::expand()`
-leaves the document unchanged, and the panels are never serialized: the JSON
-holds the parent `Config` alone. A data-area edge
-drag or `fit_to_data_area` writes the group band through the parent's
-`right_y.out_margin` and pulls every overlay band inside it. `Config::scaled`
-scales the overlay axes and legends like the parent's. The parent's own
-`right_y` stays as written: hide its line and ticks when an overlay should have
-the right band to itself.
+`Config::expand()`. The base panel is the parent without its overlays. Each
+overlay panel draws no grid, title or colourbar; its data transform reads the
+axes the overlay follows, carried on hidden copies, and it draws its own axes:
+`x_axis` on the top side while `link_x` is off, `y_axis` on the right unless
+`link_y` is on. Every panel's margins are lifted to the group's, so
+`data_area()` is the same rectangle for all of them and for the parent;
+`Expansion { panels, data_area }` returns them. `Config::expand()` leaves the
+document unchanged, and the panels are never serialized: the JSON holds the
+parent `Config` alone. The right and top margins are group geometry: a
+data-area edge drag or `fit_to_data_area` writes the group band through the
+parent's `right_y.out_margin` or `top_x.out_margin` and pulls every overlay
+band on that side inside it. `Config::scaled` scales the overlay axes and
+legends like the parent's. The parent's own `right_y` and `top_x` stay as
+written: hide their line and ticks when an overlay should have the band to
+itself. Several overlay axes on one side share its band; `line_offset` moves
+one off the plot edge.
 
 `active_layer` addresses one layer for interaction (`Config::active_layer()`
 applies the out-of-range fallback, `set_active_layer` stores it) and
 `Config::layer_of_series(id)` answers which layer scales a series. See the
 [interaction guide](INTERACTION.md#overlay-layers) for the hit map, selection
-and export behaviour. `Chart::set_overlay_y_range(layer, min, max)` sets an
-overlay's range and derives its ticks, and
-[examples/overlay_axes.rs](examples/overlay_axes.rs) draws twin Y axes.
+and export behaviour. `Chart::set_overlay_y_range(layer, min, max)` and
+`Chart::set_overlay_x_range(layer, min, max)` set an overlay's ranges and
+derive their ticks (a linked side sets the parent's), `Chart::with_overlay`
+adds a twin Y axis and `Chart::with_overlay_xy` an overlay with both axes of
+its own, and [examples/overlay_axes.rs](examples/overlay_axes.rs) draws twin
+Y axes.
 
 ### `Subplot` (`Config::subplots`)
 
@@ -528,7 +548,7 @@ A subplot is one more chart drawn in the same document. `subplots` is empty
 (key absent in JSON) by default. Each
 subplot is a complete Cartesian chart with its own `chart_area` (in the
 parent's surface coordinates), all four axes, title, grid, legend, colourbar,
-style and secondary Y axes; nothing is shared with the parent or another
+style and overlay layers; nothing is shared with the parent or another
 subplot unless a link says so. The document's own `Config` stays the first
 chart, so a 2×2 grid is the parent plus three subplots.
 
@@ -549,7 +569,7 @@ document so its coordinates stay non-negative. See the interaction guide's
 
 | Field | Type | Meaning |
 |---|---|---|
-| `config` | `Config` | The subplot's chart. Its `overlays` are secondary Y axes inside it (one nesting level: its own `subplots` must be empty). Its `annotations` must stay default, since the document has one annotation layer, on the parent; its `active_layer` is ignored. |
+| `config` | `Config` | The subplot's chart. Its `overlays` are overlay layers inside it (one nesting level: its own `subplots` must be empty). Its `annotations` must stay default, since the document has one annotation layer, on the parent; its `active_layer` is ignored. |
 | `series` | `Vec<String>` | Ids of the series this subplot draws, from the document's single series list, including the ones its own overlays scale. An id belongs to at most one subplot and to no parent overlay (`Config::validate_subplots`); ids with no declaration are ignored. Omitted from JSON when empty. |
 | `link_x` | `Option<CellRef>` | `None` (default, omitted): the X axis is the subplot's own. `Some(CellRef::Parent)` or `Some(CellRef::Subplot(j))` with `j` below this subplot's index: `bottom_x` follows the target's `bottom_x` range, scale, direction and tick spacing (`major_spacing`, `minor_count`, `log_ticks`, and the `unit` the spacing is read in). Line, label and title style stay the subplot's own. |
 | `link_y` | `Option<CellRef>` | The same for `left_y`. |
@@ -1667,39 +1687,58 @@ pub struct Config {
 
 ### `OverlayLayer` (`Config::overlays`)
 
-오버레이 레이어는 공유 데이터 영역의 오른쪽에 그리는 두 번째 Y 축이며, 자기가 나열한 시리즈를
-그 축으로 스케일한다. `overlays`의 기본값은 빈 목록이며 그때 JSON에서 키를 생략한다.
-레이어가 있어도 문서는 하나의 `Config`다. 차트 영역, 두 X 축, 제목, 그리드, 합친 범례,
-색상 막대, `draw_style`은 부모에 한 번만 있고 아래 필드만 레이어마다 있다.
-원형 차트에는 오버레이가 없고, 비상주 스트리밍은 오버레이가 있는 문서를 거부한다.
+오버레이 레이어는 자기가 나열한 시리즈를 공유 데이터 영역 위에 그리고, 자기 축이나 부모의 축으로
+스케일한다. 기본값은 부모의 X 축을 따르고 오른쪽에 자기 Y 축을 두는 것, 곧 두 번째 Y 축이다.
+`link_x`를 끄면 위쪽에 자기 X 축도 생기므로 다른 격자나 다른 시계로 기록한 시리즈를 겹쳐 그릴
+수 있다. `link_y`를 켜면 부모의 왼쪽 Y 축을 따르고 자기 Y 축은 그리지 않는다. `overlays`의
+기본값은 빈 목록이며 그때 JSON에서 키를 생략한다. 레이어가 있어도 문서는 하나의 `Config`다.
+차트 영역, 제목, 그리드, 합친 범례, 색상 막대, `draw_style`은 부모에 한 번만 있고 아래 필드만
+레이어마다 있다. 원형 차트에는 오버레이가 없고, 비상주 스트리밍은 오버레이가 있는 문서를
+거부한다.
 
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `y_axis` | `AxisOptions` | 오른쪽에 그리는 오버레이 Y 축. `min` / `max` / `scale` / `inverted`가 이 레이어 시리즈의 픽셀 변환을 정한다. `out_margin + major_tick_length`가 공유 오른쪽 여백 안의 띠이며, 오른쪽 여백은 부모 `right_y`와 모든 오버레이 띠 중 가장 넓은 값이다(`Config::margins`). 기본값은 왼쪽 축 기본 옵션(라벨·축선 보임)이다. |
+| `y_axis` | `AxisOptions` | 오른쪽에 그리는 오버레이 자기 Y 축. `min` / `max` / `scale` / `inverted`가 이 레이어 시리즈의 픽셀 변환을 정한다. `out_margin + major_tick_length`가 공유 오른쪽 여백 안의 띠이며, 오른쪽 여백은 부모 `right_y`와 그려지는 모든 오버레이 Y 축의 띠 중 가장 넓은 값이다(`Config::margins`). 기본값은 왼쪽 축 기본 옵션(라벨·축선 보임)이다. `link_y`가 켜져 있으면 쓰지 않는다. |
+| `link_x` | `bool` | `true`(기본값, JSON에서 생략): 이 레이어 시리즈를 부모의 `bottom_x`로 스케일한다. `false`: `x_axis`로 스케일한다. |
+| `x_axis` | `AxisOptions` | 오버레이 자기 X 축. `link_x`가 꺼져 있으면 위쪽에 그린다. 그 띠는 `y_axis`의 띠가 오른쪽 여백에 들어가듯 공유 위쪽 여백에 들어간다. 기본값이면 JSON에서 생략한다. `AxisOptions::overlay_x(title, color)`(`helpers`)로 만들 수 있다. |
+| `link_y` | `bool` | `false`(기본값, JSON에서 생략): 이 레이어 시리즈를 `y_axis`로 스케일한다. `true`: 부모의 `left_y`로 스케일하며, 오버레이는 Y 축을 그리지 않고 오른쪽 띠도 차지하지 않는다. |
 | `series` | `Vec<String>` | 이 레이어가 스케일하는 시리즈 id. 차트의 단일 시리즈 목록에서 참조한다. 한 id는 최대 한 오버레이에만 속할 수 있고(`Config::validate_overlays`), 선언이 없는 id는 무시하며, 나머지 시리즈는 기본 레이어에 속한다. 비어 있으면 JSON에서 생략한다. |
 | `legend` | `Option<Legend>` | 이 레이어 패널에 그리는 범례. `None`(생략)이면 부모의 합친 범례 하나가 모든 레이어의 시리즈를 나열한다. |
 
+연결한 쪽도 오버레이 자기 축은 문서에 그대로 남으므로, 연결을 다시 끄면 그 축이 돌아온다. 두
+자기 축은 연결 여부와 상관없이 부모의 축과 같은 규칙으로 검사한다(`overlays.x_axis`,
+`overlays.y_axis`). 둘 다 로그·확률·범주 축이나 끊긴 축이 될 수 있고, 그룹 머리말
+(`category_groups`)은 둘 다 받지 않는다. `OverlayLayer::own_x()` / `own_y()`는 자기 축을, 연결된
+쪽은 `None`을 돌려주고, `Config::scaling_axes(Some(i))`는 오버레이 `i`가 쓰는 X·Y 축을 돌려준다.
+
 렌더러는 `Config::expand()`로 문서를 레이어마다 하나의 내부 패널로 그린다. 기본 패널은
-오버레이를 뺀 부모이고, 오버레이 패널은 변환을 위해 부모의 X 범위를 유지하되 X 축·그리드·
-제목·색상 막대를 그리지 않으며, 숨긴 왼쪽 축에 오버레이 범위를 싣고 오른쪽에 오버레이
-`y_axis`를 그린다. 모든 패널의 여백을 그룹 여백으로 올리므로 `data_area()`는 모든 패널과
-부모에서 같은 사각형이며 `Expansion { panels, data_area }`로 돌려준다. 확장은 문서를
-바꾸지 않고, 확장한 패널은 직렬화하지 않으므로 JSON에는 부모 `Config` 하나만 저장된다. 데이터 영역 가장자리 드래그나 `fit_to_data_area`는
-부모 `right_y.out_margin`으로 그룹 띠를 쓰고 모든 오버레이 띠를 그 안으로 맞춘다.
-`Config::scaled`는 오버레이 축과 범례도 부모와 같은 규칙으로 배율을 적용한다. 부모의
-`right_y`는 적힌 대로 두므로, 오버레이 축이 오른쪽 띠를 독점하게 하려면 그 축선과 눈금을 끈다.
+오버레이를 뺀 부모다. 오버레이 패널은 그리드·제목·색상 막대를 그리지 않는다. 데이터 변환은
+오버레이가 따르는 축을 숨긴 사본에 실어 읽고, 자기 축은 직접 그린다. `link_x`가 꺼져 있으면
+`x_axis`를 위쪽에, `link_y`가 켜져 있지 않으면 `y_axis`를 오른쪽에 그린다. 모든 패널의 여백을
+그룹 여백으로 올리므로 `data_area()`는 모든 패널과 부모에서 같은 사각형이며
+`Expansion { panels, data_area }`로 돌려준다. 확장은 문서를 바꾸지 않고, 확장한 패널은
+직렬화하지 않으므로 JSON에는 부모 `Config` 하나만 저장된다. 오른쪽과 위쪽 여백은 그룹이 함께
+쓴다. 데이터 영역 가장자리 드래그나 `fit_to_data_area`는 부모의 `right_y.out_margin`이나
+`top_x.out_margin`으로 그룹 띠를 쓰고, 그쪽의 모든 오버레이 띠를 그 안으로 맞춘다.
+`Config::scaled`는 오버레이 축과 범례도 부모와 같은 규칙으로 배율을 적용한다. 부모의 `right_y`와
+`top_x`는 적힌 대로 두므로, 오버레이 축이 그 띠를 독점하게 하려면 그 축선과 눈금을 끈다. 한쪽에
+오버레이 축이 여럿이면 그 띠를 함께 쓰며, `line_offset`으로 하나를 플롯 가장자리에서 떼어 놓을
+수 있다.
 
 `active_layer`는 상호작용 대상 레이어 하나를 가리키고(`Config::active_layer()`는 범위 밖
 인덱스를 `Base`로 읽고 `set_active_layer`가 저장한다) `Config::layer_of_series(id)`는 시리즈를
 스케일하는 레이어를 답한다. 히트 맵·선택·출력 동작은 [상호작용 가이드(영문)](INTERACTION.md#overlay-layers)에 있다.
-`Chart::set_overlay_y_range(layer, min, max)`는 오버레이의 범위를 정하고 눈금을 함께 맞추며,
-[examples/overlay_axes.rs](examples/overlay_axes.rs)는 두 Y 축을 그리는 예제다.
+`Chart::set_overlay_y_range(layer, min, max)`와 `Chart::set_overlay_x_range(layer, min, max)`는
+오버레이의 범위를 정하고 눈금을 함께 맞춘다(연결된 쪽은 부모의 범위를 정한다).
+`Chart::with_overlay`는 두 번째 Y 축을, `Chart::with_overlay_xy`는 두 축이 모두 자기 것인
+오버레이를 더하며, [examples/overlay_axes.rs](examples/overlay_axes.rs)는 두 Y 축을 그리는
+예제다.
 
 ### `Subplot` (`Config::subplots`)
 
 서브플롯은 같은 문서에 그리는 차트 하나다. `subplots`의 기본값은 빈 목록이며 그때 JSON에서
 키를 생략한다. 각 서브플롯은 자기 `chart_area`(부모와 같은 표면 좌표), 축 4개,
-제목, 그리드, 범례, 색상 막대, 스타일, 보조 Y 축을 모두 가진 완전한 Cartesian 차트이며,
+제목, 그리드, 범례, 색상 막대, 스타일, 오버레이 레이어를 모두 가진 완전한 Cartesian 차트이며,
 링크로 묶지 않으면 부모나 다른 서브플롯과 아무것도 공유하지 않는다. 문서 자체의 `Config`가
 첫 번째 차트이므로 2×2 그리드는 부모 하나와 서브플롯 셋이다.
 
@@ -1717,7 +1756,7 @@ pub struct Config {
 
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `config` | `Config` | 서브플롯의 차트. 그 `overlays`는 서브플롯 안의 보조 Y 축이다(중첩은 한 단계라서 그 `subplots`는 비어 있어야 한다). 주석 층은 문서에 하나뿐이고 부모에 있으므로 그 `annotations`는 기본값이어야 하며, 그 `active_layer`는 무시한다. |
+| `config` | `Config` | 서브플롯의 차트. 그 `overlays`는 서브플롯 안의 오버레이 레이어다(중첩은 한 단계라서 그 `subplots`는 비어 있어야 한다). 주석 층은 문서에 하나뿐이고 부모에 있으므로 그 `annotations`는 기본값이어야 하며, 그 `active_layer`는 무시한다. |
 | `series` | `Vec<String>` | 이 서브플롯이 그리는 시리즈 id. 문서의 단일 시리즈 목록에서 참조하며 서브플롯 오버레이가 스케일하는 시리즈도 포함한다. 한 id는 최대 한 서브플롯에만 속하고 부모 오버레이에는 속할 수 없다(`Config::validate_subplots`). 선언이 없는 id는 무시한다. 비어 있으면 JSON에서 생략한다. |
 | `link_x` | `Option<CellRef>` | `None`(기본값, 생략)이면 X 축은 서브플롯 자신의 것이다. `Some(CellRef::Parent)` 또는 이 서브플롯보다 작은 `j`의 `Some(CellRef::Subplot(j))`이면 `bottom_x`의 범위·스케일·방향·눈금 간격(`major_spacing`, `minor_count`, `log_ticks`, 그 간격을 읽는 단위 `unit`)이 대상의 `bottom_x`를 따른다. 축선·라벨·제목 스타일은 서브플롯 자신의 것이다. |
 | `link_y` | `Option<CellRef>` | `left_y`에 대해 같은 규칙. |

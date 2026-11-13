@@ -78,14 +78,33 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         && background == &right.background
 }
 
+/// Whether the hit map `HitMap::for_active_layer` registers for `after`
+/// can differ from `before`'s in what a `HitId` names: another active layer,
+/// or other links of the active overlay (an own X axis registers on the top
+/// side, a followed Y axis registers the chart's left one).
+pub(in crate::renderer) fn registration_changed(before: &Config, after: &Config) -> bool {
+    let links = |config: &Config| {
+        config
+            .overlay_of_layer(config.active_layer())
+            .map(|overlay| (overlay.link_x, overlay.link_y))
+    };
+    before.active_layer() != after.active_layer() || links(before) != links(after)
+}
+
 /// Whether two configs map data to the same pixels on every layer: the
-/// overlay count, each overlay's Y range and the series each one scales.
-/// Decoration-only overlay edits (axis colour, legend) are not geometry.
+/// overlay count, each overlay's links, X and Y ranges and the series each
+/// one scales. Decoration-only overlay edits (axis colour, legend) are not
+/// geometry.
 pub(in crate::renderer) fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
+    let axis_equal = |a: &AxisOptions, b: &AxisOptions| {
+        AxisViewState::from_axis(a) == AxisViewState::from_axis(b) && break_geometry_equal(a, b)
+    };
     left.overlays.len() == right.overlays.len()
         && left.overlays.iter().zip(&right.overlays).all(|(a, b)| {
-            AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
-                && break_geometry_equal(&a.y_axis, &b.y_axis)
+            axis_equal(&a.y_axis, &b.y_axis)
+                && axis_equal(&a.x_axis, &b.x_axis)
+                && a.link_x == b.link_x
+                && a.link_y == b.link_y
                 && a.series == b.series
         })
 }

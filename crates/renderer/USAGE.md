@@ -536,7 +536,8 @@ constructors too, and `Chart` takes them in a chain:
   `text_rich(anchor, rich_text)`, then `with_label`, `with_line_style`,
   `with_box` and `with_align`.
 - `AxisOptions::overlay_y(title, color)`: the right-hand axis of an overlay
-  layer, titled and coloured like its series.
+  layer, titled and coloured like its series; `AxisOptions::overlay_x(title,
+  color)` is its top-side X axis, for an overlay with an X axis of its own.
 - `AxisOptions::unit(scale, offset)`: the axis prints `scale * value +
   offset` ([#273](https://github.com/shim9610/figgy/issues/273)); see
   [Axis units](#axis-units).
@@ -563,7 +564,9 @@ constructors too, and `Chart` takes them in a chain:
 - `Chart::placed(x, y, width, height)` puts the chart area at an offset and
   `with_area(..)` resizes a chart built from a document; `set_area(..)` moves
   an existing chart's area in place, as a window resize does;
-  `with_overlay(y_axis, &series_ids)` adds an overlay layer;
+  `with_overlay(y_axis, &series_ids)` adds an overlay layer with a Y axis of
+  its own, and `with_overlay_xy(x_axis, y_axis, &series_ids)` one with its own
+  X axis too (`OverlayLayer::link_x` off);
   `with_legend_swatch(label, color)` adds a filled-square entry for a meaning
   that is not a series.
 
@@ -637,7 +640,7 @@ The convenience functions that take text as a `&str` read it the way
 matplotlib reads a label: `Chart::with_title`, `with_x_title`,
 `with_y_title`, `with_legend_entry`, `with_colorbar_title`,
 `with_legend_swatch`, `SeriesConfig::label`, `Annotation::text`,
-`AxisOptions::overlay_y`, `RadialChart::with_title`, and the browser text
+`AxisOptions::overlay_y`, `AxisOptions::overlay_x`, `RadialChart::with_title`, and the browser text
 setters ([WASM.md](WASM.md#math-in-labels)).
 
 - `$…$` and `\(…\)` spans are TeX in text style, `$$…$$` spans in display
@@ -691,7 +694,10 @@ Beyond lines, scatter, error bars, histograms, heatmaps and contours:
   triangulates. [Guide](TRIMESH.md) and the `TriMesh` / `TriSurface`
   playground scenes.
 - **Overlay axes, subplots and annotations**: each overlay layer draws its series
-  against its own right-hand Y axis; subplots arrange whole charts in a grid with
+  over the same plot, against its own right-hand Y axis or the parent's
+  (`link_y`), and the parent's X axis or one of its own on the top side
+  (`link_x`), so series recorded on another grid or clock share the plot with
+  an X axis of their own; subplots arrange whole charts in a grid with
   linked or twin axes; the annotation layer adds reference lines, spans,
   text and arrows. Polar charts (radar charts included) and radial charts have no value axes: they draw
   ratio-anchored text and arrows only and skip reference lines, spans and
@@ -918,7 +924,9 @@ chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // refits th
   axis breaks, the chart area, every offset, all text content, the annotation
   layer, the overlay and subplot structure, series ids, columns and labels,
   and the selection itself.
-- Overlays take the theme with their chart. `SubplotScope` chooses the
+- Overlays take the theme with their chart; an overlay's own axes take the
+  frame of the chart's bottom and left axes, since they are data axes too.
+  `SubplotScope` chooses the
   subplots: `None`, `All` or `Only(&[indices])`; a series drawn in a subplot
   outside the scope keeps its look.
 - `Chart::apply_theme` refits the layout to the new text sizes
@@ -1453,7 +1461,7 @@ let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb
   `text(anchor, text, color, size)`, `text_rich(anchor, rich_text)`. 여기에 `with_label`,
   `with_line_style`, `with_box`, `with_align`을 붙인다.
 - `AxisOptions::overlay_y(title, color)`: 오버레이 레이어의 오른쪽 축. 제목과 색을 그 축이 맡은
-  시리즈에 맞춘다.
+  시리즈에 맞춘다. `AxisOptions::overlay_x(title, color)`는 자기 X 축이 있는 오버레이의 위쪽 X 축이다.
 - `AxisOptions::unit(scale, offset)`: 축이 `scale * value + offset`을 찍는다
   ([#273](https://github.com/shim9610/figgy/issues/273)). 아래 [축 단위](#축-단위)를 참고한다.
 - `Subplot::new(config, &series_ids)`. 축을 이으려면 `with_link_x(cell)`, `with_link_y(cell)`를 붙인다.
@@ -1473,7 +1481,9 @@ let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb
   `label_style.clearance`를 쓴다.
 - `Chart::placed(x, y, width, height)`는 차트 영역을 원하는 위치에 두고, `with_area(..)`는 문서로
   만든 차트의 크기를 바꾸며, `set_area(..)`는 창 크기가 바뀔 때처럼 이미 있는 차트의 영역을 그 자리에서
-  옮긴다. `with_overlay(y_axis, &series_ids)`는 오버레이 레이어를 더하고,
+  옮긴다. `with_overlay(y_axis, &series_ids)`는 자기 Y 축이 있는 오버레이 레이어를,
+  `with_overlay_xy(x_axis, y_axis, &series_ids)`는 X 축까지 자기 것인 오버레이 레이어를
+  (`OverlayLayer::link_x` 끔) 더하고,
   `with_legend_swatch(label, color)`는 시리즈가 아닌 의미를 나타내는 색 사각형 범례 항목을 더한다.
 
 ```rust
@@ -1534,7 +1544,7 @@ chart.set_y_range(0.0, 32768.0);                       // 0, 1, 2, 3, 4, 5 V에 
 
 텍스트를 `&str`로 받는 편의 함수는 matplotlib이 라벨을 읽듯 그 텍스트를 읽는다. `Chart::with_title`,
 `with_x_title`, `with_y_title`, `with_legend_entry`, `with_colorbar_title`, `with_legend_swatch`,
-`SeriesConfig::label`, `Annotation::text`, `AxisOptions::overlay_y`, `RadialChart::with_title`,
+`SeriesConfig::label`, `Annotation::text`, `AxisOptions::overlay_y`, `AxisOptions::overlay_x`, `RadialChart::with_title`,
 그리고 브라우저의 텍스트 설정 함수([WASM.md](WASM.md#라벨-속-수식))가 여기에 해당한다.
 
 - `$…$`와 `\(…\)` 구간은 본문 스타일의 TeX, `$$…$$` 구간은 디스플레이 스타일의 TeX다. 구간 밖은
@@ -1577,7 +1587,9 @@ let title = RichText::from_tex(r"$E = mc^2$", Color::BLACK, 18.0, "")?;
   `Renderer::upsert_triangles(id, &TriangleSource { indices })`로 올린다(삼각형마다 정점
   번호 세 개, `Column<u32>`). 렌더러는 삼각분할을 하지 않는다. [가이드](TRIMESH.md)와
   플레이그라운드의 `TriMesh`, `TriSurface` 장면.
-- **보조 Y축·서브플롯·주석**: 오버레이 레이어는 두 번째 Y축에 시리즈를 그리고, 서브플롯은 차트
+- **오버레이 축·서브플롯·주석**: 오버레이 레이어는 같은 플롯 위에 시리즈를 그린다. Y는 오른쪽의
+  자기 축이나 부모의 축(`link_y`)을, X는 부모의 축이나 위쪽의 자기 축(`link_x`)을 따르므로, 다른
+  격자나 다른 시계로 기록한 시리즈도 자기 X 축을 가진 채 같은 플롯에 겹칠 수 있다. 서브플롯은 차트
   여러 개를 연결 축·쌍둥이 축과 함께 격자로 배치하며, 주석 층은 기준선·구간·텍스트·화살표를
   더한다. 극좌표(레이더 포함)·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
   기준선·구간과 데이터 좌표 항목은 `RenderWarning::AnnotationSkipped` 경고를 내고 건너뛴다.
@@ -1771,7 +1783,8 @@ chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // 레이아
   유지한다.
 - 축 범위, 스케일, 눈금 간격, 라벨 형식, 범주, 축 끊김, 차트 영역, 모든 오프셋, 모든 텍스트
   내용, 주석 레이어, 오버레이와 서브플롯 구조, 시리즈 id·컬럼·라벨, 선택 자체는 그대로 둔다.
-- 오버레이는 차트와 함께 테마를 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
+- 오버레이는 차트와 함께 테마를 받는다. 오버레이 자기 축도 데이터 축이라 차트의 아래·왼쪽 축과
+  같은 틀을 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
   `Only(&[인덱스])` 중 하나이고, 범위 밖 서브플롯에 그려지는 시리즈는 모양을 유지한다.
 - `Chart::apply_theme`은 바뀐 글자 크기에 맞춰 레이아웃을 다시 맞춘다(`fit_layout`).
   `Chart::with_theme(&theme)`는 크롬만 적용하고 맞추며, 시리즈는
