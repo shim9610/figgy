@@ -76,6 +76,9 @@ pub struct ChromeTheme {
     pub frame_ink: Color,
     /// Tick labels and the legend text.
     pub label_ink: Color,
+    /// The legend text, where it differs from the tick labels; `None` is
+    /// [`Self::label_ink`].
+    pub legend_ink: Option<Color>,
     pub axis_width: f32,
     pub major_tick_length: f32,
     pub minor_tick_length: f32,
@@ -156,6 +159,7 @@ pub struct SeriesTheme {
     pub radar: RadarTheme,
     pub range_bars: RangeBarTheme,
     pub ternary: TernaryTheme,
+    pub parallel: ParallelTheme,
     pub surfaces: SurfaceTheme,
     pub energy_levels: EnergyLevelTheme,
     pub feynman: FeynmanTheme,
@@ -232,13 +236,30 @@ pub struct BoxTheme {
 }
 
 /// Heatmaps, contours, hexbins and meshes: the colourbar's map, the colour
-/// of cells it cannot place, and the contour lines and labels.
+/// of cells it cannot place, the fill's opacity, and the contour lines and
+/// labels. Which levels are drawn, whether they are labelled and how far
+/// apart the labels sit stay.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldTheme {
     pub colormap: ColorMap,
     pub nan_color: Color,
+    /// The opacity of a field or mesh fill; `None` keeps each fill's own.
+    pub fill_opacity: Option<f32>,
+    /// The contour lines' colour; `None` is the series' palette colour.
+    pub contour_color: Option<Color>,
     pub contour_width: f32,
+    /// Each contour level in the colour map's colour at that level, its
+    /// red, green and blue multiplied by this factor (`1.0` is the map's
+    /// own colour, less is darker) so that lines over a pale stretch of the
+    /// map stay visible. The level's place on the map is the chart's
+    /// colourbar's, so only [`Theme::apply`] writes it, to a chart with a
+    /// colourbar; `None` keeps each series' own per-level colours.
+    pub contour_shade: Option<f32>,
     pub contour_label_color: Color,
+    pub contour_label_size: f32,
+    /// The space around a contour label, logical pixels: the gap it leaves
+    /// in its line.
+    pub contour_label_padding: f32,
 }
 
 /// Vector arrows.
@@ -249,7 +270,7 @@ pub struct VectorTheme {
     pub head_width_px: f32,
 }
 
-/// Radar outlines; `None` keeps the chart's own value.
+/// Radar outlines; `None` keeps each series' own value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RadarTheme {
     pub line_width_px: Option<f32>,
@@ -284,10 +305,25 @@ pub struct RangeBarTheme {
     pub remaining_opacity: Option<f32>,
 }
 
-/// Ternary region fills.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Ternary region fills and their outlines.
+#[derive(Clone, Debug, PartialEq)]
 pub struct TernaryTheme {
+    /// The fill colours of the series that fill a region: series `i` takes
+    /// `regions[i % regions.len()]`. Empty keeps every region colour.
+    pub regions: Vec<Color>,
     pub region_opacity: f32,
+    /// The outline of a filled region, the series' line: its colour and
+    /// width. `None` leaves the line to the palette and the line part, as
+    /// any other line.
+    pub region_outline: Option<(Color, f32)>,
+}
+
+/// Parallel coordinates: the axes take the chrome's frame and tick labels,
+/// the rows the line part.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParallelTheme {
+    /// The size of the axis names, the labels of the category axis.
+    pub name_size: f32,
 }
 
 /// 3D surfaces and their lighting response.
@@ -295,6 +331,11 @@ pub struct TernaryTheme {
 pub struct SurfaceTheme {
     pub material: Material,
     pub gloss: f32,
+    /// Whether a surface draws its wireframe. A [`ChartKind::Surface3d`]
+    /// theme decides it for every filled field and mesh, which that chart
+    /// draws as surfaces; a theme of another kind leaves it as each series
+    /// has it.
+    pub wireframe: bool,
     /// A wireframe's colour and width, when the surface has one.
     pub wireframe_color: Color,
     pub wireframe_width: f32,
@@ -444,6 +485,7 @@ impl Theme {
         let bar = crate::defaults::color_bar_options();
         let vector = crate::data_config::VectorStyle::default();
         let errors = crate::data_config::DataErrorBarStyleConfig::default();
+        let contour_labels = crate::data_config::ContourLabelConfig::default();
         Self {
             kind,
             chrome: ChromeTheme {
@@ -454,6 +496,7 @@ impl Theme {
                 ink: config.chart_title.text.color,
                 frame_ink: config.bottom_x.line_color,
                 label_ink: config.bottom_x.label_style.color,
+                legend_ink: None,
                 axis_width: config.bottom_x.line_width,
                 major_tick_length: config.bottom_x.major_tick_length,
                 minor_tick_length: config.bottom_x.minor_tick_length,
@@ -551,8 +594,13 @@ impl Theme {
                 fields: FieldTheme {
                     colormap: crate::defaults::color_bar_options().colormap,
                     nan_color: crate::defaults::color_bar_options().nan_color,
+                    fill_opacity: None,
+                    contour_color: None,
                     contour_width: 1.0,
-                    contour_label_color: crate::defaults::contour_label_color(),
+                    contour_shade: None,
+                    contour_label_color: contour_labels.color,
+                    contour_label_size: contour_labels.font_size,
+                    contour_label_padding: contour_labels.bg_padding_px,
                 },
                 vectors: VectorTheme {
                     width_px: vector.width_px,
@@ -575,11 +623,17 @@ impl Theme {
                     remaining_opacity: None,
                 },
                 ternary: TernaryTheme {
+                    regions: Vec::new(),
                     region_opacity: crate::defaults::ternary_region_style().opacity,
+                    region_outline: None,
+                },
+                parallel: ParallelTheme {
+                    name_size: config.bottom_x.label_style.font_size,
                 },
                 surfaces: SurfaceTheme {
                     material: surface.material,
                     gloss: surface.gloss,
+                    wireframe: false,
                     wireframe_color: Color::BLACK,
                     wireframe_width: 1.0,
                 },
@@ -627,7 +681,50 @@ impl Theme {
             }
         }
         self.write_chrome(config, series, subplots);
+        if let Some(shade) = self.series.fields.contour_shade {
+            self.shade_contours(config, series, subplots, shade);
+        }
         Ok(())
+    }
+
+    /// [`FieldTheme::contour_shade`]: every contour level of the series in
+    /// scope in its colourbar's colour at that level, shaded by `shade`.
+    /// The colourbar already carries the theme's map.
+    fn shade_contours(
+        &self,
+        config: &Config,
+        series: &mut [SeriesConfig],
+        subplots: SubplotScope,
+        shade: f32,
+    ) {
+        for item in series {
+            let chart = match config.layer_of_series(&item.series_id) {
+                LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => {
+                    if !subplots.includes(i) {
+                        continue;
+                    }
+                    &config.subplots[i].config
+                }
+                _ => config,
+            };
+            let contour = match &mut item.render_type {
+                DataRenderType::Field(FieldSeries { contour, .. }) => contour.as_mut(),
+                DataRenderType::TriMesh(mesh) => mesh.contour.as_mut(),
+                _ => None,
+            };
+            if let (Some(bar), Some(contour)) = (&chart.colorbar, contour) {
+                contour.per_level_color = Some(
+                    contour
+                        .levels
+                        .iter()
+                        .map(|level| {
+                            let color = bar.color_for_z(*level);
+                            Color::new(color.r * shade, color.g * shade, color.b * shade, color.a)
+                        })
+                        .collect(),
+                );
+            }
+        }
     }
 
     /// Apply the chrome alone, to a chart whose series are styled elsewhere
@@ -721,13 +818,24 @@ impl Theme {
                 }
             }
             DataRenderType::Ternary {
-                scatter, region, ..
+                scatter,
+                line,
+                region,
+                ..
             } => {
                 if let Some(scatter) = scatter {
                     style_markers(scatter, lines);
                 }
                 if let Some(region) = region {
-                    region.opacity = theme.ternary.region_opacity;
+                    let ternary = &theme.ternary;
+                    if !ternary.regions.is_empty() {
+                        region.color = ternary.regions[index % ternary.regions.len()];
+                    }
+                    region.opacity = ternary.region_opacity;
+                    if let (Some((color, width)), Some(line)) = (ternary.region_outline, line) {
+                        line.line_color = color;
+                        line.line_width = width;
+                    }
                 }
             }
             DataRenderType::Histogram { bar } => {
@@ -805,12 +913,15 @@ impl Theme {
                 }
             }
             DataRenderType::Field(FieldSeries {
-                contour, surface, ..
+                fill,
+                contour,
+                surface,
+                ..
             }) => {
-                self.style_field(contour.as_mut(), surface.as_mut());
+                self.style_field(fill.as_mut(), contour.as_mut(), surface);
             }
             DataRenderType::TriMesh(mesh) => {
-                self.style_field(mesh.contour.as_mut(), mesh.surface.as_mut());
+                self.style_field(mesh.fill.as_mut(), mesh.contour.as_mut(), &mut mesh.surface);
             }
             DataRenderType::Vector { style, .. } => {
                 style.width_px = theme.vectors.width_px;
@@ -818,9 +929,16 @@ impl Theme {
                 style.head_width_px = theme.vectors.head_width_px;
             }
             DataRenderType::Radar { style, .. } => {
-                style.line_width_px = theme.radar.line_width_px;
-                style.marker_size_px = theme.radar.marker_size_px;
-                style.fill_opacity = theme.radar.fill_opacity;
+                let radar = &theme.radar;
+                if radar.line_width_px.is_some() {
+                    style.line_width_px = radar.line_width_px;
+                }
+                if radar.marker_size_px.is_some() {
+                    style.marker_size_px = radar.marker_size_px;
+                }
+                if radar.fill_opacity.is_some() {
+                    style.fill_opacity = radar.fill_opacity;
+                }
             }
             DataRenderType::EnergyLevels(levels) => {
                 let energy = &theme.energy_levels;
@@ -885,19 +1003,48 @@ impl Theme {
         }
     }
 
+    /// A field's or mesh's fill, contour lines and labels, and surface.
     fn style_field(
         &self,
+        fill: Option<&mut crate::data_config::FieldFillConfig>,
         contour: Option<&mut crate::data_config::ContourConfig>,
-        surface: Option<&mut crate::view3d::SurfaceStyle>,
+        surface: &mut Option<crate::view3d::SurfaceStyle>,
     ) {
         let fields = &self.series.fields;
-        if let Some(contour) = contour
-            && let Some(labels) = &mut contour.labels
-        {
-            labels.color = fields.contour_label_color;
+        let surfaces = &self.series.surfaces;
+        // A 3D chart draws every filled field and mesh as a surface, so its
+        // theme decides the wireframe; a series without a surface look
+        // gets one unless the theme's is the documented default it draws
+        // with anyway.
+        if self.kind == ChartKind::Surface3d && fill.is_some() {
+            let documented = crate::defaults::surface_style();
+            let default_look = surfaces.material == documented.material
+                && surfaces.gloss == documented.gloss
+                && !surfaces.wireframe;
+            if surface.is_some() || !default_look {
+                let surface = surface.get_or_insert(documented);
+                match (surfaces.wireframe, &surface.wireframe) {
+                    (true, None) => surface.wireframe = Some(Default::default()),
+                    (false, Some(_)) => surface.wireframe = None,
+                    _ => {}
+                }
+            }
+        }
+        if let (Some(opacity), Some(fill)) = (fields.fill_opacity, fill) {
+            fill.opacity = opacity;
+        }
+        if let Some(contour) = contour {
+            if let Some(color) = fields.contour_color {
+                contour.line.line_color = color;
+            }
+            contour.line.line_width = fields.contour_width;
+            if let Some(labels) = &mut contour.labels {
+                labels.color = fields.contour_label_color;
+                labels.font_size = fields.contour_label_size;
+                labels.bg_padding_px = fields.contour_label_padding;
+            }
         }
         if let Some(surface) = surface {
-            let surfaces = &self.series.surfaces;
             surface.material = surfaces.material;
             surface.gloss = surfaces.gloss;
             if let Some(wireframe) = &mut surface.wireframe {
@@ -935,6 +1082,14 @@ impl Theme {
         config.plot_background = chrome.plot_background;
         config.draw_style = chrome.draw_style;
         config.apply_axis_preset(preset);
+        // A ternary chart's third component and a 3D chart's height are read
+        // on `right_y`: a data axis, framed as the labelled sides are.
+        if config.ternary().is_some() || config.view_3d().is_some() {
+            let right = &mut config.right_y;
+            right.line_visible = config.left_y.line_visible;
+            right.tick = config.left_y.tick.clone();
+            right.label_style.label_visible = config.left_y.label_style.label_visible;
+        }
         for axis in [
             &mut config.top_x,
             &mut config.bottom_x,
@@ -942,6 +1097,16 @@ impl Theme {
             &mut config.right_y,
         ] {
             self.style_axis(axis);
+        }
+        // A parallel chart reads its values on the parallel axes, drawn in
+        // `left_y`'s style; `bottom_x` only names them. It is framed as
+        // the unlabelled sides are, so an open frame draws no line under
+        // the names.
+        if config.parallel().is_some() {
+            let names = &mut config.bottom_x;
+            names.line_visible = config.top_x.line_visible;
+            names.tick = config.top_x.tick.clone();
+            names.label_style.font_size = self.series.parallel.name_size;
         }
         self.style_text(&mut config.chart_title.text, chrome.ink, chrome.title_size);
         self.style_grid(&mut config.grid);
@@ -1048,7 +1213,8 @@ impl Theme {
         legend.bg_color = chrome.legend_fill;
         legend.border_color = chrome.legend_border;
         legend.padding = chrome.legend_padding;
-        self.style_text(&mut legend.content, chrome.label_ink, chrome.legend_size);
+        let ink = chrome.legend_ink.unwrap_or(chrome.label_ink);
+        self.style_text(&mut legend.content, ink, chrome.legend_size);
         crate::legend::update_legend_symbols_preserving_text(&mut legend.content, series, colormap);
     }
 

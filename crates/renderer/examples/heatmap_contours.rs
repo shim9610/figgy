@@ -9,6 +9,10 @@
 //!   (`DataRenderType::RgbImage`), three narrowband channels on one lattice,
 //!   in the shared gallery chrome.
 //!
+//! Each takes its look from a built-in field theme (`gallery`,
+//! `warm-neutral`, `deep-space`); the scenes keep the data, the ranges, the
+//! colourbar's scale and the labels.
+//!
 //! Run from the workspace root:
 //! cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap_contours
 
@@ -18,17 +22,17 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, chart, output_directory, save, with_renderer};
+use gallery::{Result, output_directory, save, titled, with_renderer};
 use renderer::{
-    Color, ColorMap, Renderer, SeriesConfig,
-    config::AxisScale,
+    Renderer, SeriesConfig,
+    config::{AxisScale, LegendEntryKind},
     data_config::{ContourLabelConfig, MatrixRef, Shading},
     default,
     format::{LabelFormat, PlainNumberFormat},
-    text::RichText,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{rgb, rgba};
+use styled::{background, scene_chart, theme_named, themed};
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
     contours(r, out)?;
@@ -58,40 +62,32 @@ fn contours(r: &mut Renderer, out: &Path) -> Result {
     }
     let levels = (1..=10).map(|i| i as f64 * 0.1).collect();
     let matrix = MatrixRef::columns_are_x(columns);
-    // Under the isolines an interpolated fill; on them white labels.
-    let specs = [
+    // Under the isolines an interpolated fill; on them a label every
+    // 140 px.
+    let mut specs = [
         SeriesConfig::contours("potential", "field-x", "field-y", matrix, levels)
-            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.9))
-            .width(1.3)
             .filled()
             .shading(Shading::Interpolated)
             .contour_labels(ContourLabelConfig {
-                font_size: 13.0,
-                color: Color::WHITE,
                 spacing_px: 140.0,
-                bg_padding_px: 3.0,
                 ..Default::default()
             }),
     ];
-    let mut c = chart("A smooth field, exact contour levels", "x", "y", (960, 640));
+    let mut c = titled("A smooth field, exact contour levels", "x", "y", (960, 640));
     c.set_x_range(-3.0, 3.0);
     c.set_y_range(-3.0, 3.0);
     let mut bar = default::default_colorbar_options();
-    // The gallery image was rendered with this gap.
-    bar.gap_px = 24.0;
-    bar.colormap = ColorMap::Viridis;
     bar.axis.min = 0.0;
     bar.axis.max = 1.2;
     bar.axis.major_spacing = 0.2;
-    // The colourbar titled with the field it maps, in TeX, in the axis
-    // titles' ink and size.
-    let axis_title = &c.config().left_y.title_option.text;
-    bar.axis.title_option.visible = true;
-    bar.axis.title_option.text =
-        RichText::from_tex(r"$z = f(x, y)$", axis_title.color, axis_title.font_size, "")?;
     c.config_mut().colorbar = Some(bar);
-    c.config_mut().grid.show_major_x = false;
-    c.config_mut().grid.show_major_y = false;
+    // The colourbar titled with the field it maps, in TeX.
+    let mut c = c.with_colorbar_title(r"$z = f(x, y)$");
+    themed(
+        &mut c,
+        &theme_named(ChartKind::Field, "gallery")?,
+        &mut specs,
+    )?;
     save(r, &mut c, &specs, &out.join("gallery-contours.png"))
 }
 
@@ -129,18 +125,10 @@ fn normal_pair(seed: u64, i: usize) -> (f64, f64) {
 // draws the supplied counts through a logarithmic colourbar; empty cells
 // are NaN and unpainted.
 fn hexbin(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(250, 250, 247);
-    let ink = rgb(48, 52, 66);
-    let mut chart = styled::cartesian(
-        "Taxi pickups / 100,000 rides",
-        "East (km)",
-        "North (km)",
-        bg,
-        ink,
-        rgb(234, 235, 238),
-    );
+    let theme = theme_named(ChartKind::Field, "warm-neutral")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart("Taxi pickups / 100,000 rides", "East (km)", "North (km)");
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_y = false;
     // A kilometre spans as many pixels across as up.
     let (x_min, x_max) = (0.0, 16.0);
     let (y_min, y_max) = (0.0, 16.0 * HEXBIN_AREA_PX.1 / HEXBIN_AREA_PX.0);
@@ -212,7 +200,7 @@ fn hexbin(r: &mut Renderer, out: &Path) -> Result {
         r.add_column(id.clone(), &cells)?;
         ids.push(id);
     }
-    let specs = [SeriesConfig::hexbin(
+    let mut specs = [SeriesConfig::hexbin(
         "pickups",
         "hexbin-x",
         "hexbin-y",
@@ -231,31 +219,18 @@ fn hexbin(r: &mut Renderer, out: &Path) -> Result {
         .map(|m| m * decade)
         .find(|v| *v >= peak)
         .unwrap_or(peak);
-    styled::colorbar(
-        chart.config_mut(),
-        ColorMap::Custom {
-            stops: vec![
-                rgb(226, 238, 228),
-                rgb(156, 210, 188),
-                rgb(72, 166, 170),
-                rgb(40, 106, 150),
-                rgb(44, 50, 112),
-                rgb(30, 16, 58),
-            ],
-        },
-        1.0,
-        top,
-        1.0,
-        ink,
-    );
-    let bar = chart.config_mut().colorbar.as_mut().unwrap();
+    // The count scale; the theme draws the bar and its ramp.
+    let mut bar = default::default_colorbar_options();
     bar.axis.scale = AxisScale::Logarithmic;
+    bar.axis.min = 1.0;
+    bar.axis.max = top;
+    bar.axis.major_spacing = 1.0;
     bar.axis.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
-    bar.nan_color = Color::new(0.0, 0.0, 0.0, 0.0);
     // Room for the title inside the frame.
     bar.offset_x = -26.0;
-    bar.axis.title_option.visible = true;
-    bar.axis.title_option.text = RichText::plain("Pickups per cell", ink, 19.0, "");
+    chart.config_mut().colorbar = Some(bar);
+    let mut chart = chart.with_colorbar_title("Pickups per cell");
+    themed(&mut chart, &theme, &mut specs)?;
     let image = styled::export(r, &mut chart, &specs, bg)?;
     styled::save(&image, bg, &out.join("gallery-hexbin.png"))
 }
@@ -265,39 +240,36 @@ fn hexbin(r: &mut Renderer, out: &Path) -> Result {
 // lattice of 1 arcsec pixels. The renderer maps each channel from its range
 // and blends the samples; no colourbar is involved.
 fn imshow(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(8, 10, 18);
-    let ink = rgb(170, 180, 202);
-    let mut chart = styled::cartesian(
+    let theme = theme_named(ChartKind::Field, "deep-space")?;
+    let bg = background(&theme);
+    // The channels' legend marks, in the theme's two colours.
+    let (red, cyan) = match theme.series.palette.as_slice() {
+        [red, cyan, ..] => (*red, *cyan),
+        _ => return Err("the theme has fewer than two colours".into()),
+    };
+    let mut chart = scene_chart(
         "A planetary nebula / three narrowband channels",
         "Right ascension offset (arcsec)",
         "Declination offset (arcsec)",
-        bg,
-        ink,
-        bg,
-    )
-    .with_legend_entry(
-        "Hα and [N II] in red",
-        rgb(236, 88, 64),
-        2.0,
-        renderer::config::LegendEntryKind::Scatter,
-    )
-    .with_legend_entry(
-        "[O III] in green and blue",
-        rgb(60, 196, 214),
-        2.0,
-        renderer::config::LegendEntryKind::Scatter,
     );
-    chart.config_mut().grid.show_major_y = false;
-    chart.config_mut().legend.bg_color = rgba(8, 10, 18, 0.0);
-    chart.config_mut().legend.border_color = rgba(8, 10, 18, 0.0);
-    chart.config_mut().legend.padding = 4.0;
-    chart.config_mut().legend.content.font_size = 19.0;
-    // The legend in one row under the x title, off the image; the chart is
-    // laid out with the image's width and a provisional height.
+    // The chart is laid out with the image's width and a provisional
+    // height.
     let w = 280usize;
     chart.set_x_range(-(w as f64) / 2.0, w as f64 / 2.0);
     chart.set_y_range(-80.0, 80.0);
     plain_tick_labels(&mut chart);
+    // The image has no look of its own: the theme styles the chart, and
+    // the legend is then laid out in its text size, in one row under the x
+    // title, off the image.
+    themed(&mut chart, &theme, &mut [])?;
+    let mut chart = chart
+        .with_legend_entry("Hα and [N II] in red", red, 2.0, LegendEntryKind::Scatter)
+        .with_legend_entry(
+            "[O III] in green and blue",
+            cyan,
+            2.0,
+            LegendEntryKind::Scatter,
+        );
     styled::legend_row_under_x_title(&mut chart, 1.2);
     // One image pixel per data unit, as many rows as the laid-out data
     // area's aspect asks for, so the pixels stay square.

@@ -1,7 +1,9 @@
 //! Radar documents drawn as polar charts of radar series: each `RadarChart`
 //! is opened with `Config::from_radar`, its category indices and values
 //! uploaded from the borrowed document, and exported by the Cartesian
-//! renderer at 960 × 640 without post-render scaling. Writes five PNGs into
+//! renderer at 960 × 640 without post-render scaling, in the `document`
+//! radar theme; the cases that show another outline or fill vary the
+//! theme's radar part before applying it. Writes five PNGs into
 //! the directory given as the first argument (default
 //! `target/radar-gallery`), and fails when an image has fewer than 1000
 //! coloured pixels.
@@ -21,13 +23,27 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::Result;
-use renderer::{Category, Chart, Color, LayerRef, Renderer, config::Config, radar::*};
+use renderer::{
+    Category, Chart, Color, LayerRef, Renderer, SeriesConfig,
+    config::Config,
+    radar::*,
+    theme::{ChartKind, SubplotScope, Theme},
+};
 use std::path::Path;
 
-/// `document` as a polar chart of radar series, exported to `name.png`.
-fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -> Result {
+/// `document` as a polar chart of radar series in `theme`, exported to
+/// `name.png`. `restyle` then styles single series, for a case that draws
+/// one of them apart.
+fn save(
+    r: &mut Renderer,
+    document: &RadarChart,
+    theme: &Theme,
+    restyle: impl FnOnce(&mut [SeriesConfig]),
+    directory: &Path,
+    name: &str,
+) -> Result {
     document.validate()?;
-    let (config, series, uploads) = Config::from_radar(document);
+    let (config, mut series, uploads) = Config::from_radar(document);
     for upload in &uploads {
         r.remove_column(&upload.column)?;
         r.add_column(upload.column.clone(), &upload.values)?;
@@ -36,6 +52,8 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
     // without one fits the values' statistics from zero, as the former
     // chart did, and keeps its ring spacing.
     let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
+    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    restyle(&mut series);
     if document.value_range.is_none() {
         // The fit chooses a label format too; the document's ring labels
         // keep the reader's.
@@ -79,6 +97,9 @@ fn main() -> Result {
 }
 
 fn render(r: &mut Renderer, dir: &Path) -> Result {
+    let mut theme = gallery::theme_named(ChartKind::Radar, "document")?;
+    let keep = |_: &mut [SeriesConfig]| {};
+    // The theme colours the series: series `k` takes its colour `k`.
     let mut c = RadarChart {
         title: "Build quality".into(),
         categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
@@ -90,60 +111,66 @@ fn render(r: &mut Renderer, dir: &Path) -> Result {
                 "v1",
                 "Release 1",
                 vec![6., 8., 4., 5., 7., 6.5],
-                Color::from_rgb8(65, 144, 208),
+                Color::BLACK,
             ),
             RadarSeries::new(
                 "v2",
                 "Release 2",
                 vec![8., 7., 6., 8., 9., 7.],
-                Color::from_rgb8(230, 120, 64),
+                Color::BLACK,
             ),
         ],
-        font_size: 18.,
         ..Default::default()
     };
-    save(r, &c, dir, "01-spider-web")?;
+    save(r, &c, &theme, keep, dir, "01-spider-web")?;
     c.title = "Circular grid, value labels".into();
     c.style.grid_shape = RadarGridShape::Circle;
     c.labels = RadarLabels::Values;
     c.value_suffix = " pt".into();
     c.label_decimals = 0;
-    save(r, &c, dir, "02-circle-values")?;
+    save(r, &c, &theme, keep, dir, "02-circle-values")?;
     c.title = "Fixed 0 to 10 axis, square markers".into();
     c.style.grid_shape = RadarGridShape::Polygon;
     c.labels = RadarLabels::None;
     c.value_range = Some([0., 10.]);
     c.ring_spacing = Some(2.5);
     c.style.marker = RadarMarker::Square;
-    c.style.fill_opacity = 0.15;
-    save(r, &c, dir, "03-fixed-axis")?;
+    // A lighter fill from here on.
+    theme.series.radar.fill_opacity = Some(0.15);
+    save(r, &c, &theme, keep, dir, "03-fixed-axis")?;
     c.title = "Four teams, counter-clockwise from the right".into();
     c.style.start_angle_degrees = 0.;
     c.style.clockwise = false;
     c.style.marker = RadarMarker::None;
-    c.style.line_width_px = 3.;
+    // Bolder outlines from here on.
+    theme.series.radar.line_width_px = Some(3.);
     c.value_range = None;
     c.ring_spacing = None;
     c.series.push(RadarSeries::new(
         "v3",
         "Release 3",
         vec![9., 8.5, 8., 9., 9.5, 8.],
-        Color::from_rgb8(42, 168, 120),
+        Color::BLACK,
     ));
     let mut muted = RadarSeries::new(
         "baseline",
         "Baseline",
         vec![5., 5., 5., 5., 5., 5.],
-        Color::from_rgb8(120, 120, 130),
+        Color::BLACK,
     );
+    // The baseline is an outline alone, in the theme's fourth colour.
     muted.style = Some(RadarSeriesStyle {
-        line_width_px: Some(1.5),
         fill: Some(Color::new(0., 0., 0., 0.)),
         marker: Some(RadarMarker::None),
         ..Default::default()
     });
     c.series.push(muted);
-    save(r, &c, dir, "04-four-series")?;
+    // It is drawn thinner than the releases: the theme with a hairline
+    // outline, applied to that series alone.
+    let mut thin = theme.clone();
+    thin.series.radar.line_width_px = Some(1.5);
+    let baseline = |series: &mut [SeriesConfig]| thin.style_series(&mut series[3], 3);
+    save(r, &c, &theme, baseline, dir, "04-four-series")?;
     c.title = "Selected vertex".into();
     c.style.start_angle_degrees = -90.;
     c.style.clockwise = true;
@@ -152,6 +179,6 @@ fn render(r: &mut Renderer, dir: &Path) -> Result {
     c.labels = RadarLabels::Emphasized;
     c.selected = Some(RadarTarget::vertex("v2", "docs"));
     c.hovered = Some(RadarTarget::series("v1"));
-    save(r, &c, dir, "05-selection")?;
+    save(r, &c, &theme, keep, dir, "05-selection")?;
     Ok(())
 }

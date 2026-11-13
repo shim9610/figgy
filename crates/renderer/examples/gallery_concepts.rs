@@ -19,14 +19,14 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Color, ColorMap, Material, Renderer, SeriesConfig,
+    Color, Material, Renderer, SeriesConfig,
     categorical::*,
     data_config::{MatrixRef, Shading},
     radial::*,
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{SIZE, background, cartesian, export, rgb, save, scene_chart, theme_named, themed};
+use styled::{SIZE, background, export, rgb, save, scene_chart, theme_named, themed};
 
 // 1. A dashboard card: restrained chrome and two high-contrast service metrics.
 fn observability(r: &mut Renderer, out: &Path) -> Result {
@@ -242,21 +242,19 @@ fn radial_concepts(out: &Path) -> Result {
     Ok(())
 }
 
-// 6. A topographic poster: a custom ramp and isolines over a synthetic terrain.
+// 6. A topographic poster: the `topographic` field theme's ramp and isolines
+// over a synthetic terrain.
 fn terrain(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(12, 40, 43);
-    let mut chart = cartesian(
+    let theme = theme_named(ChartKind::Field, "topographic")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Contours of an imagined landscape",
         "East (km)",
         "North (km)",
-        bg,
-        rgb(222, 230, 197),
-        bg,
     );
     chart.set_x_range(0., 10.);
     chart.set_y_range(0., 6.);
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_y = false;
     let x: Vec<f64> = (0..=120).map(|i| i as f64 / 12.).collect();
     let y: Vec<f64> = (0..=72).map(|i| i as f64 / 12.).collect();
     r.add_column("east", &x)?;
@@ -283,31 +281,16 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         MatrixRef::columns_are_x(columns),
         levels,
     )
-    .color(Color::from_rgba(0.92, 0.98, 0.8, 0.65))
-    .width(1.1)
-    // The custom ramp under the isolines, interpolated between the cells.
+    // The theme's ramp under the isolines, interpolated between the cells.
     .filled()
     .shading(Shading::Interpolated);
-    let specs = [terrain];
+    let mut specs = [terrain];
     let mut bar = renderer::default::default_colorbar_options();
-    // The gallery image was rendered with this gap.
-    bar.gap_px = 24.0;
-    bar.colormap = ColorMap::Custom {
-        stops: vec![
-            bg,
-            rgb(29, 89, 85),
-            rgb(73, 132, 112),
-            rgb(164, 185, 120),
-            rgb(239, 221, 150),
-        ],
-    };
     bar.axis.min = 0.;
     bar.axis.max = 1.8;
     bar.axis.major_spacing = 0.6;
-    bar.axis.label_style.color = rgb(222, 230, 197);
-    bar.axis.label_style.font_size = 18.;
-    bar.axis.line_color = rgb(164, 185, 120);
     chart.config_mut().colorbar = Some(bar);
+    themed(&mut chart, &theme, &mut specs)?;
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-terrain.png"))
 }

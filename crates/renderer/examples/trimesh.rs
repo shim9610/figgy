@@ -10,6 +10,11 @@
 //!   drum on a disc mesh, drawn as a lit, wireframed surface in a 3D box with
 //!   its contours on the floor.
 //!
+//! Each takes its look from a built-in theme (the mesh theme `midnight`,
+//! the 3D theme `warm-diverging`): the ramp, the contour and edge lines,
+//! the surface's material and wireframe. The scenes keep the meshes, the
+//! ranges, the contour levels, the camera and the labels.
+//!
 //! cargo run --locked -p figgy-renderer --example trimesh -- target/trimesh
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -19,19 +24,20 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Chart, Color, ColorMap, LayerRef, Material, Renderer, SeriesConfig, TriangleSource,
+    Chart, LayerRef, Renderer, SeriesConfig, TriangleSource,
     data_config::{ContourConfig, DataLineStyleConfig, DataRenderType, Shading},
     text::RichText,
+    theme::ChartKind,
     tri_mesh::{MeshValueLocation, MeshValues},
-    view3d::{SurfaceStyle, SurfaceWireframe, View3d},
+    view3d::View3d,
 };
 use std::f64::consts::TAU;
 use std::path::Path;
-use styled::{cartesian, colorbar, export, rgb, rgba, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
 
 /// A mesh series over the columns `{id}-x`, `{id}-y`, `{id}-value` and the
-/// triangle column `{id}-tri`, filled and contoured.
-fn mesh_series(id: &str, contour: ContourConfig, surface: Option<SurfaceStyle>) -> SeriesConfig {
+/// triangle column `{id}-tri`, filled and contoured at `levels`.
+fn mesh_series(id: &str, levels: Vec<f64>) -> SeriesConfig {
     let values = MeshValues {
         column: format!("{id}-value"),
         at: MeshValueLocation::Vertices,
@@ -39,36 +45,32 @@ fn mesh_series(id: &str, contour: ContourConfig, surface: Option<SurfaceStyle>) 
     let (x, y, triangles) = (format!("{id}-x"), format!("{id}-y"), format!("{id}-tri"));
     let mut mesh = SeriesConfig::mesh(id, x, y, triangles, values).shading(Shading::Interpolated);
     if let DataRenderType::TriMesh(series) = &mut mesh.render_type {
-        series.contour = Some(contour);
-        series.surface = surface;
+        series.contour = Some(ContourConfig {
+            levels,
+            line: DataLineStyleConfig::default(),
+            per_level_color: None,
+            labels: None,
+        });
     }
     mesh
 }
 
-/// Contour lines at about `count` round levels of the chart's colourbar.
-fn contours(chart: &Chart, color: Color, width: f32, count: usize) -> Result<ContourConfig> {
-    let mut contour = ContourConfig {
-        levels: vec![],
-        line: DataLineStyleConfig {
-            line_color: color,
-            line_width: width,
-            ..Default::default()
-        },
-        per_level_color: None,
-        labels: None,
-    };
-    contour
-        .set_nice_levels(&chart.config().colorbar.as_ref().unwrap().axis, count)
-        .map_err(|e| format!("contour levels: {e:?}"))?;
-    Ok(contour)
+/// About `count` round levels of the chart's colourbar.
+fn levels(chart: &Chart, count: usize) -> Result<Vec<f64>> {
+    let bar = chart.config().colorbar.as_ref().ok_or("no colourbar")?;
+    Ok(ContourConfig::nice_levels(&bar.axis, count)
+        .map_err(|e| format!("contour levels: {e:?}"))?)
 }
 
-fn colorbar_title(chart: &mut Chart, title: &str, ink: Color) {
-    if let Some(bar) = chart.config_mut().colorbar.as_mut() {
-        bar.axis.title_option.visible = true;
-        bar.axis.title_option.text = RichText::plain(title, ink, 19., "");
-        bar.axis.label_style.significant_digits = 1;
-    }
+/// The chart's colourbar over `min..max` with a label every half unit, in
+/// short labels; the theme draws the bar and its ramp.
+fn value_scale(chart: &mut Chart, min: f64, max: f64) {
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = min;
+    bar.axis.max = max;
+    bar.axis.major_spacing = 0.5;
+    bar.axis.label_style.significant_digits = 1;
+    chart.config_mut().colorbar = Some(bar);
 }
 
 // A plate under uniaxial tension S along x with a circular hole of radius a.
@@ -77,8 +79,8 @@ fn colorbar_title(chart: &mut Chart, title: &str, ink: Color) {
 // graded so the cells are small at the hole. Kirsch's solution gives the
 // stresses at every node; the value is the von Mises stress over S.
 fn plate(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(16, 18, 30);
-    let ink = rgb(192, 198, 220);
+    let theme = theme_named(ChartKind::TriMesh, "midnight")?;
+    let bg = background(&theme);
     let (half_w, half_h, hole) = (4., 2.5, 1.);
     let perimeter = 4. * (half_w + half_h);
     let (spokes, rings) = (104usize, 18usize);
@@ -164,16 +166,12 @@ fn plate(r: &mut Renderer, out: &Path) -> Result {
     }
     r.upsert_triangles("plate-tri", &TriangleSource { indices: &tris })?;
 
-    let mut chart = cartesian(
+    let mut chart = scene_chart(
         "Plate with a hole / von Mises stress under tension",
         "x / a",
         "y / a",
-        bg,
-        ink,
-        bg,
     );
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_y = false;
     chart.set_x_range(-half_w, half_w);
     chart.set_y_range(-half_h, half_h);
     chart.config_mut().bottom_x.major_spacing = 1.;
@@ -182,30 +180,14 @@ fn plate(r: &mut Renderer, out: &Path) -> Result {
     for axis in [&mut config.bottom_x, &mut config.left_y] {
         axis.label_style.significant_digits = 1;
     }
-    colorbar(
-        chart.config_mut(),
-        ColorMap::Custom {
-            stops: vec![
-                rgb(20, 24, 66),
-                rgb(52, 60, 150),
-                rgb(40, 140, 170),
-                rgb(120, 200, 140),
-                rgb(246, 220, 100),
-                rgb(244, 120, 60),
-                rgb(200, 40, 50),
-            ],
-        },
-        0.,
-        3.,
-        0.5,
-        ink,
-    );
-    colorbar_title(&mut chart, "von Mises stress / S", ink);
-    let contour = contours(&chart, rgba(255, 255, 255, 0.55), 1.2, 12)?;
-    let edges = SeriesConfig::line("mesh", "plate-edge-x", "plate-edge-y")
-        .color(rgba(255, 255, 255, 0.16))
-        .width(0.7);
-    let specs = [mesh_series("plate", contour, None), edges];
+    value_scale(&mut chart, 0., 3.);
+    let mut chart = chart.with_colorbar_title("von Mises stress / S");
+    // The stress and its isolines, then the mesh edges over them.
+    let mut specs = [
+        mesh_series("plate", levels(&chart, 12)?),
+        SeriesConfig::line("mesh", "plate-edge-x", "plate-edge-y"),
+    ];
+    themed(&mut chart, &theme, &mut specs)?;
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-trimesh.png"))
 }
@@ -226,8 +208,8 @@ fn bessel_j(n: i32, x: f64) -> f64 {
 // stitching neighbouring rings by angle, and evaluates the (2, 2) mode
 // J_2(j_22 r) cos 2θ at every node, normalized to a peak of 1.
 fn drum(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(248, 247, 244);
-    let ink = rgb(56, 60, 74);
+    let theme = theme_named(ChartKind::Surface3d, "warm-diverging")?;
+    let bg = background(&theme);
     let rings = 26usize;
     let j22 = 8.417_244_140_399_865;
     let ring_start = |k: usize| if k == 0 { 0 } else { 1 + 3 * k * (k - 1) };
@@ -277,16 +259,8 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
     }
     r.upsert_triangles("drum-tri", &TriangleSource { indices: &tris })?;
 
-    let mut chart = cartesian(
-        "Circular drum / vibration mode (2, 2)",
-        "x / R",
-        "y / R",
-        bg,
-        ink,
-        rgb(222, 220, 214),
-    );
+    let mut chart = scene_chart("Circular drum / vibration mode (2, 2)", "x / R", "y / R");
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_x = true;
     chart.set_x_range(-1., 1.);
     chart.set_y_range(-1., 1.);
     chart.config_mut().bottom_x.major_spacing = 0.5;
@@ -300,31 +274,11 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
     );
     z.label_style.label_visible = true;
     chart.config_mut().right_y = z;
-    let ramp = ColorMap::Custom {
-        stops: vec![
-            rgb(36, 72, 150),
-            rgb(96, 150, 206),
-            rgb(236, 232, 222),
-            rgb(226, 132, 92),
-            rgb(170, 40, 50),
-        ],
-    };
-    colorbar(chart.config_mut(), ramp.clone(), -1., 1., 0.5, ink);
-    let mut contour = contours(&chart, rgba(56, 60, 74, 0.85), 2.2, 10)?;
+    value_scale(&mut chart, -1., 1.);
+    let mut levels = levels(&chart, 10)?;
     // The zero level runs along the nodal lines and the rim, where the
     // displacement is zero to rounding; leave it out.
-    contour.levels.retain(|level| level.abs() > 1e-9);
-    // Each floor contour takes the ramp's colour at its level, darkened.
-    contour.per_level_color = Some(
-        contour
-            .levels
-            .iter()
-            .map(|level| {
-                let c = ramp.sample(((level + 1.) / 2.) as f32);
-                Color::from_rgba(c.r * 0.7, c.g * 0.7, c.b * 0.7, 1.)
-            })
-            .collect(),
-    );
+    levels.retain(|level| level.abs() > 1e-9);
     chart.config_mut().set_view_3d(Some(View3d {
         azimuth_degrees: -55.,
         elevation_degrees: 32.,
@@ -332,20 +286,10 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
         box_aspect: Some([1., 1., 0.6]),
         ..View3d::default()
     }));
-    let drum = mesh_series(
-        "drum",
-        contour,
-        Some(SurfaceStyle {
-            wireframe: Some(SurfaceWireframe {
-                color: rgba(30, 34, 44, 0.25),
-                width: 0.6,
-            }),
-            material: Material::Matte,
-            ..SurfaceStyle::default()
-        }),
-    )
-    .z("drum-value");
-    let specs = [drum];
+    // The theme draws the mesh as a wireframed surface and colours each
+    // floor contour from the ramp at its level.
+    let mut specs = [mesh_series("drum", levels).z("drum-value")];
+    themed(&mut chart, &theme, &mut specs)?;
     chart.auto_fit_view_3d_z(r.pool(), LayerRef::Base, &specs, 0.)?;
     let config = chart.config_mut();
     // The floor sits below the drum so its contours show beside the surface.
@@ -356,9 +300,6 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
         &mut config.right_y,
     ] {
         axis.label_style.significant_digits = 1;
-    }
-    if let Some(bar) = config.colorbar.as_mut() {
-        bar.axis.label_style.significant_digits = 1;
     }
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-trisurf.png"))
