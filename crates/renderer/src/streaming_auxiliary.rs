@@ -1,6 +1,10 @@
 //! Exact, bounded replay operations independent of the displayed stream.
 use super::*;
 
+/// The upper export scale of a streamed chart, which keeps the bound every
+/// export had before 0.19 (streaming is not extended, rule 8).
+const STREAM_EXPORT_MAX_SCALE: f32 = 8.0;
+
 #[cfg(test)]
 #[path = "streaming_auxiliary_tests.rs"]
 mod tests;
@@ -30,17 +34,19 @@ impl AuxiliaryPick {
                 reason: error.to_string(),
             })
     }
-    pub(super) fn reduce_field(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    pub(super) fn reduce_field(&mut self, encoder: &mut wgpu::CommandEncoder) -> Result<()> {
         self.data
             .as_mut()
-            .expect("typed field pick")
+            .ok_or(FiggyError::internal("typed field pick"))?
             .encode_field_candidate(encoder);
+        Ok(())
     }
-    pub(super) fn commit_field(&mut self) {
+    pub(super) fn commit_field(&mut self) -> Result<()> {
         self.data
             .as_mut()
-            .expect("typed field pick")
+            .ok_or(FiggyError::internal("typed field pick"))?
             .commit_field_candidate();
+        Ok(())
     }
 }
 
@@ -320,8 +326,8 @@ impl Renderer {
                         .descriptors
                         .iter()
                         .find(|descriptor| {
-                            descriptor.signature.series_id == series.series_id
-                                && descriptor.signature.source_id == series.source_id
+                            descriptor.series_id == series.series_id
+                                && descriptor.source_id == series.source_id
                         })
                         .ok_or(FiggyError::StaleStateToken {
                             reason: "packed view pick descriptor missing".into(),
@@ -347,7 +353,9 @@ impl Renderer {
                             .column_handle(packed.ranges[index])
                             .map_err(|error| FiggyError::InvalidSeriesConfig {
                                 series_id: series.series_id.clone(),
-                                reason: format!("invalid packed view pick lane: {error:?}"),
+                                kind: crate::RuleKind::PackedPickLane {
+                                    detail: format!("{error:?}"),
+                                },
                             })
                     };
                     let count = u32::try_from(packed.ranges[0].len).map_err(|_| {
@@ -446,7 +454,7 @@ impl Renderer {
             .await
     }
 
-    /// Exact tagged point/line/histogram replay; Pending is represented by the
+    /// Exact tagged point/line replay; Pending is represented by the
     /// operation, never by a fabricated miss.
     pub async fn begin_stream_pick_data(
         &mut self,
@@ -560,7 +568,7 @@ impl Renderer {
         } else {
             None
         };
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         runtime
             .draws
             .try_reserve(1)
@@ -568,7 +576,11 @@ impl Renderer {
                 resource: "stream auxiliary cursor",
                 reason: error.to_string(),
             })?;
-        let screen_draw = runtime.draws.iter().find(|draw| draw.job == job).unwrap();
+        let screen_draw = runtime
+            .draws
+            .iter()
+            .find(|draw| draw.job == job)
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
         let target = screen_draw.target.clone();
         let target_charge = screen_draw
             .surface
@@ -606,9 +618,6 @@ impl Renderer {
             surface_clear: None,
             display_dirty: false,
             display_serial: 0,
-            hist_envelope: None,
-            hist_series: None,
-            hist_overlay: false,
             mode: StreamExecutionMode::Explicit,
             auxiliary: Some(Arc::new(StreamAuxiliaryTarget {
                 snapshot: Arc::clone(&snapshot),
@@ -640,11 +649,11 @@ impl Renderer {
             .total_bytes()
             .checked_add(bytes)
             .ok_or_else(|| StreamRequestError::from(StreamError::Overflow).into_figgy())?;
-        if total > self.memory_budget.unwrap_or(u64::MAX) {
+        if total > self.gpu_ledger.budget_limit() {
             return Err(FiggyError::GpuResourceLimit {
                 resource: "stream auxiliary GPU memory",
                 requested: total,
-                limit: self.memory_budget.unwrap_or(u64::MAX),
+                limit: self.gpu_ledger.budget_limit(),
             });
         }
         Ok(())
@@ -659,18 +668,11 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
         if max_chunk == 0 || max_chunk > draw.max_primitives_limit {
             return Err(FiggyError::InvalidConfig {
                 field: "stream operation chunk budget",
-                reason: "must be nonzero and no larger than the initial operation cap",
+                kind: crate::RuleKind::StreamOperationCap,
             });
         }
         draw.max_primitives = max_chunk;
@@ -685,14 +687,7 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         if draw
             .auxiliary_pick
             .as_ref()
@@ -712,17 +707,13 @@ impl Renderer {
         } else {
             crate::gpu_pick::GpuStreamPick::READBACK_BYTES
         })?;
-        Ok(self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        Ok(live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .auxiliary_pick
             .take()
-            .unwrap())
+            .ok_or(FiggyError::internal(
+                "an auxiliary pick cursor keeps its pick",
+            ))?)
     }
 
     pub async fn finish_stream_pick_point(
@@ -744,7 +735,11 @@ impl Renderer {
         operation: StreamingOperation,
     ) -> Result<Option<crate::PickedData>> {
         let pick = self.take_finished_stream_pick(operation, true)?;
-        let mut data = pick.data.unwrap();
+        let Some(mut data) = pick.data else {
+            return Err(FiggyError::internal(
+                "a finished typed pick keeps its data picker",
+            ));
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
         data.encode_point_result(&mut encoder, &pick.point);
         self.queue.submit([encoder.finish()]);
@@ -772,21 +767,21 @@ impl Renderer {
             .auto_stream_snapshot(ticket.job)
             .ok_or(StreamError::Stale)?;
         let cfg = &snapshot.series[series_index];
-        let pick = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let pick = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
-            .unwrap()
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
             .auxiliary_pick
             .as_ref()
-            .unwrap();
+            .ok_or(FiggyError::internal(
+                "an auxiliary pick cursor keeps its pick",
+            ))?;
         let plan = Arc::clone(&pick.plan);
-        let descriptor = plan.descriptors.iter().find(|desc| {
-            desc.signature.series_id == cfg.series_id && desc.signature.source_id == cfg.source_id
-        });
+        let descriptor = plan
+            .descriptors
+            .iter()
+            .find(|desc| desc.series_id == cfg.series_id && desc.source_id == cfg.source_id);
         let mut descriptor = descriptor.map(OwnedGpuPickSeriesDescriptor::descriptor);
         if let Some(desc) = &mut descriptor {
             match phase {
@@ -799,8 +794,6 @@ impl Renderer {
             pick.point
                 .chunk_bytes(desc, columns[0].len as usize)
                 .map_err(FiggyError::from)?
-        } else if phase == StreamDrawPhase::Histogram && pick.data.is_some() {
-            crate::gpu_data_pick::GpuStreamDataPick::CHUNK_BYTES
         } else {
             0
         };
@@ -817,21 +810,22 @@ impl Renderer {
                 chunk.column_handle(columns[index]).map_err(|error| {
                     FiggyError::InvalidSeriesConfig {
                         series_id: cfg.series_id.clone(),
-                        reason: format!("invalid pick chunk: {error:?}"),
+                        kind: crate::RuleKind::PickChunk {
+                            detail: format!("{error:?}"),
+                        },
                     }
                 })
             };
-            let pick = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
+            let pick = live_runtime_mut(&mut self.stream_runtime)?
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == ticket.job)
-                .unwrap()
+                .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
                 .auxiliary_pick
                 .as_mut()
-                .unwrap();
+                .ok_or(FiggyError::internal(
+                    "an auxiliary pick cursor keeps its pick",
+                ))?;
             if let Some(descriptor) = descriptor {
                 let style_index = descriptor
                     .scatter
@@ -866,44 +860,6 @@ impl Renderer {
                     },
                 )?);
             }
-            if phase == StreamDrawPhase::Histogram
-                && let Some(data) = &mut pick.data
-            {
-                let bar = extract_bar(&cfg.render_type).ok_or_else(|| {
-                    StreamRequestError::from(StreamError::WrongState).into_figgy()
-                })?;
-                let horizontal = bar.orientation == crate::data_config::BarOrientation::Horizontal;
-                let (hi, lo) = crate::data::split_f64_to_f32_pair(bar.baseline);
-                let (edges, values) = if horizontal {
-                    (handles(&cfg.y_column)?, handles(&cfg.x_column)?)
-                } else {
-                    (handles(&cfg.x_column)?, handles(&cfg.y_column)?)
-                };
-                return Ok(data.encode_chunk(
-                    &mut encoder,
-                    &chunk.work,
-                    crate::gpu_data_pick::GpuDataPickSeries {
-                        source_id: cfg.source_id.clone(),
-                        series_id: cfg.series_id.clone(),
-                        paint_order: series_index as u32,
-                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Histogram {
-                            edges,
-                            values,
-                            bin_count: primitives as u32,
-                            baseline: [hi, lo],
-                            gap_px: bar.gap_px.max(0.0)
-                                * snapshot.styles.styles[series_index].display_scale,
-                            width_ratio: data_render::sanitize_bar_width_ratio(bar.width_ratio),
-                            horizontal,
-                            style_map: snapshot.styles.styles[series_index]
-                                .bar_map
-                                .as_ref()
-                                .map(|map| map.bind_group.clone()),
-                        },
-                    },
-                    offset as u32,
-                )?);
-            }
             Ok(None)
         })();
         let charge = match result {
@@ -920,14 +876,11 @@ impl Renderer {
         drop((charge, chunk));
         match result {
             Ok(submission) => {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let draw = live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap();
+                    .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
                 draw.offset += primitives;
                 draw.pending = None;
                 self.end_gpu_frame();
@@ -987,7 +940,8 @@ impl Renderer {
         let completed = self
             .auto_stream_snapshot(completed_job)
             .ok_or(StreamError::WrongState)?;
-        let scale = clamp_export_scale(scale);
+        // Streaming is frozen (rule 8): its export keeps the 0.18 bound.
+        let scale = clamp_export_scale(scale).min(STREAM_EXPORT_MAX_SCALE);
         let state = &self.chart_states[&chart];
         let document_config = if state.revisions.data == completed.data_revision
             && state.revisions.series == completed.series_revision
@@ -1003,7 +957,9 @@ impl Renderer {
             ((original.height as f32) * scale).round().max(1.0) as u32,
         );
         validate_texture_extent(self.caps, "stream export dimensions", size.0, size.1)?;
-        let format = wgpu::TextureFormat::Rgba8Unorm;
+        // The resident export's target, so a streamed export blends and
+        // rounds exactly as the resident export of the same document.
+        let format = crate::renderer::EXPORT_FORMAT;
         let sample_count = preferred_msaa_sample_count(self.caps, format);
         validate_target_sample_count(self.caps, format, sample_count)?;
         let mut config = document_config.scaled(scale);
@@ -1013,7 +969,7 @@ impl Renderer {
             width: size.0,
             height: size.1,
         });
-        let limits = self.stream_runtime.as_ref().unwrap().scheduler.limits();
+        let limits = live_runtime(&self.stream_runtime)?.scheduler.limits();
         for series in &completed.series {
             PrepareContext::validate_stream_series(&config, series)?;
             for phase in stream_draw_phases(&config.draw_style, series)? {
@@ -1049,7 +1005,7 @@ impl Renderer {
                     {
                         (total + 1).min(max_primitives).min(257)
                     } else {
-                        stream_phase_request_len(series, *phase, id, total.min(max_primitives))?
+                        stream_phase_request_len(*phase, total.min(max_primitives))?
                     };
                     input = input
                         .checked_add(
@@ -1109,9 +1065,7 @@ impl Renderer {
             .and_then(|bytes| bytes.checked_add(style_bytes))
             .ok_or(StreamError::Overflow)?;
         self.preflight_auxiliary_gpu_bytes(allocation_bytes)?;
-        self.stream_runtime
-            .as_mut()
-            .unwrap()
+        live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .try_reserve(1)
             .map_err(|_| StreamError::AllocationFailed)?;
@@ -1136,7 +1090,7 @@ impl Renderer {
         tally.add(untracked_style_bytes);
         let styles_charge =
             crate::gpu_memory::shared_charge(tally, &self.gpu_ledger, GpuResourceKind::Uniform);
-        if self.gpu_memory_usage().total_bytes() > self.memory_budget.unwrap_or(u64::MAX) {
+        if self.gpu_memory_usage().total_bytes() > self.gpu_ledger.budget_limit() {
             return Err(StreamError::TooLarge.into());
         }
         let mut pipelines = create_target_pipelines(
@@ -1160,12 +1114,16 @@ impl Renderer {
             &self.style_bgl,
             &self.per_point_style_map_bgl,
             &self.point_value_map_bgl,
+            [&self.surface_bgl, &self.view3d_value_map_bgl],
             &self.data_selection_bgl,
             &self.field_bgl,
             &self.vector_bgl,
+            &self.star_data_bgl,
+            &self.category_bar_data_bgl,
+            &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view: &chart_view,
                 chart_config: &config,
                 series: &series,
@@ -1178,7 +1136,7 @@ impl Renderer {
             &self.style_bgl,
             &self.star_data_bgl,
             format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view: &chart_view,
                 chart_config: &config,
                 series: &series,
@@ -1190,11 +1148,7 @@ impl Renderer {
             &self.gpu_ledger,
             &transfer,
             surface_spec,
-            self.memory_budget.unwrap_or(u64::MAX),
-            self.pool
-                .gpu_bytes()
-                .checked_add(self.pool.retired_bytes())
-                .ok_or(StreamError::Overflow)?,
+            self.gpu_ledger.budget_limit(),
         )?;
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
             requested_config: config.clone(),
@@ -1220,6 +1174,13 @@ impl Renderer {
             _target_charge: None,
             _completed: completed,
         });
+        let axis = &auxiliary
+            .pipelines
+            .as_ref()
+            .ok_or(FiggyError::internal(
+                "an export target is built with its pipelines",
+            ))?
+            .axis;
         let target = wgpu::Texture::clone(surface.prefix());
         let target_view = target.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -1242,7 +1203,7 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&auxiliary.pipelines.as_ref().unwrap().axis);
+            pass.set_pipeline(axis);
             pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
             pass.draw(0..3, 0..1);
             if let (Some(underlay), _) = snapshot
@@ -1253,7 +1214,7 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
             }
         }
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         let id = runtime.scheduler.start_auxiliary(
             chart.sequence,
             SourceStamp(snapshot.data_revision.sequence),
@@ -1283,9 +1244,6 @@ impl Renderer {
             surface_clear: None,
             display_dirty: false,
             display_serial: 0,
-            hist_envelope: None,
-            hist_series: None,
-            hist_overlay: false,
             mode: StreamExecutionMode::Explicit,
             auxiliary: Some(auxiliary),
             auxiliary_pick: None,
@@ -1308,10 +1266,7 @@ impl Renderer {
     fn validate_stream_operation(&self, operation: StreamingOperation) -> StreamResult<StreamJob> {
         let job = operation.0;
         self.validate_stream_job(job)?;
-        if !self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if !live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| draw.job == job && draw.auxiliary.is_some())
@@ -1330,7 +1285,12 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let revision = self.auto_stream_snapshot(job).unwrap().desired;
+        let revision = self
+            .auto_stream_snapshot(job)
+            .ok_or(FiggyError::internal(
+                "a validated stream operation keeps its snapshot",
+            ))?
+            .desired;
         let mut request = self
             .request_chart_stream_draw(job)
             .map_err(StreamRequestError::into_figgy)?;
@@ -1338,14 +1298,8 @@ impl Renderer {
             .stream_progress_counts(job)
             .map_err(StreamRequestError::into_figgy)?;
         if request == StreamDrawRequestStatus::AllSubmitted
-            && self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            && live_runtime(&self.stream_runtime)?
+                .live_draw(job)?
                 .auxiliary_pick
                 .is_none()
         {
@@ -1374,10 +1328,7 @@ impl Renderer {
                 }
             }
             StreamDrawRequestStatus::AllSubmitted => {
-                if self
-                    .stream_runtime
-                    .as_ref()
-                    .unwrap()
+                if live_runtime(&self.stream_runtime)?
                     .scheduler
                     .has_slots_for_job(job.id)
                 {
@@ -1426,10 +1377,7 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let ticket = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let ticket = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -1452,10 +1400,7 @@ impl Renderer {
             }
             (ordered, requested.len())
         };
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .requests
             .iter()
             .any(|request| request.ticket == ticket && request.selection)
@@ -1484,17 +1429,13 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
+            .live_draw(job)?
             .auxiliary
             .as_ref()
-            .unwrap()
+            .ok_or(FiggyError::internal(
+                "a validated stream operation has an auxiliary target",
+            ))?
             .transfer
             .is_none()
         {
@@ -1514,19 +1455,26 @@ impl Renderer {
         ) {
             return Err(StreamRequestError::from(StreamError::WrongState).into_figgy());
         }
-        let draw = self
-            .stream_runtime
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
+        let auxiliary = draw.auxiliary.as_ref().ok_or(FiggyError::internal(
+            "a validated stream operation has an auxiliary target",
+        ))?;
+        let surface = draw.surface.as_ref().ok_or(FiggyError::internal(
+            "a stream export operation has a surface",
+        ))?;
+        let transfer = auxiliary.transfer.as_ref().ok_or(FiggyError::internal(
+            "a stream export target keeps its transfer (checked above)",
+        ))?;
+        let axis = &auxiliary
+            .pipelines
             .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
-        let auxiliary = draw.auxiliary.as_ref().unwrap();
-        let surface = draw.surface.as_ref().unwrap();
+            .ok_or(FiggyError::internal(
+                "a stream export target keeps its pipelines",
+            ))?
+            .axis;
         let mut encoder = self.device.create_command_encoder(&Default::default());
         surface
-            .record_display(auxiliary.transfer.as_ref().unwrap(), &mut encoder, |pass| {
+            .record_display(transfer, &mut encoder, |pass| {
                 let view = &auxiliary.snapshot.view;
                 let size = (surface.prefix().width(), surface.prefix().height());
                 if let (Some(panel), Some(data)) = (
@@ -1554,7 +1502,7 @@ impl Renderer {
                     }
                     pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                 }
-                pass.set_pipeline(&auxiliary.pipelines.as_ref().unwrap().axis);
+                pass.set_pipeline(axis);
                 pass.set_bind_group(0, &auxiliary.snapshot.view.decoration_bind_group, &[]);
                 pass.draw(0..3, 0..1);
                 if let (_, Some(overlay)) = auxiliary
@@ -1601,21 +1549,23 @@ impl Renderer {
         self.cancel_stream_operation(operation)?;
         self.end_gpu_frame();
         #[cfg(target_arch = "wasm32")]
-        self.wait_submitted_work().await;
+        self.wait_submitted_work().await?;
         #[cfg(not(target_arch = "wasm32"))]
-        self.wait_idle();
+        self.wait_idle()?;
         self.service_stream_requests();
         Ok(())
     }
 
     async fn read_stream_export_rgba(&mut self, target: &wgpu::Texture) -> Result<RasterImage> {
         let (width, height) = (target.width(), target.height());
-        let row = u64::from(width) * 4;
+        // The target's rows (half-float texels) and the image's (RGBA8).
+        let row = u64::from(width) * crate::renderer::EXPORT_TEXEL_BYTES;
+        let out_row = u64::from(width) * 4;
         let padded = row.div_ceil(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
             * u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let remaining = self
-            .memory_budget
-            .unwrap_or(u64::MAX)
+            .gpu_ledger
+            .budget_limit()
             .saturating_sub(self.gpu_memory_usage().total_bytes());
         let rows =
             (self.caps.max_buffer_size.min(remaining) / padded).min(u64::from(height)) as u32;
@@ -1640,12 +1590,12 @@ impl Renderer {
                 "stream export readback",
             )?,
         );
-        let len = row
+        let len = out_row
             .checked_mul(u64::from(height))
             .and_then(|bytes| usize::try_from(bytes).ok())
             .ok_or(FiggyError::GpuResourceLimit {
                 resource: "stream export output",
-                requested: row.saturating_mul(u64::from(height)),
+                requested: out_row.saturating_mul(u64::from(height)),
                 limit: usize::MAX as u64,
             })?;
         let mut rgba = Vec::new();
@@ -1684,10 +1634,14 @@ impl Renderer {
             let slice = readback.slice(..padded * u64::from(count));
             let (tx, rx) = futures_channel::oneshot::channel();
             slice.map_async(wgpu::MapMode::Read, move |result| {
-                let _ = tx.send(result);
+                if tx.send(result).is_err() {
+                    // receiver dropped: the waiting call was cancelled
+                }
             });
+            // A lost device returns here instead of awaiting a mapping that
+            // never resolves; a completed wait has run the callback.
             #[cfg(not(target_arch = "wasm32"))]
-            self.wait_idle();
+            self.wait_idle()?;
             rx.await
                 .map_err(|error| FiggyError::GpuResourceAllocationFailed {
                     resource: "stream export mapping",
@@ -1705,17 +1659,13 @@ impl Renderer {
             })?;
             for local in 0..count {
                 let src = &mapped[(u64::from(local) * padded) as usize..][..row as usize];
-                let dst = &mut rgba[(u64::from(y + local) * row) as usize..][..row as usize];
-                dst.copy_from_slice(src);
-                for pixel in dst.chunks_exact_mut(4) {
-                    let alpha = pixel[3];
-                    if alpha != 0 && alpha != 255 {
-                        let alpha = f32::from(alpha) / 255.0;
-                        for channel in &mut pixel[..3] {
-                            *channel =
-                                (f32::from(*channel) / alpha).round().clamp(0.0, 255.0) as u8;
-                        }
-                    }
+                let dst =
+                    &mut rgba[(u64::from(y + local) * out_row) as usize..][..out_row as usize];
+                let (texels, _) =
+                    src.as_chunks::<{ crate::renderer::EXPORT_TEXEL_BYTES as usize }>();
+                let (pixels, _) = dst.as_chunks_mut::<4>();
+                for (pixel, texel) in pixels.iter_mut().zip(texels) {
+                    *pixel = crate::renderer::straight_rgba8(texel);
                 }
             }
             drop(mapped);

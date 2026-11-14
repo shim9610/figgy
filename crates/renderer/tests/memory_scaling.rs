@@ -91,28 +91,47 @@ fn fit(points: &[(f64, f64)]) -> Fit {
 
 // Scenario harness.
 
-fn shared_device() -> Option<(std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>)> {
-    use std::sync::{Arc, OnceLock};
-    static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    use std::sync::OnceLock;
+    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let (device, queue) = test_gpu::device();
-            Some((Arc::new(device), Arc::new(queue)))
+            Some((device, queue))
         })
         .as_ref()
-        .map(|(device, queue)| (std::sync::Arc::clone(device), std::sync::Arc::clone(queue)))
+        .map(|(device, queue)| (device.clone(), queue.clone()))
 }
 
 fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
     let (device, queue) = shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             pool_bytes,
         )
         .expect("required GPU test: renderer initialization failed"),
     )
+}
+
+/// Wait for the submitted work, then for its retirement credits. A credit
+/// arrives in a completion callback that whichever thread polled the shared
+/// device runs after its poll has released the device: wgpu-core collects
+/// finished closures under its locks and fires them afterwards. So the wait
+/// can end while another test's poll still holds the credit, and a reading
+/// taken then counts a retired buffer as held.
+fn settle(renderer: &Renderer) {
+    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while renderer.gpu_memory_usage().retired_bytes() != 0 {
+        renderer.service_gpu_completions().unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retirement callback timeout"
+        );
+        std::thread::yield_now();
+    }
 }
 
 const COLUMN_VALUE_BYTES: u64 = 8;
@@ -146,11 +165,7 @@ fn sample_f32(values: usize, grow_from_small_pool: bool) -> Option<Sample> {
     let input_bytes = (values as u64) * 4;
     let stored_bytes = (values as u64) * COLUMN_VALUE_BYTES;
     let data: Vec<f32> = (0..values).map(|i| i as f32).collect();
-    let column = Column {
-        min: 0.0f32,
-        max: (values.saturating_sub(1)) as f32,
-        data,
-    };
+    let column = Column { data };
 
     // "Before": no growth, so the host must size the pool for the data up
     // front — exactly how a 0.9 host works. "After": a small pool that grows.
@@ -178,7 +193,7 @@ fn sample_f32(values: usize, grow_from_small_pool: bool) -> Option<Sample> {
     });
     renderer.end_gpu_frame();
 
-    pollster::block_on(renderer.wait_submitted_work());
+    settle(&renderer);
 
     let usage = renderer.gpu_memory_usage();
     let sample = Sample {
@@ -310,14 +325,12 @@ fn f64_input_costs_one_stored_byte_per_input_byte() {
         };
         renderer.end_gpu_frame();
         let column = Column {
-            min: 0.0f64,
-            max: (values - 1) as f64,
             data: (0..values).map(|i| i as f64).collect(),
         };
         let rss_before = rss_bytes().unwrap_or(0) as i64;
         renderer.add_column("scale", &column).unwrap();
         renderer.end_gpu_frame();
-        pollster::block_on(renderer.wait_submitted_work());
+        settle(&renderer);
         let usage = renderer.gpu_memory_usage();
         assert_eq!(renderer.pool().used_bytes(), stored);
         samples.push(Sample {
@@ -364,29 +377,25 @@ fn upload_peak_stays_within_settled_plus_one_staging_buffer() {
 fn releasing_the_data_returns_the_pool_to_empty() {
     let values = (SMALL_INPUT_BYTES / 4) as usize;
     let data: Vec<f32> = (0..values).map(|i| i as f32).collect();
-    let column = Column {
-        min: 0.0f32,
-        max: (values - 1) as f32,
-        data,
-    };
+    let column = Column { data };
     let stored = (values as u64) * COLUMN_VALUE_BYTES;
     let Some(mut renderer) = renderer_with_pool(stored + 64 * 1024) else {
         eprintln!("no GPU adapter; skipping release measurement");
         return;
     };
     renderer.end_gpu_frame();
-    pollster::block_on(renderer.wait_submitted_work());
+    settle(&renderer);
     let baseline = renderer.gpu_memory_usage();
     let dc = baseline.total_bytes();
 
     renderer.add_column("released", &column).unwrap();
     renderer.end_gpu_frame();
-    pollster::block_on(renderer.wait_submitted_work());
+    settle(&renderer);
     assert_eq!(renderer.pool().used_bytes(), stored);
 
     assert!(renderer.remove_column("released").unwrap());
     renderer.end_gpu_frame();
-    pollster::block_on(renderer.wait_submitted_work());
+    settle(&renderer);
     let after = renderer.gpu_memory_usage();
     assert_eq!(
         renderer.pool().used_bytes(),

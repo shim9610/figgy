@@ -34,9 +34,14 @@ fn definition(source: &str, kind: &str, name: &str) -> String {
 
 fn generate(out: &Path, root: &Path) {
     fs::create_dir_all(out).unwrap();
-    let production = fs::read_to_string(root.join("crates/renderer/src/gpu_pick/core.wgsl")).unwrap();
+    let production =
+        fs::read_to_string(root.join("crates/renderer/src/gpu_pick/core.wgsl")).unwrap();
+    // The projection the picker splices from the draw shaders.
+    let projection =
+        fs::read_to_string(root.join("crates/renderer/src/data_render/common/projection.wgsl"))
+            .unwrap();
     let mut source = String::new();
-    for name in ["PickQueryTransform", "PickQueryParams"] {
+    for name in ["Transform", "PickQueryParams"] {
         source.push_str(&definition(&production, "struct", name));
     }
     source.push_str(
@@ -46,21 +51,25 @@ fn generate(out: &Path, root: &Path) {
 @group(1) @binding(0) var<uniform> pick_query_params: PickQueryParams;
 "#,
     );
-    for name in [
-        "pick_log10",
-        "pick_axis_pair_to_t",
-        "pick_project_axis_pair",
-        "pick_project_pair",
-    ] {
-        source.push_str(&definition(&production, "fn", name));
+    for name in ["maybe_log", "axis_pair_to_t"] {
+        source.push_str(&definition(&projection, "fn", name));
     }
+    source.push_str(&definition(&production, "fn", "pick_project_axis_pair"));
+    // The rectangular branch of `pick_project_pair`: the fixtures are
+    // rectangular, and the polar branch reads pipeline overrides.
     source.push_str(
         r#"
+fn probe_axis_t(v: vec2<f32>, axis: u32) -> f32 {
+    let tr = pick_query_params.transform;
+    return axis_pair_to_t(v, tr.data_min[axis], tr.data_max[axis], tr.data_min_lo[axis], tr.data_max_lo[axis],
+        tr.scale_log[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis]);
+}
+
 @compute @workgroup_size(64)
 fn precision_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v = inputs[gid.x];
-    let p = pick_project_pair(v.xy, v.zw);
-    outputs[gid.x] = vec4(p, pick_axis_pair_to_t(v.xy, 0u), pick_axis_pair_to_t(v.zw, 1u));
+    let p = vec2(pick_project_axis_pair(v.xy, 0u), pick_project_axis_pair(v.zw, 1u));
+    outputs[gid.x] = vec4(p, probe_axis_t(v.xy, 0u), probe_axis_t(v.zw, 1u));
 }
 "#,
     );
@@ -74,11 +83,7 @@ fn precision_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Refuse a future production ABI change before generating unchecked Metal
     // code for the manually packed host uniform below.
     for (name, expected_span, expected_offsets) in [
-        (
-            "PickQueryTransform",
-            112,
-            vec![0, 8, 16, 24, 32, 40, 48, 56, 64],
-        ),
+        ("Transform", 112, vec![0, 8, 16, 24, 32, 40, 48, 56, 64]),
         (
             "PickQueryParams",
             224,
@@ -346,7 +351,22 @@ fn evaluate(
     serde_json::json!({"variant":name, "bad_points":failures, "fixtures":records})
 }
 
-async fn run(out: &Path, metal: bool) {
+/// The output of a wgpu request future: native wgpu completes adapter and
+/// device requests when they are made and returns them ready, so one poll
+/// takes the value and no executor is needed.
+fn ready_now<F: std::future::Future>(future: F) -> F::Output {
+    use std::task::{Context, Poll, Waker};
+    let mut future = std::pin::pin!(future);
+    match future
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("a native wgpu request completes at once"),
+    }
+}
+
+fn run(out: &Path, metal: bool) {
     let backend = if metal {
         wgpu::Backends::METAL
     } else {
@@ -356,9 +376,7 @@ async fn run(out: &Path, metal: bool) {
         backends: backend,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions::default())
-        .await
+    let adapter = ready_now(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
         .expect("required native adapter missing");
     let features = if metal {
         wgpu::Features::PASSTHROUGH_SHADERS
@@ -371,14 +389,12 @@ async fn run(out: &Path, metal: bool) {
     );
     let info = adapter.get_info();
     println!("Actual adapter: {info:?}");
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("Metal precision experiment"),
-            required_features: features,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let (device, queue) = ready_now(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("Metal precision experiment"),
+        required_features: features,
+        ..Default::default()
+    }))
+    .unwrap();
     let source = fs::read_to_string(out.join("probe.wgsl")).unwrap();
     let native = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("unmodified WGSL baseline"),
@@ -441,8 +457,8 @@ fn main() {
             out,
             Path::new(args.get(3).expect("repository root required")),
         ),
-        "metal" => pollster::block_on(run(out, true)),
-        "vulkan" => pollster::block_on(run(out, false)),
+        "metal" => run(out, true),
+        "vulkan" => run(out, false),
         _ => panic!("unknown mode"),
     }
 }

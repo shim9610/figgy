@@ -8,6 +8,8 @@
 //! - `terrain` writes `concept-terrain.png`: a custom colour ramp under isolines.
 //!
 //! cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -15,44 +17,32 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, scatter, series};
+use gallery::{Result, looks};
+use renderer::theme::ThemeFamily;
 use renderer::{
-    Color, ColorMap, Renderer, RendererDevice,
+    Color, Renderer, SeriesConfig,
     categorical::*,
-    config::{DrawStyle, LegendEntryKind, SketchOptions},
-    data_config::{
-        ContourConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
-        MatrixRef, Shading,
-    },
-    data_render::{create_instance, request_adapter, request_device},
+    data_config::{MatrixRef, Shading},
     radial::*,
+    theme::ChartKind,
 };
-use std::{path::Path, sync::Arc};
-use styled::{SIZE, cartesian, rgb, save};
+use std::path::Path;
+use styled::{SIZE, background, export, save, scene_chart, themed};
 
 // 1. A dashboard card: restrained chrome and two high-contrast service metrics.
 fn observability(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(14, 22, 38);
-    let mut chart = cartesian(
-        "Traffic / last 24 hours",
-        "Hour (UTC)",
-        "Requests / s",
-        bg,
-        rgb(182, 199, 222),
-        rgb(36, 49, 70),
-    );
+    let theme = ThemeFamily::Midnight.theme(ChartKind::Line);
+    let bg = background(&theme);
+    let mut chart = scene_chart("Traffic / last 24 hours", "Hour (UTC)", "Requests / s");
     chart.set_x_range(0., 24.);
     chart.set_y_range(0., 1000.);
     chart.config_mut().bottom_x.major_spacing = 4.;
     chart.config_mut().left_y.major_spacing = 200.;
     let x: Vec<f64> = (0..=288).map(|i| i as f64 / 12.).collect();
-    r.add_column("hour", &column(x.clone()))?;
+    r.add_column("hour", &x)?;
     let mut specs = Vec::new();
-    for (id, label, color, scale, shift) in [
-        ("edge", "Edge", rgb(65, 227, 194), 1., 0.),
-        ("origin", "Origin", rgb(139, 154, 255), 0.58, 0.7),
-    ] {
-        let data = x
+    for (id, label, scale, shift) in [("edge", "Edge", 1., 0.), ("origin", "Origin", 0.58, 0.7)] {
+        let data: Vec<f64> = x
             .iter()
             .map(|t| {
                 let day = 180. + 450. * (-((t - 15. - shift) / 5.5).powi(2)).exp();
@@ -60,74 +50,53 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
                 scale * (day + burst + 28. * (t * 2.4).sin() + 12. * (t * 7.1).cos())
             })
             .collect();
-        r.add_column(id, &column(data))?;
-        specs.push(series(
-            id,
-            "hour",
-            id,
-            DataRenderType::Line {
-                line: line(color, 3.5),
-            },
-        ));
-        chart = chart.with_legend_entry(label, color, 3.5, LegendEntryKind::Line);
+        r.add_column(id, &data)?;
+        specs.push(SeriesConfig::line(id, "hour", id).label(label));
     }
-    let image = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    themed(&mut chart, &theme, &mut specs)?;
+    let mut chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-observability.png"))
 }
 
 // 2. A warm editorial figure, with deterministic path wobble and sparse markers.
 fn editorial(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(250, 245, 232);
-    let mut chart = cartesian(
+    let theme = looks::editorial();
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Small habits, lasting growth",
         "Week",
         "Weekly active members",
-        bg,
-        rgb(78, 67, 56),
-        rgb(225, 215, 195),
     );
-    chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions {
-        amplitude_px: 1.5,
-        wavelength_px: 64.,
-        seed: 7,
-    });
     chart.set_x_range(-0.3, 12.3);
     chart.set_y_range(0., 1200.);
     chart.config_mut().bottom_x.major_spacing = 2.;
     chart.config_mut().left_y.major_spacing = 300.;
     let x: Vec<f64> = (0..=12).map(|i| i as f64).collect();
-    r.add_column("week", &column(x.clone()))?;
+    r.add_column("week", &x)?;
     let mut specs = Vec::new();
-    for (id, label, color, base, gain) in [
-        ("community", "Community", rgb(190, 81, 51), 100., 70.),
-        ("newsletter", "Newsletter", rgb(49, 121, 107), 80., 39.),
+    for (id, label, base, gain) in [
+        ("community", "Community", 100., 70.),
+        ("newsletter", "Newsletter", 80., 39.),
     ] {
-        r.add_column(
-            id,
-            &column(
-                x.iter()
-                    .map(|t| base + gain * t + 20. * (t * 1.6).sin())
-                    .collect(),
-            ),
-        )?;
-        specs.push(series(
-            id,
-            "week",
-            id,
-            DataRenderType::ScatterLine {
-                line: line(color, 3.),
-                scatter: scatter(color, 7.),
-            },
-        ));
-        chart = chart.with_legend_entry(label, color, 3., LegendEntryKind::Line);
+        let data: Vec<f64> = x
+            .iter()
+            .map(|t| base + gain * t + 20. * (t * 1.6).sin())
+            .collect();
+        r.add_column(id, &data)?;
+        specs.push(SeriesConfig::scatter_line(id, "week", id).label(label));
     }
-    let image = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    themed(&mut chart, &theme, &mut specs)?;
+    let mut chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-editorial.png"))
 }
 
-// 3. A product analytics card: horizontal stacks, restrained labels, rounded ends.
-fn revenue(gpu: &RendererDevice, out: &Path) -> Result {
-    let bg = rgb(247, 248, 253);
+// 3. A product analytics card: horizontal stacks and rounded ends, a
+// categorical document opened as a Cartesian chart of category bars.
+fn revenue(r: &mut Renderer, out: &Path) -> Result {
+    let theme = looks::revenue();
+    let bg = background(&theme);
     let chart = CategoricalChart {
         title: "Revenue mix / by region".into(),
         categories: ["North America", "Europe", "Asia Pacific", "Latin America"]
@@ -140,19 +109,19 @@ fn revenue(gpu: &RendererDevice, out: &Path) -> Result {
                 "team",
                 "Team",
                 vec![Some(42.), Some(36.), Some(28.), Some(16.)],
-                rgb(98, 86, 225),
+                Color::BLACK,
             ),
             BarSeries::new(
                 "business",
                 "Business",
                 vec![Some(28.), Some(23.), Some(19.), Some(14.)],
-                rgb(157, 141, 242),
+                Color::BLACK,
             ),
             BarSeries::new(
                 "enterprise",
                 "Enterprise",
                 vec![Some(19.), Some(17.), Some(12.), Some(9.)],
-                rgb(37, 181, 167),
+                Color::BLACK,
             ),
         ],
         direction: CategoryBarDirection::Horizontal,
@@ -161,119 +130,106 @@ fn revenue(gpu: &RendererDevice, out: &Path) -> Result {
         label_decimals: 0,
         value_title: "Monthly revenue (USD thousands)".into(),
         group_width: 0.55,
-        font_size: 20.,
-        background: bg,
-        text_color: rgb(52, 57, 85),
-        grid: false,
-        style: CategoryBarStyle {
-            material: CategoryBarMaterial::Matte,
-            corner_radius: 12.,
-            texture_strength: 0.,
-            ..Default::default()
-        },
         ..Default::default()
     };
-    let mut r = CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
-    let image = r.export_rgba(&chart, SIZE, 1.)?;
-    save(&image, bg, &out.join("concept-revenue.png"))?;
-    r.end_frame();
-    Ok(())
+    let (config, mut specs, uploads) = renderer::config::Config::from_categorical(&chart);
+    // The positions, then the value columns as one batch.
+    let (positions, values) = uploads.split_first().expect("the positions column");
+    r.add_column(positions.column.clone(), &positions.values)?;
+    let columns: Vec<(&str, &dyn renderer::ColumnSource)> = values
+        .iter()
+        .map(|u| (u.column.as_str(), &u.values as &dyn renderer::ColumnSource))
+        .collect();
+    r.add_columns(&columns)?;
+    let mut cartesian = renderer::Chart::new(config).with_area(0, 0, SIZE.0, SIZE.1);
+    themed(&mut cartesian, &theme, &mut specs)?;
+    // The value axis runs 0 to 100 (the largest stack is 89) in steps of 20,
+    // printed in the document's integer format, which a range change resets.
+    let format = cartesian.config().bottom_x.label_style.format.clone();
+    cartesian.set_x_range(0., 100.);
+    let value_axis = &mut cartesian.config_mut().bottom_x;
+    value_axis.major_spacing = 20.;
+    value_axis.label_style.format = format;
+    // The legend as the design draws it: a filled square for each part of
+    // the stacks, the entries close together in one row centred under the
+    // x title. The squares are the only fielded segments.
+    let legend = &mut cartesian.config_mut().legend;
+    let size = legend.content.font_size;
+    for mark in legend
+        .content
+        .segments
+        .iter_mut()
+        .filter(|s| s.field_em.is_some())
+    {
+        mark.field_em = Some(0.7);
+        mark.font_size = Some(size * 1.3);
+    }
+    styled::legend_row_under_x_title(&mut cartesian, 0.4);
+    let image = export(r, &mut cartesian, &specs, bg)?;
+    save(&image, bg, &out.join("concept-revenue.png"))
 }
 
 // 4–5. The same named-value contract, with two very different material choices.
-fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
-    let mut r = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+fn radial_concepts(out: &Path) -> Result {
+    // The radial renderer takes a device of its own making.
+    let mut r = RadialRenderer::headless_blocking()?;
+    let slice = |label: &str, value: f64| RadialSlice::new(label, value, Color::BLACK);
+    let theme = ThemeFamily::WarmPaper.radial();
     let mut chart = RadialChart {
-        title: "Studio time / a creative week".into(),
         slices: vec![
-            RadialSlice::new("Design", 38., rgb(245, 103, 87)),
-            RadialSlice::new("Build", 32., rgb(111, 126, 241)),
-            RadialSlice::new("Explore", 18., rgb(247, 191, 65)),
-            RadialSlice::new("Share", 12., rgb(95, 196, 170)),
+            slice("Design", 38.),
+            slice("Build", 32.),
+            slice("Explore", 18.),
+            slice("Share", 12.),
         ],
-        font_size: 23.,
         label_decimals: 0,
-        label_color: rgb(49, 43, 59),
-        background: rgb(255, 248, 237),
-        style: RadialStyle {
-            material: RadialMaterial::Toon,
-            tilt_degrees: 45.,
-            depth: 0.14,
-            bevel: 0.,
-            gap_degrees: 2.,
-            inner_corner: 0.,
-            outer_corner: 0.02,
-            shadow: false,
-            texture_strength: 0.,
-            outline: RadialOutline {
-                rim: true,
-                separators: true,
-                width: 2.,
-                color: rgb(49, 43, 59),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
         ..Default::default()
-    };
-    let image = r.export_rgba(&chart, SIZE, 1.)?;
+    }
+    .with_title("Studio time / a creative week");
+    theme.apply(&mut chart);
+    chart.format_labels();
+    let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
 
-    chart.title = "Portfolio / a different perspective".into();
+    let theme = ThemeFamily::Midnight.radial();
     chart.kind = RadialKind::Donut { inner_radius: 0.57 };
-    chart.background = rgb(19, 22, 39);
-    chart.label_color = rgb(218, 224, 241);
+    chart.set_title_text("Portfolio / a different perspective");
     chart.slices = vec![
-        RadialSlice::new("Equities", 42., rgb(145, 159, 244)),
-        RadialSlice::new("Bonds", 28., rgb(99, 204, 192)),
-        RadialSlice::new("Real assets", 18., rgb(236, 166, 187)),
-        RadialSlice::new("Cash", 12., rgb(218, 200, 146)),
+        slice("Equities", 42.),
+        slice("Bonds", 28.),
+        slice("Real assets", 18.),
+        slice("Cash", 12.),
     ];
-    chart.style = RadialStyle {
-        material: RadialMaterial::Pearl,
-        tilt_degrees: 55.,
-        depth: 0.19,
-        bevel: 0.025,
-        gap_degrees: 2.,
-        inner_corner: 0.06,
-        outer_corner: 0.045,
-        texture_strength: 0.45,
-        texture_scale: 1.,
-        roughness: 0.3,
-        gloss: 0.65,
-        shadow: true,
-        ..Default::default()
-    };
-    let image = r.export_rgba(&chart, SIZE, 1.)?;
+    theme.apply(&mut chart);
+    chart.format_labels();
+    let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
     r.end_frame();
     Ok(())
 }
 
-// 6. A topographic poster: a custom ramp and isolines over a synthetic terrain.
+// 6. A topographic poster: the example's topographic look (`looks::topographic`), its ramp and isolines
+// over a synthetic terrain.
 fn terrain(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(12, 40, 43);
-    let mut chart = cartesian(
+    let theme = looks::topographic();
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Contours of an imagined landscape",
         "East (km)",
         "North (km)",
-        bg,
-        rgb(222, 230, 197),
-        bg,
     );
     chart.set_x_range(0., 10.);
     chart.set_y_range(0., 6.);
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_y = false;
     let x: Vec<f64> = (0..=120).map(|i| i as f64 / 12.).collect();
     let y: Vec<f64> = (0..=72).map(|i| i as f64 / 12.).collect();
-    r.add_column("east", &column(x.clone()))?;
-    r.add_column("north", &column(y.clone()))?;
+    r.add_column("east", &x)?;
+    r.add_column("north", &y)?;
     let mut columns = Vec::new();
     for (i, x) in x.iter().enumerate() {
         let id = format!("terrain-{i}");
-        let values = y
+        let values: Vec<f64> = y
             .iter()
             .map(|y| {
                 let a = 1.5 * (-((x - 3.).powi(2) / 3. + (y - 3.9).powi(2) / 1.7)).exp();
@@ -281,72 +237,38 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
                 a + b + 0.11 * (x * 2. + y).sin() * (y * 1.7 - x * 0.5).cos() + 0.12
             })
             .collect();
-        r.add_column(id.clone(), &column(values))?;
+        r.add_column(id.clone(), &values)?;
         columns.push(id);
     }
-    let specs = [series(
+    let levels = (1..=17).map(|i| i as f64 * 0.1).collect();
+    let terrain = SeriesConfig::contours(
         "terrain",
         "east",
         "north",
-        DataRenderType::HeatmapContour {
-            matrix: MatrixRef {
-                columns,
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Centers,
-            },
-            fill: FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Interpolated,
-                opacity: 1.,
-            },
-            contour: ContourConfig {
-                levels: (1..=17).map(|i| i as f64 * 0.1).collect(),
-                line: line(Color::from_rgba(0.92, 0.98, 0.8, 0.65), 1.1),
-                per_level_color: None,
-                labels: None,
-            },
-        },
-    )];
+        MatrixRef::columns_are_x(columns),
+        levels,
+    )
+    // The theme's ramp under the isolines, interpolated between the cells.
+    .filled()
+    .shading(Shading::Interpolated);
+    let mut specs = [terrain];
     let mut bar = renderer::default::default_colorbar_options();
-    // The gallery image was rendered with this gap.
-    bar.gap_px = 24.0;
-    bar.colormap = ColorMap::Custom {
-        stops: vec![
-            bg,
-            rgb(29, 89, 85),
-            rgb(73, 132, 112),
-            rgb(164, 185, 120),
-            rgb(239, 221, 150),
-        ],
-    };
     bar.axis.min = 0.;
     bar.axis.max = 1.8;
     bar.axis.major_spacing = 0.6;
-    bar.axis.label_style.color = rgb(222, 230, 197);
-    bar.axis.label_style.font_size = 18.;
-    bar.axis.line_color = rgb(164, 185, 120);
     chart.config_mut().colorbar = Some(bar);
-    let image = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    themed(&mut chart, &theme, &mut specs)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-terrain.png"))
 }
 
 fn main() -> Result {
     let out = gallery::output_directory("target/concepts")?;
-    let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
-    eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-    let mut r = Renderer::try_new(
-        gpu.clone(),
-        wgpu::TextureFormat::Rgba8Unorm,
-        16 * 1024 * 1024,
-    )?;
-    observability(&mut r, &out)?;
-    editorial(&mut r, &out)?;
-    revenue(&gpu, &out)?;
-    radial_concepts(&gpu, &out)?;
-    terrain(&mut r, &out)?;
-    r.wait_idle();
-    Ok(())
+    gallery::with_renderer(|r| {
+        observability(r, &out)?;
+        editorial(r, &out)?;
+        revenue(r, &out)?;
+        terrain(r, &out)
+    })?;
+    radial_concepts(&out)
 }

@@ -1,123 +1,185 @@
 //! Actual native shader renders: materials, rounded corners, outlines, selection.
+//! The look is the gallery family's radial member; each case varies the theme
+//! and applies it to a chart that holds only names and values.
+//! `sunburst` builds `gallery-sunburst.png`: a flat sunburst, slices with
+//! `children` drawn as nested rings (source group, source, technology).
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
-use renderer::{
-    Color, RendererDevice,
-    data_render::{create_instance, request_adapter, request_device},
-    encode_png,
-    radial::*,
-};
-use std::{path::PathBuf, sync::Arc};
-fn base() -> RadialChart {
+use renderer::{Color, ExportOptions, Material, radial::*, theme::RadialTheme};
+use std::path::PathBuf;
+#[path = "support/looks.rs"]
+mod looks;
+use renderer::theme::ThemeFamily;
+
+/// A slice by its name and value; the theme colours it.
+fn slice(label: &str, value: f64) -> RadialSlice {
+    RadialSlice::new(label, value, Color::BLACK)
+}
+
+/// The traffic donut every material case draws, in `theme`.
+fn base(theme: &RadialTheme) -> RadialChart {
     let mut chart = RadialChart {
-        title: "Regional share".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         labels: RadialLabels::Outside,
         label_format: RadialLabelFormat::NamePercent,
         slices: vec![
-            RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
-            RadialSlice::new("Direct", 25.0, Color::from_rgb8(165, 216, 72)),
-            RadialSlice::new("Email", 15.0, Color::from_rgb8(80, 96, 121)),
-            RadialSlice::new("Union", 12.0, Color::from_rgb8(255, 151, 62)),
-            RadialSlice::new("Video", 8.0, Color::from_rgb8(48, 192, 230)),
+            slice("Search", 40.0),
+            slice("Direct", 25.0),
+            slice("Email", 15.0),
+            slice("Union", 12.0),
+            slice("Video", 8.0),
         ],
         ..Default::default()
-    };
-    chart.style = RadialStyle {
-        material: RadialMaterial::Matte,
-        // Match the approved oblique mockup; 0 degrees is straight overhead.
-        tilt_degrees: 55.0,
-        depth: 0.16,
-        inner_corner: 0.045,
-        outer_corner: 0.045,
-        bevel: 0.025,
-        gap_degrees: 1.4,
-        shadow: true,
-        roughness: 0.3,
-        texture_strength: 0.12,
-        ..Default::default()
-    };
+    }
+    .with_title("Regional share");
+    theme.apply(&mut chart);
     chart
 }
+
+/// A flat sunburst: a year's electricity generation by source group at the
+/// centre, the sources around it and their technologies outside. Every node
+/// keeps its share of its parent's span; the leaves on the inner rings leave
+/// the outer ring empty past them. The sunburst look (`looks::sunburst`) colours the groups
+/// and steps each ring paler.
+fn sunburst(theme: &RadialTheme) -> RadialChart {
+    let node = |label: &str, value: f64, children: Vec<RadialSlice>| RadialSlice {
+        children,
+        ..slice(label, value)
+    };
+    let leaf = |label: &str, value: f64| slice(label, value);
+    let mut chart = RadialChart {
+        kind: RadialKind::Donut { inner_radius: 0.14 },
+        labels: RadialLabels::Outside,
+        label_format: RadialLabelFormat::NamePercent,
+        label_decimals: 0,
+        slices: vec![
+            node(
+                "Renewables",
+                46.0,
+                vec![
+                    node(
+                        "Wind",
+                        20.0,
+                        vec![leaf("Onshore", 13.0), leaf("Offshore", 7.0)],
+                    ),
+                    node(
+                        "Solar",
+                        12.0,
+                        vec![leaf("Utility", 8.0), leaf("Rooftop", 4.0)],
+                    ),
+                    leaf("Hydro", 10.0),
+                    leaf("Bio", 4.0),
+                ],
+            ),
+            node(
+                "Fossil",
+                38.0,
+                vec![
+                    node(
+                        "Gas",
+                        26.0,
+                        vec![leaf("Combined cycle", 21.0), leaf("Peakers", 5.0)],
+                    ),
+                    leaf("Coal", 9.0),
+                    leaf("Oil", 3.0),
+                ],
+            ),
+            leaf("Nuclear", 16.0),
+        ],
+        ..Default::default()
+    }
+    .with_title("Electricity generation / group, source, technology");
+    theme.apply(&mut chart);
+    chart
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| "target/radial-gallery".into());
     std::fs::create_dir_all(&directory)?;
-    let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
-    eprintln!("adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-    let mut renderer = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut renderer = RadialRenderer::headless_blocking()?;
+    // The gallery's raised look; each case varies the theme before applying
+    // it.
+    let ceramic = ThemeFamily::Gallery.radial();
+    let matte = RadialTheme {
+        material: Material::Matte,
+        ..ceramic.clone()
+    };
     let mut cases = Vec::new();
     for (name, material) in [
-        ("matte", RadialMaterial::Matte),
-        ("ceramic", RadialMaterial::Ceramic),
-        ("satin-metal", RadialMaterial::SatinMetal),
-        ("toon", RadialMaterial::Toon),
-        ("enamel", RadialMaterial::Enamel),
-        ("brushed-metal", RadialMaterial::BrushedMetal),
-        ("paper", RadialMaterial::Paper),
-        ("plywood", RadialMaterial::Wood),
-        ("hatch", RadialMaterial::Hatch),
-        ("pearl", RadialMaterial::Pearl),
+        ("matte", Material::Matte),
+        ("ceramic", Material::Ceramic),
+        ("satin-metal", Material::SatinMetal),
+        ("toon", Material::Toon),
+        ("enamel", Material::Enamel),
+        ("brushed-metal", Material::BrushedMetal),
+        ("paper", Material::Paper),
+        ("plywood", Material::Wood),
+        ("hatch", Material::Hatch),
+        ("pearl", Material::Pearl),
     ] {
-        let mut c = base();
-        c.title = name.to_uppercase();
-        c.style.material = material;
-        if material == RadialMaterial::Toon {
-            c.style.outline.rim = true;
-            c.style.outline.separators = true;
+        let mut theme = ceramic.clone();
+        theme.material = material;
+        if material == Material::Toon {
+            theme.outline.rim = true;
+            theme.outline.separators = true;
         }
         if matches!(
             material,
-            RadialMaterial::Hatch
-                | RadialMaterial::Pearl
-                | RadialMaterial::Paper
-                | RadialMaterial::Wood
+            Material::Hatch | Material::Pearl | Material::Paper | Material::Wood
         ) {
-            c.style.texture_strength = 0.7;
+            theme.texture_strength = 0.7;
         }
-        if material == RadialMaterial::Wood {
-            c.style.roughness = 0.9;
-            c.style.gloss = 0.1;
+        if material == Material::Wood {
+            theme.roughness = 0.9;
+            theme.gloss = 0.1;
         }
-        cases.push((name.to_owned(), c));
+        cases.push((
+            name.to_owned(),
+            base(&theme).with_title(&name.to_uppercase()),
+        ));
     }
-    let mut outlined = base();
-    outlined.title = "Raised pie / visible rim and separators".into();
-    outlined.kind = RadialKind::Pie;
-    outlined.style.material = RadialMaterial::Flat;
-    outlined.style.depth = 0.3;
-    outlined.style.bevel = 0.0;
-    outlined.style.gap_degrees = 0.0;
-    outlined.style.inner_corner = 0.0;
-    outlined.style.outer_corner = 0.0;
-    outlined.style.outline.rim = true;
-    outlined.style.outline.separators = true;
-    outlined.slices = vec![
-        RadialSlice::new("Control", 2., Color::from_rgb8(140, 69, 147)),
-        RadialSlice::new("Low", 3., Color::from_rgb8(108, 157, 148)),
-        RadialSlice::new("Medium", 4., Color::from_rgb8(224, 164, 77)),
-        RadialSlice::new("High", 5., Color::from_rgb8(107, 142, 182)),
+    // A raised pie in the four colours of a dose study.
+    let mut flat = matte.clone();
+    flat.palette = vec![
+        Color::from_rgb8(140, 69, 147),
+        Color::from_rgb8(108, 157, 148),
+        Color::from_rgb8(224, 164, 77),
+        Color::from_rgb8(107, 142, 182),
     ];
+    flat.material = Material::Flat;
+    flat.depth = 0.3;
+    flat.bevel = 0.0;
+    flat.gap_degrees = 0.0;
+    flat.inner_corner = 0.0;
+    flat.outer_corner = 0.0;
+    flat.outline.rim = true;
+    flat.outline.separators = true;
+    let mut outlined = base(&flat).with_title("Raised pie / visible rim and separators");
+    outlined.kind = RadialKind::Pie;
+    outlined.slices = vec![
+        slice("Control", 2.),
+        slice("Low", 3.),
+        slice("Medium", 4.),
+        slice("High", 5.),
+    ];
+    flat.apply(&mut outlined);
     cases.push(("outlined-raised-pie".into(), outlined));
     for (name, amount) in [("corners-sharp", 0.0), ("corners-rounded", 0.12)] {
-        let mut c = base();
-        c.title = name.into();
-        c.style.inner_corner = amount;
-        c.style.outer_corner = amount;
-        c.style.depth = 0.0;
-        c.style.tilt_degrees = 0.0;
-        c.style.shadow = false;
-        cases.push((name.into(), c));
+        let mut theme = matte.clone();
+        theme.inner_corner = amount;
+        theme.outer_corner = amount;
+        theme.depth = 0.0;
+        theme.tilt_degrees = 0.0;
+        theme.shadow = false;
+        cases.push((name.into(), base(&theme).with_title(name)));
     }
-    let mut edited = base();
-    edited.title = "Selected slice / individual edits".into();
+    // One slice edited by hand: its own colour, finish and label.
+    let mut edited = base(&matte).with_title("Selected slice / individual edits");
     edited.interaction.selected = Some(RadialTarget::main(0));
     let style = RadialStyle {
-        material: RadialMaterial::Ceramic,
+        material: Material::Ceramic,
         outline: RadialOutline {
             emphasis: true,
             width: 1.5,
@@ -131,8 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     slice.label_format = Some(RadialLabelFormat::NameValuePercent);
     edited.value_suffix = " units".into();
     cases.push(("individual-edit".into(), edited));
-    let mut split = base();
-    split.title = "Regional share / Video breakdown".into();
+    let mut split = base(&matte).with_title("Regional share / Video breakdown");
     split.labels = RadialLabels::Inside;
     split.label_format = RadialLabelFormat::Percent;
     split.split = Some(RadialSplit {
@@ -144,10 +205,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     });
     cases.push(("pie-of-pie".into(), split));
+    let burst = looks::sunburst();
+    cases.push(("gallery-sunburst".into(), sunburst(&burst)));
     // Deterministic time samples: host calls the same model transition on pointer events.
-    let mut hover = base();
-    hover.title = "Hover lift / Search".into();
-    hover.style.material = RadialMaterial::Ceramic;
+    let mut hover = base(&ceramic).with_title("Hover lift / Search");
     for frame in 0..20 {
         hover.interaction.animate_hover(
             if frame < 10 {
@@ -160,15 +221,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         cases.push((format!("hover-{frame:02}"), hover.clone()));
     }
-    for (name, chart) in cases {
-        let img = renderer.export_rgba(&chart, (900, 620), 1.0)?;
-        std::fs::write(directory.join(format!("{name}.png")), encode_png(&img)?)?;
+    for (name, mut chart) in cases {
+        // The drawn label strings are written once each case is edited.
+        chart.format_labels();
+        let path = directory.join(format!("{name}.png"));
+        renderer.save_blocking(&chart, (900, 620), ExportOptions::document(1.0), &path)?;
         renderer.end_frame();
-        gpu.device().poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })?;
-        eprintln!("{name}: {}x{}", img.width, img.height);
+        eprintln!("{}", path.display());
     }
     Ok(())
 }

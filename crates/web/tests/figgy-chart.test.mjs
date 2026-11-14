@@ -324,6 +324,9 @@ function makeKernel(name, options = {}) {
         throw options.resizeError;
       }
     },
+    monotonic_groups() {
+      return JSON.stringify(options.monotonicGroups ?? []);
+    },
     on_press(x, y) {
       calls.push(["press", x, y]);
       return true;
@@ -345,6 +348,14 @@ function makeKernel(name, options = {}) {
     export_png(scale) {
       calls.push(["export", scale]);
       return this.exportImpl(scale);
+    },
+    export_svg(scale) {
+      calls.push(["export_svg", scale]);
+      return Promise.resolve("<svg/>");
+    },
+    export_pdf(scale) {
+      calls.push(["export_pdf", scale]);
+      return Promise.resolve(new Uint8Array([37, 80, 68, 70]));
     },
     first_frame_ready() {
       calls.push(["first_frame_ready"]);
@@ -549,6 +560,33 @@ test("completed stream export reuses source views and picking delegates without 
   assert.equal(element.busy, false);
 });
 
+test("SVG and PDF export run as the export operation on a resident chart", async () => {
+  const kernel = makeKernel("vector");
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const svg = element.export_svg(2);
+  assert.equal(element.busy, true, "the export holds the operation gate");
+  await assert.rejects(element.export_pdf(), /busy/);
+  assert.equal(await svg, "<svg/>");
+  assert.equal(element.busy, false);
+  assert.deepEqual(Array.from(await element.export_pdf()), [37, 80, 68, 70]);
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name.startsWith("export")),
+    [["export_svg", 2], ["export_pdf", 1]],
+  );
+});
+
+test("SVG and PDF export reject a chart shown from a stream without calling the kernel", async () => {
+  const { kernel, element } = await completedReplayFixture({ typed: true });
+  await assert.rejects(element.export_svg(2), /SVG export does not support streamed sources/);
+  await assert.rejects(element.export_pdf(2), /PDF export does not support streamed sources/);
+  assert.equal(kernel.calls.filter(([name]) => name === "export_svg" || name === "export_pdf").length, 0);
+  assert.equal(element.busy, false);
+});
+
 function runFacadeFrame(state) {
   const [id, callback] = [...state.rafs.entries()].at(-1);
   state.rafs.delete(id);
@@ -571,10 +609,9 @@ test("selection-only mutations do not replay a completed stream", async () => {
     replayRequests += 1;
     return { status: "complete" };
   };
-  kernel.set_picked_points = () => {};
   kernel.set_picked_data = () => {};
   for (let index = 0; index < 10; index += 1) {
-    element.set_picked_points(String(index));
+    element.set_picked_data(String(index));
     runFacadeFrame(state);
   }
   element.set_picked_data("null");
@@ -591,7 +628,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
     return range.offset === 3 ? first.promise : newest.promise;
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request, ids, revisions, lengths, offsets, chunks) => {
@@ -604,7 +641,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
   runFacadeFrame(state);
   assert.equal(reads.length, 1, "unchanged pending selection must not re-read");
   assert.equal(committed, 1);
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   assert.deepEqual(reads.map((r) => r.offset), [3, 5]);
@@ -629,7 +666,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
     return range.offset === 3 ? old.promise : new Float32Array([5]);
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request) => { committed = request.index; };
@@ -637,7 +674,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
   runFacadeFrame(state);
   old.reject(new Error("old selection failed"));
   await flushTasks();
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   runFacadeFrame(state);
@@ -2929,4 +2966,119 @@ test("facade exposes pool growth, detailed memory status, and awaited cleanup", 
   assert.equal(cleaned.total_bytes, 16);
   assert.equal(cleaned.pool.capacity_bytes, 8);
   assert.equal(element.busy, false);
+});
+
+test("monotonic calls forward typed arrays and parse their JSON (#271)", async () => {
+  const kernel = makeKernel("monotonic", { monotonicGroups: ["daq"] });
+  const update = { len: 4, truncated: false, dropped: 0, x_range: [0, 3], pixel_offset: 0 };
+  kernel.set_monotonic = (group, start, interval, data, range, stride, columns) => {
+    kernel.calls.push(["set_monotonic", group, start, interval, data, range, stride, columns]);
+    return JSON.stringify(update);
+  };
+  kernel.append_monotonic = (group, data, sliding, stride, columns) => {
+    kernel.calls.push(["append_monotonic", group, data, sliding, stride, columns]);
+    return JSON.stringify({ ...update, len: 6, x_range: [2, 5] });
+  };
+  kernel.needs_source = () => {
+    kernel.calls.push(["needs_source"]);
+    return JSON.stringify([{ series_id: "ch0", group: "daq", change: "NotBuilt" }]);
+  };
+  kernel.resize_monotonic = (width, height, sources, plotArea) => {
+    kernel.calls.push(["resize_monotonic", width, height, sources, plotArea]);
+  };
+  let plotRequest = JSON.stringify({ x: 60, y: 20, width: 300, height: 140 });
+  kernel.take_plot_resize_request = () => {
+    const request = plotRequest;
+    plotRequest = undefined;
+    return request;
+  };
+  kernel.fit_layout = (sources) => {
+    kernel.calls.push(["fit_layout", sources]);
+  };
+  kernel.set_monotonic_document = (config, series) => {
+    kernel.calls.push(["set_monotonic_document", JSON.parse(config), JSON.parse(series)]);
+  };
+  kernel.clear_monotonic_document = () => {
+    kernel.calls.push(["clear_monotonic_document"]);
+  };
+  kernel.export_png_monotonic = (scale, sources) => {
+    kernel.calls.push(["export_png_monotonic", scale, sources]);
+    return Promise.resolve(new Uint8Array([137, 80]));
+  };
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const channels = [new Float64Array([1, 2, 3, 4]), new Int16Array([5, 6, 7, 8])];
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(element.set_monotonic("daq", 0, 1, channels, "autoscale")), update);
+  const frames = new Uint16Array([0, 1, 2, 0, 3, 4]);
+  assert.deepEqual(
+    plain(element.append_monotonic("daq", frames, true, 3, [1, 2]).x_range),
+    [2, 5],
+  );
+  assert.deepEqual(plain(element.needs_source()), [
+    { series_id: "ch0", group: "daq", change: "NotBuilt" },
+  ]);
+  assert.deepEqual(plain(element.monotonic_groups()), ["daq"]);
+  element.set_monotonic_document({ chart_area: {} }, []);
+  element.clear_monotonic_document();
+
+  // A canvas resize of a monotonic chart waits for the host's sources: the
+  // canvas keeps its size and figgy-resize says so.
+  const resizes = [];
+  element.addEventListener("figgy-resize", (event) => resizes.push(event.detail));
+  const before = [element.canvas.width, element.canvas.height];
+  element.setRect(320, 200);
+  element.resize();
+  assert.equal(kernel.calls.filter(([name]) => name === "resize").length, 0);
+  assert.deepEqual([element.canvas.width, element.canvas.height], before);
+  assert.equal(resizes.at(-1).monotonic, true);
+  assert.deepEqual([resizes.at(-1).width, resizes.at(-1).height], [320, 200]);
+  const sources = [{ group: "daq", start: 0, interval: 1, data: channels }];
+  element.resize_monotonic(sources);
+  assert.deepEqual([element.canvas.width, element.canvas.height], [320, 200]);
+  element.fit_layout(sources);
+
+  // A plot-area resize gesture proposes a rect on release; the host applies
+  // it with the sources.
+  const plotResizes = [];
+  element.addEventListener("figgy-plot-resize", (event) => plotResizes.push(event.detail));
+  element.canvas.emit("pointerdown", { pointerId: 3, clientX: 10, clientY: 20 });
+  element.canvas.emit("pointerup");
+  assert.deepEqual(plain(plotResizes), [
+    { plotArea: { x: 60, y: 20, width: 300, height: 140 }, monotonic: true },
+  ]);
+  element.canvas.emit("pointerdown", { pointerId: 3, clientX: 10, clientY: 20 });
+  element.canvas.emit("pointerup");
+  assert.equal(plotResizes.length, 1, "a request is emitted once");
+  element.resize_monotonic(sources, plotResizes[0].plotArea);
+
+  const png = element.export_png_monotonic(2, sources);
+  assert.equal(element.busy, true, "the export holds the operation gate");
+  assert.deepEqual(Array.from(await png), [137, 80]);
+  const calls = kernel.calls.filter(([name]) =>
+    name.includes("monotonic") || name === "needs_source" || name === "fit_layout");
+  assert.equal(calls[0][4], channels, "the channel arrays are passed as they are");
+  assert.equal(calls[0][5], "autoscale", "the range is forwarded");
+  assert.equal(calls[0][6], undefined);
+  assert.equal(calls[1][2], frames, "an interleaved array is passed as it is");
+  assert.deepEqual(Array.from(calls[1][5]), [1, 2]);
+  assert.equal(calls[1][3], true);
+  assert.deepEqual(
+    calls.slice(2).map(([name]) => name),
+    [
+      "needs_source", "set_monotonic_document", "clear_monotonic_document",
+      "resize_monotonic", "fit_layout", "resize_monotonic", "export_png_monotonic",
+    ],
+  );
+  assert.deepEqual(plain(calls[3].slice(1)), [{ chart_area: {} }, []]);
+  assert.deepEqual(calls[5].slice(1, 3), [320, 200]);
+  assert.equal(calls[5][3], sources, "the sources are passed as they are");
+  assert.equal(calls[5][4], undefined);
+  assert.equal(calls[6][1], sources);
+  assert.deepEqual(plain(calls[7][4]), { x: 60, y: 20, width: 300, height: 140 });
+  assert.equal(calls[8][2], sources);
 });

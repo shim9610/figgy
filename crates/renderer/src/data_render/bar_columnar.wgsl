@@ -24,113 +24,6 @@
 // past the bottom of the data area and is clipped by the scissor — which is
 // what a bar with no lower bound looks like. Nothing produces NaN.
 
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
-struct Style {
-    color_premul: vec4<f32>,
-    line_width_px: f32,
-    point_radius_px: f32,
-    cap_half_px: f32,
-    cap_width_px: f32,
-    shape_id: u32,
-    dash_len: u32,
-    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
-    // share a star/wobble pattern; precise entries never read it.
-    series_salt: u32,
-    // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X. Line entries read bits 2-3 as the step interpolation mode
-    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
-    // also reads bit 4 (fill to a series instead of a baseline); every
-    // other primitive ignores this field.
-    primitive_flags: u32,
-    dash: array<vec4<f32>, 2>,
-};
-
-@group(1) @binding(0) var<uniform> style: Style;
-
-fn maybe_log(v: f32, is_log: f32) -> f32 {
-    let lv = log(max(v, 1e-30)) / log(10.0);
-    if is_log > 0.5 {
-        return lv;
-    }
-    return mix(v, lv, is_log);
-}
-
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
-    let raw = v.x + v.y;
-    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
-    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
-    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    if is_log > 0.5 {
-        return fma(log_num / range, panel_scale, panel_offset);
-    }
-    let data_t = mix(linear_num / range, log_num / range, is_log);
-    return fma(data_t, panel_scale, panel_offset);
-}
-
-// Polar (Config.polar): the angle column in radians around the centre of the
-// data area, the radius axis fraction between the inner ring and the outer
-// radius. A radius below the axis start sits on the inner ring (data samples
-// there are masked by `sample_valid`; a fill baseline is not). Twin of
-// `polar_projection::ndc` on the CPU.
-fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
-    let angle = p.y + p.z * (xv.x + xv.y);
-    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
-    let r = mix(p.w, 1.0, max(rt, 0.0));
-    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return center + vec2<f32>(cos(angle), sin(angle)) * r * e.w * transform.pixel_to_ndc;
-}
-
-fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
-    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
-    if (transform.polar_angle.x > 0.5) {
-        return polar_ndc(ty, xv);
-    }
-    return vec2<f32>(tx, ty) * 2.0 - 1.0;
-}
-// ───── END common block ─────
-
 // ───── Style reinterpretation (bars only) ─────
 //
 // The `Style` uniform is byte-identical across every data shader; a bar reads
@@ -145,7 +38,18 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
 //   dash[0]        border colour, premultiplied
 //   dash[1].xy     baseline as the pool's (hi, lo) f32 pair
 //
-// `point_radius_px`, `dash_len`, `dash[1].zw` are unused.
+// `point_radius_px`, `dash_len`, `dash[1].zw` are unused by the bar draw.
+//
+// The selection outline (`vs_bar_selection`, `vs_bar_selection_mapped`)
+// reads the same `Style`, written by `PrimitiveStyle::from_bar` for the
+// series and then given three lanes a bar never reads as fill or border:
+//
+//   color_premul   highlight colour, premultiplied (not the fill)
+//   line_width_px  outline width, px, unscaled (not the border)
+//   dash_len       the selected bin's global index, the key of its overrides
+//
+// Gap, width ratio, orientation and baseline stay the draw's own, so the
+// outline resolves the bin's overrides with the draw's `resolve_bar_style`.
 
 const BAR_ORIENT_HORIZONTAL: u32 = 1u;
 /// Quads per instance: fill + four border edges.
@@ -186,11 +90,11 @@ fn bar_outer_ndc_values(
     var a: vec2<f32>;
     var b: vec2<f32>;
     if (horizontal) {
-        a = data_to_ndc(base, edge_lo);
-        b = data_to_ndc(value, edge_hi);
+        a = data_to_ndc(transform, base, edge_lo);
+        b = data_to_ndc(transform, value, edge_hi);
     } else {
-        a = data_to_ndc(edge_lo, base);
-        b = data_to_ndc(edge_hi, value);
+        a = data_to_ndc(transform, edge_lo, base);
+        b = data_to_ndc(transform, edge_hi, value);
     }
     var lo = min(a, b);
     var hi = max(a, b);
@@ -273,8 +177,8 @@ fn bar_envelope_columns(
 /// in NDC `(low, high)`: from the series baseline `b` to the value, like the
 /// bar the bin would draw if it were wide enough.
 fn bar_envelope_magnitude(value: vec2<f32>, b: vec2<f32>, horizontal: bool) -> vec2<f32> {
-    let base = select(data_to_ndc(vec2<f32>(0.0), b).y, data_to_ndc(b, vec2<f32>(0.0)).x, horizontal);
-    let top = select(data_to_ndc(vec2<f32>(0.0), value).y, data_to_ndc(value, vec2<f32>(0.0)).x, horizontal);
+    let base = select(data_to_ndc(transform, vec2<f32>(0.0), b).y, data_to_ndc(transform, b, vec2<f32>(0.0)).x, horizontal);
+    let top = select(data_to_ndc(transform, vec2<f32>(0.0), value).y, data_to_ndc(transform, value, vec2<f32>(0.0)).x, horizontal);
     return vec2<f32>(min(base, top), max(base, top));
 }
 
@@ -341,6 +245,11 @@ struct BarStyleSlot {
     border_color_premul: vec4<f32>,
     // x = border width, y = gap, z = width ratio, w = mask bits.
     params: vec4<f32>,
+    // Category bars only (`BAR_STYLE_MASK_MATERIAL`): x = material kind,
+    // y = texture strength, z = texture scale, w = gloss.
+    material: vec4<f32>,
+    // Category bars only: x = corner radius px, y = emphasis brightness.
+    finish: vec4<f32>,
 };
 
 struct BarStyleOverride {
@@ -351,6 +260,8 @@ struct BarStyleOverride {
     fill_color_premul: vec4<f32>,
     border_color_premul: vec4<f32>,
     params: vec4<f32>,
+    material: vec4<f32>,
+    finish: vec4<f32>,
 };
 
 struct BarStyleMapMeta {
@@ -370,6 +281,10 @@ struct ResolvedBarStyle {
     border_width_px: f32,
     gap_px: f32,
     width_ratio: f32,
+    // The material and finish of a category bar (`category_bars.wgsl`);
+    // a histogram bin never reads them.
+    material: vec4<f32>,
+    finish: vec4<f32>,
 };
 
 const BAR_STYLE_MASK_FILL: u32 = 1u;
@@ -377,6 +292,7 @@ const BAR_STYLE_MASK_BORDER_COLOR: u32 = 2u;
 const BAR_STYLE_MASK_BORDER_WIDTH: u32 = 4u;
 const BAR_STYLE_MASK_GAP: u32 = 8u;
 const BAR_STYLE_MASK_WIDTH_RATIO: u32 = 16u;
+const BAR_STYLE_MASK_MATERIAL: u32 = 32u;
 
 fn apply_bar_style_slot(base: ResolvedBarStyle, slot: BarStyleSlot) -> ResolvedBarStyle {
     let mask = u32(slot.params.w);
@@ -396,6 +312,10 @@ fn apply_bar_style_slot(base: ResolvedBarStyle, slot: BarStyleSlot) -> ResolvedB
     if ((mask & BAR_STYLE_MASK_WIDTH_RATIO) != 0u) {
         out.width_ratio = clamp(slot.params.z, 0.0, 1.0);
     }
+    if ((mask & BAR_STYLE_MASK_MATERIAL) != 0u) {
+        out.material = slot.material;
+        out.finish = slot.finish;
+    }
     return out;
 }
 
@@ -408,7 +328,7 @@ fn resolve_bar_style(base: ResolvedBarStyle, inst: u32) -> ResolvedBarStyle {
         if (ov.bin_index == inst) {
             out = apply_bar_style_slot(
                 out,
-                BarStyleSlot(ov.fill_color_premul, ov.border_color_premul, ov.params),
+                BarStyleSlot(ov.fill_color_premul, ov.border_color_premul, ov.params, ov.material, ov.finish),
             );
         }
     }
@@ -422,6 +342,8 @@ fn base_bar_style() -> ResolvedBarStyle {
         max(style.line_width_px, 0.0),
         max(style.cap_half_px, 0.0),
         clamp(style.cap_width_px, 0.0, 1.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
     );
 }
 
@@ -482,13 +404,6 @@ fn vs_envelope_mapped_bars(in: VsIn, @builtin(instance_index) inst: u32) -> VsOu
     return bar_vertex(in, resolve_bar_style(base_bar_style(), inst), true);
 }
 
-// The streamed work buffer starts at a local instance zero, while sparse
-// overrides are keyed by the original bin index.
-@vertex
-fn vs_stream_envelope_mapped_bars(in: VsIn, @builtin(instance_index) inst: u32) -> VsOut {
-    return bar_vertex(in, resolve_bar_style(base_bar_style(), stream_offset.bin_start + inst), true);
-}
-
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return in.color_premul;
@@ -501,23 +416,6 @@ struct EnvelopeParams { edges: u32, values: u32, count: u32, pixels: u32 };
 @group(3) @binding(1) var<uniform> envelope_params: EnvelopeParams;
 @group(3) @binding(2) var<storage, read> envelope_winners: array<u32>;
 @group(3) @binding(3) var<storage, read_write> envelope_atomic: array<atomic<u32>>;
-
-struct StreamWinner {
-    valid: u32,
-    bin_index: u32,
-    value: vec2<f32>,
-};
-
-struct StreamOffset {
-    bin_start: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-};
-
-@group(3) @binding(4) var<storage, read_write> stream_winners_write: array<StreamWinner>;
-@group(3) @binding(5) var<storage, read> stream_winners_read: array<StreamWinner>;
-@group(3) @binding(6) var<uniform> stream_offset: StreamOffset;
 
 fn envelope_better(candidate: u32, incumbent: u32) -> bool {
     if (incumbent == 0u) { return true; }
@@ -552,54 +450,6 @@ fn reduce_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-@compute @workgroup_size(64)
-fn reduce_stream_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x + gid.y * 65535u * 64u;
-    if (i >= envelope_params.count) { return; }
-    let a = envelope_pool[envelope_params.edges + i];
-    let b = envelope_pool[envelope_params.edges + i + 1u];
-    let value = envelope_pool[envelope_params.values + i];
-    let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    let columns = bar_envelope_columns(
-        a, b, value, horizontal,
-        resolve_bar_style(base_bar_style(), stream_offset.bin_start + i).width_ratio,
-        f32(envelope_params.pixels),
-    );
-    for (var p = columns.x; p < columns.y; p = p + 1u) {
-        var old = atomicLoad(&envelope_atomic[p]);
-        loop {
-            if (!envelope_better(i + 1u, old)) { break; }
-            let result = atomicCompareExchangeWeak(&envelope_atomic[p], old, i + 1u);
-            if (result.exchanged) { break; }
-            old = result.old_value;
-        }
-    }
-}
-
-fn stream_winner_better(value: vec2<f32>, bin_index: u32, incumbent: StreamWinner) -> bool {
-    if (incumbent.valid == 0u) { return true; }
-    let old = incumbent.value;
-    return value.x > old.x ||
-        (value.x == old.x && (value.y > old.y ||
-        (value.y == old.y && bin_index < incumbent.bin_index)));
-}
-
-// One invocation owns each persistent pixel. Successive dispatches are queued
-// in source order; no persistent atomic or work-buffer address survives merge.
-@compute @workgroup_size(64)
-fn merge_stream_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let p = gid.x;
-    if (p >= envelope_params.pixels) { return; }
-    let local = atomicLoad(&envelope_atomic[p]);
-    if (local == 0u || local > envelope_params.count) { return; }
-    let bin_index = stream_offset.bin_start + local - 1u;
-    let value = envelope_pool[envelope_params.values + local - 1u];
-    let incumbent = stream_winners_write[p];
-    if (stream_winner_better(value, bin_index, incumbent)) {
-        stream_winners_write[p] = StreamWinner(1u, bin_index, value);
-    }
-}
-
 struct EnvelopeVertex {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) fill: vec4<f32>,
@@ -630,28 +480,6 @@ fn vs_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_index) p: u
     return out;
 }
 
-@vertex
-fn vs_stream_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_index) p: u32) -> EnvelopeVertex {
-    var out: EnvelopeVertex;
-    out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    let winner = stream_winners_read[p];
-    if (winner.valid == 0u) { return out; }
-    let resolved = resolve_bar_style(base_bar_style(), winner.bin_index);
-    let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    let magnitude_span = bar_envelope_magnitude(winner.value, bar_baseline(), horizontal);
-    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
-    let low = magnitude_span.x;
-    let high = magnitude_span.y;
-    let border = resolved.border_width_px > 0.0 && resolved.border_color_premul.a > 0.0;
-    var corners = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
-    let corner = corners[vi % 6u];
-    let along = -1.0 + (f32(p) + select(0.0, 1.0, (corner & 1u) != 0u)) * pixel;
-    let magnitude = select(low, high, corner >= 2u);
-    out.pos = vec4<f32>(select(vec2<f32>(along, magnitude), vec2<f32>(magnitude, along), horizontal), 0.0, 1.0);
-    out.fill = select(resolved.fill_color_premul, resolved.border_color_premul, border);
-    return out;
-}
-
 @fragment
 fn fs_bar_envelope(in: EnvelopeVertex) -> @location(0) vec4<f32> {
     return in.fill;
@@ -665,32 +493,6 @@ fn fs_bar_envelope(in: EnvelopeVertex) -> @location(0) vec4<f32> {
 
 const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1u;
 const DATA_PICK_WORKGROUP_SIZE: u32 = 64u;
-
-struct DataPickQuery {
-    // xy = cursor NDC, zw = cursor axis-t.
-    cursor_ndc_t: vec4<f32>,
-    // x = max distance px, y = scaled bar gap px, z = bar width ratio,
-    // w = contour width px.
-    limits: vec4<f32>,
-    // x = flags, y = source paint order, z = item count, w = orientation.
-    data: vec4<u32>,
-    // x = edge-column f32 lane base, y = value-column lane base, z = global bin offset.
-    bases: vec4<u32>,
-    // xy = histogram baseline (hi, lo).
-    baseline: vec4<f32>,
-};
-
-// Thirty-two bytes, byte-for-byte with Rust's `DataPickCandidateGpu`.
-struct DataPickCandidate {
-    valid: u32,
-    paint_order: u32,
-    kind: u32,
-    index0: u32,
-    index1: u32,
-    index2: u32,
-    distance_px: f32,
-    primitive_order: u32,
-};
 
 @group(1) @binding(1) var<uniform> data_pick_query: DataPickQuery;
 @group(1) @binding(2) var<storage, read> data_pick_pool: array<f32>;
@@ -788,6 +590,8 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
             0.0,
             data_pick_query.limits.y,
             data_pick_query.limits.z,
+            vec4<f32>(0.0),
+            vec4<f32>(0.0),
         ),
         bin_index + data_pick_query.bases.z,
     );
@@ -869,45 +673,29 @@ fn pick_histogram_bin(@builtin(local_invocation_index) local_index: u32) {
 
 // ───── Typed selection overlay (render entry) ───────────────────────────────
 
-struct DataSelection {
-    color_premul: vec4<f32>,
-    // x = cell/bar outline width, y = selected contour extra width.
-    metrics: vec4<f32>,
-    // x = kind, y/z/w = kind-specific indices.
-    indices: vec4<u32>,
-};
-
-@group(2) @binding(4) var<uniform> data_selection: DataSelection;
-
-/// Four outline quads around the exact rendered bar outer rectangle. The
-/// caller draws only the selected bin instance, so no coordinate or rectangle
-/// is stored in selection state.
-@vertex
-fn vs_bar_selection(in: VsIn) -> VsOut {
+/// Four outline quads around the exact rendered bar outer rectangle of the
+/// selected bin, whose gap and width ratio come from `resolved` like the
+/// draw's. The highlight colour and the outline width are the selection's
+/// own `Style` lanes, never the resolved fill or border. The caller draws
+/// only the selected bin instance, so no coordinate or rectangle is stored
+/// in selection state.
+fn bar_selection_vertex(in: VsIn, resolved: ResolvedBarStyle) -> VsOut {
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    var outer = bar_outer_ndc_values(
-        in.edge_lo,
-        in.edge_hi,
-        in.value,
-        style.dash[1].xy,
-        horizontal,
-        style.cap_half_px,
-        style.cap_width_px,
-    );
+    var outer = bar_outer_ndc(in, horizontal, resolved.gap_px, resolved.width_ratio);
     // A subpixel bin is painted by the envelope pass: outline what it paints.
     let columns = bar_envelope_columns(
-        in.edge_lo, in.edge_hi, in.value, horizontal, style.cap_width_px, bar_panel_columns(horizontal),
+        in.edge_lo, in.edge_hi, in.value, horizontal, resolved.width_ratio, bar_panel_columns(horizontal),
     );
     if (columns.y > columns.x) {
-        outer = bar_envelope_rect(columns, in.value, style.dash[1].xy, horizontal);
+        outer = bar_envelope_rect(columns, in.value, bar_baseline(), horizontal);
     }
     var out: VsOut;
-    out.color_premul = data_selection.color_premul;
+    out.color_premul = style.color_premul;
     if (!(outer.z > outer.x) || !(outer.w > outer.y)) {
         out.pos = vec4<f32>(outer.xy, 0.0, 1.0);
         return out;
     }
-    let border = max(data_selection.metrics.x, 0.0) * transform.pixel_to_ndc;
+    let border = max(style.line_width_px, 0.0) * transform.pixel_to_ndc;
     let inset = min(border, (outer.zw - outer.xy) * 0.5);
     let inner = vec4<f32>(outer.xy + inset, outer.zw - inset);
     let segment = in.vi / 6u + 1u;
@@ -918,4 +706,18 @@ fn vs_bar_selection(in: VsIn) -> VsOut {
     let y = select(rect.y, rect.w, corner >= 2u);
     out.pos = vec4<f32>(x, y, 0.0, 1.0);
     return out;
+}
+
+/// The outline of a bin of a series drawn without a style map (`vs_main`).
+@vertex
+fn vs_bar_selection(in: VsIn) -> VsOut {
+    return bar_selection_vertex(in, base_bar_style());
+}
+
+/// The outline of a bin of a series drawn through its style map: the bin's
+/// overrides, keyed by its global index in `style.dash_len`, whatever
+/// instance the caller draws.
+@vertex
+fn vs_bar_selection_mapped(in: VsIn) -> VsOut {
+    return bar_selection_vertex(in, resolve_bar_style(base_bar_style(), style.dash_len));
 }

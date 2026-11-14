@@ -45,9 +45,7 @@ impl Drop for Counting {
 }
 
 fn column(data: Vec<f64>) -> renderer::data::Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    renderer::data::Column { data, min, max }
+    renderer::data::Column { data }
 }
 
 #[wasm_bindgen_test(async)]
@@ -128,13 +126,15 @@ async fn real_prewarm_reuses_pipelines_and_draws_contour_labels() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        render_type: DataRenderType::Contour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["z0".into(), "z1".into(), "z2".into()],
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: ContourConfig {
+            fill: None,
+            contour: Some(ContourConfig {
                 levels: vec![0.8, 1.6, 2.4],
                 line: DataLineStyleConfig {
                     line_style: renderer::line::LineStylePreset::Solid,
@@ -156,11 +156,15 @@ async fn real_prewarm_reuses_pipelines_and_draws_contour_labels() {
                     bg_color: Some(Color::new(1., 0., 1., 1.)),
                     bg_padding_px: 2.,
                 }),
-            },
-        },
+            }),
+            surface: None,
+        }),
     };
     let image = renderer
-        .export_panel_rgba_async(&chart, &[series], 1.)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportOptions::panel(1.),
+        )
         .await
         .expect("pixel readback");
     assert!(

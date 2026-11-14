@@ -1,0 +1,407 @@
+//! Streamed series preparation: validation and the stream layer builders.
+
+use super::*;
+
+impl PrepareContext<'_> {
+    /// A single exact pass; composite series and global-context primitives must
+    /// be scheduled separately rather than repeated once per source chunk.
+    pub(in crate::renderer) fn validate_stream_series(
+        config: &Config,
+        series: &SeriesConfig,
+    ) -> Result<()> {
+        let unsupported = || FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: crate::RuleKind::StreamedContoursOrStars,
+        };
+        // Streaming is not extended to images (#139): the three channel
+        // grids are read from the resident pool through one table. Named
+        // before the generic field gate so the reason is the image's.
+        if series.render_type.rgb_image().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_IMAGE_REASON.into(),
+            });
+        }
+        let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
+        if primitives.contour
+            || (primitives.field && !streaming_runtime::is_stream_heatmap(&series.render_type))
+            || (primitives.line && matches!(config.draw_style, DrawStyle::Milkyway(_)))
+        {
+            return Err(unsupported());
+        }
+        // Streaming is not extended to radar series: a polygon closes on its
+        // first vertex, which no streamed chunk after the first holds.
+        if series.render_type.radar().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedRadar,
+            });
+        }
+        // Streaming is not extended to parallel coordinates (rule 8, #141):
+        // every row reads one value per axis from the resident pool.
+        if series.render_type.parallel().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
+            });
+        }
+        // Nor to stems (rule 8, #206), although the error-bar path they
+        // reuse streams.
+        if matches!(
+            &series.render_type,
+            DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+        ) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_STEM_REASON.into(),
+            });
+        }
+        // Nor to triangle meshes (rule 8, #210): a triangle reads three
+        // vertices anywhere in the resident columns.
+        if series.tri_mesh().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_TRI_MESH_REASON.into(),
+            });
+        }
+        // Nor to energy-level series (rule 8, #203): they are DataLess.
+        if series.energy_levels().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
+            });
+        }
+        // Nor to monotonic series (M5, #271): their own calls feed them.
+        if series.monotonic().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_MONOTONIC_REASON.into(),
+            });
+        }
+        // Nor to Feynman series (rule 8, #234): they are DataLess.
+        if series.feynman().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_FEYNMAN_REASON.into(),
+            });
+        }
+        // Streaming is not extended to streamlines (rule 8).
+        if series.render_type.streamlines().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_STREAMLINES_REASON.into(),
+            });
+        }
+        // Streaming is not extended to broken axes (rule 8, #200).
+        if [&config.bottom_x, &config.left_y]
+            .into_iter()
+            .chain(
+                config
+                    .overlays
+                    .iter()
+                    .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+            )
+            .any(|axis| axis.breaks.as_ref().is_some_and(|b| !b.ranges.is_empty()))
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_BREAK_REASON.into(),
+            });
+        }
+        // Nor to probability axes (rule 8, #209).
+        if [&config.bottom_x, &config.left_y]
+            .into_iter()
+            .chain(
+                config
+                    .overlays
+                    .iter()
+                    .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+            )
+            .any(|axis| matches!(axis.scale, crate::config::AxisScale::Probability(_)))
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_PROBABILITY_REASON.into(),
+            });
+        }
+        // Streaming is not extended to polar charts.
+        if config.polar().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedPolar,
+            });
+        }
+        // Streaming is not extended to categorical axes.
+        if [
+            &config.top_x,
+            &config.bottom_x,
+            &config.left_y,
+            &config.right_y,
+        ]
+        .into_iter()
+        .chain(
+            config
+                .overlays
+                .iter()
+                .flat_map(|overlay| [&overlay.y_axis, &overlay.x_axis]),
+        )
+        .any(|axis| axis.categories.is_some())
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedCategoricalAxis,
+            });
+        }
+        // A fill between two series needs index-aligned chunks of two streams,
+        // which nonresident streaming cannot guarantee, and a stepped line's
+        // arc prefix is not part of the streamed canonical scan. Both are
+        // resident-only by design, rejected here rather than drawn wrong.
+        if primitives.line
+            && let Some(line) = extract_line(&series.render_type)
+            && (line.fill.is_some() || !line.interpolation.is_linear())
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedLineFillOrStep,
+            });
+        }
+        // Streaming is not extended to vector series: their shader reads the
+        // resident pool as storage.
+        if has_vector(&series.render_type) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedVector,
+            });
+        }
+        // Streaming is not extended to category bars: a stack reads the
+        // other series' resident columns by their pool lanes.
+        if series.render_type.category_bars().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedCategoryBars,
+            });
+        }
+        // Nor to box plots: a box reads a resident record and ragged column
+        // by their pool lanes, and so do its violin and raw points.
+        if series.render_type.box_plot().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedBoxPlot,
+            });
+        }
+        // Histograms are refused (#284): their columns are the host's bins,
+        // one row per bin, which never need streaming.
+        if matches!(series.render_type, DataRenderType::Histogram { .. }) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_HISTOGRAM_REASON.into(),
+            });
+        }
+        // Nor to range bars: a bar reads its start, whiskers, colour and
+        // progress columns by their pool lanes.
+        if series.render_type.range_bars().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
+            });
+        }
+        // Nor to 3D charts: a surface and its floor read their grid from the
+        // resident pool through the camera of the panel composite.
+        if config.view_3d().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::Streamed3d,
+            });
+        }
+        // Nor to hexagonal grids (#134): the lattice is read from resident
+        // coordinate columns whose uniform steps the pool measured.
+        if extract_matrix(&series.render_type)
+            .is_some_and(|m| m.grid_layout == crate::data_config::GridLayout::Hexagonal)
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_HEXAGONAL_REASON.into(),
+            });
+        }
+        // Nor to ternary series: a sample reads its third component from the
+        // resident pool.
+        if series.render_type.ternary_c_column().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: streaming_runtime::STREAMED_TERNARY_REASON.into(),
+            });
+        }
+        // The value maps read index-aligned columns on every draw; streaming
+        // is not extended to them.
+        if let Some(scatter) = extract_scatter(&series.render_type)
+            && (scatter.point_color_map.is_some() || scatter.point_size_map.is_some())
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedPointMaps,
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::renderer) fn build_stream_series(
+        &self,
+        view: &ChartView,
+        config: &Config,
+        series: &Series<'_>,
+        chunk: &crate::streaming_upload::RecordedChunk,
+        columns: &[crate::streaming::ColumnRange],
+        phase: streaming_runtime::StreamDrawPhase,
+    ) -> Result<PreparedSeries> {
+        self.build_stream_series_with_pipelines(
+            view,
+            config,
+            series,
+            chunk,
+            columns,
+            phase,
+            self.pipelines,
+        )
+    }
+
+    pub(in crate::renderer) fn build_stream_arc_series(
+        &self,
+        view: &ChartView,
+        config: &Config,
+        series: &Series<'_>,
+        pool: &wgpu::Buffer,
+        x: ColumnHandle,
+        y: ColumnHandle,
+        arc: ArcPrefix,
+        charge: crate::gpu_memory::SharedCharge,
+        pipelines: &TargetPipelines,
+    ) -> Result<PreparedSeries> {
+        Self::validate_stream_series(config, series.config)?;
+        let specs = [Series {
+            config: series.config,
+            style: series.style,
+        }];
+        let mut layers = self.build_series_layers_with_columns(
+            view,
+            config,
+            &specs,
+            pipelines,
+            PreparedSeriesProducts {
+                arcs: &[],
+                contours: &[],
+            },
+            pipelines.style_set(&config.draw_style),
+            pool,
+            |id| {
+                if id == series.config.x_column {
+                    Ok(x)
+                } else if id == series.config.y_column {
+                    Ok(y)
+                } else {
+                    Err(FiggyError::UnknownColumn { id: id.into() })
+                }
+            },
+            Some(streaming_runtime::StreamDrawPhase::Line),
+        )?;
+        let mut packet = PreparedSeries::from_layers(
+            layers.remove(0),
+            Some(charge),
+            Some(Arc::clone(&series.style._charge)),
+        );
+        if let Some(line) = &mut packet.line {
+            line.arc = Some(arc);
+        }
+        Ok(packet)
+    }
+
+    pub(in crate::renderer) fn build_stream_series_with_pipelines(
+        &self,
+        view: &ChartView,
+        config: &Config,
+        series: &Series<'_>,
+        chunk: &crate::streaming_upload::RecordedChunk,
+        columns: &[crate::streaming::ColumnRange],
+        phase: streaming_runtime::StreamDrawPhase,
+        pipelines: &TargetPipelines,
+    ) -> Result<PreparedSeries> {
+        Self::validate_stream_series(config, series.config)?;
+        if phase == streaming_runtime::StreamDrawPhase::Field {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                kind: crate::RuleKind::StreamedFieldExecutor,
+            });
+        }
+        if phase == streaming_runtime::StreamDrawPhase::Line
+            && extract_line(&series.config.render_type).is_some_and(|line| {
+                !matches!(line.line_style, LineStylePreset::Solid)
+                    || style_variant(&config.draw_style)
+                        .is_some_and(|variant| variant.needs_arc_prefix)
+            })
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                kind: crate::RuleKind::StreamedLineArcPrefix,
+            });
+        }
+        let expected = streaming_runtime::stream_phase_columns(series.config, phase);
+        let first = columns
+            .first()
+            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                kind: crate::RuleKind::StreamedPrimitiveColumns,
+            })?;
+        let primitives = first.len.saturating_sub(phase.halo());
+        if columns.len() != expected.count
+            || columns.iter().enumerate().any(|(index, column)| {
+                column.column != index as u64
+                    || column.offset != first.offset
+                    || column.len != primitives.saturating_add(phase.halo())
+            })
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.config.series_id.clone(),
+                kind: crate::RuleKind::StreamedPrimitiveRows,
+            });
+        }
+        let specs = [Series {
+            config: series.config,
+            style: series.style,
+        }];
+        let mut layers = self.build_series_layers_with_columns(
+            view,
+            config,
+            &specs,
+            pipelines,
+            PreparedSeriesProducts {
+                arcs: &[],
+                contours: &[],
+            },
+            pipelines.style_set(&config.draw_style),
+            &chunk.work,
+            |id| {
+                let index = expected.ids[..expected.count]
+                    .iter()
+                    .position(|column| *column == id)
+                    .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })?;
+                let range = columns[index];
+                chunk
+                    .column_handle(range)
+                    .map_err(|error| FiggyError::InvalidSeriesConfig {
+                        series_id: series.config.series_id.clone(),
+                        kind: crate::RuleKind::StreamedColumnSpan {
+                            detail: format!("{error:?}"),
+                        },
+                    })
+            },
+            Some(phase),
+        )?;
+        let mut prepared = PreparedSeries::from_layers(
+            layers.remove(0),
+            None,
+            Some(Arc::clone(&series.style._charge)),
+        );
+        prepared._column_charge = Some(chunk.work.shared_charge());
+        Ok(prepared)
+    }
+}

@@ -97,7 +97,6 @@ fn display(
         reveal.then_some([0, 0, s.spec.width, s.spec.height]),
         |_| {},
         |_| {},
-        |_| {},
     )
     .unwrap();
     r.queue.submit([e.finish()]);
@@ -114,7 +113,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
         for opaque in [false, true] {
             for separate_grid in [false, true] {
                 let mut r = Renderer::try_new_with_sample_count(
-                    RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+                    RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
                     wgpu::TextureFormat::Rgba8Unorm,
                     4096,
                     samples,
@@ -128,7 +127,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 };
                 let mut transfer = StreamTransfer::new(&r.device, spec.format, samples).unwrap();
                 let mut surface =
-                    StreamSurface::new(&r.device, &r.gpu_ledger, &transfer, spec, u64::MAX, 0)
+                    StreamSurface::new(&r.device, &r.gpu_ledger, &transfer, spec, u64::MAX)
                         .unwrap();
                 let color = if opaque {
                     wgpu::Color::WHITE
@@ -149,8 +148,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 let preview = display(&r, &surface, &transfer, Some(color), false);
                 let usage = r.gpu_memory_usage();
                 let mut e = r.device.create_command_encoder(&Default::default());
-                let pool = r.pool.gpu_bytes() + r.pool.retired_bytes();
-                assert_eq!(
+                assert!(matches!(
                     surface.begin_replay(
                         &r.device,
                         &r.gpu_ledger,
@@ -159,10 +157,9 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                         color,
                         |_| {},
                         usage.total_bytes() + replay_bytes(spec).unwrap() - 1,
-                        pool
                     ),
                     Err(StreamSurfaceError::TooLarge)
-                );
+                ));
                 assert!(!surface.has_replay());
                 assert_eq!(
                     r.gpu_memory_usage(),
@@ -178,7 +175,6 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                         color,
                         |_| {},
                         u64::MAX,
-                        pool,
                     )
                     .unwrap();
                 r.queue.submit([e.finish()]);
@@ -260,7 +256,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 assert_eq!(display(&r, &surface, &transfer, background, true), expected);
                 drop(surface);
                 r.end_gpu_frame();
-                r.wait_idle();
+                r.wait_idle().unwrap();
                 // On the shared test device a retirement callback can run on
                 // another test's poll thread: wait for it, as d6313ad does.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

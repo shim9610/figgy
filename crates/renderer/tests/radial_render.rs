@@ -1,19 +1,19 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-use renderer::{Color, RendererDevice, radial::*};
+use renderer::{Color, Material, RendererDevice, radial::*};
 use std::sync::{Arc, OnceLock};
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The shared test device in a bundle of its own per call, so each renderer
+/// a test builds charges its own ledger and budget (#160).
 fn gpu() -> RendererDevice {
-    static GPU: OnceLock<RendererDevice> = OnceLock::new();
-    GPU.get_or_init(|| {
-        let (d, q) = test_gpu::device();
-        RendererDevice::new(Arc::new(d), Arc::new(q))
-    })
-    .clone()
+    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+    let (d, q) = GPU.get_or_init(test_gpu::device);
+    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
 }
 fn chart() -> RadialChart {
     RadialChart {
@@ -25,8 +25,12 @@ fn chart() -> RadialChart {
         ..Default::default()
     }
 }
+/// The GPU pick at `p`, resolved.
+fn pick(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Option<RadialTarget> {
+    frame.pick(p).unwrap().resolve().block_on().unwrap()
+}
 fn renderer() -> RadialRenderer {
-    RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
+    RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
 }
 fn drain(r: &RadialRenderer) {
     r.end_frame();
@@ -43,7 +47,10 @@ fn radial_proportions_hole_zero_and_full_circle_are_correct() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
     let mut c = chart();
-    let image = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let image = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     let red = image
         .rgba
         .chunks_exact(4)
@@ -57,7 +64,10 @@ fn radial_proportions_hole_zero_and_full_circle_are_correct() {
     assert!((red as f64 / (red + blue) as f64 - 0.25).abs() < 0.005);
     c.kind = RadialKind::Donut { inner_radius: 0.5 };
     drain(&r);
-    let ring = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let ring = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     assert_eq!(
         &ring.rgba[(160 * 320 + 160) * 4..][..4],
         &[255, 255, 255, 255]
@@ -66,10 +76,16 @@ fn radial_proportions_hole_zero_and_full_circle_are_correct() {
     c.start_angle_degrees = f32::MAX;
     c.slices[0].value = 0.0;
     drain(&r);
-    let full = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let full = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     c.slices[0].explode = 0.35;
     drain(&r);
-    let hidden = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let hidden = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     assert!(
         hidden.rgba == full.rgba,
         "zero-value slice changed the layout"
@@ -89,14 +105,15 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
     let mut c = chart();
-    c.title = "Radial title".into();
+    c.set_title_text("Radial title");
     c.labels = RadialLabels::Outside;
     c.font_size = 12.0;
     c.kind = RadialKind::Donut { inner_radius: 0.4 };
-    c.style.material = RadialMaterial::Ceramic;
+    c.style.material = Material::Ceramic;
     c.style.tilt_degrees = 25.0;
     c.style.depth = 0.18;
     c.style.texture_strength = 0.8;
+    c.format_labels();
     let original = r.prepare(&c, (480, 320), 1.0).unwrap();
     let usage = r.gpu_memory_usage();
     assert!(Arc::ptr_eq(
@@ -104,7 +121,11 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
         &r.prepare(&c, (480, 320), 1.0).unwrap()
     ));
     assert_eq!(r.gpu_memory_usage(), usage);
-    let before = r.export_rgba(&c, (480, 320), 1.0).unwrap().rgba;
+    let before = r
+        .export_rgba(&c, (480, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     renderer::text_render::register_font_bytes(
         include_bytes!("../fonts/ComicNeue-Regular.ttf").to_vec(),
@@ -126,10 +147,7 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
         ("explode", Box::new(|c| c.slices[0].explode = 0.18)),
         ("kind", Box::new(|c| c.kind = RadialKind::Pie)),
         ("angle", Box::new(|c| c.start_angle_degrees += 37.0)),
-        (
-            "material",
-            Box::new(|c| c.style.material = RadialMaterial::Wood),
-        ),
+        ("material", Box::new(|c| c.style.material = Material::Wood)),
         ("tilt", Box::new(|c| c.style.tilt_degrees = 45.0)),
         ("depth", Box::new(|c| c.style.depth = 0.3)),
         ("bevel", Box::new(|c| c.style.bevel = 0.08)),
@@ -142,7 +160,7 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
         ("texture scale", Box::new(|c| c.style.texture_scale = 3.0)),
         ("light", Box::new(|c| c.style.light = [0.8, 0.5, 0.4])),
         ("shadow", Box::new(|c| c.style.shadow = true)),
-        ("title", Box::new(|c| c.title = "Updated title".into())),
+        ("title", Box::new(|c| c.set_title_text("Updated title"))),
         ("labels", Box::new(|c| c.labels = RadialLabels::None)),
         ("font", Box::new(|c| c.font_family = "Comic Neue".into())),
         ("font size", Box::new(|c| c.font_size = 16.0)),
@@ -158,9 +176,15 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
     for (name, edit) in edits {
         let mut changed = c.clone();
         edit(&mut changed);
+        // The host writes the drawn label strings after each edit.
+        changed.format_labels();
         let frame = r.prepare(&changed, (480, 320), 1.0).unwrap();
         assert!(!Arc::ptr_eq(&original, &frame), "stale {name} snapshot");
-        let after = r.export_rgba(&changed, (480, 320), 1.0).unwrap().rgba;
+        let after = r
+            .export_rgba(&changed, (480, 320), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap()
+            .rgba;
         assert!(before != after, "{name} did not update visible pixels");
         drop(frame);
         drain(&r);
@@ -182,9 +206,9 @@ fn radial_budget_validation_and_retirement_are_transactional() {
     invalid.slices[0].value = f64::NAN;
     assert!(r.prepare(&invalid, (320, 320), 1.0).is_err());
     assert_eq!(r.gpu_memory_usage(), before);
-    r.set_memory_budget(before.total_bytes());
+    let _ = r.set_memory_budget(Some(before.total_bytes()));
     let mut edit = c.clone();
-    edit.style.material = RadialMaterial::Paper;
+    edit.style.material = Material::Paper;
     assert!(matches!(
         r.prepare(&edit, (320, 320), 1.0),
         Err(RadialError::Budget { .. })
@@ -195,6 +219,51 @@ fn radial_budget_validation_and_retirement_are_transactional() {
     drop(good);
     drain(&r);
     assert_eq!(r.gpu_memory_usage().total_bytes(), 0);
+}
+/// Every renderer built from one device bundle charges one ledger and spends
+/// one budget: two Cartesian renderers and a radial renderer report the same
+/// usage, both column pools included, and a budget set through one bounds a
+/// pool growth in another (#160).
+#[test]
+fn renderers_on_one_device_bundle_share_the_ledger_and_the_budget() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let gpu = gpu();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let pool_bytes = 64 * 1024;
+    let cartesian = renderer::Renderer::try_new(gpu.clone(), format, pool_bytes).unwrap();
+    let alone = cartesian.gpu_memory_usage().total_bytes();
+    let mut radial = RadialRenderer::try_new(gpu.clone(), format).unwrap();
+    let _frame = radial.prepare(&chart(), (320, 320), 1.0).unwrap();
+    let mut second = renderer::Renderer::try_new(gpu.clone(), format, pool_bytes).unwrap();
+
+    let usage = cartesian.gpu_memory_usage();
+    assert!(
+        usage.total_bytes() > alone,
+        "the radial frame and the second renderer are on the first one's ledger"
+    );
+    assert_eq!(radial.gpu_memory_usage(), usage);
+    assert_eq!(second.gpu_memory_usage(), usage);
+    assert!(
+        usage.pool_bytes() >= 2 * pool_bytes,
+        "both column pools are charged to the one ledger"
+    );
+
+    // One budget: set through the radial renderer, it is the Cartesian
+    // renderers' budget too, and it refuses a pool growth in the second.
+    let ceiling = usage.total_bytes();
+    assert_eq!(radial.set_memory_budget(Some(ceiling)), None);
+    assert_eq!(cartesian.memory_budget(), Some(ceiling));
+    assert_eq!(second.memory_budget(), Some(ceiling));
+    let values = 32 * 1024;
+    let big = renderer::Column {
+        data: (0..values).map(f64::from).collect::<Vec<_>>(),
+    };
+    assert!(
+        second.add_column("big", &big).is_err(),
+        "a growth past the shared budget is refused"
+    );
+    assert_eq!(second.pool().capacity(), pool_bytes);
+    assert_eq!(radial.set_memory_budget(None), None);
 }
 #[test]
 fn radial_export_formats_preserve_straight_alpha_and_png_dimensions() {
@@ -207,8 +276,11 @@ fn radial_export_formats_preserve_straight_alpha_and_png_dimensions() {
         wgpu::TextureFormat::Bgra8Unorm,
         wgpu::TextureFormat::Bgra8UnormSrgb,
     ] {
-        let mut r = RadialRenderer::new(gpu(), format).unwrap();
-        let image = r.export_rgba(&c, (320, 240), 1.5).unwrap();
+        let mut r = RadialRenderer::try_new(gpu(), format).unwrap();
+        let image = r
+            .export_rgba(&c, (320, 240), renderer::ExportOptions::document(1.5))
+            .block_on()
+            .unwrap();
         assert_eq!((image.width, image.height), (480, 360));
         for (actual, expected) in image.rgba[..4].iter().zip([102u8, 153, 204, 128]) {
             assert!(
@@ -242,26 +314,30 @@ fn radial_detail_and_all_materials_render_and_change() {
             RadialSlice::new("E", 50.0, Color::from_rgb8(220, 180, 80)),
         ],
     });
+    c.format_labels();
     let mut r = renderer();
     let mut images = Vec::new();
     for material in [
-        RadialMaterial::Flat,
-        RadialMaterial::Matte,
-        RadialMaterial::Ceramic,
-        RadialMaterial::BrushedMetal,
-        RadialMaterial::Paper,
-        RadialMaterial::Wood,
-        RadialMaterial::SatinMetal,
-        RadialMaterial::Toon,
-        RadialMaterial::Enamel,
-        RadialMaterial::Hatch,
-        RadialMaterial::Pearl,
+        Material::Flat,
+        Material::Matte,
+        Material::Ceramic,
+        Material::BrushedMetal,
+        Material::Paper,
+        Material::Wood,
+        Material::SatinMetal,
+        Material::Toon,
+        Material::Enamel,
+        Material::Hatch,
+        Material::Pearl,
     ] {
         c.style.material = material;
         c.style.texture_strength = 0.8;
         c.style.tilt_degrees = 30.0;
         c.style.depth = 0.18;
-        let img = r.export_rgba(&c, (640, 400), 1.0).unwrap();
+        let img = r
+            .export_rgba(&c, (640, 400), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap();
         assert!(
             img.rgba
                 .chunks_exact(4)
@@ -288,12 +364,17 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
     let mut c = chart();
     c.kind = RadialKind::Donut { inner_radius: 0.5 };
     c.labels = RadialLabels::Outside;
-    c.style.material = RadialMaterial::Ceramic;
+    c.style.material = Material::Ceramic;
     c.style.tilt_degrees = 32.0;
     c.style.depth = 0.18;
     c.style.bevel = 0.025;
     c.style.gap_degrees = 2.0;
-    let baseline = r.export_rgba(&c, (480, 320), 1.0).unwrap().rgba;
+    c.format_labels();
+    let baseline = r
+        .export_rgba(&c, (480, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     let edits: Vec<(&str, Box<dyn Fn(&mut RadialChart)>)> = vec![
         ("outer corner", Box::new(|c| c.style.outer_corner = 0.15)),
@@ -321,7 +402,7 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
             "individual style",
             Box::new(|c| {
                 c.slices[0].style = Some(RadialStyle {
-                    material: RadialMaterial::Toon,
+                    material: Material::Toon,
                     ..c.style.clone()
                 })
             }),
@@ -353,6 +434,7 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
     for (name, edit) in edits {
         let mut changed = c.clone();
         edit(&mut changed);
+        changed.format_labels();
         let frame = r.prepare(&changed, (480, 320), 1.0).unwrap();
         let again = r.prepare(&changed, (480, 320), 1.0).unwrap();
         assert!(
@@ -360,7 +442,10 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
             "identical {name} did not reuse"
         );
         assert_ne!(
-            r.export_rgba(&changed, (480, 320), 1.0).unwrap().rgba,
+            r.export_rgba(&changed, (480, 320), renderer::ExportOptions::document(1.0))
+                .block_on()
+                .unwrap()
+                .rgba,
             baseline,
             "{name}"
         );
@@ -384,7 +469,13 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
         "hover leaked resources: {maximum}"
     );
     c.interaction = RadialInteraction::default();
-    assert_eq!(r.export_rgba(&c, (480, 320), 1.0).unwrap().rgba, baseline);
+    assert_eq!(
+        r.export_rgba(&c, (480, 320), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap()
+            .rgba,
+        baseline
+    );
 }
 
 #[test]
@@ -402,7 +493,10 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
     c.style.hover_brightness = 0.0;
     c.interaction.selected = Some(RadialTarget::main(0));
     let frame = r.prepare(&c, (320, 320), 1.0).unwrap();
-    let img = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let img = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     let mut hits = [0; 2];
     for y in (10..310).step_by(3) {
         for x in (10..310).step_by(3) {
@@ -416,7 +510,7 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
             };
             if let Some(index) = expected {
                 assert_eq!(
-                    frame.hit_test([x as f32 + 0.5, y as f32 + 0.5]),
+                    pick(&frame, [x as f32 + 0.5, y as f32 + 0.5]),
                     Some(RadialTarget::main(index)),
                     "wrong pick at {x},{y}"
                 );
@@ -425,9 +519,10 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
         }
     }
     assert!(hits.into_iter().all(|n| n > 100));
-    assert_eq!(frame.hit_test([160.0, 160.0]), None, "hole must not pick");
-    assert_eq!(frame.hit_test([f32::NAN, 0.0]), None);
-    assert_eq!(frame.hit_test([-1.0, 0.0]), None);
+    assert_eq!(pick(&frame, [160.0, 160.0]), None, "hole must not pick");
+    assert_eq!(pick(&frame, [f32::NAN, 0.0]), None);
+    assert_eq!(pick(&frame, [-1.0, 0.0]), None);
+    assert_eq!(pick(&frame, [320.0, 10.0]), None, "outside the canvas");
     // Color edits target the original index, including zero-value entries.
     c.slices
         .insert(0, RadialSlice::new("hidden", 0.0, Color::WHITE));
@@ -437,9 +532,9 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
     let mut found = false;
     for y in (20..300).step_by(10) {
         for x in (20..300).step_by(10) {
-            if frame.hit_test([x as f32, y as f32]) == Some(RadialTarget::main(0)) {
+            if pick(&frame, [x as f32, y as f32]) == Some(RadialTarget::main(0)) {
                 assert_eq!(
-                    shifted.hit_test([x as f32, y as f32]),
+                    pick(&shifted, [x as f32, y as f32]),
                     Some(RadialTarget::main(1))
                 );
                 found = true;
@@ -449,6 +544,234 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
     assert!(found);
 }
 
+/// A lifted slice picks where it is drawn, and at rest where it was: the
+/// hover hysteresis a host keeps the hover with.
+#[test]
+fn radial_pick_at_rest_finds_the_unlifted_footprint() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.style.tilt_degrees = 50.0;
+    c.style.depth = 0.15;
+    c.style.hover_lift = 0.25;
+    c.interaction.hovered = Some(RadialTarget::main(0));
+    c.interaction.hover_progress = 1.0;
+    let frame = r.prepare(&c, (320, 320), 1.0).unwrap();
+    let (mut lifted_only, mut rest_only) = (0, 0);
+    for y in (10..310).step_by(4) {
+        for x in (10..310).step_by(4) {
+            let p = [x as f32 + 0.5, y as f32 + 0.5];
+            let (drawn, rest) = (
+                pick(&frame, p),
+                frame.pick_at_rest(p).unwrap().resolve().block_on().unwrap(),
+            );
+            let a = RadialTarget::main(0);
+            lifted_only += usize::from(drawn == Some(a) && rest != Some(a));
+            rest_only += usize::from(rest == Some(a) && drawn != Some(a));
+        }
+    }
+    assert!(
+        lifted_only > 10,
+        "the lifted slice picks above its footprint"
+    );
+    assert!(
+        rest_only > 10,
+        "the footprint the lift uncovered picks at rest"
+    );
+}
+
+/// The GPU pick and the CPU twin of its ray-march (test support) pick the
+/// same slice wherever neither is on an edge between two answers: over
+/// tilt, depth, bevel, gaps, rounded corners, explode, the donut hole, the
+/// detail circle and the hover lift, lifted and at rest.
+#[cfg(feature = "cpu-twin")]
+#[test]
+fn radial_gpu_pick_agrees_with_the_cpu_twin() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut charts = Vec::new();
+    let mut flat = chart();
+    flat.slices
+        .push(RadialSlice::new("C", 40.0, Color::from_rgb8(30, 160, 60)));
+    charts.push(flat.clone());
+    let mut solid = flat.clone();
+    solid.kind = RadialKind::Donut { inner_radius: 0.45 };
+    solid.style = RadialStyle::three_dimensional();
+    solid.style.gap_degrees = 6.0;
+    solid.style.inner_corner = 0.1;
+    solid.style.outer_corner = 0.1;
+    solid.slices[1].explode = 0.2;
+    solid.interaction.hovered = Some(RadialTarget::main(2));
+    solid.interaction.hover_progress = 0.7;
+    charts.push(solid.clone());
+    let mut split = solid.clone();
+    split.interaction = Default::default();
+    split.style.tilt_degrees = 30.0;
+    split.split = Some(RadialSplit {
+        slice_index: 1,
+        kind: RadialKind::Pie,
+        children: vec![
+            RadialSlice::new("D", 50.0, Color::from_rgb8(200, 120, 20)),
+            RadialSlice::new("E", 25.0, Color::from_rgb8(120, 20, 200)),
+        ],
+    });
+    split.interaction.selected = Some(RadialTarget::detail(0));
+    charts.push(split);
+    let (mut compared, mut edges) = (0usize, 0usize);
+    for c in &charts {
+        for scale in [1.0, 2.0] {
+            let frame = r.prepare(c, (400, 300), scale).unwrap();
+            for rest in [false, true] {
+                let twin = |p: [f32; 2]| frame.cpu_twin_pick(p, rest);
+                for y in (4..300).step_by(7) {
+                    for x in (4..400).step_by(7) {
+                        let p = [x as f32 + 0.5, y as f32 + 0.5];
+                        let gpu = if rest {
+                            frame.pick_at_rest(p).unwrap().resolve().block_on().unwrap()
+                        } else {
+                            pick(&frame, p)
+                        };
+                        compared += 1;
+                        if gpu == twin(p) {
+                            continue;
+                        }
+                        // f32 trigonometry differs in the last bits between the
+                        // GPU and the CPU: a disagreement is allowed only where
+                        // the twin's own answer changes within a pixel.
+                        let edge = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]]
+                            .iter()
+                            .any(|d| twin([p[0] + d[0], p[1] + d[1]]) != twin(p));
+                        assert!(
+                            edge,
+                            "GPU {gpu:?} and twin {:?} disagree off an edge at {p:?}, scale {scale}, rest {rest}",
+                            twin(p)
+                        );
+                        edges += 1;
+                    }
+                }
+            }
+            drop(frame);
+            drain(&r);
+        }
+    }
+    assert!(
+        edges * 200 <= compared,
+        "{edges} of {compared} samples disagree on edges"
+    );
+}
+
+/// `step_selection` walks every slice with a value (the main circle's, then
+/// the detail circle's children) and wraps, and the picked highlight of each
+/// stepped slice is drawn on that slice alone. Against the export without a
+/// selection, every
+/// changed pixel lies on the selected slice where it rests or where it is
+/// lifted (the CPU twin of the pick, within a pixel of antialiasing), and
+/// the GPU pick of the selected frame finds the slice there, at 1x and 2x.
+#[cfg(feature = "cpu-twin")]
+#[test]
+fn radial_step_selection_moves_the_highlight_to_each_slice() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.kind = RadialKind::Donut { inner_radius: 0.45 };
+    c.style = RadialStyle::three_dimensional();
+    c.style.tilt_degrees = 40.0;
+    c.style.hover_lift = 0.2;
+    // A lifted slice's floor shadow falls beside its footprint.
+    c.style.shadow = false;
+    c.slices = vec![
+        RadialSlice::new("A", 25.0, Color::from_rgb8(220, 60, 40)),
+        RadialSlice::new("Z", 0.0, Color::WHITE),
+        RadialSlice::new("B", 40.0, Color::from_rgb8(40, 80, 220)),
+        RadialSlice::new("C", 35.0, Color::from_rgb8(40, 170, 70)),
+    ];
+    c.split = Some(RadialSplit {
+        slice_index: 2,
+        kind: RadialKind::Pie,
+        children: vec![
+            RadialSlice::new("D", 30.0, Color::from_rgb8(200, 140, 20)),
+            RadialSlice::new("E", 10.0, Color::from_rgb8(130, 30, 190)),
+        ],
+    });
+    let targets = [
+        RadialTarget::main(0),
+        RadialTarget::main(2),
+        RadialTarget::main(3),
+        RadialTarget::detail(0),
+        RadialTarget::detail(1),
+    ];
+    let size = (400, 300);
+    for scale in [1.0f32, 2.0] {
+        c.interaction = Default::default();
+        let rest = r
+            .export_rgba(&c, size, renderer::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
+        drain(&r);
+        // Step from no selection through every target and wrap to the first.
+        for expected in targets.iter().chain(&targets[..1]) {
+            c.step_selection(false);
+            let target = c.interaction.selected.unwrap();
+            assert_eq!(target, *expected, "step order at {scale}x");
+            let frame = r.prepare(&c, size, scale).unwrap();
+            let image = r
+                .export_rgba(&c, size, renderer::ExportOptions::document(scale))
+                .block_on()
+                .unwrap();
+            assert_eq!((image.width, image.height), (rest.width, rest.height));
+            let on = |p: [f32; 2]| {
+                frame.cpu_twin_pick(p, false) == Some(target)
+                    || frame.cpu_twin_pick(p, true) == Some(target)
+            };
+            let step = 1.0 / scale;
+            let (mut changed, mut off, mut gpu_checked) = (0usize, Vec::new(), 0usize);
+            for (i, (a, b)) in rest
+                .rgba
+                .chunks_exact(4)
+                .zip(image.rgba.chunks_exact(4))
+                .enumerate()
+            {
+                if a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 8) {
+                    continue;
+                }
+                changed += 1;
+                let (x, y) = (i as u32 % image.width, i as u32 / image.width);
+                let p = [(x as f32 + 0.5) * step, (y as f32 + 0.5) * step];
+                let near = [-step, 0.0, step].iter().any(|dx| {
+                    [-step, 0.0, step]
+                        .iter()
+                        .any(|dy| on([p[0] + dx, p[1] + dy]))
+                });
+                if !near {
+                    off.push((x, y));
+                } else if gpu_checked < 8
+                    && i % 97 == 0
+                    && frame.cpu_twin_pick(p, false) == Some(target)
+                {
+                    assert_eq!(pick(&frame, p), Some(target), "GPU pick at {p:?}");
+                    gpu_checked += 1;
+                }
+            }
+            assert!(
+                changed > (200.0 * scale * scale) as usize,
+                "{target:?} at {scale}x: the highlight changed only {changed} pixels"
+            );
+            assert!(
+                off.is_empty(),
+                "{target:?} at {scale}x: {} of {changed} changed pixels lie off the slice, first {:?}",
+                off.len(),
+                &off[..off.len().min(8)]
+            );
+            assert!(
+                gpu_checked > 0,
+                "{target:?} at {scale}x: no GPU pick sampled"
+            );
+            drop(frame);
+            drain(&r);
+        }
+    }
+}
+
 #[test]
 fn radial_rounding_changes_geometry_and_outline_is_resolution_independent() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -456,11 +779,17 @@ fn radial_rounding_changes_geometry_and_outline_is_resolution_independent() {
     let mut c = chart();
     c.kind = RadialKind::Donut { inner_radius: 0.5 };
     c.style.gap_degrees = 4.0;
-    let sharp = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let sharp = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     drain(&r);
     c.style.inner_corner = 0.15;
     c.style.outer_corner = 0.15;
-    let rounded = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let rounded = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     drain(&r);
     let colored =
         |im: &renderer::RasterImage| im.rgba.chunks_exact(4).filter(|p| p[1] < 50).count();
@@ -474,13 +803,22 @@ fn radial_rounding_changes_geometry_and_outline_is_resolution_independent() {
         width: 2.0,
         ..Default::default()
     };
-    let one = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let one = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     drain(&r);
-    let two = r.export_rgba(&c, (320, 320), 2.0).unwrap();
+    let two = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(2.0))
+        .block_on()
+        .unwrap();
     drain(&r);
     c.style.outline.rim = false;
     c.style.outline.separators = false;
-    let plain2 = r.export_rgba(&c, (320, 320), 2.0).unwrap();
+    let plain2 = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(2.0))
+        .block_on()
+        .unwrap();
     // Integrate coverage rather than thresholding partially antialiased pixels.
     let ink = |plain: &renderer::RasterImage, outlined: &renderer::RasterImage| -> f64 {
         plain
@@ -510,7 +848,7 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     c.label_format = RadialLabelFormat::NameValuePercent;
     c.slices[0].value = 25.1234;
     c.kind = RadialKind::Donut { inner_radius: 0.4 };
-    c.style.material = RadialMaterial::Ceramic;
+    c.style.material = Material::Ceramic;
     c.style.depth = 0.2;
     c.style.tilt_degrees = 35.0;
     c.style.inner_corner = 0.05;
@@ -524,7 +862,12 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     };
     c.interaction.hovered = Some(RadialTarget::main(0));
     c.interaction.hover_progress = 0.5;
-    let before = r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba;
+    c.format_labels();
+    let before = r
+        .export_rgba(&c, (500, 360), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     let edits: Vec<(&str, Box<dyn Fn(&mut RadialChart)>)> = vec![
         ("decimals", Box::new(|c| c.label_decimals = 3)),
@@ -568,19 +911,33 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     for (name, edit) in edits {
         let mut changed = c.clone();
         edit(&mut changed);
+        changed.format_labels();
         assert_ne!(
-            r.export_rgba(&changed, (500, 360), 1.0).unwrap().rgba,
+            r.export_rgba(&changed, (500, 360), renderer::ExportOptions::document(1.0))
+                .block_on()
+                .unwrap()
+                .rgba,
             before,
             "{name}"
         );
         drain(&r);
     }
-    c.style.material = RadialMaterial::Paper;
+    c.style.material = Material::Paper;
     c.style.texture_strength = 0.8;
-    let paper = r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba;
+    let paper = r
+        .export_rgba(&c, (500, 360), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     c.style.texture_angle_degrees = 90.0;
-    assert_ne!(r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba, paper);
+    assert_ne!(
+        r.export_rgba(&c, (500, 360), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap()
+            .rgba,
+        paper
+    );
     drain(&r);
     c.interaction = RadialInteraction::default();
     c.labels = RadialLabels::None;
@@ -592,10 +949,16 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
             RadialSlice::new("E", 50.0, Color::from_rgb8(240, 180, 30)),
         ],
     });
-    let original = r.export_rgba(&c, (640, 360), 1.0).unwrap();
+    let original = r
+        .export_rgba(&c, (640, 360), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     drain(&r);
     c.slice_mut(RadialTarget::detail(0)).unwrap().color = Color::from_rgb8(200, 40, 200);
-    let edited = r.export_rgba(&c, (640, 360), 1.0).unwrap();
+    let edited = r
+        .export_rgba(&c, (640, 360), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     for y in 0..360 {
         assert_eq!(
             &original.rgba[y * 640 * 4..(y * 640 + 300) * 4],
@@ -606,6 +969,112 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     assert_ne!(original.rgba, edited.rgba);
 }
 
+/// A title wider than the canvas is drawn clipped by it, not refused: its
+/// hit region is what the canvas shows, and it can still be dragged.
+#[test]
+fn radial_title_wider_than_the_canvas_is_clipped() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.set_title_text("A title that is far wider than the canvas it is drawn on");
+    c.font_size = 24.0;
+    let frame = r
+        .prepare(&c, (320, 320), 1.0)
+        .expect("a wide title is clipped");
+    let id = frame
+        .decoration(&renderer::DecorationId::ChartTitle)
+        .expect("the title is in the hit map");
+    let bounds = frame
+        .decoration_selection_box(&c, id)
+        .unwrap()
+        .rect()
+        .expanded(-renderer::select::SELECTION_PADDING);
+    assert!(
+        bounds.x >= 0.0 && bounds.x + bounds.width <= 320.0 && bounds.width > 300.0,
+        "{bounds:?}"
+    );
+    assert_eq!(frame.decoration_at(&c, [2.0, bounds.y + 4.0]), Some(id));
+    assert_eq!(frame.decoration_at(&c, [-1.0, bounds.y + 4.0]), None);
+    let image = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
+    let ink = |columns: std::ops::Range<usize>| {
+        (0..60).any(|y| {
+            columns.clone().any(|x| {
+                image.rgba[(y * 320 + x) * 4..][..3]
+                    .iter()
+                    .any(|&v| v < 128)
+            })
+        })
+    };
+    assert!(ink(0..8) && ink(312..320), "the title runs off both edges");
+    let mut moved = c.clone();
+    assert_eq!(
+        frame.drag_decoration(&mut moved, id, 0.0, 6.0),
+        Some(renderer::layout::NudgeResult::Moved)
+    );
+    assert_eq!(
+        frame.drag_decoration(&mut moved, id, 6.0, 0.0),
+        Some(renderer::layout::NudgeResult::Rejected(
+            renderer::layout::NudgeReject::OutOfBounds
+        )),
+        "the clipped title already fills the canvas width"
+    );
+    assert!(r.prepare(&moved, (320, 320), 1.0).is_ok());
+}
+
+/// The renderer draws `RadialSlice::text` and formats nothing: a slice whose
+/// text is another slice's formatted string draws exactly what that slice
+/// draws, and a shown label without text is refused.
+#[test]
+fn radial_labels_draw_the_slice_text() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut named = chart();
+    named.labels = RadialLabels::Outside;
+    named.label_format = RadialLabelFormat::Name;
+    named.slices[0].label = "Zed".into();
+    named.format_labels();
+    assert_eq!(named.slices[0].text.as_deref(), Some("Zed"));
+    let expected = r
+        .export_rgba(&named, (480, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap()
+        .rgba;
+    drain(&r);
+    let mut custom = named.clone();
+    custom.slices[0].label = "A".into();
+    custom.label_format = RadialLabelFormat::NameValuePercent;
+    // The name and format no longer produce "Zed"; the stored text does.
+    assert_eq!(custom.slices[0].text.as_deref(), Some("Zed"));
+    assert_eq!(
+        r.export_rgba(&custom, (480, 320), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap()
+            .rgba,
+        expected
+    );
+    drain(&r);
+    custom.slices[0].text = Some("Custom\ntwo lines".into());
+    assert_ne!(
+        r.export_rgba(&custom, (480, 320), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap()
+            .rgba,
+        expected
+    );
+    drain(&r);
+    custom.slices[1].text = None;
+    let refused = r.prepare(&custom, (480, 320), 1.0).err();
+    assert!(
+        refused.is_some_and(|e| e.to_string().contains("format_labels")),
+        "a shown label without text must be refused"
+    );
+    custom.slices[1].labels = Some(RadialLabels::None);
+    assert!(r.prepare(&custom, (480, 320), 1.0).is_ok());
+}
+
 // Exhaustive destructuring makes future SSOT additions require an explicit review
 // of the editing/reuse/pixel contract above (no `..` silently accepting fields).
 #[test]
@@ -613,13 +1082,13 @@ fn radial_ssot_fields_are_explicit() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let RadialChart {
         decorations: _,
-        title: _,
         chart_title: _,
         // Layer foundation: `active_layer` only routes interaction and never
         // changes pixels; `annotations` is the container the annotation layer
         // fills later. `frame_key` strips both before the frame and label
         // raster cache comparisons, so editing either reuses the cached frame
-        // (covered by `layer_fields_reuse_cached_frames` in bounded_interaction).
+        // (covered by the empty-layer cases of `family_contract!` and
+        // `family_routing!` in annotation_layer).
         active_layer: _,
         annotations: _,
         slices: _,
@@ -639,8 +1108,13 @@ fn radial_ssot_fields_are_explicit() {
     } = RadialChart::default();
     // Independent title fields are covered by the three CPU layout/pixel tests.
     // Keep this exhaustive so additions require an explicit editing/cache review.
-    let renderer::BoundedTitleOptions {
+    // The offsets and `top_margin` must be 0 on a radial chart (its
+    // position is in `decorations`); validation enforces it.
+    let renderer::config::ChartTitleOptions {
         visible: _,
+        offset_x: _,
+        offset_y: _,
+        top_margin: _,
         text:
             renderer::text::RichText {
                 segments: _,
@@ -649,7 +1123,7 @@ fn radial_ssot_fields_are_explicit() {
                 font: _,
                 align: _,
             },
-    } = renderer::BoundedTitleOptions::from_legacy("Title", "", 16., Color::BLACK);
+    } = renderer::config::ChartTitleOptions::from_legacy_plain("Title", "", 16., Color::BLACK);
     let RadialStyle {
         material: _,
         tilt_degrees: _,
@@ -678,6 +1152,8 @@ fn radial_ssot_fields_are_explicit() {
         labels: _,
         label_format: _,
         label_color: _,
+        text: _,
+        children: _,
     } = RadialSlice::new("A", 1.0, Color::WHITE);
     let RadialOutline {
         rim: _,
@@ -712,13 +1188,20 @@ fn radial_inside_labels_follow_lift_without_raster_reallocation() {
     c.style.depth = 0.1;
     c.style.hover_lift = 0.15;
     c.style.hover_brightness = 0.0;
+    c.format_labels();
     let rest = r.prepare(&c, (320, 320), 1.0).unwrap();
-    let a = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let a = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     drain(&r);
     c.interaction.selected = Some(RadialTarget::main(0));
     let lifted = r.prepare(&c, (320, 320), 1.0).unwrap();
     assert!(rest.shares_annotations_with(&lifted));
-    let b = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let b = r
+        .export_rgba(&c, (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     let centroid = |im: &renderer::RasterImage| {
         let mut count = 0.0;
         let mut y = 0.0;
@@ -756,7 +1239,7 @@ fn radial_paper_wall_grain_varies_with_height_instead_of_extruding_stripes() {
         ..Default::default()
     };
     c.style = RadialStyle {
-        material: RadialMaterial::Paper,
+        material: Material::Paper,
         depth: 0.4,
         tilt_degrees: 55.0,
         bevel: 0.0,
@@ -768,10 +1251,15 @@ fn radial_paper_wall_grain_varies_with_height_instead_of_extruding_stripes() {
     let plain = {
         let mut plain = c.clone();
         plain.style.texture_strength = 0.0;
-        r.export_rgba(&plain, (512, 512), 1.0).unwrap()
+        r.export_rgba(&plain, (512, 512), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap()
     };
     drain(&r);
-    let grain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    let grain = r
+        .export_rgba(&c, (512, 512), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     // Locate the front cylindrical wall from the silhouette, then measure ONLY
     // the texture residual against an otherwise identical untextured render.
     // At fixed x the cylinder's x/y and normal are constant; height is different.
@@ -851,10 +1339,16 @@ fn radial_raised_rims_include_visible_top_wall_creases() {
             },
             ..Default::default()
         };
-        let plain = r.export_rgba(&c, (384, 320), scale).unwrap();
+        let plain = r
+            .export_rgba(&c, (384, 320), renderer::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
         drain(&r);
         c.style.outline.rim = true;
-        let outlined = r.export_rgba(&c, (384, 320), scale).unwrap();
+        let outlined = r
+            .export_rgba(&c, (384, 320), renderer::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
         save_surface_probe(
             if hole == 0.0 {
                 "raised-pie-rim"
@@ -921,14 +1415,20 @@ fn radial_raised_rims_include_visible_top_wall_creases() {
         c.style.outline.rim = false;
         c.style.outline.separators = true;
         assert_eq!(
-            r.export_rgba(&c, (384, 320), scale).unwrap().rgba,
+            r.export_rgba(&c, (384, 320), renderer::ExportOptions::document(scale))
+                .block_on()
+                .unwrap()
+                .rgba,
             plain.rgba
         );
         drain(&r);
         c.style.outline.rim = true;
         c.style.outline.width = 0.0;
         assert_eq!(
-            r.export_rgba(&c, (384, 320), scale).unwrap().rgba,
+            r.export_rgba(&c, (384, 320), renderer::ExportOptions::document(scale))
+                .block_on()
+                .unwrap()
+                .rgba,
             plain.rgba
         );
         drain(&r);
@@ -947,7 +1447,7 @@ fn radial_wood_is_matte_irregular_surface_grain_not_bands_or_wall_stripes() {
             Color::from_rgb8(180, 180, 180),
         )],
         style: RadialStyle {
-            material: RadialMaterial::Wood,
+            material: Material::Wood,
             depth: 0.4,
             tilt_degrees: 55.0,
             bevel: 0.0,
@@ -958,10 +1458,16 @@ fn radial_wood_is_matte_irregular_surface_grain_not_bands_or_wall_stripes() {
         },
         ..Default::default()
     };
-    let plain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    let plain = r
+        .export_rgba(&c, (512, 512), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     drain(&r);
     c.style.texture_strength = 1.0;
-    let grain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    let grain = r
+        .export_rgba(&c, (512, 512), renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     save_surface_probe("plywood-surface", &grain);
     let residual = |x: usize, y: usize| -> f64 {
         let i = (y * 512 + x) * 4;
@@ -1004,5 +1510,162 @@ mod radial_export;
 #[test]
 fn radial_png_preserves_hover_progress_and_persistent_selection() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    pollster::block_on(radial_export::check(gpu()));
+    test_gpu::block_on(radial_export::check(gpu()));
+}
+/// RADIAL_CHART_VALIDATED (#152): the layout reads a validated chart only.
+/// A split naming a slice at or past the chart's slices is refused as
+/// invalid by `prepare` and every export, at 1x and 2x, before anything is
+/// laid out, and the renderer still prepares the valid chart afterwards.
+#[test]
+fn a_split_past_the_slices_is_refused_by_prepare_and_every_export() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let size = (400, 300);
+    for slice_index in [chart().slices.len(), usize::MAX] {
+        let mut c = chart();
+        c.labels = RadialLabels::Outside;
+        c.split = Some(RadialSplit {
+            slice_index,
+            kind: RadialKind::Pie,
+            children: vec![RadialSlice::new("D", 25.0, Color::from_rgb8(0, 200, 150))],
+        });
+        c.format_labels();
+        for scale in [1.0, 2.0] {
+            let context = format!("split.slice_index {slice_index} at {scale}x");
+            let invalid = |e: &RadialError| matches!(e, RadialError::Invalid(_));
+            assert!(
+                invalid(&r.prepare(&c, size, scale).err().unwrap()),
+                "{context}"
+            );
+            assert!(
+                invalid(
+                    &r.export_rgba(&c, size, renderer::ExportOptions::document(scale))
+                        .block_on()
+                        .err()
+                        .unwrap()
+                ),
+                "{context}"
+            );
+            assert!(
+                invalid(
+                    &r.export_svg(&c, size, renderer::ExportOptions::document(scale))
+                        .block_on()
+                        .unwrap_err()
+                ),
+                "{context}"
+            );
+            assert!(
+                invalid(
+                    &r.export_pdf(&c, size, renderer::ExportOptions::document(scale))
+                        .block_on()
+                        .unwrap_err()
+                ),
+                "{context}"
+            );
+        }
+    }
+    r.prepare(&chart(), size, 1.0).unwrap();
+    drain(&r);
+}
+
+/// The Flat fast path (#41): a level, unlit, unoutlined Flat chart shades a
+/// pixel once when no sector edge is near it, instead of once per
+/// antialiasing sample. An outline with a fully transparent colour changes no
+/// pixel but sends every pixel through the sampled path, so both exports must
+/// match byte for byte: pies and donuts, many slices, gaps, rounded corners,
+/// explode, hover lift, moving inside labels and a detail chart, at 1x and 2x.
+#[test]
+fn a_flat_chart_draws_the_same_pixels_as_its_sampled_path() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let palette = [
+        Color::from_rgb8(217, 76, 64),
+        Color::from_rgb8(64, 128, 217),
+        Color::from_rgb8(76, 178, 89),
+        Color::from_rgb8(242, 204, 51),
+    ];
+    let slices = |n: usize| -> Vec<RadialSlice> {
+        (0..n)
+            .map(|i| RadialSlice::new(format!("S{i}"), 1.0 + (i * 7 % 5) as f64, palette[i % 4]))
+            .collect()
+    };
+    let donut = RadialKind::Donut { inner_radius: 0.55 };
+    let mut cases = Vec::new();
+    for (n, kind) in [
+        (1, RadialKind::Pie),
+        (3, RadialKind::Pie),
+        (12, donut),
+        (40, donut),
+    ] {
+        let mut c = chart();
+        c.kind = kind;
+        c.slices = slices(n);
+        cases.push(c);
+    }
+    let mut c = chart();
+    c.kind = donut;
+    c.slices = slices(5);
+    c.style.gap_degrees = 3.0;
+    c.style.inner_corner = 0.05;
+    c.style.outer_corner = 0.08;
+    cases.push(c);
+    let mut c = chart();
+    c.slices = slices(6);
+    c.slices[1].explode = 0.2;
+    c.slices[4].explode = 0.35;
+    c.interaction.hovered = Some(RadialTarget::main(2));
+    c.interaction.hover_progress = 0.6;
+    cases.push(c);
+    let mut c = chart();
+    c.kind = donut;
+    c.slices = slices(6);
+    c.labels = RadialLabels::Inside;
+    c.font_size = 12.0;
+    c.interaction.hovered = Some(RadialTarget::main(1));
+    c.interaction.hover_progress = 1.0;
+    c.background = Color::new(0.1, 0.2, 0.3, 0.5);
+    c.format_labels();
+    cases.push(c);
+    let mut c = chart();
+    c.kind = donut;
+    c.split = Some(RadialSplit {
+        slice_index: 1,
+        kind: RadialKind::Pie,
+        children: vec![
+            RadialSlice::new("D", 25.0, Color::from_rgb8(0, 200, 150)),
+            RadialSlice::new("E", 50.0, Color::from_rgb8(220, 180, 80)),
+        ],
+    });
+    cases.push(c);
+    let mut r = renderer();
+    for (index, flat) in cases.iter().enumerate() {
+        let mut sampled = flat.clone();
+        sampled.style.outline.rim = true;
+        sampled.style.outline.separators = true;
+        sampled.style.outline.color = Color::new(0.0, 0.0, 0.0, 0.0);
+        for (size, scale) in [((480, 300), 1.0), ((333, 257), 2.0)] {
+            let export = |r: &mut RadialRenderer, c: &RadialChart| {
+                r.export_rgba(c, size, renderer::ExportOptions::document(scale))
+                    .block_on()
+                    .unwrap()
+                    .rgba
+            };
+            let fast = export(&mut r, flat);
+            let slow = export(&mut r, &sampled);
+            let colored = fast
+                .chunks_exact(4)
+                .filter(|p| p[0] != p[1] || p[1] != p[2])
+                .count();
+            assert!(colored > 1000, "case {index} at {scale}x drew no slices");
+            let differing = fast
+                .chunks_exact(4)
+                .zip(slow.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(
+                differing, 0,
+                "case {index} at {scale}x: {differing} pixels differ"
+            );
+            drain(&r);
+        }
+    }
 }

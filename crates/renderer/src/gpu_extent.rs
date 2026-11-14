@@ -1,0 +1,2310 @@
+//! GPU reduction for drawable-series and legacy errorbar fit bounds.
+//!
+//! The column pool remains the sole per-value source. The initial pass binds
+//! that pool once, addresses packed `(hi, lo)` lanes through checked offsets,
+//! and exhaustively reduces the rows that can produce a primitive. No
+//! value-sized CPU allocation, shadow column, sampling, or downsampling is
+//! involved. Readback contains only the six `(hi, lo)` bounds consumed by the
+//! CPU-owned axis SSoT; no source endpoint or errorbar provenance crosses the
+//! GPU boundary.
+
+use std::num::NonZeroU64;
+use std::sync::Arc;
+
+use crate::TryResolve;
+use crate::gpu_readback::{GpuReadback, ReadbackError};
+
+use crate::data::COLUMN_VALUE_BYTES;
+use crate::data_config::DataRenderType;
+use crate::data_render::ColumnHandle;
+use crate::gpu_memory::{
+    ChargeTally, GpuByteCharge, GpuLedger, GpuResourceKind, charged_buffer, charged_buffer_init,
+};
+use crate::init::{InitEvent, finished, observe_value, started};
+
+/// The assembled fit-bounds reduction module.
+pub(crate) const ERRORBAR_FIT_SHADER: crate::shader_assembly::Assembled =
+    crate::shader_assembly::assembled!("data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl",);
+
+const INIT_SCOPE: &str = "renderer.errorbar_extent";
+
+const WORKGROUP_SIZE: u32 = 64;
+const LEGACY_AXIS_MODE: u32 = 5;
+pub(crate) const FIELD_EDGES_CELLS_MODE: u32 = 6;
+pub(crate) const FIELD_EDGES_SAMPLES_MODE: u32 = 7;
+pub(crate) const FIELD_CENTERS_CELLS_MODE: u32 = 8;
+pub(crate) const FIELD_CENTERS_SAMPLES_MODE: u32 = 9;
+const EMPTY_MINIMUM_BOUND: [f32; 2] = [f32::MAX, f32::MAX];
+const EMPTY_MAXIMUM_BOUND: [f32; 2] = [-f32::MAX, -f32::MAX];
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct AxisStateGpu {
+    minimum: [f32; 2],
+    maximum: [f32; 2],
+    minimum_positive: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct SeriesStateGpu {
+    x: AxisStateGpu,
+    y: AxisStateGpu,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ParamsGpu {
+    offsets_0: [u32; 4],
+    offsets_1: [u32; 4],
+    lengths_0: [u32; 4],
+    lengths_1: [u32; 4],
+}
+
+#[derive(Clone, Copy)]
+struct ColumnRangeGpu {
+    offset: u32,
+    len: u32,
+}
+
+const SERIES_STATE_BYTES: u64 = std::mem::size_of::<SeriesStateGpu>() as u64;
+
+const _: [(); 24] = [(); std::mem::size_of::<AxisStateGpu>()];
+const _: [(); 48] = [(); std::mem::size_of::<SeriesStateGpu>()];
+const _: [(); 64] = [(); std::mem::size_of::<ParamsGpu>()];
+
+/// Scalar fit extent reconstructed from the GPU-reduced `(hi, lo)` bounds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuErrorbarExtent {
+    pub min: f64,
+    pub max: f64,
+    pub min_positive: Option<f64>,
+}
+
+/// Exact paired x/y result for one drawable series.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuSeriesExtent {
+    pub x: GpuErrorbarExtent,
+    pub y: GpuErrorbarExtent,
+}
+
+/// Normalized primitive domains used by the series fit-bound reducer.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GpuSeriesExtentMode {
+    /// Only endpoints belonging to a finite adjacent line segment.
+    Line = 0,
+    /// Every finite paired x/y point.
+    Points = 1,
+    /// Finite paired points plus active x errorbar endpoints.
+    PointsX = 2,
+    /// Finite paired points plus active y errorbar endpoints.
+    PointsY = 3,
+    /// Finite paired points plus active x and y errorbar endpoints.
+    PointsXY = 4,
+    /// Finite paired anchors plus the arrow tips `anchor + factor * (u, v)`
+    /// of a `Data`-scaled point vector series. The `u` / `v` columns ride in
+    /// the x-upper / y-upper slots and the factor in the reserved params word.
+    VectorTips = 10,
+}
+
+/// The coordinate lattice whose exact outer bounds a matrix-backed primitive
+/// paints. These four cases mirror `field_columnar.wgsl`'s
+/// `cell_edge_pair`/`sample_point_pair` choice; the CPU supplies only the
+/// resolved cell counts, while the GPU reads and combines the coordinate pairs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GpuFieldExtentMode {
+    EdgesCells,
+    EdgesSamples,
+    CentersCells,
+    CentersSamples,
+}
+
+impl GpuFieldExtentMode {
+    fn shader_mode(self) -> u32 {
+        match self {
+            Self::EdgesCells => FIELD_EDGES_CELLS_MODE,
+            Self::EdgesSamples => FIELD_EDGES_SAMPLES_MODE,
+            Self::CentersCells => FIELD_CENTERS_CELLS_MODE,
+            Self::CentersSamples => FIELD_CENTERS_SAMPLES_MODE,
+        }
+    }
+}
+
+/// One normalized GPU fit domain. Paired point/line/errorbar series reduce all
+/// drawable rows; fields read only the outer coordinate pairs of the exact
+/// lattice their render entry uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GpuSeriesFitMode {
+    Paired(GpuSeriesExtentMode),
+    Field(GpuFieldExtentMode),
+}
+
+impl GpuSeriesFitMode {
+    pub fn from_render_type(render_type: &DataRenderType) -> Option<Self> {
+        if let Some(mode) = GpuSeriesExtentMode::from_render_type(render_type) {
+            return Some(Self::Paired(mode));
+        }
+        use crate::data_config::{GridLayout, Shading};
+        let (matrix, samples) = match render_type {
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix,
+                fill: Some(fill),
+                contour: None,
+                surface: _,
+            }) => (matrix, matches!(fill.shading, Shading::Interpolated)),
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix, fill: None, ..
+            }) => (matrix, true),
+            // An image fits as a heatmap of its red grid's layout.
+            DataRenderType::RgbImage { red, shading, .. } => {
+                (red, matches!(shading, Shading::Interpolated))
+            }
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix,
+                fill: Some(fill),
+                contour: Some(_),
+                surface: _,
+            }) => {
+                // The fit covers the union of fill and isolines. A flat fill
+                // reaches cell edges; an interpolated fill and the contour both
+                // stop at sample points.
+                (matrix, matches!(fill.shading, Shading::Interpolated))
+            }
+            // Category bars fit from column and stack statistics, box plots
+            // from record and ragged statistics.
+            DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
+            | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. } => {
+                return None;
+            }
+            // A radar series and streamlines fit as the line they draw (the
+            // extent mode above answers them first).
+            DataRenderType::Radar { .. }
+            | DataRenderType::Streamlines { .. }
+            | DataRenderType::MonotonicLine(_) => return None,
+            // A ternary chart's axes are the triangle, not a data extent.
+            DataRenderType::Ternary { .. } => return None,
+            // A parallel chart's axes are the categorical positions and the
+            // normalized band; each parallel axis fits from its column's
+            // statistics (`Chart::auto_fit_parallel_axes`).
+            DataRenderType::Parallel { .. }
+            | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_) => return None,
+            // A triangle mesh fits from its vertex columns' statistics at
+            // commit, as a histogram does (#210).
+            DataRenderType::TriMesh(_) => return None,
+            // A grid vector's anchors are the grid's sample points: the
+            // coordinates under `Centers`, the cell centres under `Edges`.
+            // Data-mode tips over a grid are not part of the fit.
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Grid { u, .. },
+                ..
+            } => (u, true),
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { .. },
+                ..
+            }
+            | DataRenderType::Xy(_) => {
+                // The paired mode answered these above; it is their mode.
+                return GpuSeriesExtentMode::from_render_type(render_type).map(Self::Paired);
+            }
+        };
+        let mode = match (&matrix.grid_layout, samples) {
+            (GridLayout::Edges, false) => GpuFieldExtentMode::EdgesCells,
+            (GridLayout::Edges, true) => GpuFieldExtentMode::EdgesSamples,
+            (GridLayout::Centers, false) => GpuFieldExtentMode::CentersCells,
+            (GridLayout::Centers, true) => GpuFieldExtentMode::CentersSamples,
+            // A hexagonal grid's centres reach half a pitch out as centres
+            // cells do; the ticket adds the hexagons' overhang (#134).
+            (GridLayout::Hexagonal, _) => GpuFieldExtentMode::CentersCells,
+        };
+        Some(Self::Field(mode))
+    }
+}
+
+impl GpuSeriesExtentMode {
+    /// The paired-reducer domain for a render type, or `None` when its extent
+    /// does not come from this reducer at all.
+    ///
+    /// Every mode here reduces over **index-aligned pairs** — pair `i` is
+    /// `(x[i], y[i])`, and the pass runs to `min(x.len(), y.len())`. That is the
+    /// right domain for a series whose two columns are the same points, and the
+    /// wrong one for the four field / bar types, in a way that would not look
+    /// like a failure:
+    ///
+    /// - A histogram is `(edges = n + 1, counts = n)`. Pairing stops at `n`, so
+    ///   the last edge never reaches the x extent and auto-fit clips the final
+    ///   bar's far side.
+    /// - A matrix' `x_column` and `y_column` are the grid's two coordinate axes
+    ///   with independent lengths. Pairing a 100-wide x against a 50-tall y
+    ///   would report x's extent as `x[49]`, and auto-fit would show half the
+    ///   field.
+    ///
+    /// Histograms are fitted synchronously from their edge/count metadata.
+    /// Matrix fields instead use [`GpuSeriesFitMode::Field`], because their
+    /// rendered outer bounds may be derived midpoints or extrapolated half-cells
+    /// rather than either coordinate column's raw minimum and maximum.
+    pub fn from_render_type(render_type: &DataRenderType) -> Option<Self> {
+        match render_type {
+            // A radar outline is a line through (position, value) pairs;
+            // streamlines are polylines whose NaN rows hold no extent.
+            DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
+            | DataRenderType::Radar { .. }
+            | DataRenderType::Streamlines { .. }
+            // A monotonic envelope fits as the line it draws: its kept
+            // points, the visible samples and one on each side (#271).
+            | DataRenderType::MonotonicLine(_) => Some(Self::Line),
+            DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), errors: None, .. }) => {
+                Some(Self::Points)
+            }
+            DataRenderType::Xy(crate::data_config::XySeries { errors: Some(crate::data_config::ErrorBars { x: Some(_), y: None, .. }), .. }) => Some(Self::PointsX),
+            DataRenderType::Xy(crate::data_config::XySeries { errors: Some(crate::data_config::ErrorBars { x: None, .. }), .. }) => Some(Self::PointsY),
+            DataRenderType::Xy(crate::data_config::XySeries { errors: Some(crate::data_config::ErrorBars { x: Some(_), y: Some(_), .. }), .. }) => Some(Self::PointsXY),
+            // Point vectors fit their anchors; in `Data` mode the tips are data
+            // coordinates too and join the extent. `Pixels` tips are screen
+            // lengths, not data, so they are left out like marker radii.
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { .. },
+                style,
+            } => Some(match style.scale {
+                crate::data_config::VectorScale::Data { .. } => Self::VectorTips,
+                crate::data_config::VectorScale::Pixels { .. } => Self::Points,
+            }),
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Grid { .. },
+                ..
+            }
+            | DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
+            | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. }
+            // A ternary chart's axes are the triangle, not a data extent.
+            | DataRenderType::Ternary { .. }
+            // A parallel chart's are the categorical positions and the
+            // normalized band.
+            | DataRenderType::Parallel { .. }
+            // A DataLess energy-level series has no column to fit; its
+            // extent is read from the SSOT (#203).
+            | DataRenderType::EnergyLevels(_)
+            // A triangle mesh fits from its vertex columns' statistics (#210).
+            | DataRenderType::TriMesh(_)
+            | DataRenderType::Feynman(_)
+            | DataRenderType::Field(_)
+            | DataRenderType::RgbImage { .. } => None,
+        }
+    }
+
+    fn has_x_errors(self) -> bool {
+        matches!(self, Self::PointsX | Self::PointsXY)
+    }
+
+    fn has_y_errors(self) -> bool {
+        matches!(self, Self::PointsY | Self::PointsXY)
+    }
+}
+
+/// Role-labelled renderer column ids for a series extent submission.
+///
+/// Only active error directions are supplied. Inactive error directions are
+/// virtual zero lanes and do not participate in the error-domain minimum.
+#[derive(Clone, Copy, Debug)]
+pub struct GpuSeriesExtentColumnIds<'a> {
+    pub x: &'a str,
+    pub y: &'a str,
+    pub x_lower: Option<&'a str>,
+    pub x_upper: Option<&'a str>,
+    pub y_lower: Option<&'a str>,
+    pub y_upper: Option<&'a str>,
+}
+
+/// Resolved live handles after Renderer has validated ids/generations.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GpuSeriesExtentColumns {
+    pub(crate) x: ColumnHandle,
+    pub(crate) y: ColumnHandle,
+    pub(crate) x_lower: Option<ColumnHandle>,
+    pub(crate) x_upper: Option<ColumnHandle>,
+    pub(crate) y_lower: Option<ColumnHandle>,
+    pub(crate) y_upper: Option<ColumnHandle>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GpuFieldExtentColumns {
+    pub(crate) x: ColumnHandle,
+    pub(crate) y: ColumnHandle,
+    pub(crate) x_cells: u32,
+    pub(crate) y_cells: u32,
+}
+
+/// Validation, submission, or detached-readback failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GpuExtentError {
+    ColumnNotResident {
+        id: String,
+    },
+    UnknownColumn {
+        role: &'static str,
+        id: String,
+    },
+    StaleHandle {
+        role: &'static str,
+        id: String,
+        generation: u32,
+        current: u32,
+    },
+    MissingSeriesColumn {
+        role: &'static str,
+        mode: GpuSeriesExtentMode,
+    },
+    EmptyColumn {
+        role: &'static str,
+    },
+    ValueCountTooLarge {
+        role: &'static str,
+        len: usize,
+    },
+    ColumnOffsetTooLarge {
+        role: &'static str,
+        offset: u64,
+    },
+    InvalidColumnRange {
+        role: &'static str,
+        offset: u64,
+        required: u64,
+        available: u64,
+        pool_size: u64,
+    },
+    MisalignedColumnOffset {
+        role: &'static str,
+        offset: u64,
+        alignment: u32,
+    },
+    StorageBindingTooLarge {
+        role: &'static str,
+        requested: u64,
+        limit: u64,
+    },
+    NoDispatchCapacity,
+    /// All hosts must complete mutable `ensure_errorbar_extent_engine`
+    /// preparation before shared extent submission. The shared path only reads
+    /// a successfully published engine and never creates compute pipelines.
+    EngineNotReady,
+    AsyncCompileFailed(String),
+    ReadbackSenderDropped,
+    ReadbackMapFailed(String),
+    DevicePollFailed(String),
+    CorruptResult,
+    /// An internal invariant did not hold: a figgy bug, reported instead of
+    /// panicking (#152).
+    Internal {
+        invariant: &'static str,
+    },
+    /// The GPU reported an error, or the device was lost, while the extent
+    /// reduction created or ran its resources (#152).
+    Gpu(String),
+}
+
+impl GpuExtentError {
+    pub(crate) fn from_figgy(error: crate::FiggyError) -> Self {
+        Self::Gpu(error.to_string())
+    }
+}
+
+/// A readback failure in the variants an extent reduction has always
+/// reported.
+impl From<ReadbackError> for GpuExtentError {
+    fn from(error: ReadbackError) -> Self {
+        match error {
+            ReadbackError::Poll(error) => Self::DevicePollFailed(error.to_string()),
+            ReadbackError::Health(error) => Self::from_figgy(error),
+            ReadbackError::Canceled(_) => Self::ReadbackSenderDropped,
+            ReadbackError::Map(error) => Self::ReadbackMapFailed(format!("{error:?}")),
+            ReadbackError::Range(error) => Self::ReadbackMapFailed(format!("{error:?}")),
+        }
+    }
+}
+
+impl std::fmt::Display for GpuExtentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ColumnNotResident { id } => {
+                write!(f, "fit column is registered but not resident: {id}")
+            }
+            Self::UnknownColumn { role, id } => write!(f, "unknown {role} column id: {id}"),
+            Self::StaleHandle {
+                role,
+                id,
+                generation,
+                current,
+            } => write!(
+                f,
+                "stale {role} column handle for {id} \
+                 (handle generation {generation}, pool generation {current})"
+            ),
+            Self::MissingSeriesColumn { role, mode } => {
+                write!(f, "{mode:?} series extent requires a {role} column")
+            }
+            Self::EmptyColumn { role } => write!(f, "{role} column is empty"),
+            Self::ValueCountTooLarge { role, len } => {
+                write!(f, "{role} column length {len} exceeds u32 indexing")
+            }
+            Self::ColumnOffsetTooLarge { role, offset } => {
+                write!(f, "{role} pool offset {offset} exceeds u32 lane indexing")
+            }
+            Self::InvalidColumnRange {
+                role,
+                offset,
+                required,
+                available,
+                pool_size,
+            } => write!(
+                f,
+                "{role} pool range is invalid: offset={offset}, required={required}, \
+                 handle_bytes={available}, pool_bytes={pool_size}"
+            ),
+            Self::MisalignedColumnOffset {
+                role,
+                offset,
+                alignment,
+            } => write!(
+                f,
+                "{role} pool offset {offset} is not aligned to {alignment} bytes"
+            ),
+            Self::StorageBindingTooLarge {
+                role,
+                requested,
+                limit,
+            } => write!(
+                f,
+                "{role} storage binding requires {requested} bytes, device limit is {limit}"
+            ),
+            Self::NoDispatchCapacity => write!(f, "device exposes no usable extent dispatch"),
+            Self::EngineNotReady => write!(
+                f,
+                "extent engine is not ready; call ensure_errorbar_extent_engine first"
+            ),
+            Self::AsyncCompileFailed(reason) => {
+                write!(f, "async extent pipeline compile failed: {reason}")
+            }
+            Self::ReadbackSenderDropped => write!(f, "extent readback callback sender was dropped"),
+            Self::ReadbackMapFailed(reason) => write!(f, "extent readback map failed: {reason}"),
+            Self::DevicePollFailed(reason) => {
+                write!(f, "extent submission poll failed: {reason}")
+            }
+            Self::CorruptResult => write!(f, "GPU returned an invalid extent record"),
+            Self::Internal { invariant } => {
+                write!(f, "internal invariant failed (figgy bug): {invariant}")
+            }
+            Self::Gpu(reason) => write!(f, "extent reduction GPU error: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for GpuExtentError {}
+
+#[cfg(target_arch = "wasm32")]
+async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuExtentError> {
+    let mut observer = |_| {};
+    crate::init::prewarm_compute_entries_js(
+        device,
+        "gpu.extent.async",
+        ERRORBAR_FIT_SHADER.source,
+        &[
+            ("reduce_values", "reduce_values"),
+            ("reduce_states", "reduce_states"),
+        ],
+        &mut observer,
+    )
+    .await
+    .map_err(GpuExtentError::AsyncCompileFailed)
+}
+
+/// Pipelines and layouts intended to be created once and owned by Renderer.
+pub struct GpuErrorbarExtentEngine {
+    values_layout: wgpu::BindGroupLayout,
+    states_layout: wgpu::BindGroupLayout,
+    reduce_values: wgpu::ComputePipeline,
+    reduce_states: wgpu::ComputePipeline,
+    /// Where per-ticket scratch is charged. Held by the engine rather than
+    /// passed per call so the whole `begin_*` chain keeps its signatures — the
+    /// engine outlives every ticket it issues.
+    ledger: Arc<GpuLedger>,
+    /// The device's health record; every extent readback polls through it.
+    /// An engine built without a renderer holds an unwatched record, and its
+    /// polls still report a lost device as an error.
+    health: crate::renderer::DeviceHealth,
+}
+
+impl GpuErrorbarExtentEngine {
+    /// The device's health record, checked at the end of every `begin_*`
+    /// call that dispatches through this engine (#158).
+    pub(crate) fn health(&self) -> &crate::renderer::DeviceHealth {
+        &self.health
+    }
+
+    /// Engine on the device bundle `gpu`: its per-ticket scratch is charged to
+    /// the bundle's ledger and its readbacks poll the bundle's health record,
+    /// as for every renderer built from `gpu` (#160).
+    pub fn new(gpu: &crate::RendererDevice) -> Self {
+        let mut noop = |_| {};
+        Self::new_observed(gpu, &mut noop)
+    }
+
+    /// [`Self::new`], reporting each initialization step to `observer`.
+    pub fn new_observed(gpu: &crate::RendererDevice, observer: &mut dyn FnMut(InitEvent)) -> Self {
+        Self::new_observed_tracked(gpu.device(), Arc::clone(gpu.ledger()), observer)
+            .with_health(gpu.health().clone())
+    }
+
+    /// Engine whose per-ticket scratch is charged to `ledger`, for the
+    /// renderer's own pipeline preparation, which holds the bundle's parts.
+    pub(crate) fn new_tracked(device: &wgpu::Device, ledger: Arc<GpuLedger>) -> Self {
+        let mut noop = |_| {};
+        Self::new_observed_tracked(device, ledger, &mut noop)
+    }
+
+    pub(crate) fn new_observed_tracked(
+        device: &wgpu::Device,
+        ledger: Arc<GpuLedger>,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Self {
+        observe_value(observer, INIT_SCOPE, "limits", || device.limits());
+        started(observer, INIT_SCOPE, "setup");
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy series fit-bound shader"),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.source.into()),
+            },
+        );
+
+        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let uniform = wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<ParamsGpu>() as u64),
+            },
+            count: None,
+        };
+        let make_layout = |label| {
+            crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some(label),
+                    entries: &[storage(0, true), storage(1, false), uniform],
+                },
+            )
+        };
+        let values_layout = make_layout("figgy series fit values layout");
+        let states_layout = make_layout("figgy series fit states layout");
+
+        let values_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy series fit values pipeline layout"),
+                bind_group_layouts: &[Some(&values_layout)],
+                immediate_size: 0,
+            },
+        );
+        let states_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy series fit states pipeline layout"),
+                bind_group_layouts: &[Some(&states_layout)],
+                immediate_size: 0,
+            },
+        );
+        finished(observer, INIT_SCOPE, "setup");
+        let make_pipeline = |label, layout, entry| {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    cache: None,
+                },
+            )
+        };
+        let reduce_values = observe_value(observer, INIT_SCOPE, "reduce_values", || {
+            make_pipeline(
+                "figgy series fit initial pipeline",
+                &values_pipeline_layout,
+                "reduce_values",
+            )
+        });
+        let reduce_states = observe_value(observer, INIT_SCOPE, "reduce_states", || {
+            make_pipeline(
+                "figgy series fit state pipeline",
+                &states_pipeline_layout,
+                "reduce_states",
+            )
+        });
+
+        Self {
+            values_layout,
+            states_layout,
+            reduce_values,
+            reduce_states,
+            ledger,
+            health: crate::renderer::DeviceHealth::default(),
+        }
+    }
+
+    pub async fn new_observed_async(
+        device: &wgpu::Device,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Self {
+        // No renderer to report to on this path; see `new`.
+        // host-alloc: W1-a
+        let ledger = Arc::new(GpuLedger::new());
+        use crate::init::{observe_value_async, yield_init_frame};
+        observe_value_async(observer, INIT_SCOPE, "limits", || device.limits()).await;
+        started(observer, INIT_SCOPE, "setup");
+        let shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("figgy series fit-bound shader"),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.source.into()),
+            },
+        );
+
+        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let uniform = wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<ParamsGpu>() as u64),
+            },
+            count: None,
+        };
+        let make_layout = |label| {
+            crate::gpu_compile::bind_group_layout(
+                &device,
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some(label),
+                    entries: &[storage(0, true), storage(1, false), uniform],
+                },
+            )
+        };
+        let values_layout = make_layout("figgy series fit values layout");
+        let states_layout = make_layout("figgy series fit states layout");
+
+        let values_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy series fit values pipeline layout"),
+                bind_group_layouts: &[Some(&values_layout)],
+                immediate_size: 0,
+            },
+        );
+        let states_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy series fit states pipeline layout"),
+                bind_group_layouts: &[Some(&states_layout)],
+                immediate_size: 0,
+            },
+        );
+        finished(observer, INIT_SCOPE, "setup");
+        yield_init_frame().await;
+        let make_pipeline = |label, layout, entry| {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: crate::gpu_compile::workgroup_options(device),
+                    cache: None,
+                },
+            )
+        };
+        let reduce_values = observe_value_async(observer, INIT_SCOPE, "reduce_values", || {
+            make_pipeline(
+                "figgy series fit initial pipeline",
+                &values_pipeline_layout,
+                "reduce_values",
+            )
+        })
+        .await;
+        let reduce_states = observe_value_async(observer, INIT_SCOPE, "reduce_states", || {
+            make_pipeline(
+                "figgy series fit state pipeline",
+                &states_pipeline_layout,
+                "reduce_states",
+            )
+        })
+        .await;
+
+        Self {
+            values_layout,
+            states_layout,
+            reduce_values,
+            reduce_states,
+            ledger,
+            health: crate::renderer::DeviceHealth::default(),
+        }
+    }
+
+    /// The engine with the renderer's device health record, so its polls
+    /// report a device loss the renderer saw.
+    pub(crate) fn with_health(mut self, health: crate::renderer::DeviceHealth) -> Self {
+        self.health = health;
+        self
+    }
+
+    /// Compile the extent compute pipelines through the browser's async API.
+    ///
+    /// Native is a no-op. On wasm this calls `createComputePipelineAsync` so
+    /// Dawn/driver compilation is not deferred to the first `queue.submit()`.
+    /// The resulting JS pipelines are discarded; the wgpu engine created
+    /// afterwards should hit the device compilation cache.
+    pub async fn warm_device_async(device: &wgpu::Device) -> Result<(), GpuExtentError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _native_needs_no_warmup = device;
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            warm_extent_pipelines_js(device).await
+        }
+    }
+
+    /// Reduce one drawable series to the six bounds consumed by the axis SSoT.
+    pub(crate) fn begin_series(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        mode: GpuSeriesExtentMode,
+        columns: GpuSeriesExtentColumns,
+    ) -> Result<GpuSeriesExtentTicket, GpuExtentError> {
+        let x = checked_range(pool_buffer, &columns.x, columns.x.len_values, "x")?;
+        let y = checked_range(pool_buffer, &columns.y, columns.y.len_values, "y")?;
+        let input_len = x.len.min(y.len);
+        if input_len == 0 {
+            return Err(GpuExtentError::EmptyColumn {
+                role: "paired series",
+            });
+        }
+
+        let required = |column: Option<ColumnHandle>, role: &'static str, active: bool| {
+            if !active {
+                return Ok(ColumnRangeGpu { offset: 0, len: 0 });
+            }
+            let handle = column.ok_or(GpuExtentError::MissingSeriesColumn { role, mode })?;
+            checked_range(pool_buffer, &handle, handle.len_values, role)
+        };
+        let x_lower = required(columns.x_lower, "x lower error", mode.has_x_errors())?;
+        let x_upper = required(columns.x_upper, "x upper error", mode.has_x_errors())?;
+        let y_lower = required(columns.y_lower, "y lower error", mode.has_y_errors())?;
+        let y_upper = required(columns.y_upper, "y upper error", mode.has_y_errors())?;
+
+        let params = ParamsGpu {
+            offsets_0: [x.offset, y.offset, x_lower.offset, x_upper.offset],
+            offsets_1: [y_lower.offset, y_upper.offset, mode as u32, 0],
+            lengths_0: [x.len, y.len, x_lower.len, x_upper.len],
+            lengths_1: [y_lower.len, y_upper.len, input_len, 0],
+        };
+        self.begin_raw(device, queue, pool_buffer, params)
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
+    }
+
+    /// Reduce a `Data`-scaled point vector series: every finite anchor plus
+    /// its tip `anchor + factor * (u, v)`. `columns` is `[x, y, u, v]`; the
+    /// components ride in the x-upper / y-upper slots and the factor in the
+    /// reserved params word.
+    pub(crate) fn begin_vector_tips(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        columns: [ColumnHandle; 4],
+        factor: f32,
+    ) -> Result<GpuSeriesExtentTicket, GpuExtentError> {
+        let [x, y, u, v] = columns;
+        let x = checked_range(pool_buffer, &x, x.len_values, "x")?;
+        let y = checked_range(pool_buffer, &y, y.len_values, "y")?;
+        let u = checked_range(pool_buffer, &u, u.len_values, "vector u")?;
+        let v = checked_range(pool_buffer, &v, v.len_values, "vector v")?;
+        let input_len = x.len.min(y.len);
+        if input_len == 0 {
+            return Err(GpuExtentError::EmptyColumn {
+                role: "paired series",
+            });
+        }
+        let params = ParamsGpu {
+            offsets_0: [x.offset, y.offset, 0, u.offset],
+            offsets_1: [
+                0,
+                v.offset,
+                GpuSeriesExtentMode::VectorTips as u32,
+                factor.to_bits(),
+            ],
+            lengths_0: [x.len, y.len, 0, u.len],
+            lengths_1: [0, v.len, input_len, 0],
+        };
+        self.begin_raw(device, queue, pool_buffer, params)
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
+    }
+
+    /// Resolve the exact outer bounds of a field's rendered coordinate lattice.
+    /// Only one invocation is needed: the GPU reads at most the two endpoint
+    /// pairs per axis and returns the same six compact bounds as the row reducer.
+    pub(crate) fn begin_field(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        mode: GpuFieldExtentMode,
+        columns: GpuFieldExtentColumns,
+    ) -> Result<GpuSeriesExtentTicket, GpuExtentError> {
+        let x = checked_range(pool_buffer, &columns.x, columns.x.len_values, "field x")?;
+        let y = checked_range(pool_buffer, &columns.y, columns.y.len_values, "field y")?;
+        if columns.x_cells == 0 || columns.y_cells == 0 {
+            return Err(GpuExtentError::EmptyColumn {
+                role: "field drawable lattice",
+            });
+        }
+        let params = ParamsGpu {
+            offsets_0: [x.offset, y.offset, 0, 0],
+            offsets_1: [0, 0, mode.shader_mode(), 0],
+            lengths_0: [x.len, y.len, 0, 0],
+            // x/y resolved cell counts; one logical reduction input; dispatch
+            // group count is filled by `begin_raw`.
+            lengths_1: [columns.x_cells, columns.y_cells, 1, 0],
+        };
+        self.begin_raw(device, queue, pool_buffer, params)
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
+    }
+
+    /// Preserve the original three-column errorbar reducer contract.
+    ///
+    /// Missing rows in a shorter error column and non-finite error pairs are
+    /// zero, exactly as before. This is intentionally distinct from the
+    /// drawable-series direction predicate.
+    pub fn begin(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        values: ColumnHandle,
+        lower_errors: ColumnHandle,
+        upper_errors: ColumnHandle,
+    ) -> Result<GpuErrorbarExtentTicket, GpuExtentError> {
+        let value = checked_range(pool_buffer, &values, values.len_values, "value")?;
+        if value.len == 0 {
+            return Err(GpuExtentError::EmptyColumn { role: "value" });
+        }
+        let lower_bound_len = lower_errors.len_values.min(values.len_values);
+        let upper_bound_len = upper_errors.len_values.min(values.len_values);
+        let lower = checked_range(pool_buffer, &lower_errors, lower_bound_len, "lower error")?;
+        let upper = checked_range(pool_buffer, &upper_errors, upper_bound_len, "upper error")?;
+        if lower.len == 0 {
+            return Err(GpuExtentError::EmptyColumn {
+                role: "lower error",
+            });
+        }
+        if upper.len == 0 {
+            return Err(GpuExtentError::EmptyColumn {
+                role: "upper error",
+            });
+        }
+
+        let params = ParamsGpu {
+            offsets_0: [value.offset, 0, lower.offset, upper.offset],
+            offsets_1: [0, 0, LEGACY_AXIS_MODE, 0],
+            lengths_0: [value.len, 0, lower.len, upper.len],
+            lengths_1: [0, 0, value.len, 0],
+        };
+        self.begin_raw(device, queue, pool_buffer, params)
+            .map(|core| GpuErrorbarExtentTicket { core })
+    }
+
+    fn begin_raw(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool_buffer: &wgpu::Buffer,
+        mut params: ParamsGpu,
+    ) -> Result<GpuExtentTicketCore, GpuExtentError> {
+        let limits = device.limits();
+        let pool_binding = checked_pool_binding(pool_buffer, &limits)?;
+        let input_len = params.lengths_1[2];
+        let max_scratch_groups = limits.max_storage_buffer_binding_size / SERIES_STATE_BYTES;
+        let dispatch_cap = u64::from(limits.max_compute_workgroups_per_dimension)
+            .min(max_scratch_groups)
+            .min(u64::from(u32::MAX)) as u32;
+        if dispatch_cap == 0 {
+            return Err(GpuExtentError::NoDispatchCapacity);
+        }
+
+        let first_groups = div_ceil(input_len, WORKGROUP_SIZE).min(dispatch_cap);
+        let first_scratch_bytes = u64::from(first_groups) * SERIES_STATE_BYTES;
+        let second_capacity = div_ceil(first_groups, WORKGROUP_SIZE).max(1);
+        let second_scratch_bytes = u64::from(second_capacity) * SERIES_STATE_BYTES;
+        // Two tallies: the reduction scratch (including every params uniform the
+        // bind groups end up owning) and the MAP_READ buffer, which is its own
+        // row. Both are handed to the ticket as one charge each.
+        let scratch_tally = ChargeTally::new();
+        let readback_tally = ChargeTally::new();
+        // gpu-alloc: ErrorbarScratch
+        let scratch_a = charged_buffer(
+            &scratch_tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy series fit scratch A"),
+                size: first_scratch_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(GpuExtentError::from_figgy)?;
+        // gpu-alloc: ErrorbarScratch
+        let scratch_b = charged_buffer(
+            &scratch_tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy series fit scratch B"),
+                size: second_scratch_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(GpuExtentError::from_figgy)?;
+        // gpu-alloc: Readback
+        let readback = charged_buffer(
+            &readback_tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy series fit detached readback"),
+                size: SERIES_STATE_BYTES,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            },
+        )
+        .map_err(GpuExtentError::from_figgy)?;
+
+        params.lengths_1[3] = first_groups;
+        // The params uniforms are owned by their bind groups; `params_buffer`
+        // tallies them into the same lump as the scratch.
+        let initial_params = params_buffer(
+            &scratch_tally,
+            device,
+            "figgy series fit value params",
+            params,
+        )?;
+        let initial_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy series fit value bindings"),
+            layout: &self.values_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(pool_binding),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: scratch_a.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: initial_params.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("figgy series fit-bound encoder"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy series fit values pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.reduce_values);
+            pass.set_bind_group(0, &initial_bind_group, &[]);
+            pass.dispatch_workgroups(first_groups, 1, 1);
+        }
+
+        let mut current_len = first_groups;
+        let mut current_is_a = true;
+        while current_len > 1 {
+            let groups = div_ceil(current_len, WORKGROUP_SIZE);
+            let state_params = params_buffer(
+                &scratch_tally,
+                device,
+                "figgy series fit state params",
+                ParamsGpu {
+                    offsets_0: [0; 4],
+                    offsets_1: [0, 0, params.offsets_1[2], 0],
+                    lengths_0: [0; 4],
+                    lengths_1: [0, 0, current_len, groups],
+                },
+            )?;
+            let (input, output) = if current_is_a {
+                (&scratch_a, &scratch_b)
+            } else {
+                (&scratch_b, &scratch_a)
+            };
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("figgy series fit state bindings"),
+                layout: &self.states_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: input.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: output.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: state_params.as_entire_binding(),
+                    },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("figgy series fit state pass"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.reduce_states);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(groups, 1, 1);
+            }
+            current_len = groups;
+            current_is_a = !current_is_a;
+        }
+
+        let final_buffer = if current_is_a { &scratch_a } else { &scratch_b };
+        encoder.copy_buffer_to_buffer(final_buffer, 0, &readback, 0, SERIES_STATE_BYTES);
+        let (callback, map) = crate::gpu_readback::completion(&self.health);
+        encoder.map_buffer_on_submit(
+            &readback,
+            wgpu::MapMode::Read,
+            0..SERIES_STATE_BYTES,
+            callback,
+        );
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+        Ok(GpuExtentTicketCore {
+            readback: GpuReadback::from_completion(
+                device,
+                &self.health,
+                &readback,
+                Some(SERIES_STATE_BYTES),
+                map,
+                Some(submission),
+            ),
+            _scratch_charge: scratch_tally
+                .into_charge(&self.ledger, GpuResourceKind::ErrorbarScratch),
+            _readback_charge: readback_tally.into_charge(&self.ledger, GpuResourceKind::Readback),
+        })
+    }
+}
+
+struct GpuExtentTicketCore {
+    /// The reduced state, mapped when its submission completes.
+    readback: GpuReadback,
+    /// Charges for the reduction scratch and the MAP_READ buffer. They are
+    /// credited back when this core is destructured on resolve or dropped on
+    /// abandonment, which is exactly when the buffers go away.
+    _scratch_charge: GpuByteCharge,
+    _readback_charge: GpuByteCharge,
+}
+
+impl GpuExtentTicketCore {
+    async fn wait(&mut self) -> Result<(), GpuExtentError> {
+        Ok(self.readback.wait().await?)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_blocking(&mut self) -> Result<(), GpuExtentError> {
+        Ok(self.readback.wait_blocking()?)
+    }
+
+    fn poll_ready(&mut self) -> Result<bool, GpuExtentError> {
+        Ok(self.readback.poll_ready()?)
+    }
+
+    /// After a wait: the reduced state. The unmap is the ticket's last GPU
+    /// call, so the read checks the device health after it (#158).
+    /// Dropping the ticket afterwards destroys the scratch and the readback.
+    fn finish(&mut self) -> Result<SeriesStateGpu, GpuExtentError> {
+        Ok(self
+            .readback
+            .finish_checked(bytemuck::pod_read_unaligned::<SeriesStateGpu>)?)
+    }
+}
+
+/// Owned one-shot readback for a drawable-series extent.
+pub struct GpuSeriesExtentTicket {
+    core: GpuExtentTicketCore,
+    /// A hexagonal grid's overhang past its centres-cells bounds (#134).
+    overhang: Option<HexOverhang>,
+}
+
+/// How far a flat-topped hexagonal grid reaches past the `CentersCells`
+/// bounds of its coordinates (#134): a hexagon's half width is two thirds
+/// of the column pitch, a sixth past the half pitch on each side, and the
+/// raised odd columns reach half a row pitch past the top (the bottom when
+/// the rows descend). From the coordinate columns' uniform steps, so the
+/// fit draws every hexagon whole.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HexOverhang {
+    x: f64,
+    y_min: f64,
+    y_max: f64,
+}
+
+impl HexOverhang {
+    fn new(x_step: f64, y_step: f64) -> Self {
+        Self {
+            x: x_step.abs() / 6.0,
+            y_min: (-y_step).max(0.0) * 0.5,
+            y_max: y_step.max(0.0) * 0.5,
+        }
+    }
+
+    fn widen(self, extent: GpuSeriesExtent) -> GpuSeriesExtent {
+        GpuSeriesExtent {
+            x: GpuErrorbarExtent {
+                min: extent.x.min - self.x,
+                max: extent.x.max + self.x,
+                min_positive: extent.x.min_positive,
+            },
+            y: GpuErrorbarExtent {
+                min: extent.y.min - self.y_min,
+                max: extent.y.max + self.y_max,
+                min_positive: extent.y.min_positive,
+            },
+        }
+    }
+}
+
+impl GpuSeriesExtentTicket {
+    /// The ticket of a hexagonal grid: its result reaches past the
+    /// centres-cells bounds by the hexagons' overhang (#134).
+    pub(crate) fn with_hexagonal_overhang(mut self, x_step: f64, y_step: f64) -> Self {
+        self.overhang = Some(HexOverhang::new(x_step, y_step));
+        self
+    }
+
+    fn widened(
+        overhang: Option<HexOverhang>,
+        extent: Option<GpuSeriesExtent>,
+    ) -> Option<GpuSeriesExtent> {
+        match overhang {
+            Some(overhang) => extent.map(|extent| overhang.widen(extent)),
+            None => extent,
+        }
+    }
+
+    pub(crate) const FIELD_BYTES: u64 =
+        SERIES_STATE_BYTES * 3 + std::mem::size_of::<ParamsGpu>() as u64;
+
+    /// Nonblocking check used by renderer-owned streaming continuations,
+    /// which drive the device themselves: it neither polls nor hands the
+    /// wait to the poll thread. `None` means pending; `Some(None)` is a
+    /// completed empty drawable extent.
+    pub(crate) fn try_resolve_unpolled(
+        &mut self,
+    ) -> Result<Option<Option<GpuSeriesExtent>>, GpuExtentError> {
+        if !self.core.readback.try_receive()? {
+            return Ok(None);
+        }
+        self.finish().map(Some)
+    }
+
+    /// Wait for the extent: the bundle's poll thread completes the wait on
+    /// native (see [`crate::RendererDevice::new`]).
+    pub async fn resolve(mut self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
+        self.wait().await?;
+        self.finish()
+    }
+
+    /// [`Self::resolve`], polling the device on this thread until the work
+    /// completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(mut self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
+        self.wait_blocking()?;
+        self.finish()
+    }
+
+    /// The extent if the work has completed, or the ticket back, without
+    /// blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> Result<TryResolve<Option<GpuSeriesExtent>, Self>, GpuExtentError> {
+        if !self.core.poll_ready()? {
+            return Ok(TryResolve::Pending(self));
+        }
+        self.finish().map(TryResolve::Ready)
+    }
+
+    /// Await the reduction; see [`Self::resolve`].
+    pub(crate) async fn wait(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait().await
+    }
+
+    /// Poll the device on this thread until the reduction completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_blocking(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait_blocking()
+    }
+
+    /// Whether the reduction has completed, without blocking.
+    pub(crate) fn poll_ready(&mut self) -> Result<bool, GpuExtentError> {
+        self.core.poll_ready()
+    }
+
+    /// After a wait: the decoded extent.
+    pub(crate) fn finish(&mut self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
+        decode_series_state(self.core.finish()?).map(|extent| Self::widened(self.overhang, extent))
+    }
+}
+
+/// Owned one-shot readback preserving the legacy scalar result.
+pub struct GpuErrorbarExtentTicket {
+    core: GpuExtentTicketCore,
+}
+
+impl GpuErrorbarExtentTicket {
+    /// Wait for the extent: the bundle's poll thread completes the wait on
+    /// native (see [`crate::RendererDevice::new`]).
+    pub async fn resolve(mut self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
+        self.core.wait().await?;
+        self.finish()
+    }
+
+    /// [`Self::resolve`], polling the device on this thread until the work
+    /// completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(mut self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
+        self.core.wait_blocking()?;
+        self.finish()
+    }
+
+    /// The extent if the work has completed, or the ticket back, without
+    /// blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> Result<TryResolve<Option<GpuErrorbarExtent>, Self>, GpuExtentError> {
+        if !self.core.poll_ready()? {
+            return Ok(TryResolve::Pending(self));
+        }
+        self.finish().map(TryResolve::Ready)
+    }
+
+    fn finish(&mut self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
+        decode_axis_state(self.core.finish()?.x)
+    }
+}
+
+fn checked_u32_len(role: &'static str, len: usize) -> Result<u32, GpuExtentError> {
+    u32::try_from(len).map_err(|_| GpuExtentError::ValueCountTooLarge { role, len })
+}
+
+fn checked_range(
+    pool_buffer: &wgpu::Buffer,
+    handle: &ColumnHandle,
+    bound_values: usize,
+    role: &'static str,
+) -> Result<ColumnRangeGpu, GpuExtentError> {
+    let len = checked_u32_len(role, bound_values)?;
+    let required = (bound_values as u64)
+        .checked_mul(COLUMN_VALUE_BYTES as u64)
+        .ok_or(GpuExtentError::ValueCountTooLarge {
+            role,
+            len: bound_values,
+        })?;
+    let pool_size = pool_buffer.size();
+    let end = handle.offset.checked_add(required);
+    if required > handle.byte_size || end.is_none_or(|end| end > pool_size) {
+        return Err(GpuExtentError::InvalidColumnRange {
+            role,
+            offset: handle.offset,
+            required,
+            available: handle.byte_size,
+            pool_size,
+        });
+    }
+    let lane_alignment = COLUMN_VALUE_BYTES as u32;
+    if !handle.offset.is_multiple_of(u64::from(lane_alignment)) {
+        return Err(GpuExtentError::MisalignedColumnOffset {
+            role,
+            offset: handle.offset,
+            alignment: lane_alignment,
+        });
+    }
+    let offset = u32::try_from(handle.offset / COLUMN_VALUE_BYTES as u64).map_err(|_| {
+        GpuExtentError::ColumnOffsetTooLarge {
+            role,
+            offset: handle.offset,
+        }
+    })?;
+    Ok(ColumnRangeGpu { offset, len })
+}
+
+fn checked_pool_binding<'a>(
+    pool_buffer: &'a wgpu::Buffer,
+    limits: &wgpu::Limits,
+) -> Result<wgpu::BufferBinding<'a>, GpuExtentError> {
+    let requested = pool_buffer.size();
+    let limit = limits.max_storage_buffer_binding_size;
+    if requested > limit {
+        return Err(GpuExtentError::StorageBindingTooLarge {
+            role: "column pool",
+            requested,
+            limit,
+        });
+    }
+    let size = NonZeroU64::new(requested).ok_or(GpuExtentError::EmptyColumn {
+        role: "column pool",
+    })?;
+    Ok(wgpu::BufferBinding {
+        buffer: pool_buffer,
+        offset: 0,
+        size: Some(size),
+    })
+}
+
+fn div_ceil(value: u32, divisor: u32) -> u32 {
+    value / divisor + u32::from(!value.is_multiple_of(divisor))
+}
+
+fn params_buffer(
+    tally: &ChargeTally,
+    device: &wgpu::Device,
+    label: &'static str,
+    params: ParamsGpu,
+) -> Result<wgpu::Buffer, GpuExtentError> {
+    // gpu-alloc: ErrorbarScratch
+    charged_buffer_init(
+        tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    )
+    .map_err(GpuExtentError::from_figgy)
+}
+
+fn decode_bound(bound: [f32; 2]) -> Result<f64, GpuExtentError> {
+    if !bound.into_iter().all(f32::is_finite) {
+        return Err(GpuExtentError::CorruptResult);
+    }
+    Ok(bound[0] as f64 + bound[1] as f64)
+}
+
+fn decode_axis_state(state: AxisStateGpu) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
+    if state.minimum == EMPTY_MINIMUM_BOUND
+        && state.maximum == EMPTY_MAXIMUM_BOUND
+        && state.minimum_positive == EMPTY_MINIMUM_BOUND
+    {
+        return Ok(None);
+    }
+
+    let min = decode_bound(state.minimum)?;
+    let max = decode_bound(state.maximum)?;
+    let min_positive = if max > 0.0 {
+        Some(decode_bound(state.minimum_positive)?)
+    } else if state.minimum_positive == EMPTY_MINIMUM_BOUND {
+        None
+    } else {
+        return Err(GpuExtentError::CorruptResult);
+    };
+    if min > max || min_positive.is_some_and(|value| value <= 0.0 || value > max) {
+        return Err(GpuExtentError::CorruptResult);
+    }
+    Ok(Some(GpuErrorbarExtent {
+        min,
+        max,
+        min_positive,
+    }))
+}
+
+fn decode_series_state(state: SeriesStateGpu) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
+    match (decode_axis_state(state.x)?, decode_axis_state(state.y)?) {
+        (None, None) => Ok(None),
+        (Some(x), Some(y)) => Ok(Some(GpuSeriesExtent { x, y })),
+        _ => Err(GpuExtentError::CorruptResult),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{Column, split_f64_to_f32_pair};
+    use crate::data_render::ColumnPool;
+
+    fn f32_column(values: Vec<f32>) -> Column<f32> {
+        Column { data: values }
+    }
+
+    fn f64_column(values: Vec<f64>) -> Column<f64> {
+        Column { data: values }
+    }
+
+    fn add_f32(
+        pool: &mut ColumnPool,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: &str,
+        values: Vec<f32>,
+    ) -> ColumnHandle {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        pool.add_column(
+            id.into(),
+            &f32_column(values),
+            crate::data_render::GpuAllocCtx::new(device, queue, &ledger),
+        )
+        .unwrap()
+    }
+
+    fn series_columns(x: ColumnHandle, y: ColumnHandle) -> GpuSeriesExtentColumns {
+        GpuSeriesExtentColumns {
+            x,
+            y,
+            x_lower: None,
+            x_upper: None,
+            y_lower: None,
+            y_upper: None,
+        }
+    }
+
+    fn resolve_series(
+        engine: &GpuErrorbarExtentEngine,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool: &ColumnPool,
+        mode: GpuSeriesExtentMode,
+        columns: GpuSeriesExtentColumns,
+    ) -> Option<GpuSeriesExtent> {
+        crate::test_gpu::block_on(
+            engine
+                .begin_series(device, queue, pool.buffer(), mode, columns)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+    }
+
+    fn resolve_field(
+        engine: &GpuErrorbarExtentEngine,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pool: &ColumnPool,
+        mode: GpuFieldExtentMode,
+        columns: GpuFieldExtentColumns,
+    ) -> GpuSeriesExtent {
+        crate::test_gpu::block_on(
+            engine
+                .begin_field(device, queue, pool.buffer(), mode, columns)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("field coordinates produce an extent")
+    }
+
+    #[test]
+    fn fit_readback_is_only_six_hilo_axis_bounds() {
+        assert_eq!(
+            SERIES_STATE_BYTES,
+            6 * std::mem::size_of::<[f32; 2]>() as u64
+        );
+        assert_eq!(std::mem::size_of::<AxisStateGpu>(), 3 * 8);
+        assert_eq!(std::mem::size_of::<SeriesStateGpu>(), 6 * 8);
+
+        let shader = ERRORBAR_FIT_SHADER.source;
+        for forbidden in [
+            "struct Endpoint",
+            "source_index",
+            "SignedAccumulator",
+            "ACC_WORDS",
+        ] {
+            assert!(
+                !shader.contains(forbidden),
+                "fit shader leaked non-SSoT state: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn field_extent_matches_the_rendered_cell_or_sample_lattice() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "field-fit-x",
+            vec![-3.1, -2.9, 2.9, 3.1],
+        );
+        let y = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "field-fit-y",
+            vec![-2.5, -2.3, 2.3, 2.5],
+        );
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+
+        let samples = resolve_field(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuFieldExtentMode::EdgesSamples,
+            GpuFieldExtentColumns {
+                x,
+                y,
+                x_cells: 3,
+                y_cells: 3,
+            },
+        );
+        assert!((samples.x.min - (-3.0)).abs() < 1.0e-6);
+        assert!((samples.x.max - 3.0).abs() < 1.0e-6);
+        assert!((samples.y.min - (-2.4)).abs() < 1.0e-6);
+        assert!((samples.y.max - 2.4).abs() < 1.0e-6);
+
+        let cells = resolve_field(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuFieldExtentMode::EdgesCells,
+            GpuFieldExtentColumns {
+                x,
+                y,
+                x_cells: 3,
+                y_cells: 3,
+            },
+        );
+        assert!((cells.x.min - (-3.1)).abs() < 1.0e-6);
+        assert!((cells.x.max - 3.1).abs() < 1.0e-6);
+        assert!((cells.y.min - (-2.5)).abs() < 1.0e-6);
+        assert!((cells.y.max - 2.5).abs() < 1.0e-6);
+
+        let centres_as_cells = resolve_field(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuFieldExtentMode::CentersCells,
+            GpuFieldExtentColumns {
+                x,
+                y,
+                x_cells: 4,
+                y_cells: 4,
+            },
+        );
+        assert!((centres_as_cells.x.min - (-3.2)).abs() < 1.0e-6);
+        assert!((centres_as_cells.x.max - 3.2).abs() < 1.0e-6);
+        assert!((centres_as_cells.y.min - (-2.6)).abs() < 1.0e-6);
+        assert!((centres_as_cells.y.max - 2.6).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn legacy_extent_matches_nan_and_short_error_oracle() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let values = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "legacy-values",
+            vec![f32::NAN, 2.0, 4.0],
+        );
+        let lower = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "legacy-lower",
+            vec![100.0, f32::NAN],
+        );
+        let upper = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "legacy-upper",
+            vec![100.0, f32::NAN],
+        );
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = crate::test_gpu::block_on(
+            engine
+                .begin(&device, &queue, pool.buffer(), values, lower, upper)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            extent,
+            GpuErrorbarExtent {
+                min: 2.0,
+                max: 4.0,
+                min_positive: Some(2.0),
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_extent_preserves_overflow_hilo_and_multi_pass() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            128 * 1024,
+        )
+        .unwrap();
+        let values = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "legacy-many-values",
+            (0..1000).map(|value| value as f32).collect(),
+        );
+        let lower = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "legacy-many-lower",
+            vec![5.0; 1000],
+        );
+        let upper = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "legacy-many-upper",
+            vec![7.0; 1000],
+        );
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = crate::test_gpu::block_on(
+            engine
+                .begin(&device, &queue, pool.buffer(), values, lower, upper)
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(extent.min, -5.0);
+        assert_eq!(extent.max, 1006.0);
+        assert_eq!(extent.min_positive, Some(1.0));
+
+        let mut overflow_pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let max_value = add_f32(
+            &mut overflow_pool,
+            &device,
+            &queue,
+            "legacy-max-value",
+            vec![f32::MAX],
+        );
+        let max_error = add_f32(
+            &mut overflow_pool,
+            &device,
+            &queue,
+            "legacy-max-error",
+            vec![f32::MAX],
+        );
+        let overflow = crate::test_gpu::block_on(
+            engine
+                .begin(
+                    &device,
+                    &queue,
+                    overflow_pool.buffer(),
+                    max_value,
+                    max_error,
+                    max_error,
+                )
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(overflow.min, 0.0);
+        assert_eq!(overflow.max, f32::MAX as f64 + f32::MAX as f64);
+    }
+
+    #[test]
+    fn points_keep_base_tail_beyond_short_error_domain() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(&mut pool, &device, &queue, "series-x", vec![0.0, 1.0, 50.0]);
+        let y = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "series-y",
+            vec![10.0, 20.0, 30.0],
+        );
+        let lower = add_f32(&mut pool, &device, &queue, "series-x-lower", vec![5.0, 0.0]);
+        let upper = add_f32(&mut pool, &device, &queue, "series-x-upper", vec![0.0, 5.0]);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::PointsX,
+            GpuSeriesExtentColumns {
+                x,
+                y,
+                x_lower: Some(lower),
+                x_upper: Some(upper),
+                y_lower: None,
+                y_upper: None,
+            },
+        )
+        .unwrap();
+        assert_eq!((extent.x.min, extent.x.max), (-5.0, 50.0));
+        assert_eq!((extent.y.min, extent.y.max), (10.0, 30.0));
+        assert_eq!(extent.x.min_positive, Some(1.0));
+    }
+
+    #[test]
+    fn line_uses_only_finite_adjacent_segment_endpoints() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "line-x",
+            vec![0.0, 1.0, 100.0, 200.0],
+        );
+        let y = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "line-y",
+            vec![0.0, 1.0, f32::NAN, 3.0],
+        );
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::Line,
+            series_columns(x, y),
+        )
+        .unwrap();
+        assert_eq!((extent.x.min, extent.x.max), (0.0, 1.0));
+        assert_eq!((extent.y.min, extent.y.max), (0.0, 1.0));
+
+        let mut single_pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(&mut single_pool, &device, &queue, "single-x", vec![1.0]);
+        let y = add_f32(&mut single_pool, &device, &queue, "single-y", vec![2.0]);
+        assert!(
+            resolve_series(
+                &engine,
+                &device,
+                &queue,
+                &single_pool,
+                GpuSeriesExtentMode::Line,
+                series_columns(x, y),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn all_point_modes_and_one_sided_nan_match_renderer_direction_policy() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(&mut pool, &device, &queue, "modes-x", vec![1.0, 2.0]);
+        let y = add_f32(&mut pool, &device, &queue, "modes-y", vec![10.0, 20.0]);
+        let x_lo = add_f32(&mut pool, &device, &queue, "modes-x-lo", vec![1.0, 1.0]);
+        let x_hi = add_f32(&mut pool, &device, &queue, "modes-x-hi", vec![2.0, 2.0]);
+        let y_lo = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "modes-y-lo",
+            vec![f32::NAN, 3.0],
+        );
+        let y_hi = add_f32(&mut pool, &device, &queue, "modes-y-hi", vec![1000.0, 4.0]);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        for mode in [
+            GpuSeriesExtentMode::Points,
+            GpuSeriesExtentMode::PointsX,
+            GpuSeriesExtentMode::PointsY,
+            GpuSeriesExtentMode::PointsXY,
+        ] {
+            let extent = resolve_series(
+                &engine,
+                &device,
+                &queue,
+                &pool,
+                mode,
+                GpuSeriesExtentColumns {
+                    x,
+                    y,
+                    x_lower: mode.has_x_errors().then_some(x_lo),
+                    x_upper: mode.has_x_errors().then_some(x_hi),
+                    y_lower: mode.has_y_errors().then_some(y_lo),
+                    y_upper: mode.has_y_errors().then_some(y_hi),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                (extent.x.min, extent.x.max),
+                if mode.has_x_errors() {
+                    (0.0, 4.0)
+                } else {
+                    (1.0, 2.0)
+                }
+            );
+            assert_eq!(
+                (extent.y.min, extent.y.max),
+                if mode.has_y_errors() {
+                    (10.0, 24.0)
+                } else {
+                    (10.0, 20.0)
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn paired_invalid_rows_exclude_base_and_error_endpoints() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "paired-invalid-x",
+            vec![1.0, 2.0, 3.0],
+        );
+        let y = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "paired-invalid-y",
+            vec![10.0, f32::NAN, f32::INFINITY],
+        );
+        let lower = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "paired-invalid-lo",
+            vec![100.0; 3],
+        );
+        let upper = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "paired-invalid-hi",
+            vec![100.0; 3],
+        );
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::PointsX,
+            GpuSeriesExtentColumns {
+                x,
+                y,
+                x_lower: Some(lower),
+                x_upper: Some(upper),
+                y_lower: None,
+                y_upper: None,
+            },
+        )
+        .unwrap();
+        assert_eq!((extent.x.min, extent.x.max), (-99.0, 101.0));
+        assert_eq!((extent.y.min, extent.y.max), (10.0, 10.0));
+    }
+
+    #[test]
+    fn enabled_direction_keeps_finite_endpoint_when_opposite_error_is_infinite() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(&mut pool, &device, &queue, "one-infinite-x", vec![10.0]);
+        let y = add_f32(&mut pool, &device, &queue, "one-infinite-y", vec![20.0]);
+        let lower = add_f32(&mut pool, &device, &queue, "one-infinite-lo", vec![2.0]);
+        let upper = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "one-infinite-hi",
+            vec![f32::INFINITY],
+        );
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::PointsX,
+            GpuSeriesExtentColumns {
+                x,
+                y,
+                x_lower: Some(lower),
+                x_upper: Some(upper),
+                y_lower: None,
+                y_upper: None,
+            },
+        )
+        .unwrap();
+        assert_eq!((extent.x.min, extent.x.max), (8.0, 10.0));
+    }
+
+    #[test]
+    fn xy_errors_share_six_column_domain_without_truncating_base_tail() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "six-domain-x",
+            vec![0.0, 10.0, 100.0],
+        );
+        let y = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "six-domain-y",
+            vec![0.0, 20.0, 200.0],
+        );
+        let x_lower = add_f32(&mut pool, &device, &queue, "six-domain-x-lo", vec![1.0; 3]);
+        let x_upper = add_f32(&mut pool, &device, &queue, "six-domain-x-hi", vec![1.0; 3]);
+        let y_lower = add_f32(&mut pool, &device, &queue, "six-domain-y-lo", vec![2.0]);
+        let y_upper = add_f32(&mut pool, &device, &queue, "six-domain-y-hi", vec![2.0]);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::PointsXY,
+            GpuSeriesExtentColumns {
+                x,
+                y,
+                x_lower: Some(x_lower),
+                x_upper: Some(x_upper),
+                y_lower: Some(y_lower),
+                y_upper: Some(y_upper),
+            },
+        )
+        .unwrap();
+        assert_eq!((extent.x.min, extent.x.max), (-1.0, 100.0));
+        assert_eq!((extent.y.min, extent.y.max), (-2.0, 200.0));
+    }
+
+    #[test]
+    fn subnormal_min_positive_is_exact() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let tiny = f32::from_bits(1);
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = add_f32(&mut pool, &device, &queue, "subnormal-x", vec![-tiny, tiny]);
+        let y = add_f32(
+            &mut pool,
+            &device,
+            &queue,
+            "subnormal-y",
+            vec![tiny * 2.0, tiny * 3.0],
+        );
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::Points,
+            series_columns(x, y),
+        )
+        .unwrap();
+        assert_eq!(extent.x.min_positive, Some(tiny as f64));
+        assert_eq!(extent.y.min_positive, Some((tiny * 2.0) as f64));
+    }
+
+    #[test]
+    fn hilo_error_endpoints_preserve_residual_lanes() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let raw_value = 1_700_000_000_000.125_f64;
+        let raw_lower = 0.25_f64;
+        let raw_upper = 0.75_f64;
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let x = pool
+            .add_hilo_column(
+                "hilo-error-x".into(),
+                &f64_column(vec![raw_value]),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap();
+        let y = pool
+            .add_hilo_column(
+                "hilo-error-y".into(),
+                &f64_column(vec![1.0]),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap();
+        let lower = pool
+            .add_hilo_column(
+                "hilo-error-lo".into(),
+                &f64_column(vec![raw_lower]),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap();
+        let upper = pool
+            .add_hilo_column(
+                "hilo-error-hi".into(),
+                &f64_column(vec![raw_upper]),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap();
+        let pair_sum = |value: f64| {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            hi as f64 + lo as f64
+        };
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::PointsX,
+            GpuSeriesExtentColumns {
+                x,
+                y,
+                x_lower: Some(lower),
+                x_upper: Some(upper),
+                y_lower: None,
+                y_upper: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(extent.x.min, pair_sum(raw_value) - pair_sum(raw_lower));
+        assert_eq!(extent.x.max, pair_sum(raw_value) + pair_sum(raw_upper));
+    }
+
+    #[test]
+    fn series_extent_preserves_hilo_residuals_and_min_positive() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let mut pool = ColumnPool::new(
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            64 * 1024,
+        )
+        .unwrap();
+        let raw = [1_700_000_000_000.125_f64, 1_700_000_000_000.875_f64];
+        let x = pool
+            .add_hilo_column(
+                "hilo-series-x".into(),
+                &f64_column(raw.to_vec()),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap();
+        let y = pool
+            .add_hilo_column(
+                "hilo-series-y".into(),
+                &f64_column(vec![-2.0, 0.25]),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap();
+        let pair_sum = |value: f64| {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            hi as f64 + lo as f64
+        };
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = resolve_series(
+            &engine,
+            &device,
+            &queue,
+            &pool,
+            GpuSeriesExtentMode::Points,
+            series_columns(x, y),
+        )
+        .unwrap();
+        assert_eq!(extent.x.min, pair_sum(raw[0]));
+        assert_eq!(extent.x.max, pair_sum(raw[1]));
+        assert_eq!(extent.y.min_positive, Some(0.25));
+    }
+    #[test]
+    fn reduction_boundaries_and_reuse_have_bounded_first_completion() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
+        let (device, queue) = crate::data_render::shared_device().expect("required adapter");
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        for count in [1_usize, 63, 64, 65, 127, 128, 129, 4097] {
+            let mut pool = ColumnPool::new(
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
+                1024 * 1024,
+            )
+            .unwrap();
+            let xs: Vec<f32> = (0..count).map(|i| 13.5 + i as f32 * 0.25).collect();
+            let ys: Vec<f32> = (0..count).map(|i| -50.0 + (i % 17) as f32 * 1.75).collect();
+            let x_expected = (xs[0] as f64, xs[count - 1] as f64);
+            let y_expected = (
+                ys.iter().copied().fold(f32::INFINITY, f32::min) as f64,
+                ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64,
+            );
+            let x = add_f32(&mut pool, &device, &queue, "boundary-x", xs);
+            let y = add_f32(&mut pool, &device, &queue, "boundary-y", ys);
+            for _ in 0..2 {
+                let started = std::time::Instant::now();
+                let actual = resolve_series(
+                    &engine,
+                    &device,
+                    &queue,
+                    &pool,
+                    GpuSeriesExtentMode::Points,
+                    series_columns(x, y),
+                )
+                .unwrap();
+                let elapsed = started.elapsed();
+                eprintln!("extent count={count}: GPU completion {elapsed:?}");
+                if device.adapter_info().backend == wgpu::Backend::Dx12 {
+                    assert!(
+                        elapsed < std::time::Duration::from_secs(5),
+                        "first-use extent stalled: {elapsed:?}"
+                    );
+                }
+                assert_eq!((actual.x.min, actual.x.max), x_expected, "x count={count}");
+                assert_eq!((actual.y.min, actual.y.max), y_expected, "y count={count}");
+            }
+        }
+    }
+}

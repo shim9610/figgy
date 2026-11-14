@@ -47,17 +47,15 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
-    RendererDevice, ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
+    DataRenderType, HitId, HitMap, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
+    RendererDevice, ResizeHandle, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 const N: usize = 1024;
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 // ============================================================================
@@ -99,7 +97,7 @@ impl FiggyPipeline {
         let device = Arc::new(device.clone());
         let queue = Arc::new(queue.clone());
         let mut renderer =
-            match Renderer::try_new(RendererDevice::new(device, queue), format, POOL_CAPACITY) {
+            match Renderer::try_new(RendererDevice::new(device, queue).expect("figgy poll thread"), format, POOL_CAPACITY) {
                 Ok(renderer) => renderer,
                 Err(e) => {
                     let message = format!("Renderer init failed: {e}");
@@ -184,16 +182,15 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         source_id: None,
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }), errors: None }),
     };
     let style = renderer.create_style_for_series(&cfg);
     PanelEntry {
@@ -249,16 +246,15 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         source_id: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }), errors: None }),
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
     let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
@@ -305,16 +301,15 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         source_id: None,
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }), errors: None }),
     };
     let style = renderer.create_style_for_series(&cfg);
     PanelEntry {
@@ -402,12 +397,13 @@ impl shader::Primitive for FiggyPrimitive {
                 && let Some((pi, id)) = pipeline.selected
                 && let Some(panel) = pipeline.panels.get_mut(pi)
             {
+                let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
                 if let Some(handle) = pipeline.active_resize {
                     if let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) {
-                        let _ = rz.resize_by(panel.chart.config_mut(), handle, dx, dy);
+                        let _ = rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy);
                     }
                 } else if let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) {
-                    let _ = drag.drag_by(panel.chart.config_mut(), dx, dy);
+                    let _ = drag.drag_by(panel.chart.config_mut(), &measure, dx, dy);
                 }
             }
             if RELEASE_EVENT.swap(false, Ordering::Relaxed) {
@@ -430,17 +426,11 @@ impl shader::Primitive for FiggyPrimitive {
         // Cleared up-front so an early return below can't leave `draw` with
         // a token from an older frame; repopulated at the end on success.
         panel.prepared = None;
-        let sel_boxes: Vec<SelectionBox> = match selected {
-            Some((pi, id)) if pi == self.panel_idx => panel
-                .hitmap
-                .selection_box(
-                    id,
-                    panel.chart.config(),
-                    &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                )
-                .into_iter()
-                .collect(),
-            _ => Vec::new(),
+        let selected_id: Option<String> = match selected {
+            Some((pi, id)) if pi == self.panel_idx => {
+                panel.hitmap.get(id).map(|el| el.element_id())
+            }
+            _ => None,
         };
         let cur = panel.view.panel_rect();
         if cur != self.panel_rect_px {
@@ -449,7 +439,7 @@ impl shader::Primitive for FiggyPrimitive {
                 &mut panel.view,
                 &panel.chart,
                 self.panel_rect_px,
-                &sel_boxes,
+                selected_id.as_deref(),
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return;
@@ -467,7 +457,7 @@ impl shader::Primitive for FiggyPrimitive {
                     &mut panel.view,
                     &panel.chart,
                     cur,
-                    &sel_boxes,
+                    selected_id.as_deref(),
                 ) {
                     eprintln!("[figgy] refresh_axis failed: {e}");
                     return;
@@ -481,7 +471,7 @@ impl shader::Primitive for FiggyPrimitive {
             let dpi = EXPORT_DPI.load(Ordering::Relaxed) as f32;
             let scale = dpi_to_scale(dpi);
             for (i, p) in pipeline.panels.iter().enumerate() {
-                match renderer.export_panel_png_bytes(&p.chart, &p.series, scale) {
+                match renderer.export_png(&p.chart, &p.series, scale) {
                     Ok(bytes) => {
                         let path = format!("/tmp/figgy_iced_panel_{i}.png");
                         match std::fs::write(&path, &bytes) {
@@ -695,7 +685,8 @@ impl App {
                 .height(Length::Fill)
         };
         let dpi_min = (MIN_EXPORT_SCALE * 96.0).round() as u32;
-        let dpi_max = (MAX_EXPORT_SCALE * 96.0).round() as u32;
+        // No renderer bound: the device texture limit decides; 16x here.
+        let dpi_max = 16 * 96;
         container(ic_column![
             row![
                 text("figgy + iced — sine / RC / cross-section").size(18),

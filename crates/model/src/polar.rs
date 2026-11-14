@@ -4,22 +4,30 @@
 //! ring) and `left_y` as the radius (the labelled ray); `top_x` and
 //! `right_y` stay in the document but are not drawn. Scatter, line and
 //! scatter-line series, with their fills, keep their columns, picking and
-//! export. Histogram, field, contour, error-bar and vector series, overlay
-//! layers and streamed sources are rejected with an error. `None` (the
-//! default, omitted from JSON) draws the rectangular chart.
+//! export, radar series draw their polygons, category bars draw a rose
+//! (#133), and heatmaps and contours draw their cells as annular sectors in
+//! (angle, radius) (#208). Histogram, image, hexagonal-grid, error-bar,
+//! stem, vector, box plot and the other kinds listed in
+//! `Config::validate_series_on_polar`, overlay layers and streamed sources
+//! are rejected with an error. `None` (the default, omitted from JSON)
+//! draws the rectangular chart.
+//!
+//! A categorical angle axis (`bottom_x.categories`) puts category `i` at
+//! `i / n` of the full turn, or of the sector, from `zero_angle_degrees` in
+//! the `clockwise` direction ([`PolarOptions::angle_map`]): its spokes are
+//! the categories and its labels the category labels.
 
-use crate::config::{AxisScale, Config, LabelStyle};
+use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
 
 /// The most pieces one segment is subdivided into under
 /// [`PolarInterpolation::Arc`].
 pub const MAX_POLAR_ARC_PIECES: u32 = 64;
 
 /// How the angle column is read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AngleUnit {
     /// Degrees, 360 per turn (the default).
-    #[default]
     Degrees,
     /// Radians, 2π per turn.
     Radians,
@@ -36,11 +44,10 @@ impl AngleUnit {
 }
 
 /// How a line segment between two polar samples is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PolarInterpolation {
     /// A straight segment on screen between the two projected samples.
-    #[default]
     Chord,
     /// `pieces` straight segments between points interpolated linearly in
     /// (angle, radius): a segment at constant radius follows the ring. Each
@@ -53,17 +60,66 @@ pub enum PolarInterpolation {
 }
 
 impl PolarInterpolation {
-    /// The pieces one segment is drawn as; a chord is one piece.
-    pub fn piece_count(self) -> u32 {
-        match self {
-            Self::Chord => 1,
-            Self::Arc { pieces } => pieces.max(1),
-        }
-    }
-
     /// Whether segments are straight chords (the default).
     pub fn is_chord(&self) -> bool {
         matches!(self, Self::Chord)
+    }
+}
+
+/// The shape of a polar chart's rings: the radius grid and the outer ring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum GridShape {
+    /// Circles (the default).
+    Circle,
+    /// Regular polygons through the spokes of a categorical angle axis: each
+    /// ring joins its points at the category angles with straight chords
+    /// (the radar look). Needs a categorical angle axis.
+    Polygon,
+}
+
+/// How an angle-axis value maps to a screen angle
+/// ([`PolarOptions::angle_map`]): the one mapping the GPU transform, the
+/// polar grid, the angle labels and the picker share.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AngleMap {
+    /// The screen angle of value 0, in radians counter-clockwise from the
+    /// right with y up.
+    pub zero_radians: f64,
+    /// Radians per angle-axis value, negative when values grow clockwise.
+    pub radians_per_value: f64,
+    /// The visible window `[start, end]` in angle-axis values, `None` for the
+    /// full circle.
+    pub window: Option<[f64; 2]>,
+}
+
+impl AngleMap {
+    /// The screen angle of `value`, in radians counter-clockwise from the
+    /// right with y up.
+    pub fn screen_angle(&self, value: f64) -> f64 {
+        self.zero_radians + self.radians_per_value * value
+    }
+
+    /// +1 when values grow counter-clockwise, -1 clockwise.
+    pub fn direction(&self) -> f64 {
+        if self.radians_per_value < 0.0 {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
+    /// Angle-axis values per full turn.
+    pub fn values_per_turn(&self) -> f64 {
+        std::f64::consts::TAU / self.radians_per_value.abs()
+    }
+
+    /// Whether `value` is inside the visible window.
+    pub fn contains(&self, value: f64) -> bool {
+        match self.window {
+            None => value.is_finite(),
+            Some([start, end]) => value >= start && value <= end,
+        }
     }
 }
 
@@ -71,7 +127,7 @@ impl PolarInterpolation {
 /// counter-clockwise from the right, in degrees.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::polar_options"))]
 pub struct PolarOptions {
     /// Where the angle value 0 points, in screen degrees: 0 right, 90 up.
     pub zero_angle_degrees: f64,
@@ -94,20 +150,22 @@ pub struct PolarOptions {
     /// axis line sit on, in degrees counter-clockwise from the right.
     /// Dragging the ray (`Element::Axis(Side::Left)`) turns it.
     pub radial_label_angle_degrees: f64,
-}
-
-impl Default for PolarOptions {
-    fn default() -> Self {
-        Self {
-            zero_angle_degrees: 0.0,
-            clockwise: false,
-            angle_unit: AngleUnit::Degrees,
-            sector: None,
-            inner_radius_fraction: 0.0,
-            interpolation: PolarInterpolation::Chord,
-            radial_label_angle_degrees: 90.0,
-        }
-    }
+    /// The shape of the rings. `None` (the default, omitted from JSON)
+    /// draws circles; [`GridShape::Polygon`] joins them at the categories
+    /// of a categorical angle axis.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub grid_shape: Option<GridShape>,
+    /// Skip the label of the innermost radius ring (#259): in a wind rose it
+    /// sits on the edge of the calm circle. The ring and its tick still draw.
+    /// `false` (the default) is omitted from JSON.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub hide_first_radius_label: bool,
 }
 
 /// The circle a polar chart draws into, in the chart's pixel space.
@@ -211,52 +269,115 @@ impl PolarOptions {
         }
     }
 
+    /// The ring shape: `grid_shape`, or circles.
+    pub fn grid_shape(&self) -> GridShape {
+        self.grid_shape.unwrap_or_else(crate::defaults::grid_shape)
+    }
+
+    /// How the values of `angle_axis` (the chart's `bottom_x`) map to screen
+    /// angles. A numeric axis reads its values in `angle_unit` from
+    /// `zero_angle_degrees` in the `clockwise` direction, inside `sector`.
+    /// A categorical axis with `n` categories puts category `i` at `i / n`
+    /// of the full turn from `zero_angle_degrees`, or at `i / n` of the
+    /// sector from its start; its window is then `[0, n]` in category
+    /// values.
+    pub fn angle_map(&self, angle_axis: &AxisOptions) -> AngleMap {
+        let zero = self.zero_angle_degrees.to_radians();
+        let unit = self.angle_unit.radians_per_unit();
+        let direction = self.direction();
+        match angle_axis.category_count() {
+            None => AngleMap {
+                zero_radians: zero,
+                radians_per_value: direction * unit,
+                window: self.sector,
+            },
+            Some(n) => {
+                let n = n.max(1) as f64;
+                match self.sector {
+                    None => AngleMap {
+                        zero_radians: zero,
+                        radians_per_value: direction * std::f64::consts::TAU / n,
+                        window: None,
+                    },
+                    Some([start, end]) => AngleMap {
+                        zero_radians: zero + direction * start * unit,
+                        radians_per_value: direction * (end - start) * unit / n,
+                        window: Some([0.0, n]),
+                    },
+                }
+            }
+        }
+    }
+
     /// Validate against the axes the coordinate system reads.
-    pub fn validate(&self, config: &Config) -> Result<(), &'static str> {
+    pub fn validate(&self, config: &Config) -> Result<(), crate::RuleKind> {
         if !self.zero_angle_degrees.is_finite() || !self.radial_label_angle_degrees.is_finite() {
-            return Err("polar angles must be finite");
+            return Err(crate::RuleKind::PolarAngles);
         }
         if !self.inner_radius_fraction.is_finite()
             || !(0.0..=0.9).contains(&self.inner_radius_fraction)
         {
-            return Err("polar inner_radius_fraction must be within 0..=0.9");
+            return Err(crate::RuleKind::PolarInnerRadius);
         }
         if let Some([start, end]) = self.sector {
             if !start.is_finite() || !end.is_finite() || end <= start {
-                return Err("polar sector must be a finite [start, end] with start < end");
+                return Err(crate::RuleKind::PolarSector);
             }
             if (end - start) * self.angle_unit.radians_per_unit()
                 > std::f64::consts::TAU * (1.0 + 1e-9)
             {
-                return Err("polar sector cannot exceed one turn");
+                return Err(crate::RuleKind::PolarSectorTurn);
             }
         }
         if let PolarInterpolation::Arc { pieces } = self.interpolation
             && !(1..=MAX_POLAR_ARC_PIECES).contains(&pieces)
         {
-            return Err("polar arc pieces must be within 1..=64");
+            return Err(crate::RuleKind::PolarArcPieces);
         }
         if config.bottom_x.scale != AxisScale::Linear {
-            return Err("the polar angle axis (bottom_x) must be linear");
+            return Err(crate::RuleKind::PolarAngleAxisScale);
         }
         if config.bottom_x.inverted {
-            return Err("the polar angle axis (bottom_x) cannot be inverted; use clockwise");
+            return Err(crate::RuleKind::PolarAngleAxisInverted);
+        }
+        if self.grid_shape() == GridShape::Polygon && config.bottom_x.categories.is_none() {
+            return Err(crate::RuleKind::PolarPolygonGridAxis);
+        }
+        if config.left_y.categories.is_some() {
+            return Err(crate::RuleKind::PolarRadiusCategorical);
+        }
+        if matches!(config.left_y.scale, AxisScale::Probability(_)) {
+            return Err(crate::RuleKind::PolarRadiusScale);
         }
         if !config.overlays.is_empty() {
-            return Err("polar charts have no overlay layers");
+            return Err(crate::RuleKind::PolarOverlay);
+        }
+        if config
+            .line_offsets
+            .as_ref()
+            .is_some_and(|offsets| !offsets.series.is_empty())
+        {
+            return Err(crate::RuleKind::PolarLineOffsets);
         }
         Ok(())
     }
 }
 
 impl Config {
+    /// How this polar chart's angle axis maps to screen angles
+    /// ([`PolarOptions::angle_map`] of `bottom_x`), `None` for a rectangular
+    /// chart.
+    pub fn polar_angle_map(&self) -> Option<AngleMap> {
+        Some(self.polar()?.angle_map(&self.bottom_x))
+    }
+
     /// The polar circle of this chart, when the chart is polar and has a
     /// data area. The GPU transform, the polar grid and axis raster, the CPU
     /// picker and the decoration hit regions and drags all read this circle.
     /// The annotation layer does not: its ratio anchors stay relative to the
     /// data area and its data anchors are skipped.
     pub fn polar_geometry(&self) -> Option<PolarGeometry> {
-        self.polar.as_ref()?;
+        self.polar()?;
         let area = self.data_area().ok()?.0;
         let center = [
             area.x as f32 + area.width as f32 * 0.5,
@@ -266,24 +387,30 @@ impl Config {
         let axis = &self.bottom_x;
         let labels = &axis.label_style;
         // One band of angular tick labels fits inside the data area on every
-        // side; the tick marks point outward from the ring.
+        // side; the tick marks point outward from the ring. Every term of the
+        // band is a multiple of a size `Config::scaled` scales (the tick
+        // length and the label font size), so a 2x export is the 1x layout
+        // doubled. With labels the band holds a line of 1.4 font sizes plus a
+        // third of one as clearance (6 px at the default 18 px); without them,
+        // a ninth of the font size (2 px at 18 px).
+        let font_size = labels.font_size.max(0.0);
         let band = axis.major_tick_length.max(0.0)
             + if labels.visible && labels.label_visible {
-                labels.font_size.max(0.0) * 1.4 + 6.0
+                font_size * 1.4 + font_size / 3.0
             } else {
-                2.0
+                font_size / 9.0
             };
         let radius = (half - band).max(0.0);
         Some(PolarGeometry {
             center,
             radius,
-            inner_radius: radius * self.polar.as_ref()?.inner_radius_fraction,
+            inner_radius: radius * self.polar()?.inner_radius_fraction,
         })
     }
 
     /// Validate `polar` against the axes it reads; `None` always passes.
-    pub fn validate_polar(&self) -> Result<(), &'static str> {
-        match &self.polar {
+    pub fn validate_polar(&self) -> Result<(), crate::RuleKind> {
+        match self.polar() {
             Some(polar) => polar.validate(self),
             None => Ok(()),
         }
@@ -293,21 +420,20 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
 
     fn polar_config() -> Config {
-        let mut config = default_config();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 360.0;
         config.left_y.min = 0.0;
         config.left_y.max = 10.0;
-        config.polar = Some(PolarOptions::default());
+        config.set_polar(Some(crate::defaults::polar_options()));
         config
     }
 
     #[test]
     fn screen_angles_follow_zero_direction_and_unit() {
-        let mut polar = PolarOptions::default();
+        let mut polar = crate::defaults::polar_options();
         assert!((polar.screen_angle(90.0) - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
         polar.clockwise = true;
         polar.zero_angle_degrees = 90.0;
@@ -321,8 +447,6 @@ mod tests {
         assert!(polar.contains_angle(0.5));
         assert!(!polar.contains_angle(1.5));
         assert_eq!(polar.sector_radians(), Some([0.0, 1.0]));
-        assert_eq!(PolarInterpolation::Chord.piece_count(), 1);
-        assert_eq!(PolarInterpolation::Arc { pieces: 8 }.piece_count(), 8);
     }
 
     #[test]
@@ -330,21 +454,21 @@ mod tests {
         let config = polar_config();
         assert_eq!(config.validate_polar(), Ok(()));
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().inner_radius_fraction = 0.95;
+        c.polar_mut().unwrap().inner_radius_fraction = 0.95;
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().sector = Some([10.0, 10.0]);
+        c.polar_mut().unwrap().sector = Some([10.0, 10.0]);
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().sector = Some([0.0, 400.0]);
+        c.polar_mut().unwrap().sector = Some([0.0, 400.0]);
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().sector = Some([-90.0, 90.0]);
+        c.polar_mut().unwrap().sector = Some([-90.0, 90.0]);
         assert_eq!(c.validate_polar(), Ok(()));
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 0 };
+        c.polar_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 0 };
         assert!(c.validate_polar().is_err());
-        c.polar.as_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 65 };
+        c.polar_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 65 };
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
         c.bottom_x.scale = AxisScale::Logarithmic;
@@ -353,16 +477,113 @@ mod tests {
         let mut c = config.clone();
         c.bottom_x.inverted = true;
         assert!(c.validate_polar().is_err());
+        let category = || Some(vec![crate::config::Category::new("a", "A")]);
         let mut c = config.clone();
-        c.overlays.push(crate::layer::OverlayLayer::default());
+        c.bottom_x.categories = category();
+        assert_eq!(
+            c.validate_polar(),
+            Ok(()),
+            "a categorical angle axis is valid"
+        );
+        c.polar_mut().unwrap().grid_shape = Some(GridShape::Polygon);
+        assert_eq!(c.validate_polar(), Ok(()));
+        let mut c = config.clone();
+        c.polar_mut().unwrap().grid_shape = Some(GridShape::Polygon);
+        assert!(matches!(
+            c.validate_polar().unwrap_err(),
+            crate::RuleKind::PolarPolygonGridAxis
+        ));
+        c.polar_mut().unwrap().grid_shape = Some(GridShape::Circle);
+        assert_eq!(c.validate_polar(), Ok(()));
+        let mut c = config.clone();
+        c.left_y.categories = category();
+        assert_eq!(
+            c.validate_polar(),
+            Err(crate::RuleKind::PolarRadiusCategorical)
+        );
+        let mut c = config.clone();
+        c.left_y.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        assert_eq!(c.validate_polar(), Err(crate::RuleKind::PolarRadiusScale));
+        let mut c = config.clone();
+        c.overlays.push(crate::defaults::overlay_layer());
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().zero_angle_degrees = f64::NAN;
+        c.polar_mut().unwrap().zero_angle_degrees = f64::NAN;
         assert!(c.validate_polar().is_err());
-        let mut plain = default_config();
-        plain.polar = None;
+        let mut plain = crate::defaults::config();
+        plain.set_polar(None);
         plain.bottom_x.inverted = true;
         assert_eq!(plain.validate_polar(), Ok(()));
+    }
+
+    #[test]
+    fn a_numeric_angle_axis_maps_as_screen_angle_does() {
+        let config = polar_config();
+        let mut polar = PolarOptions {
+            zero_angle_degrees: 30.0,
+            clockwise: true,
+            sector: Some([-45.0, 200.0]),
+            ..crate::defaults::polar_options()
+        };
+        let map = polar.angle_map(&config.bottom_x);
+        for value in [-45.0, 0.0, 12.5, 200.0] {
+            assert_eq!(map.screen_angle(value), polar.screen_angle(value));
+            assert_eq!(map.contains(value), polar.contains_angle(value));
+        }
+        assert_eq!(map.window, polar.sector);
+        assert_eq!(map.direction(), -1.0);
+        assert!((map.values_per_turn() - 360.0).abs() < 1e-9);
+        polar.angle_unit = AngleUnit::Radians;
+        polar.sector = None;
+        let map = polar.angle_map(&config.bottom_x);
+        assert_eq!(map.radians_per_value, -1.0);
+        assert_eq!(map.window, None);
+    }
+
+    #[test]
+    fn a_categorical_angle_axis_puts_category_i_at_i_over_n_of_the_turn() {
+        let mut config = polar_config();
+        config.bottom_x.categories = Some(
+            ["a", "b", "c", "d"]
+                .map(|id| crate::config::Category::new(id, id))
+                .to_vec(),
+        );
+        let mut polar = PolarOptions {
+            zero_angle_degrees: 90.0,
+            clockwise: true,
+            ..crate::defaults::polar_options()
+        };
+        let quarter = std::f64::consts::FRAC_PI_2;
+        let map = polar.angle_map(&config.bottom_x);
+        // Category 0 points up, the others follow clockwise a quarter apart.
+        for i in 0..4 {
+            assert!((map.screen_angle(i as f64) - (quarter - i as f64 * quarter)).abs() < 1e-12);
+        }
+        assert_eq!(map.window, None);
+        assert!((map.values_per_turn() - 4.0).abs() < 1e-12);
+        // Counter-clockwise from the right.
+        polar.zero_angle_degrees = 0.0;
+        polar.clockwise = false;
+        let map = polar.angle_map(&config.bottom_x);
+        assert!((map.screen_angle(1.0) - quarter).abs() < 1e-12);
+        // A sector of 180 degrees from 90: i / n of the sector from its
+        // start, the window [0, n] in category values.
+        polar.sector = Some([90.0, 270.0]);
+        let map = polar.angle_map(&config.bottom_x);
+        assert!((map.screen_angle(0.0) - quarter).abs() < 1e-12);
+        assert!((map.screen_angle(2.0) - (quarter + std::f64::consts::FRAC_PI_2)).abs() < 1e-12);
+        assert!((map.screen_angle(4.0) - 3.0 * quarter).abs() < 1e-12);
+        assert_eq!(map.window, Some([0.0, 4.0]));
+        assert!(map.contains(3.0) && !map.contains(4.5));
+        // The angle unit reads the sector, not the categories.
+        polar.angle_unit = AngleUnit::Radians;
+        polar.sector = Some([0.0, std::f64::consts::PI]);
+        let map = polar.angle_map(&config.bottom_x);
+        assert!((map.radians_per_value - std::f64::consts::PI / 4.0).abs() < 1e-12);
+        assert_eq!(
+            config.polar_angle_map(),
+            Some(crate::defaults::polar_options().angle_map(&config.bottom_x))
+        );
     }
 
     #[test]
@@ -383,20 +604,77 @@ mod tests {
         hidden.bottom_x.label_style.visible = false;
         assert!(hidden.polar_geometry().unwrap().radius > geometry.radius);
         let mut plain = config;
-        plain.polar = None;
+        plain.set_polar(None);
         assert_eq!(plain.polar_geometry(), None);
+    }
+
+    #[test]
+    fn geometry_at_2x_is_the_1x_geometry_doubled() {
+        // `Config::scaled` scales the tick length and the label font size,
+        // which are every term of the label band, so the band doubles
+        // exactly; the centre and radius also follow the data area, whose
+        // edges are floored at each scale.
+        for font_size in [18.0, 9.0, 12.0, 16.0] {
+            for labels_visible in [true, false] {
+                let mut config = polar_config();
+                config.bottom_x.label_style.font_size = font_size;
+                config.bottom_x.label_style.visible = labels_visible;
+                let one = config.polar_geometry().unwrap();
+                let scaled = config.scaled(2.0);
+                let two = scaled.polar_geometry().unwrap();
+                let half = |c: &Config| {
+                    let area = c.data_area().unwrap().0;
+                    area.width.min(area.height) as f32 * 0.5
+                };
+                let band_one = half(&config) - one.radius;
+                let band_two = half(&scaled) - two.radius;
+                assert!(
+                    (band_two - 2.0 * band_one).abs() < 1e-4,
+                    "font {font_size}, labels {labels_visible}: band {band_two} at 2x, \
+                     {band_one} at 1x"
+                );
+                for (a, b) in [
+                    (two.center[0], one.center[0]),
+                    (two.center[1], one.center[1]),
+                    (two.radius, one.radius),
+                ] {
+                    assert!(
+                        (a - 2.0 * b).abs() <= 1.0,
+                        "font {font_size}, labels {labels_visible}: {a} at 2x, {b} at 1x"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_label_band_is_unchanged() {
+        // At the default 18 px label font the band's clearance is the 6 px
+        // (2 px without labels) of earlier releases, to the bit.
+        let config = polar_config();
+        assert_eq!(config.bottom_x.label_style.font_size, 18.0);
+        let area = config.data_area().unwrap().0;
+        let half = area.width.min(area.height) as f32 * 0.5;
+        let tick = config.bottom_x.major_tick_length.max(0.0);
+        assert_eq!(
+            config.polar_geometry().unwrap().radius,
+            half - (tick + (18.0f32 * 1.4 + 6.0))
+        );
+        let mut hidden = config.clone();
+        hidden.bottom_x.label_style.visible = false;
+        assert_eq!(hidden.polar_geometry().unwrap().radius, half - (tick + 2.0));
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn polar_is_additive_in_json() {
-        let plain = default_config();
+        let plain = crate::defaults::config();
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json.get("polar").is_none());
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, plain);
         let mut polar = polar_config();
-        polar.polar = Some(PolarOptions {
+        polar.set_polar(Some(PolarOptions {
             zero_angle_degrees: 90.0,
             clockwise: true,
             angle_unit: AngleUnit::Radians,
@@ -404,17 +682,33 @@ mod tests {
             inner_radius_fraction: 0.2,
             interpolation: PolarInterpolation::Arc { pieces: 12 },
             radial_label_angle_degrees: 45.0,
-        });
+            grid_shape: Some(GridShape::Polygon),
+            hide_first_radius_label: true,
+        }));
         let text = serde_json::to_string(&polar).unwrap();
         let back: Config = serde_json::from_str(&text).unwrap();
         assert_eq!(back, polar);
+        assert!(text.contains(r#""grid_shape":"Polygon""#), "{text}");
+        // The default grid shape is omitted, so earlier documents keep
+        // their bytes.
+        let default_text = serde_json::to_string(&crate::defaults::polar_options()).unwrap();
+        assert!(!default_text.contains("grid_shape"), "{default_text}");
+        assert!(
+            !default_text.contains("hide_first_radius_label"),
+            "{default_text}"
+        );
+        assert!(text.contains(r#""hide_first_radius_label":true"#), "{text}");
+        let circle: PolarOptions =
+            serde_json::from_value(serde_json::json!({ "grid_shape": "Circle" })).unwrap();
+        assert_eq!(circle.grid_shape, Some(GridShape::Circle));
+        assert_eq!(circle.grid_shape(), GridShape::Circle);
         let partial: PolarOptions =
             serde_json::from_value(serde_json::json!({ "clockwise": true })).unwrap();
         assert_eq!(
             partial,
             PolarOptions {
                 clockwise: true,
-                ..Default::default()
+                ..crate::defaults::polar_options()
             }
         );
     }

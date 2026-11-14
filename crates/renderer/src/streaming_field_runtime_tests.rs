@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_gpu::BlockOn as _;
 
 #[path = "streaming_field_selection_tests.rs"]
 mod selection_tests;
@@ -13,11 +14,7 @@ mod edge_tests;
 mod diagnostic_tests;
 
 fn column(data: Vec<f64>) -> crate::Column<f64> {
-    crate::Column {
-        min: data.iter().copied().fold(f64::INFINITY, f64::min),
-        max: data.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        data,
-    }
+    crate::Column { data }
 }
 
 struct Fixture {
@@ -63,7 +60,7 @@ fn setup_columns_with_budget(
 ) -> Fixture {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut renderer = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
         samples,
@@ -120,7 +117,8 @@ fn setup_columns_with_budget(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        render_type: DataRenderType::Heatmap {
+        z_column: None,
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: crate::data_config::MatrixRef {
                 columns: vec!["z0".into(), "z1".into(), "z0".into()],
                 orientation: if columns_are_y {
@@ -134,7 +132,7 @@ fn setup_columns_with_budget(
                     crate::data_config::GridLayout::Edges
                 },
             },
-            fill: crate::data_config::FieldFillConfig {
+            fill: Some(crate::data_config::FieldFillConfig {
                 mode: crate::data_config::FillMode::Continuous,
                 shading: if interpolated {
                     crate::data_config::Shading::Interpolated
@@ -142,8 +140,10 @@ fn setup_columns_with_budget(
                     crate::data_config::Shading::Flat
                 },
                 opacity: 0.63,
-            },
-        },
+            }),
+            contour: None,
+            surface: None,
+        }),
     }];
     let id = renderer
         .register_chart(chart.config().clone(), series.clone())
@@ -199,6 +199,7 @@ fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
             crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
                 reads += 1;
                 assert_eq!(ranges.len(), 1);
+                assert!(f.renderer.check_stream_tickets_for_test() >= 1);
                 let range = &ranges[0];
                 let original = &f.columns.iter().find(|(id, _)| *id == range.id).unwrap().1;
                 let payload = column(
@@ -226,7 +227,9 @@ fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
                         .unwrap();
                 }
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => return reads,
         }
@@ -236,12 +239,12 @@ fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
 
 fn finish_display(f: &mut Fixture) {
     pump(f, None);
-    f.renderer.wait_idle();
+    f.renderer.wait_idle().unwrap();
     drop(
         f.renderer
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: f.id,
-                view: &f.view,
+                view: &mut f.view,
             }])
             .unwrap(),
     );
@@ -267,7 +270,7 @@ fn heatmap_runtime_exports_match_resident_lattice_and_duplicate_columns() {
         let job = f.renderer.active_stream_job(f.id);
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -281,9 +284,14 @@ fn heatmap_runtime_exports_match_resident_lattice_and_duplicate_columns() {
                 .begin_stream_export(f.id, scale, Color::new(0.0, 0.0, 0.0, 0.0), io)
                 .unwrap();
             pump(&mut f, Some(operation));
-            let actual = pollster::block_on(f.renderer.finish_stream_export(operation)).unwrap();
+            let actual =
+                crate::test_gpu::block_on(f.renderer.finish_stream_export(operation)).unwrap();
             let expected = resident
-                .export_panel_rgba(&f.chart, &f.series, scale)
+                .export_rgba(
+                    crate::ExportSource::chart(&f.chart, &f.series),
+                    crate::ExportOptions::panel(scale),
+                )
+                .block_on()
                 .unwrap();
             assert_eq!(
                 (actual.width, actual.height),
@@ -310,7 +318,7 @@ fn heatmap_runtime_cancel_stale_and_budget_are_transactional() {
         .lock()
         .unwrap();
     let mut f = setup(false, false, false, 1, 2);
-    f.renderer.wait_idle();
+    f.renderer.wait_idle().unwrap();
     let before = f.renderer.gpu_memory_usage().total_bytes();
     let _ = f.renderer.set_memory_budget(Some(before + 1));
     assert!(f.renderer.auto_stream_chart_request_ranges(f.id).is_err());
@@ -351,7 +359,7 @@ fn heatmap_runtime_cancel_stale_and_budget_are_transactional() {
             .is_err()
     );
     f.renderer.end_gpu_frame();
-    f.renderer.wait_idle();
+    f.renderer.wait_idle().unwrap();
     f.renderer.service_stream_requests();
     assert_eq!(f.renderer.streaming_usage().reserved_gpu_bytes, 0);
 }
@@ -383,7 +391,7 @@ fn heatmap_runtime_fit_uses_exact_gpu_lattice_and_cached_refit() {
         finish_display(&mut f);
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -391,12 +399,14 @@ fn heatmap_runtime_fit_uses_exact_gpu_lattice_and_cached_refit() {
         for (id, column) in &f.columns {
             resident.add_hilo_column(*id, column).unwrap();
         }
-        pollster::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
+        crate::test_gpu::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
         let ticket = resident
             .begin_series_fit_extent(&f.series[0])
             .unwrap()
             .unwrap();
-        let expected = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+        let expected = crate::test_gpu::block_on(ticket.resolve())
+            .unwrap()
+            .unwrap();
         let mut expected_config = f.chart.config().clone();
         let x = crate::FitExtent {
             min: expected.x.min,
@@ -473,6 +483,7 @@ fn pump_pick(f: &mut Fixture, operation: StreamingOperation) -> usize {
         {
             crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
                 assert_eq!(ranges.len(), 1);
+                assert!(f.renderer.check_stream_tickets_for_test() >= 1);
                 let range = &ranges[0];
                 assert!(
                     range.id == "x" || range.id == "y",
@@ -501,7 +512,9 @@ fn pump_pick(f: &mut Fixture, operation: StreamingOperation) -> usize {
                     .unwrap();
                 reads += 1;
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => return reads,
         }
@@ -574,7 +587,7 @@ fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
         finish_display(&mut f);
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -608,25 +621,29 @@ fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
                 display_scale: 1.0,
                 max_distance_px: 5.0,
             };
-            let expected =
-                pollster::block_on(resident.pick_chart_data(chart_id, query).unwrap().resolve())
-                    .unwrap();
-            let operation =
-                pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
-                    .unwrap();
+            let expected = crate::test_gpu::block_on(
+                resident.pick_chart_data(chart_id, query).unwrap().resolve(),
+            )
+            .unwrap();
+            let operation = crate::test_gpu::block_on(
+                f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2),
+            )
+            .unwrap();
             pump_pick(&mut f, operation);
-            let actual = pollster::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap();
+            let actual =
+                crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap();
             assert_eq!(actual, expected, "case={case} fraction={fraction:?}");
-            let legacy =
-                pollster::block_on(f.renderer.begin_stream_pick_point(f.id, position, 5.0, 2))
-                    .unwrap();
+            let legacy = crate::test_gpu::block_on(
+                f.renderer.begin_stream_pick_point(f.id, position, 5.0, 2),
+            )
+            .unwrap();
             assert_eq!(
                 pump_pick(&mut f, legacy),
                 0,
                 "legacy point picker skips matrix inputs"
             );
             assert!(
-                pollster::block_on(f.renderer.finish_stream_pick_point(legacy))
+                crate::test_gpu::block_on(f.renderer.finish_stream_pick_point(legacy))
                     .unwrap()
                     .is_none()
             );
@@ -856,7 +873,7 @@ fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
                 })
                 .collect();
             let step = f.renderer.auto_stream_chart_step(f.id, &bindings).unwrap();
-            f.renderer.wait_idle();
+            f.renderer.wait_idle().unwrap();
             if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
                 f.chart = Chart::new(f.renderer.chart_config(f.id).unwrap().clone());
                 f.view = f
@@ -865,9 +882,9 @@ fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
                     .unwrap();
             }
             f.renderer
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: f.id,
-                    view: &f.view,
+                    view: &mut f.view,
                 }])
                 .unwrap();
             let job = f.renderer.active_stream_job(f.id).unwrap();
@@ -933,4 +950,338 @@ fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
         );
     }
     drop(font);
+}
+
+/// A heatmap stream over `x_len` x and `y_len` y coordinates and `z_count`
+/// matrix columns `z{k}` of `z_len` values each, in the given layout, with
+/// an automatic stream requested; `fit` asks for an automatic fit first.
+#[allow(clippy::too_many_arguments)]
+fn setup_grid(
+    x_len: usize,
+    y_len: usize,
+    z_count: usize,
+    z_len: usize,
+    centers: bool,
+    interpolated: bool,
+    columns_are_y: bool,
+    fit: bool,
+) -> Fixture {
+    let (device, queue) = data_render::shared_device().unwrap();
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4096,
+    )
+    .unwrap();
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 360,
+        height: 240,
+    });
+    let mut colorbar = crate::default::default_colorbar_options();
+    colorbar.axis.min = 0.0;
+    colorbar.axis.max = 4.0;
+    config.colorbar = Some(colorbar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 4.0);
+    chart.set_y_range(0.0, 4.0);
+    let ramp = |n: usize| column((0..n).map(|i| 4.0 * i as f64 / n.max(2) as f64).collect());
+    let mut columns: Vec<(&'static str, crate::Column<f64>)> =
+        vec![("x", ramp(x_len)), ("y", ramp(y_len))];
+    let z_ids: Vec<&'static str> = (0..z_count)
+        .map(|k| &*Box::leak(format!("z{k}").into_boxed_str()))
+        .collect();
+    for (k, id) in z_ids.iter().enumerate() {
+        columns.push((
+            id,
+            column((0..z_len).map(|i| ((i + k) % 5) as f64).collect()),
+        ));
+    }
+    renderer
+        .register_streamed_columns(
+            columns
+                .iter()
+                .map(|(id, values)| crate::StreamColumn {
+                    id: (*id).into(),
+                    len: values.data.len() as u64,
+                    revision: 2,
+                    encoding: crate::StreamEncoding::HiLoF32,
+                    replay: crate::StreamReplay::RandomAccess,
+                    statistics: crate::StreamStatistics::Unknown,
+                })
+                .collect(),
+        )
+        .unwrap();
+    let series = vec![SeriesConfig {
+        series_id: "heat".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        z_column: None,
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
+            matrix: crate::data_config::MatrixRef {
+                columns: z_ids.iter().map(|id| (*id).into()).collect(),
+                orientation: if columns_are_y {
+                    crate::data_config::MatrixOrientation::ColumnsAreY
+                } else {
+                    crate::data_config::MatrixOrientation::ColumnsAreX
+                },
+                grid_layout: if centers {
+                    crate::data_config::GridLayout::Centers
+                } else {
+                    crate::data_config::GridLayout::Edges
+                },
+            },
+            fill: Some(crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: if interpolated {
+                    crate::data_config::Shading::Interpolated
+                } else {
+                    crate::data_config::Shading::Flat
+                },
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    }];
+    let id = renderer
+        .register_chart(chart.config().clone(), series.clone())
+        .unwrap();
+    renderer
+        .configure_streaming(crate::StreamingLimits {
+            max_active_charts: 1,
+            max_in_flight_chunks: 2,
+            max_columns_per_chunk: 1,
+            max_chunk_input_bytes: 64 * 8,
+            max_in_flight_gpu_bytes: 4 * 1024 * 1024,
+        })
+        .unwrap();
+    let view = renderer
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    if fit {
+        renderer.request_stream_auto_fit(id, 0.05).unwrap();
+    }
+    renderer
+        .request_auto_streaming_chart(
+            id,
+            &view,
+            crate::StreamingChartOptions {
+                size: (360, 240),
+                clear_color: Color::new(0.0, 0.0, 0.0, 0.0),
+                max_primitives_per_chunk: 64,
+            },
+        )
+        .unwrap();
+    Fixture {
+        renderer,
+        chart,
+        id,
+        view,
+        series,
+        columns,
+    }
+}
+
+/// The field fit of the screen stream of `f`, as `(ordinal, count)`.
+fn field_fit_state(f: &Fixture) -> Option<(u32, u32)> {
+    let job = f.renderer.active_stream_job(f.id)?;
+    let draw = f
+        .renderer
+        .stream_runtime
+        .as_ref()?
+        .draws
+        .iter()
+        .find(|draw| draw.job == job)?;
+    draw.field_fit.as_ref().map(|fit| fit.progress_for_test())
+}
+
+/// STREAM_FIELD_Z_COLUMN_IN_MATRIX (#152): a field tile asks only for
+/// matrix columns the extent covers, so every Z range it requests names one
+/// of `matrix.columns`. More matrix columns than coordinate cells, fewer,
+/// one and 400, in both orientations and both layouts, each streamed to
+/// completion.
+#[test]
+fn a_field_stream_requests_only_its_matrix_columns() {
+    for (x_len, y_len, z_count, z_len) in
+        [(3, 3, 6, 3), (6, 4, 2, 4), (2, 2, 1, 2), (400, 3, 400, 3)]
+    {
+        for centers in [true, false] {
+            for columns_are_y in [false, true] {
+                let mut f = setup_grid(
+                    x_len,
+                    y_len,
+                    z_count,
+                    z_len,
+                    centers,
+                    false,
+                    columns_are_y,
+                    false,
+                );
+                let mut requested = std::collections::HashSet::new();
+                for _ in 0..100_000 {
+                    match f.renderer.auto_stream_chart_request_ranges(f.id).unwrap() {
+                        crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
+                            assert!(f.renderer.check_stream_tickets_for_test() >= 1);
+                            for range in &ranges {
+                                assert!(
+                                    f.columns.iter().any(|(id, _)| *id == range.id),
+                                    "{} is not a column of the chart",
+                                    range.id
+                                );
+                                requested.insert(range.id.clone());
+                            }
+                            let payload: Vec<_> = ranges
+                                .iter()
+                                .map(|range| {
+                                    let source = &f
+                                        .columns
+                                        .iter()
+                                        .find(|(id, _)| *id == range.id)
+                                        .unwrap()
+                                        .1;
+                                    column(
+                                        source.data[range.offset as usize
+                                            ..(range.offset + range.len) as usize]
+                                            .to_vec(),
+                                    )
+                                })
+                                .collect();
+                            let bindings: Vec<_> = ranges
+                                .iter()
+                                .zip(&payload)
+                                .map(|(range, payload)| crate::StreamRangeSourceBinding {
+                                    id: &range.id,
+                                    revision: range.revision,
+                                    source_len: range.source_len,
+                                    offset: range.offset,
+                                    source: crate::StreamColumnSource::HiLo(payload),
+                                })
+                                .collect();
+                            f.renderer
+                                .auto_stream_chart_submit_ranges(f.id, &bindings)
+                                .unwrap();
+                        }
+                        crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                            f.renderer.wait_idle().unwrap()
+                        }
+                        crate::AutoStreamingRangeRequest::AllSubmitted { .. }
+                        | crate::AutoStreamingRangeRequest::Complete { .. } => break,
+                    }
+                }
+                let z_requested = requested.iter().filter(|id| id.starts_with('z')).count();
+                assert!(z_requested >= 1, "no Z column was read");
+                assert!(z_requested <= z_count);
+            }
+        }
+    }
+}
+
+/// FIELD_FIT_ORDINAL_BOUNDED (#152): a field fit compacts each axis to 2
+/// or 4 endpoints, and its ordinal counts the submitted endpoint reads, so
+/// it stays at most `2 * count` and the read at `ordinal` is in range.
+/// Automatic fits in all four extent modes on 1 x 1, 2 x 2 and 500 x 3
+/// grids, checked after every request and submit; a second submit of the
+/// same ranges is refused.
+#[test]
+fn a_field_fit_reads_each_compacted_endpoint_once() {
+    for (cells_x, cells_y) in [(1usize, 1usize), (2, 2), (500, 3)] {
+        for centers in [false, true] {
+            for interpolated in [false, true] {
+                // Interpolation needs two samples per axis.
+                let samples = |cells: usize| if interpolated { cells.max(2) } else { cells };
+                let (x_len, y_len) = if centers {
+                    (samples(cells_x), samples(cells_y))
+                } else {
+                    (samples(cells_x) + 1, samples(cells_y) + 1)
+                };
+                let z_count = if centers { x_len } else { x_len - 1 };
+                let z_len = if centers { y_len } else { y_len - 1 };
+                let mut f = setup_grid(
+                    x_len,
+                    y_len,
+                    z_count.max(1),
+                    z_len.max(1),
+                    centers,
+                    interpolated,
+                    false,
+                    true,
+                );
+                let mut seen_fit = false;
+                let mut refused_twice = false;
+                for _ in 0..100_000 {
+                    if let Some((ordinal, count)) = field_fit_state(&f) {
+                        seen_fit = true;
+                        assert!(count == 2 || count == 4, "count {count}");
+                        assert!(ordinal <= 2 * count, "{ordinal} of {count}");
+                    }
+                    match f.renderer.auto_stream_chart_request_ranges(f.id).unwrap() {
+                        crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
+                            let payload: Vec<_> = ranges
+                                .iter()
+                                .map(|range| {
+                                    let source = &f
+                                        .columns
+                                        .iter()
+                                        .find(|(id, _)| *id == range.id)
+                                        .unwrap()
+                                        .1;
+                                    column(
+                                        source.data[range.offset as usize
+                                            ..(range.offset + range.len) as usize]
+                                            .to_vec(),
+                                    )
+                                })
+                                .collect();
+                            let bindings: Vec<_> = ranges
+                                .iter()
+                                .zip(&payload)
+                                .map(|(range, payload)| crate::StreamRangeSourceBinding {
+                                    id: &range.id,
+                                    revision: range.revision,
+                                    source_len: range.source_len,
+                                    offset: range.offset,
+                                    source: crate::StreamColumnSource::HiLo(payload),
+                                })
+                                .collect();
+                            let before = field_fit_state(&f);
+                            f.renderer
+                                .auto_stream_chart_submit_ranges(f.id, &bindings)
+                                .unwrap();
+                            if let (Some((ordinal, _)), Some((after, count))) =
+                                (before, field_fit_state(&f))
+                            {
+                                assert_eq!(after, ordinal + 1);
+                                assert!(after <= 2 * count);
+                                if !refused_twice {
+                                    assert!(
+                                        f.renderer
+                                            .auto_stream_chart_submit_ranges(f.id, &bindings)
+                                            .is_err(),
+                                        "a submitted endpoint read was taken twice"
+                                    );
+                                    assert_eq!(field_fit_state(&f), Some((after, count)));
+                                    refused_twice = true;
+                                }
+                            }
+                        }
+                        crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                            f.renderer.wait_idle().unwrap()
+                        }
+                        crate::AutoStreamingRangeRequest::AllSubmitted { .. }
+                        | crate::AutoStreamingRangeRequest::Complete { .. } => break,
+                    }
+                }
+                assert!(
+                    seen_fit,
+                    "{cells_x}x{cells_y} centers={centers} interpolated={interpolated}"
+                );
+                assert!(refused_twice, "no endpoint read was supplied twice");
+            }
+        }
+    }
 }

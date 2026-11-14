@@ -1,0 +1,5509 @@
+//! The playground's scene catalogue: synthetic data and the starting model
+//! of every scene, Cartesian and polar (`Config` and series) and the
+//! DataLess radial chart (in [`radial`]).
+//!
+//! The file lives with the renderer's tests so the decoration oracle
+//! (`tests/decoration_oracle.rs`) sweeps exactly the scenes the playground
+//! shows: `tools/playground` includes it back with `#[path]`, so a scene added
+//! here is covered without a test of its own. It uses only the renderer's
+//! public API.
+#![allow(dead_code)]
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
+
+// The NIST diagrams the gallery draws, shared with the playground (#205).
+#[allow(dead_code)]
+#[path = "../../examples/support/gallery.rs"]
+mod gallery;
+#[allow(dead_code)]
+#[path = "../../examples/support/grotrian_sets.rs"]
+mod grotrian_sets;
+#[allow(dead_code)]
+#[path = "../../examples/support/nist_csv.rs"]
+mod nist_csv;
+
+use renderer::config::{Config, append_legend_entry, series_symbol_segments};
+use renderer::data::Column;
+use renderer::data_config::{
+    BarOrientation, ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, FieldFillConfig,
+    FillMode, GridLayout, LineFill, LineInterpolation, MatrixOrientation, MatrixRef, PointColorMap,
+    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale, StreamlineArrows, VectorColorMap,
+    VectorComponents, VectorPivot, VectorScale, VectorStyle,
+};
+use renderer::format::LabelFormat;
+use renderer::layout::{ChartArea, Rect};
+use renderer::line::LineStylePreset;
+use renderer::monotonic::MonotonicSlices;
+use renderer::polar::{PolarInterpolation, PolarOptions};
+use renderer::renderer::MonotonicGroupRef;
+use renderer::text::RichText;
+use renderer::{
+    Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, ArrowStyle, CellRef,
+    Chart, Color, ColorMap, ColumnSource, ExportSource, FiggyError, LayerRef, OverlayLayer,
+    Renderer, ShapeStyle, Subplot, default,
+};
+
+/// Logical size of every Cartesian document; the window fits it uniformly.
+pub const DOC_W: u32 = 1100;
+pub const DOC_H: u32 = 720;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneKind {
+    Lines,
+    Scatter,
+    ValueMaps,
+    Histogram,
+    Field,
+    VectorField,
+    Streamlines,
+    LogAxes,
+    TwinAxes,
+    Subplots,
+    Annotations,
+    Polar,
+    CategoryAxis,
+    BigData,
+    Radial,
+    Categorical,
+    BoxPlot,
+    Radar,
+    LongLabels,
+    OffsetSpectra,
+    Waterfall,
+    Candles,
+    Gantt,
+    Violins,
+    Raincloud,
+    Ternary,
+    Surface,
+    Hexbin,
+    Rose,
+    Image,
+    Sunburst,
+    Parallel,
+    BrokenAxes,
+    EnergyLevels,
+    Stem,
+    Lollipop,
+    PolarHeatmap,
+    Quiver3d,
+    ProbabilityPaper,
+    /// Ar I, Cu I and U I from the bundled NIST exports (#205).
+    EnergyLevelsAr,
+    EnergyLevelsCu,
+    EnergyLevelsU,
+    EnergyLevelsArAll,
+    Feynman,
+    /// Potential flow past a cylinder on a triangle mesh (#210).
+    TriMesh,
+    /// The same mesh as a surface in a 3D box (#210).
+    TriSurface,
+    /// Raw channels printed in physical units (#273).
+    AxisUnits,
+    /// Four channels of an evenly sampled recording as monotonic-x lines
+    /// (#271).
+    Monotonic,
+    /// Two recordings on different clocks, one on an overlay with an X axis
+    /// of its own (#283).
+    MonotonicClocks,
+}
+
+impl SceneKind {
+    pub const ALL: [SceneKind; 49] = [
+        SceneKind::Lines,
+        SceneKind::Scatter,
+        SceneKind::ValueMaps,
+        SceneKind::Histogram,
+        SceneKind::Field,
+        SceneKind::VectorField,
+        SceneKind::Streamlines,
+        SceneKind::LogAxes,
+        SceneKind::TwinAxes,
+        SceneKind::Subplots,
+        SceneKind::Annotations,
+        SceneKind::Polar,
+        SceneKind::CategoryAxis,
+        SceneKind::BigData,
+        SceneKind::Radial,
+        SceneKind::Categorical,
+        SceneKind::BoxPlot,
+        SceneKind::Radar,
+        SceneKind::LongLabels,
+        SceneKind::OffsetSpectra,
+        SceneKind::Waterfall,
+        SceneKind::Candles,
+        SceneKind::Gantt,
+        SceneKind::Violins,
+        SceneKind::Raincloud,
+        SceneKind::Ternary,
+        SceneKind::Surface,
+        SceneKind::Hexbin,
+        SceneKind::Rose,
+        SceneKind::Image,
+        SceneKind::Sunburst,
+        SceneKind::Parallel,
+        SceneKind::BrokenAxes,
+        SceneKind::EnergyLevels,
+        SceneKind::Stem,
+        SceneKind::Lollipop,
+        SceneKind::PolarHeatmap,
+        SceneKind::Quiver3d,
+        SceneKind::ProbabilityPaper,
+        SceneKind::EnergyLevelsAr,
+        SceneKind::EnergyLevelsCu,
+        SceneKind::EnergyLevelsU,
+        SceneKind::EnergyLevelsArAll,
+        SceneKind::Feynman,
+        SceneKind::TriMesh,
+        SceneKind::TriSurface,
+        SceneKind::AxisUnits,
+        SceneKind::Monotonic,
+        SceneKind::MonotonicClocks,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SceneKind::Lines => "Lines · areas · steps",
+            SceneKind::Scatter => "Scatter · error bars",
+            SceneKind::ValueMaps => "Scatter · value maps",
+            SceneKind::Histogram => "Histogram",
+            SceneKind::Field => "Heatmap · contours",
+            SceneKind::VectorField => "Vector field (quiver)",
+            SceneKind::Streamlines => "Streamlines (dipole)",
+            SceneKind::LogAxes => "Log axes",
+            SceneKind::TwinAxes => "Twin Y axes (overlay)",
+            SceneKind::Subplots => "Subplots (linked X)",
+            SceneKind::Annotations => "Annotations",
+            SceneKind::Polar => "Polar (angle, radius)",
+            SceneKind::CategoryAxis => "Category axis",
+            SceneKind::BigData => "Large data (resident)",
+            SceneKind::Radial => "Radial (pie / donut)",
+            SceneKind::Categorical => "Categorical bars",
+            SceneKind::BoxPlot => "Box plot",
+            SceneKind::Radar => "Radar (spider)",
+            SceneKind::LongLabels => "Long labels (auto layout)",
+            SceneKind::OffsetSpectra => "Offset spectra (waterfall)",
+            SceneKind::Waterfall => "Waterfall (range bars)",
+            SceneKind::Candles => "Candlesticks (range bars)",
+            SceneKind::Gantt => "Gantt (range bars)",
+            SceneKind::Violins => "Split violins (box plot)",
+            SceneKind::Raincloud => "Raincloud (box plot)",
+            SceneKind::Ternary => "Ternary (three components)",
+            SceneKind::Surface => "3D surface",
+            SceneKind::Hexbin => "Hexbin (hexagonal grid)",
+            SceneKind::Rose => "Rose (polar bars)",
+            SceneKind::Image => "Image (RGB test card)",
+            SceneKind::Sunburst => "Sunburst (nested rings)",
+            SceneKind::Parallel => "Parallel coordinates",
+            SceneKind::BrokenAxes => "Broken axes (two peaks)",
+            SceneKind::EnergyLevels => "Energy levels (He I)",
+            SceneKind::Stem => "Stems (impulse response)",
+            SceneKind::Lollipop => "Lollipop (ranked)",
+            SceneKind::PolarHeatmap => "Polar heatmap (radar)",
+            SceneKind::Quiver3d => "3D vector field (ABC flow)",
+            SceneKind::ProbabilityPaper => "Probability paper (normal, Weibull)",
+            SceneKind::EnergyLevelsAr => "Energy levels (Ar I)",
+            SceneKind::EnergyLevelsCu => "Energy levels (Cu I)",
+            SceneKind::EnergyLevelsU => "Energy levels (U I)",
+            SceneKind::EnergyLevelsArAll => "Energy levels (Ar I, every level)",
+            SceneKind::Feynman => "Feynman diagrams",
+            SceneKind::TriMesh => "Triangle mesh (flow past a cylinder)",
+            SceneKind::TriSurface => "3D triangle mesh surface",
+            SceneKind::AxisUnits => "Axis units (raw counts in volts)",
+            SceneKind::Monotonic => "Monotonic x (recorded channels)",
+            SceneKind::MonotonicClocks => "Monotonic x (two clocks)",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            SceneKind::Lines => "Area fill to baseline, a band between two series, step modes.",
+            SceneKind::Scatter => "Marker shapes, XY error bars, a line through the points.",
+            SceneKind::ValueMaps => {
+                "Colour by a value column through the colourbar; size by another (bubbles). \
+                 Pick a point to read both values. NaN sizes hide the point."
+            }
+            SceneKind::Histogram => "Pre-binned edges + counts. Try horizontal orientation.",
+            SceneKind::Field => "Interpolated field, labelled isolines and a colourbar.",
+            SceneKind::VectorField => {
+                "Arrows from (u, v) grids over a speed heatmap, coloured through the \
+                 colourbar, plus pixel-scaled probe arrows. Pick an arrow or a cell to \
+                 read u / v."
+            }
+            SceneKind::Streamlines => {
+                "Field lines of an electric dipole, integrated by the host and drawn as \
+                 NaN-separated polylines with arrowheads every 70 px, coloured by |E| \
+                 through a logarithmic colourbar. Pan or zoom: the heads keep their pixel \
+                 spacing. Pick a line or a head to read the vertex."
+            }
+            SceneKind::LogAxes => {
+                "Logarithmic Y with decade ticks, a logarithmic X under one decade with \
+                 adaptive 1..9 ticks (AxisOptions.log_ticks), dotted minor grid."
+            }
+            SceneKind::TwinAxes => "Switch the active layer to Overlay 0 to edit the right axis.",
+            SceneKind::Subplots => {
+                "Upper-right X is linked to the parent. Activate a subplot to edit it."
+            }
+            SceneKind::Annotations => {
+                "Active layer = Annotations: drag lines, spans, text, arrows."
+            }
+            SceneKind::Polar => {
+                "Config.polar: bottom_x is the angle in degrees, left_y the radius. A \
+                 filled pattern and a marker rose with arc segments; pick the markers."
+            }
+            SceneKind::CategoryAxis => {
+                "AxisOptions.categories on X: a label per category, staggered over two \
+                 rows when they crowd (one is long). Drag the tick labels; pick the markers."
+            }
+            SceneKind::BigData => {
+                "Up to 100 million resident points as a line, markers or both, every one \
+                 drawn. Set the size, upload, then zoom, pan, pick or run the benchmark."
+            }
+            SceneKind::Radial => "Click a slice; drag the title or legend.",
+            SceneKind::Categorical => {
+                "A categorical document opened as category bars on a categorical \
+                 axis: pick a bar, step with the arrows, switch grouped / stacked / \
+                 percent in the chart's bar groups."
+            }
+            SceneKind::BoxPlot => {
+                "A box plot document opened as box plot series on a categorical \
+                 axis: pick a box, a whisker or an outlier, step with the arrows; \
+                 notches, means and outliers come from the document's style."
+            }
+            SceneKind::LongLabels => {
+                "Labels such as 0.00300 under the Y title, negative decimals on the right, \
+                 a logarithmic top axis, timestamps and a colourbar, in bands set by hand. \
+                 Press \"Auto layout\" (layout::auto_layout) to fit bands, title offsets \
+                 and label formats."
+            }
+            SceneKind::Radar => {
+                "A radar document opened as radar series on a polar chart whose \
+                 angle axis holds the categories: pick a vertex, an edge or a \
+                 fill, step with the arrows; grid shape, markers and fill."
+            }
+            SceneKind::OffsetSpectra => {
+                "Twelve spectra stacked by line_offsets with a skew along x: pick \
+                 a trace (values stay unshifted), step with the arrows; the \
+                 labels are annotations."
+            }
+            SceneKind::Waterfall => {
+                "An energy balance as range bars: the host's running totals before \
+                 and after each step, coloured by direction, a subtotal and a total \
+                 flagged by a column, connectors and the host's change labels. Pick \
+                 a bar or a connector, step with the arrows."
+            }
+            SceneKind::Candles => {
+                "Daily prices on a time axis: open to close bodies, low to high \
+                 wicks, up and down colours from the given ends, a slot of 0.7 days. \
+                 Pick a body or a wick; pan and zoom the time axis."
+            }
+            SceneKind::Gantt => {
+                "Tasks by team as horizontal range bars on a time value axis: a \
+                 state colour per task, its progress shaded, planned beside actual. \
+                 Pick a task, step with the arrows."
+            }
+            SceneKind::Violins => {
+                "Two conditions per dose as split violins over the host's density \
+                 curves, without boxes, a box override restyling one category. \
+                 Pick a violin, step with the arrows."
+            }
+            SceneKind::Ternary => {
+                "Alloy compositions as three unnormalized columns placed in a \
+                 triangle, coloured by hardness through the colourbar, with a \
+                 dashed tie-line and a filled phase field with a hole. Pick a \
+                 sample or the field; step with the arrows."
+            }
+            SceneKind::Surface => {
+                "A heatmap's grid drawn as a lit, wireframed surface in a 3D box, \
+                 its contours on the floor. Drag the plot to orbit; pick a sample \
+                 and step with the arrows."
+            }
+            SceneKind::Raincloud => {
+                "Four groups as rainclouds: a half violin on the right, a narrow \
+                 box, and the raw points jittered on the left. Pick a point and \
+                 step along the points, or a cloud."
+            }
+            SceneKind::Hexbin => {
+                "Thirty thousand samples of a bivariate normal binned by the host \
+                 into 40 by 35 flat-topped hexagons, the counts through the \
+                 colourbar. Pick a cell and step with the arrows."
+            }
+            SceneKind::Rose => {
+                "A wind rose: the hours of wind from sixteen directions, three \
+                 speed bands stacked outward from the centre. Pick a wedge and \
+                 step around the compass with the arrows."
+            }
+            SceneKind::Image => {
+                "A 256 by 192 test card the host composes as bytes (colour bars, \
+                 a hue sweep, a grey ramp), registered as three channel grids on \
+                 one lattice, with markers over it. Pick a cell and step with the \
+                 arrows."
+            }
+            SceneKind::Sunburst => {
+                "A budget as three nested rings: departments, their teams and the \
+                 teams' projects, each ring over its parent's span. Click a node; \
+                 step ring by ring with the arrows; drag the outer labels."
+            }
+            SceneKind::Parallel => {
+                "150 flowers of three species over four measurements, one polyline \
+                 per flower across four axes with their own ranges, coloured by \
+                 species through the colourbar. Pick a row and step with the \
+                 arrows; drag an axis's labels."
+            }
+            SceneKind::BrokenAxes => {
+                "Ranges cut out of an axis (AxisOptions.breaks). Above, Continuous \
+                 joins the pieces into one axis; below, Panels draws each piece at \
+                 its own scale over a logarithmic Y cut between the two peaks. Pick \
+                 either peak; drag the tick labels."
+            }
+            SceneKind::Feynman => {
+                "Four processes: Higgs production by gluon fusion through a top loop, \
+                 the electron's one-loop vertex correction, beta decay through a W and \
+                 a three-jet event. The host places the legs; the layout places every \
+                 internal vertex. Pick a vertex, a line or a label; drag a vertex, bend \
+                 a line, move a label."
+            }
+            SceneKind::TriMesh => {
+                "Potential flow past a cylinder on a graded annulus mesh, a mesh with \
+                 a hole that no lattice heatmap can draw. The host computes the \
+                 pressure coefficient Cp = 2 (R/r)² cos 2θ − (R/r)⁴ at every node; \
+                 the fill interpolates it across each triangle and the contours are \
+                 its level set. Pick a triangle or a contour and step with the \
+                 arrows; drag the colourbar."
+            }
+            SceneKind::TriSurface => {
+                "The same mesh in a 3D box: Cp as the height and the colour of a \
+                 matte, wireframed surface, its contours on the floor. Drag the data \
+                 area to orbit; pick a triangle on the surface or a contour on the \
+                 floor and step with the arrows."
+            }
+            SceneKind::Monotonic => {
+                "Four channels of a 10 kHz recording, 200 000 samples each, as \
+                 monotonic-x lines: the host lends the samples (x = start + i × \
+                 interval) and the renderer keeps the first, lowest, highest and \
+                 last sample of each pixel column. The x range is the document's \
+                 (no wheel zoom or pan); resize the window and the series is \
+                 reduced again from its samples. Pick a kept point and step with \
+                 the arrows."
+            }
+            SceneKind::MonotonicClocks => {
+                "A 10 kHz vibration channel and a 400 Hz temperature logger that \
+                 started on a clock of its own. The logger is an overlay whose X \
+                 axis is its own (link_x off), drawn on the top side, so each \
+                 recording keeps its own time axis over one plot, and each group \
+                 is reduced at its own mapping. Make the overlay the active layer \
+                 to drag its top axis; pick a kept point of either trace."
+            }
+            SceneKind::EnergyLevels => {
+                "A Grotrian diagram of He I from NIST ASD values: term columns \
+                 grouped into singlets and triplets, the ground state below a \
+                 broken energy axis, the continuum above the ionization limit and \
+                 an inset of the 2p ³P° fine structure. Pick a level, an arrow or \
+                 a label; drag a label or the group headers."
+            }
+            SceneKind::Stem => {
+                "A filter's impulse response h[n]: dashed stems from 0 to each tap, up and \
+                 down. Pick a stem or its marker; arrows step along the taps."
+            }
+            SceneKind::Lollipop => {
+                "Horizontal stems on a categorical y axis, from a baseline of 0 marked by a \
+                 draggable reference line."
+            }
+            SceneKind::PolarHeatmap => {
+                "A weather radar sweep: reflectivity over azimuth and range, clockwise \
+                 from north, the blind range a hole at the centre, 30 and 45 dBZ \
+                 contours labelled along their curves. Pick a gate and step along the \
+                 azimuths and ranges with the arrows."
+            }
+            SceneKind::Quiver3d => {
+                "An Arnold-Beltrami-Childress flow sampled on a 6 x 6 x 6 lattice \
+                 in a 3D box: one arrow per sample along (u, v, w), coloured by \
+                 its speed, which the host computes. Drag the plot to orbit; pick \
+                 an arrow and step with the arrows."
+            }
+            SceneKind::ProbabilityPaper => {
+                "Probability axes: tensile strengths on normal paper, where a normal \
+                 sample is a straight line, and failure times on Weibull paper over \
+                 a log time axis, where the line's slope is the shape parameter. \
+                 The host computes the Hazen plotting positions and the fitted \
+                 lines. Pick a point; drag the percent tick labels."
+            }
+            SceneKind::EnergyLevelsAr => {
+                "Ar I from the NIST exports: the 3p⁵ 4s and 4p manifolds with 5s, \
+                 3d and 5p under the two ion cores, Paschen labels, the 4p → 4s \
+                 lines of plasma diagnostics, and 3d and 5p as host-declared bands. \
+                 Pick a level, a band or a line; drag a label."
+            }
+            SceneKind::EnergyLevelsCu => {
+                "Cu I below 7 eV: the doublets beside the 3d⁹4s4p quartets drawn as \
+                 bands, the 324.8 / 327.4 nm resonance lines and the 510.6 / 578.2 nm \
+                 copper vapour laser lines. Pick a level or a line; drag a label."
+            }
+            SceneKind::EnergyLevelsU => {
+                "U I in cm⁻¹ by J and parity, from the NIST Handbook levels, with \
+                 lines the host computes from E1-allowed pairs (among them 591.5 nm \
+                 of laser isotope separation) and a thin piece for the limit. Pick a \
+                 level or a line; zoom the J axis."
+            }
+            SceneKind::EnergyLevelsArAll => {
+                "All 503 Ar I levels of the NIST export in twenty-five term \
+                 columns: the Rydberg members from n = 8 to the limit as one band \
+                 per column, the low members labelled, crowds collapsed to brackets. \
+                 Pick a level or a band; zoom into a column."
+            }
+            SceneKind::AxisUnits => {
+                "The host keeps the raw channels; the axes print them in physical \
+                 units (AxisOptions.unit): 16-bit ADC counts on Y as volts \
+                 (scale 5/32768), sample indices on X as milliseconds at 2 kHz, and \
+                 the overlay's kelvin as degrees Celsius (offset -273.15). The ticks \
+                 are round in the shown units. Pick a point: it reads in counts."
+            }
+        }
+    }
+
+    /// Whether the scene is a radial chart (a pie, a donut or a sunburst),
+    /// which its own renderer draws from a `RadialChart` document
+    /// (`radial::document`).
+    pub fn is_radial(self) -> bool {
+        matches!(self, SceneKind::Radial | SceneKind::Sunburst)
+    }
+}
+
+pub struct CartesianScene {
+    pub config: Config,
+    pub series: Vec<SeriesConfig>,
+    /// The samples of the monotonic groups the scene's monotonic series read
+    /// (#271), which the host keeps and lends on every call: a draw at a
+    /// mapping the renderer has no envelope for takes them
+    /// ([`export_scene`]). Empty for every other scene.
+    pub monotonic: Vec<MonotonicData>,
+}
+
+/// One monotonic group of a scene (#271): `x = start + i × interval`, one
+/// `Vec` per channel, held by the host as a recorder would hold its buffer.
+pub struct MonotonicData {
+    pub group: String,
+    pub start: f64,
+    pub interval: f64,
+    pub channels: Vec<Vec<f64>>,
+}
+
+/// Run `export` on `chart` and `series`. A scene without monotonic groups
+/// is exported as the host-held chart (`ExportSource::chart`). A monotonic
+/// series draws only from an envelope the renderer built at the export's
+/// own mapping, from the samples the host lends for the call, so a scene
+/// with monotonic groups is registered as a monotonic chart for the call
+/// and exported with them (`ExportSource::Monotonic`), then removed (#271).
+pub fn export_scene<T>(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    monotonic: &[MonotonicData],
+    export: impl FnOnce(&mut Renderer, ExportSource<'_>) -> Result<T, FiggyError>,
+) -> Result<T, FiggyError> {
+    if monotonic.is_empty() {
+        return export(r, ExportSource::chart(chart, series));
+    }
+    let views: Vec<Vec<&[f64]>> = monotonic
+        .iter()
+        .map(|group| group.channels.iter().map(Vec::as_slice).collect())
+        .collect();
+    let slices: Vec<MonotonicSlices<'_, f64>> = monotonic
+        .iter()
+        .zip(&views)
+        .map(|(group, view)| MonotonicSlices::new(group.start, group.interval, view))
+        .collect();
+    let refs: Vec<MonotonicGroupRef<'_>> = monotonic
+        .iter()
+        .zip(&slices)
+        .map(|(group, source)| MonotonicGroupRef::new(&group.group, source))
+        .collect();
+    let id = r.register_monotonic_chart(chart.config().clone(), series.to_vec())?;
+    let result = export(
+        r,
+        ExportSource::Monotonic {
+            chart: id,
+            monotonic: &refs,
+        },
+    );
+    let removed = r.monotonic_chart(id).and_then(|chart| chart.remove());
+    let value = result?;
+    removed?;
+    Ok(value)
+}
+
+// ---------------------------------------------------------------------------
+// Data helpers
+// ---------------------------------------------------------------------------
+
+fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) -> Result<(), FiggyError> {
+    if r.handle_for(id).is_ok() {
+        return Ok(());
+    }
+    r.add_column(id, &Column { data }).map(|_| ())
+}
+
+/// Deterministic pseudo-random numbers in [-1, 1] (no rand dependency).
+pub fn noise(seed: u64, i: usize) -> f64 {
+    let mut x = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    x ^= x >> 33;
+    (x as f64 / u64::MAX as f64) * 2.0 - 1.0
+}
+
+fn linspace(a: f64, b: f64, n: usize) -> Vec<f64> {
+    (0..n)
+        .map(|i| a + (b - a) * i as f64 / (n - 1) as f64)
+        .collect()
+}
+
+pub fn line_style(color: Color, width: f32) -> DataLineStyleConfig {
+    DataLineStyleConfig {
+        line_style: LineStylePreset::Solid,
+        line_color: color,
+        line_width: width,
+        fill: None,
+        fill_color: None,
+        interpolation: LineInterpolation::Linear,
+    }
+}
+
+pub fn scatter_style(color: Color, shape: ScatterShape, size: f32) -> DataScatterStyleConfig {
+    DataScatterStyleConfig {
+        point_color: color,
+        point_shape: shape,
+        point_size: size,
+        point_style_table: None,
+        point_style_index_column: None,
+        point_style_overrides: None,
+        point_color_map: None,
+        point_size_map: None,
+    }
+}
+
+pub fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        z_column: None,
+        render_type,
+    }
+}
+
+pub fn base_config(title: &str, x_title: &str, y_title: &str) -> Config {
+    let mut config = default::default_config();
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    Chart::new(config)
+        .with_title(title)
+        .with_x_title(x_title)
+        .with_y_title(y_title)
+        .config()
+        .clone()
+}
+
+/// `text` written as TeX (`RichText::from_tex`, #45) in the style of
+/// `like`: its colour, size and font.
+pub fn math_text(text: &str, like: &RichText) -> RichText {
+    RichText::from_tex(text, like.color, like.font_size, like.font.clone())
+        .unwrap_or_else(|e| panic!("{text}: {e}"))
+}
+
+/// Set the chart title of `config` to the formula `text` and grow the title
+/// band to fit it, as `Chart::with_title` does for plain text.
+pub fn with_math_title(mut config: Config, text: &str) -> Config {
+    config.chart_title.text = math_text(text, &config.chart_title.text);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    renderer::layout::fit_chart_title_margin(&mut config, &measure);
+    config
+}
+
+/// Rebuild the parent legend from the series the parent draws (those no
+/// subplot claims), and each visible subplot legend from its own series.
+pub fn rebuild_legends(config: &mut Config, series: &[SeriesConfig]) {
+    let claimed: Vec<&str> = config
+        .subplots
+        .iter()
+        .flat_map(|s| s.series.iter().map(String::as_str))
+        .collect();
+    // A heatmap's mark is a swatch of its chart's colourbar map.
+    let fill = |content: &mut RichText,
+                colormap: Option<&ColorMap>,
+                ids: &mut dyn Iterator<Item = &SeriesConfig>| {
+        content.segments.clear();
+        for s in ids {
+            append_legend_entry(content, series_symbol_segments(s, colormap), &s.series_id);
+        }
+    };
+    fill(
+        &mut config.legend.content,
+        config.colorbar.as_ref().map(|bar| &bar.colormap),
+        &mut series
+            .iter()
+            .filter(|s| !claimed.contains(&s.series_id.as_str())),
+    );
+    for sub in &mut config.subplots {
+        if sub.config.legend.visible {
+            let own = sub.series.clone();
+            fill(
+                &mut sub.config.legend.content,
+                sub.config.colorbar.as_ref().map(|bar| &bar.colormap),
+                &mut series.iter().filter(|s| own.contains(&s.series_id)),
+            );
+        }
+    }
+}
+
+pub fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
+    config.legend.visible = true;
+    rebuild_legends(&mut config, series);
+    config
+}
+
+// ---------------------------------------------------------------------------
+// Builders
+// ---------------------------------------------------------------------------
+
+/// The starting model of Cartesian scene `kind`, its columns uploaded to
+/// `r`. The large-data scene generates `big_data_points` samples.
+pub fn build(
+    r: &mut Renderer,
+    kind: SceneKind,
+    big_data_points: usize,
+) -> Result<CartesianScene, FiggyError> {
+    match kind {
+        SceneKind::Lines => lines(r),
+        SceneKind::Scatter => scatter(r),
+        SceneKind::ValueMaps => value_maps(r),
+        SceneKind::Histogram => histogram(r),
+        SceneKind::Field => field(r),
+        SceneKind::VectorField => vector_field(r),
+        SceneKind::Streamlines => streamlines(r),
+        SceneKind::LogAxes => log_axes(r),
+        SceneKind::TwinAxes => twin_axes(r),
+        SceneKind::Subplots => subplots(r),
+        SceneKind::Annotations => annotations(r),
+        SceneKind::Polar => polar(r),
+        SceneKind::CategoryAxis => category_axis(r),
+        SceneKind::Categorical => categorical(r),
+        SceneKind::BoxPlot => box_plot(r),
+        SceneKind::Radar => radar(r),
+        SceneKind::LongLabels => long_labels(r),
+        SceneKind::OffsetSpectra => offset_spectra(r),
+        SceneKind::Waterfall => waterfall(r),
+        SceneKind::Candles => candles(r),
+        SceneKind::Gantt => gantt(r),
+        SceneKind::Violins => violins(r),
+        SceneKind::Raincloud => raincloud(r),
+        SceneKind::Ternary => ternary(r),
+        SceneKind::Surface => surface(r),
+        SceneKind::Hexbin => hexbin(r),
+        SceneKind::Rose => rose(r),
+        SceneKind::Image => image(r),
+        SceneKind::Parallel => parallel(r),
+        SceneKind::BrokenAxes => broken_axes(r),
+        SceneKind::EnergyLevels => energy_levels(r),
+        SceneKind::Feynman => feynman(r),
+        SceneKind::TriMesh => tri_mesh(r),
+        SceneKind::TriSurface => tri_surface(r),
+        SceneKind::Stem => stem(r),
+        SceneKind::Lollipop => lollipop(r),
+        SceneKind::PolarHeatmap => polar_heatmap(r),
+        SceneKind::Quiver3d => quiver_3d(r),
+        SceneKind::ProbabilityPaper => probability_paper(r),
+        SceneKind::Monotonic => Ok(monotonic()),
+        SceneKind::MonotonicClocks => Ok(monotonic_clocks()),
+        SceneKind::EnergyLevelsAr => grotrian_scene(grotrian_sets::argon()),
+        SceneKind::EnergyLevelsCu => grotrian_scene(grotrian_sets::copper()),
+        SceneKind::EnergyLevelsU => grotrian_scene(grotrian_sets::uranium()),
+        SceneKind::EnergyLevelsArAll => grotrian_scene(grotrian_sets::argon_all()),
+        SceneKind::AxisUnits => axis_units(r),
+        SceneKind::BigData => big_data::build(r, big_data_points),
+        SceneKind::Radial | SceneKind::Sunburst => {
+            unreachable!("a radial scene is built by `radial::document`")
+        }
+    }
+}
+
+fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let x = linspace(0.0, 10.0, 400);
+    upload(r, "ln_x", x.clone())?;
+    upload(r, "ln_sin", x.iter().map(|v| v.sin()).collect())?;
+    upload(
+        r,
+        "ln_cos",
+        x.iter().map(|v| 0.8 * (v * 0.7).cos()).collect(),
+    )?;
+    let mid: Vec<f64> = x.iter().map(|v| -1.6 + 0.3 * (v * 0.9).sin()).collect();
+    upload(
+        r,
+        "ln_hi",
+        mid.iter()
+            .zip(&x)
+            .map(|(m, v)| m + 0.25 + 0.1 * (v * 2.0).cos())
+            .collect(),
+    )?;
+    upload(
+        r,
+        "ln_lo",
+        mid.iter()
+            .zip(&x)
+            .map(|(m, v)| m - 0.25 - 0.1 * (v * 2.0).cos())
+            .collect(),
+    )?;
+    let sx = linspace(0.0, 10.0, 11);
+    upload(r, "ln_step_x", sx.clone())?;
+    upload(
+        r,
+        "ln_step_y",
+        (0..sx.len()).map(|i| 1.6 + 0.4 * noise(7, i)).collect(),
+    )?;
+
+    let blue = Color::from_rgb8(31, 119, 180);
+    let orange = Color::from_rgb8(255, 127, 14);
+    let green = Color::from_rgb8(44, 160, 44);
+    let purple = Color::from_rgb8(148, 103, 189);
+    let mut area = line_style(blue, 2.0);
+    area.fill = Some(LineFill::ToBaseline(0.0));
+    let mut dashed = line_style(orange, 2.0);
+    dashed.line_style = LineStylePreset::Dash;
+    let mut band = line_style(green, 1.5);
+    band.fill = Some(LineFill::ToSeries("band_lo".into()));
+    let mut step = line_style(purple, 2.5);
+    step.interpolation = LineInterpolation::StepMid;
+    let series = vec![
+        series(
+            "sin_area",
+            "ln_x",
+            "ln_sin",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(area),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "cos_dashed",
+            "ln_x",
+            "ln_cos",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(dashed),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "band_hi",
+            "ln_x",
+            "ln_hi",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(band),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "band_lo",
+            "ln_x",
+            "ln_lo",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(green, 1.5)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "step_mid",
+            "ln_step_x",
+            "ln_step_y",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(step),
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    let mut config = with_math_title(
+        base_config("", "x", "y"),
+        r"Lines, areas and steps: $y = \sin x$, $\int_0^{x} \cos t\,dt$, $\sqrt{x^2+y^2}$",
+    );
+    config.left_y.title_option.text = math_text(
+        r"$y(x) = \frac{\Delta s}{\Delta t}$",
+        &config.left_y.title_option.text,
+    );
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(-2.2, 2.4);
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let n = 25;
+    let x: Vec<f64> = (0..n).map(|i| i as f64 * 0.8).collect();
+    let y: Vec<f64> = x
+        .iter()
+        .enumerate()
+        .map(|(i, v)| 2.0 + 0.5 * v + 0.8 * noise(1, i))
+        .collect();
+    upload(r, "sc_x", x.clone())?;
+    upload(r, "sc_y", y)?;
+    upload(
+        r,
+        "sc_ex",
+        (0..n).map(|i| 0.15 + 0.1 * noise(2, i).abs()).collect(),
+    )?;
+    upload(
+        r,
+        "sc_ey",
+        (0..n).map(|i| 0.3 + 0.4 * noise(3, i).abs()).collect(),
+    )?;
+    upload(r, "sc_fit", x.iter().map(|v| 2.0 + 0.5 * v).collect())?;
+    let cloud = 600;
+    upload(
+        r,
+        "sc_cx",
+        (0..cloud)
+            .map(|i| 10.0 + 4.0 * noise(4, i) * noise(5, i).abs().sqrt())
+            .collect(),
+    )?;
+    upload(
+        r,
+        "sc_cy",
+        (0..cloud)
+            .map(|i| 4.0 + 2.5 * noise(6, i) * noise(8, i).abs().sqrt())
+            .collect(),
+    )?;
+
+    let red = Color::from_rgb8(214, 39, 40);
+    let teal = Color::from_rgb8(23, 190, 207);
+    let gray = Color::from_rgb8(90, 90, 90);
+    let err = DataErrorBarStyleConfig {
+        error_bar_color: red,
+        error_bar_width: 1.2,
+        error_bar_cap_size: 6.0,
+        cap_width: 1.2,
+        error_bar_style_table: None,
+        error_bar_style_index_column: None,
+        error_bar_style_overrides: None,
+    };
+    let mut fit = line_style(gray, 1.5);
+    fit.line_style = LineStylePreset::DashDot;
+    let series = vec![
+        series(
+            "cloud",
+            "sc_cx",
+            "sc_cy",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(
+                    Color::from_rgba(0.09, 0.75, 0.81, 0.55),
+                    ScatterShape::DiamondFilled,
+                    5.0,
+                )),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "fit",
+            "sc_x",
+            "sc_fit",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(fit),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "measured",
+            "sc_x",
+            "sc_y",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(red, ScatterShape::CircleFilled, 7.0)),
+                line: None,
+                errors: Some(renderer::data_config::ErrorBars {
+                    x: Some(ErrorRef::Symmetric {
+                        column: "sc_ex".into(),
+                    }),
+                    y: Some(ErrorRef::Symmetric {
+                        column: "sc_ey".into(),
+                    }),
+                    style: err,
+                }),
+                stem: None,
+            }),
+        ),
+    ];
+    let _ = teal;
+    let mut chart = Chart::new(base_config("Scatter and error bars", "dose", "response"));
+    chart.auto_fit_x_union(r.pool(), &["sc_x", "sc_cx"], 0.05)?;
+    chart.auto_fit_y_union(r.pool(), &["sc_y", "sc_cy"], 0.1)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// A filter's impulse response `h[n] = 0.88^n cos(0.7 n)` as a stem plot
+/// (#206): dashed stems from 0 to each tap, with negative taps. The taps are
+/// host data.
+fn stem(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let n = 32;
+    let taps: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let h: Vec<f64> = taps
+        .iter()
+        .map(|k| 0.88_f64.powf(*k) * (0.7 * k).cos())
+        .collect();
+    upload(r, "stem_n", taps)?;
+    upload(r, "stem_h", h)?;
+    let blue = Color::from_rgb8(31, 119, 180);
+    let series = vec![series(
+        "h",
+        "stem_n",
+        "stem_h",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter_style(blue, ScatterShape::CircleFilled, 7.0)),
+            line: None,
+            errors: None,
+            stem: Some(renderer::data_config::Stem {
+                baseline: 0.0,
+                direction: renderer::data_config::CategoryBarDirection::Vertical,
+                color: Color::from_rgb8(90, 90, 90),
+                width: 1.5,
+                line_style: LineStylePreset::Dash,
+            }),
+        }),
+    )];
+    let mut chart = Chart::new(base_config("Impulse response", "n", "h[n]"));
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.08)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// Monotonic-x lines (#271): four channels of a recording sampled at
+/// 10 kHz for 20 s, `x = i × 1e-4`. Nothing is uploaded: the host keeps the
+/// samples ([`CartesianScene::monotonic`]) and lends them on every call,
+/// and the renderer keeps each series' first, lowest, highest and last
+/// sample per pixel column. The channels are offset by the host so they
+/// stack; the pressure channel draws a wider stroke.
+fn monotonic() -> CartesianScene {
+    const N: usize = 200_000;
+    const INTERVAL: f64 = 1e-4;
+    let tau = std::f64::consts::TAU;
+    let signal = |channel: usize, i: usize| {
+        let t = i as f64 * INTERVAL;
+        let jitter = noise(271 + channel as u64, i);
+        match channel {
+            // A 50 Hz vibration whose amplitude swells and fades: a full
+            // cycle in every pixel column, the densest envelope there is.
+            0 => 6.0 + (0.4 + 0.5 * (tau * 0.1 * t).sin().abs()) * (tau * 50.0 * t).sin(),
+            // A pressure ramp with a burst every 5 s.
+            1 => {
+                let burst = (-(t % 5.0 - 2.5).powi(2) * 40.0).exp();
+                3.0 + 0.08 * t + 1.2 * burst * (tau * 7.0 * t).sin() + 0.05 * jitter
+            }
+            // A slow strain drift under broadband noise.
+            2 => 0.5 * (tau * 0.3 * t).sin() + 0.25 * jitter,
+            // A 2 Hz trigger: a square wave of vertical edges.
+            _ => -3.0 + if (t * 2.0).fract() < 0.5 { 1.0 } else { 0.0 },
+        }
+    };
+    let channels: Vec<Vec<f64>> = (0..4)
+        .map(|channel| (0..N).map(|i| signal(channel, i)).collect())
+        .collect();
+    let looks = [
+        ("vibration", Color::from_rgb8(31, 119, 180), 1.0),
+        ("pressure", Color::from_rgb8(214, 39, 40), 2.5),
+        ("strain", Color::from_rgb8(44, 160, 44), 1.0),
+        ("trigger", Color::from_rgb8(90, 90, 90), 1.5),
+    ];
+    let series: Vec<SeriesConfig> = looks
+        .iter()
+        .enumerate()
+        .map(|(channel, (id, color, width))| {
+            SeriesConfig::monotonic_line(*id, "daq", channel)
+                .color(*color)
+                .width(*width)
+        })
+        .collect();
+    let mut chart = Chart::new(base_config(
+        "Recording (monotonic x)",
+        "time (s)",
+        "signal (V, offset)",
+    ));
+    chart.set_x_range(0.0, (N - 1) as f64 * INTERVAL);
+    chart.set_y_range(-3.5, 7.5);
+    CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+        monotonic: vec![MonotonicData {
+            group: "daq".into(),
+            start: 0.0,
+            interval: INTERVAL,
+            channels,
+        }],
+    }
+}
+
+/// Two recordings on different clocks (#283): a 10 kHz vibration channel
+/// over 2 s on the base layer, and a 400 Hz temperature logger over 3 s on
+/// an overlay with an X axis and a Y axis of its own, its time axis drawn on
+/// the top side. Each is a monotonic group with its own grid; the host lends
+/// both.
+fn monotonic_clocks() -> CartesianScene {
+    const FAST: usize = 20_000;
+    const FAST_INTERVAL: f64 = 1e-4;
+    const SLOW: usize = 1_200;
+    const SLOW_INTERVAL: f64 = 2.5e-3;
+    let tau = std::f64::consts::TAU;
+    let vibration: Vec<f64> = (0..FAST)
+        .map(|i| {
+            let t = i as f64 * FAST_INTERVAL;
+            (0.4 + 0.5 * (tau * 0.5 * t).sin().abs()) * (tau * 50.0 * t).sin()
+                + 0.05 * noise(283, i)
+        })
+        .collect();
+    let temperature: Vec<f64> = (0..SLOW)
+        .map(|i| {
+            let t = i as f64 * SLOW_INTERVAL;
+            24.0 + 3.0 * (1.0 - (-t / 1.2).exp()) + 0.08 * noise(284, i)
+        })
+        .collect();
+    let orange = Color::from_rgb8(230, 120, 20);
+    let series = vec![
+        SeriesConfig::monotonic_line("vibration", "daq", 0)
+            .color(Color::from_rgb8(31, 119, 180))
+            .width(1.0),
+        SeriesConfig::monotonic_line("temperature", "logger", 0)
+            .color(orange)
+            .width(2.0),
+    ];
+    let mut config = base_config("Two clocks (monotonic x)", "daq time (s)", "vibration (g)");
+    // The overlay's axes take the top and right sides.
+    config.top_x.line_visible = false;
+    config.top_x.tick = renderer::config::TickVisibility::None;
+    config.right_y.line_visible = false;
+    config.right_y.tick = renderer::config::TickVisibility::None;
+    let mut x_axis = renderer::config::AxisOptions::overlay_x("logger time (s)", orange);
+    x_axis.out_margin = 70.0;
+    x_axis.line_color = orange;
+    let mut y_axis = renderer::config::AxisOptions::overlay_y("temperature (°C)", orange);
+    y_axis.out_margin = 120.0;
+    y_axis.line_color = orange;
+    let mut chart = Chart::new(config).with_overlay_xy(x_axis, y_axis, &["temperature"]);
+    chart.set_x_range(0.0, (FAST - 1) as f64 * FAST_INTERVAL);
+    chart.set_y_range(-1.2, 1.2);
+    chart.set_overlay_x_range(0, 0.0, (SLOW - 1) as f64 * SLOW_INTERVAL);
+    chart.set_overlay_y_range(0, 23.5, 27.5);
+    // The legend stays clear of the overlay's axes on the top and right.
+    let mut config = with_legend(chart.config().clone(), &series);
+    config.legend.corner = renderer::config::LegendCorner::BottomLeft;
+    CartesianScene {
+        config,
+        series,
+        monotonic: vec![
+            MonotonicData {
+                group: "daq".into(),
+                start: 0.0,
+                interval: FAST_INTERVAL,
+                channels: vec![vibration],
+            },
+            MonotonicData {
+                group: "logger".into(),
+                start: 0.0,
+                interval: SLOW_INTERVAL,
+                channels: vec![temperature],
+            },
+        ],
+    }
+}
+
+/// Probability paper (#209): a normal panel and a Weibull subplot over a log
+/// time axis. The host computes everything a reader takes as data, the
+/// Hazen plotting positions `(i - 0.5) / n` and the fitted lines, and the
+/// renderer only places them (CLAUDE.md rule 1).
+fn probability_paper(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisScale, ProbabilityScale};
+    let normal = ProbabilityScale::Normal;
+    let weibull = ProbabilityScale::Weibull;
+    let n = 40;
+    let hazen: Vec<f64> = (0..n).map(|i| (i as f64 + 0.5) / n as f64).collect();
+    // Tensile strengths: a normal sample (mean 420 MPa, sd 18) with a little
+    // scatter about its quantiles, sorted as a probability plot reads it.
+    let (mean, sd) = (420.0, 18.0);
+    let mut strength: Vec<f64> = hazen
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let z = normal
+                .forward(*p)
+                .expect("a Hazen position is inside (0, 1)");
+            mean + sd * z + 4.0 * noise(209, i)
+        })
+        .collect();
+    strength.sort_by(f64::total_cmp);
+    // Failure times: Weibull with shape 1.8 and scale 1000 h.
+    let (shape, scale) = (1.8_f64, 1000.0_f64);
+    let mut hours: Vec<f64> = hazen
+        .iter()
+        .enumerate()
+        .map(|(i, p)| scale * (-(1.0 - p).ln()).powf(1.0 / shape) * (1.0 + 0.08 * noise(211, i)))
+        .collect();
+    hours.sort_by(f64::total_cmp);
+    // The fitted lines, sampled across the axis ranges.
+    let fit_p = [0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.999];
+    let fit_strength: Vec<f64> = fit_p
+        .iter()
+        .map(|p| mean + sd * normal.forward(*p).expect("inside (0, 1)"))
+        .collect();
+    let fit_hours: Vec<f64> = fit_p
+        .iter()
+        .map(|p| scale * (-(1.0 - p).ln()).powf(1.0 / shape))
+        .collect();
+    upload(r, "pp_p", hazen)?;
+    upload(r, "pp_strength", strength)?;
+    upload(r, "pp_hours", hours)?;
+    upload(r, "pp_fit_p", fit_p.to_vec())?;
+    upload(r, "pp_fit_strength", fit_strength)?;
+    upload(r, "pp_fit_hours", fit_hours)?;
+
+    let (w, h) = (DOC_W / 2, DOC_H);
+    let cell = |x: u32, title: &str, xt: &str, yt: &str| -> Config {
+        let mut c = base_config(title, xt, yt);
+        c.chart_area = ChartArea(Rect {
+            x,
+            y: 0,
+            width: w,
+            height: h,
+        });
+        c.grid.show_major_x = true;
+        c.grid.show_major_y = true;
+        c
+    };
+    let mut config = cell(
+        0,
+        "Tensile strength",
+        "Strength [MPa]",
+        "Cumulative probability",
+    );
+    for axis in [&mut config.left_y, &mut config.right_y] {
+        axis.scale = AxisScale::Probability(normal);
+    }
+    let mut times = Subplot {
+        config: cell(w, "Time to failure", "Time [h]", "Unreliability"),
+        series: vec!["failures".into(), "weibull_fit".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    };
+    for axis in [&mut times.config.left_y, &mut times.config.right_y] {
+        axis.scale = AxisScale::Probability(weibull);
+    }
+    for axis in [&mut times.config.bottom_x, &mut times.config.top_x] {
+        axis.scale = AxisScale::Logarithmic;
+        axis.log_ticks = renderer::config::LogTickPolicy::Adaptive;
+    }
+    config.subplots = vec![times];
+
+    let blue = Color::from_rgb8(31, 119, 180);
+    let red = Color::from_rgb8(200, 60, 40);
+    let points = |id: &str, x: &str, color: Color, shape: ScatterShape| {
+        series(
+            id,
+            x,
+            "pp_p",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(color, shape, 7.0)),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        )
+    };
+    let fit = |id: &str, x: &str, color: Color| {
+        series(
+            id,
+            x,
+            "pp_fit_p",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(color, 1.5)),
+                errors: None,
+                stem: None,
+            }),
+        )
+    };
+    let series = vec![
+        points("strength", "pp_strength", blue, ScatterShape::CircleFilled),
+        fit("normal_fit", "pp_fit_strength", blue),
+        points("failures", "pp_hours", red, ScatterShape::SquareFilled),
+        fit("weibull_fit", "pp_fit_hours", red),
+    ];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_x(r.pool(), "pp_strength", 0.08)?;
+    chart.set_y_range(0.001, 0.999);
+    chart.set_subplot_x_range(0, 30.0, 5000.0);
+    chart.set_subplot_y_range(0, 0.001, 0.999);
+    // Hours read as plain numbers (50, 100, 200 …) rather than powers.
+    chart.with_axis_range_change(|c| {
+        c.subplots[0].config.bottom_x.label_style.format = LabelFormat::Decimal;
+    });
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series[..2]),
+        series,
+    })
+}
+
+/// A ranked lollipop chart (#206): horizontal stems from 0 on a categorical
+/// `left_y`, the baseline drawn by a reference line (an annotation the user
+/// can drag), as CONFIG.md's stem recipe says.
+fn lollipop(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    let names = [
+        ("rust", "Rust"),
+        ("go", "Go"),
+        ("python", "Python"),
+        ("kotlin", "Kotlin"),
+        ("swift", "Swift"),
+        ("java", "Java"),
+        ("cpp", "C++"),
+        ("php", "PHP"),
+    ];
+    let score = [8.6, 6.9, 6.1, 4.8, 3.2, 1.4, -0.8, -2.5];
+    upload(r, "lol_score", score.to_vec())?;
+    upload(r, "lol_row", (0..names.len()).map(|i| i as f64).collect())?;
+    let mut config = base_config("Change in share", "points", "language");
+    let categories: Vec<Category> = names
+        .iter()
+        .map(|(id, label)| Category::new(*id, *label))
+        .collect();
+    config.left_y.categories = Some(categories);
+    config.grid.show_major_y = true;
+    let orange = Color::from_rgb8(255, 127, 14);
+    let series = vec![series(
+        "share",
+        "lol_score",
+        "lol_row",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter_style(orange, ScatterShape::CircleFilled, 11.0)),
+            line: None,
+            errors: None,
+            stem: Some(renderer::data_config::Stem {
+                baseline: 0.0,
+                direction: renderer::data_config::CategoryBarDirection::Horizontal,
+                color: orange,
+                width: 3.0,
+                line_style: LineStylePreset::Solid,
+            }),
+        }),
+    )];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
+    let mut config = chart.config().clone();
+    config.annotations.items = vec![Annotation::new(AnnotationKind::ReferenceLine {
+        axis: AnnotationAxis::X,
+        value: 0.0,
+        style: AnnotationLineStyle {
+            color: Color::from_rgb8(60, 60, 60),
+            width: 1.2,
+            style: LineStylePreset::Solid,
+        },
+        label: None,
+    })];
+    // The category names are long beside the axis title: lay the chrome
+    // out so neither covers the other.
+    let config = renderer::layout::auto_layout(
+        &with_legend(config, &series),
+        &renderer::CpuTextMeasure::for_style(&renderer::config::DrawStyle::Precise),
+    );
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+/// Two clouds on one colourbar. The left cloud is coloured by `depth` at a
+/// fixed size; the right cloud is coloured by `depth` and sized by
+/// `amplitude` (a bubble chart). The size domain comes from the amplitude
+/// statistics this scene already has, never from the renderer.
+fn value_maps(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let n = 320;
+    let depth = |x: f64, y: f64| 10.0 * y + 4.0 * (x - 5.0).abs();
+    let cloud = |seed: u64, cx: f64| -> (Vec<f64>, Vec<f64>) {
+        let x: Vec<f64> = (0..n).map(|i| cx + 1.8 * noise(seed, i)).collect();
+        let y: Vec<f64> = (0..n).map(|i| 5.0 + 4.2 * noise(seed + 1, i)).collect();
+        (x, y)
+    };
+    let (x1, y1) = cloud(31, 2.6);
+    let (x2, y2) = cloud(41, 7.4);
+    let depth1: Vec<f64> = x1.iter().zip(&y1).map(|(x, y)| depth(*x, *y)).collect();
+    let depth2: Vec<f64> = x2.iter().zip(&y2).map(|(x, y)| depth(*x, *y)).collect();
+    // Every 40th amplitude is NaN: a non-finite size hides the point and
+    // removes it from picking.
+    let amplitude: Vec<f64> = (0..n)
+        .map(|i| {
+            if i % 40 == 20 {
+                f64::NAN
+            } else {
+                1.0 + 9.0 * noise(43, i).abs()
+            }
+        })
+        .collect();
+    let (amp_min, amp_max) = amplitude
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(*v), hi.max(*v))
+        });
+    upload(r, "vm_x1", x1)?;
+    upload(r, "vm_y1", y1)?;
+    upload(r, "vm_depth1", depth1)?;
+    upload(r, "vm_x2", x2)?;
+    upload(r, "vm_y2", y2)?;
+    upload(r, "vm_depth2", depth2)?;
+    upload(r, "vm_amp", amplitude)?;
+
+    let mut coloured = scatter_style(
+        Color::from_rgb8(31, 119, 180),
+        ScatterShape::CircleFilled,
+        7.0,
+    );
+    coloured.point_color_map = Some(PointColorMap {
+        column: "vm_depth1".into(),
+    });
+    let mut bubbles = scatter_style(
+        Color::from_rgba(0.13, 0.41, 0.78, 0.6),
+        ScatterShape::CircleFilled,
+        6.0,
+    );
+    bubbles.point_color_map = Some(PointColorMap {
+        column: "vm_depth2".into(),
+    });
+    let mut size_map = PointSizeMap {
+        column: "vm_amp".into(),
+        domain_min: 0.0,
+        domain_max: 1.0,
+        min_px: 2.0,
+        max_px: 16.0,
+        scale: SizeScale::Area,
+    };
+    size_map.fit_domain(amp_min, amp_max);
+    bubbles.point_size_map = Some(size_map);
+    let series = vec![
+        series(
+            "depth",
+            "vm_x1",
+            "vm_y1",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(coloured),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "bubbles",
+            "vm_x2",
+            "vm_y2",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(bubbles),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    let mut config = base_config("Scatter: colour and size value maps", "x", "y");
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 10.0);
+    chart.auto_fit_colorbar_union(r.pool(), &["vm_depth1", "vm_depth2"], 0.0)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+fn histogram(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let bins = 30;
+    let edges = linspace(-3.0, 3.0, bins + 1);
+    let mut counts = vec![0.0; bins];
+    for i in 0..5000 {
+        // Sum of uniforms ≈ normal.
+        let v: f64 = (0..4).map(|k| noise(10 + k, i)).sum::<f64>() * 0.85;
+        let b = ((v + 3.0) / 6.0 * bins as f64).floor();
+        if b >= 0.0 && (b as usize) < bins {
+            counts[b as usize] += 1.0;
+        }
+    }
+    upload(r, "hist_edges", edges)?;
+    upload(r, "hist_counts", counts)?;
+    let bar = DataBarStyleConfig {
+        fill_color: Color::from_rgb8(86, 140, 200),
+        border_color: Color::from_rgb8(30, 60, 110),
+        border_width: 1.0,
+        baseline: 0.0,
+        gap_px: 1.0,
+        width_ratio: 1.0,
+        orientation: BarOrientation::Vertical,
+        bar_style_overrides: None,
+    };
+    let series = vec![series(
+        "samples",
+        "hist_edges",
+        "hist_counts",
+        DataRenderType::Histogram { bar },
+    )];
+    let mut chart = Chart::new(base_config("Histogram of 5000 samples", "value", "count"));
+    chart.set_x_range(-3.0, 3.0);
+    chart.auto_fit_y(r.pool(), "hist_counts", 0.08)?;
+    chart.with_axis_range_change(|c| {
+        c.left_y.min = 0.0;
+        c.right_y.min = 0.0;
+    });
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const G: usize = 48;
+    let coords = linspace(0.0, 1.0, G);
+    let z = |x: f64, y: f64| {
+        let a = (-((x - 0.35).powi(2) + (y - 0.6).powi(2)) / 0.03).exp();
+        let b = 0.7 * (-((x - 0.7).powi(2) + (y - 0.3).powi(2)) / 0.02).exp();
+        a + b + 0.1 * (6.0 * x).sin() * (5.0 * y).cos()
+    };
+    let ids: Vec<String> = (0..G).map(|c| format!("fld_z{c}")).collect();
+    if r.handle_for("fld_x").is_err() {
+        let grid: Vec<Column<f64>> = coords
+            .iter()
+            .map(|x| {
+                let data: Vec<f64> = coords.iter().map(|y| z(*x, *y)).collect();
+                Column { data }
+            })
+            .collect();
+        let coord = Column {
+            data: coords.clone(),
+        };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("fld_x", &coord), ("fld_y", &coord)];
+        for (id, column) in ids.iter().zip(&grid) {
+            batch.push((id.as_str(), column as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Field: heatmap + labelled contours", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.axis.min = -0.2;
+    bar.axis.max = 1.2;
+    bar.axis.major_spacing = 0.2;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 1.0);
+    let ink = Color::from_rgb8(20, 20, 20);
+    let series = vec![series(
+        "field",
+        "fld_x",
+        "fld_y",
+        DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Centers,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 1.0,
+            }),
+            contour: Some(ContourConfig {
+                levels: vec![0.0, 0.2, 0.4, 0.6, 0.8],
+                line: line_style(ink, 1.2),
+                per_level_color: None,
+                labels: Some(ContourLabelConfig {
+                    visible: true,
+                    font_size: 11.0,
+                    color: ink,
+                    format: LabelFormat::Decimal,
+                    significant_digits: 1,
+                    spacing_px: 140.0,
+                    anchors: Vec::new(),
+                    bg_color: None,
+                    bg_padding_px: 2.0,
+                }),
+            }),
+            surface: None,
+        }),
+    )];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    // An antenna-like pattern over the full circle and a three-leaf rose
+    // sampled every five degrees. Both columns are the host's (angle,
+    // radius); the renderer projects them.
+    let degrees: Vec<f64> = (0..=360).map(f64::from).collect();
+    let pattern: Vec<f64> = degrees
+        .iter()
+        .map(|d| {
+            let t = d.to_radians();
+            (0.6 + 2.4 * (2.0 * t).cos().abs()) * (0.7 + 0.3 * t.cos().max(0.0))
+        })
+        .collect();
+    let rose_deg: Vec<f64> = (0..72).map(|i| f64::from(i) * 5.0).collect();
+    let rose: Vec<f64> = rose_deg
+        .iter()
+        .map(|d| 2.0 + (3.0 * d.to_radians()).cos())
+        .collect();
+    upload(r, "polar_deg", degrees)?;
+    upload(r, "polar_pattern", pattern)?;
+    upload(r, "polar_rose_deg", rose_deg)?;
+    upload(r, "polar_rose", rose)?;
+    let blue = Color::from_rgb8(30, 110, 210);
+    let red = Color::from_rgb8(200, 60, 40);
+    let mut filled = line_style(blue, 2.5);
+    filled.fill = Some(LineFill::ToBaseline(0.0));
+    filled.fill_color = Some(Color::from_rgba(0.12, 0.43, 0.82, 0.25));
+    let series = vec![
+        series(
+            "pattern",
+            "polar_deg",
+            "polar_pattern",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(filled),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "rose",
+            "polar_rose_deg",
+            "polar_rose",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(red, ScatterShape::CircleFilled, 6.0)),
+                line: Some(line_style(red, 1.5)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    let mut config = base_config("Polar: pattern and rose", "Angle", "Radius");
+    config.bottom_x.min = 0.0;
+    config.bottom_x.max = 360.0;
+    config.bottom_x.major_spacing = 30.0;
+    config.bottom_x.label_style.format = LabelFormat::Degrees;
+    config.left_y.min = 0.0;
+    config.left_y.max = 3.0;
+    config.left_y.major_spacing = 0.5;
+    config.set_polar(Some(PolarOptions {
+        interpolation: PolarInterpolation::Arc { pieces: 6 },
+        radial_label_angle_degrees: 90.0,
+        ..PolarOptions::default()
+    }));
+    rebuild_legends(&mut config, &series);
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    // A vortex with a mild drift, sampled on a 24 x 16 grid: the u / v
+    // components and the speed are three matrices over the same coordinates.
+    const NX: usize = 24;
+    const NY: usize = 16;
+    let xs = linspace(0.0, 10.0, NX);
+    let ys = linspace(0.0, 6.0, NY);
+    let flow = |x: f64, y: f64| {
+        let (dx, dy) = (x - 5.0, y - 3.0);
+        let r2 = dx * dx + dy * dy;
+        (-dy / (1.0 + 0.3 * r2) + 0.3, dx / (1.0 + 0.3 * r2))
+    };
+    let u_ids: Vec<String> = (0..NX).map(|c| format!("vf_u{c}")).collect();
+    let v_ids: Vec<String> = (0..NX).map(|c| format!("vf_v{c}")).collect();
+    let s_ids: Vec<String> = (0..NX).map(|c| format!("vf_s{c}")).collect();
+    // Twelve probe anchors on a ring, with their own (u, v) columns. Their
+    // bounds size the probe arrows: host statistics, not a renderer read.
+    let probes: Vec<(f64, f64)> = (0..12)
+        .map(|i| {
+            let a = i as f64 / 12.0 * std::f64::consts::TAU;
+            (5.0 + 3.2 * a.cos(), 3.0 + 2.0 * a.sin())
+        })
+        .collect();
+    let probe_uv: Vec<(f64, f64)> = probes.iter().map(|p| flow(p.0, p.1)).collect();
+    let bounds = |pick: fn(&(f64, f64)) -> f64| {
+        probe_uv
+            .iter()
+            .map(pick)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+                (l.min(v), h.max(v))
+            })
+    };
+    if r.handle_for("vf_x").is_err() {
+        let column = |data: Vec<f64>| Column { data };
+        let mut grids = Vec::new();
+        for x in &xs {
+            let samples: Vec<(f64, f64)> = ys.iter().map(|y| flow(*x, *y)).collect();
+            grids.push(column(samples.iter().map(|s| s.0).collect()));
+            grids.push(column(samples.iter().map(|s| s.1).collect()));
+            grids.push(column(samples.iter().map(|s| s.0.hypot(s.1)).collect()));
+        }
+        let gx = column(xs.clone());
+        let gy = column(ys.clone());
+        let px = column(probes.iter().map(|p| p.0).collect());
+        let py = column(probes.iter().map(|p| p.1).collect());
+        let pu = column(probe_uv.iter().map(|p| p.0).collect());
+        let pv = column(probe_uv.iter().map(|p| p.1).collect());
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![
+            ("vf_x", &gx),
+            ("vf_y", &gy),
+            ("vf_px", &px),
+            ("vf_py", &py),
+            ("vf_pu", &pu),
+            ("vf_pv", &pv),
+        ];
+        for (c, chunk) in grids.chunks(3).enumerate() {
+            batch.push((u_ids[c].as_str(), &chunk[0] as &dyn ColumnSource));
+            batch.push((v_ids[c].as_str(), &chunk[1] as &dyn ColumnSource));
+            batch.push((s_ids[c].as_str(), &chunk[2] as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let grid = |ids: &[String]| MatrixRef {
+        columns: ids.to_vec(),
+        orientation: MatrixOrientation::ColumnsAreX,
+        grid_layout: GridLayout::Centers,
+    };
+    let speed = series(
+        "speed",
+        "vf_x",
+        "vf_y",
+        DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: grid(&s_ids),
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 0.3,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    );
+    // The gradient grid: data-scaled, so the tips follow the axes when the
+    // view pans or zooms, and coloured by the speed grid.
+    let quiver = series(
+        "quiver",
+        "vf_x",
+        "vf_y",
+        DataRenderType::Vector {
+            components: VectorComponents::Grid {
+                u: grid(&u_ids),
+                v: grid(&v_ids),
+            },
+            style: VectorStyle {
+                color: Color::from_rgb8(20, 20, 20),
+                width_px: 1.6,
+                scale: VectorScale::Data { factor: 0.3 },
+                pivot: VectorPivot::Tail,
+                head_length_px: 7.0,
+                head_width_px: 6.0,
+                min_length_px: 2.0,
+                color_map: Some(VectorColorMap::Grid(grid(&s_ids))),
+            },
+        },
+    );
+    // Probe arrows: pixel-scaled, so they keep their size under zoom.
+    let mut probe_style = VectorStyle {
+        color: Color::from_rgb8(200, 40, 60),
+        width_px: 2.5,
+        scale: VectorScale::Pixels { px_per_unit: 1.0 },
+        pivot: VectorPivot::Middle,
+        head_length_px: 10.0,
+        head_width_px: 9.0,
+        min_length_px: 0.0,
+        color_map: None,
+    };
+    probe_style.fit_scale(bounds(|p| p.0), bounds(|p| p.1), 48.0);
+    let probes = series(
+        "probes",
+        "vf_px",
+        "vf_py",
+        DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "vf_pu".into(),
+                v: "vf_pv".into(),
+                w: None,
+            },
+            style: probe_style,
+        },
+    );
+    let series = vec![speed, quiver, probes];
+    let mut config = base_config("Vector field: vortex flow", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 6.0);
+    let speed_refs: Vec<&str> = s_ids.iter().map(String::as_str).collect();
+    chart.auto_fit_colorbar_union(r.pool(), &speed_refs, 0.0)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// The electric field of a dipole, `+1` at `(-1, 0)` and `-1` at `(1, 0)`.
+fn dipole_field(x: f64, y: f64) -> (f64, f64) {
+    let mut e = (0.0, 0.0);
+    for (cx, q) in [(-1.0, 1.0), (1.0, -1.0)] {
+        let (dx, dy) = (x - cx, y);
+        let r3 = (dx * dx + dy * dy).powf(1.5).max(1e-9);
+        e.0 += q * dx / r3;
+        e.1 += q * dy / r3;
+    }
+    e
+}
+
+/// Field lines integrated by the host (the scene stands in for the host
+/// application; the renderer draws the paths it is given): RK4 steps along
+/// the unit field direction from seeds around the positive charge, until a
+/// line leaves the view or reaches the negative charge. Each streamline is
+/// followed by a NaN row in all three columns, which breaks the line.
+fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let (mut xs, mut ys, mut speed) = (Vec::new(), Vec::new(), Vec::new());
+    let unit = |x: f64, y: f64| {
+        let (ex, ey) = dipole_field(x, y);
+        let l = ex.hypot(ey).max(1e-12);
+        (ex / l, ey / l)
+    };
+    let seeds = 16;
+    for k in 0..seeds {
+        let angle = (k as f64 + 0.5) / seeds as f64 * std::f64::consts::TAU;
+        let (mut x, mut y) = (-1.0 + 0.12 * angle.cos(), 0.12 * angle.sin());
+        let h = 0.02;
+        for _ in 0..1200 {
+            let (ex, ey) = dipole_field(x, y);
+            xs.push(x);
+            ys.push(y);
+            speed.push(ex.hypot(ey));
+            if !(-3.0..=3.0).contains(&x) || !(-2.0..=2.0).contains(&y) || (x - 1.0).hypot(y) < 0.1
+            {
+                break;
+            }
+            let k1 = unit(x, y);
+            let k2 = unit(x + 0.5 * h * k1.0, y + 0.5 * h * k1.1);
+            let k3 = unit(x + 0.5 * h * k2.0, y + 0.5 * h * k2.1);
+            let k4 = unit(x + h * k3.0, y + h * k3.1);
+            x += h / 6.0 * (k1.0 + 2.0 * k2.0 + 2.0 * k3.0 + k4.0);
+            y += h / 6.0 * (k1.1 + 2.0 * k2.1 + 2.0 * k3.1 + k4.1);
+        }
+        xs.push(f64::NAN);
+        ys.push(f64::NAN);
+        speed.push(f64::NAN);
+    }
+    for (id, data) in [("sl_x", xs), ("sl_y", ys), ("sl_speed", speed)] {
+        if r.handle_for(id).is_ok() {
+            continue;
+        }
+        r.add_column(id, &Column { data })?;
+    }
+    let field_lines = series(
+        "field lines",
+        "sl_x",
+        "sl_y",
+        DataRenderType::Streamlines {
+            line: line_style(Color::from_rgb8(40, 40, 40), 1.4),
+            arrows: Some(StreamlineArrows {
+                spacing_px: 70.0,
+                head_length_px: 9.0,
+                head_width_px: 8.0,
+            }),
+            color_map: Some(PointColorMap {
+                column: "sl_speed".into(),
+            }),
+        },
+    );
+    let series = vec![field_lines];
+    let mut config = base_config("Electric dipole: field lines", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.scale = renderer::config::AxisScale::Logarithmic;
+    bar.axis.title_option.text = RichText::plain("|E|", Color::BLACK, 12.0, "");
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(-3.0, 3.0);
+    chart.set_y_range(-2.0, 2.0);
+    chart.auto_fit_colorbar_union(r.pool(), &["sl_speed"], 0.0)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+fn log_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let (es, sigmas) = renderer::demo::cross_section_data(1024);
+    upload(r, "log_e", es)?;
+    upload(r, "log_sigma", sigmas)?;
+    let mut config = base_config("Cross-section σ(E)", "E [keV]", "σ [barn]");
+    config.left_y.scale = renderer::config::AxisScale::Logarithmic;
+    config.right_y.scale = renderer::config::AxisScale::Logarithmic;
+    // The energy range spans less than one decade: whole decades would label
+    // 100 alone, the adaptive policy labels the 1..9 ladder (#42).
+    for axis in [&mut config.bottom_x, &mut config.top_x] {
+        axis.scale = renderer::config::AxisScale::Logarithmic;
+        axis.log_ticks = renderer::config::LogTickPolicy::Adaptive;
+    }
+    config.grid.show_minor_x = true;
+    config.grid.show_minor_y = true;
+    config.grid.minor_x_style = LineStylePreset::Dot;
+    config.grid.minor_y_style = LineStylePreset::Dot;
+    let mut chart = Chart::new(config);
+    chart.auto_fit_x(r.pool(), "log_e", 0.0)?;
+    chart.auto_fit_y(r.pool(), "log_sigma", 0.1)?;
+    // Energies read as plain numbers (50, 60, … 100) rather than powers.
+    let fitted = chart.config_mut();
+    for axis in [&mut fitted.bottom_x, &mut fitted.top_x] {
+        axis.label_style.format = LabelFormat::Decimal;
+    }
+    let series = vec![series(
+        "sigma",
+        "log_e",
+        "log_sigma",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line_style(Color::from_rgb8(60, 160, 90), 2.5)),
+            errors: None,
+            stem: None,
+        }),
+    )];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// A Cartesian chart whose X axis is categorical: seven departments, one
+/// with a long name so the labels are thinned at the document size, and
+/// values at the category positions `0..7`.
+fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    let names = [
+        ("sales", "Sales"),
+        ("support", "Support"),
+        ("rnd", "Research and development (all sites)"),
+        ("ops", "Operations"),
+        ("legal", "Legal"),
+        ("design", "Design"),
+        ("qa", "Quality"),
+    ];
+    let x: Vec<f64> = (0..names.len()).map(|i| i as f64).collect();
+    upload(r, "cat_x", x)?;
+    upload(
+        r,
+        "cat_budget",
+        (0..names.len())
+            .map(|i| 4.0 + 2.5 * (i as f64 * 0.9).sin() + 0.6 * noise(31, i))
+            .collect(),
+    )?;
+    upload(
+        r,
+        "cat_spent",
+        (0..names.len())
+            .map(|i| 3.5 + 2.0 * (i as f64 * 0.9 + 0.4).sin() + 0.8 * noise(32, i))
+            .collect(),
+    )?;
+    let mut config = base_config("Budget by department", "Department", "Budget (M€)");
+    let categories: Vec<Category> = names
+        .iter()
+        .map(|(id, label)| Category::new(*id, *label))
+        .collect();
+    config.bottom_x.categories = Some(categories.clone());
+    config.top_x.categories = Some(categories);
+    config.grid.show_major_x = true;
+    let mut chart = Chart::new(config);
+    chart.auto_fit_y_union(r.pool(), &["cat_budget", "cat_spent"], 0.15)?;
+    let blue = Color::from_rgb8(31, 119, 180);
+    let orange = Color::from_rgb8(255, 127, 14);
+    let series = vec![
+        series(
+            "budget",
+            "cat_x",
+            "cat_budget",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(blue, ScatterShape::CircleFilled, 9.0)),
+                line: Some(line_style(blue, 2.0)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "spent",
+            "cat_x",
+            "cat_spent",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(orange, ScatterShape::Diamond, 11.0)),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    // The crowded labels take two rows (#205): fit the bands to them, as a
+    // host does with `auto_layout`.
+    let config = with_legend(chart.config().clone(), &series);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: renderer::layout::auto_layout(&config, &measure),
+        series,
+    })
+}
+
+/// The overlap `layout::auto_layout` resolves (#44), as a user reported it
+/// and left it: small optical depths whose `0.00300` labels run under the Y
+/// title, with every other kind of label that needs room beside them:
+/// negative long decimals on the right, a logarithmic top axis with adaptive
+/// labels printed as decimals, timestamps along the bottom and a colourbar
+/// with long labels under a math title. The bands are the ones a host set by
+/// hand; the playground's "Auto layout" action and the decoration oracle's
+/// second sweep apply `auto_layout` to it.
+fn long_labels(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisScale, LogTickPolicy};
+    use renderer::format::TimestampLabelFormat;
+    // 2023-11-14 22:13:20 UTC, then every 45 minutes for three days.
+    const START: f64 = 1_700_000_000.0;
+    const HOURS: f64 = 72.0;
+    let n = 97;
+    let t: Vec<f64> = (0..n)
+        .map(|i| START + i as f64 * HOURS * 3600.0 / (n - 1) as f64)
+        .collect();
+    let tau: Vec<f64> = (0..n)
+        .map(|i| 0.0016 + 0.0011 * (i as f64 * 0.21).sin() + 0.0001 * noise(51, i))
+        .collect();
+    let albedo: Vec<f64> = (0..n)
+        .map(|i| 0.0024 + 0.0016 * (i as f64 * 0.13 + 0.7).cos())
+        .collect();
+    upload(r, "ll_t", t)?;
+    upload(r, "ll_tau", tau)?;
+    upload(r, "ll_albedo", albedo)?;
+
+    let blue = Color::from_rgb8(31, 119, 180);
+    let mut points = scatter_style(blue, ScatterShape::CircleFilled, 7.0);
+    points.point_color_map = Some(PointColorMap {
+        column: "ll_albedo".into(),
+    });
+    let series = vec![series(
+        "optical_depth",
+        "ll_t",
+        "ll_tau",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(points),
+            line: Some(line_style(blue, 1.5)),
+            errors: None,
+            stem: None,
+        }),
+    )];
+
+    let mut config = base_config("Aerosol optical depth over three days", "Time (UTC)", "");
+    config.left_y.title_option.text = math_text(
+        r"Optical depth $\tau_{550}$",
+        &config.left_y.title_option.text,
+    );
+    config.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.title_option.visible = true;
+    bar.axis.title_option.text = math_text(
+        r"Albedo $\omega_0 - 10^{-3}$",
+        &config.left_y.title_option.text,
+    );
+    // Room the host gave the bar's labels, not its title.
+    bar.axis.out_margin = 80.0;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(START, START + HOURS * 3600.0);
+    chart.set_y_range(0.0, 0.003);
+    chart.auto_fit_colorbar_union(r.pool(), &["ll_albedo"], 0.0)?;
+    let mut config = chart.config().clone();
+
+    // A second Y scale on the right: the same depths as a negative forcing.
+    let right = &mut config.right_y;
+    right.min = -0.0045;
+    right.max = -0.0005;
+    right.major_spacing = 0.0005;
+    right.minor_count = 4;
+    right.label_style.label_visible = true;
+    right.label_style.significant_digits = 3;
+    right.title_option.visible = true;
+    right.title_option.text = math_text(r"Forcing $\Delta F$", &config.left_y.title_option.text);
+    right.out_margin = 110.0;
+
+    // A wavelength scale on top, logarithmic with adaptive majors, its
+    // labels printed as decimals.
+    let top = &mut config.top_x;
+    top.scale = AxisScale::Logarithmic;
+    top.min = 1.0e-6;
+    top.max = 1.0e3;
+    top.log_ticks = LogTickPolicy::Adaptive;
+    top.minor_count = 8;
+    top.label_style.format = LabelFormat::Decimal;
+    top.label_style.significant_digits = 1;
+    top.label_style.label_visible = true;
+    top.title_option.visible = true;
+    top.title_option.text = math_text(
+        r"Wavelength $\lambda$ (m)",
+        &config.bottom_x.title_option.text,
+    );
+    top.out_margin = 40.0;
+
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(config, &series),
+        series,
+    })
+}
+
+fn day_columns(r: &mut Renderer) -> Result<(), FiggyError> {
+    let hour = linspace(0.0, 24.0, 97);
+    let wave = |phase: f64| -> Vec<f64> {
+        hour.iter()
+            .map(|h| (h / 24.0 * std::f64::consts::TAU + phase).sin())
+            .collect()
+    };
+    upload(r, "day_hour", hour.clone())?;
+    upload(
+        r,
+        "day_temp",
+        wave(-1.2).iter().map(|v| 18.0 + 8.0 * v).collect(),
+    )?;
+    upload(
+        r,
+        "day_press",
+        wave(0.0)
+            .iter()
+            .enumerate()
+            .map(|(i, v)| 1008.0 + 6.0 * v + 0.6 * noise(20, i))
+            .collect(),
+    )?;
+    upload(
+        r,
+        "day_hum",
+        wave(2.0).iter().map(|v| 60.0 + 25.0 * v).collect(),
+    )?;
+    Ok(())
+}
+
+fn twin_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    day_columns(r)?;
+    let mut config = base_config("Temperature and pressure", "Hour", "Temperature (°C)");
+    config.right_y.line_visible = false;
+    config.right_y.tick = renderer::config::TickVisibility::None;
+    let rust = Color::from_rgb8(176, 64, 32);
+    let mut overlay = OverlayLayer {
+        series: vec!["pressure".into()],
+        ..Default::default()
+    };
+    overlay.y_axis.out_margin = 110.0;
+    overlay.y_axis.title_option.visible = true;
+    overlay.y_axis.title_option.text =
+        RichText::from_tex(r"Pressure $p_{\mathrm{atm}}$ (hPa)", rust, 18.0, "")
+            .expect("valid TeX");
+    overlay.y_axis.label_style.color = rust;
+    overlay.y_axis.line_color = rust;
+    config.overlays.push(overlay);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 24.0);
+    chart.auto_fit_y(r.pool(), "day_temp", 0.1)?;
+    chart.auto_fit_overlay_y_union(r.pool(), 0, &["day_press"], 0.1)?;
+    let series = vec![
+        series(
+            "temperature",
+            "day_hour",
+            "day_temp",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.5)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "pressure",
+            "day_hour",
+            "day_press",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(rust, ScatterShape::Circle, 5.0)),
+                line: Some(line_style(rust, 1.5)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// Raw channels printed in physical units (#273): a 16-bit ADC channel in
+/// counts on `left_y` printed as volts, sample indices on `bottom_x`
+/// printed as milliseconds at 2 kHz, and an overlay temperature channel in
+/// kelvin printed as degrees Celsius. The columns stay raw; only the axes
+/// convert what they print.
+fn axis_units(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::AxisUnit;
+    let samples: Vec<f64> = (0..400).map(f64::from).collect();
+    upload(r, "au_sample", samples.clone())?;
+    upload(
+        r,
+        "au_counts",
+        samples
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                16384.0 + 12000.0 * (t * 0.045).sin() * (-t / 320.0).exp() + 300.0 * noise(31, i)
+            })
+            .collect(),
+    )?;
+    upload(
+        r,
+        "au_kelvin",
+        samples
+            .iter()
+            .enumerate()
+            .map(|(i, t)| 296.2 + 3.5 * t / 400.0 + 0.25 * noise(32, i))
+            .collect(),
+    )?;
+    let mut config = base_config("Raw channels in physical units", "Time (ms)", "Voltage (V)");
+    config.right_y.line_visible = false;
+    config.right_y.tick = renderer::config::TickVisibility::None;
+    // 2 kHz: half a millisecond per sample, on both x axes so their ticks
+    // agree.
+    for axis in [&mut config.bottom_x, &mut config.top_x] {
+        axis.unit = Some(AxisUnit::new(0.5, 0.0));
+    }
+    config.left_y.unit = Some(AxisUnit::new(5.0 / 32768.0, 0.0));
+    let rust = Color::from_rgb8(176, 64, 32);
+    let mut overlay = OverlayLayer {
+        series: vec!["temperature".into()],
+        ..Default::default()
+    };
+    overlay.y_axis.unit = Some(AxisUnit::new(1.0, -273.15));
+    overlay.y_axis.out_margin = 110.0;
+    overlay.y_axis.title_option.visible = true;
+    overlay.y_axis.title_option.text = RichText::plain("Temperature (°C)", rust, 18.0, "");
+    overlay.y_axis.label_style.color = rust;
+    overlay.y_axis.line_color = rust;
+    config.overlays.push(overlay);
+    // Away from the overlay axis band on the right.
+    config.legend.corner = renderer::config::LegendCorner::TopLeft;
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 399.0);
+    chart.set_y_range(0.0, 32768.0);
+    chart.auto_fit_overlay_y_union(r.pool(), 0, &["au_kelvin"], 0.1)?;
+    let series = vec![
+        series(
+            "voltage",
+            "au_sample",
+            "au_counts",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 1.5)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "temperature",
+            "au_sample",
+            "au_kelvin",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(rust, ScatterShape::Circle, 3.0)),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    day_columns(r)?;
+    let (w, h) = (DOC_W / 2, DOC_H / 2);
+    let cell = |x: u32, y: u32, title: &str, xt: &str, yt: &str| -> Config {
+        let mut c = base_config(title, xt, yt);
+        c.chart_area = ChartArea(Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        });
+        c
+    };
+    let sub = |config: Config, ids: &[&str]| Subplot {
+        config,
+        series: ids.iter().map(|s| s.to_string()).collect(),
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    };
+    let rust = Color::from_rgb8(176, 64, 32);
+    let green = Color::from_rgb8(40, 140, 90);
+    let mut config = cell(0, 0, "Temperature", "Hour", "°C");
+    let mut pressure = sub(
+        with_math_title(
+            cell(w, 0, "", "Hour", "hPa"),
+            r"Pressure $\frac{dp}{dt} \approx 0$ (X linked)",
+        ),
+        &["pressure"],
+    );
+    pressure.link_x = Some(CellRef::Parent);
+    let humid = sub(
+        cell(0, h, "Humidity vs temperature", "°C", "%"),
+        &["humidity_t"],
+    );
+    let mut day = sub(
+        cell(w, h, "Daytime + twin axis", "Hour", "hPa"),
+        &["daytime"],
+    );
+    let mut twin = OverlayLayer {
+        series: vec!["daytime_humidity".into()],
+        ..Default::default()
+    };
+    twin.y_axis.out_margin = 90.0;
+    twin.y_axis.title_option.visible = true;
+    twin.y_axis.title_option.text = RichText::plain("%", green, 18.0, "");
+    twin.y_axis.label_style.color = green;
+    day.config.overlays.push(twin);
+    config.subplots = vec![pressure, humid, day];
+
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 24.0);
+    chart.auto_fit_y(r.pool(), "day_temp", 0.1)?;
+    chart.auto_fit_subplot_y_union(r.pool(), 0, &["day_press"], 0.1)?;
+    chart.auto_fit_subplot_x_union(r.pool(), 1, &["day_temp"], 0.05)?;
+    chart.auto_fit_subplot_y_union(r.pool(), 1, &["day_hum"], 0.1)?;
+    chart.set_subplot_x_range(2, 6.0, 18.0);
+    chart.auto_fit_subplot_y_union(r.pool(), 2, &["day_press"], 0.1)?;
+    chart.with_axis_range_change(|c| {
+        let y = &mut c.subplots[2].config.overlays[0].y_axis;
+        y.min = 30.0;
+        y.max = 90.0;
+        y.major_spacing = 10.0;
+    });
+    let series = vec![
+        series(
+            "temperature",
+            "day_hour",
+            "day_temp",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.5)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "pressure",
+            "day_hour",
+            "day_press",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(rust, 2.0)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "humidity_t",
+            "day_temp",
+            "day_hum",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(green, ScatterShape::TriangleFilled, 6.0)),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "daytime",
+            "day_hour",
+            "day_press",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(rust, 2.0)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "daytime_humidity",
+            "day_hour",
+            "day_hum",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(green, 2.0)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let (ts, vs) = renderer::demo::rc_data(512);
+    upload(r, "ann_t", ts)?;
+    upload(r, "ann_v", vs)?;
+    let mut chart = Chart::new(base_config(
+        "RC charging with annotations",
+        "t [s]",
+        "V [V]",
+    ));
+    chart.auto_fit_x(r.pool(), "ann_t", 0.02)?;
+    chart.auto_fit_y(r.pool(), "ann_v", 0.08)?;
+    let (x0, x1) = (chart.config().bottom_x.min, chart.config().bottom_x.max);
+    let (y0, y1) = (chart.config().left_y.min, chart.config().left_y.max);
+    let red = Color::from_rgb8(200, 40, 40);
+    let items = vec![
+        Annotation::new(AnnotationKind::Span {
+            axis: AnnotationAxis::X,
+            from: x0 + 0.1 * (x1 - x0),
+            to: x0 + 0.25 * (x1 - x0),
+            fill: Color::from_rgba(1.0, 0.8, 0.2, 0.3),
+        }),
+        Annotation::new(AnnotationKind::ReferenceLine {
+            axis: AnnotationAxis::Y,
+            value: y0 + 0.63 * (y1 - y0),
+            style: AnnotationLineStyle {
+                color: red,
+                width: 1.5,
+                style: LineStylePreset::Dash,
+            },
+            label: Some(RichText::plain("63 % (τ)", red, 14.0, "")),
+        }),
+        Annotation::new(AnnotationKind::Text {
+            anchor: Anchor::Ratio { x: 0.55, y: 0.35 },
+            text: RichText::from_tex(
+                r"drag me: $V = V_0\left(1 - e^{-t/\tau}\right)$",
+                Color::BLACK,
+                16.0,
+                "",
+            )
+            .expect("valid TeX"),
+            box_style: Some(Default::default()),
+            align: Default::default(),
+        }),
+        Annotation::new(AnnotationKind::Arrow {
+            from: Anchor::Ratio { x: 0.55, y: 0.45 },
+            to: Anchor::Data {
+                x: x0 + 0.2 * (x1 - x0),
+                y: y0 + 0.6 * (y1 - y0),
+            },
+            style: ArrowStyle::default(),
+            text: None,
+        }),
+        // A region of interest around the knee of the curve, below the
+        // data; an ellipse on the plateau; a concave polygon (an L) in
+        // the lower right, all filled so every point inside is ink.
+        Annotation::new(AnnotationKind::Rect {
+            from: Anchor::Data {
+                x: x0 + 0.3 * (x1 - x0),
+                y: y0 + 0.55 * (y1 - y0),
+            },
+            to: Anchor::Data {
+                x: x0 + 0.45 * (x1 - x0),
+                y: y0 + 0.8 * (y1 - y0),
+            },
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.2, 0.5, 0.9, 0.18)),
+                border: AnnotationLineStyle {
+                    color: Color::from_rgb8(40, 90, 180),
+                    width: 1.5,
+                    style: LineStylePreset::Solid,
+                },
+                below: true,
+            },
+        }),
+        Annotation::new(AnnotationKind::Ellipse {
+            from: Anchor::Ratio { x: 0.7, y: 0.08 },
+            to: Anchor::Ratio { x: 0.95, y: 0.3 },
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.9, 0.3, 0.2, 0.2)),
+                border: AnnotationLineStyle {
+                    color: red,
+                    width: 1.5,
+                    style: LineStylePreset::Dot,
+                },
+                below: false,
+            },
+        }),
+        Annotation::new(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Ratio { x: 0.7, y: 0.6 },
+                Anchor::Ratio { x: 0.95, y: 0.6 },
+                Anchor::Ratio { x: 0.95, y: 0.7 },
+                Anchor::Ratio { x: 0.8, y: 0.7 },
+                Anchor::Ratio { x: 0.8, y: 0.92 },
+                Anchor::Ratio { x: 0.7, y: 0.92 },
+            ],
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.3, 0.7, 0.3, 0.25)),
+                border: AnnotationLineStyle {
+                    color: Color::from_rgb8(30, 120, 50),
+                    width: 1.5,
+                    style: LineStylePreset::Solid,
+                },
+                below: false,
+            },
+        }),
+    ];
+    let mut config = chart.config().clone();
+    config.annotations.items = items;
+    config.set_active_layer(LayerRef::Annotations);
+    let series = vec![series(
+        "charge",
+        "ann_t",
+        "ann_v",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line_style(Color::from_rgb8(220, 90, 60), 2.0)),
+            errors: None,
+            stem: None,
+        }),
+    )];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(config, &series),
+        series,
+    })
+}
+
+/// Offset spectra (#50): twelve Gaussian bands drifting with temperature,
+/// drawn stacked by `Config::line_offsets` with a skew along x. The host
+/// uploads each spectrum as measured; the shift is a display parameter, so
+/// picks and selection details report the measured values. The first trace
+/// is filled to its baseline, and each trace's label is an annotation at its
+/// start.
+fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const TRACES: usize = 12;
+    const STEP_Y: f64 = 0.55;
+    const STEP_X: f64 = 6.0;
+    let x = linspace(200.0, 800.0, 301);
+    upload(r, "os_x", x.clone())?;
+    let gauss = |v: f64, center: f64, width: f64| (-0.5 * ((v - center) / width).powi(2)).exp();
+    let mut traces = Vec::new();
+    let mut members = Vec::new();
+    for k in 0..TRACES {
+        let t = k as f64 / (TRACES - 1) as f64;
+        let column = format!("os_y{k}");
+        upload(
+            r,
+            &column,
+            x.iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    (1.0 - 0.3 * t) * gauss(*v, 420.0 + 120.0 * t, 38.0 + 10.0 * t)
+                        + 0.35 * gauss(*v, 650.0, 24.0)
+                        + 0.012 * noise(40 + k as u64, i)
+                })
+                .collect(),
+        )?;
+        let color = Color::new(
+            (0.15 + 0.75 * t) as f32,
+            (0.35 - 0.2 * t) as f32,
+            (0.85 - 0.7 * t) as f32,
+            1.0,
+        );
+        let mut line = line_style(color, 1.8);
+        if k == 0 {
+            line.fill = Some(LineFill::ToBaseline(0.0));
+            line.fill_color = Some(Color::new(color.r, color.g, color.b, 0.3));
+        }
+        let id = format!("T{}", 300 + 25 * k);
+        members.push(id.clone());
+        traces.push(series(
+            &id,
+            "os_x",
+            &column,
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+                stem: None,
+            }),
+        ));
+    }
+    let mut config = base_config(
+        "Offset spectra: band drift with temperature",
+        "Raman shift (cm⁻¹)",
+        "Intensity (offset)",
+    );
+    config.line_offsets = Some(renderer::data_config::LineOffsets {
+        series: members,
+        step_y: STEP_Y,
+        step_x: STEP_X,
+    });
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &traces, 0.04)?;
+    let mut config = chart.config().clone();
+    // A trace label at each trace's start, through the annotation layer.
+    config.annotations.items = (0..TRACES)
+        .map(|k| {
+            Annotation::new(AnnotationKind::Text {
+                anchor: Anchor::Data {
+                    x: 205.0 + k as f64 * STEP_X,
+                    y: 0.12 + k as f64 * STEP_Y,
+                },
+                text: RichText::plain(&format!("{} K", 300 + 25 * k), Color::BLACK, 12.0, ""),
+                box_style: None,
+                align: Default::default(),
+            })
+        })
+        .collect();
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config,
+        series: traces,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Large data
+// ---------------------------------------------------------------------------
+
+/// The data half of the resident large-data scene: generated points drawn
+/// as a line, as markers or as both.
+///
+/// The data is resident: both columns live in the GPU column pool and every
+/// point is drawn on every frame. The generator writes each value straight
+/// into the pool's mapped staging range through `HiLoColumnSource`, so no
+/// dataset-sized CPU buffer exists at any point. The playground keeps the
+/// bench (sizes, timings, the pan benchmark) in its own `big_data.rs`.
+pub mod big_data {
+    use renderer::config::Config;
+    use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig};
+    use renderer::{Chart, Color, ColumnPairWriter, FiggyError, HiLoColumnSource, Renderer};
+
+    use super::CartesianScene;
+
+    const X_ID: &str = "big_x";
+    const Y_ID: &str = "big_y";
+    /// The X column spans `0..=X_SPAN`; hi/lo pairs keep 100 million samples
+    /// distinct where a single f32 could not.
+    const X_SPAN: f64 = 1000.0;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        Line,
+        Scatter,
+        Both,
+    }
+
+    impl Mode {
+        pub const ALL: [Mode; 3] = [Mode::Line, Mode::Scatter, Mode::Both];
+
+        pub fn label(self) -> &'static str {
+            match self {
+                Mode::Line => "Line",
+                Mode::Scatter => "Scatter",
+                Mode::Both => "Line + scatter",
+            }
+        }
+    }
+
+    /// One generated column, evaluated per index while it is written.
+    struct Generated {
+        len: usize,
+        y: bool,
+    }
+
+    impl Generated {
+        fn x(len: usize) -> Self {
+            Self { len, y: false }
+        }
+
+        /// The renderer measures the bounds while the values are written, so
+        /// the signal is evaluated once.
+        fn y(len: usize) -> Self {
+            Self { len, y: true }
+        }
+
+        fn value(&self, i: usize) -> f64 {
+            if self.y {
+                y_at(self.len, i)
+            } else {
+                x_at(self.len, i)
+            }
+        }
+    }
+
+    fn x_at(len: usize, i: usize) -> f64 {
+        X_SPAN * i as f64 / (len.max(2) - 1) as f64
+    }
+
+    /// Two waves and per-sample noise: a line with structure at every zoom level
+    /// and a scatter band with visible density.
+    fn y_at(len: usize, i: usize) -> f64 {
+        let x = x_at(len, i);
+        30.0 * (x / 40.0).sin() + 8.0 * (0.9 * x).sin() + 4.0 * super::noise(7, i)
+    }
+
+    impl HiLoColumnSource for Generated {
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+            for i in 0..self.len {
+                dst.write_value(i, self.value(i));
+            }
+        }
+    }
+
+    /// Upload `points` samples of both columns, replacing any earlier ones, and
+    /// wait until the GPU holds them. Removing a column also removes the series
+    /// that read it, so callers set the series again afterwards.
+    pub fn upload(r: &mut Renderer, points: usize) -> Result<(), FiggyError> {
+        r.remove_column(X_ID)?;
+        r.remove_column(Y_ID)?;
+        r.add_hilo_column(X_ID, &Generated::x(points))?;
+        r.add_hilo_column(Y_ID, &Generated::y(points))?;
+        // A failed wait only makes the upload time read short.
+        if let Err(e) = r.device().poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        }) {
+            eprintln!("[big data] poll: {e}");
+        }
+        Ok(())
+    }
+
+    pub fn series(mode: Mode) -> Vec<SeriesConfig> {
+        let line = super::line_style(Color::from_rgb8(31, 119, 180), 1.0);
+        let scatter =
+            super::scatter_style(Color::from_rgb8(214, 39, 40), ScatterShape::Circle, 2.0);
+        let render_type = match mode {
+            Mode::Line => DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+                stem: None,
+            }),
+            Mode::Scatter => DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+            Mode::Both => DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter),
+                line: Some(line),
+                errors: None,
+                stem: None,
+            }),
+        };
+        vec![super::series("samples", X_ID, Y_ID, render_type)]
+    }
+
+    fn title(points: usize) -> String {
+        format!("Resident data, {} points", group_digits(points))
+    }
+
+    /// `5000000` as `5,000,000`.
+    pub fn group_digits(n: usize) -> String {
+        let digits = n.to_string();
+        let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// The chart for `points` samples, fitted to the generated columns.
+    pub fn chart_config(
+        r: &Renderer,
+        points: usize,
+        series: &[SeriesConfig],
+    ) -> Result<Config, FiggyError> {
+        let mut chart = Chart::new(super::base_config(&title(points), "x", "value"));
+        chart.auto_fit_x(r.pool(), X_ID, 0.0)?;
+        chart.auto_fit_y(r.pool(), Y_ID, 0.05)?;
+        Ok(super::with_legend(chart.config().clone(), series))
+    }
+
+    /// The scene with `points` samples, drawn as a line.
+    pub fn build(r: &mut Renderer, points: usize) -> Result<CartesianScene, FiggyError> {
+        upload(r, points)?;
+        let series = series(Mode::Line);
+        Ok(CartesianScene {
+            monotonic: Vec::new(),
+            config: chart_config(r, points, &series)?,
+            series,
+        })
+    }
+
+    /// Release the columns when the scene goes away, so other scenes get the
+    /// pool space back.
+    pub fn release(r: &mut Renderer) {
+        for id in [X_ID, Y_ID] {
+            if let Err(e) = r.remove_column(id) {
+                eprintln!("[big data] remove {id}: {e}");
+            }
+        }
+    }
+}
+
+/// The legacy categorical document of the categorical scene: quarterly
+/// revenue of three regions, Matte bars.
+pub fn categorical_document() -> renderer::CategoricalChart {
+    let mut chart = renderer::CategoricalChart {
+        title: "Quarterly revenue".into(),
+        categories: ["Q1", "Q2", "Q3", "Q4"]
+            .into_iter()
+            .map(|s| renderer::config::Category::new(s, s))
+            .collect(),
+        series: vec![
+            renderer::BarSeries::new(
+                "north",
+                "North",
+                [12., 18., 9., 15.].map(Some).into(),
+                Color::from_rgb8(85, 143, 211),
+            ),
+            renderer::BarSeries::new(
+                "south",
+                "South",
+                [18., 24., 14., 21.].map(Some).into(),
+                Color::from_rgb8(255, 166, 105),
+            ),
+            renderer::BarSeries::new(
+                "west",
+                "West",
+                [7., 11., 16., 13.].map(Some).into(),
+                Color::from_rgb8(110, 190, 120),
+            ),
+        ],
+        value_title: "Revenue (M$)".into(),
+        ..Default::default()
+    };
+    chart.style.material = renderer::Material::Matte;
+    chart
+}
+
+/// The categorical scene: [`categorical_document`] opened through
+/// `Config::from_categorical` as a Cartesian chart of category bars. The
+/// uploads borrow the document's values: the positions first, then the
+/// value columns as one batch. The value axis is fitted to the bars and
+/// keeps the document's label format.
+fn categorical(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let document = categorical_document();
+    let (mut config, series, uploads) = Config::from_categorical(&document);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    let Some((positions, values)) = uploads.split_first() else {
+        unreachable!("the reader writes the positions first");
+    };
+    if r.handle_for(&positions.column).is_err() {
+        r.add_column(positions.column.clone(), &positions.values)?;
+    }
+    for upload in values {
+        if r.handle_for(&upload.column).is_ok() {
+            r.remove_column(&upload.column)?;
+        }
+    }
+    let columns: Vec<(&str, &dyn ColumnSource)> = values
+        .iter()
+        .map(|upload| (upload.column.as_str(), &upload.values as &dyn ColumnSource))
+        .collect();
+    r.add_columns(&columns)?;
+    let format = config.left_y.label_style.format.clone();
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
+    let mut config = chart.config().clone();
+    config.left_y.label_style.format = format;
+    let (min, max) = (config.left_y.min, config.left_y.max);
+    // Nice ticks when they exist; the fitted range stays otherwise.
+    if config.left_y.auto_ticks(min, max, 5).is_err() {
+        config.left_y.min = min;
+        config.left_y.max = max;
+    }
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+/// The legacy box plot document of the box plot scene: responses by dose
+/// of two trials, notches, means and outliers.
+pub fn boxplot_document() -> renderer::BoxPlotChart {
+    renderer::BoxPlotChart {
+        title: "Response by dose".into(),
+        categories: ["Control", "Low", "Mid", "High"]
+            .into_iter()
+            .map(|s| renderer::Category::new(s, s))
+            .collect(),
+        series: vec![
+            renderer::BoxPlotSeries::new(
+                "trial_a",
+                "Trial A",
+                vec![
+                    box_summary(12., 30., 42., 55., 78., &[90.]),
+                    box_summary(20., 42., 55., 68., 85., &[96., 4.]),
+                    box_summary(25., 45., 60., 70., 88., &[]),
+                    box_summary(8., 24., 36., 49., 67., &[82.]),
+                ],
+                Color::from_rgb8(65, 144, 208),
+            ),
+            renderer::BoxPlotSeries::new(
+                "trial_b",
+                "Trial B",
+                vec![
+                    box_summary(15., 28., 38., 50., 70., &[]),
+                    box_summary(22., 40., 50., 62., 80., &[93.]),
+                    box_summary(30., 50., 64., 74., 92., &[]),
+                    box_summary(12., 30., 40., 52., 72., &[2.]),
+                ],
+                Color::from_rgb8(230, 169, 64),
+            ),
+        ],
+        value_range: Some([0., 100.]),
+        value_title: "Response".into(),
+        // The median above every box: the scene sweeps value labels too.
+        labels: renderer::BoxPlotLabels::Median,
+        ..Default::default()
+    }
+}
+
+fn box_summary(
+    low: f64,
+    q1: f64,
+    med: f64,
+    q3: f64,
+    high: f64,
+    outliers: &[f64],
+) -> Option<renderer::BoxSummary> {
+    let mut v = renderer::BoxSummary::new(low, q1, med, q3, high);
+    v.outliers = outliers.to_vec();
+    v.sample_count = Some(80);
+    v.median_ci = Some([med - 4.0, med + 4.0]);
+    v.mean = Some(med + 2.0);
+    Some(v)
+}
+
+/// The box plot scene: [`boxplot_document`] opened through
+/// `Config::from_boxplot` as a Cartesian chart of box plot series. The
+/// uploads borrow the document's summaries: the positions, then each
+/// series' record and outliers. The document fixes the value range.
+fn box_plot(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::{BOX_PLOT_RECORD, RaggedSource, RecordSource, UploadValues};
+    let document = boxplot_document();
+    let (mut config, series, uploads) = Config::from_boxplot(&document);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    for upload in &uploads {
+        match &upload.values {
+            UploadValues::BoxRecord(_) => {
+                let Some(fields) = upload.values.box_fields() else {
+                    unreachable!("a record upload has fields");
+                };
+                let pairs: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
+                    (BOX_PLOT_RECORD[k].0, &fields[k] as &dyn ColumnSource)
+                });
+                r.upsert_record(
+                    upload.column.clone(),
+                    &RecordSource {
+                        schema: BOX_PLOT_RECORD,
+                        fields: &pairs,
+                    },
+                )?;
+            }
+            UploadValues::BoxOutliers(_) => {
+                let Some((values, offsets)) = upload.values.box_outliers() else {
+                    unreachable!("an outlier upload has values");
+                };
+                r.upsert_ragged(
+                    upload.column.clone(),
+                    &RaggedSource {
+                        values: &values,
+                        offsets: &offsets,
+                    },
+                )?;
+            }
+            values => {
+                if r.handle_for(&upload.column).is_err() {
+                    r.add_column(upload.column.clone(), values)?;
+                }
+            }
+        }
+    }
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+/// The radar scene's document: three releases over six categories on a
+/// fixed 0 to 10 axis.
+pub fn radar_document() -> renderer::RadarChart {
+    renderer::RadarChart {
+        title: "Build quality".into(),
+        categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
+            .into_iter()
+            .map(|s| renderer::Category::new(s.to_lowercase(), s))
+            .collect(),
+        series: vec![
+            renderer::RadarSeries::new(
+                "v1",
+                "Release 1",
+                vec![6., 8., 4., 5., 7., 6.5],
+                Color::from_rgb8(65, 144, 208),
+            ),
+            renderer::RadarSeries::new(
+                "v2",
+                "Release 2",
+                vec![8., 7., 6., 8., 9., 7.],
+                Color::from_rgb8(230, 120, 64),
+            ),
+            renderer::RadarSeries::new(
+                "v3",
+                "Release 3",
+                vec![9., 8.5, 8., 9., 9.5, 8.],
+                Color::from_rgb8(42, 168, 120),
+            ),
+        ],
+        value_range: Some([0., 10.]),
+        ring_spacing: Some(2.5),
+        // A value label at every vertex: the scene sweeps value labels too.
+        labels: renderer::RadarLabels::Values,
+        ..Default::default()
+    }
+}
+
+fn radar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let document = radar_document();
+    let (mut config, series, uploads) = Config::from_radar(&document);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    let config = with_math_title(config, r"Build quality $\bar{q} = \frac{1}{n}\sum_{k} q_k$");
+    for upload in &uploads {
+        if r.handle_for(&upload.column).is_err() {
+            r.add_column(upload.column.clone(), &upload.values)?;
+        }
+    }
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The radial scene
+// ---------------------------------------------------------------------------
+
+/// The starting models of the radial scenes; the playground's `radial.rs`
+/// hosts them.
+pub mod radial {
+    use renderer::Color;
+    use renderer::radial::*;
+
+    /// The document of radial scene `kind`.
+    pub fn document(kind: super::SceneKind) -> RadialChart {
+        match kind {
+            super::SceneKind::Sunburst => sunburst_chart(),
+            _ => radial_chart(),
+        }
+    }
+
+    /// A sunburst (#140): a year's budget as three rings, departments at the
+    /// centre, their teams, and the teams' projects, each node over its
+    /// share of its parent's span; two parents keep a remainder. Outside
+    /// labels on the projects, inside labels within.
+    pub fn sunburst_chart() -> RadialChart {
+        let node =
+            |label: &str, value: f64, rgb: (u8, u8, u8), children: Vec<RadialSlice>| RadialSlice {
+                children,
+                ..RadialSlice::new(label, value, Color::from_rgb8(rgb.0, rgb.1, rgb.2))
+            };
+        let mut chart = RadialChart {
+            kind: RadialKind::Donut { inner_radius: 0.18 },
+            labels: RadialLabels::Outside,
+            label_format: RadialLabelFormat::NamePercent,
+            slices: vec![
+                node(
+                    "Engineering",
+                    48.0,
+                    (51, 132, 245),
+                    vec![
+                        node(
+                            "Platform",
+                            22.0,
+                            (96, 165, 250),
+                            vec![
+                                node("Runtime", 12.0, (147, 197, 253), vec![]),
+                                node("Storage", 7.0, (191, 219, 254), vec![]),
+                            ],
+                        ),
+                        node(
+                            "Apps",
+                            18.0,
+                            (56, 189, 248),
+                            vec![
+                                node("Mobile", 10.0, (125, 211, 252), vec![]),
+                                node("Web", 8.0, (186, 230, 253), vec![]),
+                            ],
+                        ),
+                        node("Tooling", 8.0, (14, 165, 233), vec![]),
+                    ],
+                ),
+                node(
+                    "Sales",
+                    30.0,
+                    (255, 151, 62),
+                    vec![
+                        node(
+                            "Field",
+                            18.0,
+                            (251, 191, 36),
+                            vec![
+                                node("EMEA", 10.0, (253, 224, 71), vec![]),
+                                node("APAC", 6.0, (254, 240, 138), vec![]),
+                            ],
+                        ),
+                        node("Inside", 9.0, (245, 158, 11), vec![]),
+                    ],
+                ),
+                node(
+                    "Operations",
+                    22.0,
+                    (165, 216, 72),
+                    vec![
+                        node("Facilities", 12.0, (190, 242, 100), vec![]),
+                        node("People", 10.0, (217, 249, 157), vec![]),
+                    ],
+                ),
+            ],
+            ..Default::default()
+        };
+        chart.set_title_text("Budget by department, team and project");
+        chart.format_labels();
+        chart
+    }
+
+    pub fn radial_chart() -> RadialChart {
+        let mut chart = RadialChart {
+            kind: RadialKind::Donut { inner_radius: 0.5 },
+            slices: vec![
+                RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
+                RadialSlice::new("Direct", 25.0, Color::from_rgb8(165, 216, 72)),
+                RadialSlice::new("Email", 15.0, Color::from_rgb8(80, 96, 121)),
+                RadialSlice::new("Social", 12.0, Color::from_rgb8(255, 151, 62)),
+                RadialSlice::new("Video", 8.0, Color::from_rgb8(48, 192, 230)),
+            ],
+            ..Default::default()
+        };
+        chart.set_title_text("Traffic sources");
+        chart.style = RadialStyle::three_dimensional();
+        chart.format_labels();
+        chart
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Range bars
+// ---------------------------------------------------------------------------
+
+/// A range bar series of `start` to `end` at `positions`, flat, its other
+/// options unset.
+/// The host's side of a violin or a raincloud: `samples` per category,
+/// summarised as a box record (median, quartiles, 1.5 IQR whiskers), a
+/// Gaussian kernel density on `grid` points per category (Silverman's
+/// bandwidth) as the ragged curve `{id}.curve` with its density column
+/// `{id}.density`, and the samples as raw point columns `{id}.cat` and
+/// `{id}.value`. The renderer draws what this computes; it estimates
+/// nothing. Returns the largest density, for `fit_density_scale`.
+fn upload_distribution(
+    r: &mut Renderer,
+    id: &str,
+    samples: &[Vec<f64>],
+    grid: usize,
+) -> Result<f64, FiggyError> {
+    use renderer::{BOX_PLOT_RECORD, RaggedSource, RecordSource};
+    let quantile = |sorted: &[f64], q: f64| {
+        let at = q * (sorted.len() - 1) as f64;
+        let (lo, hi) = (at.floor() as usize, at.ceil() as usize);
+        sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo as f64)
+    };
+    let mut stats = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let mut values = Vec::new();
+    let mut density = Vec::new();
+    let mut offsets = vec![0.0];
+    let mut peak = 0.0f64;
+    for group in samples {
+        let mut sorted = group.clone();
+        sorted.sort_by(f64::total_cmp);
+        let (q1, med, q3) = (
+            quantile(&sorted, 0.25),
+            quantile(&sorted, 0.5),
+            quantile(&sorted, 0.75),
+        );
+        let iqr = q3 - q1;
+        let low = sorted
+            .iter()
+            .copied()
+            .find(|v| *v >= q1 - 1.5 * iqr)
+            .unwrap_or(q1);
+        let high = sorted
+            .iter()
+            .rev()
+            .copied()
+            .find(|v| *v <= q3 + 1.5 * iqr)
+            .unwrap_or(q3);
+        for (k, v) in [med, q1, q3, low, high].into_iter().enumerate() {
+            stats[k].push(v);
+        }
+        let n = sorted.len() as f64;
+        let mean = sorted.iter().sum::<f64>() / n;
+        let sd = (sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
+        let h = 1.06 * sd * n.powf(-0.2);
+        let (a, b) = (sorted[0] - 2.0 * h, sorted[sorted.len() - 1] + 2.0 * h);
+        for v in linspace(a, b, grid) {
+            let d = sorted
+                .iter()
+                .map(|x| (-0.5 * ((v - x) / h).powi(2)).exp())
+                .sum::<f64>()
+                / (n * h * (2.0 * std::f64::consts::PI).sqrt());
+            peak = peak.max(d);
+            values.push(v);
+            density.push(d);
+        }
+        offsets.push(values.len() as f64);
+    }
+    let column = |data: Vec<f64>| Column { data };
+    let columns = stats.map(column);
+    let names = ["median", "q1", "q3", "whisker_low", "whisker_high"];
+    let fields: [(&str, &dyn ColumnSource); 5] =
+        std::array::from_fn(|k| (names[k], &columns[k] as &dyn ColumnSource));
+    r.upsert_record(
+        format!("{id}.record"),
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+    )?;
+    r.upsert_ragged(
+        format!("{id}.curve"),
+        &RaggedSource {
+            values: &column(values),
+            offsets: &column(offsets),
+        },
+    )?;
+    upload(r, &format!("{id}.density"), density)?;
+    let (cats, points): (Vec<f64>, Vec<f64>) = samples
+        .iter()
+        .enumerate()
+        .flat_map(|(k, group)| group.iter().map(move |v| (k as f64, *v)))
+        .unzip();
+    upload(r, &format!("{id}.cat"), cats)?;
+    upload(r, &format!("{id}.value"), points)?;
+    Ok(peak)
+}
+
+/// `n` samples of a two-component mixture around `centre`, from the
+/// scene's deterministic noise.
+fn mixture(seed: u64, n: usize, centre: f64, split: f64, spread: f64) -> Vec<f64> {
+    (0..n)
+        .map(|i| {
+            let side = if noise(seed, 3 * i) > 0.0 {
+                split
+            } else {
+                -split
+            };
+            let g = (noise(seed, 3 * i + 1) + noise(seed, 3 * i + 2)) * 0.5;
+            centre + side + g * spread
+        })
+        .collect()
+}
+
+/// A box plot series over `{id}.record` with a violin of `body`, named
+/// `label` (the legend names a series by its id).
+fn violin_box(
+    id: &str,
+    label: &str,
+    color: Color,
+    body: renderer::data_config::ViolinBody,
+) -> SeriesConfig {
+    use renderer::data_config::{BoxPlotSeriesLabels, BoxPlotStyle, Violin};
+    let mut item = series(
+        id,
+        "vl_pos",
+        &format!("{id}.record"),
+        DataRenderType::BoxPlot {
+            color,
+            style: BoxPlotStyle {
+                caps: false,
+                show_outliers: false,
+                ..BoxPlotStyle::default()
+            },
+            labels: BoxPlotSeriesLabels::default(),
+            outliers: None,
+            overrides: None,
+            violin: Some(Violin {
+                body,
+                box_width: 0.18,
+            }),
+            points: None,
+        },
+    );
+    // The legend names a series by its id.
+    item.series_id = label.into();
+    item
+}
+
+fn violin_half(id: &str, scale: f64, fill: Option<Color>) -> renderer::data_config::ViolinHalf {
+    use renderer::data_config::{ViolinHalf, ViolinStyle};
+    let mut half = ViolinHalf {
+        curve: format!("{id}.curve"),
+        density: format!("{id}.density"),
+        density_scale: 1.0,
+        style: ViolinStyle {
+            fill,
+            outline: true,
+            outline_width: 1.0,
+            outline_color: Color::from_rgb8(40, 52, 64),
+        },
+    };
+    half.fit_density_scale(scale);
+    half
+}
+
+/// The split violin scene: two conditions per dose, each a host density
+/// curve on its side of one box plot series without boxes, the third dose
+/// restyled by a box override.
+fn violins(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, BoxPlotOverride, BoxPlotTarget, ViolinBody};
+    let doses = ["0 mg", "5 mg", "10 mg", "20 mg"];
+    upload(r, "vl_pos", (0..doses.len()).map(|k| k as f64).collect())?;
+    let control: Vec<Vec<f64>> = (0..doses.len())
+        .map(|k| mixture(11 + k as u64, 160, 40.0 + 4.0 * k as f64, 6.0, 10.0))
+        .collect();
+    let treated: Vec<Vec<f64>> = (0..doses.len())
+        .map(|k| {
+            mixture(
+                31 + k as u64,
+                160,
+                42.0 + 9.0 * k as f64,
+                2.0 + 3.0 * k as f64,
+                9.0,
+            )
+        })
+        .collect();
+    let peak_c = upload_distribution(r, "vl_c", &control, 160)?;
+    let peak_t = upload_distribution(r, "vl_t", &treated, 160)?;
+    let peak = peak_c.max(peak_t);
+    let mut config = base_config("Response by dose", "Dose", "Response");
+    config.bottom_x.categories = Some(
+        doses
+            .iter()
+            .map(|d| Category::new(d.replace(' ', ""), *d))
+            .collect(),
+    );
+    config.bar_groups = Some(BarGroups {
+        group_width: 0.85,
+        ..BarGroups::default()
+    });
+    // One series carries both conditions as the halves of its violins,
+    // with no box (no record): a box would summarise one condition only.
+    let mut control_series = violin_box(
+        "vl_c",
+        "Control / treated",
+        Color::from_rgb8(120, 160, 200),
+        ViolinBody::Split {
+            low: Some(violin_half("vl_c", peak, None)),
+            high: Some(violin_half(
+                "vl_t",
+                peak,
+                Some(Color::from_rgb8(236, 150, 110)),
+            )),
+        },
+    );
+    control_series.y_column.clear();
+    if let DataRenderType::BoxPlot { overrides, .. } = &mut control_series.render_type {
+        let mut o = BoxPlotOverride::new(BoxPlotTarget::new("10mg", "Control / treated"));
+        o.color = Some(Color::from_rgb8(170, 140, 210));
+        *overrides = Some(vec![o]);
+    }
+    let series = vec![control_series];
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// The raincloud scene: four groups, each a half violin on the high side
+/// over the host's density curve, a narrow box, and the raw points
+/// jittered on the low side.
+fn raincloud(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, BoxPoints, BoxPointsStyle, ViolinBody};
+    let groups = ["North", "East", "South", "West"];
+    upload(r, "vl_pos", (0..groups.len()).map(|k| k as f64).collect())?;
+    let samples: Vec<Vec<f64>> = (0..groups.len())
+        .map(|k| {
+            mixture(
+                71 + k as u64,
+                120,
+                30.0 + 7.0 * k as f64,
+                3.0 * (k % 2) as f64 + 1.0,
+                12.0,
+            )
+        })
+        .collect();
+    let peak = upload_distribution(r, "rc", &samples, 140)?;
+    let mut config = base_config("Rainfall by region", "Region", "mm");
+    config.bottom_x.categories = Some(
+        groups
+            .iter()
+            .map(|g| Category::new(g.to_lowercase(), *g))
+            .collect(),
+    );
+    config.bar_groups = Some(BarGroups {
+        group_width: 0.9,
+        ..BarGroups::default()
+    });
+    let mut cloud = violin_box(
+        "rc",
+        "Rainfall",
+        Color::from_rgb8(90, 150, 200),
+        ViolinBody::Split {
+            low: None,
+            high: Some(violin_half("rc", peak, None)),
+        },
+    );
+    cloud.x_column = "vl_pos".into();
+    if let DataRenderType::BoxPlot { points, violin, .. } = &mut cloud.render_type {
+        if let Some(violin) = violin {
+            violin.box_width = 0.12;
+        }
+        *points = Some(BoxPoints {
+            positions: "rc.cat".into(),
+            values: "rc.value".into(),
+            style: BoxPointsStyle {
+                color: Color::from_rgb8(40, 80, 120),
+                size: 4.0,
+                jitter: 0.35,
+                offset: -0.5,
+                ..BoxPointsStyle::default()
+            },
+        });
+    }
+    let series = vec![cloud];
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// The ternary scene: three clusters of alloy compositions (iron, nickel,
+/// chromium) as unnormalized percentages summing to about 100, coloured by
+/// a hardness column through the colourbar, and a dashed tie-line between
+/// two of them.
+fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::ternary::TernaryOptions;
+    let centres = [[70.0, 10.0, 20.0], [20.0, 65.0, 15.0], [30.0, 25.0, 45.0]];
+    let n = 60;
+    let mut columns = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (k, centre) in centres.iter().enumerate() {
+        for i in 0..n {
+            let seed = 101 + k as u64;
+            let parts: [f64; 3] =
+                std::array::from_fn(|j| (centre[j] + noise(seed, 3 * i + j) * 8.0).max(0.5));
+            // Unnormalized on purpose: the renderer places by the sum.
+            let scale = 1.0 + noise(seed + 7, i) * 0.04;
+            for j in 0..3 {
+                columns[j].push(parts[j] * scale);
+            }
+            columns[3].push(150.0 + 120.0 * parts[2] / 60.0 + noise(seed + 9, i) * 15.0);
+        }
+    }
+    let [fe, ni, cr, hardness] = columns;
+    upload(r, "tn_fe", fe)?;
+    upload(r, "tn_ni", ni)?;
+    upload(r, "tn_cr", cr)?;
+    upload(r, "tn_hv", hardness)?;
+    upload(r, "tn_tie_fe", vec![70.0, 30.0])?;
+    upload(r, "tn_tie_ni", vec![10.0, 25.0])?;
+    upload(r, "tn_tie_cr", vec![20.0, 45.0])?;
+    // A phase field: a concave region around the chromium-rich cluster
+    // with a hole, two NaN-separated rings of one series.
+    let field: [[f64; 3]; 10] = [
+        [45.0, 10.0, 45.0],
+        [30.0, 15.0, 55.0],
+        [15.0, 30.0, 55.0],
+        [20.0, 42.0, 38.0],
+        [34.0, 36.0, 30.0],
+        [42.0, 25.0, 33.0],
+        [f64::NAN, f64::NAN, f64::NAN],
+        [40.0, 13.0, 47.0],
+        [36.0, 18.0, 46.0],
+        [32.0, 13.5, 54.5],
+    ];
+    upload(r, "tn_field_fe", field.iter().map(|v| v[0]).collect())?;
+    upload(r, "tn_field_ni", field.iter().map(|v| v[1]).collect())?;
+    upload(r, "tn_field_cr", field.iter().map(|v| v[2]).collect())?;
+    let mut markers = scatter_style(
+        Color::from_rgb8(31, 119, 180),
+        ScatterShape::CircleFilled,
+        4.5,
+    );
+    markers.point_color_map = Some(PointColorMap {
+        column: "tn_hv".into(),
+    });
+    let mut tie = line_style(Color::from_rgb8(60, 60, 60), 1.6);
+    tie.line_style = LineStylePreset::Dash;
+    let series = vec![
+        series(
+            "Cr-rich field",
+            "tn_field_fe",
+            "tn_field_ni",
+            DataRenderType::Ternary {
+                c_column: "tn_field_cr".into(),
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(214, 96, 40), 1.2)),
+                region: Some(renderer::TernaryRegionStyle {
+                    color: Color::from_rgb8(244, 160, 90),
+                    opacity: 0.3,
+                }),
+            },
+        ),
+        series(
+            "alloys",
+            "tn_fe",
+            "tn_ni",
+            DataRenderType::Ternary {
+                c_column: "tn_cr".into(),
+                scatter: Some(markers),
+                line: None,
+                region: None,
+            },
+        ),
+        series(
+            "tie-line",
+            "tn_tie_fe",
+            "tn_tie_ni",
+            DataRenderType::Ternary {
+                c_column: "tn_tie_cr".into(),
+                scatter: Some(scatter_style(
+                    Color::from_rgb8(60, 60, 60),
+                    ScatterShape::Diamond,
+                    5.0,
+                )),
+                line: Some(tie),
+                region: None,
+            },
+        ),
+    ];
+    let mut config = base_config("Alloy compositions", "Fe %", "Ni %");
+    // The c axis reads like the other two: the left axis' style with its
+    // own title.
+    let mut right = config.left_y.clone();
+    right.title_option.text = RichText::plain(
+        "Cr %",
+        right.title_option.text.color,
+        right.title_option.text.font_size,
+        right.title_option.text.font.clone(),
+    );
+    config.right_y = right;
+    config.set_ternary(Some(TernaryOptions {}));
+    for axis in [
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.min = 0.0;
+        axis.max = 100.0;
+        axis.major_spacing = 20.0;
+        axis.minor_count = 1;
+    }
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["tn_hv"], 0.0)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::data_config::{
+        ContourConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
+    };
+    use renderer::view3d::{SurfaceStyle, SurfaceWireframe, View3d};
+    let (nx, ny) = (48, 40);
+    let xs = linspace(-2.0, 2.0, nx);
+    let ys = linspace(-2.0, 2.0, ny);
+    upload(r, "sf_x", xs.clone())?;
+    upload(r, "sf_y", ys.clone())?;
+    let height = |x: f64, y: f64| {
+        (-(x - 0.6).powi(2) - (y - 0.3).powi(2)).exp() * 1.2
+            - 0.7 * (-(x + 0.8).powi(2) - (y + 0.7).powi(2)).exp()
+            + 0.15 * (2.0 * x).sin() * (1.5 * y).cos()
+    };
+    let mut columns = Vec::with_capacity(nx);
+    for (i, x) in xs.iter().enumerate() {
+        let id = format!("sf_z{i}");
+        upload(r, &id, ys.iter().map(|y| height(*x, *y)).collect())?;
+        columns.push(id);
+    }
+    let mut contour = ContourConfig {
+        levels: vec![],
+        line: line_style(Color::from_rgb8(40, 40, 40), 1.0),
+        per_level_color: None,
+        labels: None,
+    };
+    // A trajectory over the surface (#132): a scatter-line series with a
+    // height column, drawn through the 3D point entries.
+    let steps = 120;
+    let path: Vec<[f64; 3]> = (0..steps)
+        .map(|i| {
+            let t = i as f64 / (steps - 1) as f64;
+            let a = 1.5 * std::f64::consts::TAU * t;
+            let x = 1.4 * a.cos() * (1.0 - 0.4 * t);
+            let y = 1.4 * a.sin() * (1.0 - 0.4 * t);
+            [x, y, height(x, y) + 0.25]
+        })
+        .collect();
+    upload(r, "sf_tx", path.iter().map(|p| p[0]).collect())?;
+    upload(r, "sf_ty", path.iter().map(|p| p[1]).collect())?;
+    upload(r, "sf_tz", path.iter().map(|p| p[2]).collect())?;
+    let mut trajectory = series(
+        "trajectory",
+        "sf_tx",
+        "sf_ty",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(renderer::data_config::DataScatterStyleConfig {
+                point_color: Color::from_rgb8(220, 60, 40),
+                point_shape: renderer::ScatterShape::CircleFilled,
+                point_size: 3.5,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            }),
+            line: Some(line_style(Color::from_rgb8(220, 60, 40), 1.5)),
+            errors: None,
+            stem: None,
+        }),
+    );
+    trajectory.z_column = Some("sf_tz".into());
+    let series = vec![
+        series(
+            "surface",
+            "sf_x",
+            "sf_y",
+            DataRenderType::Field(renderer::data_config::FieldSeries {
+                matrix: MatrixRef {
+                    columns: columns.iter().map(|c| c.as_str().into()).collect(),
+                    orientation: MatrixOrientation::ColumnsAreX,
+                    grid_layout: GridLayout::Centers,
+                },
+                fill: Some(FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: Shading::Interpolated,
+                    opacity: 1.0,
+                }),
+                contour: Some({
+                    let mut bar = default::default_colorbar_options();
+                    bar.axis.min = -0.8;
+                    bar.axis.max = 1.3;
+                    contour
+                        .set_nice_levels(&bar.axis, 8)
+                        .expect("the surface scene's colourbar range gives nice levels");
+                    contour
+                }),
+                surface: Some(SurfaceStyle {
+                    wireframe: Some(SurfaceWireframe {
+                        color: Color::new(0.1, 0.1, 0.1, 0.35),
+                        width: 0.8,
+                    }),
+                    material: renderer::Material::Matte,
+                    ..SurfaceStyle::default()
+                }),
+            }),
+        ),
+        trajectory,
+    ];
+    let mut config = base_config("Surface", "x", "y");
+    let mut right = config.left_y.clone();
+    right.title_option.text = RichText::plain(
+        "z",
+        right.title_option.text.color,
+        right.title_option.text.font_size,
+        right.title_option.text.font.clone(),
+    );
+    right.label_style.label_visible = true;
+    config.right_y = right;
+    config.set_view_3d(Some(View3d::default()));
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.min = -2.0;
+        axis.max = 2.0;
+        axis.major_spacing = 1.0;
+    }
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    let column_ids: Vec<&str> = columns.iter().map(String::as_str).collect();
+    chart.auto_fit_colorbar_union(r.pool(), &column_ids, 0.0)?;
+    chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// The triangle mesh scenes' data (#210): potential flow past a cylinder on
+/// an annulus from the cylinder wall `r = R` to `r = MESH_OUTER_RADIUS`,
+/// `MESH_RINGS` rings graded geometrically so the cells near the wall are
+/// small, `MESH_SPOKES` nodes around each ring and two triangles per cell.
+/// The host computes the pressure coefficient at every node,
+/// `Cp = 2 (R/r)² cos 2θ − (R/r)⁴` (rule 1); the renderer interpolates it
+/// across the triangles. The mesh has a hole, which no lattice heatmap can
+/// draw. Columns `tm_x`, `tm_y` and `tm_cp`, and the triangle index column
+/// `tm_tri`; uploaded once, as [`upload`] uploads a column.
+const MESH_RINGS: usize = 25;
+const MESH_SPOKES: usize = 72;
+const CYLINDER_RADIUS: f64 = 1.0;
+const MESH_OUTER_RADIUS: f64 = 3.0;
+
+fn cylinder_mesh(r: &mut Renderer) -> Result<(), FiggyError> {
+    use renderer::TriangleSource;
+    let tau = std::f64::consts::TAU;
+    let nodes = MESH_RINGS * MESH_SPOKES;
+    let (mut xs, mut ys, mut cp) = (
+        Vec::with_capacity(nodes),
+        Vec::with_capacity(nodes),
+        Vec::with_capacity(nodes),
+    );
+    for k in 0..MESH_RINGS {
+        let grade = k as f64 / (MESH_RINGS - 1) as f64;
+        let radius = CYLINDER_RADIUS * (MESH_OUTER_RADIUS / CYLINDER_RADIUS).powf(grade);
+        let ratio = (CYLINDER_RADIUS / radius).powi(2);
+        for j in 0..MESH_SPOKES {
+            let theta = tau * j as f64 / MESH_SPOKES as f64;
+            xs.push(radius * theta.cos());
+            ys.push(radius * theta.sin());
+            cp.push(2.0 * ratio * (2.0 * theta).cos() - ratio * ratio);
+        }
+    }
+    let mut tris: Vec<u32> = Vec::with_capacity(6 * (MESH_RINGS - 1) * MESH_SPOKES);
+    for k in 0..MESH_RINGS - 1 {
+        for j in 0..MESH_SPOKES {
+            let a = (k * MESH_SPOKES + j) as u32;
+            let b = (k * MESH_SPOKES + (j + 1) % MESH_SPOKES) as u32;
+            let c = a + MESH_SPOKES as u32;
+            let d = b + MESH_SPOKES as u32;
+            tris.extend([a, b, d, a, d, c]);
+        }
+    }
+    upload(r, "tm_x", xs)?;
+    upload(r, "tm_y", ys)?;
+    upload(r, "tm_cp", cp)?;
+    if r.pool().triangles("tm_tri").is_none() {
+        r.upsert_triangles(
+            "tm_tri",
+            &TriangleSource {
+                indices: &Column { data: tris },
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// The mesh scenes' colourbar: the pressure coefficient's range, which the
+/// contour levels are chosen in and the colourbar fits to.
+fn cylinder_colorbar() -> renderer::ColorBarOptions {
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Turbo;
+    bar.axis.min = -3.0;
+    bar.axis.max = 1.0;
+    bar
+}
+
+/// The pressure series of the mesh scenes: the fill interpolated across the
+/// triangles, about twelve nice contour levels over the pressure range, and
+/// `surface` the look on a 3D chart.
+fn cylinder_series(surface: Option<renderer::view3d::SurfaceStyle>) -> SeriesConfig {
+    use renderer::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
+    let mut contour = ContourConfig {
+        levels: vec![],
+        line: line_style(Color::from_rgb8(30, 30, 30), 1.0),
+        per_level_color: None,
+        labels: None,
+    };
+    contour
+        .set_nice_levels(&cylinder_colorbar().axis, 12)
+        .expect("the mesh scenes' pressure range gives nice levels");
+    series(
+        "pressure",
+        "tm_x",
+        "tm_y",
+        DataRenderType::TriMesh(TriMeshSeries {
+            triangles: "tm_tri".into(),
+            values: MeshValues {
+                column: "tm_cp".into(),
+                at: MeshValueLocation::Vertices,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 1.0,
+            }),
+            contour: Some(contour),
+            surface,
+        }),
+    )
+}
+
+/// The mesh scenes' axes: the annulus with room on either side.
+fn cylinder_axes(config: &mut Config) {
+    config.bottom_x.min = -4.0;
+    config.bottom_x.max = 4.0;
+    config.left_y.min = -3.0;
+    config.left_y.max = 3.0;
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.major_spacing = 1.0;
+    }
+}
+
+/// Potential flow past a cylinder on a triangle mesh (#210): the pressure
+/// coefficient interpolated over the triangles, with contour lines.
+fn tri_mesh(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    cylinder_mesh(r)?;
+    let series = vec![cylinder_series(None)];
+    let mut config = base_config("Potential flow past a cylinder", "x / R", "y / R");
+    cylinder_axes(&mut config);
+    config.colorbar = Some(cylinder_colorbar());
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["tm_cp"], 0.0)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// The cylinder mesh as a surface in a 3D box (#210): the pressure
+/// coefficient as the height and the colour of a matte, wireframed surface,
+/// its contours on the floor.
+fn tri_surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::view3d::{SurfaceStyle, SurfaceWireframe, View3d};
+    cylinder_mesh(r)?;
+    let mut pressure = cylinder_series(Some(SurfaceStyle {
+        wireframe: Some(SurfaceWireframe {
+            color: Color::new(0.1, 0.1, 0.1, 0.3),
+            width: 0.6,
+        }),
+        material: renderer::Material::Matte,
+        ..SurfaceStyle::default()
+    }));
+    pressure.z_column = Some("tm_cp".into());
+    let series = vec![pressure];
+    // Short axis titles and five x labels: a box edge is foreshortened, so a
+    // wide turned title or nine labels along it would overlap (the oracle).
+    let mut config = base_config("Pressure over a cylinder (lengths in R)", "x", "y");
+    let mut right = config.left_y.clone();
+    right.title_option.text = math_text("C_p", &right.title_option.text);
+    right.label_style.label_visible = true;
+    config.right_y = right;
+    config.set_view_3d(Some(View3d::default()));
+    cylinder_axes(&mut config);
+    config.bottom_x.major_spacing = 2.0;
+    config.colorbar = Some(cylinder_colorbar());
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["tm_cp"], 0.0)?;
+    chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// An Arnold-Beltrami-Childress flow on a lattice in a 3D box (#211): the
+/// host computes the components and the speed the arrows are coloured by
+/// (rule 1); the arrows are `Data`-scaled so the longest is 0.8 of the
+/// lattice spacing (`fit_scale_3d`), and the z fit covers their tips.
+fn quiver_3d(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::data_config::{
+        VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    };
+    use renderer::view3d::View3d;
+    const N: usize = 6;
+    let tau = std::f64::consts::TAU;
+    let spacing = tau / N as f64;
+    let at = |k: usize| (k as f64 + 0.5) * spacing;
+    let (a, b, c) = (1.0, 0.8, 0.6);
+    let flow = |x: f64, y: f64, z: f64| {
+        [
+            a * z.sin() + c * y.cos(),
+            b * x.sin() + a * z.cos(),
+            c * y.sin() + b * x.cos(),
+        ]
+    };
+    let mut anchors = Vec::with_capacity(N * N * N);
+    for i in 0..N {
+        for j in 0..N {
+            for k in 0..N {
+                anchors.push([at(i), at(j), at(k)]);
+            }
+        }
+    }
+    let vectors: Vec<[f64; 3]> = anchors.iter().map(|p| flow(p[0], p[1], p[2])).collect();
+    let component = |set: &[[f64; 3]], k: usize| set.iter().map(|p| p[k]).collect::<Vec<_>>();
+    let bounds = |k: usize| {
+        vectors
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+                (l.min(v[k]), h.max(v[k]))
+            })
+    };
+    let speed: Vec<f64> = vectors
+        .iter()
+        .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+        .collect();
+    for (id, data) in [
+        ("q3_x", component(&anchors, 0)),
+        ("q3_y", component(&anchors, 1)),
+        ("q3_z", component(&anchors, 2)),
+        ("q3_u", component(&vectors, 0)),
+        ("q3_v", component(&vectors, 1)),
+        ("q3_w", component(&vectors, 2)),
+        ("q3_s", speed),
+    ] {
+        upload(r, id, data)?;
+    }
+    let mut style = VectorStyle {
+        color: Color::from_rgb8(40, 40, 40),
+        width_px: 1.6,
+        scale: VectorScale::Data { factor: 1.0 },
+        pivot: VectorPivot::Middle,
+        head_length_px: 7.0,
+        head_width_px: 6.0,
+        min_length_px: 0.0,
+        color_map: Some(VectorColorMap::Column("q3_s".into())),
+    };
+    style.fit_scale_3d(bounds(0), bounds(1), bounds(2), 0.8 * spacing);
+    let mut arrows = series(
+        "flow",
+        "q3_x",
+        "q3_y",
+        DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "q3_u".into(),
+                v: "q3_v".into(),
+                w: Some("q3_w".into()),
+            },
+            style,
+        },
+    );
+    arrows.z_column = Some("q3_z".into());
+    let series = vec![arrows];
+    let mut config = base_config("ABC flow", "x", "y");
+    let mut right = config.left_y.clone();
+    right.title_option.text = RichText::plain(
+        "z",
+        right.title_option.text.color,
+        right.title_option.text.font_size,
+        right.title_option.text.font.clone(),
+    );
+    right.label_style.label_visible = true;
+    config.right_y = right;
+    config.set_view_3d(Some(View3d::default()));
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.min = 0.0;
+        axis.max = tau;
+        axis.major_spacing = 2.0;
+    }
+    config.right_y.major_spacing = 2.0;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["q3_s"], 0.0)?;
+    chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color) -> SeriesConfig {
+    use renderer::data_config::{CategoryBarSeriesLabels, CategoryBarStyle, RangeColor};
+    series(
+        id,
+        positions,
+        end,
+        DataRenderType::RangeBars {
+            color,
+            style: CategoryBarStyle {
+                corner_radius: 2.0,
+                ..CategoryBarStyle::default()
+            },
+            start: start.into(),
+            whiskers: None,
+            color_by: RangeColor::Single,
+            progress: None,
+            connector: None,
+            slot_width: None,
+            labels: CategoryBarSeriesLabels::default(),
+        },
+    )
+}
+
+/// The waterfall scene: an energy balance from the host's running totals,
+/// the subtotal and the total flagged by a column, connectors between the
+/// steps and the host's change labels.
+fn waterfall(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, CategoryBarLabels, RangeColor, RangeConnector, RangeTotal,
+    };
+    let steps = [
+        ("supply", "Supply", 120.0, false),
+        ("solar", "Solar", 35.0, false),
+        ("wind", "Wind", 22.0, false),
+        ("losses", "Losses", -18.0, false),
+        ("gross", "Gross", 0.0, true),
+        ("heat", "Heat", -42.0, false),
+        ("industry", "Industry", -51.0, false),
+        ("storage", "Storage", 9.0, false),
+        ("net", "Net", 0.0, true),
+    ];
+    // The running totals are host data: the renderer draws the bars from
+    // the values it is given.
+    let (mut total, mut start, mut end, mut flag, mut text) =
+        (0.0f64, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for &(_, _, change, is_total) in &steps {
+        if is_total {
+            start.push(0.0);
+            end.push(total);
+            text.push(format!("{total:.0}"));
+        } else {
+            start.push(total);
+            total += change;
+            end.push(total);
+            text.push(format!("{change:+.0}"));
+        }
+        flag.push(if is_total { 1.0 } else { 0.0 });
+    }
+    upload(r, "wf_pos", (0..steps.len()).map(|i| i as f64).collect())?;
+    upload(r, "wf_start", start)?;
+    upload(r, "wf_end", end)?;
+    upload(r, "wf_total", flag)?;
+    let mut config = base_config("Energy balance", "", "TWh");
+    config.bottom_x.categories = Some(
+        steps
+            .iter()
+            .map(|&(id, label, _, _)| Category::new(id, label))
+            .collect(),
+    );
+    config.bar_groups = Some(BarGroups {
+        group_width: 0.7,
+        ..BarGroups::default()
+    });
+    let mut bars = range_series(
+        "balance",
+        "wf_pos",
+        "wf_start",
+        "wf_end",
+        Color::from_rgb8(90, 110, 130),
+    );
+    if let DataRenderType::RangeBars {
+        color_by,
+        connector,
+        labels,
+        ..
+    } = &mut bars.render_type
+    {
+        *color_by = RangeColor::Direction {
+            up: Color::from_rgb8(44, 160, 90),
+            down: Color::from_rgb8(214, 72, 64),
+            total: Some(RangeTotal {
+                column: "wf_total".into(),
+                color: Color::from_rgb8(65, 110, 180),
+            }),
+        };
+        *connector = Some(RangeConnector {
+            color: Color::from_rgb8(110, 110, 110),
+            width: 1.5,
+        });
+        labels.placement = CategoryBarLabels::Outside;
+        labels.text = text;
+    }
+    let series = vec![bars];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.08)?;
+    let mut config = chart.config().clone();
+    let (min, max) = (0.0, config.left_y.max);
+    if config.left_y.auto_ticks(min, max, 6).is_err() {
+        config.left_y.min = min;
+        config.left_y.max = max;
+    }
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+/// The candlestick scene: sixty days of synthetic prices on a time axis,
+/// open to close bodies and low to high wicks, coloured by the direction of
+/// the given ends.
+fn candles(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::data_config::{BarGroups, RangeColor, RangeWhiskers};
+    const DAY: f64 = 86_400.0;
+    const T0: f64 = 1_767_225_600.0; // 2026-01-01T00:00:00Z
+    let n = 60;
+    let (mut open, mut close, mut low, mut high) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut price = 100.0f64;
+    for i in 0..n {
+        let o = price;
+        let c = o * (1.0 + 0.025 * noise(31, i));
+        let spread = 0.012 * o * (1.0 + noise(32, i).abs());
+        open.push(o);
+        close.push(c);
+        low.push(o.min(c) - spread);
+        high.push(o.max(c) + spread);
+        price = c;
+    }
+    upload(r, "cd_t", (0..n).map(|i| T0 + i as f64 * DAY).collect())?;
+    upload(r, "cd_open", open)?;
+    upload(r, "cd_close", close)?;
+    upload(r, "cd_low", low)?;
+    upload(r, "cd_high", high)?;
+    let mut config = base_config("Daily prices", "Date", "Price");
+    config.bottom_x.label_style.format =
+        LabelFormat::Timestamp(renderer::format::TimestampLabelFormat::default());
+    config.bar_groups = Some(BarGroups::default());
+    let mut candles = range_series(
+        "price",
+        "cd_t",
+        "cd_open",
+        "cd_close",
+        Color::from_rgb8(90, 110, 130),
+    );
+    if let DataRenderType::RangeBars {
+        style,
+        whiskers,
+        color_by,
+        slot_width,
+        ..
+    } = &mut candles.render_type
+    {
+        style.corner_radius = 0.0;
+        *whiskers = Some(RangeWhiskers {
+            low: "cd_low".into(),
+            high: "cd_high".into(),
+            width: 1.5,
+            color: Some(Color::from_rgb8(70, 70, 70)),
+        });
+        *color_by = RangeColor::Direction {
+            up: Color::from_rgb8(38, 166, 154),
+            down: Color::from_rgb8(239, 83, 80),
+            total: None,
+        };
+        // The bars cover 0.7 of a day; the group takes the whole slot.
+        *slot_width = Some(DAY);
+    }
+    if let Some(groups) = config.bar_groups.as_mut() {
+        groups.group_width = 0.7;
+    }
+    let series = vec![candles];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.03)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// The Gantt scene: tasks on team rows as horizontal range bars over a time
+/// value axis, a state colour per task and its progress shaded, the planned
+/// schedule beside the actual one.
+fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, CategoryBarDirection, CategoryBarLabels, RangeColor, RangeProgress,
+        RangeStateStyle,
+    };
+    const DAY: f64 = 86_400.0;
+    const T0: f64 = 1_767_225_600.0;
+    // (row, planned start, planned days, actual start, actual days, state,
+    // progress, name)
+    let tasks = [
+        (0.0, 0.0, 6.0, 0.0, 7.0, 2.0, 1.0, "Spec"),
+        (1.0, 4.0, 10.0, 5.0, 11.0, 1.0, 0.6, "Renderer"),
+        (1.0, 15.0, 6.0, 17.0, 6.0, 0.0, 0.0, "Shaders"),
+        (2.0, 6.0, 8.0, 7.0, 9.0, 1.0, 0.4, "Web"),
+        (3.0, 12.0, 9.0, 13.0, 8.0, 0.0, 0.1, "Docs"),
+        (3.0, 22.0, 4.0, 23.0, 4.0, 0.0, 0.0, "Release"),
+    ];
+    let column = |f: &dyn Fn(&(f64, f64, f64, f64, f64, f64, f64, &str)) -> f64| {
+        tasks.iter().map(f).collect::<Vec<f64>>()
+    };
+    upload(r, "gt_row", column(&|t| t.0))?;
+    upload(r, "gt_plan_start", column(&|t| T0 + t.1 * DAY))?;
+    upload(r, "gt_plan_end", column(&|t| T0 + (t.1 + t.2) * DAY))?;
+    upload(r, "gt_start", column(&|t| T0 + t.3 * DAY))?;
+    upload(r, "gt_end", column(&|t| T0 + (t.3 + t.4) * DAY))?;
+    upload(r, "gt_state", column(&|t| t.5))?;
+    upload(r, "gt_progress", column(&|t| t.6))?;
+    let mut config = base_config("Release plan", "Date", "");
+    config.left_y.categories = Some(vec![
+        Category::new("design", "Design"),
+        Category::new("core", "Core"),
+        Category::new("web", "Web"),
+        Category::new("docs", "Docs"),
+    ]);
+    config.bottom_x.label_style.format =
+        LabelFormat::Timestamp(renderer::format::TimestampLabelFormat::default());
+    config.bar_groups = Some(BarGroups {
+        direction: CategoryBarDirection::Horizontal,
+        group_width: 0.75,
+        bar_gap: 2.0,
+        ..BarGroups::default()
+    });
+    let planned = range_series(
+        "planned",
+        "gt_row",
+        "gt_plan_start",
+        "gt_plan_end",
+        Color::from_rgb8(176, 186, 198),
+    );
+    let mut actual = range_series(
+        "actual",
+        "gt_row",
+        "gt_start",
+        "gt_end",
+        Color::from_rgb8(90, 110, 130),
+    );
+    if let DataRenderType::RangeBars {
+        color_by,
+        progress,
+        labels,
+        ..
+    } = &mut actual.render_type
+    {
+        *color_by = RangeColor::State {
+            column: "gt_state".into(),
+            styles: vec![
+                RangeStateStyle {
+                    color: Color::from_rgb8(120, 144, 156),
+                },
+                RangeStateStyle {
+                    color: Color::from_rgb8(66, 133, 244),
+                },
+                RangeStateStyle {
+                    color: Color::from_rgb8(52, 168, 83),
+                },
+            ],
+        };
+        *progress = Some(RangeProgress {
+            column: "gt_progress".into(),
+            remaining_opacity: 0.4,
+        });
+        labels.placement = CategoryBarLabels::Inside;
+        labels.text = tasks.iter().map(|t| t.7.to_string()).collect();
+    }
+    let series = vec![planned, actual];
+    let mut config = with_legend(config, &series);
+    // The top left is the one empty corner of the plan.
+    config.legend.corner = renderer::config::LegendCorner::TopLeft;
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.04)?;
+    let mut config = chart.config().clone();
+    // End the date axis half a day after the last task, short of the next
+    // weekly tick, so no tick label sits on the plot's right edge.
+    config.bottom_x.max = T0 + 27.5 * DAY;
+    Ok(CartesianScene {
+        config,
+        series,
+        monotonic: Vec::new(),
+    })
+}
+
+/// A hexbin (#134): the host bins samples of a bivariate normal into a
+/// lattice of flat-topped hexagons (the renderer never bins, rule 1) and
+/// registers the counts as a hexagonal grid, coloured through the colourbar.
+fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, CategoryBarMode, CategoryBarStyle};
+    use renderer::polar::PolarOptions;
+    const DIRECTIONS: [&str; 16] = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
+        "NW", "NNW",
+    ];
+    // Hours of wind per direction and speed band over a year: a prevailing
+    // south-westerly with a secondary northerly, the faster bands rarer.
+    let hours = |band: usize, k: usize| {
+        let a = (k as f64) * std::f64::consts::TAU / 16.0;
+        let prevailing = (1.0 + (a - 3.9).cos()).powi(2) * 0.25;
+        let secondary = (1.0 + a.cos()).powi(3) * 0.08;
+        let shape = 0.08 + prevailing + secondary;
+        let share = [0.55, 0.32, 0.13][band];
+        (1100.0 * shape * share * (1.0 + 0.08 * noise(70 + band as u64, k))).round()
+    };
+    upload(r, "rose_pos", (0..16).map(|k| k as f64).collect())?;
+    let bands = ["rose_calm", "rose_fresh", "rose_strong"];
+    for (band, id) in bands.iter().enumerate() {
+        upload(r, id, (0..16).map(|k| hours(band, k)).collect())?;
+    }
+    let colors = [
+        Color::from_rgb8(158, 202, 225),
+        Color::from_rgb8(66, 146, 198),
+        Color::from_rgb8(8, 69, 148),
+    ];
+    let labels = ["0 to 5 m/s", "5 to 10 m/s", "over 10 m/s"];
+    let series: Vec<SeriesConfig> = bands
+        .iter()
+        .zip(colors)
+        .zip(labels)
+        .map(|((id, color), label)| {
+            let mut s = series(
+                id,
+                "rose_pos",
+                id,
+                DataRenderType::CategoryBars {
+                    color,
+                    style: CategoryBarStyle {
+                        corner_radius: 0.0,
+                        ..CategoryBarStyle::default()
+                    },
+                    labels: Default::default(),
+                    label_format: Default::default(),
+                    overrides: None,
+                },
+            );
+            s.label = Some(RichText::plain(label, Color::BLACK, 12.0, ""));
+            s
+        })
+        .collect();
+    let mut config = base_config(
+        "Wind rose: hours by direction and speed",
+        "Direction",
+        "Hours",
+    );
+    config.bottom_x.categories = Some(
+        DIRECTIONS
+            .iter()
+            .map(|d| Category::new(d.to_lowercase(), *d))
+            .collect(),
+    );
+    config.set_polar(Some(PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        radial_label_angle_degrees: 90.0,
+        ..PolarOptions::default()
+    }));
+    config.bar_groups = Some(BarGroups {
+        mode: CategoryBarMode::Stacked,
+        group_width: 0.9,
+        ..BarGroups::default()
+    });
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const COLS: usize = 40;
+    const ROWS: usize = 35;
+    // Regular hexagons of circumradius `radius`: column pitch 1.5 r, row
+    // pitch √3 r, the odd columns raised by half a row pitch.
+    let radius = 1.0 / (1.5 * COLS as f64);
+    let (px, py) = (1.5 * radius, 3f64.sqrt() * radius);
+    let xs: Vec<f64> = (0..COLS).map(|c| radius + c as f64 * px).collect();
+    let ys: Vec<f64> = (0..ROWS).map(|r| py / 2.0 + r as f64 * py).collect();
+    let ids: Vec<String> = (0..COLS).map(|c| format!("hexbin_z{c}")).collect();
+    if r.handle_for("hexbin_x").is_err() {
+        let center = |c: i64, row: i64| {
+            (
+                xs[0] + c as f64 * px,
+                ys[0] + row as f64 * py + (c & 1) as f64 * py / 2.0,
+            )
+        };
+        let mut counts = vec![vec![0.0f64; ROWS]; COLS];
+        for i in 0..30_000 {
+            // Box-Muller from two uniforms, correlated by a shear.
+            let u1 = ((noise(41, i) + 1.0) * 0.5).clamp(1e-9, 1.0 - 1e-9);
+            let u2 = (noise(43, i) + 1.0) * 0.5;
+            let radius_n = (-2.0 * u1.ln()).sqrt();
+            let (g1, g2) = (
+                radius_n * (std::f64::consts::TAU * u2).cos(),
+                radius_n * (std::f64::consts::TAU * u2).sin(),
+            );
+            let x = 0.5 + 0.16 * g1;
+            let y = 0.5 + 0.11 * g2 + 0.06 * g1;
+            // The host's binning: the nearest centre on the lattice among
+            // the nearest column, the nearest row in it and its neighbours.
+            let c0 = ((x - xs[0]) / px).round() as i64;
+            let r0 = ((y - ys[0] - (c0 & 1) as f64 * py / 2.0) / py).round() as i64;
+            let up = c0 & 1;
+            let candidates = [
+                (c0, r0),
+                (c0, r0 - 1),
+                (c0, r0 + 1),
+                (c0 - 1, r0 - 1 + up),
+                (c0 - 1, r0 + up),
+                (c0 + 1, r0 - 1 + up),
+                (c0 + 1, r0 + up),
+            ];
+            let (best, _) = candidates
+                .iter()
+                .map(|&(c, row)| {
+                    let (cx, cy) = center(c, row);
+                    ((c, row), (x - cx).powi(2) + (y - cy).powi(2))
+                })
+                .fold(((0, 0), f64::INFINITY), |acc, item| {
+                    if item.1 < acc.1 { item } else { acc }
+                });
+            if best.0 >= 0 && best.0 < COLS as i64 && best.1 >= 0 && best.1 < ROWS as i64 {
+                counts[best.0 as usize][best.1 as usize] += 1.0;
+            }
+        }
+        let grid: Vec<Column<f64>> = counts.into_iter().map(|data| Column { data }).collect();
+        let x = Column { data: xs.clone() };
+        let y = Column { data: ys.clone() };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("hexbin_x", &x), ("hexbin_y", &y)];
+        for (id, column) in ids.iter().zip(&grid) {
+            batch.push((id.as_str(), column as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Hexbin: binned samples", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.min = 0.0;
+    bar.axis.max = 120.0;
+    bar.axis.major_spacing = 20.0;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 1.0 + py);
+    let series = vec![series(
+        "hexbin",
+        "hexbin_x",
+        "hexbin_y",
+        DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Hexagonal,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    )];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// Broken axes (#200): a spectrum with two peaks far apart, at channels 5
+/// and 95, the empty middle cut out of X. The upper chart joins the pieces
+/// into one axis (`Continuous`); the lower one draws each piece at its own
+/// scale (`Panels`) over a logarithmic Y cut between the two peaks'
+/// magnitudes. Both frame their pieces (the default).
+fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, AxisScale};
+    let x = linspace(0.0, 100.0, 801);
+    let peak = |x: f64, at: f64, width: f64| (-((x - at) / width).powi(2)).exp();
+    upload(r, "brk_x", x.clone())?;
+    upload(
+        r,
+        "brk_lin",
+        x.iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                4.0 + 38.0 * peak(x, 5.0, 1.4) + 60.0 * peak(x, 95.0, 1.8) + 0.8 * noise(61, i)
+            })
+            .collect(),
+    )?;
+    upload(
+        r,
+        "brk_log",
+        x.iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                (3.0 + 40.0 * peak(x, 5.0, 1.4) + 3.0e5 * peak(x, 95.0, 1.8))
+                    * (1.0 + 0.15 * noise(62, i))
+            })
+            .collect(),
+    )?;
+    let cut = |style, from, to| {
+        Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(from, to)],
+            style,
+            gap_px: 12.0,
+            ..AxisBreaks::default()
+        })
+    };
+    let (w, h) = (DOC_W, DOC_H / 2);
+    let mut config = base_config(
+        "Continuous: one axis, the middle cut out",
+        "Channel",
+        "Counts",
+    );
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    });
+    config.bottom_x.breaks = cut(AxisBreakStyle::Continuous, 12.0, 88.0);
+    let mut lower = base_config(
+        "Panels: each piece its own scale, log Y",
+        "Channel",
+        "Counts",
+    );
+    lower.chart_area = ChartArea(Rect {
+        x: 0,
+        y: h,
+        width: w,
+        height: h,
+    });
+    lower.left_y.scale = AxisScale::Logarithmic;
+    lower.right_y.scale = AxisScale::Logarithmic;
+    lower.bottom_x.breaks = cut(AxisBreakStyle::Panels, 12.0, 88.0);
+    lower.left_y.breaks = cut(AxisBreakStyle::Panels, 300.0, 1.0e4);
+    config.subplots = vec![Subplot {
+        config: lower,
+        series: vec!["peaks_log".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    }];
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 100.0);
+    chart.auto_fit_y(r.pool(), "brk_lin", 0.1)?;
+    chart.set_subplot_x_range(0, 0.0, 100.0);
+    chart.with_axis_range_change(|c| {
+        // Each piece keeps the axis' own spacing: one fine enough for the
+        // pieces left of the cut, not for the whole range.
+        for chart in [&mut *c] {
+            chart.bottom_x.major_spacing = 4.0;
+            chart.top_x.major_spacing = 4.0;
+        }
+        let lower = &mut c.subplots[0].config;
+        lower.bottom_x.major_spacing = 4.0;
+        lower.top_x.major_spacing = 4.0;
+        for axis in [&mut lower.left_y, &mut lower.right_y] {
+            axis.min = 1.0;
+            axis.max = 1.0e6;
+            axis.major_spacing = 1.0;
+            axis.label_style.format = LabelFormat::Power;
+        }
+    });
+    let series = vec![
+        series(
+            "peaks",
+            "brk_x",
+            "brk_lin",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.0)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+        series(
+            "peaks_log",
+            "brk_x",
+            "brk_log",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(176, 64, 32), 2.0)),
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// Parallel coordinates (#141): 150 synthetic flowers of three species over
+/// four measurements, an iris-like mixture, one row per flower across four
+/// axes with their own ranges, coloured by the species column through the
+/// colourbar.
+fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{Category, TickVisibility};
+    use renderer::parallel::{ParallelAxis, ParallelOptions};
+    // (centre, spread) per measurement, per species.
+    let species: [[(f64, f64); 4]; 3] = [
+        [(5.0, 0.35), (3.4, 0.38), (1.5, 0.17), (0.25, 0.1)],
+        [(5.9, 0.5), (2.8, 0.3), (4.3, 0.47), (1.3, 0.2)],
+        [(6.6, 0.64), (3.0, 0.32), (5.5, 0.55), (2.0, 0.27)],
+    ];
+    let names = ["pc_sepal_l", "pc_sepal_w", "pc_petal_l", "pc_petal_w"];
+    let mut columns: [Vec<f64>; 4] = Default::default();
+    let mut class = Vec::new();
+    for (k, spread) in species.iter().enumerate() {
+        for i in 0..50 {
+            for (j, (centre, sigma)) in spread.iter().enumerate() {
+                let seed = 301 + 7 * k as u64 + j as u64;
+                columns[j].push((centre + noise(seed, i) * 2.0 * sigma).max(0.1));
+            }
+            class.push(k as f64);
+        }
+    }
+    let ranges: Vec<(f64, f64)> = columns
+        .iter()
+        .map(|c| {
+            c.iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(*v), hi.max(*v))
+                })
+        })
+        .collect();
+    for (name, column) in names.iter().zip(columns) {
+        upload(r, name, column)?;
+    }
+    upload(r, "pc_species", class)?;
+    let series = vec![series(
+        "flowers",
+        names[0],
+        names[1],
+        DataRenderType::Parallel {
+            columns: names.iter().map(|n| (*n).to_owned()).collect(),
+            line: line_style(Color::from_rgb8(31, 119, 180), 1.2),
+            color_column: Some("pc_species".into()),
+        },
+    )];
+    let mut config = base_config("Iris measurements", "", "");
+    config.bottom_x.categories = Some(
+        [
+            ("sepal_l", "Sepal length"),
+            ("sepal_w", "Sepal width"),
+            ("petal_l", "Petal length"),
+            ("petal_w", "Petal width"),
+        ]
+        .iter()
+        .map(|(id, label)| Category::new(*id, *label))
+        .collect(),
+    );
+    config.bottom_x.tick = TickVisibility::None;
+    config.bottom_x.line_visible = false;
+    config.left_y.min = 0.0;
+    config.left_y.max = 1.0;
+    config.left_y.major_spacing = 0.25;
+    config.left_y.title_option.visible = false;
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    config.grid.show_minor_x = false;
+    config.grid.show_minor_y = false;
+    // Each axis spans its measurement with a little room past the data.
+    config.set_parallel(Some(ParallelOptions {
+        axes: ranges
+            .iter()
+            .map(|(lo, hi)| {
+                let pad = (hi - lo) * 0.05;
+                let lo = ((lo - pad) * 10.0).floor() / 10.0;
+                let hi = ((hi + pad) * 10.0).ceil() / 10.0;
+                ParallelAxis::new(lo, hi)
+            })
+            .collect(),
+    }));
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.min = 0.0;
+    bar.axis.max = 2.0;
+    bar.axis.major_spacing = 1.0;
+    bar.axis.title_option.text = RichText::plain(
+        "Species",
+        bar.axis.title_option.text.color,
+        bar.axis.title_option.text.font_size,
+        bar.axis.title_option.text.font.clone(),
+    );
+    config.colorbar = Some(bar);
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: with_legend(config, &series),
+        series,
+    })
+}
+
+/// A colour image (#139): a 256 by 192 test card the host composes as bytes
+/// on the CPU (eight colour bars, a hue sweep and a grey ramp; the renderer
+/// maps the bytes through `range` and derives no value), registered as
+/// three channel grids on one `Edges` lattice, with a scatter series of
+/// markers over it.
+fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const W: usize = 256;
+    const H: usize = 192;
+    let ids: [Vec<String>; 3] =
+        ["r", "g", "b"].map(|ch| (0..W).map(|c| format!("img_{ch}{c}")).collect());
+    if r.handle_for("img_x").is_err() {
+        // The card, as bytes: the upper two thirds eight 75 % colour bars
+        // (white, yellow, cyan, green, magenta, red, blue, black), then a
+        // hue sweep across the width, then a grey ramp.
+        let card = |c: usize, row: usize| -> [f64; 3] {
+            if row >= 2 * H / 3 {
+                let bar = c * 8 / W;
+                let on = |bit: usize| {
+                    if (7 - bar) >> bit & 1 == 1 {
+                        191.0
+                    } else {
+                        0.0
+                    }
+                };
+                [on(2), on(1), on(0)]
+            } else if row >= H / 3 {
+                let h = c as f64 / W as f64 * 6.0;
+                let x = 255.0 * (1.0 - (h % 2.0 - 1.0).abs());
+                match h as usize {
+                    0 => [255.0, x, 0.0],
+                    1 => [x, 255.0, 0.0],
+                    2 => [0.0, 255.0, x],
+                    3 => [0.0, x, 255.0],
+                    4 => [x, 0.0, 255.0],
+                    _ => [255.0, 0.0, x],
+                }
+            } else {
+                let v = (c as f64 / (W - 1) as f64 * 255.0).round();
+                [v, v, v]
+            }
+        };
+        let channel = |k: usize| -> Vec<Column<f64>> {
+            (0..W)
+                .map(|c| Column {
+                    data: (0..H).map(|row| card(c, row)[k]).collect(),
+                })
+                .collect()
+        };
+        let grids = [channel(0), channel(1), channel(2)];
+        let x = Column {
+            data: (0..=W).map(|v| v as f64).collect(),
+        };
+        let y = Column {
+            data: (0..=H).map(|v| v as f64).collect(),
+        };
+        // Markers at the centre of each colour bar and along the hue sweep.
+        let mx = Column {
+            data: (0..8).map(|i| (i as f64 + 0.5) * W as f64 / 8.0).collect(),
+        };
+        let my = Column {
+            data: (0..8)
+                .map(|i| H as f64 * (5.0 + (i % 2) as f64) / 6.0 - H as f64 / 12.0)
+                .collect(),
+        };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![
+            ("img_x", &x),
+            ("img_y", &y),
+            ("img_mx", &mx),
+            ("img_my", &my),
+        ];
+        for (ids, grid) in ids.iter().zip(&grids) {
+            for (id, column) in ids.iter().zip(grid) {
+                batch.push((id.as_str(), column as &dyn ColumnSource));
+            }
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Image: a test card as bytes", "x (px)", "y (px)");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, W as f64);
+    chart.set_y_range(0.0, H as f64);
+    let lattice = |columns: &[String]| MatrixRef {
+        columns: columns.to_vec(),
+        orientation: MatrixOrientation::ColumnsAreX,
+        grid_layout: GridLayout::Edges,
+    };
+    let series = vec![
+        series(
+            "image",
+            "img_x",
+            "img_y",
+            DataRenderType::RgbImage {
+                red: lattice(&ids[0]),
+                green: lattice(&ids[1]),
+                blue: lattice(&ids[2]),
+                range: [0.0, 255.0],
+                shading: Shading::Flat,
+                opacity: 1.0,
+            },
+        ),
+        series(
+            "marks",
+            "img_mx",
+            "img_my",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(
+                    Color::from_rgb8(20, 20, 20),
+                    ScatterShape::DiamondFilled,
+                    6.0,
+                )),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        ),
+    ];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// The energy-level scene (#203): He I from NIST ASD values (eV), n ≤ 4,
+/// singlets beside triplets under group headers, the ground state below a
+/// Continuous break, the continuum above the limit and an inset of the
+/// resolved 2p ³P° multiplet. DataLess: nothing is registered.
+/// One of the shared NIST diagrams (`examples/support/grotrian_sets.rs`)
+/// as a scene, its bands fitted with `auto_layout` as the gallery does.
+fn grotrian_scene(
+    built: grotrian_sets::Result<(renderer::Chart, Vec<SeriesConfig>)>,
+) -> Result<CartesianScene, FiggyError> {
+    // The exports are bundled, so a parse failure is a defect of the
+    // repository's data: it is reported and the scene is refused.
+    let (chart, series) = built.map_err(|e| {
+        eprintln!("bundled NIST exports: {e}");
+        FiggyError::Internal {
+            invariant: "a bundled NIST export parses",
+        }
+    })?;
+    let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: renderer::layout::auto_layout(chart.config(), &measure),
+        series,
+    })
+}
+
+/// The Feynman scene (#234): four well-known processes, one per quadrant,
+/// each captioned by an annotation. Their legs are placed by the host and
+/// their internal vertices by the layout, which draws the top-quark
+/// triangle of Higgs production, the electron's one-loop vertex, the W of
+/// beta decay and the gluon of a three-jet event without a coordinate.
+fn feynman(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use ParticleLine::{ChargedBoson, Fermion, Gluon, Photon, Scalar};
+    use VertexRole::{Incoming, Internal, Outgoing};
+    use renderer::feynman::{
+        FeynmanSeries, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine, Propagator,
+        VertexRole,
+    };
+    use renderer::{Anchor, Annotation, AnnotationKind};
+    let ink = Color::from_rgb8(40, 44, 60);
+    // Labels at the size of the text they sit beside in a paper: larger
+    // than tick labels.
+    let tex = |text: &str, size: f32| RichText::from_tex(text, ink, size, "").expect("valid TeX");
+    let vertex = |id: &str, role: VertexRole, at: Option<[f64; 2]>, label: &str| FeynmanVertex {
+        at,
+        label: (!label.is_empty()).then(|| tex(label, 22.0)),
+        ..FeynmanVertex::new(id, role)
+    };
+    let line = |id: &str, from: &str, to: &str, particle: ParticleLine, label: &str| Propagator {
+        label: (!label.is_empty()).then(|| tex(label, 20.0)),
+        ..Propagator::new(id, from, to, particle)
+    };
+    // Higgs production by gluon fusion through a top-quark loop.
+    let higgs = FeynmanSeries {
+        vertices: vec![
+            vertex("g1", Incoming, Some([0.08, 1.82]), "$g$"),
+            vertex("g2", Incoming, Some([0.08, 1.12]), "$g$"),
+            vertex("t1", Internal, None, ""),
+            vertex("t2", Internal, None, ""),
+            vertex("t3", Internal, None, ""),
+            vertex("H", Outgoing, Some([1.0, 1.47]), "$H$"),
+        ],
+        propagators: vec![
+            line("ga", "g1", "t1", Gluon, ""),
+            line("gb", "g2", "t2", Gluon, ""),
+            line("ta", "t1", "t2", Fermion, "$t$"),
+            line("tb", "t2", "t3", Fermion, ""),
+            line("tc", "t3", "t1", Fermion, ""),
+            line("h", "t3", "H", Scalar, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
+    // The electron's one-loop vertex correction (Schwinger's g - 2).
+    let mut vertex_loop = FeynmanSeries {
+        vertices: vec![
+            vertex("in", Incoming, Some([1.22, 1.18]), "$e^-$"),
+            vertex("a", Internal, None, ""),
+            vertex("c", Internal, None, ""),
+            vertex("b", Internal, None, ""),
+            vertex("out", Outgoing, Some([2.12, 1.18]), "$e^-$"),
+            vertex("field", Incoming, Some([1.67, 1.9]), r"$\gamma$"),
+        ],
+        propagators: vec![
+            line("e1", "in", "a", Fermion, ""),
+            line("e2", "a", "c", Fermion, ""),
+            line("e3", "c", "b", Fermion, ""),
+            line("e4", "b", "out", Fermion, ""),
+            line("loop", "a", "b", Photon, ""),
+            line("ext", "field", "c", Photon, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
+    vertex_loop.propagators[4].bend = Some(-50.0);
+    vertex_loop.propagators[4].momentum = Some(MomentumArrow {
+        label: tex("$k$", 20.0),
+        side: MomentumSide::Right,
+        reversed: false,
+        label_offset: [0.0; 2],
+    });
+    // Beta decay at the quark level: d -> u W-, W- -> e- anti-nu.
+    let beta = FeynmanSeries {
+        vertices: vec![
+            vertex("d", Incoming, Some([0.08, 0.2]), "$d$"),
+            vertex("w1", Internal, None, ""),
+            vertex("w2", Internal, None, ""),
+            vertex("u", Outgoing, Some([1.0, 0.2]), "$u$"),
+            vertex("nu", Outgoing, Some([1.0, 0.52]), r"$\bar\nu_e$"),
+            vertex("e", Outgoing, Some([1.0, 0.86]), "$e^-$"),
+        ],
+        propagators: vec![
+            line("q1", "d", "w1", Fermion, ""),
+            line("q2", "w1", "u", Fermion, ""),
+            line("w", "w1", "w2", ChargedBoson, "$W^-$"),
+            line("l1", "w2", "e", Fermion, ""),
+            line("l2", "nu", "w2", Fermion, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
+    // A three-jet event: e+ e- -> q qbar g, the gluon radiated by the quark.
+    let jets = FeynmanSeries {
+        vertices: vec![
+            vertex("e-", Incoming, Some([1.22, 0.8]), "$e^-$"),
+            vertex("e+", Incoming, Some([1.22, 0.24]), "$e^+$"),
+            vertex("v1", Internal, None, ""),
+            vertex("v2", Internal, None, ""),
+            vertex("v3", Internal, None, ""),
+            vertex("q", Outgoing, Some([2.12, 0.88]), "$q$"),
+            vertex("g", Outgoing, Some([2.12, 0.56]), "$g$"),
+            vertex("qb", Outgoing, Some([2.12, 0.16]), r"$\bar q$"),
+        ],
+        propagators: vec![
+            line("a", "e-", "v1", Fermion, ""),
+            line("b", "v1", "e+", Fermion, ""),
+            line("gamma", "v1", "v2", Photon, r"$\gamma^*$"),
+            line("c", "v2", "v3", Fermion, ""),
+            line("d", "v3", "q", Fermion, ""),
+            line("e", "qb", "v2", Fermion, ""),
+            line("glue", "v3", "g", Gluon, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
+    let series = |id: &str, diagram: FeynmanSeries| SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: Some(RichText::plain(id, ink, 12.0, "")),
+        x_column: String::new(),
+        y_column: String::new(),
+        z_column: None,
+        render_type: DataRenderType::Feynman(diagram),
+    };
+    let mut config = renderer::default::default_config();
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    config.legend.visible = false;
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    for axis in [
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.line_visible = false;
+        axis.tick = renderer::config::TickVisibility::None;
+        axis.label_style.visible = false;
+        axis.title_option.visible = false;
+    }
+    // One caption over each quadrant.
+    for (x, y, text) in [
+        (0.08, 2.08, r"Higgs production: $gg \to H$"),
+        (1.22, 2.08, r"Electron $g-2$ at one loop"),
+        (0.08, 1.0, r"Beta decay: $d \to u\, e^-\, \bar\nu_e$"),
+        (1.22, 1.0, r"Three jets: $e^+e^- \to q\bar q g$"),
+    ] {
+        config
+            .annotations
+            .items
+            .push(Annotation::new(AnnotationKind::Text {
+                anchor: Anchor::Data { x, y },
+                text: tex(text, 20.0),
+                box_style: None,
+                align: Default::default(),
+            }));
+    }
+    let config = with_math_title(config, "Feynman diagrams");
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 2.2);
+    chart.set_y_range(0.0, 2.1);
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series: vec![
+            series("Higgs", higgs),
+            series("g-2", vertex_loop),
+            series("beta", beta),
+            series("jets", jets),
+        ],
+    })
+}
+
+fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, Category, CategoryGroup};
+    use renderer::energy_levels::{
+        EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, LevelView, Transition,
+    };
+    let ink = Color::from_rgb8(70, 76, 90);
+    let label = |text: &str| Some(RichText::plain(text, ink, 11.0, ""));
+    let level = |id: &str, column: &str, energy: f64, text: Option<&str>| EnergyLevel {
+        id: id.into(),
+        column: column.into(),
+        configuration: String::new(),
+        term: column.into(),
+        j: String::new(),
+        g: None,
+        prefix: String::new(),
+        energy,
+        suffix: String::new(),
+        uncertainty: None,
+        reference: String::new(),
+        role: LevelRole::Level,
+        label: text.and_then(label),
+        label_offset: [0.0; 2],
+    };
+    // J = 2 and J = 1 lie 9.5 µeV apart: their labels sit above and below
+    // the pair.
+    let component = |id: &str, j: &str, g: f64, energy: f64, dy: f32| EnergyLevel {
+        j: j.into(),
+        g: Some(g),
+        role: LevelRole::Component {
+            multiplet: "2p3P".into(),
+        },
+        label: label(&format!("J = {j}")),
+        label_offset: [0.0, dy],
+        ..level(id, "3P*", energy, None)
+    };
+    let levels = vec![
+        level("1s2", "1S", 0.0, Some("1s²")),
+        level("2s1S", "1S", 20.615_774_823, Some("2s")),
+        level("3s1S", "1S", 22.920_317_359, Some("3s")),
+        level("4s1S", "1S", 23.673_570_590, Some("4s")),
+        level("2p1P", "1P*", 21.218_022_711_2, Some("2p")),
+        level("3p1P", "1P*", 23.087_018_529_60, Some("3p")),
+        level("4p1P", "1P*", 23.742_070_068_80, Some("4p")),
+        level("3d1D", "1D", 23.074_074_797_77, Some("3d")),
+        level("4d1D", "1D", 23.736_335_035_36, Some("4d")),
+        level("4f1F", "1F*", 23.737_009_722_091, Some("4f")),
+        level("2s3S", "3S", 19.819_614_525, Some("2s")),
+        level("3s3S", "3S", 22.718_466_419, Some("3s")),
+        level("4s3S", "3S", 23.593_958_713, Some("4s")),
+        EnergyLevel {
+            role: LevelRole::Centroid,
+            g: Some(9.0),
+            ..level("2p3P", "3P*", 20.964_098_42, Some("2p"))
+        },
+        component("2p3P2", "2", 5.0, 20.964_086_889_08, 18.0),
+        component("2p3P1", "1", 3.0, 20.964_096_364_64, -3.0),
+        component("2p3P0", "0", 1.0, 20.964_218_850_51, 0.0),
+        level("3p3P", "3P*", 23.007_075, Some("3p")),
+        level("4p3P", "3P*", 23.707_892, Some("4p")),
+        level("3d3D", "3D", 23.073_652, Some("3d")),
+        level("4d3D", "3D", 23.736_091, Some("4d")),
+        level("4f3F", "3F*", 23.737_008, Some("4f")),
+    ];
+    let line = |nm: f64, lower: &str, upper: &str, x_offset: f32| Transition {
+        id: format!("{nm}"),
+        lower: lower.into(),
+        upper: upper.into(),
+        // Written by the renderer from the wavelength (#258).
+        label: None,
+        label_offset: [0.0; 2],
+        value: None,
+        x_offset,
+        wavelength: Some(nm),
+        wavelength_uncertainty: None,
+        intensity: String::new(),
+        aki: None,
+        accuracy: String::new(),
+        line_type: String::new(),
+        tp_reference: String::new(),
+        line_reference: String::new(),
+    };
+    let mut series = EnergyLevelSeries {
+        levels,
+        limits: vec![IonizationLimit {
+            id: "He II".into(),
+            energy: 24.587_389_011,
+            label: Some(RichText::plain(
+                "He II 1s ²S  24.587 eV",
+                Color::from_rgb8(40, 50, 120),
+                11.0,
+                "",
+            )),
+            label_offset: [0.0; 2],
+            uncertainty: Some(0.000_000_025),
+            reference: "L17714".into(),
+        }],
+        transitions: vec![
+            line(501.6, "2s1S", "3p1P", 0.0),
+            line(667.8, "2p1P", "3d1D", 0.0),
+            line(728.1, "2p1P", "3s1S", -0.15),
+            line(492.2, "2p1P", "4d1D", 0.15),
+            line(388.9, "2s3S", "3p3P", 0.0),
+            line(587.6, "2p3P", "3d3D", 0.0),
+            line(706.5, "2p3P", "3s3S", -0.15),
+            line(447.1, "2p3P", "4d3D", 0.15),
+        ],
+        ..EnergyLevelSeries::default()
+    };
+    // 388.9 nm leaves 3p ³P° across the inset window's edge: its label
+    // sits on the other side of the arrow.
+    if let Some(t) = series.transitions.iter_mut().find(|t| t.id == "388.9") {
+        t.label_offset = [-34.0, 0.0];
+    }
+    series.style.level.color = Color::from_rgb8(34, 52, 88);
+    series.style.level.width = 2.5;
+    series.style.transition.color = Color::from_rgb8(214, 120, 20);
+    // The wavelengths labelled to one decimal, the unit once in a note
+    // (#258).
+    series.style.wavelength_labels = Some(renderer::energy_levels::WavelengthLabels {
+        format: renderer::format::PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: false,
+        },
+        unit: None,
+        text: RichText::plain("", Color::from_rgb8(150, 90, 0), 10.0, ""),
+    });
+
+    let mut config = base_config("He I energy levels (NIST ASD)", "", "Energy (eV)");
+    config.legend.visible = false;
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 1100,
+        height: 760,
+    });
+    let tex = |m: &str, l: &str, odd: bool| {
+        RichText::from_tex(
+            &format!("$^{m}\\mathrm{{{l}}}{}$", if odd { "^o" } else { "" }),
+            Color::from_rgb8(30, 30, 30),
+            15.0,
+            "",
+        )
+        .ok()
+    };
+    let mut categories = Vec::new();
+    for (id, m, l, odd) in [
+        ("1S", "1", "S", false),
+        ("1P*", "1", "P", true),
+        ("1D", "1", "D", false),
+        ("1F*", "1", "F", true),
+        ("gap", "", "", false),
+        ("3S", "3", "S", false),
+        ("3P*", "3", "P", true),
+        ("3D", "3", "D", false),
+        ("3F*", "3", "F", true),
+        ("inset1", "", "", false),
+        ("inset2", "", "", false),
+    ] {
+        let mut category = Category::new(id, "");
+        if !m.is_empty() {
+            category.label = id.into();
+            category.rich_label = tex(m, l, odd);
+        }
+        categories.push(category);
+    }
+    config.bottom_x.categories = Some(categories);
+    let header = |text: &str| RichText::plain(text, Color::from_rgb8(24, 39, 63), 14.0, "");
+    config.bottom_x.category_groups = Some(renderer::config::CategoryGroups {
+        groups: vec![
+            CategoryGroup {
+                label: header("Singlets (S = 0)"),
+                first: "1S".into(),
+                last: "1F*".into(),
+                bracket: true,
+            },
+            CategoryGroup {
+                label: header("Triplets (S = 1)"),
+                first: "3S".into(),
+                last: "3F*".into(),
+                bracket: true,
+            },
+        ],
+        offset: [0.0; 2],
+    });
+    config.bottom_x.out_margin = 72.0;
+    // The ground state keeps a thin strip below the break.
+    config.left_y.min = -0.15;
+    config.left_y.max = 25.2;
+    config.left_y.minor_count = 1;
+    config.left_y.breaks = Some(AxisBreaks {
+        ranges: vec![AxisBreak::new(0.25, 19.6)],
+        style: AxisBreakStyle::Continuous,
+        gap_px: 12.0,
+        mark: renderer::config::BreakMark::default(),
+        // Framed pieces: the frames snap to whole logical pixels (#205).
+        frame_each_panel: true,
+        // Sized by the Grotrian preset below.
+        sizing: renderer::config::PieceSizing::ByValue,
+    });
+    // A Grotrian diagram reads by its levels: no grid, no mirrored ticks,
+    // and the ground-state strip thin at a scale of its own (#205).
+    config.apply_axis_preset(renderer::AxisPreset::Grotrian);
+    series
+        .write_continuum(
+            &mut config.annotations,
+            "he",
+            25.2,
+            Color::from_rgba8(80, 100, 220, 36),
+        )
+        .map_err(|kind| FiggyError::InvalidConfig {
+            field: "annotations",
+            kind,
+        })?;
+    // The unit of the wavelength labels, once, in a corner note that owns
+    // its text (#258).
+    let note = config.annotations.add_corner_note(
+        RichText::plain("Wavelengths in nm", Color::from_rgb8(150, 90, 0), 11.0, ""),
+        renderer::NoteAlign::BottomRight,
+    );
+    let plot = config.data_area().map(|area| area.0);
+    if let renderer::AnnotationKind::Text { anchor, .. } = &mut config.annotations.items[note].kind
+    {
+        // Off the plot's frame: the corner's ratio moved in by 10 px.
+        if let (renderer::Anchor::Ratio { x, y }, Ok(plot)) = (anchor, plot) {
+            *x -= 10.0 / plot.width.max(1) as f32;
+            *y -= 10.0 / plot.height.max(1) as f32;
+        }
+    }
+
+    // The inset over the two spare columns on the right: the 2p ³P°
+    // components, 0.13 meV apart, on their own energy axis.
+    let plot = config.data_area().map_err(|_| FiggyError::Internal {
+        invariant: "the scene's data area is not empty",
+    })?;
+    let plot = plot.0;
+    let mut inset = renderer::default::default_config();
+    inset.chart_area = ChartArea(Rect {
+        x: plot.x + plot.width - 196,
+        y: plot.y + plot.height / 2 - 90,
+        width: 188,
+        height: 230,
+    });
+    inset.legend.visible = false;
+    inset.chart_title.visible = false;
+    inset.grid.show_major_x = false;
+    inset.grid.show_minor_x = false;
+    inset.grid.show_minor_y = false;
+    inset.grid.show_major_y = false;
+    // Opaque, so the parent's annotations stop at the inset (#203).
+    inset.plot_background = Some(Color::WHITE);
+    // The inset's text is written at full-chart sizes and drawn at its
+    // cell's text scale (#292, 0.55 here): its tick labels at 10 px, its
+    // term label as large as them.
+    inset.bottom_x.categories = Some(vec![{
+        let mut c = Category::new("3P*", "3P*");
+        c.rich_label = tex("3", "P", true).map(|mut label| {
+            label.font_size = inset.left_y.label_style.font_size;
+            label
+        });
+        c
+    }]);
+    inset.top_x.out_margin = 8.0;
+    inset.right_y.out_margin = 8.0;
+    inset.bottom_x.out_margin = 34.0;
+    inset.left_y.out_margin = 64.0;
+    inset.left_y.min = 20.964_04;
+    inset.left_y.max = 20.964_26;
+    inset.left_y.label_style.significant_digits = 6;
+    for axis in [&mut inset.bottom_x, &mut inset.left_y] {
+        axis.minor_count = 0;
+    }
+    for axis in [&mut inset.top_x, &mut inset.right_y] {
+        axis.tick = renderer::config::TickVisibility::None;
+    }
+    inset.left_y.major_spacing = 0.000_1;
+    config.subplots.push(renderer::Subplot {
+        config: inset,
+        series: vec!["he-fine".into()],
+        link_x: None,
+        link_y: None,
+        // The window is derived from the inset (#205): the 3P* slot at the
+        // inset's energy range, drawn on every frame so it follows the
+        // inset and the view.
+        marker: Some(renderer::InsetMarker::default()),
+        text_scale: Default::default(),
+    });
+
+    let mut fine_style = series.style.clone();
+    fine_style.label_side = renderer::energy_levels::LevelLabelSide::Above;
+    fine_style.level.slot_fraction = 0.5;
+    let fine = EnergyLevelSeries {
+        source: Some("he".into()),
+        show: LevelView::Components,
+        style: fine_style,
+        ..EnergyLevelSeries::default()
+    };
+    let data = |id: &str, levels: EnergyLevelSeries| SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: String::new(),
+        y_column: String::new(),
+        z_column: None,
+        render_type: DataRenderType::EnergyLevels(levels),
+    };
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config,
+        series: vec![data("he", series), data("he-fine", fine)],
+    })
+}
+
+/// A weather radar sweep (#208): reflectivity in dBZ over 180 azimuths of
+/// 2° and 60 range gates of 2.5 km, the host's synthetic storm (a squall
+/// line and two cells), no echo left as NaN.
+fn polar_heatmap(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::polar::PolarOptions;
+    const AZIMUTHS: usize = 180;
+    const GATES: usize = 60;
+    let ids: Vec<String> = (0..AZIMUTHS).map(|a| format!("radar_z{a}")).collect();
+    if r.handle_for("radar_az").is_err() {
+        let dbz = |az: f64, range: f64| {
+            let (x, y) = (range * az.to_radians().sin(), range * az.to_radians().cos());
+            let blob =
+                |cx: f64, cy: f64, w: f64| (-((x - cx).powi(2) + (y - cy).powi(2)) / w).exp();
+            // A squall line running south-west to north-east, ahead of it
+            // two cells, the stronger with a hook.
+            let line = (-((x - y * 0.8 + 40.0).powi(2)) / 700.0).exp()
+                * (-(y + 10.0).powi(2) / 5000.0).exp();
+            let z = 42.0 * line
+                + 54.0 * blob(55.0, 60.0, 500.0)
+                + 44.0 * blob(70.0, -45.0, 700.0)
+                + 22.0 * blob(-30.0, 80.0, 1600.0)
+                + 1.5 * noise(91, (az * 7.0 + range) as usize);
+            if z < 8.0 { f64::NAN } else { z.min(65.0) }
+        };
+        let azimuths: Vec<f64> = (0..=AZIMUTHS).map(|a| a as f64 * 2.0).collect();
+        let ranges: Vec<f64> = (0..=GATES).map(|g| g as f64 * 2.5).collect();
+        let grid: Vec<Column<f64>> = (0..AZIMUTHS)
+            .map(|a| Column {
+                data: (0..GATES)
+                    .map(|g| dbz(a as f64 * 2.0 + 1.0, g as f64 * 2.5 + 1.25))
+                    .collect(),
+            })
+            .collect();
+        let az = Column { data: azimuths };
+        let range = Column { data: ranges };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> =
+            vec![("radar_az", &az), ("radar_range", &range)];
+        for (id, column) in ids.iter().zip(&grid) {
+            batch.push((id.as_str(), column as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Radar reflectivity (dBZ)", "Azimuth", "Range (km)");
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = renderer::ColorMap::Custom {
+        stops: vec![
+            Color::from_rgb8(4, 233, 231),
+            Color::from_rgb8(1, 159, 244),
+            Color::from_rgb8(2, 253, 2),
+            Color::from_rgb8(1, 197, 1),
+            Color::from_rgb8(253, 248, 2),
+            Color::from_rgb8(253, 149, 0),
+            Color::from_rgb8(253, 0, 0),
+            Color::from_rgb8(188, 0, 0),
+            Color::from_rgb8(248, 0, 253),
+        ],
+    };
+    bar.nan_color = Color::new(0.0, 0.0, 0.0, 0.0);
+    bar.axis.min = 5.0;
+    bar.axis.max = 65.0;
+    bar.axis.major_spacing = 10.0;
+    bar.axis.title_option.text = RichText::plain("dBZ", Color::BLACK, 12.0, "");
+    bar.axis.title_option.visible = true;
+    config.colorbar = Some(bar);
+    config.set_polar(Some(PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        inner_radius_fraction: 0.06,
+        // Between the 0° and 45° spokes, clear of the top angle label.
+        radial_label_angle_degrees: 67.5,
+        ..PolarOptions::default()
+    }));
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 360.0);
+    chart.set_y_range(0.0, 150.0);
+    // The range functions set the tick plan; the spacing and format follow.
+    chart.config_mut().bottom_x.major_spacing = 45.0;
+    chart.config_mut().bottom_x.label_style.format = LabelFormat::Degrees;
+    chart.config_mut().left_y.major_spacing = 25.0;
+    let ink = Color::from_rgb8(30, 30, 30);
+    let series = vec![series(
+        "radar",
+        "radar_az",
+        "radar_range",
+        DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Edges,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: Some(ContourConfig {
+                levels: vec![30.0, 45.0],
+                line: line_style(ink, 1.0),
+                per_level_color: None,
+                labels: Some(ContourLabelConfig {
+                    visible: true,
+                    font_size: 10.0,
+                    color: ink,
+                    format: LabelFormat::Decimal,
+                    significant_digits: 2,
+                    spacing_px: 120.0,
+                    anchors: Vec::new(),
+                    bg_color: None,
+                    bg_padding_px: 2.0,
+                }),
+            }),
+            surface: None,
+        }),
+    )];
+    Ok(CartesianScene {
+        monotonic: Vec::new(),
+        config: chart.config().clone(),
+        series,
+    })
+}

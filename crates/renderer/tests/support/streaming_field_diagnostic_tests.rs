@@ -104,7 +104,7 @@ fn read_target(r: &Renderer, target: &wgpu::Texture, resolved: &wgpu::Texture) -
     );
     r.queue.submit([encoder.finish()]);
     readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let mapped = readback.slice(..).get_mapped_range().unwrap();
     let mut rgba = Vec::new();
     for bytes in mapped.chunks_exact(row as usize) {
@@ -129,13 +129,13 @@ fn pass_control(
     config.chart_area.0.y = 0;
     r.ensure_target(wgpu::TextureFormat::Rgba8Unorm, 4).unwrap();
     let id = r.register_chart(config.clone(), series.to_vec()).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let frame = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     let item = &frame.items[0];
@@ -258,7 +258,9 @@ fn pump_export(f: &mut Fixture, operation: StreamingOperation) {
                     .unwrap();
             }
             crate::AutoStreamingRangeRequest::Backpressure { .. }
-            | crate::AutoStreamingRangeRequest::AllSubmitted { .. } => f.renderer.wait_idle(),
+            | crate::AutoStreamingRangeRequest::AllSubmitted { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::Complete { .. } => return,
         }
     }
@@ -284,13 +286,17 @@ fn heatmap_browser_fixture_backend_diagnostic() {
     );
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = data_render::request_adapter(&instance).unwrap();
+    let adapter = crate::gpu::request_adapter_async(&instance)
+        .block_on()
+        .unwrap();
     eprintln!("FIELD adapter {:?}", adapter.get_info());
-    let (device, queue) = data_render::request_device(&adapter).unwrap();
-    let (device, queue) = (Arc::new(device), Arc::new(queue));
+    let (device, queue) = crate::gpu::request_device_async(&adapter)
+        .block_on()
+        .unwrap();
+    let (device, queue) = (device, queue);
     let make = || {
         Renderer::try_new(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             4096,
         )
@@ -353,18 +359,21 @@ fn heatmap_browser_fixture_backend_diagnostic() {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
-            render_type: DataRenderType::Heatmap {
+            z_column: None,
+            render_type: DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: crate::data_config::MatrixRef {
                     columns: vec!["z0".into(), "z1".into(), "z0".into()],
                     orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
                     grid_layout: crate::data_config::GridLayout::Centers,
                 },
-                fill: crate::data_config::FieldFillConfig {
+                fill: Some(crate::data_config::FieldFillConfig {
                     mode: crate::data_config::FillMode::Continuous,
                     shading: crate::data_config::Shading::Interpolated,
                     opacity: 0.63,
-                },
-            },
+                }),
+                contour: None,
+                surface: None,
+            }),
         }];
         let mut resident = make();
         for (id, values) in &columns {
@@ -372,11 +381,9 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         }
         if std::env::var_os("FIGGY_FIELD_DIAGNOSTIC_PASS_ONLY").is_some() {
             for scale in [1.0, 2.0] {
-                let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
-                    &Chart::new(config.clone()),
-                    &series,
-                    scale,
-                    Color::WHITE,
+                let expected = crate::test_gpu::block_on(resident.export_rgba(
+                    crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+                    crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
                 ))
                 .unwrap();
                 let [single, split] = pass_control(&mut resident, &config, &series, scale);
@@ -446,11 +453,9 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         };
         finish_display(&mut f);
         for scale in [1.0, 2.0] {
-            let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
-                &f.chart,
-                &f.series,
-                scale,
-                Color::WHITE,
+            let expected = crate::test_gpu::block_on(resident.export_rgba(
+                crate::ExportSource::chart(&f.chart, &f.series),
+                crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
             ))
             .unwrap();
             let op = f
@@ -458,7 +463,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
                 .begin_stream_export(f.id, scale, Color::WHITE, 2)
                 .unwrap();
             pump_export(&mut f, op);
-            let actual = pollster::block_on(f.renderer.finish_stream_export(op)).unwrap();
+            let actual = crate::test_gpu::block_on(f.renderer.finish_stream_export(op)).unwrap();
             compare(
                 &format!("selected-{selected}-scale-{scale}-resident-stream"),
                 &expected,

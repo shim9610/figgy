@@ -17,7 +17,7 @@
 
 use std::fmt;
 
-use crate::axis_render::MAX_LOG_DECADE_STEP;
+use crate::tick::MAX_LOG_DECADE_STEP;
 
 /// The axis a [`RenderWarning`] is about, named after its `Config` field.
 ///
@@ -40,6 +40,9 @@ pub enum WarningAxis {
     /// `Config::overlays[index]`. A layered view merges every panel's
     /// warnings into one list, and this tag says which layer one is about.
     OverlayY(usize),
+    /// The own X axis of overlay layer `index`, `OverlayLayer::x_axis` of
+    /// `Config::overlays[index]`, drawn while its `link_x` is off.
+    OverlayX(usize),
     /// An axis of subplot `index`: `axis` names it inside
     /// `Config::subplots[index].config`.
     Subplot { index: usize, axis: SubplotAxis },
@@ -56,6 +59,8 @@ pub enum SubplotAxis {
     ColorBar,
     /// The Y axis of the subplot's overlay `index`.
     OverlayY(usize),
+    /// The own X axis of the subplot's overlay `index`.
+    OverlayX(usize),
 }
 
 impl SubplotAxis {
@@ -69,6 +74,7 @@ impl SubplotAxis {
             WarningAxis::RightY => Self::RightY,
             WarningAxis::ColorBar => Self::ColorBar,
             WarningAxis::OverlayY(index) => Self::OverlayY(index),
+            WarningAxis::OverlayX(index) => Self::OverlayX(index),
             WarningAxis::Subplot { .. } => return None,
         })
     }
@@ -83,6 +89,7 @@ impl fmt::Display for SubplotAxis {
             Self::RightY => f.write_str("right_y"),
             Self::ColorBar => f.write_str("colorbar.axis"),
             Self::OverlayY(index) => write!(f, "overlays[{index}].y_axis"),
+            Self::OverlayX(index) => write!(f, "overlays[{index}].x_axis"),
         }
     }
 }
@@ -96,32 +103,15 @@ impl fmt::Display for WarningAxis {
             Self::RightY => f.write_str("right_y"),
             Self::ColorBar => f.write_str("colorbar.axis"),
             Self::OverlayY(index) => write!(f, "overlays[{index}].y_axis"),
+            Self::OverlayX(index) => write!(f, "overlays[{index}].x_axis"),
             Self::Subplot { index, axis } => write!(f, "subplots[{index}].config.{axis}"),
         }
     }
 }
 
 /// Why the linear tick walker did not walk a requested `major_spacing`.
-///
-/// New reasons may be added as new variants. The fields of existing variants
-/// are frozen.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum SpacingRejection {
-    /// NaN or infinite.
-    NonFinite,
-    /// Zero or negative.
-    NotPositive,
-    /// Too small to move either end of the axis range at `f64` precision
-    /// (`min + spacing == min` and `max - spacing == max`), so the walk could
-    /// not advance.
-    BelowResolution,
-    /// The axis range holds more than `limit` intervals of this spacing.
-    TooManyTicks {
-        /// The most major intervals the walker draws (1000).
-        limit: usize,
-    },
-}
+/// Defined with the walkers in [`crate::tick`].
+pub use crate::tick::SpacingRejection;
 
 /// Why the annotation raster skipped an item.
 ///
@@ -253,6 +243,8 @@ impl fmt::Display for RenderWarning {
                     SpacingRejection::TooManyTicks { limit } => {
                         write!(f, "would need more than {limit} major intervals")?
                     }
+                    // `SpacingRejection` is `#[non_exhaustive]` in the model.
+                    other => write!(f, "was rejected ({other:?})")?,
                 }
                 write!(f, "; drawn at automatic spacing {used:?} instead")
             }

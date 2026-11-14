@@ -1,8 +1,9 @@
 //! Single error enum for all fallible figgy operations.
 //!
-//! Only variants meaningful to library users are exposed; internal invariant
-//! violations panic. `From` conversions propagate sub-errors (e.g.
-//! [`AllocError`] from the column pool).
+//! Every failure reaches the caller as a value: product code has no panic
+//! path (#152). An internal invariant that does not hold is a figgy bug and
+//! returns [`FiggyError::Internal`]. `From` conversions propagate sub-errors
+//! (e.g. [`AllocError`] from the column pool).
 
 use crate::data_render::AllocError;
 
@@ -24,7 +25,8 @@ pub enum FiggyError {
     /// A renderer-owned chart config violates a render invariant.
     InvalidConfig {
         field: &'static str,
-        reason: &'static str,
+        /// Which rule failed; its `Display` is the sentence (#215).
+        kind: crate::RuleKind,
     },
 
     /// CPU raster target allocation failed — typically a zero/oversized area.
@@ -119,7 +121,8 @@ pub enum FiggyError {
     /// render path.
     InvalidSeriesConfig {
         series_id: String,
-        reason: String,
+        /// Which rule failed; its `Display` is the sentence (#215).
+        kind: crate::RuleKind,
     },
 
     /// Handle generation no longer matches after an invalidating pool mutation.
@@ -136,6 +139,71 @@ pub enum FiggyError {
     StalePreparedFrame {
         reason: String,
     },
+
+    /// An internal invariant did not hold. This is a figgy bug; it is
+    /// reported instead of panicking so the host keeps running (#152).
+    Internal {
+        invariant: &'static str,
+    },
+
+    /// The GPU reported a validation or internal error for figgy's work.
+    GpuValidation {
+        resource: &'static str,
+        reason: String,
+    },
+
+    /// Font bytes handed to [`register_font_bytes`](crate::text_render::register_font_bytes)
+    /// hold no face the text stack can use.
+    InvalidFont {
+        reason: &'static str,
+    },
+
+    /// The wgpu device was lost. Every later GPU call on this renderer
+    /// returns this error; the host recreates the device and the renderer.
+    DeviceLost {
+        reason: String,
+    },
+
+    /// The OS could not start the native poll thread of a
+    /// [`RendererDevice`](crate::RendererDevice), which completes
+    /// asynchronous GPU waits. `RendererDevice::blocking`
+    /// builds a bundle without one.
+    PollThreadStartFailed {
+        reason: String,
+    },
+
+    /// A monotonic chart's resize or layout fit (#271), or an export at
+    /// another scale, would move the x-to-pixel mapping of a monotonic
+    /// series without its group's source: `change` says how (the plot width
+    /// in device pixels, for one). The renderer keeps no copy of the
+    /// samples, so the call that moves it takes the source
+    /// (`MonotonicChart::resize`, `MonotonicChart::fit_layout`,
+    /// `ExportSource::Monotonic`). The refused call changes nothing. A frame
+    /// or a pick never fails with it.
+    MonotonicSourceRequired {
+        series_id: String,
+        change: crate::monotonic::MappingChange,
+    },
+
+    /// A monotonic call (#271) on group `group` was refused by the
+    /// envelope core: an invalid grid or mapping, an x axis that is not
+    /// linear and unbroken, an append before a full call or with another
+    /// channel count, or a slide over samples that were not kept.
+    Monotonic {
+        group: String,
+        error: crate::monotonic::MonotonicError,
+    },
+
+    /// No series of the chart names monotonic group `group` (#271).
+    UnknownMonotonicGroup {
+        group: String,
+    },
+
+    /// An asynchronous GPU wait on a bundle built with
+    /// `RendererDevice::blocking`: it has
+    /// no poll thread to complete the wait. Use the `_blocking` call, or
+    /// build the bundle with [`RendererDevice::new`](crate::RendererDevice::new).
+    AsyncWaitUnavailable,
 }
 
 impl std::fmt::Display for FiggyError {
@@ -146,8 +214,8 @@ impl std::fmt::Display for FiggyError {
             Self::InvalidChartArea { width, height } => {
                 write!(f, "invalid chart area: {width}x{height}")
             }
-            Self::InvalidConfig { field, reason } => {
-                write!(f, "invalid chart config field {field}: {reason}")
+            Self::InvalidConfig { field, kind } => {
+                write!(f, "invalid chart config field {field}: {kind}")
             }
             Self::RasterWrapFailed { reason } => write!(f, "raster wrap failed: {reason}"),
             Self::AdapterUnavailable => write!(f, "no compatible wgpu adapter"),
@@ -195,8 +263,8 @@ impl std::fmt::Display for FiggyError {
             Self::StateAllocationFailed { resource, reason } => {
                 write!(f, "{resource} allocation failed: {reason}")
             }
-            Self::InvalidSeriesConfig { series_id, reason } => {
-                write!(f, "invalid series config for {series_id}: {reason}")
+            Self::InvalidSeriesConfig { series_id, kind } => {
+                write!(f, "invalid series config for {series_id}: {kind}")
             }
             Self::StaleHandle {
                 generation,
@@ -208,6 +276,30 @@ impl std::fmt::Display for FiggyError {
             Self::StalePreparedFrame { reason } => {
                 write!(f, "stale prepared frame: {reason}")
             }
+            Self::InvalidFont { reason } => write!(f, "invalid font: {reason}"),
+            Self::Internal { invariant } => {
+                write!(f, "internal invariant failed (figgy bug): {invariant}")
+            }
+            Self::GpuValidation { resource, reason } => {
+                write!(f, "{resource}: GPU error: {reason}")
+            }
+            Self::DeviceLost { reason } => write!(f, "wgpu device lost: {reason}"),
+            Self::PollThreadStartFailed { reason } => {
+                write!(f, "could not start the GPU poll thread: {reason}")
+            }
+            Self::MonotonicSourceRequired { series_id, change } => write!(
+                f,
+                "monotonic series {series_id}: the call would move its x mapping ({change:?}); \
+                 the call takes the group's source"
+            ),
+            Self::Monotonic { group, error } => write!(f, "monotonic group {group}: {error}"),
+            Self::UnknownMonotonicGroup { group } => {
+                write!(f, "no series of the chart names monotonic group {group}")
+            }
+            Self::AsyncWaitUnavailable => write!(
+                f,
+                "asynchronous GPU wait on a blocking-only device bundle (no poll thread)"
+            ),
         }
     }
 }
@@ -217,6 +309,7 @@ impl std::error::Error for FiggyError {
         match self {
             Self::Pool(e) => Some(e),
             Self::GpuPick(e) => Some(e),
+            Self::Monotonic { error, .. } => Some(error),
             _ => None,
         }
     }
@@ -231,6 +324,13 @@ impl From<AllocError> for FiggyError {
 impl From<crate::gpu_pick::GpuPickError> for FiggyError {
     fn from(error: crate::gpu_pick::GpuPickError) -> Self {
         Self::GpuPick(error)
+    }
+}
+
+impl FiggyError {
+    /// The error for an internal invariant that did not hold.
+    pub(crate) const fn internal(invariant: &'static str) -> Self {
+        Self::Internal { invariant }
     }
 }
 

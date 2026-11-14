@@ -9,40 +9,6 @@
 // the field's `sample_point_pair` puts a cell's value and what
 // `selection_details` reports for an edge grid.
 
-fn vector_rounded_add(a: f32, b: f32) -> f32 {
-    return fma(1.0, a, b);
-}
-
-fn vector_rounded_subtract(a: f32, b: f32) -> f32 {
-    return fma(1.0, a, -b);
-}
-
-/// Normalize a finite pair with error-free addition (the field's
-/// `normalize_grid_pair`).
-fn vector_normalize_pair(v: vec2<f32>) -> vec2<f32> {
-    let sum = vector_rounded_add(v.x, v.y);
-    let b_virtual = vector_rounded_subtract(sum, v.x);
-    let a_virtual = vector_rounded_subtract(sum, b_virtual);
-    let b_roundoff = vector_rounded_subtract(v.y, b_virtual);
-    let a_roundoff = vector_rounded_subtract(v.x, a_virtual);
-    return vec2<f32>(sum, vector_rounded_add(a_roundoff, b_roundoff));
-}
-
-fn vector_add_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    let high = vector_normalize_pair(vec2<f32>(a.x, b.x));
-    let low = vector_rounded_add(vector_rounded_add(a.y, b.y), high.y);
-    return vector_normalize_pair(vec2<f32>(high.x, low));
-}
-
-fn vector_scale_pair(v: vec2<f32>, factor: f32) -> vec2<f32> {
-    return vector_normalize_pair(vec2<f32>(v.x * factor, v.y * factor));
-}
-
-/// The midpoint of two coordinate pairs, as the field computes a cell centre.
-fn vector_midpoint_pair(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    return vector_add_pairs(vector_scale_pair(a, 0.5), vector_scale_pair(b, 0.5));
-}
-
 /// Where sample `k` sits along one coordinate column: the coordinate itself
 /// under `Centers`, the centre of cell `k` under `Edges`.
 fn vector_anchor_pair(base: u32, len: u32, k: u32) -> vec2<f32> {
@@ -50,7 +16,7 @@ fn vector_anchor_pair(base: u32, len: u32, k: u32) -> vec2<f32> {
         return vector_pool_pair(base, min(k, max(len, 1u) - 1u));
     }
     let next = min(k + 1u, max(len, 1u) - 1u);
-    return vector_midpoint_pair(vector_pool_pair(base, k), vector_pool_pair(base, next));
+    return midpoint_grid_pair(vector_pool_pair(base, k), vector_pool_pair(base, next));
 }
 
 /// Value `row` of constituent column `col` of the table starting at `base`,
@@ -122,7 +88,7 @@ fn vector_sample(i: u32) -> VectorSample {
 // ───── Grid arrow pick (compute entry, typed data pick) ─────────────────────
 //
 // Only the grid form has a typed data pick (a point vector is a point pick,
-// `gpu_pick/vector.wgsl`, through the SHADER_COMMON.md §5.8 twins), so its entry
+// `gpu_pick/vector.wgsl`, through the same arrow fragment), so its entry
 // closes this fragment: every assembled module's entry points are compiled
 // and measured. It walks the samples `vs_main` draws through the same
 // projection, placement and glyph distance, so a grid vector picks the arrow
@@ -130,30 +96,6 @@ fn vector_sample(i: u32) -> VectorSample {
 // follow in the assembly.
 
 const DATA_PICK_KIND_MATRIX_CELL: u32 = 2u;
-
-// The typed data pick's query (`gpu_data_pick.rs::DataPickQueryGpu`).
-struct DataPickQuery {
-    // xy = cursor NDC, zw = cursor axis-t.
-    cursor_ndc_t: vec4<f32>,
-    // x = max distance px.
-    limits: vec4<f32>,
-    // x = flags, y = source paint order.
-    data: vec4<u32>,
-    bases: vec4<u32>,
-    baseline: vec4<f32>,
-};
-
-// Thirty-two bytes, byte-for-byte with Rust's `DataPickCandidateGpu`.
-struct DataPickCandidate {
-    valid: u32,
-    paint_order: u32,
-    kind: u32,
-    index0: u32,
-    index1: u32,
-    index2: u32,
-    distance_px: f32,
-    primitive_order: u32,
-};
 
 @group(1) @binding(1) var<uniform> data_pick_query: DataPickQuery;
 @group(1) @binding(3) var<storage, read_write> data_pick_output: DataPickCandidate;

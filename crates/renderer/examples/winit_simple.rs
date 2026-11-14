@@ -2,19 +2,21 @@
 //!
 //! What this example demonstrates:
 //!
-//! 1. **Data → Column**: wrap two `Vec<f64>` from `renderer::demo` as
-//!    `renderer::Column<f64>` (default `ColumnSource` impl).
-//! 2. **One-line WindowedRenderer**: `Renderer::for_window(window, size,
+//! 1. **Data**: two `Vec<f64>` from `renderer::demo`, uploaded as they are
+//!    (`ColumnSource` is implemented for `Vec<f64>`).
+//! 2. **One-line WindowedRenderer**: `Renderer::for_window_async(window, size,
 //!    pool_capacity)` — figgy owns instance / adapter / device / queue /
 //!    surface / swap chain. Zero wgpu setup code.
-//! 3. **Register columns**: `renderer.add_column(id, &column)`.
+//! 3. **Register columns**: `renderer.add_column(id, &values)`.
 //! 4. **Chart builder**: `default::default_config()` → `Chart::new(cfg)
 //!    .with_title(...).with_x_title(...).with_y_title(...)` →
 //!    `auto_fit_x/y` or `set_x_range/set_y_range`. Log scale is a one-liner
 //!    via `config.left_y.scale = AxisScale::Logarithmic`.
-//! 5. **ChartView / ChartStyle**: `renderer.create_chart_view(chart, rect)`,
+//! 5. **Series / ChartView / ChartStyle**: `SeriesConfig::line(...)` with
+//!    `.label/.color/.width`, the legend from the series
+//!    (`Chart::with_legend_from`), `renderer.create_chart_view(chart, rect)`,
 //!    `create_style_for_series(...)`.
-//! 6. **Draw**: a single `renderer.draw(clear, &items)` call — handles
+//! 6. **Draw**: a single `renderer.draw(clear, &mut items)` call — handles
 //!    surface frame acquire → encoder → render pass → paint → submit →
 //!    present internally.
 //!
@@ -45,30 +47,26 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use renderer::color::Color;
-use renderer::config::{AxisScale, LegendEntryKind};
-use renderer::data::Column;
-use renderer::data_config::{
-    ContourConfig, ContourLabelConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
-    MatrixRef, Shading,
-};
+use renderer::config::AxisScale;
+use renderer::data_config::{ContourLabelConfig, MatrixRef, Shading};
 use renderer::default;
 use renderer::demo;
-use renderer::format::LabelFormat;
 use renderer::layout::NudgeResult;
-use renderer::layout::{ChartArea, Rect};
+use renderer::layout::Rect;
 use renderer::line::LineStylePreset;
 use renderer::{
     AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, ColumnSource,
-    CpuTextMeasure, DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle,
-    SelectionBox, Series, SeriesConfig, WindowedRenderer, encode_png,
+    CpuTextMeasure, HitId, HitMap, Renderer, ResizeHandle, Series, SeriesConfig, WindowedRenderer,
 };
 
-const AXIS_PRESETS: [AxisPreset; 5] = [
+const AXIS_PRESETS: [AxisPreset; 7] = [
     AxisPreset::BoxedInward,
     AxisPreset::BoxedOutward,
     AxisPreset::OpenOutward,
     AxisPreset::OpenInward,
     AxisPreset::Minimal,
+    AxisPreset::Hidden,
+    AxisPreset::Grotrian,
 ];
 
 const COLOR_CYCLES: [ColorCycle; 5] = [
@@ -82,16 +80,6 @@ const COLOR_CYCLES: [ColorCycle; 5] = [
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 const N: usize = 1024;
 const GAP: u32 = 8;
-
-// ============================================================================
-// Vec<f64> → Column<f64>
-// ============================================================================
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
-}
 
 // ============================================================================
 // One panel bundle.
@@ -145,7 +133,7 @@ impl App {
 
     fn shutdown_gpu(&mut self) {
         if let Some(renderer) = self.renderer.as_ref() {
-            renderer.wait_idle();
+            renderer.wait_idle().unwrap();
         }
         self.panels.clear();
         self.renderer.take();
@@ -174,30 +162,34 @@ fn compute_panel_rects(w: u32, h: u32) -> [Rect; PANELS] {
 }
 
 // ============================================================================
-// Chart setup — data (Vec) → Column → Chart builder → ChartView/Style.
+// Chart setup — data (Vec) → columns → series → Chart builder → ChartView/Style.
 // Same pattern when adding a new chart kind.
 // ============================================================================
 
 fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry {
     let (xs, ys) = demo::sine_data(N);
-    renderer.add_column("sine_x", &col_f64(xs)).expect("add x");
-    renderer.add_column("sine_y", &col_f64(ys)).expect("add y");
+    renderer.add_column("sine_x", &xs).expect("add x");
+    renderer.add_column("sine_y", &ys).expect("add y");
 
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     // Chart 1: grid off.
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
 
-    let line_color = Color::from_rgb8(20, 110, 230);
-    let line_w = 1.0;
+    let series = vec![
+        SeriesConfig::line("sin", "sine_x", "sine_y")
+            .label("sin(x)")
+            .color(Color::from_rgb8(20, 110, 230))
+            .width(1.0),
+    ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Sine (1 px line, no grid)")
         .with_x_title("x [rad]")
         .with_y_title("y")
-        .with_legend_entry("sin(x)", line_color, line_w, LegendEntryKind::Line);
+        .with_legend_from(&series);
     chart
         .auto_fit_x(renderer.pool(), "sine_x", 0.02)
         .expect("fit x");
@@ -205,74 +197,47 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
         .auto_fit_y(renderer.pool(), "sine_y", 0.10)
         .expect("fit y");
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
-    let cfg_sin = SeriesConfig {
-        series_id: "sin".into(),
-        source_id: None,
-        label: None,
-        x_column: "sine_x".into(),
-        y_column: "sine_y".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color,
-                line_width: line_w,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
-    };
-    let style = renderer.create_style_for_series(&cfg_sin).unwrap();
-    PanelEntry {
-        chart,
-        view,
-        series: vec![cfg_sin],
-        styles: vec![style],
-        hitmap: HitMap::standard_chart(),
-        reported_warnings: Vec::new(),
-    }
+    panel_entry(renderer, chart, view, series)
 }
 
 fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry {
     // Charge + discharge — same t, two V columns.
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
-    renderer.add_column("rc_t", &col_f64(ts)).expect("add t");
+    renderer.add_column("rc_t", &ts).expect("add t");
     renderer
-        .add_column("rc_charge", &col_f64(vs_charge))
+        .add_column("rc_charge", &vs_charge)
         .expect("add charge");
     renderer
-        .add_column("rc_discharge", &col_f64(vs_discharge))
+        .add_column("rc_discharge", &vs_discharge)
         .expect("add discharge");
 
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     config.grid.show_major_x = true;
     config.grid.show_major_y = true;
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
 
-    let charge_color = Color::from_rgb8(220, 90, 60);
-    let discharge_color = Color::from_rgb8(60, 130, 210);
-    let line_w = 2.0;
+    // '₀' (U+2080) renders as a subscript segment; plain '0' would not.
+    let series = vec![
+        SeriesConfig::line("charge", "rc_t", "rc_charge")
+            .label("Charging V₀(1−e⁻ᵗ)")
+            .color(Color::from_rgb8(220, 90, 60))
+            .width(2.0),
+        SeriesConfig::line("discharge", "rc_t", "rc_discharge")
+            .label("Discharging V₀·e⁻ᵗ")
+            .color(Color::from_rgb8(60, 130, 210))
+            .width(2.0),
+    ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("RC charge / discharge (2 px, major grid)")
         .with_x_title("t [s]")
         .with_y_title("V [V]")
-        // '₀' (U+2080) renders as a subscript segment; plain '0' would not.
-        .with_legend_entry(
-            "Charging V₀(1−e⁻ᵗ)",
-            charge_color,
-            line_w,
-            LegendEntryKind::Line,
-        )
-        .with_legend_entry(
-            "Discharging V₀·e⁻ᵗ",
-            discharge_color,
-            line_w,
-            LegendEntryKind::Line,
-        );
+        .with_legend_from(&series);
     chart
         .auto_fit_x(renderer.pool(), "rc_t", 0.02)
         .expect("fit t");
@@ -281,49 +246,20 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
         .expect("fit v");
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
-    let mk = |id: &str, x: &str, y: &str, color: Color| SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: color,
-                line_width: line_w,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
-    };
-    let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
-    let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
-    let style_charge = renderer.create_style_for_series(&cfg_charge).unwrap();
-    let style_discharge = renderer.create_style_for_series(&cfg_discharge).unwrap();
-    PanelEntry {
-        chart,
-        view,
-        series: vec![cfg_charge, cfg_discharge],
-        styles: vec![style_charge, style_discharge],
-        hitmap: HitMap::standard_chart(),
-        reported_warnings: Vec::new(),
-    }
+    panel_entry(renderer, chart, view, series)
 }
 
 fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry {
     let (es, sigmas) = demo::cross_section_data(N);
-    renderer.add_column("xs_e", &col_f64(es)).expect("add E");
-    renderer
-        .add_column("xs_sigma", &col_f64(sigmas))
-        .expect("add sigma");
+    renderer.add_column("xs_e", &es).expect("add E");
+    renderer.add_column("xs_sigma", &sigmas).expect("add sigma");
 
     // Log scale is one line in Config. set_y_range / auto_fit_y automatically picks
     // (a) decade major spacing (b) Power label format (c) multiplicative padding.
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     config.left_y.scale = AxisScale::Logarithmic;
     config.right_y.scale = AxisScale::Logarithmic;
     // Chart 3: major + minor grid, minor is dotted.
@@ -334,13 +270,18 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
     config.grid.minor_x_style = LineStylePreset::Dot;
     config.grid.minor_y_style = LineStylePreset::Dot;
 
-    let line_color = Color::from_rgb8(60, 160, 90);
-    let line_w = 3.5;
+    let series = vec![
+        SeriesConfig::line("sigma", "xs_e", "xs_sigma")
+            .label("σ(E)")
+            .color(Color::from_rgb8(60, 160, 90))
+            .width(3.5),
+    ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Cross-section σ(E) — 3.5 px, log + minor grid")
         .with_x_title("E [keV]")
         .with_y_title("σ [barn]")
-        .with_legend_entry("σ(E)", line_color, line_w, LegendEntryKind::Line);
+        .with_legend_from(&series);
     chart
         .auto_fit_x(renderer.pool(), "xs_e", 0.0)
         .expect("fit E");
@@ -348,33 +289,10 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
         .auto_fit_y(renderer.pool(), "xs_sigma", 0.10)
         .expect("fit sigma");
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
-    let cfg_xs = SeriesConfig {
-        series_id: "sigma".into(),
-        source_id: None,
-        label: None,
-        x_column: "xs_e".into(),
-        y_column: "xs_sigma".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color,
-                line_width: line_w,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
-    };
-    let style = renderer.create_style_for_series(&cfg_xs).unwrap();
-    PanelEntry {
-        chart,
-        view,
-        series: vec![cfg_xs],
-        styles: vec![style],
-        hitmap: HitMap::standard_chart(),
-        reported_warnings: Vec::new(),
-    }
+    panel_entry(renderer, chart, view, series)
 }
 
 /// Field panel — a heatmap with contour lines, labels and a colourbar.
@@ -390,23 +308,21 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
         let (dx, dy) = (x - 0.5, y - 0.5);
         (-(dx * dx + dy * dy) / SPREAD).exp()
     };
-    let grid: Vec<Column<f64>> = coords
+    let grid: Vec<Vec<f64>> = coords
         .iter()
-        .map(|x| col_f64(coords.iter().map(|y| bump(*x, *y)).collect()))
+        .map(|x| coords.iter().map(|y| bump(*x, *y)).collect())
         .collect();
     let ids: Vec<String> = (0..G).map(|c| format!("bump_z{c}")).collect();
 
-    let coord_col = col_f64(coords.clone());
     let mut batch: Vec<(&str, &dyn ColumnSource)> = Vec::with_capacity(G + 2);
-    batch.push(("bump_x", &coord_col as &dyn ColumnSource));
-    batch.push(("bump_y", &coord_col as &dyn ColumnSource));
+    batch.push(("bump_x", &coords as &dyn ColumnSource));
+    batch.push(("bump_y", &coords as &dyn ColumnSource));
     for (id, column) in ids.iter().zip(&grid) {
         batch.push((id.as_str(), column as &dyn ColumnSource));
     }
     renderer.add_columns(&batch).expect("grid batch upload");
 
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
     config.grid.show_minor_x = false;
@@ -420,6 +336,7 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
     config.colorbar = Some(bar);
 
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Gaussian field — heatmap + labelled contours")
         .with_x_title("x")
         .with_y_title("y");
@@ -432,52 +349,40 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
     // which only worked because the demo knew the closed form of its own data.
     let levels = vec![0.2f64, 0.4, 0.6, 0.8];
 
-    let series = vec![SeriesConfig {
-        series_id: "bump".into(),
-        source_id: None,
-        label: None,
-        x_column: "bump_x".into(),
-        y_column: "bump_y".into(),
-        render_type: DataRenderType::HeatmapContour {
-            matrix: MatrixRef {
-                columns: ids,
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Centers,
-            },
-            fill: FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Interpolated,
-                opacity: 1.0,
-            },
-            contour: ContourConfig {
-                levels,
-                line: DataLineStyleConfig {
-                    line_style: LineStylePreset::Solid,
-                    line_color: Color::from_rgb8(20, 20, 20),
-                    line_width: 1.5,
-                    fill: None,
-                    fill_color: None,
-                    interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-                per_level_color: None,
-                labels: Some(ContourLabelConfig {
-                    visible: true,
-                    font_size: 11.0,
-                    color: Color::from_rgb8(20, 20, 20),
-                    format: LabelFormat::Decimal,
-                    significant_digits: 1,
-                    spacing_px: 120.0,
-                    // Empty: the GPU picks. A non-empty list would override it.
-                    anchors: Vec::new(),
-                    // The label's own background, so the isoline under it does
-                    // not run through the digits.
-                    bg_color: Some(Color::from_rgb8(250, 250, 250)),
-                    bg_padding_px: 2.0,
-                }),
-            },
-        },
-    }];
+    let ink = Color::from_rgb8(20, 20, 20);
+    let series = vec![
+        SeriesConfig::contours(
+            "bump",
+            "bump_x",
+            "bump_y",
+            MatrixRef::columns_are_x(ids),
+            levels,
+        )
+        .filled()
+        .shading(Shading::Interpolated)
+        .color(ink)
+        .width(1.5)
+        .contour_labels(ContourLabelConfig {
+            font_size: 11.0,
+            color: ink,
+            significant_digits: 1,
+            bg_color: Some(Color::from_rgb8(250, 250, 250)),
+            ..Default::default()
+        }),
+    ];
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
+    panel_entry(renderer, chart, view, series)
+}
+
+/// A panel over `series`, with one GPU style per series.
+fn panel_entry(
+    renderer: &mut WindowedRenderer<'_>,
+    chart: Chart,
+    view: ChartView,
+    series: Vec<SeriesConfig>,
+) -> PanelEntry {
     let styles = series
         .iter()
         .map(|cfg| renderer.create_style_for_series(cfg).unwrap())
@@ -509,7 +414,7 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
 
         // One-line setup — figgy owns surface / device / queue / pipelines.
-        let mut renderer = match Renderer::for_window(
+        let mut renderer = match Renderer::for_window_blocking(
             Arc::clone(&window),
             (size.width, size.height),
             POOL_CAPACITY,
@@ -685,7 +590,8 @@ impl App {
         let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
             return;
         };
-        if drag.drag_by(panel.chart.config_mut(), dx, dy) == NudgeResult::Moved
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
+        if drag.drag_by(panel.chart.config_mut(), &measure, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -703,7 +609,8 @@ impl App {
         let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) else {
             return;
         };
-        if rz.resize_by(panel.chart.config_mut(), handle, dx, dy) == NudgeResult::Moved
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
+        if rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -763,28 +670,23 @@ impl App {
         }
     }
 
-    /// 'S' key — export each panel separately as in-memory PNG bytes (scale=2 = 2x DPI);
-    /// the caller (this fn) writes the files. figgy itself only handles memory.
+    /// 'S' key — save each panel separately as a PNG (scale=2 = 2x DPI).
     fn export_pngs(&mut self) {
         const EXPORT_SCALE: f32 = 2.0;
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
         for (i, panel) in self.panels.iter().enumerate() {
-            match renderer.export_panel_png_bytes(&panel.chart, &panel.series, EXPORT_SCALE) {
-                Ok(bytes) => {
-                    let path = format!("/tmp/figgy_winit_panel_{i}.png");
-                    if let Err(e) = std::fs::write(&path, &bytes) {
-                        eprintln!("[export] write {path} failed: {e}");
-                    } else {
-                        eprintln!("[export] saved {path} ({} bytes)", bytes.len());
-                    }
-                }
+            let path = format!("/tmp/figgy_winit_panel_{i}.png");
+            match renderer.save_blocking(
+                renderer::ExportSource::chart(&panel.chart, &panel.series),
+                renderer::ExportOptions::panel(EXPORT_SCALE),
+                &path,
+            ) {
+                Ok(()) => eprintln!("[export] saved {path}"),
                 Err(e) => eprintln!("[export] panel {i} failed: {e}"),
             }
         }
-        // encode_png can also be called on an export_panel_rgba result (e.g. RGBA-only for clipboard).
-        let _ = encode_png;
     }
 
     fn handle_resize(&mut self, w: u32, h: u32) {
@@ -798,37 +700,14 @@ impl App {
             return;
         }
 
-        let selected = self.selected;
+        // The next prepare redraws each panel's raster at its new area.
         let rects = compute_panel_rects(w, h);
-        for (i, (panel, rect)) in self.panels.iter_mut().zip(rects.iter()).enumerate() {
-            panel.chart.config_mut().chart_area = ChartArea(*rect);
-            let sel_boxes: Vec<SelectionBox> = match selected {
-                Some((pi, id)) if pi == i => panel
-                    .hitmap
-                    .selection_box(
-                        id,
-                        panel.chart.config(),
-                        &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                    )
-                    .into_iter()
-                    .collect(),
-                _ => Vec::new(),
-            };
-            if let Err(e) = renderer.refresh_axis_with_selection(
-                &mut panel.view,
-                &panel.chart,
-                *rect,
-                &sel_boxes,
-            ) {
-                eprintln!("[refresh_axis] {e}");
-                return;
-            }
-            if let Err(e) = renderer.update_transform(&panel.view, &panel.chart) {
-                eprintln!("[update_transform] {e}");
-                return;
-            }
-            let _ = panel.chart.consume_data_dirty();
-            let _ = panel.chart.consume_raster_dirty();
+        for (panel, rect) in self.panels.iter_mut().zip(rects.iter()) {
+            panel
+                .chart
+                .set_area(rect.x, rect.y, rect.width, rect.height);
+            // Refit the margins to the labels at the new size.
+            panel.chart.fit_layout();
         }
     }
 
@@ -841,75 +720,63 @@ impl App {
             return;
         }
 
-        // ---- prepare: handle dirty flags ----
+        // ---- the selection is the chart's: prepare draws its box ----
         for (i, panel) in self.panels.iter_mut().enumerate() {
-            let panel_rect = panel.view.panel_rect();
-            let raster_dirty = panel.chart.consume_raster_dirty();
-            // `Renderer::prepare` (inside `draw` below) rewrites the transform
-            // uniform from the current config every frame; the data-dirty flag
-            // only needs resetting.
+            let selected_id: Option<String> = match selected {
+                Some((pi, id)) if pi == i => panel.hitmap.get(id).map(|el| el.element_id()),
+                _ => None,
+            };
+            panel.chart.select(selected_id.as_deref());
+            // `Renderer::prepare` (inside `draw` below) redraws a stale raster
+            // and rewrites the transform uniform every frame; the dirty flags
+            // only need resetting.
             let _ = panel.chart.consume_data_dirty();
-            if raster_dirty {
-                let sel_boxes: Vec<SelectionBox> = match selected {
-                    Some((pi, id)) if pi == i => panel
-                        .hitmap
-                        .selection_box(
-                            id,
-                            panel.chart.config(),
-                            &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                        )
-                        .into_iter()
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                if let Err(e) = renderer.refresh_axis_with_selection(
-                    &mut panel.view,
-                    &panel.chart,
-                    panel_rect,
-                    &sel_boxes,
-                ) {
-                    eprintln!("[refresh_axis] {e}");
-                    return;
-                }
-                // Tick settings the new raster could not draw as written. They
-                // are re-derived on every dirty-driven refresh (a drag refreshes
-                // each frame), so log only when the list changes.
-                let warnings = panel.view.render_warnings();
-                if warnings != panel.reported_warnings.as_slice() {
-                    for warning in warnings {
-                        eprintln!("[render_warning] panel {i}: {warning}");
-                    }
-                    panel.reported_warnings = warnings.to_vec();
-                }
-            }
+            let _ = panel.chart.consume_raster_dirty();
         }
 
         // ---- Series + ChartDrawItem slices ----
-        let series_per_panel: Vec<Vec<Series<'_>>> = self
+        // Each panel lends its view mutably (prepare redraws a stale raster)
+        // and its chart and series immutably: disjoint fields of one panel.
+        let mut parts: Vec<(&mut ChartView, &Chart, Vec<Series<'_>>)> = self
             .panels
-            .iter()
+            .iter_mut()
             .map(|p| {
-                p.series
+                let series = p
+                    .series
                     .iter()
                     .zip(p.styles.iter())
                     .map(|(cfg, style)| Series { config: cfg, style })
-                    .collect()
+                    .collect();
+                (&mut p.view, &p.chart, series)
             })
             .collect();
-        let items: Vec<ChartDrawItem<'_>> = self
-            .panels
-            .iter()
-            .zip(series_per_panel.iter())
-            .map(|(p, ss)| ChartDrawItem {
-                view: &p.view,
-                chart_config: p.chart.config(),
-                series: ss.as_slice(),
+        let mut items: Vec<ChartDrawItem<'_>> = parts
+            .iter_mut()
+            .map(|(view, chart, series)| ChartDrawItem {
+                view,
+                chart,
+                series: series.as_slice(),
             })
             .collect();
 
         // ---- single draw call — surface/encoder/pass/submit/present all internal. ----
-        if let Err(e) = renderer.draw(Color::WHITE, &items) {
+        if let Err(e) = renderer.draw(Color::WHITE, &mut items) {
             eprintln!("[draw] {e}");
+        }
+        drop(items);
+        drop(parts);
+
+        // Tick settings the new raster could not draw as written. They are
+        // re-derived on every redraw (a drag redraws each frame), so log only
+        // when the list changes.
+        for (i, panel) in self.panels.iter_mut().enumerate() {
+            let warnings = panel.view.render_warnings();
+            if warnings != panel.reported_warnings.as_slice() {
+                for warning in warnings {
+                    eprintln!("[render_warning] panel {i}: {warning}");
+                }
+                panel.reported_warnings = warnings.to_vec();
+            }
         }
     }
 }

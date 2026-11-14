@@ -1,7 +1,7 @@
 use renderer::{
-    ChartId, ChartView, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, ColumnUploadStats,
-    Renderer, StreamBounds, StreamColumnSource, StreamSourceBinding, StreamingChartOptions,
-    StreamingLimits, StreamingProgress,
+    ChartId, ChartView, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, Renderer,
+    StreamColumnSource, StreamSourceBinding, StreamingChartOptions, StreamingLimits,
+    StreamingProgress,
 };
 
 struct VirtualColumn {
@@ -12,49 +12,24 @@ impl ColumnSource for VirtualColumn {
     fn len(&self) -> usize {
         self.len
     }
-    fn min(&self) -> f64 {
-        0.0
-    }
-    fn max(&self) -> f64 {
-        self.len.saturating_sub(1) as f64
-    }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (index, bytes) in dst.chunks_exact_mut(4).enumerate() {
-            bytes.copy_from_slice(&(index as f32).to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for index in 0..dst.len() {
             dst.write_pair(index, index as f32, 0.0);
         }
-        ColumnUploadStats {
-            min_positive: (self.len > 1).then_some(1.0),
-        }
     }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
-        let end = start
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError> {
+        start
             .checked_add(dst.len() as u64)
             .filter(|end| *end <= self.len as u64)
             .ok_or(ColumnRangeWriteError::InvalidRange)?;
         for index in 0..dst.len() {
             dst.write_pair(index, (start + index as u64) as f32, 0.0);
         }
-        Ok(Some(StreamBounds {
-            min: start as f64,
-            max: end.saturating_sub(1) as f64,
-            min_positive: if end <= 1 {
-                None
-            } else {
-                Some(start.max(1) as f64)
-            },
-        }))
+        Ok(())
     }
 }
 

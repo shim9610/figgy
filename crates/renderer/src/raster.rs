@@ -252,43 +252,52 @@ impl Canvas {
     /// curve continuously.
     pub fn draw_polyline_smooth(&mut self, points: &[(f32, f32)], paint: &Paint) {
         let mut pb = PathBuilder::new();
-        let mut run: Vec<(f32, f32)> = Vec::new();
-        let flush = |pb: &mut PathBuilder, run: &mut Vec<(f32, f32)>| {
-            match run.len() {
-                0 => {}
-                1 => {
-                    pb.move_to(run[0].0, run[0].1);
-                    pb.line_to(run[0].0, run[0].1);
-                }
-                2 => {
-                    pb.move_to(run[0].0, run[0].1);
-                    pb.line_to(run[1].0, run[1].1);
-                }
-                n => {
-                    pb.move_to(run[0].0, run[0].1);
-                    for i in 0..n - 1 {
-                        // Uniform Catmull–Rom: tangents from the neighbors,
-                        // end tangents from the duplicated end points.
-                        let p0 = run[i.saturating_sub(1)];
-                        let p1 = run[i];
-                        let p2 = run[i + 1];
-                        let p3 = run[(i + 2).min(n - 1)];
-                        let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0);
-                        let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0);
-                        pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p2.0, p2.1);
-                    }
-                }
+        crate::sketch::smooth_cubics(points, |segment| match segment {
+            crate::sketch::PathSegment::Move(p) => pb.move_to(p.0, p.1),
+            crate::sketch::PathSegment::Line(p) => pb.line_to(p.0, p.1),
+            crate::sketch::PathSegment::Cubic(c1, c2, p) => {
+                pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p.0, p.1)
             }
-            run.clear();
-        };
-        for &(x, y) in points {
-            if !x.is_finite() || !y.is_finite() {
-                flush(&mut pb, &mut run);
-            } else {
-                run.push((x, y));
+            crate::sketch::PathSegment::Close => pb.close(),
+        });
+        let Some(path) = pb.finish() else { return };
+        self.pix.stroke_path(
+            &path,
+            &paint.shader_paint(),
+            &paint.stroke_params(),
+            self.ts,
+            None,
+        );
+    }
+
+    /// Stroke `segments` as **one** path (straight and cubic segments, a
+    /// subpath per `Move`), mapping each point through `map`: a dash
+    /// pattern runs continuously along the whole path (#234).
+    pub(crate) fn draw_path(
+        &mut self,
+        segments: &[crate::sink::PathSegment],
+        map: impl Fn((f32, f32)) -> (f32, f32),
+        paint: &Paint,
+    ) {
+        use crate::sink::PathSegment;
+        let mut pb = PathBuilder::new();
+        for segment in segments {
+            match *segment {
+                PathSegment::Move(p) => {
+                    let p = map(p);
+                    pb.move_to(p.0, p.1);
+                }
+                PathSegment::Line(p) => {
+                    let p = map(p);
+                    pb.line_to(p.0, p.1);
+                }
+                PathSegment::Cubic(c1, c2, p) => {
+                    let (c1, c2, p) = (map(c1), map(c2), map(p));
+                    pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p.0, p.1);
+                }
+                PathSegment::Close => pb.close(),
             }
         }
-        flush(&mut pb, &mut run);
         let Some(path) = pb.finish() else { return };
         self.pix.stroke_path(
             &path,
@@ -413,32 +422,38 @@ impl Canvas {
         color: &Color,
         turn: u8,
     ) {
-        if w == 0 || h == 0 || alpha.len() < (w as usize * h as usize) {
+        let Some(cells) = (w as usize).checked_mul(h as usize) else {
+            return;
+        };
+        if w == 0 || h == 0 || alpha.len() < cells {
             return;
         }
         let c = ts_color(color);
         let (cr, cg, cb, ca) = (c.red(), c.green(), c.blue(), c.alpha());
-        let dst_w = self.pix.width() as i32;
-        let dst_h = self.pix.height() as i32;
+        // Pixel arithmetic in i64: the positions come from saturating float
+        // casts, so `ix + col` or `-y - 1` can leave the i32 range.
+        let dst_w = i64::from(self.pix.width());
+        let dst_h = i64::from(self.pix.height());
         let px = self.pix.pixels_mut();
 
-        for row in 0..h as i32 {
-            for col in 0..w as i32 {
-                let x = ix + col;
-                let y = iy + row;
+        for row in 0..h {
+            for col in 0..w {
+                let x = i64::from(ix) + i64::from(col);
+                let y = i64::from(iy) + i64::from(row);
                 // Map pixel cells, not their top-left points: a reversed axis
-                // needs -1 so [x, x+1) becomes [-x-1, -x).
-                let (dx, dy) = match turn {
+                // needs -1 so [x, x+1) becomes [-x-1, -x). `turn` counts
+                // quarter turns, taken modulo four.
+                let (dx, dy) = match turn % 4 {
                     0 => (x, y),
                     1 => (-y - 1, x),
                     2 => (-x - 1, -y - 1),
-                    3 => (y, -x - 1),
-                    _ => unreachable!("quarter turn must be in 0..4"),
+                    _ => (y, -x - 1),
                 };
                 if dx < 0 || dx >= dst_w || dy < 0 || dy >= dst_h {
                     continue;
                 }
-                let a = alpha[(row * w as i32 + col) as usize];
+                // `row * w + col < w * h = cells <= alpha.len()`.
+                let a = alpha[row as usize * w as usize + col as usize];
                 if a == 0 {
                     continue;
                 }
@@ -448,6 +463,7 @@ impl Canvas {
                 let sg = ((cg * af * 255.0 + 0.5) as u16).min(sa);
                 let sb = ((cb * af * 255.0 + 0.5) as u16).min(sa);
 
+                // Inside the canvas, checked above: no overflow.
                 let di = (dy * dst_w + dx) as usize;
                 let d = px[di];
                 let inv = 255 - sa;

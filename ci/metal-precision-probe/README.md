@@ -7,8 +7,9 @@ production backend.
 
 ## Scope and assertions
 
-The generator extracts the current `PickQueryTransform`, `PickQueryParams` and
-coordinate projection helpers directly from the production `gpu_pick/core.wgsl`.
+The generator extracts the current `Transform`, `PickQueryParams` and
+coordinate projection helpers directly from the production `gpu_pick/core.wgsl`
+and the projection fragment it splices (`data_render/common/projection.wgsl`).
 It validates a small compute harness with Naga, then emits MSL 2.3 with an explicit
 resource map. There is no hand-maintained second copy of the coordinate formula.
 
@@ -66,7 +67,8 @@ The independent Cargo lockfile pins the experiment's dependencies.
 ## First measured result (2026-10-10, before renderer 0.14.0)
 
 This run used the coordinate helpers from before renderer 0.14.0. Since 0.14.0 the
-production `gpu_pick.wgsl` helpers use explicit `fma` rounding boundaries; with
+production pick helpers (then `gpu_pick.wgsl`; since 0.19.0 `gpu_pick/core.wgsl`
+and the projection fragment it splices) use explicit `fma` rounding boundaries; with
 them, default WGSL on unmodified wgpu passed all 768 points in
 [run 38109490393](https://github.com/shim9610/figgy/actions/runs/38109490393).
 The generator extracts the current helpers, so a new run measures the `fma`
@@ -115,7 +117,8 @@ macOS / Metal은 아직 불안정한 실험 단계로 둔다. 이 도구는 현�
 
 위의 2026-10-10 측정 표는 renderer 0.14.0 이전의 좌표 함수로 얻은 결과다. 당시 기본 WGSL과
 `-ffast-math` 바이너리는 큰 epoch 값에서 768개 점 중 512개가 허용 오차를 넘었고, `-fno-fast-math`
-바이너리는 모두 통과했다. 0.14.0부터 `gpu_pick.wgsl`의 좌표 함수는 `fma`로 반올림 경계를 명시하며,
+바이너리는 모두 통과했다. 0.14.0부터 피킹 좌표 함수(당시 `gpu_pick.wgsl`, 0.19.0부터 `gpu_pick/core.wgsl`과
+여기에 이어 붙이는 투영 조각)는 `fma`로 반올림 경계를 명시하며,
 이 방식에서는 수정하지 않은 wgpu의 기본 WGSL도 768개 점을 모두 통과했다
 ([실행 38109490393](https://github.com/shim9610/figgy/actions/runs/38109490393)). 생성기는 현재 함수를
 추출하므로 지금 실행하면 위 표가 아니라 `fma` 방식의 결과가 나온다.

@@ -26,6 +26,9 @@ impl Cell {
         index: [usize; 2],
         mut len: impl FnMut(&str) -> Option<u64>,
     ) -> Option<Self> {
+        // `None` skips the pick: a picked cell the current lattice cannot
+        // resolve is not drawn, like an index past its end. The stream's own
+        // draw validated this extent and reports its errors.
         let (extent, x_len, y_len) = field_runtime::extent(series, &mut len).ok()?;
         let matrix = extract_matrix(&series.render_type)?;
         let fill = extract_field_fill(&series.render_type)?;
@@ -105,6 +108,7 @@ pub(super) fn packet(
         level_color_count: 0,
         z_min: [0.0; 2],
         z_max: [0.0; 2],
+        image: [0; 4],
     };
     let (field_bg, charge) = data_render::create_field_data_bind_group(
         context.device,
@@ -122,7 +126,7 @@ pub(super) fn packet(
             }],
             params: &params,
         },
-    );
+    )?;
     let selected = config.picked_data.as_ref().ok_or(StreamError::WrongState)?;
     let mut selection = data_render::DataSelectionGpu::from_color(selected.highlight_color);
     selection.metrics[0] = selected.outline_width_px;
@@ -137,7 +141,7 @@ pub(super) fn packet(
         context.device,
         context.data_selection_bgl,
         &selection,
-    );
+    )?;
     let layers = SelectionLayers {
         picked: Vec::new(),
         selected_bars: Vec::new(),
@@ -152,6 +156,8 @@ pub(super) fn packet(
             field_bg,
             charge,
             drawable: true,
+            vertices: crate::data_render::FIELD_VERTICES,
+            instances: 0..1,
         }],
     };
     let mut packet = PreparedSeries::from_layers(layers.into_series_layers(), None, None);

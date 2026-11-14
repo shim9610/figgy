@@ -1,9 +1,13 @@
-//! Editable decoration positions for bounded charts. The same `HitMap`,
-//! `Selectable`, `Draggable` and `SelectionBox` policy as Cartesian charts applies.
+//! Editable decoration positions of the radial chart, and the decoration
+//! state the legacy categorical, box plot and radar documents carry for
+//! their readers. Decoration identities ([`DecorationId`]) name the elements
+//! of every chart. The same `HitMap`, `Selectable`, `Draggable` and
+//! `SelectionBox` policy as Cartesian charts applies.
 use crate::{
     drag::{DragConfig, Draggable},
     layout::{NudgeReject, NudgeResult, RectF, Side},
     select::Selectable,
+    sink::{Sink, Slot},
     text::MeasureText,
 };
 
@@ -84,11 +88,11 @@ pub struct DecorationOffset {
     /// Chart-local logical pixels, independent of DPR/export scale.
     pub offset: [f32; 2],
 }
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::decoration_layout")
 )]
 pub struct DecorationLayout {
     /// Explicit plot region in logical pixels. None uses the measured automatic
@@ -98,6 +102,7 @@ pub struct DecorationLayout {
     /// Decoration selection is separate from data selection and hover.
     pub selected: Option<DecorationId>,
 }
+
 impl DecorationLayout {
     pub fn offset(&self, id: &DecorationId) -> [f32; 2] {
         self.offsets
@@ -121,7 +126,7 @@ impl DecorationLayout {
         }
         self.offsets.retain(|o| &o.element != id);
     }
-    pub fn resolve_data_area(&self, automatic: RectF) -> Result<RectF, &'static str> {
+    pub fn resolve_data_area(&self, automatic: RectF) -> Result<RectF, crate::RuleKind> {
         let r = self.data_area.unwrap_or(automatic);
         if ![r.x, r.y, r.width, r.height, r.x + r.width, r.y + r.height]
             .into_iter()
@@ -135,18 +140,16 @@ impl DecorationLayout {
             || r.x + r.width > automatic.x + automatic.width
             || r.y + r.height > automatic.y + automatic.height
         {
-            return Err(
-                "data area must fit the measured plot region and be at least 80 by 60 logical pixels",
-            );
+            return Err(crate::RuleKind::DataAreaTooSmall);
         }
         Ok(r)
     }
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if let Some(r) = self.data_area {
             self.resolve_data_area(r)?;
         }
         if self.offsets.len() > 1024 {
-            return Err("too many decoration offsets");
+            return Err(crate::RuleKind::DecorationOffsetCount);
         }
         for (i, o) in self.offsets.iter().enumerate() {
             if o.offset.iter().any(|x| !x.is_finite())
@@ -156,7 +159,7 @@ impl DecorationLayout {
                     DecorationId::DataArea | DecorationId::DataAreaEdge(_)
                 )
             {
-                return Err("decoration offsets must be finite and unique");
+                return Err(crate::RuleKind::DecorationOffsets);
             }
             if let DecorationId::Axis(s) = &o.element {
                 let parallel = match s {
@@ -164,7 +167,7 @@ impl DecorationLayout {
                     _ => o.offset[1],
                 };
                 if parallel != 0.0 {
-                    return Err("axes only move perpendicular to their direction");
+                    return Err(crate::RuleKind::DecorationAxisMove);
                 }
             }
         }
@@ -178,24 +181,38 @@ pub struct DecorationElement {
     pub id: DecorationId,
     pub base_bounds: RectF,
     pub canvas_size: (u32, u32),
-    /// Parts that move together with this target (e.g. a detached axis's labels).
-    pub followers: Vec<(DecorationId, RectF)>,
 }
 impl Selectable<DecorationLayout> for DecorationElement {
-    fn bounds(&self, cfg: &DecorationLayout, _: &dyn MeasureText) -> Option<RectF> {
-        match self.id {
-            DecorationId::DataArea => return cfg.resolve_data_area(self.base_bounds).ok(),
-            DecorationId::DataAreaEdge(_) => return None,
-            _ => {}
-        }
-        let p = cfg.effective_offset(&self.id);
-        Some(self.base_bounds.translated(p[0], p[1]))
+    /// The renderer-measured bounds, moved by the stored offset: the data
+    /// area resolves the explicit plot region, an edge is a resize target
+    /// with nothing of its own.
+    fn emit(&self, cfg: &DecorationLayout, _: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        let rect = match self.id {
+            DecorationId::DataArea => match cfg.resolve_data_area(self.base_bounds) {
+                Ok(rect) => rect,
+                Err(_) => return true,
+            },
+            DecorationId::DataAreaEdge(_) => return true,
+            _ => {
+                let p = cfg.effective_offset(&self.id);
+                self.base_bounds.translated(p[0], p[1])
+            }
+        };
+        sink.rect(Slot::Above, rect, None, None);
+        true
     }
     fn as_draggable(&self) -> Option<&dyn Draggable<DecorationLayout>> {
         Some(self)
     }
     fn as_resizable(&self) -> Option<&dyn crate::resize::Resizable<DecorationLayout>> {
         (self.id == DecorationId::DataArea).then_some(self)
+    }
+    /// The plot region and its edges sit behind the labels and axes.
+    fn is_background(&self) -> bool {
+        matches!(
+            self.id,
+            DecorationId::DataArea | DecorationId::DataAreaEdge(_)
+        )
     }
     fn element_id(&self) -> String {
         self.id.element_id()
@@ -229,6 +246,7 @@ impl crate::resize::Resizable<DecorationLayout> for DecorationElement {
     fn resize_by(
         &self,
         cfg: &mut DecorationLayout,
+        measure: &dyn MeasureText,
         handle: crate::resize::ResizeHandle,
         dx: f32,
         dy: f32,
@@ -241,7 +259,7 @@ impl crate::resize::Resizable<DecorationLayout> for DecorationElement {
         let mut trial = cfg.clone();
         for (element, dx, dy) in [(x, dx, 0.), (y, 0., dy)] {
             if let Some(element) = element {
-                if trial.nudge(element, dx, dy) != NudgeResult::Moved {
+                if trial.nudge(element, measure, dx, dy) != NudgeResult::Moved {
                     return reject;
                 }
             }
@@ -252,34 +270,44 @@ impl crate::resize::Resizable<DecorationLayout> for DecorationElement {
 }
 impl DragConfig for DecorationLayout {
     type Element = DecorationElement;
-    fn nudge(&mut self, element: DecorationElement, mut dx: f32, mut dy: f32) -> NudgeResult {
+    /// The element carries its renderer-measured bounds, so `measure` is not
+    /// read.
+    fn nudge(
+        &mut self,
+        element: DecorationElement,
+        _measure: &dyn MeasureText,
+        mut dx: f32,
+        mut dy: f32,
+    ) -> NudgeResult {
         let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
         if !dx.is_finite() || !dy.is_finite() {
             return reject;
         }
-        if matches!(
-            element.id,
-            DecorationId::DataArea | DecorationId::DataAreaEdge(_)
-        ) {
+        // `None` moves the whole data area, `Some(side)` resizes one edge.
+        let data_area_target = match &element.id {
+            DecorationId::DataArea => Some(None),
+            DecorationId::DataAreaEdge(side) => Some(Some(side.clone())),
+            _ => None,
+        };
+        if let Some(edge) = data_area_target {
             let Ok(mut r) = self.resolve_data_area(element.base_bounds) else {
                 return reject;
             };
-            match element.id {
-                DecorationId::DataArea => {
+            match edge {
+                None => {
                     r.x += dx;
                     r.y += dy;
                 }
-                DecorationId::DataAreaEdge(Side::Left) => {
+                Some(Side::Left) => {
                     r.x += dx;
                     r.width -= dx;
                 }
-                DecorationId::DataAreaEdge(Side::Right) => r.width += dx,
-                DecorationId::DataAreaEdge(Side::Top) => {
+                Some(Side::Right) => r.width += dx,
+                Some(Side::Top) => {
                     r.y += dy;
                     r.height -= dy;
                 }
-                DecorationId::DataAreaEdge(Side::Bottom) => r.height += dy,
-                _ => unreachable!(),
+                Some(Side::Bottom) => r.height += dy,
             }
             let mut trial = self.clone();
             trial.data_area = Some(r);
@@ -302,12 +330,7 @@ impl DragConfig for DecorationLayout {
                 && r.x + r.width <= element.canvas_size.0 as f32
                 && r.y + r.height <= element.canvas_size.1 as f32
         };
-        if !inside(element.base_bounds, self.effective_offset(&element.id))
-            || element
-                .followers
-                .iter()
-                .any(|(id, rect)| !inside(*rect, self.effective_offset(id)))
-        {
+        if !inside(element.base_bounds, self.effective_offset(&element.id)) {
             return reject;
         }
         let old = self.offset(&element.id);
@@ -326,6 +349,20 @@ impl DragConfig for DecorationLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{RichText, TextExtents};
+
+    /// Decoration elements carry their renderer-measured bounds, so the
+    /// layout never reads the measure: any stub will do.
+    struct NoMeasure;
+    impl MeasureText for NoMeasure {
+        fn measure_rich(&self, _: &RichText) -> TextExtents {
+            TextExtents {
+                width: 0.0,
+                ascent: 0.0,
+                descent: 0.0,
+            }
+        }
+    }
 
     // Layer-addressed identities get stable element-id strings that embed the
     // wrapped element's own id, so hosts keying UI on these strings can route
@@ -361,7 +398,7 @@ mod tests {
             let back: DecorationId = serde_json::from_str(&json).unwrap();
             assert_eq!(back, id, "{json}");
         }
-        let mut layout = DecorationLayout::default();
+        let mut layout = crate::defaults::decoration_layout();
         layout.selected = Some(DecorationId::Annotation(4));
         let json = serde_json::to_string(&layout).unwrap();
         let back: DecorationLayout = serde_json::from_str(&json).unwrap();
@@ -380,7 +417,6 @@ mod tests {
                 height: 160.,
             },
             canvas_size: (300, 200),
-            followers: vec![],
         };
         let original = RectF {
             x: 50.,
@@ -400,9 +436,12 @@ mod tests {
         ] {
             let mut state = DecorationLayout {
                 data_area: Some(original),
-                ..Default::default()
+                ..crate::defaults::decoration_layout()
             };
-            assert_eq!(e.resize_by(&mut state, handle, 7., 9.), NudgeResult::Moved);
+            assert_eq!(
+                e.resize_by(&mut state, &NoMeasure, handle, 7., 9.),
+                NudgeResult::Moved
+            );
             let r = state.data_area.unwrap();
             assert_eq!(r.x, original.x + if left { 7. } else { 0. });
             assert_eq!(r.y, original.y + if top { 9. } else { 0. });
@@ -417,7 +456,7 @@ mod tests {
         }
         let mut state = DecorationLayout {
             data_area: Some(original),
-            ..Default::default()
+            ..crate::defaults::decoration_layout()
         };
         let before = state.clone();
         for (dx, dy) in [
@@ -427,7 +466,7 @@ mod tests {
             (100., 0.),
         ] {
             assert!(matches!(
-                e.resize_by(&mut state, NW, dx, dy),
+                e.resize_by(&mut state, &NoMeasure, NW, dx, dy),
                 NudgeResult::Rejected(_)
             ));
             assert_eq!(state, before);
@@ -448,7 +487,6 @@ mod tests {
                 height: 20.,
             },
             canvas_size: (300, 200),
-            followers: vec![],
         }
     }
     #[test]
@@ -458,26 +496,20 @@ mod tests {
         assert!(empty.is_empty() && default.is_empty());
     }
     #[test]
-    fn drag_rejects_nonfinite_outside_and_axis_follower_overflow_atomically() {
-        let mut state = DecorationLayout::default();
-        let mut axis = element(DecorationId::Axis(Side::Left));
-        axis.followers.push((
-            DecorationId::AxisLabel(Side::Left),
-            RectF {
-                x: 1.,
-                y: 20.,
-                width: 20.,
-                height: 30.,
-            },
-        ));
-        for delta in [[f32::NAN, 0.], [0., f32::INFINITY], [-2., 0.], [1000., 0.]] {
+    fn drag_rejects_nonfinite_and_outside_moves_atomically() {
+        let mut state = crate::defaults::decoration_layout();
+        let axis = element(DecorationId::Axis(Side::Left));
+        for delta in [[f32::NAN, 0.], [0., f32::INFINITY], [-21., 0.], [1000., 0.]] {
             assert!(matches!(
-                axis.drag_by(&mut state, delta[0], delta[1]),
+                axis.drag_by(&mut state, &NoMeasure, delta[0], delta[1]),
                 NudgeResult::Rejected(_)
             ));
-            assert_eq!(state, DecorationLayout::default());
+            assert_eq!(state, crate::defaults::decoration_layout());
         }
-        assert_eq!(axis.drag_by(&mut state, 5., 80.), NudgeResult::Moved);
+        assert_eq!(
+            axis.drag_by(&mut state, &NoMeasure, 5., 80.),
+            NudgeResult::Moved
+        );
         assert_eq!(state.offset(&axis.id), [5., 0.]);
         assert_eq!(
             state.effective_offset(&DecorationId::AxisLabel(Side::Left)),
@@ -504,12 +536,13 @@ mod tests {
     }
     #[cfg(feature = "serde")]
     #[test]
+    #[allow(deprecated)]
     fn old_documents_default_positions_and_all_models_preserve_edits() {
         for mut value in [
-            serde_json::to_value(crate::RadialChart::default()).unwrap(),
-            serde_json::to_value(crate::CategoricalChart::default()).unwrap(),
-            serde_json::to_value(crate::BoxPlotChart::default()).unwrap(),
-            serde_json::to_value(crate::RadarChart::default()).unwrap(),
+            serde_json::to_value(crate::defaults::radial_chart()).unwrap(),
+            serde_json::to_value(crate::defaults::categorical_chart()).unwrap(),
+            serde_json::to_value(crate::defaults::box_plot_chart()).unwrap(),
+            serde_json::to_value(crate::defaults::radar_chart()).unwrap(),
         ] {
             value.as_object_mut().unwrap().remove("decorations");
             assert!(value.get("decorations").is_none());
@@ -519,41 +552,41 @@ mod tests {
                     serde_json::from_value::<crate::RadialChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             } else if value.get("mode").is_some() {
                 assert_eq!(
                     serde_json::from_value::<crate::CategoricalChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             } else if value.get("direction").is_some() {
                 assert_eq!(
                     serde_json::from_value::<crate::BoxPlotChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             } else {
                 assert_eq!(
                     serde_json::from_value::<crate::RadarChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             }
         }
-        let mut state = DecorationLayout::default();
-        element(DecorationId::ChartTitle).drag_by(&mut state, 4., 6.);
+        let mut state = crate::defaults::decoration_layout();
+        element(DecorationId::ChartTitle).drag_by(&mut state, &NoMeasure, 4., 6.);
         state.selected = Some(DecorationId::ChartTitle);
-        let mut radial = crate::RadialChart::default();
+        let mut radial = crate::defaults::radial_chart();
         radial.decorations = state.clone();
-        let mut categorical = crate::CategoricalChart::default();
+        let mut categorical = crate::defaults::categorical_chart();
         categorical.decorations = state.clone();
-        let mut boxplot = crate::BoxPlotChart::default();
+        let mut boxplot = crate::defaults::box_plot_chart();
         boxplot.decorations = state.clone();
-        let mut radar = crate::RadarChart::default();
+        let mut radar = crate::defaults::radar_chart();
         radar.decorations = state;
         assert_eq!(
             serde_json::from_str::<crate::RadialChart>(&serde_json::to_string(&radial).unwrap())

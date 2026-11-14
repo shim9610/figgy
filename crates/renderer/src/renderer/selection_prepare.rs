@@ -1,19 +1,20 @@
 //! Selection preparation shared by resident columns and bounded selected rows.
 
+mod bars;
+mod fields;
+mod rings;
+
 use super::*;
+use crate::data_config::ViolinSide;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SelectionRefFilter {
     All,
-    Legacy(usize),
+    /// Only the ref at this index of `picked_data.refs`.
     Typed(usize),
 }
 
 impl SelectionRefFilter {
-    fn accepts_legacy(self, ordinal: usize) -> bool {
-        matches!(self, Self::All) || self == Self::Legacy(ordinal)
-    }
-
     fn accepts_typed(self, ordinal: usize) -> bool {
         matches!(self, Self::All) || self == Self::Typed(ordinal)
     }
@@ -53,10 +54,21 @@ pub(super) struct SelectionColumns<'a> {
     pub x: ColumnHandle,
     pub y: ColumnHandle,
     pub bar: Option<(ColumnHandle, ColumnHandle)>,
+    /// A category bar, box plot or range bar series' data and style map, as
+    /// its draw binds them; its picked bar's or box's highlight reads the
+    /// same.
+    pub category: Option<data_render::CategoryBarData>,
+    /// A box plot series' violin data and segment count, and its raw
+    /// points' data, as their draws bind them.
+    pub violin: Option<(data_render::CategoryBarData, u32)>,
+    pub box_points: Option<data_render::CategoryBarData>,
     pub rows: SelectionRows,
     /// A precise streamed ring uses ScatterStyleMap::stream_bind_group with
     /// rows.global_start. Its style-index vertex column still uses local rows.
     pub mapped_point_bg: Option<&'a wgpu::BindGroup>,
+    /// A 3D series' height column and camera group (#132): its ring draws
+    /// through the 3D ring entries in the live slot.
+    pub view3d: Option<(ColumnHandle, data_render::surface_mesh::View3dBinding)>,
 }
 
 pub(super) struct SelectionLayers<'a> {
@@ -70,55 +82,52 @@ impl<'a> SelectionLayers<'a> {
         data_render::SeriesLayers {
             area: None,
             field: None,
+            mesh: None,
+            mesh_contour: None,
             bar: None,
+            violin: None,
+            category_bars: None,
+            box_points: None,
             contour: None,
             vector: None,
             errorbar: None,
+            stem: None,
             line: None,
+            parallel: None,
             line_extra: None,
             scatter: None,
+            line_3d: None,
+            scatter_3d: None,
+            vector_3d: None,
             selected_bars: self.selected_bars,
             selected_fields: self.selected_fields,
             picked: self.picked,
+            value_labels: None,
+            energy_levels: None,
+            surface: None,
+            selected_surface: None,
+            floor: None,
+            region: None,
         }
     }
 }
 
 #[derive(Debug)]
-struct PointSelectionVisual {
-    point_index: usize,
-    color: Color,
-    width_px: f32,
-    radius_extra_px: f32,
+pub(super) struct PointSelectionVisual {
+    pub(super) point_index: usize,
+    pub(super) color: Color,
+    pub(super) width_px: f32,
+    pub(super) radius_extra_px: f32,
 }
 
-fn point_selection_visuals(
+/// The point selections of `cfg` with the colour and width each is drawn
+/// in.
+pub(super) fn point_selection_visuals(
     chart_config: &Config,
     cfg: &SeriesConfig,
     refs: SelectionRefFilter,
 ) -> Vec<PointSelectionVisual> {
     let mut point_visuals = Vec::new();
-    if let Some(picked_cfg) = chart_config
-        .picked_points
-        .as_ref()
-        .filter(|config| config.visible && !config.refs.is_empty())
-    {
-        point_visuals.extend(
-            picked_cfg
-                .refs
-                .iter()
-                .enumerate()
-                .filter(|(ordinal, picked_ref)| {
-                    refs.accepts_legacy(*ordinal) && picked_ref_matches_series(cfg, picked_ref)
-                })
-                .map(|(_, picked_ref)| PointSelectionVisual {
-                    point_index: picked_ref.point_index,
-                    color: picked_cfg.ring_color,
-                    width_px: picked_cfg.ring_width_px,
-                    radius_extra_px: picked_cfg.radius_extra_px,
-                }),
-        );
-    }
     let typed_selections = chart_config
         .picked_data
         .as_ref()
@@ -146,6 +155,24 @@ fn point_selection_visuals(
     point_visuals
 }
 
+/// One series' inputs to the selection builders: the panel's view, config
+/// and pipelines, the series and the columns its draws bind.
+#[derive(Clone, Copy)]
+struct SelectionInputs<'a, 'c> {
+    view: &'a ChartView,
+    chart_config: &'c Config,
+    series: &'c Series<'a>,
+    pipelines: &'a TargetPipelines,
+    columns: &'c SelectionColumns<'a>,
+    contour_scratch: Option<&'c PreparedContourScratch>,
+    use_scatter_style_mapping: bool,
+    cfg: &'a SeriesConfig,
+    rt: &'a DataRenderType,
+    x_h: ColumnHandle,
+    y_h: ColumnHandle,
+    column_buffer: &'a wgpu::Buffer,
+}
+
 impl PrepareContext<'_> {
     /// Reads selection policy from Config; callers retain all supplied GPU
     /// handles and charges until the resulting prepared packet is dropped.
@@ -165,7 +192,12 @@ impl PrepareContext<'_> {
         let rt = &cfg.render_type;
         let primitives = effective_series_primitives(&chart_config.draw_style, rt);
         let (x_h, y_h, column_buffer) = (columns.x, columns.y, columns.buffer);
-        let point_visuals = point_selection_visuals(chart_config, cfg, columns.rows.refs);
+        let mut point_visuals = point_selection_visuals(chart_config, cfg, columns.rows.refs);
+        // A monotonic point is selected by its logical sample index and
+        // ringed at the row its kept point was uploaded to (#271).
+        if cfg.monotonic().is_some() {
+            self.monotonic.rows_of_visuals(cfg, &mut point_visuals);
+        }
         let typed_selections = chart_config
             .picked_data
             .as_ref()
@@ -176,131 +208,23 @@ impl PrepareContext<'_> {
             .filter(|_| primitives.vector)
             .and_then(|(components, style)| components.grid().is_none().then_some(style));
         let mut picked = Vec::new();
+        let s = SelectionInputs {
+            view,
+            chart_config,
+            series,
+            pipelines,
+            columns: &columns,
+            contour_scratch,
+            use_scatter_style_mapping,
+            cfg,
+            rt,
+            x_h,
+            y_h,
+            column_buffer,
+        };
         if primitives.line || primitives.scatter || vector_points.is_some() {
             for visual in point_visuals {
-                let Some(instance) = columns
-                    .rows
-                    .instance(visual.point_index, x_h.len_values.min(y_h.len_values))
-                else {
-                    continue;
-                };
-
-                let scatter_cfg = extract_scatter(rt);
-                let has_line_anchor = extract_line(rt).is_some();
-                // A zero-size marker still draws its dot and picks, so it
-                // takes the ring too; a size-mapped point the map hides
-                // (negative radius) is dropped by the mapped ring entry.
-                let has_scatter_anchor = scatter_cfg.is_some();
-                let has_vector_anchor = vector_points
-                    .is_some_and(|style| crate::pick::vector_anchor_radius_px(style) > 0.0);
-                if !has_line_anchor && !has_scatter_anchor && !has_vector_anchor {
-                    continue;
-                }
-
-                let precise_pick_style_map = if use_scatter_style_mapping {
-                    series.style.scatter_map.as_ref()
-                } else {
-                    None
-                };
-                if precise_pick_style_map.is_some()
-                    && columns.rows.global_start != 0
-                    && columns.mapped_point_bg.is_none()
-                {
-                    return Err(FiggyError::InvalidSeriesConfig {
-                        series_id: cfg.series_id.clone(),
-                        reason: "rebased selection needs a global-index style map binding".into(),
-                    });
-                }
-                let style_index = match (precise_pick_style_map, scatter_cfg) {
-                    (Some(map), Some(scatter)) if map.has_index => {
-                        let Some(column) = scatter.point_style_index_column.as_ref() else {
-                            return Err(FiggyError::InvalidSeriesConfig {
-                                series_id: cfg.series_id.clone(),
-                                reason: "scatter style map expects an index column".into(),
-                            });
-                        };
-                        let h = lookup(column)?;
-                        let count = x_h.len_values.min(y_h.len_values);
-                        if h.len_values < count {
-                            return Err(FiggyError::InvalidSeriesConfig {
-                                series_id: cfg.series_id.clone(),
-                                reason: format!(
-                                    "style index column {column:?} has {} values, but scatter uses {count}",
-                                    h.len_values
-                                ),
-                            });
-                        }
-                        Some(h)
-                    }
-                    _ => None,
-                };
-
-                let (color_value, size_value, value_map_bg) = self.scatter_value_map_columns(
-                    cfg,
-                    precise_pick_style_map.is_some(),
-                    x_h.len_values.min(y_h.len_values),
-                    &mut lookup,
-                )?;
-                // The ring sits `radius_extra_px` outside the marker drawn at
-                // the point: the shader measures that marker from its radius
-                // and shape at the render scale (`ring_marker_extent_px`),
-                // under the chart's draw style. A mapped ring resolves both
-                // per point like the mapped marker. A line-only anchor has no
-                // marker; a point vector's anchor is the glyph's half width.
-                let mut ring_style =
-                    PrimitiveStyle::from_color_with_width(visual.color, visual.width_px);
-                let uses_mapped_pick = precise_pick_style_map.is_some();
-                ring_style.cap_half_px = visual.radius_extra_px;
-                ring_style.series_salt = crate::sketch::fnv1a(&cfg.series_id);
-                ring_style.primitive_flags =
-                    crate::gpu_pick::GpuPickDrawStyle::of(&chart_config.draw_style).marker_mode();
-                if let Some(scatter) = scatter_cfg {
-                    ring_style.point_radius_px = if uses_mapped_pick {
-                        series.style.scatter_radius_px
-                    } else {
-                        scatter_config_radius_px(
-                            scatter,
-                            visual.point_index,
-                            use_scatter_style_mapping,
-                        ) * series.style.display_scale
-                    };
-                    ring_style.shape_id = data_render::shape_id(&scatter.point_shape);
-                } else {
-                    ring_style.point_radius_px = vector_points.map_or(0.0, |style| {
-                        crate::pick::vector_anchor_radius_px(style) * series.style.display_scale
-                    });
-                    ring_style.shape_id = data_render::shape_id(&ScatterShape::CircleFilled);
-                    ring_style.primitive_flags = 0;
-                }
-                let ring_buf = data_render::create_style_uniform_buffer(&self.device, &ring_style);
-                let style_bg =
-                    data_render::create_style_bind_group(&self.device, &self.style_bgl, &ring_buf);
-                picked.push(ColumnPickRingLayer {
-                    pipeline: if uses_mapped_pick {
-                        pipelines
-                            .pick_ring_mapped
-                            .as_ref()
-                            .expect("prepare ensured mapped pick ring pipeline")
-                    } else {
-                        pipelines
-                            .pick_ring
-                            .as_ref()
-                            .expect("prepare ensured pick ring pipeline")
-                    },
-                    transform_bg: &view.transform_bg,
-                    style_bg,
-                    style_map_bg: precise_pick_style_map
-                        .map(|map| columns.mapped_point_bg.unwrap_or(&map.bind_group)),
-                    value_map_bg,
-                    quad_vb: &self.quad_vb,
-                    pool_buffer: column_buffer,
-                    x: x_h,
-                    y: y_h,
-                    style_index,
-                    color_value,
-                    size_value,
-                    instance,
-                });
+                self.point_ring_layer(&s, visual, vector_points, &mut picked, &mut lookup)?;
             }
         }
 
@@ -315,152 +239,73 @@ impl PrepareContext<'_> {
                 }
                 match picked_ref {
                     PickedDataRef::HistogramBin { bin_index, .. } if primitives.bar => {
-                        let (edges, values) =
-                            columns.bar.expect("bar primitive has selection columns");
-                        let count =
-                            data_render::bar_instance_count(edges.len_values, values.len_values);
-                        let Some(instance) = columns.rows.instance(*bin_index, count as usize)
-                        else {
-                            continue;
-                        };
-                        let mut selection = data_render::DataSelectionGpu::from_color(
-                            selection_cfg.highlight_color,
-                        );
-                        selection.metrics[0] = selection_cfg.outline_width_px;
-                        selection.indices = [
-                            data_render::DATA_SELECTION_KIND_HISTOGRAM_BIN,
-                            instance,
-                            0,
-                            0,
-                        ];
-                        let (selection_bg, selection_charge) =
-                            data_render::create_data_selection_bind_group(
-                                &self.gpu_ledger,
-                                &self.device,
-                                &self.data_selection_bgl,
-                                &selection,
-                            );
-                        // The selection outline must follow the selected
-                        // bin's overridden gap/width exactly. Resolve only
-                        // style metadata on the CPU; edge/value geometry
-                        // remains in the shared GPU columns.
-                        let bar_cfg =
-                            extract_bar(rt).expect("histogram selection has a bar config");
-                        let resolved_style = resolved_bar_primitive_style(
-                            bar_cfg,
-                            *bin_index,
-                            series.style.display_scale,
-                        );
-                        let resolved_style_buffer =
-                            data_render::create_style_uniform_buffer(&self.device, &resolved_style);
-                        let resolved_style_bg = data_render::create_style_bind_group(
-                            &self.device,
-                            &self.style_bgl,
-                            &resolved_style_buffer,
-                        );
-                        selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_selection
-                                .as_ref()
-                                .expect("prepare ensured histogram selection pipeline"),
-                            transform_bg: &view.transform_bg,
-                            style_bg: resolved_style_bg,
-                            selection_bg,
-                            selection_charge,
-                            pool_buffer: column_buffer,
-                            edges,
-                            values,
-                            instance,
-                        });
+                        self.histogram_bin_selection(
+                            &s,
+                            selection_cfg,
+                            bin_index,
+                            &mut selected_bars,
+                        )?;
                     }
+                    // A box is a bin whose index is its row: the highlight
+                    // builds the same body from the same group 3 and style
+                    // map as the draw.
+                    PickedDataRef::HistogramBin {
+                        bin_index, half, ..
+                    } if primitives.box_plot => {
+                        self.box_selection(&s, selection_cfg, bin_index, half, &mut selected_bars)?;
+                    }
+                    // A range bar is a bin whose index is its row: the
+                    // highlight builds the same body from the same group 3
+                    // and style map as the draw.
+                    // A box plot's raw point: its ring, built from the same
+                    // group 3 and slot as its draw places it with.
+                    PickedDataRef::Point { point_index, .. } if primitives.box_points => {
+                        self.box_point_selection(
+                            &s,
+                            selection_cfg,
+                            point_index,
+                            &mut selected_bars,
+                        )?;
+                    }
+                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.range_bars => {
+                        self.range_bar_selection(&s, selection_cfg, bin_index, &mut selected_bars)?;
+                    }
+                    // A category bar is a bin whose index is its row: the
+                    // highlight builds the same bar from the same group 3
+                    // and override table as the draw.
+                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.category_bars => {
+                        self.category_bar_selection(
+                            &s,
+                            selection_cfg,
+                            bin_index,
+                            &mut selected_bars,
+                        )?;
+                    }
+                    // A 3D chart's picked cell is its surface patch
+                    // (`surface_layers`), not the flat cell outline.
                     PickedDataRef::MatrixCell {
                         x_index, y_index, ..
-                    } if primitives.field => {
-                        let (Some(x_index), Some(y_index)) =
-                            (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
-                        else {
-                            continue;
-                        };
-                        let scratch = self
-                            .field_cache
-                            .get(cfg.series_id.as_str())
-                            .expect("prepare ensured selected field scratch");
-                        let mut selection = data_render::DataSelectionGpu::from_color(
-                            selection_cfg.highlight_color,
-                        );
-                        selection.metrics[0] = selection_cfg.outline_width_px;
-                        selection.indices = [
-                            data_render::DATA_SELECTION_KIND_MATRIX_CELL,
-                            0,
+                    } if primitives.field && chart_config.view_3d().is_none() => {
+                        self.field_cell_selection(
+                            &s,
+                            selection_cfg,
                             x_index,
                             y_index,
-                        ];
-                        let (selection_bg, selection_charge) =
-                            data_render::create_data_selection_bind_group(
-                                &self.gpu_ledger,
-                                &self.device,
-                                &self.data_selection_bgl,
-                                &selection,
-                            );
-                        selected_fields.push(ColumnFieldSelectionLayer {
-                            pipeline: pipelines
-                                .field_selection
-                                .as_ref()
-                                .expect("prepare ensured field selection pipeline"),
-                            transform_bg: &view.transform_bg,
-                            selection_bg,
-                            selection_charge,
-                            field_bg: scratch.field_bg.clone(),
-                            charge: Arc::clone(&scratch.charge),
-                            drawable: scratch.drawable,
-                        });
+                            &mut selected_fields,
+                        )?;
                     }
                     // A grid vector's selected cell: the `u` grid is bound as a
                     // field, so the field selection pipeline outlines the cell.
                     PickedDataRef::MatrixCell {
                         x_index, y_index, ..
                     } if primitives.vector => {
-                        let (Some(x_index), Some(y_index)) =
-                            (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
-                        else {
-                            continue;
-                        };
-                        let scratch = self
-                            .vector_cache
-                            .get(cfg.series_id.as_str())
-                            .expect("prepare ensured selected vector scratch");
-                        let Some((field_bg, charge)) = scratch.field.as_ref() else {
-                            continue;
-                        };
-                        let mut selection = data_render::DataSelectionGpu::from_color(
-                            selection_cfg.highlight_color,
-                        );
-                        selection.metrics[0] = selection_cfg.outline_width_px;
-                        selection.indices = [
-                            data_render::DATA_SELECTION_KIND_MATRIX_CELL,
-                            0,
+                        self.vector_cell_selection(
+                            &s,
+                            selection_cfg,
                             x_index,
                             y_index,
-                        ];
-                        let (selection_bg, selection_charge) =
-                            data_render::create_data_selection_bind_group(
-                                &self.gpu_ledger,
-                                &self.device,
-                                &self.data_selection_bgl,
-                                &selection,
-                            );
-                        selected_fields.push(ColumnFieldSelectionLayer {
-                            pipeline: pipelines
-                                .field_selection
-                                .as_ref()
-                                .expect("prepare ensured field selection pipeline"),
-                            transform_bg: &view.transform_bg,
-                            selection_bg,
-                            selection_charge,
-                            field_bg: field_bg.clone(),
-                            charge: Arc::clone(charge),
-                            drawable: scratch.count != 0,
-                        });
+                            &mut selected_fields,
+                        )?;
                     }
                     PickedDataRef::ContourLevel {
                         level_index,
@@ -468,59 +313,43 @@ impl PrepareContext<'_> {
                         y_index,
                         ..
                     } if primitives.contour => {
-                        let (Some(level_index), Some(x_index), Some(y_index)) = (
-                            u32::try_from(*level_index).ok(),
-                            u32::try_from(*x_index).ok(),
-                            u32::try_from(*y_index).ok(),
-                        ) else {
-                            continue;
-                        };
-                        if usize::try_from(level_index).ok().is_none_or(|index| {
-                            extract_contour(rt).is_none_or(|contour| index >= contour.levels.len())
-                        }) {
-                            continue;
-                        }
-                        let scratch =
-                            contour_scratch.expect("prepare captured selected contour scratch");
-                        let mut selection = data_render::DataSelectionGpu::from_color(
-                            selection_cfg.highlight_color,
-                        );
-                        selection.metrics[1] = selection_cfg.contour_width_extra_px;
-                        selection.indices = [
-                            data_render::DATA_SELECTION_KIND_CONTOUR_LEVEL,
+                        self.contour_level_selection(
+                            &s,
+                            selection_cfg,
                             level_index,
                             x_index,
                             y_index,
-                        ];
-                        let (selection_bg, selection_charge) =
-                            data_render::create_data_selection_bind_group(
-                                &self.gpu_ledger,
-                                &self.device,
-                                &self.data_selection_bgl,
-                                &selection,
-                            );
-                        // A labelled contour's highlight leaves its label
-                        // gaps; the draw binds the label group with it.
-                        let pipeline = if scratch.label.is_some() {
-                            pipelines
-                                .field_selection_labelled
-                                .as_ref()
-                                .expect("prepare ensured labelled contour selection pipeline")
-                        } else {
-                            pipelines
-                                .field_selection
-                                .as_ref()
-                                .expect("prepare ensured contour selection pipeline")
-                        };
-                        selected_fields.push(ColumnFieldSelectionLayer {
-                            pipeline,
-                            transform_bg: &view.transform_bg,
-                            selection_bg,
-                            selection_charge,
-                            field_bg: scratch.field_bg.clone(),
-                            charge: Arc::clone(&scratch.charge),
-                            drawable: scratch.drawable,
-                        });
+                            &mut selected_fields,
+                        )?;
+                    }
+                    // A triangle mesh's picked triangle (#210): that one
+                    // instance redrawn through the mesh's selection entry,
+                    // outlined inside its edges.
+                    // A 3D chart's picked triangle is its surface patch
+                    // (`mesh_surface_layers`), not the flat outline.
+                    PickedDataRef::MeshTriangle { triangle_index, .. }
+                        if primitives.mesh && chart_config.view_3d().is_none() =>
+                    {
+                        self.mesh_triangle_selection(
+                            &s,
+                            selection_cfg,
+                            triangle_index,
+                            &mut selected_fields,
+                        )?;
+                    }
+                    // A triangle mesh's picked level: every triangle redrawn,
+                    // painting that level's stroke widened. On a 3D chart
+                    // the contours are on the floor, which draws no
+                    // highlight, as a heatmap's floor does not.
+                    PickedDataRef::ContourLevel { level_index, .. }
+                        if primitives.mesh_contour && chart_config.view_3d().is_none() =>
+                    {
+                        self.mesh_contour_selection(
+                            &s,
+                            selection_cfg,
+                            level_index,
+                            &mut selected_fields,
+                        )?;
                     }
                     _ => {}
                 }
@@ -538,7 +367,7 @@ impl PrepareContext<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DataSelectionsConfig, PickedPointsConfig};
+    use crate::config::DataSelectionsConfig;
     use crate::data_config::{BarOrientation, DataBarStyleOverride, DataScatterPointStyleOverride};
 
     fn declaration() -> SeriesConfig {
@@ -548,8 +377,9 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            z_column: None,
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 0.0,
@@ -567,16 +397,11 @@ mod tests {
                     }]),
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
-        }
-    }
-
-    fn legacy(index: usize) -> PickedPointRef {
-        PickedPointRef {
-            source_id: Some("source".into()),
-            series_id: "selected".into(),
-            point_index: index,
+                }),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
         }
     }
 
@@ -592,13 +417,6 @@ mod tests {
     fn selection_ordinals_preserve_duplicates_order_and_provenance() {
         let series = declaration();
         let mut config = crate::default::default_config();
-        config.picked_points = Some(PickedPointsConfig {
-            refs: vec![legacy(10), legacy(2), legacy(10)],
-            ring_color: Color::new(1.0, 0.0, 0.0, 0.5),
-            ring_width_px: 3.0,
-            radius_extra_px: 7.0,
-            ..Default::default()
-        });
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![
                 point(10),
@@ -606,6 +424,7 @@ mod tests {
                     source_id: None,
                     series_id: "selected".into(),
                     bin_index: 2,
+                    half: None,
                 },
                 point(2),
                 point(10),
@@ -618,28 +437,17 @@ mod tests {
         let visuals = point_selection_visuals(&config, &series, SelectionRefFilter::All);
         assert_eq!(
             visuals.iter().map(|v| v.point_index).collect::<Vec<_>>(),
-            [10, 2, 10, 10, 2, 10]
+            [10, 2, 10]
         );
         assert_eq!(
             (
-                visuals[0].color.r,
+                visuals[0].color.g,
                 visuals[0].width_px,
                 visuals[0].radius_extra_px
-            ),
-            (1.0, 3.0, 7.0)
-        );
-        assert_eq!(
-            (
-                visuals[3].color.g,
-                visuals[3].width_px,
-                visuals[3].radius_extra_px
             ),
             (1.0, 5.0, 11.0)
         );
         for (filter, expected) in [
-            (SelectionRefFilter::Legacy(0), vec![10]),
-            (SelectionRefFilter::Legacy(1), vec![2]),
-            (SelectionRefFilter::Legacy(2), vec![10]),
             (SelectionRefFilter::Typed(0), vec![10]),
             (SelectionRefFilter::Typed(1), vec![]),
             (SelectionRefFilter::Typed(2), vec![2]),
@@ -654,16 +462,22 @@ mod tests {
                 expected
             );
         }
-        config.picked_points.as_mut().unwrap().refs[0].source_id = Some("other".into());
-        assert!(
-            point_selection_visuals(&config, &series, SelectionRefFilter::Legacy(0)).is_empty()
-        );
-        config.picked_points.as_mut().unwrap().refs[0].source_id = None;
+        let refs = &mut config.picked_data.as_mut().unwrap().refs;
+        refs[0] = PickedDataRef::Point {
+            source_id: Some("other".into()),
+            series_id: "selected".into(),
+            point_index: 10,
+        };
+        assert!(point_selection_visuals(&config, &series, SelectionRefFilter::Typed(0)).is_empty());
+        config.picked_data.as_mut().unwrap().refs[0] = PickedDataRef::Point {
+            source_id: None,
+            series_id: "selected".into(),
+            point_index: 10,
+        };
         assert_eq!(
-            point_selection_visuals(&config, &series, SelectionRefFilter::Legacy(0)).len(),
+            point_selection_visuals(&config, &series, SelectionRefFilter::Typed(0)).len(),
             1
         );
-        config.picked_points.as_mut().unwrap().visible = false;
         config.picked_data.as_mut().unwrap().visible = false;
         assert!(point_selection_visuals(&config, &series, SelectionRefFilter::All).is_empty());
     }
@@ -785,7 +599,7 @@ mod tests {
             .unwrap();
         let (device, queue) = data_render::shared_device().expect("selection parity GPU required");
         let mut renderer = Renderer::try_new_with_sample_count(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             8192,
             1,
@@ -797,14 +611,7 @@ mod tests {
             ("index", vec![0.0; 3]),
         ] {
             renderer
-                .add_column(
-                    id,
-                    &crate::Column {
-                        data: values,
-                        min: 0.0,
-                        max: 1.0,
-                    },
-                )
+                .add_column(id, &crate::Column { data: values })
                 .unwrap();
         }
         for kind in 0..3 {
@@ -852,6 +659,7 @@ mod tests {
                         source_id: Some("source".into()),
                         series_id: "selected".into(),
                         bin_index: 2,
+                        half: None,
                     }
                 }],
                 highlight_color: Color::new(0.0, 1.0, 0.0, 1.0),
@@ -862,7 +670,7 @@ mod tests {
             let mut chart = Chart::new(config);
             chart.set_x_range(0.0, 1.0);
             chart.set_y_range(0.0, 1.0);
-            let view = renderer
+            let mut view = renderer
                 .create_chart_view(&chart, chart.config().chart_area.0)
                 .unwrap();
             let style = renderer.create_style_for_series(&declaration).unwrap();
@@ -871,9 +679,9 @@ mod tests {
                 style: &style,
             }];
             let mut frame = renderer
-                .prepare(&[ChartDrawItem {
-                    view: &view,
-                    chart_config: chart.config(),
+                .prepare(&mut [ChartDrawItem {
+                    view: &mut view,
+                    chart: &chart,
                     series: &series,
                 }])
                 .unwrap();
@@ -896,6 +704,7 @@ mod tests {
                                     2,
                                     &tally,
                                 )
+                                .unwrap()
                             })
                         })
                         .flatten();
@@ -916,12 +725,16 @@ mod tests {
                                         (edges, values)
                                     }
                                 }),
+                                category: None,
+                                violin: None,
+                                box_points: None,
                                 rows: SelectionRows {
                                     global_start: if local { 2 } else { 0 },
                                     refs: SelectionRefFilter::Typed(0),
                                     packed_instance: None,
                                 },
                                 mapped_point_bg: map.as_ref(),
+                                view3d: None,
                             },
                             None,
                             true,

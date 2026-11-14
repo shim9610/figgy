@@ -59,7 +59,7 @@ fn single_pipeline_builders_compile_only_the_requested_shader() {
 #[test]
 fn all_shader_compilation_times_and_entry_coverage() {
     let (device, queue) = crate::data_render::shared_device().expect("required GPU adapter");
-    let gpu = RendererDevice::new(device.clone(), queue.clone());
+    let gpu = RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread");
     let session = capture::Session::begin();
     for samples in [1, 4] {
         let mut renderer = Renderer::try_new_with_sample_count(
@@ -69,10 +69,10 @@ fn all_shader_compilation_times_and_entry_coverage() {
             samples,
         )
         .unwrap();
-        pollster::block_on(renderer.prewarm_all()).unwrap();
+        crate::test_gpu::block_on(renderer.prewarm_all()).unwrap();
         // No shader or pipeline creation at all, even a compiler-cache hit.
         let before = capture::counts();
-        pollster::block_on(renderer.prewarm_all()).unwrap();
+        crate::test_gpu::block_on(renderer.prewarm_all()).unwrap();
         assert_eq!(before, capture::counts());
         // The exact pick modules compile on the first pick that needs each;
         // measure every module (with every path) here.
@@ -120,11 +120,7 @@ fn all_shader_compilation_times_and_entry_coverage() {
             },
         );
     }
-    crate::radial::RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    crate::categorical::CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
-        .unwrap();
-    crate::boxplot::BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    crate::radar::RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    crate::radial::RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let capture = session.finish();
     if let Some(path) = std::env::var_os("FIGGY_SHADER_COMPILE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&capture.json()).unwrap()).unwrap();
@@ -169,6 +165,11 @@ fn all_shader_compilation_times_and_entry_coverage() {
                     | "pick_exact_candidates"
                     | "pick_reduce_candidates"
                     | "pick_histogram_bin"
+                    | "pick_category_bar"
+                    | "pick_box_plot"
+                    | "pick_range_bar"
+                    | "pick_violin"
+                    | "pick_value_labels"
                     | "scan_block"
             )
         ) {
