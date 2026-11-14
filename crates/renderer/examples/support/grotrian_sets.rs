@@ -203,7 +203,7 @@ fn themed(
     mut series: Vec<SeriesConfig>,
     theme: &Theme,
 ) -> Result<(Chart, Vec<SeriesConfig>)> {
-    c.apply_theme(theme, &mut series, SubplotScope::All)?;
+    c.apply_custom_theme(theme, &mut series, SubplotScope::All)?;
     Ok((c, series))
 }
 

@@ -568,19 +568,22 @@ fn the_radial_chart_takes_its_part() {
     );
 }
 
-// Every kind lists `default` first, every listed name is a theme of that
-// kind, and other names are none.
+// Every kind lists the families first, then `default`; every listed name
+// is a theme of that kind, and other names are none.
 #[test]
 fn the_built_in_themes_have_names() {
+    let families = ThemeFamily::NAMES.len();
     for kind in ChartKind::ALL {
         let names = Theme::names(kind);
-        assert_eq!(names.first(), Some(&"default"), "{kind}");
+        assert_eq!(names[..families], *ThemeFamily::NAMES, "{kind}");
+        assert_eq!(names[families], "default", "{kind}");
         for name in names {
             assert_eq!(named(kind, name).kind, kind, "{kind} {name}");
         }
         assert!(Theme::named(kind, "neon").is_none());
     }
-    assert_eq!(RadialTheme::names().first(), Some(&"default"));
+    assert_eq!(RadialTheme::names()[..families], *ThemeFamily::NAMES);
+    assert_eq!(RadialTheme::names()[families], "default");
     assert!(RadialTheme::named("neon").is_none());
 }
 
@@ -1727,5 +1730,596 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
         );
         assert_eq!(chart.style.material, theme.material, "{name}");
         assert_eq!(chart.validate(), Ok(()), "{name}");
+    }
+}
+
+// --- Theme families (#295) ---
+
+/// The draw styles a test renderer draws: Precise draws everything, the
+/// rest nothing, so a theme in another style is refused for any series.
+fn precise_only(style: &crate::config::DrawStyle, _: &DataRenderType) -> bool {
+    *style == crate::config::DrawStyle::Precise
+}
+
+/// A dashboard whose charts are of four kinds: a line chart, then a
+/// scatter, a heatmap and a histogram subplot, the last with a colourbar,
+/// and a subplot without series yet.
+fn dashboard() -> (Config, Vec<SeriesConfig>) {
+    let mut config = Config::default();
+    config.chart_title.text = RichText::plain("Dashboard", Color::BLACK, 28.0, "");
+    let ids = ["s0", "s1", "s2", ""];
+    for (index, id) in ids.into_iter().enumerate() {
+        let mut subplot = Subplot::default();
+        subplot.config.chart_area = ChartArea(Rect {
+            x: 950,
+            y: 20 + 200 * index as u32,
+            width: 300,
+            height: 180,
+        });
+        if !id.is_empty() {
+            subplot.series.push(id.into());
+        }
+        config.subplots.push(subplot);
+    }
+    config.subplots[2].config.colorbar = Some(crate::defaults::color_bar_options());
+    let series = vec![
+        SeriesConfig::line("a", "x", "y").label("first"),
+        SeriesConfig::scatter("s0", "x", "y"),
+        SeriesConfig::heatmap("s1", "x", "y", grid("z")),
+        SeriesConfig::histogram("s2", "edges", "counts"),
+    ];
+    (config, series)
+}
+
+// Every family has a member for every kind and for the radial chart: a
+// Precise theme of that kind, which the family's name looks up too, and
+// each family's member differs from the others'.
+#[test]
+fn every_family_has_a_member_for_every_kind() {
+    for (place, family) in ThemeFamily::ALL.into_iter().enumerate() {
+        assert_eq!(ThemeFamily::NAMES[place], family.name());
+        assert_eq!(ThemeFamily::named(family.name()), Some(family));
+        for kind in ChartKind::ALL {
+            let member = family.theme(kind);
+            assert_eq!(member.kind, kind, "{family} {kind}");
+            assert_eq!(
+                member.chrome.draw_style,
+                crate::config::DrawStyle::Precise,
+                "{family} {kind}"
+            );
+            assert!(!member.series.palette.is_empty(), "{family} {kind}");
+            assert_eq!(named(kind, family.name()), member, "{family} {kind}");
+            for other in ThemeFamily::ALL
+                .into_iter()
+                .filter(|&other| other != family)
+            {
+                assert_ne!(other.theme(kind), member, "{family} {other} {kind}");
+            }
+        }
+        assert_eq!(RadialTheme::named(family.name()), Some(family.radial()));
+        assert!(!family.radial().palette.is_empty(), "{family}");
+    }
+    assert_eq!(ThemeFamily::named("neon"), None);
+    // A family's chrome is one look: every member of a family with a
+    // background of its own paints it, the gallery's leave the paper
+    // white.
+    for kind in ChartKind::ALL {
+        assert_eq!(
+            ThemeFamily::Gallery.theme(kind).chrome.background,
+            None,
+            "{kind}"
+        );
+        for family in [
+            ThemeFamily::CoolSlate,
+            ThemeFamily::Midnight,
+            ThemeFamily::WarmPaper,
+        ] {
+            assert!(
+                family.theme(kind).chrome.background.is_some(),
+                "{family} {kind}"
+            );
+        }
+    }
+}
+
+// The #291 themes whose chrome is a family's are that family's members.
+#[test]
+fn the_kind_themes_of_a_family_s_chrome_are_its_members() {
+    let reused = [
+        (ThemeFamily::Gallery, ChartKind::CategoryBars, "document"),
+        (ThemeFamily::Gallery, ChartKind::Distribution, "document"),
+        (ThemeFamily::Gallery, ChartKind::Radar, "document"),
+        (ThemeFamily::Gallery, ChartKind::EnergyLevels, "grotrian"),
+        (
+            ThemeFamily::WarmPaper,
+            ChartKind::Probability,
+            "warm-neutral",
+        ),
+        (ThemeFamily::WarmPaper, ChartKind::RangeBars, "warm-neutral"),
+        (ThemeFamily::WarmPaper, ChartKind::Field, "warm-neutral"),
+        (ThemeFamily::WarmPaper, ChartKind::Surface3d, "warm-terrain"),
+        (ThemeFamily::WarmPaper, ChartKind::Feynman, "parchment"),
+    ];
+    for (family, kind, name) in reused {
+        assert_eq!(
+            family.theme(kind),
+            named(kind, name),
+            "{family} {kind} {name}"
+        );
+    }
+    let radial = [
+        (ThemeFamily::Gallery, "ceramic"),
+        (ThemeFamily::Midnight, "portfolio"),
+        (ThemeFamily::WarmPaper, "pop-art"),
+    ];
+    for (family, name) in radial {
+        assert_eq!(Some(family.radial()), RadialTheme::named(name), "{family}");
+    }
+}
+
+// On a document of one kind, a family name writes exactly what its member
+// writes through `Theme::apply`.
+#[test]
+fn a_family_name_applies_its_member_to_every_kind() {
+    let ink = Color::BLACK;
+    let mut polar = categorical();
+    polar.set_polar(Some(crate::defaults::polar_options()));
+    let mut ternary = Config::default();
+    ternary.set_ternary(Some(crate::defaults::ternary_options()));
+    let mut parallel = Config::default();
+    let mut options = crate::defaults::parallel_options();
+    options.axes = vec![
+        crate::parallel::ParallelAxis::new(0.0, 1.0),
+        crate::parallel::ParallelAxis::new(0.0, 1.0),
+    ];
+    parallel.set_parallel(Some(options));
+    let mut probability = Config::default();
+    probability.left_y.scale = AxisScale::Probability(ProbabilityScale::Normal);
+    let cases: Vec<(Config, Vec<SeriesConfig>)> = vec![
+        rich_chart(),
+        (
+            Config::default(),
+            vec![SeriesConfig::scatter("a", "x", "y")],
+        ),
+        (
+            Config::default(),
+            vec![SeriesConfig::scatter_line("a", "x", "y").y_errors("e")],
+        ),
+        (Config::default(), vec![SeriesConfig::stem("a", "x", "y")]),
+        (
+            Config::default(),
+            vec![SeriesConfig::histogram("a", "edges", "counts")],
+        ),
+        (
+            categorical(),
+            vec![SeriesConfig::category_bars("a", "i", "v", ink)],
+        ),
+        (
+            categorical(),
+            vec![SeriesConfig::box_plot("a", "i", "records", ink)],
+        ),
+        (
+            categorical(),
+            vec![SeriesConfig::range_bars("a", "i", "start", "end", ink)],
+        ),
+        (
+            Config::default(),
+            vec![SeriesConfig::heatmap("a", "x", "y", grid("z"))],
+        ),
+        (
+            Config::default(),
+            vec![SeriesConfig::vectors("a", "x", "y", "u", "v")],
+        ),
+        (polar.clone(), vec![SeriesConfig::line("a", "x", "y")]),
+        (polar, vec![SeriesConfig::radar("a", "i", "v", ink)]),
+        (ternary, vec![SeriesConfig::ternary("a", "p", "q", "r")]),
+        (parallel, vec![SeriesConfig::parallel("a", ["p", "q"])]),
+        (
+            probability,
+            vec![
+                SeriesConfig::scatter("a", "x", "p"),
+                SeriesConfig::line("b", "x", "p"),
+            ],
+        ),
+    ];
+    let mut seen = Vec::new();
+    for (config, series) in cases {
+        let kind = ChartKind::of(&config, &series, LayerRef::Base).unwrap();
+        seen.push(kind);
+        for family in ThemeFamily::ALL {
+            let (mut by_name, mut named_series) = (config.clone(), series.clone());
+            Theme::apply_named(
+                family.name(),
+                &mut by_name,
+                &mut named_series,
+                SubplotScope::All,
+                precise_only,
+            )
+            .unwrap_or_else(|error| panic!("{family} {kind}: {error}"));
+            let (mut by_member, mut member_series) = (config.clone(), series.clone());
+            family
+                .theme(kind)
+                .apply(&mut by_member, &mut member_series, SubplotScope::All)
+                .unwrap();
+            assert_eq!(by_name, by_member, "{family} {kind}");
+            assert_eq!(named_series, member_series, "{family} {kind}");
+            valid_on(&by_name, &named_series);
+        }
+    }
+    assert!(seen.len() >= 14, "{seen:?}");
+}
+
+// A family themes a dashboard whose subplots mix kinds in one call: the
+// base chart and every subplot take their own kind's member, a subplot
+// without series the line member, and every series its chart's member.
+#[test]
+fn a_family_themes_subplots_of_mixed_kinds_each_in_its_kind_s_member() {
+    for family in ThemeFamily::ALL {
+        let (mut config, mut series) = dashboard();
+        Theme::apply_named(
+            family.name(),
+            &mut config,
+            &mut series,
+            SubplotScope::All,
+            precise_only,
+        )
+        .unwrap();
+        let kinds = [
+            ChartKind::Scatter,
+            ChartKind::Field,
+            ChartKind::Histogram,
+            ChartKind::Line,
+        ];
+        let line = family.theme(ChartKind::Line);
+        assert_eq!(config.background, line.chrome.background, "{family}");
+        assert_eq!(config.chart_title.text.color, line.chrome.ink, "{family}");
+        assert_eq!(
+            config.chart_title.text.font_size, line.chrome.title_size,
+            "{family}"
+        );
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let member = family.theme(kind);
+            let chart = &config.subplots[index].config;
+            let at = format!("{family}: subplot {index} ({kind})");
+            assert_eq!(chart.background, member.chrome.background, "{at}");
+            assert_eq!(chart.chart_title.text.color, member.chrome.ink, "{at}");
+            assert_eq!(
+                chart.grid.show_major_x, member.chrome.grid.major_x.show,
+                "{at}"
+            );
+            assert_eq!(
+                chart.grid.show_major_y, member.chrome.grid.major_y.show,
+                "{at}"
+            );
+            assert_eq!(
+                chart.bottom_x.label_style.font_size, member.chrome.tick_label_size,
+                "{at}"
+            );
+        }
+        // Each series in its chart's member, coloured as the series of its
+        // index in the document.
+        let scatter = family.theme(ChartKind::Scatter);
+        let DataRenderType::Xy(xy) = &series[1].render_type else {
+            panic!("an x-y series");
+        };
+        let marker = xy.scatter.as_ref().unwrap();
+        assert_eq!(
+            marker.point_size, scatter.series.lines.marker_size,
+            "{family}"
+        );
+        let histogram = family.theme(ChartKind::Histogram);
+        let DataRenderType::Histogram { bar } = &series[3].render_type else {
+            panic!("a histogram");
+        };
+        assert_eq!(
+            bar.border_color, histogram.series.bars.border_color,
+            "{family}"
+        );
+        assert_eq!(
+            bar.border_width, histogram.series.bars.border_width,
+            "{family}"
+        );
+        assert_eq!(
+            line_color(&series[0]),
+            line.series.palette[0],
+            "{family}: the base chart's line"
+        );
+        valid_on(&config, &series);
+    }
+}
+
+// Each subplot's colourbar takes its own member's map: the dashboard's
+// histogram subplot holds a colourbar, which takes the histogram member's
+// map, while the base chart takes the line member's look.
+#[test]
+fn a_family_writes_each_chart_s_colourbar_from_its_member() {
+    for family in ThemeFamily::ALL {
+        let (mut config, mut series) = dashboard();
+        Theme::apply_named(
+            family.name(),
+            &mut config,
+            &mut series,
+            SubplotScope::All,
+            precise_only,
+        )
+        .unwrap();
+        let bar = config.subplots[2].config.colorbar.as_ref().unwrap();
+        let member = family.theme(ChartKind::Histogram);
+        assert_eq!(bar.colormap, member.series.fields.colormap, "{family}");
+        assert_eq!(bar.border_color, member.chrome.colorbar.border, "{family}");
+    }
+}
+
+// The subplot scope chooses the charts as it does for one theme: the base
+// chart always, the subplots it names, and nothing else.
+#[test]
+fn a_family_keeps_the_subplots_out_of_scope() {
+    let (declared, declared_series) = dashboard();
+    let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    Theme::apply_named(
+        "midnight",
+        &mut config,
+        &mut series,
+        SubplotScope::Only(&[2]),
+        precise_only,
+    )
+    .unwrap();
+    let midnight = ThemeFamily::Midnight;
+    assert_eq!(
+        config.background,
+        midnight.theme(ChartKind::Line).chrome.background
+    );
+    assert_eq!(config.subplots[0], declared.subplots[0]);
+    assert_eq!(config.subplots[1], declared.subplots[1]);
+    assert_eq!(config.subplots[3], declared.subplots[3]);
+    assert_eq!(
+        config.subplots[2].config.background,
+        midnight.theme(ChartKind::Histogram).chrome.background
+    );
+    assert_eq!(series[1], declared_series[1]);
+    assert_eq!(series[2], declared_series[2]);
+    assert_ne!(series[3], declared_series[3]);
+}
+
+// A kind's own name applies to the charts of a kind that has it and is
+// refused, changing nothing, by a chart of another kind in scope; out of
+// scope, that chart does not matter. A name several kinds have gives each
+// chart its own kind's theme of that name.
+#[test]
+fn a_kind_s_own_name_refuses_other_kinds() {
+    let (declared, declared_series) = dashboard();
+    let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    assert_eq!(
+        Theme::apply_named(
+            "editorial",
+            &mut config,
+            &mut series,
+            SubplotScope::All,
+            |_, _| true
+        ),
+        Err(ThemeError::Kind {
+            theme: ChartKind::Line,
+            chart: ChartKind::Scatter,
+            layer: LayerRef::Subplot(0),
+        })
+    );
+    assert_eq!((&config, &series), (&declared, &declared_series));
+    // The base chart and the empty subplot are line charts.
+    Theme::apply_named(
+        "editorial",
+        &mut config,
+        &mut series,
+        SubplotScope::Only(&[3]),
+        |_, _| true,
+    )
+    .unwrap();
+    let editorial = named(ChartKind::Line, "editorial");
+    assert_eq!(config.background, editorial.chrome.background);
+    assert_eq!(
+        config.subplots[3].config.background,
+        editorial.chrome.background
+    );
+    assert_eq!(config.subplots[0], declared.subplots[0]);
+
+    // `document` is a category-bar theme and a box plot theme.
+    let mut config = categorical();
+    let mut boxes = Subplot::default();
+    boxes.series.push("b".into());
+    boxes.config = categorical();
+    config.subplots.push(boxes);
+    let mut series = vec![
+        SeriesConfig::category_bars("a", "i", "v", Color::BLACK),
+        SeriesConfig::box_plot("b", "i", "records", Color::BLACK),
+    ];
+    Theme::apply_named(
+        "document",
+        &mut config,
+        &mut series,
+        SubplotScope::All,
+        precise_only,
+    )
+    .unwrap();
+    let DataRenderType::BoxPlot { style, .. } = &series[1].render_type else {
+        panic!("a box plot");
+    };
+    let document = named(ChartKind::Distribution, "document");
+    assert_eq!(style.outline_color, document.series.boxes.ink);
+    assert_eq!(
+        config.subplots[0].config.chart_title.text.color,
+        document.chrome.ink
+    );
+}
+
+// A name no kind has is refused with the names the chart takes, the
+// families first, and changes nothing; a chart without a kind lists the
+// families.
+#[test]
+fn an_unknown_name_lists_the_names_the_chart_takes() {
+    let (declared, declared_series) = dashboard();
+    let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    let error = Theme::apply_named(
+        "neon",
+        &mut config,
+        &mut series,
+        SubplotScope::All,
+        precise_only,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ThemeError::Unknown {
+            name: "neon".into(),
+            kind: Some(ChartKind::Line),
+            names: Theme::names(ChartKind::Line),
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("gallery, cool-slate, midnight, warm-paper, default"),
+        "{error}"
+    );
+    assert_eq!((&config, &series), (&declared, &declared_series));
+
+    let mut empty = Config::default();
+    let error = Theme::apply_named("neon", &mut empty, &mut [], SubplotScope::All, precise_only)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ThemeError::Unknown {
+            name: "neon".into(),
+            kind: None,
+            names: ThemeFamily::NAMES,
+        }
+    );
+    assert_eq!(empty, Config::default());
+}
+
+// A chart that draws no series yet takes a family's line member, and a
+// kind's own name as the first kind that has it.
+#[test]
+fn a_chart_without_series_takes_any_name() {
+    for family in ThemeFamily::ALL {
+        let mut config = Config::default();
+        Theme::apply_named(
+            family.name(),
+            &mut config,
+            &mut [],
+            SubplotScope::All,
+            precise_only,
+        )
+        .unwrap();
+        let mut expected = Config::default();
+        family
+            .theme(ChartKind::Line)
+            .apply(&mut expected, &mut [], SubplotScope::All)
+            .unwrap();
+        assert_eq!(config, expected, "{family}");
+    }
+    let mut config = Config::default();
+    Theme::apply_named(
+        "parchment",
+        &mut config,
+        &mut [],
+        SubplotScope::All,
+        |_, _| true,
+    )
+    .unwrap();
+    assert_eq!(
+        config.background,
+        named(ChartKind::Feynman, "parchment").chrome.background
+    );
+}
+
+// A theme whose draw style cannot draw a series in scope is refused before
+// any chart is written; the families' Precise members never are.
+#[test]
+fn a_draw_style_refusal_changes_nothing() {
+    let (declared, declared_series) = dashboard();
+    let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    assert_eq!(
+        Theme::apply_named(
+            "milkyway",
+            &mut config,
+            &mut series,
+            SubplotScope::None,
+            precise_only
+        ),
+        Err(ThemeError::DrawStyle {
+            series_id: "a".into()
+        })
+    );
+    assert_eq!((&config, &series), (&declared, &declared_series));
+    // The refusal of a subplot's series leaves the base chart alone too.
+    let refuse_histograms = |_: &crate::config::DrawStyle, render_type: &DataRenderType| {
+        !matches!(render_type, DataRenderType::Histogram { .. })
+    };
+    assert_eq!(
+        Theme::apply_named(
+            "gallery",
+            &mut config,
+            &mut series,
+            SubplotScope::All,
+            refuse_histograms
+        ),
+        Err(ThemeError::DrawStyle {
+            series_id: "s2".into()
+        })
+    );
+    assert_eq!((&config, &series), (&declared, &declared_series));
+}
+
+// Applying a family twice is applying it once.
+#[test]
+fn applying_a_family_again_changes_nothing() {
+    for family in ThemeFamily::ALL {
+        let (mut config, mut series) = dashboard();
+        for _ in 0..2 {
+            Theme::apply_named(
+                family.name(),
+                &mut config,
+                &mut series,
+                SubplotScope::All,
+                precise_only,
+            )
+            .unwrap();
+        }
+        let (mut once, mut once_series) = dashboard();
+        Theme::apply_named(
+            family.name(),
+            &mut once,
+            &mut once_series,
+            SubplotScope::All,
+            precise_only,
+        )
+        .unwrap();
+        assert_eq!(config, once, "{family}");
+        assert_eq!(series, once_series, "{family}");
+    }
+}
+
+// A document themed by a family is plain values: it serializes, parses
+// back to itself and serializes to the same JSON.
+#[cfg(feature = "serde")]
+#[test]
+fn a_family_themed_document_round_trips_through_json() {
+    for family in ThemeFamily::ALL {
+        let (mut config, mut series) = dashboard();
+        Theme::apply_named(
+            family.name(),
+            &mut config,
+            &mut series,
+            SubplotScope::All,
+            precise_only,
+        )
+        .unwrap();
+        let json = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config, "{family}");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json, "{family}");
+        let json = serde_json::to_string(&series).unwrap();
+        let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, series, "{family}");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json, "{family}");
     }
 }

@@ -80,7 +80,7 @@ fn save(
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
     // The theme last: it fits the layout to the axes' final labels.
-    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, &mut series, SubplotScope::All)?;
     // The grid marks the value axis, which runs along x for horizontal
     // bars.
     let grid = &mut chart.config_mut().grid;

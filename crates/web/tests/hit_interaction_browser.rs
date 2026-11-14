@@ -670,4 +670,59 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         chart_config(&chart).subplots[0].config.background,
         dark.chrome.background
     );
+    // A family (#295) themes a chart whose subplot is of another kind in
+    // one call: the line chart takes the family's line member, the scatter
+    // inset its scatter member. A kind's own name refuses the inset and
+    // changes nothing.
+    use renderer::theme::ThemeFamily;
+    let mut series: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&chart.get_series().expect("get_series")).expect("series json");
+    series.push(renderer::SeriesConfig::scatter("dots", "x", "y"));
+    chart
+        .set_series(&serde_json::to_string(&series).unwrap())
+        .expect("add a scatter series");
+    let mut config = chart_config(&chart);
+    config.subplots[0].series = vec!["dots".into()];
+    chart
+        .set_config(&serde_json::to_string(&config).unwrap())
+        .expect("draw the scatter series in the inset");
+    let config = chart_config(&chart);
+    let base = ChartKind::of(&config, &series, renderer::LayerRef::Base);
+    let inset = ChartKind::of(&config, &series, renderer::LayerRef::Subplot(0));
+    assert_eq!(
+        (base, inset),
+        (Some(ChartKind::Line), Some(ChartKind::Scatter))
+    );
+    let names: Vec<String> =
+        serde_json::from_str(&chart.theme_names().expect("theme names")).expect("a JSON array");
+    assert_eq!(names[..ThemeFamily::NAMES.len()], *ThemeFamily::NAMES);
+    let before = chart_config(&chart);
+    assert!(chart.apply_theme("editorial", "all").is_err());
+    assert_eq!(chart_config(&chart), before);
+    chart
+        .apply_theme("warm-paper", "all")
+        .expect("a family over both kinds");
+    let themed = chart_config(&chart);
+    let line = ThemeFamily::WarmPaper.theme(ChartKind::Line);
+    let scatter = ThemeFamily::WarmPaper.theme(ChartKind::Scatter);
+    assert_eq!(themed.background, line.chrome.background);
+    assert_eq!(themed.chart_title.text.color, line.chrome.ink);
+    assert_eq!(
+        themed.subplots[0].config.background,
+        scatter.chrome.background
+    );
+    assert_eq!(
+        themed.subplots[0].config.grid.show_major_x,
+        scatter.chrome.grid.major_x.show
+    );
+    let styled: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&chart.get_series().expect("get_series")).expect("series json");
+    let dots = styled.iter().find(|item| item.series_id == "dots").unwrap();
+    let renderer::DataRenderType::Xy(xy) = &dots.render_type else {
+        panic!("an x-y series");
+    };
+    assert_eq!(
+        xy.scatter.as_ref().map(|marker| marker.point_size),
+        Some(scatter.series.lines.marker_size)
+    );
 }

@@ -904,17 +904,57 @@ the document once. It is a value, not a name the document stores: after it is
 applied, the document holds plain values and stays the single source of truth.
 
 A theme belongs to one kind of chart (`ChartKind`): a dashboard look is made
-for line charts, a parchment card for Feynman diagrams. A theme applies only
-to a chart of its kind.
+for line charts, a parchment card for Feynman diagrams. A theme family
+(`ThemeFamily`) is one look with a member theme for every kind, so one name
+themes any chart, and a dashboard whose subplots mix kinds, in one call:
 
 ```rust
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::SubplotScope;
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-let theme = Theme::named(ChartKind::Line, "midnight").ok_or("no such theme")?;
-chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // refits the layout too
+chart.apply_theme("midnight", &mut series, SubplotScope::All)?;  // refits the layout too
 ```
+
+- **Families.** Four families, each with a member for all 19 kinds and for
+  the radial chart. Every member draws in `DrawStyle::Precise`.
+
+  | Family (`ThemeFamily`) | Look |
+  |---|---|
+  | `gallery` (`Gallery`) | White paper, navy ink, a slate frame and a pale grid: the gallery's look |
+  | `cool-slate` (`CoolSlate`) | A light dashboard: slate ink on a cool off-white |
+  | `midnight` (`Midnight`) | A dark screen: pale ink on midnight navy |
+  | `warm-paper` (`WarmPaper`) | Warm cream paper and brown ink, for reports and print |
+
+  Where a kind's own theme already has a family's chrome it is that
+  family's member: `document` is the `gallery` member for category bars,
+  distributions and radar charts, `grotrian` for energy levels; `warm-neutral`
+  is the `warm-paper` member for probability paper, range bars and fields,
+  `warm-terrain` for 3D charts and `parchment` for Feynman diagrams; a theme
+  a kind already had under a family's name (the line `cool-slate`, the
+  range-bar `midnight`) is that family's member. The radial members are `ceramic` (`gallery`),
+  `portfolio` (`midnight`), `pop-art` (`warm-paper`) and a flat dashboard
+  donut for `cool-slate`. `ThemeFamily::theme(kind)` and
+  `ThemeFamily::radial()` hand out a member, `ThemeFamily::named(name)` and
+  `ThemeFamily::NAMES` look the families up.
+- **One call by name.** `Chart::apply_theme(name, &mut series, scope)` reads
+  each chart in scope, the base chart and every subplot, with
+  `ChartKind::of` and applies the theme `name` of that chart's kind
+  (`Theme::apply_named` on a bare `Config`):
+  - a family name gives each chart its own kind's member;
+  - a kind's own name (`editorial`, `milkyway`, `constellation`, `revenue`,
+    `deep-space`, `topographic`, `ocean`, `warm-terrain`, `warm-diverging`,
+    `grotrian`, `parchment`, `document`, `warm-neutral`) applies to charts
+    of a kind that has it; a chart of another kind in scope refuses it
+    (`ThemeError::Kind`). `document` is a category-bar, a distribution and a
+    radar theme, so each of those charts takes its own kind's `document`;
+  - a chart that draws no series yet takes the name as the first kind that
+    has it (`ChartKind::ALL`): a family's line member;
+  - any other name is refused (`ThemeError::Unknown`).
+- **Custom themes.** `Chart::apply_custom_theme(&theme, &mut series, scope)`
+  applies a theme the host built or edited, made for one kind: a family
+  member (`ThemeFamily::Midnight.theme(ChartKind::Line)`) or a kind's theme
+  (`Theme::named(kind, name)`) with any field changed.
 
 - **Kinds.** `ChartKind::of(&config, &series, layer)` reads the kind of the
   base chart or of a subplot from its coordinates, its axes and the series
@@ -930,10 +970,13 @@ chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // refits the layou
   bars, and wind arrows over a speed field are a vector field.
   `ChartKind::name()` is the kind's name in the table below, in error
   messages and in the browser API.
-- **The catalogue.** `Theme::names(kind)` lists a kind's themes and
-  `Theme::named(kind, name)` returns one, or `None`. Every kind has `default`,
-  the documented default look: applying it to a default document changes
-  nothing. Every other theme is the look of a gallery image:
+- **The catalogue.** `Theme::names(kind)` lists the names a kind takes, the
+  four families first, then `default` and the kind's own themes, and
+  `Theme::named(kind, name)` returns one, or `None`. Every kind has
+  `default`, the documented default look: applying it to a default document
+  changes nothing. The kind's own themes and the family members below are
+  the looks of gallery images (a family member of a kind not listed here is
+  designed in the family's chrome for that kind):
 
   | Kind (`ChartKind`) | Theme | Look | Gallery image |
   |---|---|---|---|
@@ -981,17 +1024,25 @@ chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // refits the layou
   Every field of a theme is public, so a host edits a copy before applying
   it: `theme.chrome.title_size = 30.0`, another `theme.series.palette`, a
   different `theme.chrome.draw_style`.
-- **Refusals.** `Chart::apply_theme` returns `Result<(), ThemeError>` and a
-  refusal changes nothing, neither the chart nor its series:
+- **Refusals.** `Chart::apply_theme` and `Chart::apply_custom_theme` return
+  `Result<(), ThemeError>`. Every chart in scope is checked before any is
+  written, so a refusal changes nothing, neither the chart nor its series:
   - `ThemeError::Kind { theme, chart, layer }`: the base chart or a subplot in
-    scope (`layer`) is of another kind than the theme. Apply the theme with a
-    `SubplotScope` that leaves that subplot out, and give the subplot a theme
-    of its own kind.
+    scope (`layer`) is of a kind without the name (`theme` is the first kind
+    that has it), or of another kind than a custom theme. Apply the theme
+    with a `SubplotScope` that leaves that subplot out, and give the subplot
+    a theme of its own kind, or use a family.
+  - `ThemeError::Unknown { name, kind, names }`: no kind has the name.
+    `names` lists what the chart (`kind`, the first chart in scope) takes:
+    the families, then `default` and the kind's own themes; the families
+    alone for a chart without series.
   - `ThemeError::DrawStyle { series_id }`: the theme's draw style cannot draw
     a series in scope (`renderer::draw_style_supports`), which the renderer
     would drop: `constellation` draws a line only with its markers. A theme
-    in `DrawStyle::Precise` draws everything. The model cannot tell, so
-    `Chart::apply_theme` and the browser wrappers check it
+    in `DrawStyle::Precise`, every family member among them, draws
+    everything. The model cannot tell, so `Theme::apply_named` takes the
+    renderer's answer as an argument, and `Chart::apply_custom_theme` and
+    the browser wrappers check it
     (`renderer::helpers::check_theme_draw_style`) before `Theme::apply`.
 - **What a theme writes.** The chrome (`ChromeTheme`): the chart and plot
   fills, the draw style, the axis frame (`AxisPreset`, and `ticks: false` for
@@ -1027,21 +1078,27 @@ chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // refits the layou
   overlay's own axes take the frame of the chart's bottom and left axes,
   since they are data axes too. `SubplotScope` chooses the subplots: `None`,
   `All` or `Only(&[indices])`; a series drawn in a subplot outside the scope
-  keeps its look.
-- **The parts on their own.** `Chart::apply_theme` refits the layout to the
-  new text sizes (`fit_layout`). `theme.apply(&mut config, &mut series, scope)`
-  works on a bare `Config`, returns the same `Result` without the draw-style
-  check, and leaves the layout to the host. `theme.apply_chrome(&mut config,
+  keeps its look. By name, each subplot in scope takes the theme of its own
+  kind; a custom theme applies to subplots of its kind only.
+- **The parts on their own.** `Chart::apply_theme` and
+  `Chart::apply_custom_theme` refit the layout to the new text sizes
+  (`fit_layout`). On a bare `Config`, `Theme::apply_named(name, &mut config,
+  &mut series, scope, renderer::draw_style_supports)` applies a name and
+  `theme.apply(&mut config, &mut series, scope)` a theme, which returns the
+  same `Result` without the draw-style check; both leave the layout to the
+  host. `theme.apply_chrome(&mut config,
   &series, scope)` writes the chrome alone (the legend symbols follow
   `series`; pass `&[]` for a chart without series yet) and
   `theme.style_series(&mut series, index)` styles one series as the
   `index`-th of its chart.
 - **Radial charts.** The radial chart is a model of its own and has its own
-  themes: `RadialTheme::names()` and `RadialTheme::named(name)`, applied with
-  `theme.apply(&mut radial_chart)`.
+  themes: `RadialTheme::names()` (the families first, then `default` and the
+  radial themes) and `RadialTheme::named(name)`, which takes a family name
+  too, applied with `theme.apply(&mut radial_chart)`.
 
   | Theme | Look | Gallery image |
   |---|---|---|
+  | `cool-slate` | Matte teal, coral, violet, amber and blue slices seen from above with a narrow gap, slate text on a cool off-white | |
   | `ceramic` | Glazed ceramic slices from an oblique camera with rounded corners and a soft shadow on white | `gallery-donut.png` |
   | `sunburst` | Flat green, rust and violet groups, each ring a paler step of the one inside it | `gallery-sunburst.png` |
   | `pop-art` | Toon slices with a bold ink rim and separators, tilted on cream | `concept-pop-art.png` |
@@ -1891,16 +1948,52 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
 하나뿐인 원본(SSOT)으로 남는다.
 
 테마는 차트 종류(`ChartKind`) 하나에 속한다. 대시보드 모양은 선 차트용이고 양피지 카드는 파인만
-도형용이다. 테마는 자기 종류의 차트에만 적용된다.
+도형용이다. 테마 계열(`ThemeFamily`)은 모든 종류에 구성원 테마를 하나씩 둔 하나의 모양이다. 그래서
+이름 하나로 어떤 차트든, 서브플롯마다 종류가 다른 대시보드도 한 번의 호출로 꾸민다.
 
 ```rust
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::SubplotScope;
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-let theme = Theme::named(ChartKind::Line, "midnight").ok_or("no such theme")?;
-chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // 레이아웃도 다시 맞춘다
+chart.apply_theme("midnight", &mut series, SubplotScope::All)?;  // 레이아웃도 다시 맞춘다
 ```
+
+- **계열.** 계열은 네 가지이고, 각 계열은 19개 종류 모두와 원형 차트에 구성원을 하나씩 둔다.
+  구성원은 모두 `DrawStyle::Precise`로 그린다.
+
+  | 계열(`ThemeFamily`) | 모양 |
+  |---|---|
+  | `gallery`(`Gallery`) | 흰 종이, 남색 글자, 슬레이트색 틀, 옅은 격자. 갤러리의 모양 |
+  | `cool-slate`(`CoolSlate`) | 밝은 대시보드. 차가운 흰색 바탕에 슬레이트색 글자 |
+  | `midnight`(`Midnight`) | 어두운 화면. 짙은 남색 바탕에 옅은 글자 |
+  | `warm-paper`(`WarmPaper`) | 따뜻한 크림색 종이와 갈색 글자. 보고서와 인쇄용 |
+
+  종류마다 이미 있던 테마의 크롬이 계열의 크롬과 같으면 그 테마가 계열의 구성원이다.
+  `document`는 범주 막대, 분포, 레이더 차트의 `gallery` 구성원이고 `grotrian`은 에너지 준위의
+  `gallery` 구성원이다. `warm-neutral`은 확률지, 범위 막대, 필드의 `warm-paper` 구성원이고,
+  `warm-terrain`은 3D 차트의, `parchment`는 파인만 도형의 `warm-paper` 구성원이다. 종류가 이미
+  계열 이름으로 가지고 있던 테마(선 차트의 `cool-slate`, 범위 막대의 `midnight` 등)는 그 계열의
+  구성원이다. 원형 차트의 구성원은 `ceramic`(`gallery`), `portfolio`(`midnight`),
+  `pop-art`(`warm-paper`)이고, `cool-slate`에는 평평한 대시보드 도넛을 새로 두었다.
+  `ThemeFamily::theme(kind)`와 `ThemeFamily::radial()`은 구성원을 돌려주고,
+  `ThemeFamily::named(name)`과 `ThemeFamily::NAMES`로 계열을 찾는다.
+- **이름으로 한 번에 적용하기.** `Chart::apply_theme(name, &mut series, scope)`는 범위 안의 차트,
+  즉 기본 차트와 각 서브플롯의 종류를 `ChartKind::of`로 읽고 그 종류의 테마 `name`을
+  적용한다(`Config`에 바로 적용할 때는 `Theme::apply_named`).
+  - 계열 이름이면 차트마다 자기 종류의 구성원을 받는다.
+  - 종류 고유의 이름(`editorial`, `milkyway`, `constellation`, `revenue`, `deep-space`,
+    `topographic`, `ocean`, `warm-terrain`, `warm-diverging`, `grotrian`, `parchment`,
+    `document`, `warm-neutral`)은 그 이름을 가진 종류의 차트에만 적용된다. 범위 안에 다른
+    종류의 차트가 있으면 거부한다(`ThemeError::Kind`). `document`는 범주 막대, 분포, 레이더
+    테마이므로 그런 차트는 각자 자기 종류의 `document`를 받는다.
+  - 아직 시리즈를 그리지 않는 차트는 그 이름을 가진 첫 종류(`ChartKind::ALL` 순서)의 테마를
+    받는다. 계열이면 선 차트 구성원이다.
+  - 그 밖의 이름은 거부한다(`ThemeError::Unknown`).
+- **직접 만든 테마.** `Chart::apply_custom_theme(&theme, &mut series, scope)`는 호스트가 만들거나
+  고친 테마, 즉 한 종류에 속한 테마를 적용한다. 계열의 구성원
+  (`ThemeFamily::Midnight.theme(ChartKind::Line)`)이나 종류의 테마(`Theme::named(kind, name)`)의
+  필드를 바꿔서 쓴다.
 
 - **종류.** `ChartKind::of(&config, &series, layer)`는 기본 차트나 서브플롯의 종류를 좌표계와 축,
   그 차트와 오버레이에 그려지는 시리즈에서 읽는다. 아직 시리즈를 그리지 않는 차트는 종류가
@@ -1912,10 +2005,11 @@ chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // 레이아웃도 
   시리즈가 없으면 `Scatter`, 있으면 `Line`이다. 그래서 이동 평균선이 있는 캔들 차트는 범위
   막대이고, 풍속 필드 위의 바람 화살표는 벡터 필드다. `ChartKind::name()`은 아래 표와 오류
   메시지, 브라우저 API에 쓰이는 종류 이름이다.
-- **카탈로그.** `Theme::names(kind)`는 그 종류의 테마 이름을 돌려주고, `Theme::named(kind, name)`은
-  테마 하나를 돌려주거나 `None`을 돌려준다. 모든 종류에 `default`가 있다. 문서에 적힌 기본
-  모양이며, 기본 문서에 적용하면 아무것도 바뀌지 않는다. 나머지 테마는 모두 갤러리 이미지의
-  모양이다.
+- **카탈로그.** `Theme::names(kind)`는 그 종류가 받는 이름을 돌려준다. 네 계열이 먼저 오고, 이어서
+  `default`와 그 종류 고유의 테마가 온다. `Theme::named(kind, name)`은 테마 하나를 돌려주거나
+  `None`을 돌려준다. 모든 종류에 `default`가 있다. 문서에 적힌 기본 모양이며, 기본 문서에 적용하면
+  아무것도 바뀌지 않는다. 종류 고유의 테마와 아래 표의 계열 구성원은 갤러리 이미지의 모양이다.
+  표에 없는 종류의 계열 구성원은 그 계열의 크롬에 맞춰 그 종류용으로 새로 만든 것이다.
 
   | 종류(`ChartKind`) | 테마 | 모양 | 갤러리 이미지 |
   |---|---|---|---|
@@ -1963,16 +2057,22 @@ chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // 레이아웃도 
   테마의 모든 필드가 공개되어 있어서 복사본을 고친 뒤 적용해도 된다.
   `theme.chrome.title_size = 30.0`처럼 값을 바꾸거나, `theme.series.palette`나
   `theme.chrome.draw_style`을 다른 것으로 바꾼다.
-- **거부.** `Chart::apply_theme`은 `Result<(), ThemeError>`를 돌려주며, 거부되면 차트도 시리즈도
-  바뀌지 않는다.
-  - `ThemeError::Kind { theme, chart, layer }`: 기본 차트나 범위 안의 서브플롯(`layer`)이 테마와
-    다른 종류다. 그 서브플롯을 뺀 `SubplotScope`로 테마를 적용하고, 그 서브플롯에는 자기 종류의
-    테마를 준다.
+- **거부.** `Chart::apply_theme`과 `Chart::apply_custom_theme`은 `Result<(), ThemeError>`를
+  돌려준다. 범위 안의 차트를 모두 검사한 뒤에야 쓰기 시작하므로, 거부되면 차트도 시리즈도 바뀌지
+  않는다.
+  - `ThemeError::Kind { theme, chart, layer }`: 기본 차트나 범위 안의 서브플롯(`layer`)이 그 이름이
+    없는 종류이거나(`theme`은 그 이름을 가진 첫 종류다), 직접 만든 테마와 다른 종류다. 그
+    서브플롯을 뺀 `SubplotScope`로 테마를 적용하고 그 서브플롯에는 자기 종류의 테마를 주거나,
+    계열을 쓴다.
+  - `ThemeError::Unknown { name, kind, names }`: 그 이름을 가진 종류가 없다. `names`는 그
+    차트(`kind`, 범위 안의 첫 차트)가 받는 이름이다. 계열이 먼저 오고 `default`와 그 종류 고유의
+    테마가 이어진다. 시리즈가 없는 차트에는 계열만 나열한다.
   - `ThemeError::DrawStyle { series_id }`: 테마의 그리기 스타일이 범위 안의 시리즈를 그리지
     못한다(`renderer::draw_style_supports`). 그대로 두면 렌더러가 그 시리즈를 빼고 그린다.
     `constellation`은 선을 마커와 함께일 때만 그린다. `DrawStyle::Precise`인 테마는 모든 시리즈를
-    그린다. 모델은 이를 알 수 없으므로 `Chart::apply_theme`과 브라우저 래퍼가 `Theme::apply`
-    전에 검사한다(`renderer::helpers::check_theme_draw_style`).
+    그리며, 계열 구성원은 모두 이 스타일이다. 모델은 이를 알 수 없으므로 `Theme::apply_named`는
+    렌더러의 답을 인자로 받고, `Chart::apply_custom_theme`과 브라우저 래퍼는 `Theme::apply` 전에
+    검사한다(`renderer::helpers::check_theme_draw_style`).
 - **테마가 쓰는 것.** 크롬(`ChromeTheme`)을 쓴다. 차트와 플롯 배경, 그리기 스타일, 축
   틀(`AxisPreset`, 눈금 없는 틀은 `ticks: false`), 축·눈금 라벨·제목·범례의 색과 글꼴과 크기,
   격자, 범례 상자와 안쪽 여백, 색상 막대(`ColorbarTheme`: 테두리, 두께, 길이, 간격, 눈금, 글자
@@ -1996,18 +2096,24 @@ chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // 레이아웃도 
   색상 막대를 먼저 넣는다. `style_series`만으로는 등고선의 준위별 색이 바뀌지 않는다.
 - **오버레이와 서브플롯.** 오버레이는 차트와 함께 테마를 받는다. 오버레이 자기 축도 데이터 축이라
   차트의 아래·왼쪽 축과 같은 틀을 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
-  `Only(&[인덱스])` 중 하나이고, 범위 밖 서브플롯에 그려지는 시리즈는 모양을 유지한다.
-- **부분만 적용하기.** `Chart::apply_theme`은 바뀐 글자 크기에 맞춰 레이아웃을 다시
-  맞춘다(`fit_layout`). `theme.apply(&mut config, &mut series, scope)`는 `Config`에 바로 적용하며,
-  그리기 스타일 검사 없이 같은 `Result`를 돌려주고 레이아웃은 호스트에게 맡긴다.
+  `Only(&[인덱스])` 중 하나이고, 범위 밖 서브플롯에 그려지는 시리즈는 모양을 유지한다. 이름으로
+  적용하면 범위 안의 서브플롯은 각자 자기 종류의 테마를 받고, 직접 만든 테마는 같은 종류의
+  서브플롯에만 적용된다.
+- **부분만 적용하기.** `Chart::apply_theme`과 `Chart::apply_custom_theme`은 바뀐 글자 크기에 맞춰
+  레이아웃을 다시 맞춘다(`fit_layout`). `Config`에 바로 적용할 때는 `Theme::apply_named(name,
+  &mut config, &mut series, scope, renderer::draw_style_supports)`로 이름을,
+  `theme.apply(&mut config, &mut series, scope)`로 테마를 적용한다. 뒤쪽은 그리기 스타일 검사 없이
+  같은 `Result`를 돌려준다. 둘 다 레이아웃은 호스트에게 맡긴다.
   `theme.apply_chrome(&mut config, &series, scope)`는 크롬만 쓴다(범례 기호는 `series`를 따르며,
   아직 시리즈가 없는 차트에는 `&[]`를 넘긴다). `theme.style_series(&mut series, index)`는 시리즈
   하나를 차트의 `index`번째 시리즈로 꾸민다.
-- **원형 차트.** 원형 차트는 모델이 따로 있고 테마도 따로 있다. `RadialTheme::names()`와
-  `RadialTheme::named(name)`으로 찾고 `theme.apply(&mut radial_chart)`로 적용한다.
+- **원형 차트.** 원형 차트는 모델이 따로 있고 테마도 따로 있다. `RadialTheme::names()`(계열이
+  먼저 오고 `default`와 원형 테마가 이어진다)와 계열 이름도 받는 `RadialTheme::named(name)`으로
+  찾고 `theme.apply(&mut radial_chart)`로 적용한다.
 
   | 테마 | 모양 | 갤러리 이미지 |
   |---|---|---|
+  | `cool-slate` | 차가운 흰색 바탕에 위에서 본 무광 청록·산호·보라·호박·파랑 조각, 좁은 간격, 슬레이트색 글자 | |
   | `ceramic` | 흰 바탕에 비스듬한 시점의 유약 도자기 조각, 둥근 모서리와 부드러운 그림자 | `gallery-donut.png` |
   | `sunburst` | 평평한 초록·적갈색·보라 그룹, 고리마다 안쪽 고리보다 한 단계 옅은 색 | `gallery-sunburst.png` |
   | `pop-art` | 크림색 바탕에 기울인 툰 조각, 굵은 먹색 테두리와 구분선 | `concept-pop-art.png` |

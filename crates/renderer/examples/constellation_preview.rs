@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         series.push(SeriesConfig::scatter_line(id, "time", id));
         labels.push(label);
     }
-    chart.apply_theme(&theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
     // The legend draws each series as a line in its theme colour.
     for (label, color) in labels.into_iter().zip(&theme.series.palette) {
         let width = theme.series.lines.line_width;

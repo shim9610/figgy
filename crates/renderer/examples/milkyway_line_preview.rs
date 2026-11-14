@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Milkyway line pipeline; no scatter planets or errorbar jets exist.
         series.push(SeriesConfig::line(id, "time", id).label(label));
     }
-    chart.apply_theme(&theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
     let mut chart = chart.with_legend_from(&series);
     chart.config_mut().legend.corner = LegendCorner::TopLeft;
     // Fit the margins to the labels, titles and legend before export.

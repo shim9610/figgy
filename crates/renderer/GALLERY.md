@@ -380,7 +380,7 @@ page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/render
 
 0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. 육각 빈, 컬러 이미지, 삼각 좌표, 3D, 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표 그림은 `readme_gallery`가 다른 그림과 함께 만들고, 나머지는 `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper`, `nist_grotrian_gallery`가 만든다. 예제마다 따로 실행할 수도 있다.
 
-갤러리 그림은 모두 차트 종류에 속한 내장 테마로 그린다([테마](USAGE.md#테마)). 예제는 `Theme::named(kind, name)`(원형 차트는 `RadialTheme::named(name)`)으로 테마를 찾아 `Chart::apply_theme`으로 적용하며, 팔레트 순서나 채움 불투명도처럼 그림에 맞춰 복사본을 조금 고치는 예제도 있다. 그림마다 쓴 테마 이름은 위의 표와 종류별 페이지에 적었다.
+갤러리 그림은 모두 차트 종류에 속한 내장 테마로 그린다([테마](USAGE.md#테마)). 예제는 `Theme::named(kind, name)`(원형 차트는 `RadialTheme::named(name)`)으로 테마를 찾아 `Chart::apply_custom_theme`으로 적용하며, 팔레트 순서나 채움 불투명도처럼 그림에 맞춰 복사본을 조금 고치는 예제도 있다. 그림마다 쓴 테마 이름은 위의 표와 종류별 페이지에 적었다.
 
 README는 갤러리 그림을 종류별로 묶어 작은 그림(썸네일)으로 보여 준다. 썸네일을 누르면 그 종류의 페이지([`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery))에서 큰 그림과 설명, 실행 명령을 볼 수 있고, 큰 그림을 누르면 그림을 그린 예제 코드가 열린다. 썸네일은 `assets/thumbs/`에 있는 폭 320픽셀짜리 사본이다. 그림을 새로 만들거나 다시 만든 뒤에는 저장소 루트에서 `python3 ci/gallery_thumbs.py`(Pillow 필요)를 실행해 썸네일을 다시 쓴다. 새 그림은 해당 종류 페이지와 README 표에도 추가한다.
 

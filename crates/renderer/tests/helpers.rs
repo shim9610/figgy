@@ -225,8 +225,8 @@ fn a_themed_chart_exports_with_its_look() {
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
     chart
-        .apply_theme(&theme, &mut series, SubplotScope::All)
-        .expect("a line theme on a line chart");
+        .apply_theme("midnight", &mut series, SubplotScope::All)
+        .expect("a family on a line chart");
 
     let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
     let fitted = renderer::layout::auto_layout(chart.config(), &measure);
@@ -273,7 +273,8 @@ fn a_themed_chart_exports_with_its_look() {
 
 // A theme is refused, changing neither the chart nor its series, when its
 // draw style cannot draw a series (Constellation draws lines only with
-// their markers) and when it is made for another kind of chart.
+// their markers), when it is made for another kind of chart, and when no
+// kind has its name.
 #[test]
 fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
     use renderer::theme::{ChartKind, SubplotScope, Theme, ThemeError};
@@ -286,7 +287,7 @@ fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
     let constellation =
         Theme::named(ChartKind::Line, "constellation").expect("the line kind's constellation");
     assert_eq!(
-        chart.apply_theme(&constellation, &mut series, SubplotScope::All),
+        chart.apply_custom_theme(&constellation, &mut series, SubplotScope::All),
         Err(ThemeError::DrawStyle {
             series_id: "sine".into()
         })
@@ -297,7 +298,7 @@ fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
     let histogram =
         Theme::named(ChartKind::Histogram, "gallery").expect("the histogram kind's gallery");
     assert_eq!(
-        chart.apply_theme(&histogram, &mut series, SubplotScope::All),
+        chart.apply_custom_theme(&histogram, &mut series, SubplotScope::All),
         Err(ThemeError::Kind {
             theme: ChartKind::Histogram,
             chart: ChartKind::Line,
@@ -307,10 +308,37 @@ fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
     assert_eq!(chart.config(), &config);
     assert_eq!(series, declared);
 
+    // By name: the draw style, a name of another kind's catalogue and a
+    // name no kind has.
+    assert_eq!(
+        chart.apply_theme("constellation", &mut series, SubplotScope::All),
+        Err(ThemeError::DrawStyle {
+            series_id: "sine".into()
+        })
+    );
+    assert_eq!(
+        chart.apply_theme("parchment", &mut series, SubplotScope::All),
+        Err(ThemeError::Kind {
+            theme: ChartKind::Feynman,
+            chart: ChartKind::Line,
+            layer: renderer::LayerRef::Base,
+        })
+    );
+    assert_eq!(
+        chart.apply_theme("neon", &mut series, SubplotScope::All),
+        Err(ThemeError::Unknown {
+            name: "neon".into(),
+            kind: Some(ChartKind::Line),
+            names: Theme::names(ChartKind::Line),
+        })
+    );
+    assert_eq!(chart.config(), &config);
+    assert_eq!(series, declared);
+
     // The same chart takes a theme of its kind that its series can draw in.
     let gallery = Theme::named(ChartKind::Line, "gallery").expect("the line kind's gallery");
     assert_eq!(
-        chart.apply_theme(&gallery, &mut series, SubplotScope::All),
+        chart.apply_custom_theme(&gallery, &mut series, SubplotScope::All),
         Ok(())
     );
     assert_eq!(chart.config().chart_title.text.color, gallery.chrome.ink);

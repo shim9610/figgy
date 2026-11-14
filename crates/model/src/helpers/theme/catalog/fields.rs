@@ -1,78 +1,96 @@
 //! Field, vector, 3D, mesh, polar, radar, parallel and ternary themes.
 
-use super::super::{ChartKind, Theme};
-use super::{alpha, document, gallery, rgb, scene};
+use super::super::{ChartKind, Theme, ThemeFamily};
+use super::{
+    GALLERY_INK, alpha, colormap, covered, document, family_chrome, gallery, gridded, inked_scene,
+    mark_colormap, palette, ramp, rgb,
+};
 use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::material::Material;
 use crate::preset::AxisPreset;
 
 pub(super) const FIELD: &[&str] = &[
-    "default",
     "gallery",
+    "cool-slate",
+    "midnight",
+    "warm-paper",
+    "default",
     "warm-neutral",
     "deep-space",
     "topographic",
 ];
-pub(super) const VECTOR_FIELD: &[&str] = &["default", "gallery", "midnight", "ocean"];
-pub(super) const SURFACE_3D: &[&str] = &["default", "warm-terrain", "warm-diverging", "midnight"];
-pub(super) const TRI_MESH: &[&str] = &["default", "midnight"];
-pub(super) const POLAR: &[&str] = &["default", "gallery", "cool-slate", "warm-paper"];
-pub(super) const RADAR: &[&str] = &["default", "document"];
-pub(super) const PARALLEL: &[&str] = &["default", "midnight"];
-pub(super) const TERNARY: &[&str] = &["default", "warm-paper"];
+pub(super) const VECTOR_FIELD: &[&str] = &[
+    "gallery",
+    "cool-slate",
+    "midnight",
+    "warm-paper",
+    "default",
+    "ocean",
+];
+pub(super) const SURFACE_3D: &[&str] = &[
+    "gallery",
+    "cool-slate",
+    "midnight",
+    "warm-paper",
+    "default",
+    "warm-terrain",
+    "warm-diverging",
+];
+pub(super) const TRI_MESH: &[&str] =
+    &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
+pub(super) const POLAR: &[&str] = &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
+pub(super) const RADAR: &[&str] = &[
+    "gallery",
+    "cool-slate",
+    "midnight",
+    "warm-paper",
+    "default",
+    "document",
+];
+pub(super) const PARALLEL: &[&str] =
+    &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
+pub(super) const TERNARY: &[&str] = &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
 
-/// The theme `name` of `kind`'s catalogue, past `default`.
+/// `family`'s member for `kind`.
+pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
+    match (kind, family) {
+        (ChartKind::Field, ThemeFamily::Gallery) => field_gallery(),
+        (ChartKind::Field, ThemeFamily::WarmPaper) => field_warm_neutral(),
+        (ChartKind::VectorField, ThemeFamily::Gallery) => vector_field_gallery(),
+        (ChartKind::VectorField, ThemeFamily::Midnight) => vector_field_midnight(),
+        (ChartKind::Surface3d, ThemeFamily::Midnight) => surface_3d_midnight(),
+        (ChartKind::Surface3d, ThemeFamily::WarmPaper) => surface_3d_warm_terrain(),
+        (ChartKind::TriMesh, ThemeFamily::Midnight) => tri_mesh_midnight(),
+        (ChartKind::Polar, ThemeFamily::Gallery) => polar_gallery(),
+        (ChartKind::Polar, ThemeFamily::CoolSlate) => polar_cool_slate(),
+        (ChartKind::Polar, ThemeFamily::WarmPaper) => polar_warm_paper(),
+        (ChartKind::Radar, ThemeFamily::Gallery) => radar_document(),
+        (ChartKind::Parallel, ThemeFamily::Midnight) => parallel_midnight(),
+        (ChartKind::Ternary, ThemeFamily::WarmPaper) => ternary_warm_paper(),
+        (ChartKind::Field, _) => field(family),
+        (ChartKind::VectorField, _) => vector_field(family),
+        (ChartKind::Surface3d, _) => surface_3d(family),
+        (ChartKind::TriMesh, _) => tri_mesh(family),
+        (ChartKind::Polar, _) => polar_midnight(),
+        (ChartKind::Radar, _) => radar(family),
+        (ChartKind::Parallel, _) => parallel(family),
+        _ => ternary(family),
+    }
+}
+
+/// The theme `name` of `kind`'s own catalogue, past `default`.
 pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
     match (kind, name) {
-        (ChartKind::Field, "gallery") => Some(field_gallery()),
         (ChartKind::Field, "warm-neutral") => Some(field_warm_neutral()),
         (ChartKind::Field, "deep-space") => Some(field_deep_space()),
         (ChartKind::Field, "topographic") => Some(field_topographic()),
-        (ChartKind::VectorField, "gallery") => Some(vector_field_gallery()),
-        (ChartKind::VectorField, "midnight") => Some(vector_field_midnight()),
         (ChartKind::VectorField, "ocean") => Some(vector_field_ocean()),
         (ChartKind::Surface3d, "warm-terrain") => Some(surface_3d_warm_terrain()),
         (ChartKind::Surface3d, "warm-diverging") => Some(surface_3d_warm_diverging()),
-        (ChartKind::Surface3d, "midnight") => Some(surface_3d_midnight()),
-        (ChartKind::TriMesh, "midnight") => Some(tri_mesh_midnight()),
-        (ChartKind::Polar, "gallery") => Some(polar_gallery()),
-        (ChartKind::Polar, "cool-slate") => Some(polar_cool_slate()),
-        (ChartKind::Polar, "warm-paper") => Some(polar_warm_paper()),
         (ChartKind::Radar, "document") => Some(radar_document()),
-        (ChartKind::Parallel, "midnight") => Some(parallel_midnight()),
-        (ChartKind::Ternary, "warm-paper") => Some(ternary_warm_paper()),
         _ => None,
     }
-}
-
-fn ramp<const N: usize>(stops: [Color; N]) -> ColorMap {
-    ColorMap::Custom {
-        stops: stops.to_vec(),
-    }
-}
-
-/// The scene chrome ([`scene`]) with contour labels in its ink: the
-/// documented black is unreadable on the dark scenes.
-fn inked_scene(kind: ChartKind, bg: Color, ink: Color, grid: Color) -> Theme {
-    let mut theme = scene(kind, bg, ink, grid);
-    theme.series.fields.contour_label_color = ink;
-    theme
-}
-
-/// A scene whose field covers the plot: no grid over it.
-fn covered(mut theme: Theme) -> Theme {
-    theme.chrome.grid.major_x.show = false;
-    theme.chrome.grid.major_y.show = false;
-    theme
-}
-
-/// A scene whose grid runs both ways: a box floor, a disc's spokes and
-/// rings, a triangle's three families of lines.
-fn gridded(mut theme: Theme) -> Theme {
-    theme.chrome.grid.major_x.show = true;
-    theme.chrome.grid.major_y.show = true;
-    theme
 }
 
 /// The gallery's contour field: Viridis under white isolines with white
@@ -504,5 +522,250 @@ fn ternary_warm_paper() -> Theme {
     ];
     ternary.region_opacity = 0.75;
     ternary.region_outline = Some((bg, 2.0));
+    theme
+}
+
+/// A field ink that stays readable on `family`'s maps: white on the
+/// gallery's and midnight's, which run dark to light, the dark slate of the
+/// cool-slate isolines on its pale to navy map, a deep brown on the warm
+/// one.
+fn isoline_ink(family: ThemeFamily) -> Color {
+    match family {
+        ThemeFamily::Gallery | ThemeFamily::Midnight => Color::WHITE,
+        ThemeFamily::CoolSlate => rgb(20, 28, 48),
+        ThemeFamily::WarmPaper => rgb(60, 30, 30),
+    }
+}
+
+/// A family's contour field (cool slate, midnight): the family's map under
+/// isolines with labels in the isoline ink, empty cells unpainted, no grid.
+fn field(family: ThemeFamily) -> Theme {
+    let mut theme = covered(family_chrome(family, ChartKind::Field));
+    theme.chrome.colorbar.title_size = 19.0;
+    theme.series.palette = palette(family);
+    let ink = isoline_ink(family);
+    let fields = &mut theme.series.fields;
+    fields.colormap = colormap(family);
+    fields.nan_color = Color::new(0.0, 0.0, 0.0, 0.0);
+    fields.contour_color = Some(alpha(ink, 0.75));
+    fields.contour_width = 1.3;
+    fields.contour_label_color = ink;
+    fields.contour_label_size = 14.0;
+    fields.contour_label_padding = 3.0;
+    theme
+}
+
+/// A family's quiver (cool slate, warm paper): arrows in the family's ink,
+/// coloured through the family's mark map when they carry a value, over a
+/// muted field.
+fn vector_field(family: ThemeFamily) -> Theme {
+    let mut theme = family_chrome(family, ChartKind::VectorField);
+    theme.chrome.colorbar.title_size = 19.0;
+    theme.series.palette = vec![theme.chrome.ink];
+    theme.series.fields.colormap = mark_colormap(family);
+    theme.series.fields.fill_opacity = Some(0.35);
+    let vectors = &mut theme.series.vectors;
+    vectors.width_px = 1.8;
+    vectors.head_length_px = 7.0;
+    vectors.head_width_px = 6.0;
+    theme
+}
+
+/// A family's 3D charts (gallery, cool slate): a matte, finely wireframed
+/// surface in the family's mark map, floor contours in the map's colours
+/// darkened, lines and arrows in the family's colours, a floor grid.
+fn surface_3d(family: ThemeFamily) -> Theme {
+    let mut theme = gridded(family_chrome(family, ChartKind::Surface3d));
+    theme.chrome.colorbar.title_size = theme.chrome.axis_title_size;
+    let ink = theme.chrome.ink;
+    theme.series.palette = palette(family);
+    theme.series.lines.line_width = 3.0;
+    theme.series.lines.marker_size = 10.0;
+    let fields = &mut theme.series.fields;
+    fields.colormap = mark_colormap(family);
+    fields.contour_color = Some(alpha(ink, 0.85));
+    fields.contour_width = 2.0;
+    fields.contour_shade = Some(0.72);
+    let surfaces = &mut theme.series.surfaces;
+    surfaces.material = Material::Matte;
+    surfaces.wireframe = true;
+    surfaces.wireframe_color = alpha(ink, 0.2);
+    surfaces.wireframe_width = 0.6;
+    let vectors = &mut theme.series.vectors;
+    vectors.width_px = 2.2;
+    vectors.head_length_px = 9.0;
+    vectors.head_width_px = 7.0;
+    theme
+}
+
+/// A family's mesh field (gallery, cool slate, warm paper): the family's
+/// map under isolines in the isoline ink, mesh edges as faint hairlines,
+/// no grid.
+fn tri_mesh(family: ThemeFamily) -> Theme {
+    let mut theme = covered(family_chrome(family, ChartKind::TriMesh));
+    theme.chrome.colorbar.title_size = 19.0;
+    let ink = isoline_ink(family);
+    let edges = match family {
+        ThemeFamily::Gallery => GALLERY_INK,
+        _ => theme.chrome.ink,
+    };
+    // The isolines, then the mesh edges drawn over them.
+    theme.series.palette = vec![alpha(ink, 0.6), alpha(edges, 0.18)];
+    theme.series.lines.line_width = 0.7;
+    let fields = &mut theme.series.fields;
+    fields.colormap = colormap(family);
+    fields.contour_width = 1.2;
+    fields.contour_label_color = ink;
+    theme
+}
+
+/// The night polar plots: mint, lavender, amber and rose lines with a
+/// light fill and round markers, flat rose bars, the midnight map under
+/// white isolines, spokes and rings on midnight.
+fn polar_midnight() -> Theme {
+    let mut theme = gridded(family_chrome(ThemeFamily::Midnight, ChartKind::Polar));
+    theme.chrome.colorbar.title_size = 19.0;
+    theme.series.palette = palette(ThemeFamily::Midnight);
+    let lines = &mut theme.series.lines;
+    lines.line_width = 2.5;
+    lines.fill_opacity = Some(0.2);
+    lines.marker_size = 7.0;
+    let bars = &mut theme.series.bars;
+    bars.corner_radius = 3.0;
+    bars.gloss = 0.0;
+    bars.texture_strength = 0.0;
+    let fields = &mut theme.series.fields;
+    fields.colormap = colormap(ThemeFamily::Midnight);
+    fields.contour_color = Some(alpha(Color::WHITE, 0.7));
+    fields.contour_width = 1.2;
+    fields.contour_label_color = Color::WHITE;
+    fields.contour_label_size = 13.0;
+    fields.contour_label_padding = 3.0;
+    theme
+}
+
+/// A family's radar (cool slate, midnight, warm paper): outlines in the
+/// family's colours with a light fill and round markers, rings in the
+/// family's grid and spokes a shade stronger, no axis lines.
+fn radar(family: ThemeFamily) -> Theme {
+    let mut theme = gridded(family_chrome(family, ChartKind::Radar));
+    let chrome = &mut theme.chrome;
+    chrome.frame_ink = chrome.grid.major_y.color;
+    chrome.grid.major_x.color = match family {
+        ThemeFamily::Midnight => rgb(56, 72, 100),
+        ThemeFamily::WarmPaper => rgb(220, 208, 190),
+        _ => rgb(208, 212, 226),
+    };
+    theme.series.palette = palette(family);
+    let radar = &mut theme.series.radar;
+    radar.line_width_px = Some(2.0);
+    radar.marker_size_px = Some(7.0);
+    radar.fill_opacity = Some(0.25);
+    theme
+}
+
+/// A family's parallel coordinates (gallery, cool slate, warm paper): thin
+/// rows in the family's ink or coloured through its mark map, muted axes
+/// with outward ticks and small labels under larger axis names, a slim
+/// colourbar.
+fn parallel(family: ThemeFamily) -> Theme {
+    let mut theme = covered(family_chrome(family, ChartKind::Parallel));
+    let ink = theme.chrome.ink;
+    let chrome = &mut theme.chrome;
+    chrome.axis_preset = AxisPreset::OpenOutward;
+    chrome.frame_ink = match family {
+        ThemeFamily::Gallery => chrome.frame_ink,
+        ThemeFamily::WarmPaper => rgb(160, 146, 132),
+        _ => rgb(150, 156, 174),
+    };
+    chrome.tick_label_size = 16.0;
+    chrome.colorbar.thickness = 12.0;
+    chrome.colorbar.length = 0.3;
+    chrome.colorbar.gap = 16.0;
+    chrome.colorbar.title_size = 19.0;
+    theme.series.parallel.name_size = 20.0;
+    theme.series.palette = vec![ink];
+    theme.series.lines.line_width = 1.2;
+    theme.series.fields.colormap = mark_colormap(family);
+    theme
+}
+
+/// A family's ternary chart (gallery, cool slate, midnight): twelve
+/// regions in the family's tints outlined in the paper colour, lines
+/// through their markers in strong colours, muted axes with outward ticks.
+fn ternary(family: ThemeFamily) -> Theme {
+    let mut theme = gridded(family_chrome(family, ChartKind::Ternary));
+    let paper = theme.chrome.background.unwrap_or(Color::WHITE);
+    let ink = theme.chrome.ink;
+    let chrome = &mut theme.chrome;
+    chrome.axis_preset = AxisPreset::OpenOutward;
+    chrome.tick_label_size = 16.0;
+    chrome.legend_ink = Some(ink);
+    let (frame, label) = match family {
+        ThemeFamily::Midnight => (rgb(96, 110, 140), rgb(150, 164, 190)),
+        ThemeFamily::CoolSlate => (rgb(150, 156, 174), rgb(96, 102, 128)),
+        _ => (chrome.frame_ink, rgb(70, 80, 98)),
+    };
+    chrome.frame_ink = frame;
+    chrome.label_ink = label;
+    let (lines, regions) = match family {
+        ThemeFamily::Midnight => (
+            vec![rgb(240, 246, 255), rgb(242, 186, 78), rgb(65, 227, 194)],
+            vec![
+                rgb(34, 62, 96),
+                rgb(52, 48, 98),
+                rgb(28, 80, 84),
+                rgb(70, 52, 86),
+                rgb(40, 74, 62),
+                rgb(84, 66, 48),
+                rgb(30, 58, 110),
+                rgb(60, 84, 110),
+                rgb(46, 96, 90),
+                rgb(90, 60, 80),
+                rgb(70, 80, 46),
+                rgb(56, 62, 120),
+            ],
+        ),
+        ThemeFamily::CoolSlate => (
+            vec![rgb(40, 60, 130), rgb(190, 60, 60), rgb(20, 120, 120)],
+            vec![
+                rgb(190, 214, 236),
+                rgb(206, 200, 236),
+                rgb(180, 226, 222),
+                rgb(214, 226, 244),
+                rgb(196, 232, 206),
+                rgb(226, 214, 240),
+                rgb(170, 206, 230),
+                rgb(222, 236, 214),
+                rgb(200, 220, 232),
+                rgb(236, 226, 244),
+                rgb(188, 220, 214),
+                rgb(230, 236, 248),
+            ],
+        ),
+        _ => (
+            vec![rgb(36, 74, 140), rgb(180, 40, 60), rgb(18, 112, 96)],
+            vec![
+                rgb(170, 196, 230),
+                rgb(236, 180, 170),
+                rgb(246, 206, 150),
+                rgb(170, 214, 200),
+                rgb(200, 186, 226),
+                rgb(214, 222, 170),
+                rgb(160, 206, 226),
+                rgb(240, 196, 214),
+                rgb(206, 214, 226),
+                rgb(226, 200, 160),
+                rgb(186, 226, 190),
+                rgb(246, 226, 176),
+            ],
+        ),
+    };
+    theme.series.palette = lines;
+    theme.series.lines.line_width = 2.2;
+    let ternary = &mut theme.series.ternary;
+    ternary.regions = regions;
+    ternary.region_opacity = 0.75;
+    ternary.region_outline = Some((paper, 2.0));
     theme
 }

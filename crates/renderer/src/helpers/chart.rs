@@ -226,16 +226,50 @@ impl Chart {
         self
     }
 
-    /// Apply `theme` to the chart and its series ([`Theme::apply`]): the
-    /// chrome of the chart, its overlays and the subplots `subplots` names,
-    /// and the series drawn there. The layout is then fitted to the new text
-    /// sizes ([`Self::fit_layout`]).
+    /// Apply the theme `name` to the chart and its series
+    /// ([`Theme::apply_named`]): the chrome of the chart, its overlays and
+    /// the subplots `subplots` names, and the series drawn there. A family
+    /// name ([`crate::theme::ThemeFamily`]) gives the base chart and every
+    /// subplot in scope the member of its own kind
+    /// ([`crate::theme::ChartKind::of`]), so a chart whose subplots mix
+    /// kinds takes one name; a name of one kind's catalogue
+    /// ([`Theme::names`]) applies to charts of that kind. The layout is
+    /// then fitted to the new text sizes ([`Self::fit_layout`]).
+    ///
+    /// Refused, changing nothing, when a chart in scope is of a kind
+    /// without that name ([`ThemeError::Kind`]), when no kind has it
+    /// ([`ThemeError::Unknown`]), or when a theme's draw style cannot draw a
+    /// series in scope ([`ThemeError::DrawStyle`],
+    /// [`crate::draw_style_supports`]).
+    pub fn apply_theme(
+        &mut self,
+        name: &str,
+        series: &mut [SeriesConfig],
+        subplots: SubplotScope,
+    ) -> Result<(), ThemeError> {
+        Theme::apply_named(
+            name,
+            self.config_mut(),
+            series,
+            subplots,
+            crate::draw_style_supports,
+        )?;
+        self.fit_layout();
+        Ok(())
+    }
+
+    /// Apply `theme`, a theme the host built or edited (a family's member
+    /// from [`crate::theme::ThemeFamily::theme`], a kind's from
+    /// [`Theme::named`]), to the chart and its series ([`Theme::apply`]):
+    /// the chrome of the chart, its overlays and the subplots `subplots`
+    /// names, and the series drawn there. The layout is then fitted to the
+    /// new text sizes ([`Self::fit_layout`]).
     ///
     /// Refused, changing nothing, when a chart in scope is of another kind
     /// than the theme ([`ThemeError::Kind`]), or when the theme's draw style
     /// cannot draw a series in scope ([`ThemeError::DrawStyle`],
     /// [`crate::draw_style_supports`]).
-    pub fn apply_theme(
+    pub fn apply_custom_theme(
         &mut self,
         theme: &Theme,
         series: &mut [SeriesConfig],

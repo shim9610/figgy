@@ -390,8 +390,9 @@ impl FiggyRadialChart {
         self.annotations = annotations;
         Ok(true)
     }
-    /// Apply the built-in radial theme `name` (#291; the names are in
-    /// [`Self::theme_names`]): the background, label look, material, view,
+    /// Apply the radial theme `name` (#291, #295; the names are in
+    /// [`Self::theme_names`]), a family's radial member or a theme of the
+    /// radial catalogue: the background, label look, material, view,
     /// slice shape and outline, the palette on the top-level slices and the
     /// theme's tint on the slices below them. Values, labels, the slice
     /// structure and the kind stay. An unknown name changes nothing and
@@ -402,8 +403,8 @@ impl FiggyRadialChart {
         theme.apply(&mut next);
         self.adopt(next)
     }
-    /// The names of the built-in radial themes (#291), as a JSON array,
-    /// `default` first.
+    /// The names of the radial themes (#291, #295), as a JSON array: the
+    /// families first, then `default` and the radial catalogue.
     pub fn theme_names(&self) -> Result<String, JsValue> {
         serde_json::to_string(renderer::theme::RadialTheme::names())
             .map_err(crate::web::convert::js_err)

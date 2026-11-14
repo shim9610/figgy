@@ -777,18 +777,21 @@ impl FiggyChart {
         self.replace_chart_config(config)
     }
 
-    /// Apply the built-in theme `name` of the chart's kind (#291; the names
-    /// are in [`Self::theme_names`]) to the chart, its overlays and the
-    /// series drawn there, then fit the layout to the theme's text sizes.
+    /// Apply the theme `name` (#291, #295; the names are in
+    /// [`Self::theme_names`]) to the chart, its overlays and the series
+    /// drawn there, then fit the layout to the theme's text sizes.
     /// `subplots` names the subplots that take it too: `"all"`, `"none"`
-    /// or a JSON array of indices. Ranges, text, annotations, the layer
+    /// or a JSON array of indices. A family name (`gallery`, `cool-slate`,
+    /// `midnight`, `warm-paper`) gives the chart and every subplot in scope
+    /// the member of its own kind, so subplots of other kinds take it too;
+    /// a name of one kind's catalogue applies to charts of that kind
+    /// (`Theme::apply_named`). Ranges, text, annotations, the layer
     /// structure and the selection stay. An unknown name, a bad list, a
-    /// subplot of another kind, or a draw style that cannot draw a series
-    /// in scope changes nothing and errors. A chart with monotonic series
-    /// keeps its layout (#271): `fit_layout`, which takes the groups'
-    /// sources, fits it.
+    /// subplot of a kind without the name, or a draw style that cannot
+    /// draw a series in scope changes nothing and errors. A chart with
+    /// monotonic series keeps its layout (#271): `fit_layout`, which takes
+    /// the groups' sources, fits it.
     pub fn apply_theme(&mut self, name: &str, subplots: &str) -> Result<(), JsValue> {
-        let theme = theme_named(self.chart_config()?, self.chart_series()?, name)?;
         let indices: Vec<usize> = match subplots.trim() {
             "all" | "none" => Vec::new(),
             list => serde_json::from_str(list).map_err(js_err)?,
@@ -800,11 +803,14 @@ impl FiggyChart {
         };
         let mut config = self.chart_config()?.clone();
         let mut series = self.chart_series()?.to_vec();
-        renderer::helpers::check_theme_draw_style(&theme, &config, &series, scope)
-            .map_err(js_err)?;
-        theme
-            .apply(&mut config, &mut series, scope)
-            .map_err(js_err)?;
+        renderer::theme::Theme::apply_named(
+            name,
+            &mut config,
+            &mut series,
+            scope,
+            renderer::draw_style_supports,
+        )
+        .map_err(js_err)?;
         // A chart with monotonic series keeps its layout: the layout fit can
         // move the plot's edges, so it is `fit_layout`, which takes the
         // groups' sources (#271).
@@ -820,17 +826,17 @@ impl FiggyChart {
         self.replace_chart_state(config, series)
     }
 
-    /// The names of the built-in themes of the chart's kind (#291), as a
-    /// JSON array, `default` first; `[]` for a chart that draws no series
-    /// yet.
+    /// The names of the themes the chart takes (#291, #295), as a JSON
+    /// array: the families first, then `default` and the chart kind's own
+    /// themes; the families alone for a chart that draws no series yet.
     pub fn theme_names(&self) -> Result<String, JsValue> {
-        use renderer::theme::{ChartKind, Theme};
+        use renderer::theme::{ChartKind, Theme, ThemeFamily};
         let names = ChartKind::of(
             self.chart_config()?,
             self.chart_series()?,
             renderer::LayerRef::Base,
         )
-        .map_or(&[][..], Theme::names);
+        .map_or(ThemeFamily::NAMES, Theme::names);
         serde_json::to_string(names).map_err(js_err)
     }
 

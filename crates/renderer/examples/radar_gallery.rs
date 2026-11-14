@@ -52,7 +52,7 @@ fn save(
     // without one fits the values' statistics from zero, as the former
     // chart did, and keeps its ring spacing.
     let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
-    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, &mut series, SubplotScope::All)?;
     restyle(&mut series);
     if document.value_range.is_none() {
         // The fit chooses a label format too; the document's ring labels

@@ -38,7 +38,7 @@ pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Cha
 }
 
 /// A chart of `size` with its titles, for a built-in theme applied with
-/// its series (`Chart::apply_theme`).
+/// its series (`Chart::apply_custom_theme`).
 pub fn titled(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
     Chart::sized(size.0, size.1)
         .with_title(title)
@@ -51,9 +51,10 @@ pub fn theme_named(kind: ChartKind, name: &str) -> Result<Theme> {
     Ok(Theme::named(kind, name).ok_or_else(|| format!("no {kind} theme {name:?}"))?)
 }
 
-/// Apply `theme` to the chart and its series (`Chart::apply_theme`).
+/// Apply `theme`, as given or edited, to the chart and its series
+/// (`Chart::apply_custom_theme`).
 pub fn themed(chart: &mut Chart, theme: &Theme, series: &mut [SeriesConfig]) -> Result {
-    chart.apply_theme(theme, series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, series, SubplotScope::All)?;
     Ok(())
 }
 

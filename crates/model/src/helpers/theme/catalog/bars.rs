@@ -1,27 +1,65 @@
 //! Histogram, category-bar, distribution and range-bar themes.
 
-use super::super::{ChartKind, Theme};
-use super::{document, gallery, rgb, scene};
+use super::super::{ChartKind, Theme, ThemeFamily};
+use super::{
+    NIGHT_BG, NIGHT_GRID, NIGHT_INK, alpha, document, family_chrome, gallery, palette, rgb, scene,
+};
 use crate::color::Color;
 use crate::material::Material;
 
-pub(super) const HISTOGRAM: &[&str] = &["default", "gallery"];
-pub(super) const CATEGORY_BARS: &[&str] = &["default", "document", "revenue"];
-pub(super) const DISTRIBUTION: &[&str] = &["default", "document", "cool-slate", "warm-paper"];
-pub(super) const RANGE_BARS: &[&str] = &["default", "warm-neutral", "midnight", "cool-slate"];
+pub(super) const HISTOGRAM: &[&str] =
+    &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
+pub(super) const CATEGORY_BARS: &[&str] = &[
+    "gallery",
+    "cool-slate",
+    "midnight",
+    "warm-paper",
+    "default",
+    "document",
+    "revenue",
+];
+pub(super) const DISTRIBUTION: &[&str] = &[
+    "gallery",
+    "cool-slate",
+    "midnight",
+    "warm-paper",
+    "default",
+    "document",
+];
+pub(super) const RANGE_BARS: &[&str] = &[
+    "gallery",
+    "cool-slate",
+    "midnight",
+    "warm-paper",
+    "default",
+    "warm-neutral",
+];
 
-/// The theme `name` of `kind`'s catalogue, past `default`.
+/// `family`'s member for `kind`.
+pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
+    match (kind, family) {
+        (ChartKind::Histogram, ThemeFamily::Gallery) => histogram_gallery(),
+        (ChartKind::CategoryBars, ThemeFamily::Gallery) => category_bars_document(),
+        (ChartKind::Distribution, ThemeFamily::Gallery) => distribution_document(),
+        (ChartKind::Distribution, ThemeFamily::CoolSlate) => distribution_cool_slate(),
+        (ChartKind::Distribution, ThemeFamily::WarmPaper) => distribution_warm_paper(),
+        (ChartKind::RangeBars, ThemeFamily::CoolSlate) => range_bars_cool_slate(),
+        (ChartKind::RangeBars, ThemeFamily::Midnight) => range_bars_midnight(),
+        (ChartKind::RangeBars, ThemeFamily::WarmPaper) => range_bars_warm_neutral(),
+        (ChartKind::Histogram, _) => histogram(family),
+        (ChartKind::CategoryBars, _) => category_bars(family),
+        (ChartKind::Distribution, _) => distribution_midnight(),
+        _ => range_bars_gallery(),
+    }
+}
+
+/// The theme `name` of `kind`'s own catalogue, past `default`.
 pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
     match (kind, name) {
-        (ChartKind::Histogram, "gallery") => Some(histogram_gallery()),
         (ChartKind::CategoryBars, "document") => Some(category_bars_document()),
         (ChartKind::CategoryBars, "revenue") => Some(category_bars_revenue()),
         (ChartKind::Distribution, "document") => Some(distribution_document()),
-        (ChartKind::Distribution, "cool-slate") => Some(distribution_cool_slate()),
-        (ChartKind::Distribution, "warm-paper") => Some(distribution_warm_paper()),
         (ChartKind::RangeBars, "warm-neutral") => Some(range_bars_warm_neutral()),
-        (ChartKind::RangeBars, "midnight") => Some(range_bars_midnight()),
-        (ChartKind::RangeBars, "cool-slate") => Some(range_bars_cool_slate()),
         _ => None,
     }
 }
@@ -204,6 +242,77 @@ fn range_bars_cool_slate() -> Theme {
     theme.series.bars.corner_radius = 5.0;
     let range = &mut theme.series.range_bars;
     range.states = states;
+    range.remaining_opacity = Some(0.35);
+    theme
+}
+
+/// A family's histogram (cool slate, midnight, warm paper): bars in the
+/// family's colours with a border that sets them apart, two pixels apart.
+fn histogram(family: ThemeFamily) -> Theme {
+    let mut theme = family_chrome(family, ChartKind::Histogram);
+    theme.series.palette = palette(family);
+    let bars = &mut theme.series.bars;
+    bars.border_color = match family {
+        ThemeFamily::Midnight => NIGHT_BG,
+        ThemeFamily::CoolSlate => rgb(24, 98, 106),
+        _ => rgb(128, 52, 36),
+    };
+    bars.border_width = 0.8;
+    bars.gap = 2.0;
+    theme
+}
+
+/// A family's category bars (cool slate, midnight, warm paper): matte bars
+/// in the family's colours with rounded ends and no texture; a single
+/// series takes one colour per category.
+fn category_bars(family: ThemeFamily) -> Theme {
+    let mut theme = family_chrome(family, ChartKind::CategoryBars);
+    theme.series.palette = palette(family);
+    let bars = &mut theme.series.bars;
+    bars.material = Material::Matte;
+    bars.corner_radius = 6.0;
+    bars.texture_strength = 0.0;
+    bars.color_by_category = true;
+    theme
+}
+
+/// The dark violin and box scene: pale outlines, medians and whiskers on
+/// midnight, mint, lavender and amber bodies one colour per category of a
+/// single series, an amber mean and translucent raw points.
+fn distribution_midnight() -> Theme {
+    let mut theme = distribution_scene(NIGHT_BG, NIGHT_INK, NIGHT_GRID);
+    theme.series.palette = palette(ThemeFamily::Midnight);
+    let boxes = &mut theme.series.boxes;
+    boxes.ink = rgb(206, 216, 232);
+    boxes.mean_color = rgb(255, 214, 120);
+    boxes.outlier_color = rgb(206, 216, 232);
+    boxes.point_opacity = Some(0.6);
+    boxes.color_by_category = true;
+    theme
+}
+
+/// The gallery's range bars: green rises, coral falls and blue totals with
+/// small round corners, slate connectors and whiskers, state colours from
+/// the gallery's palette with their unfinished part faded, on white paper.
+fn range_bars_gallery() -> Theme {
+    let mut theme = gallery(ChartKind::RangeBars);
+    let total = rgb(34, 104, 198);
+    theme.series.palette = palette(ThemeFamily::Gallery);
+    theme.series.bars.corner_radius = 3.0;
+    theme.series.lines.line_width = 2.5;
+    let range = &mut theme.series.range_bars;
+    range.up = Some(rgb(30, 150, 110));
+    range.down = Some(rgb(225, 81, 79));
+    range.total = Some(total);
+    range.states = vec![
+        rgb(30, 150, 110),
+        total,
+        rgb(224, 123, 38),
+        rgb(140, 150, 168),
+    ];
+    range.whisker_width = 1.5;
+    range.connector_color = alpha(rgb(88, 102, 123), 0.8);
+    range.connector_width = 1.5;
     range.remaining_opacity = Some(0.35);
     theme
 }
