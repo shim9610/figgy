@@ -15,6 +15,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Anchor, Annotation, AnnotationKind, Color, Renderer, SeriesConfig,
     config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark},
@@ -23,7 +24,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// The counts per 2 keV channel at `energy` (keV), before noise: three
 /// Gaussian photopeaks whose width grows as the square root of the energy
@@ -49,7 +50,7 @@ fn jitter(i: u32) -> f64 {
 
 // A gamma-ray spectrum with the energy axis broken between the two sources.
 fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
-    let mut theme = theme_named(ChartKind::Line, "midnight")?;
+    let mut theme = ThemeFamily::Midnight.theme(ChartKind::Line);
     // The spectrum and its source names in the theme's cyan.
     let cyan = theme.series.palette[2];
     theme.series.palette = vec![cyan];

@@ -267,7 +267,7 @@ pub struct Subplot {
     pub marker: Option<InsetMarker>,
     /// How this subplot's text follows the size of its cell (#292). `Auto`
     /// (default, omitted) draws its text at the stored sizes times
-    /// [`Config::subplot_text_scale`](crate::config::Config::subplot_text_scale);
+    /// [`Config::subplot_text_factor`](crate::config::Config::subplot_text_factor);
     /// `Fixed` draws the stored sizes as they are.
     #[cfg_attr(
         feature = "serde",
@@ -284,7 +284,7 @@ pub struct Subplot {
 /// titles, tick labels, legend (text and symbols), colourbar labels and
 /// title, category group headers and value labels are drawn at those sizes
 /// times one factor chosen from the cell,
-/// [`Config::subplot_text_scale`](crate::config::Config::subplot_text_scale).
+/// [`Config::subplot_text_factor`](crate::config::Config::subplot_text_factor).
 /// The factor is a display parameter: it is computed from the chart areas
 /// whenever the subplot's chart is resolved
 /// ([`Config::subplot_config`](crate::config::Config::subplot_config)) and

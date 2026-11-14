@@ -7,7 +7,9 @@
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data_config::{ScatterShape, SeriesConfig};
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::SubplotScope;
+#[path = "support/looks.rs"]
+mod looks;
 use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 
 /// The deep-space backdrop the exports clear to.
@@ -40,7 +42,7 @@ fn build_chart(style: DrawStyle) -> Chart {
     // The night-sky chrome over the backdrop the export clears to, with no
     // legend. The demo sweeps the draw style, which it writes into the
     // theme; the series keep the colours each case picks.
-    let mut theme = Theme::named(ChartKind::Line, "milkyway").expect("a built-in theme");
+    let mut theme = looks::milkyway();
     theme.chrome.draw_style = style;
     let mut chart = Chart::sized(960, 620);
     theme

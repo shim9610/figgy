@@ -1501,7 +1501,7 @@ fn baseline_with_subplot() -> Config {
 fn baseline_with_small_subplot() -> Config {
     let mut c = baseline_with_subplot();
     c.subplots[0].config.chart_area.0.width = 160;
-    assert!(c.subplot_text_scale(0) < 0.8);
+    assert!(c.subplot_text_factor(0) < 0.8);
     c
 }
 

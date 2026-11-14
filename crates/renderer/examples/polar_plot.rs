@@ -25,6 +25,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 
+use renderer::theme::ThemeFamily;
 use renderer::{
     Chart, Color, Renderer, SeriesConfig,
     config::Category,
@@ -35,7 +36,7 @@ use renderer::{
     theme::{ChartKind, Theme},
 };
 use std::{f64::consts::PI, path::Path};
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// Plain check `case` in `theme`: its series take the theme's colours from
 /// the `case`-th on, so each check has a colour of its own.
@@ -58,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = gallery::output_directory("target/polar-plot")?;
     gallery::with_renderer(|r| {
         let size = (960, 640);
-        let theme = theme_named(ChartKind::Polar, "gallery")?;
+        let theme = ThemeFamily::Gallery.theme(ChartKind::Polar);
         let degrees: Vec<f64> = (0..=360).map(f64::from).collect();
         r.add_column("deg", &degrees)?;
 
@@ -269,7 +270,7 @@ const COMPASS: [&str; 16] = [
 // swell from the south-east. The host computes the spectrum in decibels
 // below its peak; the renderer maps and outlines the supplied cells.
 fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
-    let theme = theme_named(ChartKind::Polar, "cool-slate")?;
+    let theme = ThemeFamily::CoolSlate.theme(ChartKind::Polar);
     let bg = background(&theme);
     let mut chart = scene_chart(
         "Directional wave spectrum / rings in Hz",
@@ -383,7 +384,7 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
 // sixteen directions, stacked outward by speed band. Category bars on a
 // categorical angle axis; the host counts the shares.
 fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
-    let theme = theme_named(ChartKind::Polar, "warm-paper")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Polar);
     let bg = background(&theme);
     let mut chart = scene_chart(
         "Wind rose / share of a year's hours",

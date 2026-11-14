@@ -8,7 +8,7 @@ use renderer::line::LineStylePreset;
 use renderer::select::{
     ColorBarAxisElement, ColorBarLabelElement, ColorBarTitleElement, SelectionGeometry,
 };
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -562,13 +562,14 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
             .text
             .font_size
     };
-    let small = chart.subplot_text_scale(0).unwrap();
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), "Auto");
+    let small = chart.subplot_text_factor(0).unwrap();
     assert!((small - (300.0f32 / 960.0).cbrt()).abs() < 1e-6, "{small}");
     assert_eq!(drawn_size(&chart), stored_size * small);
     chart
         .set_subplot_area(0, 1000, 40, 600, 440)
         .expect("a larger frame");
-    let large = chart.subplot_text_scale(0).unwrap();
+    let large = chart.subplot_text_factor(0).unwrap();
     assert!((large - (600.0f32 / 960.0).cbrt()).abs() < 1e-6, "{large}");
     assert_eq!(drawn_size(&chart), stored_size * large);
     chart
@@ -578,15 +579,31 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     chart
         .set_subplot_text_scale(0, "Fixed")
         .expect("draw the stored sizes");
-    assert_eq!(chart.subplot_text_scale(0).unwrap(), 1.0);
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), "Fixed");
+    assert_eq!(chart.subplot_text_factor(0).unwrap(), 1.0);
     assert_eq!(drawn_size(&chart), stored_size);
-    assert!(chart.set_subplot_text_scale(0, "Half").is_err());
+    let half = chart.set_subplot_text_scale(0, "Half").unwrap_err();
+    assert_eq!(
+        js_sys::Reflect::get(&half, &JsValue::from_str("code"))
+            .unwrap()
+            .as_string()
+            .as_deref(),
+        Some("subplot_text_mode")
+    );
+    let accepted: Vec<String> =
+        js_sys::Array::from(&js_sys::Reflect::get(&half, &JsValue::from_str("accepted")).unwrap())
+            .iter()
+            .filter_map(|mode| mode.as_string())
+            .collect();
+    assert_eq!(accepted, ["Auto", "Fixed"]);
     assert!(chart.set_subplot_text_scale(3, "Auto").is_err());
     assert!(chart.subplot_text_scale(3).is_err());
+    assert!(chart.subplot_text_factor(3).is_err());
     chart
         .set_subplot_text_scale(0, "Auto")
         .expect("follow the cell again");
-    assert_eq!(chart.subplot_text_scale(0).unwrap(), large);
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), "Auto");
+    assert_eq!(chart.subplot_text_factor(0).unwrap(), large);
     assert_eq!(
         chart_config(&chart).subplots[0]
             .config
@@ -599,7 +616,22 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         .set_subplot_area(0, 1000, 40, 300, 220)
         .expect("the small frame again");
     // A frame too small for its plot is refused and nothing changes.
-    assert!(chart.set_subplot_area(0, 0, 0, 4, 4).is_err());
+    let small = chart.set_subplot_area(0, 0, 0, 4, 4).unwrap_err();
+    assert_eq!(
+        js_sys::Reflect::get(&small, &JsValue::from_str("code"))
+            .unwrap()
+            .as_string()
+            .as_deref(),
+        Some("subplot_area")
+    );
+    let past = chart.set_subplot_area(7, 0, 0, 400, 400).unwrap_err();
+    assert_eq!(
+        js_sys::Reflect::get(&past, &JsValue::from_str("code"))
+            .unwrap()
+            .as_string()
+            .as_deref(),
+        Some("subplot_index")
+    );
     assert_eq!(
         chart.subplot_area(0).unwrap(),
         r#"{"x":1000,"y":40,"width":300,"height":220}"#
@@ -623,11 +655,11 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     );
     chart.set_background("null").expect("clear the chart fill");
     assert!(chart_config(&chart).background.is_none());
-    // A theme (#291) is one of the chart's kind: the chart draws a line, so
-    // it lists and takes the line themes. It writes the look into the chart
-    // and leaves the subplot it is not given alone; a bad name, a name of
-    // another kind's catalogue or a bad list changes nothing.
-    use renderer::theme::{ChartKind, Theme};
+    // A theme is a family by name (#291, #295): the chart draws a line, so
+    // it takes the family's line member. It writes the look into the chart
+    // and leaves the subplot it is not given alone; a name that is not a
+    // family or a bad list changes nothing.
+    use renderer::theme::{ChartKind, ThemeFamily};
     chart
         .register_column_f32("x", &[0.0, 1.0, 2.0])
         .expect("register x");
@@ -637,17 +669,17 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     chart
         .add_line_series("line", "x", "y", 2.0, "")
         .expect("add a line series");
-    let names: Vec<String> =
-        serde_json::from_str(&chart.theme_names().expect("theme names")).expect("a JSON array");
-    assert_eq!(names, Theme::names(ChartKind::Line));
-    assert!(names.iter().any(|name| name == "midnight"));
+    let names: Vec<String> = chart
+        .theme_names()
+        .iter()
+        .filter_map(|name| name.as_string())
+        .collect();
+    assert_eq!(names, ThemeFamily::NAMES);
     let before = chart_config(&chart);
     let series_before = chart.get_series().expect("get_series");
     assert!(chart.apply_theme("neon", "all").is_err());
     assert!(chart.apply_theme("midnight", "[nope").is_err());
-    // `parchment` is a Feynman theme: not one of a line chart's.
-    assert!(Theme::named(ChartKind::Feynman, "parchment").is_some());
-    assert!(!names.iter().any(|name| name == "parchment"));
+    // A look that is not a family is no name.
     assert!(chart.apply_theme("parchment", "all").is_err());
     assert_eq!(chart_config(&chart), before);
     assert_eq!(chart.get_series().expect("get_series"), series_before);
@@ -655,7 +687,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         .apply_theme("midnight", "none")
         .expect("apply the midnight theme");
     let themed = chart_config(&chart);
-    let dark = Theme::named(ChartKind::Line, "midnight").expect("the line kind's midnight");
+    let dark = ThemeFamily::Midnight.theme(ChartKind::Line);
     assert_eq!(themed.background, dark.chrome.background);
     assert_eq!(themed.bottom_x.line_color, dark.chrome.frame_ink);
     assert_eq!(themed.subplots[0].config.background, None);
@@ -670,4 +702,178 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         chart_config(&chart).subplots[0].config.background,
         dark.chrome.background
     );
+    // A family (#295) themes a chart whose subplot is of another kind in
+    // one call: the line chart takes the family's line member, the scatter
+    // inset its scatter member.
+    let mut series: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&chart.get_series().expect("get_series")).expect("series json");
+    series.push(renderer::SeriesConfig::scatter("dots", "x", "y"));
+    chart
+        .set_series(&serde_json::to_string(&series).unwrap())
+        .expect("add a scatter series");
+    let mut config = chart_config(&chart);
+    config.subplots[0].series = vec!["dots".into()];
+    chart
+        .set_config(&serde_json::to_string(&config).unwrap())
+        .expect("draw the scatter series in the inset");
+    let config = chart_config(&chart);
+    let base = ChartKind::of(&config, &series, renderer::LayerRef::Base);
+    let inset = ChartKind::of(&config, &series, renderer::LayerRef::Subplot(0));
+    assert_eq!(
+        (base, inset),
+        (Some(ChartKind::Line), Some(ChartKind::Scatter))
+    );
+    chart
+        .apply_theme("warm-paper", "all")
+        .expect("a family over both kinds");
+    let themed = chart_config(&chart);
+    let line = ThemeFamily::WarmPaper.theme(ChartKind::Line);
+    let scatter = ThemeFamily::WarmPaper.theme(ChartKind::Scatter);
+    assert_eq!(themed.background, line.chrome.background);
+    assert_eq!(themed.chart_title.text.color, line.chrome.ink);
+    assert_eq!(
+        themed.subplots[0].config.background,
+        scatter.chrome.background
+    );
+    assert_eq!(
+        themed.subplots[0].config.grid.show_major_x,
+        scatter.chrome.grid.major_x.show
+    );
+    let styled: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&chart.get_series().expect("get_series")).expect("series json");
+    let dots = styled.iter().find(|item| item.series_id == "dots").unwrap();
+    let renderer::DataRenderType::Xy(xy) = &dots.render_type else {
+        panic!("an x-y series");
+    };
+    assert_eq!(
+        xy.scatter.as_ref().map(|marker| marker.point_size),
+        Some(scatter.series.lines.marker_size)
+    );
+
+    // Typed errors (#295): each refusal throws an `Error` with a `code`,
+    // the names on an unknown name, the index and count on a subplot index.
+    let field = |error: &JsValue, key: &str| {
+        js_sys::Reflect::get(error, &JsValue::from_str(key)).expect("an error object")
+    };
+    let code = |error: &JsValue| field(error, "code").as_string().unwrap_or_default();
+    let unknown = chart.apply_theme("neon", "all").unwrap_err();
+    assert_eq!(code(&unknown), "theme_unknown_name");
+    let names: Vec<String> = js_sys::Array::from(&field(&unknown, "names"))
+        .iter()
+        .filter_map(|name| name.as_string())
+        .collect();
+    assert_eq!(names, ThemeFamily::NAMES);
+    assert_eq!(
+        code(&chart.apply_theme("editorial", "all").unwrap_err()),
+        "theme_unknown_name"
+    );
+    let index = chart.apply_theme("gallery", "[4]").unwrap_err();
+    assert_eq!(code(&index), "subplot_index");
+    assert_eq!(field(&index, "index").as_f64(), Some(4.0));
+    assert_eq!(field(&index, "count").as_f64(), Some(1.0));
+    for error in [
+        chart.subplot_text_scale(4).unwrap_err(),
+        chart.subplot_text_factor(4).unwrap_err(),
+        chart.set_subplot_text_scale(4, "Auto").unwrap_err(),
+        chart.subplot_area(4).unwrap_err(),
+        chart.set_subplot_background(4, "null").unwrap_err(),
+    ] {
+        assert_eq!(code(&error), "subplot_index");
+    }
+    assert_eq!(
+        code(&chart.theme("neon").unwrap_err()),
+        "theme_unknown_name"
+    );
+    assert_eq!(
+        code(&chart.subplot_theme(4, "midnight").unwrap_err()),
+        "subplot_index"
+    );
+    assert_eq!(
+        code(&chart.apply_theme("gallery", "[nope").unwrap_err()),
+        "subplot_scope"
+    );
+    assert_eq!(
+        code(&chart.set_subplot_background(0, "{\"red\":1}").unwrap_err()),
+        "subplot_background"
+    );
+    assert_eq!(
+        code(&chart.set_background("blue").unwrap_err()),
+        "background"
+    );
+    // The inset's theme, as an object: its own kind's member.
+    let inset = chart
+        .subplot_theme(0, "cool-slate")
+        .expect("the scatter member");
+    let json = js_sys::JSON::stringify(&inset)
+        .unwrap()
+        .as_string()
+        .unwrap();
+    let inset: renderer::theme::Theme = serde_json::from_str(&json).expect("a theme");
+    assert_eq!(inset, ThemeFamily::CoolSlate.theme(ChartKind::Scatter));
+
+    // Edit and apply (#295): the theme a name resolves to comes out as an
+    // object, reads back equal, and applies to the charts of its kind.
+    let object = chart.theme("midnight").expect("the line member");
+    let json = js_sys::JSON::stringify(&object)
+        .unwrap()
+        .as_string()
+        .unwrap();
+    let back: renderer::theme::Theme = serde_json::from_str(&json).expect("a theme");
+    let line = ThemeFamily::Midnight.theme(ChartKind::Line);
+    assert_eq!(back, line);
+    js_sys::Reflect::set(
+        &object,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("scatter"),
+    )
+    .unwrap();
+    let before = chart_config(&chart);
+    chart
+        .apply_custom_theme(object.clone())
+        .expect("the scatter inset takes it");
+    let themed = chart_config(&chart);
+    assert_eq!(themed.background, before.background, "the line base stays");
+    assert_eq!(themed.subplots[0].config.background, line.chrome.background);
+    assert_eq!(
+        code(
+            &chart
+                .apply_custom_theme_to(object.clone(), "all")
+                .unwrap_err()
+        ),
+        "theme_wrong_kind"
+    );
+    chart
+        .apply_custom_theme_to(object, "[0]")
+        .expect("the inset alone");
+    assert_eq!(
+        code(
+            &chart
+                .apply_custom_theme(JsValue::from_str("plain"))
+                .unwrap_err()
+        ),
+        "theme_invalid"
+    );
+    // A custom theme in a draw style that cannot draw the line series
+    // (Constellation draws lines only with their markers), built from a
+    // partial object: the missing fields take the documented look's.
+    let night = js_sys::JSON::parse(
+        r#"{"kind": "line", "chrome": {"draw_style": {"mode": "constellation"}}}"#,
+    )
+    .expect("a JSON object");
+    let partial: renderer::theme::Theme = serde_json::from_str(
+        &js_sys::JSON::stringify(&night)
+            .unwrap()
+            .as_string()
+            .unwrap(),
+    )
+    .expect("a partial theme parses");
+    assert_eq!(partial.series, renderer::theme::Theme::default().series);
+    let before = chart_config(&chart);
+    let error = chart.apply_custom_theme_to(night, "none").unwrap_err();
+    assert_eq!(code(&error), "theme_draw_style");
+    assert_eq!(
+        field(&error, "series_id").as_string().as_deref(),
+        Some("line")
+    );
+    assert_eq!(chart_config(&chart), before);
 }

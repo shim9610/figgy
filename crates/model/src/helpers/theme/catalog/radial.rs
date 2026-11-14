@@ -1,19 +1,17 @@
 //! Radial (pie, donut, sunburst) themes.
 
-use super::super::RadialTheme;
-use super::rgb;
+use super::super::{RadialTheme, ThemeFamily};
+use super::{COOL_BG, COOL_INK, rgb};
 use crate::material::Material;
 
-pub(super) const NAMES: &[&str] = &["default", "ceramic", "sunburst", "pop-art", "portfolio"];
-
-/// The radial theme `name`, past `default`.
-pub(super) fn named(name: &str) -> Option<RadialTheme> {
-    match name {
-        "ceramic" => Some(ceramic()),
-        "sunburst" => Some(sunburst()),
-        "pop-art" => Some(pop_art()),
-        "portfolio" => Some(portfolio()),
-        _ => None,
+/// `family`'s radial member: the gallery's ceramic chart, a flat dashboard
+/// donut for cool slate, the night portfolio and the pop-art pie on cream.
+pub(super) fn member(family: ThemeFamily) -> RadialTheme {
+    match family {
+        ThemeFamily::Gallery => ceramic(),
+        ThemeFamily::CoolSlate => cool_slate(),
+        ThemeFamily::Midnight => portfolio(),
+        ThemeFamily::WarmPaper => pop_art(),
     }
 }
 
@@ -39,21 +37,6 @@ fn ceramic() -> RadialTheme {
     theme.roughness = 0.3;
     theme.texture_strength = 0.12;
     theme.shadow = true;
-    theme
-}
-
-/// A flat sunburst: green, rust and violet groups, each ring a paler step
-/// of the one inside it, with hairline gaps and barely rounded corners.
-fn sunburst() -> RadialTheme {
-    let mut theme = RadialTheme::documented();
-    theme.palette = vec![rgb(38, 140, 112), rgb(196, 112, 64), rgb(128, 110, 196)];
-    theme.child_tint = Some(0.22);
-    theme.label_color = rgb(40, 44, 52);
-    theme.material = Material::Flat;
-    theme.gloss = 0.15;
-    theme.gap_degrees = 0.6;
-    theme.inner_corner = 0.012;
-    theme.outer_corner = 0.012;
     theme
 }
 
@@ -115,5 +98,31 @@ fn portfolio() -> RadialTheme {
     theme.inner_corner = 0.06;
     theme.outer_corner = 0.045;
     theme.shadow = true;
+    theme
+}
+
+/// The dashboard chart: satin teal, coral, violet, amber and blue slices,
+/// flat and seen from above with a narrow gap and soft corners, slate text
+/// on a cool off-white.
+fn cool_slate() -> RadialTheme {
+    let mut theme = RadialTheme::documented();
+    theme.palette = vec![
+        rgb(37, 150, 160),
+        rgb(232, 104, 84),
+        rgb(112, 92, 212),
+        rgb(228, 170, 50),
+        rgb(70, 130, 206),
+    ];
+    theme.background = COOL_BG;
+    theme.label_color = COOL_INK;
+    theme.font_size = 20.0;
+    theme.title_size = 30.0;
+    theme.material = Material::Matte;
+    theme.gloss = 0.2;
+    theme.texture_strength = 0.0;
+    theme.gap_degrees = 1.2;
+    theme.inner_corner = 0.02;
+    theme.outer_corner = 0.02;
+    theme.child_tint = Some(0.22);
     theme
 }

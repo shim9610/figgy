@@ -212,12 +212,12 @@ fn the_chart_background_is_an_additive_key() {
 // theme's background and series colours.
 #[test]
 fn a_themed_chart_exports_with_its_look() {
-    use renderer::theme::{ChartKind, SubplotScope, Theme};
+    use renderer::theme::{ChartKind, ThemeFamily};
     let mut renderer = Renderer::headless_blocking().expect("headless renderer");
     let (x, y) = sine();
     renderer.add_column("x", &x).unwrap();
     renderer.add_column("y", &y).unwrap();
-    let theme = Theme::named(ChartKind::Line, "midnight").expect("the line kind's midnight");
+    let theme = ThemeFamily::Midnight.theme(ChartKind::Line);
     let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
     let mut chart = Chart::sized(480, 320)
         .with_title("A sine wave")
@@ -225,8 +225,8 @@ fn a_themed_chart_exports_with_its_look() {
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
     chart
-        .apply_theme(&theme, &mut series, SubplotScope::All)
-        .expect("a line theme on a line chart");
+        .apply_theme("midnight", &mut series)
+        .expect("a family on a line chart");
 
     let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
     let fitted = renderer::layout::auto_layout(chart.config(), &measure);
@@ -271,34 +271,35 @@ fn a_themed_chart_exports_with_its_look() {
     }
 }
 
-// A theme is refused, changing neither the chart nor its series, when its
-// draw style cannot draw a series (Constellation draws lines only with
-// their markers) and when it is made for another kind of chart.
+// A theme is refused, changing neither the chart nor its series, when a
+// custom theme's draw style cannot draw a series (Constellation draws lines
+// only with their markers), when a custom theme is made for another kind of
+// chart, and when a name is not a family.
 #[test]
 fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
-    use renderer::theme::{ChartKind, SubplotScope, Theme, ThemeError};
+    use renderer::config::DrawStyle;
+    use renderer::theme::{ChartKind, SubplotScope, Theme, ThemeError, ThemeFamily};
     let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
     let mut chart = Chart::sized(480, 320)
         .with_title("A sine wave")
         .with_legend_from(&series);
     let (config, declared) = (chart.config().clone(), series.clone());
 
-    let constellation =
-        Theme::named(ChartKind::Line, "constellation").expect("the line kind's constellation");
+    let mut constellation = Theme::default();
+    constellation.chrome.draw_style = DrawStyle::Constellation(Default::default());
     assert_eq!(
-        chart.apply_theme(&constellation, &mut series, SubplotScope::All),
-        Err(ThemeError::DrawStyle {
+        chart.apply_custom_theme(&constellation, &mut series),
+        Err(ThemeError::UnsupportedDrawStyle {
             series_id: "sine".into()
         })
     );
     assert_eq!(chart.config(), &config);
     assert_eq!(series, declared);
 
-    let histogram =
-        Theme::named(ChartKind::Histogram, "gallery").expect("the histogram kind's gallery");
+    let histogram = ThemeFamily::Gallery.theme(ChartKind::Histogram);
     assert_eq!(
-        chart.apply_theme(&histogram, &mut series, SubplotScope::All),
-        Err(ThemeError::Kind {
+        chart.apply_custom_theme(&histogram, &mut series),
+        Err(ThemeError::WrongKind {
             theme: ChartKind::Histogram,
             chart: ChartKind::Line,
             layer: renderer::LayerRef::Base,
@@ -307,13 +308,250 @@ fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
     assert_eq!(chart.config(), &config);
     assert_eq!(series, declared);
 
+    // By name: only the families are names.
+    for name in ["neon", "constellation", "default"] {
+        assert_eq!(
+            chart.apply_theme(name, &mut series),
+            Err(ThemeError::UnknownName {
+                name: name.into(),
+                names: ThemeFamily::NAMES,
+            })
+        );
+    }
+    assert_eq!(chart.config(), &config);
+    assert_eq!(series, declared);
+
     // The same chart takes a theme of its kind that its series can draw in.
-    let gallery = Theme::named(ChartKind::Line, "gallery").expect("the line kind's gallery");
+    let gallery = ThemeFamily::Gallery.theme(ChartKind::Line);
     assert_eq!(
-        chart.apply_theme(&gallery, &mut series, SubplotScope::All),
+        chart.apply_custom_theme_to(&gallery, &mut series, SubplotScope::All),
         Ok(())
     );
     assert_eq!(chart.config().chart_title.text.color, gallery.chrome.ink);
+}
+
+// The chart answers the theme questions about itself (#295): its kind, the
+// names it takes, the theme a name resolves to for editing, and a name
+// applied to some subplots only.
+#[test]
+fn a_chart_names_its_kind_and_themes() {
+    use renderer::theme::{ChartKind, SubplotScope, ThemeError, ThemeFamily};
+    let mut series = vec![SeriesConfig::line("sine", "x", "y").label("sin x")];
+    let mut chart = Chart::sized(480, 320).with_legend_from(&series);
+    assert_eq!(chart.chart_kind(&[]), None);
+    assert_eq!(chart.theme_names(), ThemeFamily::NAMES);
+    assert_eq!(chart.chart_kind(&series), Some(ChartKind::Line));
+
+    // A member to edit, then applied as a custom theme.
+    let mut theme = chart.theme("midnight", &series).expect("a family member");
+    assert_eq!(theme, ThemeFamily::Midnight.theme(ChartKind::Line));
+    let orange = Color::from_rgb8(255, 120, 0);
+    theme.series.palette[0] = orange;
+    chart
+        .apply_custom_theme(&theme, &mut series)
+        .expect("a line theme on a line chart");
+    let renderer::DataRenderType::Xy(xy) = &series[0].render_type else {
+        panic!("an x-y series");
+    };
+    assert_eq!(xy.line.as_ref().map(|line| line.line_color), Some(orange));
+    // A chart without series takes the line member.
+    assert_eq!(
+        chart.theme("gallery", &[]),
+        Ok(ThemeFamily::Gallery.theme(ChartKind::Line))
+    );
+    for name in ["neon", "editorial"] {
+        assert!(matches!(
+            chart.theme(name, &series),
+            Err(ThemeError::UnknownName { .. })
+        ));
+    }
+
+    // A subplot of another kind: the whole document takes a family, and a
+    // scope leaves the subplot alone.
+    let mut config = chart.config().clone();
+    config.subplots.push(renderer::Subplot::new(
+        renderer::Config::default(),
+        &["dots"],
+    ));
+    series.push(SeriesConfig::scatter("dots", "x", "y"));
+    let mut chart = Chart::new(config);
+    let before = chart.config().subplots[0].clone();
+    chart
+        .apply_theme_to("cool-slate", &mut series, SubplotScope::None)
+        .expect("the base chart alone");
+    // The layout is fitted again; the subplot's look stays.
+    let cell = &chart.config().subplots[0].config;
+    assert_eq!(cell.grid, before.config.grid);
+    assert_eq!(
+        cell.bottom_x.label_style.color,
+        before.config.bottom_x.label_style.color
+    );
+    assert_eq!(cell.background, before.config.background);
+    chart
+        .apply_theme("cool-slate", &mut series)
+        .expect("a family over both kinds");
+    assert_eq!(
+        chart.config().subplots[0].config.background,
+        ThemeFamily::CoolSlate
+            .theme(ChartKind::Scatter)
+            .chrome
+            .background
+    );
+}
+
+// A custom theme without a scope themes the charts of its kind and leaves
+// the others; with a scope it is the theme of every chart in scope. A scope
+// past the subplots is refused with the index (#295).
+#[test]
+fn a_custom_theme_themes_the_charts_of_its_kind() {
+    use renderer::theme::{ChartKind, SubplotIndexError, SubplotScope, ThemeError, ThemeFamily};
+    let mut series = vec![
+        SeriesConfig::line("sine", "x", "y"),
+        SeriesConfig::scatter("dots", "x", "y"),
+    ];
+    let mut config = Chart::sized(480, 320).config().clone();
+    config.subplots.push(renderer::Subplot::new(
+        renderer::Config::default(),
+        &["dots"],
+    ));
+    let mut chart = Chart::new(config);
+    let (before, before_series) = (chart.config().clone(), series.clone());
+
+    // The inset's theme by name: its own kind's member.
+    assert_eq!(
+        chart.subplot_theme(0, "midnight", &series),
+        Ok(ThemeFamily::Midnight.theme(ChartKind::Scatter))
+    );
+    assert_eq!(
+        chart.subplot_theme(2, "midnight", &series),
+        Err(ThemeError::SubplotIndex(SubplotIndexError {
+            index: 2,
+            count: 1
+        }))
+    );
+    assert!(matches!(
+        chart.subplot_theme(0, "editorial", &series),
+        Err(ThemeError::UnknownName { .. })
+    ));
+    let mut scatter = chart
+        .subplot_theme(0, "midnight", &series)
+        .expect("a member");
+    scatter.series.palette[0] = Color::from_rgb8(255, 120, 0);
+    chart
+        .apply_custom_theme(&scatter, &mut series)
+        .expect("the scatter subplot takes it");
+    assert_eq!(
+        chart.config().background,
+        before.background,
+        "the line base stays"
+    );
+    assert_eq!(series[0], before_series[0]);
+    assert_eq!(
+        chart.config().subplots[0].config.background,
+        scatter.chrome.background
+    );
+    // With a scope, the line base refuses it.
+    assert!(matches!(
+        chart.apply_custom_theme_to(&scatter, &mut series, SubplotScope::All),
+        Err(ThemeError::WrongKind {
+            theme: ChartKind::Scatter,
+            chart: ChartKind::Line,
+            ..
+        })
+    ));
+    // A scope past the subplots.
+    let line = ThemeFamily::Midnight.theme(ChartKind::Line);
+    assert_eq!(
+        chart.apply_custom_theme_to(&line, &mut series, SubplotScope::Only(&[3])),
+        Err(ThemeError::SubplotIndex(SubplotIndexError {
+            index: 3,
+            count: 1
+        }))
+    );
+    assert_eq!(
+        chart.apply_theme_to("gallery", &mut series, SubplotScope::Only(&[3])),
+        Err(ThemeError::SubplotIndex(SubplotIndexError {
+            index: 3,
+            count: 1
+        }))
+    );
+    // No chart of a polar theme's kind.
+    let polar = ThemeFamily::Midnight.theme(ChartKind::Polar);
+    assert!(matches!(
+        chart.apply_custom_theme(&polar, &mut series),
+        Err(ThemeError::WrongKind {
+            layer: renderer::LayerRef::Base,
+            ..
+        })
+    ));
+}
+
+// The subplot text mode on the chart: read, set and the factor it draws
+// with; an index past the subplots is a typed error, never a panic (#292,
+// #295).
+#[test]
+fn a_chart_reads_and_sets_its_subplot_text_mode() {
+    use renderer::SubplotTextScale;
+    use renderer::theme::SubplotIndexError;
+    let mut config = Chart::sized(960, 640).config().clone();
+    let mut cell = renderer::Subplot::new(renderer::Config::default(), &[]);
+    cell.config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+        x: 600,
+        y: 40,
+        width: 240,
+        height: 160,
+    });
+    config.subplots.push(cell);
+    let mut chart = Chart::new(config);
+    assert_eq!(chart.subplot_text_scale(0), Some(SubplotTextScale::Auto));
+    let factor = chart.subplot_text_factor(0).expect("subplot 0");
+    assert!(factor < 1.0, "{factor}");
+    chart
+        .set_subplot_text_scale(0, SubplotTextScale::Fixed)
+        .expect("subplot 0");
+    assert_eq!(chart.subplot_text_scale(0), Some(SubplotTextScale::Fixed));
+    assert_eq!(chart.subplot_text_factor(0), Some(1.0));
+    let before = chart.config().clone();
+    assert_eq!(
+        chart.set_subplot_text_scale(1, SubplotTextScale::Auto),
+        Err(SubplotIndexError { index: 1, count: 1 })
+    );
+    assert_eq!(chart.config(), &before);
+    assert_eq!(chart.subplot_text_scale(1), None);
+    assert_eq!(chart.subplot_text_factor(1), None);
+}
+
+// A radial chart takes a family by name, as its radial member; any other
+// name lists the family names and changes nothing (#295). A custom radial
+// theme is a value.
+#[test]
+fn a_radial_chart_takes_a_theme_by_name() {
+    use renderer::theme::{RadialTheme, ThemeError, ThemeFamily};
+    let mut chart = RadialChart::default();
+    chart.slices = vec![
+        RadialSlice::new("A", 1.0, Color::BLACK),
+        RadialSlice::new("B", 2.0, Color::BLACK),
+    ];
+    let before = chart.clone();
+    for name in ["neon", "ceramic"] {
+        assert_eq!(
+            chart.apply_theme(name),
+            Err(ThemeError::UnknownName {
+                name: name.into(),
+                names: ThemeFamily::NAMES,
+            })
+        );
+    }
+    assert_eq!(chart, before);
+    chart.apply_theme("midnight").expect("a family");
+    assert_eq!(chart.background, ThemeFamily::Midnight.radial().background);
+    let mut theme = ThemeFamily::Gallery.radial();
+    theme.palette[1] = Color::from_rgb8(255, 120, 0);
+    theme.apply(&mut chart);
+    assert_eq!(chart.slices[1].color, theme.palette[1]);
+    // The documented look undoes the family's background.
+    RadialTheme::default().apply(&mut chart);
+    assert_eq!(chart.background, before.background);
 }
 
 // A placed chart, a resized document chart, an overlay and a swatch entry

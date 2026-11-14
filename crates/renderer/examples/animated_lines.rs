@@ -7,12 +7,13 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::*;
+use renderer::theme::ThemeFamily;
 use renderer::{Color, Renderer, SeriesConfig, theme::ChartKind};
 use std::f64::consts::TAU;
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
-    let theme = theme_named(ChartKind::Line, "gallery")?;
+    let theme = ThemeFamily::Gallery.theme(ChartKind::Line);
     let x: Vec<f64> = (0..401).map(|i| i as f64 / 400.0 * TAU * 2.0).collect();
     r.add_column("wave-x", &x)?;
     r.add_column("wave-a", &vec![0.0; x.len()])?;

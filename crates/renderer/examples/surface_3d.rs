@@ -8,8 +8,8 @@
 //!   lattice, one arrow per sample along (u, v, w), coloured by a speed
 //!   column the host computes.
 //!
-//! Each takes its look from a built-in 3D theme (`warm-terrain`,
-//! `midnight`): the ramp, the surface's material and wireframe, the floor
+//! Each takes its look from the example's terrain look or the midnight
+//! family's 3D member: the ramp, the surface's material and wireframe, the floor
 //! contours' colours, the arrows and the trail. The scenes keep the data,
 //! the ranges, the camera and the labels.
 //!
@@ -21,6 +21,8 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use gallery::looks;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Chart, LayerRef, Renderer, SeriesConfig,
     data_config::{ContourConfig, MatrixRef, Shading, VectorColorMap, VectorPivot, VectorScale},
@@ -29,7 +31,7 @@ use renderer::{
     view3d::View3d,
 };
 use std::path::Path;
-use styled::{background, export, extent, save, scene_chart, theme_named, themed};
+use styled::{background, export, extent, save, scene_chart, themed};
 
 /// The box's z axis is `right_y`: labels and a title in the chrome's style.
 fn z_axis(chart: &mut Chart, title: &str, spacing: f64) {
@@ -90,7 +92,7 @@ fn bezier(p: [[f64; 2]; 4], t: f64) -> [f64; 2] {
 // south. A trail climbs from the trailhead over the saddle to the higher
 // summit; the host lifts it a little above the ground it follows.
 fn terrain(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Surface3d, "warm-terrain")?;
+    let theme = looks::warm_terrain();
     let bg = background(&theme);
     let height = |x: f64, y: f64| {
         let peak = |cx: f64, cy: f64, h: f64, w: f64| {
@@ -195,7 +197,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
 // the axis and an updraft that grows with height. The host computes the
 // components and the speed the arrows are coloured by.
 fn vortex(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Surface3d, "midnight")?;
+    let theme = ThemeFamily::Midnight.theme(ChartKind::Surface3d);
     let bg = background(&theme);
     let (circulation, core, strain) = (24., 1.2, 0.16);
     let flow = |x: f64, y: f64, z: f64| -> [f64; 3] {

@@ -12,8 +12,8 @@
 //!   computes the gradient and the speed; the renderer draws the supplied
 //!   matrices.
 //!
-//! Each takes its look from a built-in vector-field theme (`midnight`,
-//! `ocean`, `gallery`); the scenes keep the data, the ranges, the arrows'
+//! Each takes its look from the midnight and gallery families' vector-field
+//! members or the example's ocean look; the scenes keep the data, the ranges, the arrows'
 //! scale and pivot and the colourbar's range.
 //!
 //! cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field
@@ -24,13 +24,15 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use gallery::looks;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Chart, Renderer, SeriesConfig,
     data_config::{MatrixRef, Shading, VectorColorMap, VectorPivot, VectorScale},
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, extent, save, scene_chart, theme_named, themed};
+use styled::{background, export, extent, save, scene_chart, themed};
 
 /// The chart's colourbar over `min..max` with a label every `spacing`; the
 /// theme draws the bar and its ramp.
@@ -45,7 +47,7 @@ fn value_scale(chart: &mut Chart, min: f64, max: f64, spacing: f64) {
 // A sea breeze over a bay: wind speed as a smooth field, direction as arrows
 // on a coarser grid of the same coordinate space.
 fn wind(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::VectorField, "midnight")?;
+    let theme = ThemeFamily::Midnight.theme(ChartKind::VectorField);
     let bg = background(&theme);
     let mut chart = scene_chart("Sea breeze / 15:00 local", "East (km)", "North (km)");
     chart.set_x_range(0., 12.);
@@ -124,7 +126,7 @@ fn wind(r: &mut Renderer, out: &Path) -> Result {
 
 // Surface currents: arrows at scattered buoys, length and colour by speed.
 fn currents(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::VectorField, "ocean")?;
+    let theme = looks::ocean();
     let bg = background(&theme);
     let mut chart = scene_chart("Surface current / drifter array", "Longitude", "Latitude");
     chart.set_x_range(0., 10.);
@@ -269,7 +271,7 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
     let mut specs = [field, arrows];
     themed(
         &mut chart,
-        &theme_named(ChartKind::VectorField, "gallery")?,
+        &ThemeFamily::Gallery.theme(ChartKind::VectorField),
         &mut specs,
     )?;
     gallery::save(r, &mut chart, &specs, &out.join("gradient.png"))

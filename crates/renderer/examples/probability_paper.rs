@@ -16,6 +16,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Chart, Config, Renderer, SeriesConfig, Subplot,
     config::{AxisScale, LogTickPolicy, ProbabilityScale},
@@ -24,7 +25,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, save, theme_named, themed};
+use styled::{background, save, themed};
 
 /// A deterministic value in `-1..1`, so the sample is the same every run.
 fn jitter(seed: u64, i: usize) -> f64 {
@@ -36,7 +37,7 @@ fn jitter(seed: u64, i: usize) -> f64 {
 }
 
 fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
-    let mut theme = theme_named(ChartKind::Probability, "warm-neutral")?;
+    let mut theme = ThemeFamily::WarmPaper.theme(ChartKind::Probability);
     // Each sample and its fitted line share a colour: the strengths take
     // the first, the failure times the second.
     let [first, second, ..] = theme.series.palette[..] else {

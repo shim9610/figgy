@@ -1,7 +1,8 @@
 //! Categorical bar documents drawn as Cartesian category bars: each
 //! `CategoricalChart` is opened with `Config::from_categorical`, its columns
 //! uploaded from the borrowed values, and exported by the Cartesian renderer
-//! at 900 x 620 without post-render scaling, in the `document` theme.
+//! at 900 x 620 without post-render scaling, in the gallery family's
+//! category-bar member.
 //! Each case shows one finish: it varies the theme's bar material, and
 //! where the case has colours of its own its palette, before applying it.
 // Legacy documents are read through their deprecated reader types.
@@ -10,15 +11,16 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Chart, Color, ColumnSource, ExportOptions, ExportSource, LayerRef, Material, Renderer,
     categorical::*,
     config::Config,
-    theme::{ChartKind, SubplotScope, Theme},
+    theme::{ChartKind, Theme},
 };
 use std::path::Path;
 
-/// `document` as a Cartesian chart of category bars in `theme`, exported
+/// The categorical document as a Cartesian chart of category bars in `theme`, exported
 /// to `name.png`.
 fn save(
     r: &mut Renderer,
@@ -80,7 +82,7 @@ fn save(
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
     // The theme last: it fits the layout to the axes' final labels.
-    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, &mut series)?;
     // The grid marks the value axis, which runs along x for horizontal
     // bars.
     let grid = &mut chart.config_mut().grid;
@@ -104,7 +106,7 @@ fn main() -> Result {
 }
 
 fn render(renderer: &mut Renderer, directory: &Path) -> Result {
-    let document = gallery::theme_named(ChartKind::CategoryBars, "document")?;
+    let document = ThemeFamily::Gallery.theme(ChartKind::CategoryBars);
     let mut chart = CategoricalChart {
         title: "Grouped · Matte".into(),
         categories: ["A", "B", "C", "D"]

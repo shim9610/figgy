@@ -10,8 +10,8 @@
 //!   drum on a disc mesh, drawn as a lit, wireframed surface in a 3D box with
 //!   its contours on the floor.
 //!
-//! Each takes its look from a built-in theme (the mesh theme `midnight`,
-//! the 3D theme `warm-diverging`): the ramp, the contour and edge lines,
+//! Each takes its look from the midnight family's mesh member or the
+//! example's diverging 3D look: the ramp, the contour and edge lines,
 //! the surface's material and wireframe. The scenes keep the meshes, the
 //! ranges, the contour levels, the camera and the labels.
 //!
@@ -23,6 +23,8 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use gallery::looks;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Chart, LayerRef, Renderer, SeriesConfig, TriangleSource,
     data_config::{ContourConfig, DataLineStyleConfig, DataRenderType, Shading},
@@ -33,7 +35,7 @@ use renderer::{
 };
 use std::f64::consts::TAU;
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// A mesh series over the columns `{id}-x`, `{id}-y`, `{id}-value` and the
 /// triangle column `{id}-tri`, filled and contoured at `levels`.
@@ -79,7 +81,7 @@ fn value_scale(chart: &mut Chart, min: f64, max: f64) {
 // graded so the cells are small at the hole. Kirsch's solution gives the
 // stresses at every node; the value is the von Mises stress over S.
 fn plate(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::TriMesh, "midnight")?;
+    let theme = ThemeFamily::Midnight.theme(ChartKind::TriMesh);
     let bg = background(&theme);
     let (half_w, half_h, hole) = (4., 2.5, 1.);
     let perimeter = 4. * (half_w + half_h);
@@ -208,7 +210,7 @@ fn bessel_j(n: i32, x: f64) -> f64 {
 // stitching neighbouring rings by angle, and evaluates the (2, 2) mode
 // J_2(j_22 r) cos 2θ at every node, normalized to a peak of 1.
 fn drum(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Surface3d, "warm-diverging")?;
+    let theme = looks::warm_diverging();
     let bg = background(&theme);
     let rings = 26usize;
     let j22 = 8.417_244_140_399_865;

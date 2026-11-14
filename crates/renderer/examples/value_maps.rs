@@ -15,18 +15,19 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Renderer, SeriesConfig,
     config::{LegendCorner, LegendEntryKind},
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 // A colour-mapped scatter: samples along two spiral arms, coloured by a third
 // column through the colourbar.
 fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Scatter, "cool-slate")?;
+    let theme = ThemeFamily::CoolSlate.theme(ChartKind::Scatter);
     let bg = background(&theme);
     let mut chart = scene_chart("Particle ages / two arms", "x (kpc)", "y (kpc)");
     chart.set_x_range(-10., 10.);
@@ -68,7 +69,7 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
 // A bubble chart: three regions, marker area by population over one shared
 // domain, translucent fills so overlaps stay readable.
 fn bubbles(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Scatter, "warm-paper")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Scatter);
     let bg = background(&theme);
     let mut chart = scene_chart(
         "Income and life expectancy / 54 cities",

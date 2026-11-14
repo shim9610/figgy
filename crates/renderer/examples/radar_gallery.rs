@@ -1,8 +1,8 @@
 //! Radar documents drawn as polar charts of radar series: each `RadarChart`
 //! is opened with `Config::from_radar`, its category indices and values
 //! uploaded from the borrowed document, and exported by the Cartesian
-//! renderer at 960 × 640 without post-render scaling, in the `document`
-//! radar theme; the cases that show another outline or fill vary the
+//! renderer at 960 × 640 without post-render scaling, in the gallery
+//! family's radar member; the cases that show another outline or fill vary the
 //! theme's radar part before applying it. Writes five PNGs into
 //! the directory given as the first argument (default
 //! `target/radar-gallery`), and fails when an image has fewer than 1000
@@ -23,15 +23,16 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Category, Chart, Color, LayerRef, Renderer, SeriesConfig,
     config::Config,
     radar::*,
-    theme::{ChartKind, SubplotScope, Theme},
+    theme::{ChartKind, Theme},
 };
 use std::path::Path;
 
-/// `document` as a polar chart of radar series in `theme`, exported to
+/// The radar document as a polar chart of radar series in `theme`, exported to
 /// `name.png`. `restyle` then styles single series, for a case that draws
 /// one of them apart.
 fn save(
@@ -52,7 +53,7 @@ fn save(
     // without one fits the values' statistics from zero, as the former
     // chart did, and keeps its ring spacing.
     let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
-    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, &mut series)?;
     restyle(&mut series);
     if document.value_range.is_none() {
         // The fit chooses a label format too; the document's ring labels
@@ -97,7 +98,7 @@ fn main() -> Result {
 }
 
 fn render(r: &mut Renderer, dir: &Path) -> Result {
-    let mut theme = gallery::theme_named(ChartKind::Radar, "document")?;
+    let mut theme = ThemeFamily::Gallery.theme(ChartKind::Radar);
     let keep = |_: &mut [SeriesConfig]| {};
     // The theme colours the series: series `k` takes its colour `k`.
     let mut c = RadarChart {

@@ -4,8 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
-Each entry names the built-in theme its example applies
-([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+Each entry names the theme its example applies ([Themes](../USAGE.md#themes)):
+a theme family, or a custom theme the example builds in its support code
+(`examples/support/looks.rs`); some examples edit a copy first, such as the
 palette order or a fill opacity.
 
 ## Waterfall
@@ -16,7 +17,7 @@ A profit bridge: the host's running totals as start and end columns, increases a
 
 **Code:** [range_bars.rs](../examples/range_bars.rs), `waterfall`
 
-**Theme:** `range-bars` theme `warm-neutral`
+**Theme:** the `warm-paper` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars`
 
@@ -28,7 +29,7 @@ A profit bridge: the host's running totals as start and end columns, increases a
 
 **Code:** [range_bars.rs](../examples/range_bars.rs), `candlestick`
 
-**Theme:** `range-bars` theme `midnight`
+**Theme:** the `midnight` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars`
 
@@ -40,6 +41,6 @@ A release plan on six rows over a date axis: a state column colours each task an
 
 **Code:** [range_bars.rs](../examples/range_bars.rs), `gantt`
 
-**Theme:** `range-bars` theme `cool-slate`
+**Theme:** the `cool-slate` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars`

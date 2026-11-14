@@ -17,13 +17,13 @@
 //!   591.5 nm first step of laser isotope separation.
 //!
 //! The host chooses the columns, the labels and the lines; the renderer
-//! draws them. Every colour, width and text size is the `grotrian`
-//! energy-level theme's (#291): a builder gives each text its content and
+//! draws them. Every colour, width and text size is the gallery family's
+//! energy-level member's (#295): a builder gives each text its content and
 //! applies the theme last. The including module declares `gallery` (for
-//! `titled`, `theme_named` and `Result`) and `nist_csv` beside this one.
+//! `titled` and `Result`) and `nist_csv` beside this one.
 
 pub use super::gallery::Result;
-use super::gallery::{theme_named, titled};
+use super::gallery::titled;
 use super::nist_csv::{self, LevelRow, Levels, LineRow};
 use renderer::config::{
     AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Category, CategoryGroup, CategoryGroups,
@@ -34,12 +34,12 @@ use renderer::energy_levels::{
 };
 use renderer::format::PlainNumberFormat;
 use renderer::text::RichText;
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::{ChartKind, Theme, ThemeFamily};
 use renderer::{Chart, Color, DataRenderType, SeriesConfig};
 
-/// The diagrams' look: the `grotrian` energy-level theme.
+/// The diagrams' look: the gallery family's energy-level member.
 fn theme() -> Result<Theme> {
-    theme_named(ChartKind::EnergyLevels, "grotrian")
+    Ok(ThemeFamily::Gallery.theme(ChartKind::EnergyLevels))
 }
 
 /// A text of the diagram: its content, in the look the theme gives it.
@@ -203,7 +203,7 @@ fn themed(
     mut series: Vec<SeriesConfig>,
     theme: &Theme,
 ) -> Result<(Chart, Vec<SeriesConfig>)> {
-    c.apply_theme(theme, &mut series, SubplotScope::All)?;
+    c.apply_custom_theme(theme, &mut series)?;
     Ok((c, series))
 }
 

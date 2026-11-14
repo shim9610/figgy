@@ -2951,7 +2951,7 @@ pub(crate) mod tests {
     #[test]
     fn a_scaled_subplots_text_is_hit_where_it_is_drawn() {
         let cfg = cfg_with_small_cell();
-        let scale = cfg.subplot_text_scale(0);
+        let scale = cfg.subplot_text_factor(0);
         assert!((scale - 0.5f32.cbrt()).abs() < 1e-6);
         let resolved = cfg.subplot_config(0).unwrap();
         let mut fixed = cfg.clone();
@@ -3013,7 +3013,7 @@ pub(crate) mod tests {
     #[test]
     fn dragging_a_scaled_subplots_text_keeps_the_stored_sizes() {
         let before = cfg_with_small_cell();
-        let scale = before.subplot_text_scale(0);
+        let scale = before.subplot_text_factor(0);
         for active in [LayerRef::Base, LayerRef::Subplot(0)] {
             let mut cfg = before.clone();
             cfg.set_active_layer(active);
@@ -3054,7 +3054,7 @@ pub(crate) mod tests {
                 assert_eq!(axis.label_style.font_size, old.label_style.font_size);
                 assert_eq!(axis.title_option.text, old.title_option.text);
             }
-            assert_eq!(cfg.subplot_text_scale(0), scale);
+            assert_eq!(cfg.subplot_text_factor(0), scale);
             assert_eq!(
                 cfg.subplot_config(0).unwrap().chart_title.text.font_size,
                 was.chart_title.text.font_size * scale
@@ -3074,7 +3074,7 @@ pub(crate) mod tests {
             ),
             NudgeResult::Moved
         );
-        assert!((cfg.subplot_text_scale(0) - 0.75f32.cbrt()).abs() < 1e-6);
+        assert!((cfg.subplot_text_factor(0) - 0.75f32.cbrt()).abs() < 1e-6);
         assert_eq!(
             cfg.subplots[0].config.chart_title.text,
             before.subplots[0].config.chart_title.text

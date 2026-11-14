@@ -16,6 +16,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, Chart, Color, Renderer,
     SeriesConfig,
@@ -26,7 +27,7 @@ use renderer::{
 };
 use std::f64::consts::PI;
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// `color` with alpha `a`.
 fn faded(color: Color, a: f32) -> Color {
@@ -45,7 +46,7 @@ fn sinc(x: f64) -> f64 {
 // A stem plot: the impulse response h[n] of a 41-tap low-pass FIR filter
 // (cutoff 0.2 of the sample rate, Hamming window), the ideal sinc behind it.
 fn impulse_response(r: &mut Renderer, out: &Path) -> Result {
-    let mut theme = theme_named(ChartKind::Stem, "cool-slate")?;
+    let mut theme = ThemeFamily::CoolSlate.theme(ChartKind::Stem);
     // The ideal curve draws first, under the taps, in the second colour.
     theme.series.palette.swap(0, 1);
     let bg = background(&theme);
@@ -113,7 +114,7 @@ fn baseline(axis: AnnotationAxis, ink: Color) -> Annotation {
 // A ranked lollipop chart: the change in tree canopy of twelve districts,
 // sorted, gains and losses as two series of one categorical axis.
 fn lollipop(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Stem, "warm-paper")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Stem);
     let bg = background(&theme);
     let ink = theme.chrome.ink;
     let mut chart = scene_chart(

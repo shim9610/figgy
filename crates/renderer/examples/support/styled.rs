@@ -1,6 +1,7 @@
 //! What the designed gallery scenes share: the 1200 x 800 scene chart with
 //! a top-left legend, the colourbar, the export and the PNG check. The look
-//! of each scene is a built-in theme of its chart's kind (#291).
+//! of each scene is a family member or one of the example looks
+//! (`gallery::looks`), applied as a theme value (#295).
 use crate::gallery::Result;
 use renderer::{
     AxisTitleElement, Chart, Color, ColorMap, Config, CpuTextMeasure, LegendElement, RasterImage,
@@ -54,7 +55,7 @@ pub fn save(image: &RasterImage, background: Color, path: &Path) -> Result {
 }
 
 /// A scene chart of [`SIZE`] with its titles and a top-left legend, for a
-/// built-in theme applied with its series ([`themed`]).
+/// theme applied with its series ([`themed`]).
 pub fn scene_chart(title: &str, x: &str, y: &str) -> Chart {
     let mut chart = Chart::sized(SIZE.0, SIZE.1)
         .with_title(title)
@@ -68,7 +69,7 @@ pub fn scene_chart(title: &str, x: &str, y: &str) -> Chart {
 
 // Not every scene uses them.
 #[allow(unused_imports)]
-pub use crate::gallery::{theme_named, themed};
+pub use crate::gallery::{looks, themed};
 
 /// The scene colour of `theme`: its chart-area fill.
 pub fn background(theme: &Theme) -> Color {

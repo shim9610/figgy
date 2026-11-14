@@ -1,61 +1,26 @@
 //! Line, scatter, error-bar, stem and probability-paper themes.
 
-use super::super::{ChartKind, Theme};
-use super::{gallery, rgb, scene};
+use super::super::{ChartKind, Theme, ThemeFamily};
+use super::{colormap, family_chrome, gallery, gridded, palette, rgb, scene};
 use crate::colormap::ColorMap;
-use crate::config::{DrawStyle, MilkywayOptions, SketchOptions};
 
-pub(super) const LINE: &[&str] = &[
-    "default",
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "editorial",
-    "milkyway",
-    "constellation",
-];
-pub(super) const SCATTER: &[&str] = &["default", "cool-slate", "warm-paper"];
-pub(super) const ERROR_BARS: &[&str] = &["default", "gallery"];
-pub(super) const STEM: &[&str] = &["default", "cool-slate", "warm-paper"];
-pub(super) const PROBABILITY: &[&str] = &["default", "warm-neutral"];
-
-/// The theme `name` of `kind`'s catalogue, past `default`.
-pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
-    match (kind, name) {
-        (ChartKind::Line, "gallery") => Some(line_gallery()),
-        (ChartKind::Line, "cool-slate") => Some(line_cool_slate()),
-        (ChartKind::Line, "midnight") => Some(line_midnight()),
-        (ChartKind::Line, "editorial") => Some(line_editorial()),
-        (ChartKind::Line, "milkyway") => {
-            // Every field is named (#46); the scales and the seed are the
-            // documented defaults.
-            let documented = crate::defaults::milkyway_options();
-            Some(night_sky(DrawStyle::Milkyway(MilkywayOptions {
-                star_density: 70.0,
-                ribbon_width_px: 24.0,
-                ribbon_intensity: 0.08,
-                star_scale: documented.star_scale,
-                star_brightness: 0.32,
-                spread_px: 8.0,
-                structure_scale: documented.structure_scale,
-                faint_bias: 4.5,
-                glow: 0.35,
-                nebula: 0.6,
-                dust: 0.7,
-                planet_rim: 0.0,
-                seed: documented.seed,
-            })))
-        }
-        (ChartKind::Line, "constellation") => Some(night_sky(DrawStyle::Constellation(
-            crate::defaults::constellation_options(),
-        ))),
-        (ChartKind::Scatter, "cool-slate") => Some(scatter_cool_slate()),
-        (ChartKind::Scatter, "warm-paper") => Some(scatter_warm_paper()),
-        (ChartKind::ErrorBars, "gallery") => Some(error_bars_gallery()),
-        (ChartKind::Stem, "cool-slate") => Some(stem_cool_slate()),
-        (ChartKind::Stem, "warm-paper") => Some(stem_warm_paper()),
-        (ChartKind::Probability, "warm-neutral") => Some(probability_warm_neutral()),
-        _ => None,
+/// `family`'s member for `kind`.
+pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
+    match (kind, family) {
+        (ChartKind::Line, ThemeFamily::Gallery) => line_gallery(),
+        (ChartKind::Line, ThemeFamily::CoolSlate) => line_cool_slate(),
+        (ChartKind::Line, ThemeFamily::Midnight) => line_midnight(),
+        (ChartKind::Scatter, ThemeFamily::CoolSlate) => scatter_cool_slate(),
+        (ChartKind::Scatter, ThemeFamily::WarmPaper) => scatter_warm_paper(),
+        (ChartKind::ErrorBars, ThemeFamily::Gallery) => error_bars_gallery(),
+        (ChartKind::Stem, ThemeFamily::CoolSlate) => stem_cool_slate(),
+        (ChartKind::Stem, ThemeFamily::WarmPaper) => stem_warm_paper(),
+        (ChartKind::Probability, ThemeFamily::WarmPaper) => probability_warm_paper(),
+        (ChartKind::Line, _) => line(family),
+        (ChartKind::Scatter, _) => scatter(family),
+        (ChartKind::ErrorBars, _) => error_bars(family),
+        (ChartKind::Stem, _) => stem(family),
+        _ => probability(family),
     }
 }
 
@@ -108,60 +73,6 @@ fn line_midnight() -> Theme {
     ];
     theme.series.lines.line_width = 3.5;
     theme.series.lines.fill_opacity = Some(0.12);
-    theme
-}
-
-/// The warm editorial chart: hand-drawn strokes and round markers on
-/// newsprint.
-fn line_editorial() -> Theme {
-    let mut theme = scene(
-        ChartKind::Line,
-        rgb(250, 245, 232),
-        rgb(78, 67, 56),
-        rgb(225, 215, 195),
-    );
-    theme.chrome.draw_style = DrawStyle::Sketch(SketchOptions {
-        amplitude_px: 1.5,
-        wavelength_px: 64.0,
-        seed: 7,
-    });
-    theme.series.palette = vec![rgb(190, 81, 51), rgb(49, 121, 107)];
-    theme.series.lines.line_width = 3.0;
-    theme.series.lines.marker_size = 7.0;
-    theme
-}
-
-/// The night-sky style previews: pale ink on deep space, no grid, pastel
-/// pink and cyan lines drawn in `style`.
-fn night_sky(style: DrawStyle) -> Theme {
-    let bg = rgb(11, 15, 23);
-    let ink = rgb(225, 228, 235);
-    let soft = rgb(190, 195, 205);
-    let mut theme = Theme::documented(ChartKind::Line);
-    let chrome = &mut theme.chrome;
-    chrome.background = Some(bg);
-    chrome.draw_style = style;
-    chrome.ink = ink;
-    chrome.frame_ink = soft;
-    chrome.label_ink = soft;
-    chrome.tick_label_size = 25.0;
-    chrome.axis_title_size = 32.0;
-    chrome.legend_size = 23.0;
-    chrome.legend_fill = bg;
-    chrome.legend_border = rgb(90, 95, 106);
-    chrome.legend_padding = 9.0;
-    chrome.colorbar.border = rgb(140, 145, 155);
-    chrome.highlight.color = rgb(255, 214, 10);
-    for line in [
-        &mut chrome.grid.major_x,
-        &mut chrome.grid.major_y,
-        &mut chrome.grid.minor_x,
-        &mut chrome.grid.minor_y,
-    ] {
-        line.show = false;
-    }
-    theme.series.palette = vec![rgb(225, 161, 206), rgb(165, 215, 229)];
-    theme.series.lines.line_width = 2.0;
     theme
 }
 
@@ -266,7 +177,7 @@ fn stem_warm_paper() -> Theme {
 /// Probability paper: slate ink on a warm off-white with a full grid, blue
 /// and red samples with their fitted lines, compact text for side-by-side
 /// papers.
-fn probability_warm_neutral() -> Theme {
+fn probability_warm_paper() -> Theme {
     let mut theme = scene(
         ChartKind::Probability,
         rgb(250, 249, 246),
@@ -277,6 +188,70 @@ fn probability_warm_neutral() -> Theme {
     theme.chrome.tick_label_size = 18.0;
     theme.chrome.grid.major_x.show = true;
     theme.series.palette = vec![rgb(44, 110, 190), rgb(204, 72, 52)];
+    theme.series.lines.line_width = 3.0;
+    theme.series.lines.marker_size = 11.0;
+    theme
+}
+
+/// A family's line chart (warm paper): its colours at three pixels with a
+/// light fill.
+fn line(family: ThemeFamily) -> Theme {
+    let mut theme = family_chrome(family, ChartKind::Line);
+    theme.series.palette = palette(family);
+    theme.series.lines.line_width = 3.0;
+    theme.series.lines.fill_opacity = Some(0.1);
+    theme
+}
+
+/// A family's scatter chart (gallery, midnight): a full grid, markers a
+/// little translucent so that overlaps stay readable, and the family's map
+/// for markers coloured by value.
+fn scatter(family: ThemeFamily) -> Theme {
+    let mut theme = gridded(family_chrome(family, ChartKind::Scatter));
+    theme.series.palette = palette(family);
+    theme.series.lines.marker_size = 7.0;
+    theme.series.lines.marker_opacity = Some(0.7);
+    theme.series.fields.colormap = colormap(family);
+    theme
+}
+
+/// A family's measured curves (cool slate, midnight, warm paper): lines
+/// through markers with capped error bars.
+fn error_bars(family: ThemeFamily) -> Theme {
+    let mut theme = family_chrome(family, ChartKind::ErrorBars);
+    theme.series.palette = palette(family);
+    let lines = &mut theme.series.lines;
+    lines.line_width = 2.5;
+    lines.marker_size = 9.0;
+    lines.error_bar_width = 1.5;
+    lines.error_cap_width = 1.5;
+    lines.error_cap_size = 7.0;
+    theme
+}
+
+/// A family's stems (gallery, midnight): stems a shade lighter than their
+/// round heads.
+fn stem(family: ThemeFamily) -> Theme {
+    let mut theme = family_chrome(family, ChartKind::Stem);
+    theme.series.palette = palette(family);
+    let lines = &mut theme.series.lines;
+    lines.line_width = 2.0;
+    lines.marker_size = 11.0;
+    lines.stem_width = 2.5;
+    lines.stem_opacity = Some(0.75);
+    theme
+}
+
+/// A family's probability paper (gallery, cool slate, midnight): a full
+/// grid, the samples with their fitted lines, and compact text for papers
+/// side by side.
+fn probability(family: ThemeFamily) -> Theme {
+    let mut theme = gridded(family_chrome(family, ChartKind::Probability));
+    if family != ThemeFamily::Gallery {
+        theme.chrome.title_size = 28.0;
+        theme.chrome.tick_label_size = 18.0;
+    }
+    theme.series.palette = palette(family);
     theme.series.lines.line_width = 3.0;
     theme.series.lines.marker_size = 11.0;
     theme

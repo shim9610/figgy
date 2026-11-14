@@ -2424,11 +2424,19 @@ export class FiggyChartElement extends HTMLElement {
     return this.#mutateChart("set_subplot_text_scale", index, mode);
   }
   subplot_text_scale(index) { return this.#kernelForCall().subplot_text_scale(index); }
+  subplot_text_factor(index) { return this.#kernelForCall().subplot_text_factor(index); }
   apply_theme(name, subplots = "all") {
     const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
     return this.#mutateChart("apply_theme", name, list);
   }
-  theme_names() { return JSON.parse(this.#kernelForCall().theme_names()); }
+  theme_names() { return this.#kernelForCall().theme_names(); }
+  theme(name) { return this.#kernelForCall().theme(name); }
+  subplot_theme(index, name) { return this.#kernelForCall().subplot_theme(index, name); }
+  apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
+  apply_custom_theme_to(theme, subplots = "all") {
+    const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
+    return this.#mutateChart("apply_custom_theme_to", theme, list);
+  }
   set_background(color) {
     return this.#mutateChart("set_background", JSON.stringify(color ?? null));
   }

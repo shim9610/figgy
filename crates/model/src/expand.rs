@@ -424,7 +424,7 @@ impl Config {
         }
         config.active_layer = LayerRef::Base;
         config.annotations = AnnotationLayer::empty();
-        let scale = self.subplot_text_scale(index);
+        let scale = self.subplot_text_factor(index);
         if scale != 1.0 {
             config.scale_text_sizes(None, scale);
         }
@@ -443,7 +443,7 @@ impl Config {
     /// hit regions, drags and exports use the same sizes, and it is never
     /// stored. An export scale multiplies both chart areas, so the factor
     /// is the same at 1x and 2x.
-    pub fn subplot_text_scale(&self, index: usize) -> f32 {
+    pub fn subplot_text_factor(&self, index: usize) -> f32 {
         let Some(subplot) = self.subplots.get(index) else {
             return 1.0;
         };
@@ -2027,13 +2027,13 @@ mod tests {
             (1, 1, 0.5),
         ] {
             let cfg = text_document(width, height);
-            let scale = cfg.subplot_text_scale(0);
+            let scale = cfg.subplot_text_factor(0);
             assert!((scale - expected).abs() < 1e-6, "{width}x{height}: {scale}");
         }
         let mut cfg = text_document(400, 300);
-        assert_eq!(cfg.subplot_text_scale(1), 1.0, "past the list");
+        assert_eq!(cfg.subplot_text_factor(1), 1.0, "past the list");
         cfg.chart_area.0.width = 0;
-        assert_eq!(cfg.subplot_text_scale(0), 1.0, "an empty parent");
+        assert_eq!(cfg.subplot_text_factor(0), 1.0, "an empty parent");
     }
 
     // The resolved chart carries every text size times the factor and
@@ -2042,7 +2042,7 @@ mod tests {
     #[test]
     fn a_subplot_resolves_with_its_text_scaled_and_stores_it_unscaled() {
         let cfg = text_document(400, 300);
-        let scale = cfg.subplot_text_scale(0);
+        let scale = cfg.subplot_text_factor(0);
         let stored = &cfg.subplots[0].config;
         let resolved = cfg.subplot_config(0).unwrap();
         let (from, to) = (text_sizes(stored), text_sizes(&resolved));
@@ -2065,7 +2065,7 @@ mod tests {
 
         let mut fixed = cfg.clone();
         fixed.subplots[0].text_scale = SubplotTextScale::Fixed;
-        assert_eq!(fixed.subplot_text_scale(0), 1.0);
+        assert_eq!(fixed.subplot_text_factor(0), 1.0);
         assert_eq!(&fixed.subplot_config(0).unwrap(), stored);
         let full = text_document(800, 600);
         assert_eq!(full.subplot_config(0).unwrap(), full.subplots[0].config);
@@ -2092,9 +2092,9 @@ mod tests {
     // Resizing the cell or the parent chart moves the factor with it; an
     // export scale multiplies both areas and leaves it.
     #[test]
-    fn the_subplot_text_scale_follows_its_cell_and_not_the_export_scale() {
+    fn the_subplot_text_factor_follows_its_cell_and_not_the_export_scale() {
         let mut cfg = text_document(400, 300);
-        let small = cfg.subplot_text_scale(0);
+        let small = cfg.subplot_text_factor(0);
         cfg.set_subplot_area(
             0,
             ChartArea(Rect {
@@ -2105,7 +2105,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let larger = cfg.subplot_text_scale(0);
+        let larger = cfg.subplot_text_factor(0);
         assert!((larger - 0.75f32.cbrt()).abs() < 1e-6 && larger > small);
         assert_eq!(
             cfg.subplot_config(0).unwrap().chart_title.text.font_size,
@@ -2113,10 +2113,10 @@ mod tests {
         );
         cfg.chart_area.0.width = 1600;
         cfg.chart_area.0.height = 1200;
-        assert!((cfg.subplot_text_scale(0) - 0.375f32.cbrt()).abs() < 1e-6);
+        assert!((cfg.subplot_text_factor(0) - 0.375f32.cbrt()).abs() < 1e-6);
         for scale in [2.0, 3.0] {
             let scaled = cfg.scaled(scale);
-            assert_eq!(scaled.subplot_text_scale(0), cfg.subplot_text_scale(0));
+            assert_eq!(scaled.subplot_text_factor(0), cfg.subplot_text_factor(0));
             assert_eq!(
                 scaled.subplot_config(0).unwrap().chart_title.text.font_size,
                 cfg.subplot_config(0).unwrap().chart_title.text.font_size * scale
@@ -2153,7 +2153,7 @@ mod tests {
         );
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, fixed);
-        assert_eq!(back.subplot_text_scale(0), 1.0);
+        assert_eq!(back.subplot_text_factor(0), 1.0);
         let explicit = written.replacen(
             r#""subplots":[{"#,
             r#""subplots":[{"text_scale":"Auto","#,

@@ -1,40 +1,53 @@
-//! The theme matrix (#291): every built-in theme on every playground scene
-//! of its kind.
+//! The theme matrix (#291, #295): every family and every custom look on
+//! every playground scene of its kind.
 //!
-//! A theme is made for one kind of chart, so the matrix is scene x theme
-//! of the scene's kind: for every scene of the playground catalogue
-//! (`support/playground_scenes.rs`) the kind of its base chart
-//! (`ChartKind::of`) and, for every name in that kind's catalogue
-//! (`Theme::names`), `Chart::apply_theme` over the whole document. The
-//! radial scenes take the radial catalogue (`RadialTheme`). After a theme
-//! is applied:
+//! The families are the theme names; a family has a member for every kind.
+//! Any other look is a custom theme, made for one kind. So for every scene
+//! of the playground catalogue (`support/playground_scenes.rs`) the matrix
+//! reads the kind of its base chart (`ChartKind::of`) and applies:
+//! - every family by name with `Chart::apply_theme_to` over the whole
+//!   document. A family gives every chart its own kind's member, so a scene
+//!   whose subplots mix kinds takes it whole, each subplot in its kind's
+//!   member;
+//! - as custom themes with `Chart::apply_custom_theme_to`, the documented
+//!   look of the kind (`Theme::default()` with its `kind`) and the gallery's
+//!   custom looks of that kind (`examples/support/looks.rs`).
+//!
+//! The radial scenes take the families' radial members, the documented
+//! radial look and the gallery's sunburst look. After a theme is applied:
 //! - the document validates with its series;
 //! - once saved, it serializes unchanged (`serde` feature);
 //! - it exports at 1x and at 2x, and its image is not the image of a theme
-//!   applied before it, so no frame is left stale;
+//!   applied before it, so no frame is left stale (a theme that writes the
+//!   same document as an earlier one draws the same image);
 //! - the data is drawn: the 1x export differs from the export of the same
 //!   themed chart without its series at [`MIN_DATA_PIXELS`] pixels or more
 //!   inside the data areas, so no theme paints its series away.
 //!
 //! Two refusals are part of the contract and are checked to change nothing:
-//! - a subplot of another kind than the base chart refuses the theme over
-//!   `SubplotScope::All` (`ThemeError::Kind` naming the subplot). The theme
-//!   is then applied with `SubplotScope::None`, which styles the base chart
-//!   alone and must work;
-//! - a theme whose draw style is not Precise refuses a series that style
-//!   cannot draw (`ThemeError::DrawStyle`). A Precise theme never does.
+//! - a subplot of another kind refuses a custom theme over
+//!   `SubplotScope::All` (`ThemeError::WrongKind` naming the subplot); a family
+//!   never does. The theme is then applied with `SubplotScope::None`, which
+//!   styles the base chart alone and must work;
+//! - a custom theme whose draw style is not Precise refuses a series that
+//!   style cannot draw (`ThemeError::UnsupportedDrawStyle`). A Precise theme,
+//!   every family member among them, never does.
 //!
 //! The scenes keep the playground's document size. Every kind has a scene
-//! (`every_kind_has_a_scene`), so every theme of the catalogue is drawn at
-//! least once. The catalogue's colours are held to a contrast floor against
-//! the theme's background in a test of their own, without a GPU.
+//! (`every_kind_has_a_scene`), so every family member and every custom look
+//! is drawn at least once. The colours of every family member, the
+//! documented looks and the gallery's looks are held to a contrast floor
+//! against the theme's background in a test of their own, without a GPU.
 #![cfg(not(target_arch = "wasm32"))]
 
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 
+#[path = "../examples/support/looks.rs"]
+mod looks;
+
 use renderer::config::DrawStyle;
-use renderer::theme::{ChartKind, RadialTheme, SubplotScope, Theme, ThemeError};
+use renderer::theme::{ChartKind, RadialTheme, SubplotScope, Theme, ThemeError, ThemeFamily};
 use renderer::{
     Chart, Color, Config, ExportOptions, LayerRef, RadialRenderer, RasterImage, Renderer,
     SeriesConfig,
@@ -137,6 +150,11 @@ const GROUPS: [&[SceneKind]; 7] = [
 struct Tally {
     /// Themes applied and drawn.
     applied: usize,
+    /// Of those, family members.
+    families: usize,
+    /// Of those, families applied to a scene whose subplots are of another
+    /// kind than its base chart.
+    mixed: usize,
     /// Of those, the ones a subplot of another kind sent to
     /// `SubplotScope::None`.
     base_only: usize,
@@ -229,8 +247,39 @@ fn round_trip(at: &str, config: &Config, series: &[SeriesConfig]) {
 #[cfg(not(feature = "serde"))]
 fn round_trip(_: &str, _: &Config, _: &[SeriesConfig]) {}
 
-/// One row of the matrix: every theme of `chart_kind` on the chart, which
-/// must be of that kind.
+/// The gallery's custom looks (`examples/support/looks.rs`), by name.
+fn gallery_looks() -> [(&'static str, Theme); 9] {
+    [
+        ("editorial", looks::editorial()),
+        ("milkyway", looks::milkyway()),
+        ("constellation", looks::constellation()),
+        ("revenue", looks::revenue()),
+        ("deep-space", looks::deep_space()),
+        ("topographic", looks::topographic()),
+        ("ocean", looks::ocean()),
+        ("warm-terrain", looks::warm_terrain()),
+        ("warm-diverging", looks::warm_diverging()),
+    ]
+}
+
+/// The custom themes of `kind`: its documented look, then the gallery's
+/// looks of that kind.
+fn custom_themes(kind: ChartKind) -> Vec<(&'static str, Theme)> {
+    let documented = Theme {
+        kind,
+        ..Theme::default()
+    };
+    std::iter::once(("documented", documented))
+        .chain(
+            gallery_looks()
+                .into_iter()
+                .filter(|(_, theme)| theme.kind == kind),
+        )
+        .collect()
+}
+
+/// One row of the matrix: every family and every custom theme of
+/// `chart_kind` on the chart, which must be of that kind.
 fn sweep_chart(
     r: &mut Renderer,
     what: &str,
@@ -246,33 +295,55 @@ fn sweep_chart(
         "{what}"
     );
     // The themed 1x exports so far: a theme that left a stale frame behind
-    // would repeat the image of the one before it.
-    let mut looks: Vec<(&str, RasterImage)> = Vec::new();
-    for name in Theme::names(chart_kind) {
+    // would repeat the image of the one before it. A theme that writes the
+    // same document as an earlier one draws the same image.
+    let mut looks: Vec<(&str, Config, Vec<SeriesConfig>, RasterImage)> = Vec::new();
+    let candidates = ThemeFamily::ALL
+        .into_iter()
+        .map(|family| (family.name(), Some(family), family.theme(chart_kind)))
+        .chain(
+            custom_themes(chart_kind)
+                .into_iter()
+                .map(|(name, theme)| (name, None, theme)),
+        );
+    for (name, family, theme) in candidates {
         let at = format!("{what}: {chart_kind} theme {name:?}");
-        let theme = Theme::named(chart_kind, name).unwrap_or_else(|| panic!("{at}: not found"));
         assert_eq!(theme.kind, chart_kind, "{at}");
+        if family.is_some() {
+            assert_eq!(theme.chrome.draw_style, DrawStyle::Precise, "{at}");
+            assert_eq!(
+                Chart::new(config.clone()).theme(name, declared),
+                Ok(theme.clone()),
+                "{at}: the member the chart takes"
+            );
+        }
+        let apply = |chart: &mut Chart, series: &mut [SeriesConfig], scope| match family {
+            Some(_) => chart.apply_theme_to(name, series, scope),
+            None => chart.apply_custom_theme_to(&theme, series, scope),
+        };
         let mut chart = Chart::new(config.clone());
         let mut series = declared.to_vec();
 
         let mut scope = SubplotScope::All;
-        let mut result = chart.apply_theme(&theme, &mut series, scope);
-        if let Err(ThemeError::Kind { layer, .. }) = &result {
-            // A subplot of another kind: the theme styles the base chart
-            // alone.
+        let mut result = apply(&mut chart, &mut series, scope);
+        if let Err(ThemeError::WrongKind { layer, .. }) = &result {
+            // A subplot of another kind than a custom theme: the theme
+            // styles the base chart alone. A family has a member for every
+            // kind.
+            assert!(family.is_none(), "{at}: a family refused {layer:?}");
             assert!(matches!(layer, LayerRef::Subplot(_)), "{at}: {result:?}");
             assert_eq!(chart.config(), config, "{at}: a refusal changed the chart");
             assert_eq!(series, declared, "{at}: a refusal changed the series");
             scope = SubplotScope::None;
-            result = chart.apply_theme(&theme, &mut series, scope);
+            result = apply(&mut chart, &mut series, scope);
             assert!(
-                !matches!(result, Err(ThemeError::Kind { .. })),
+                !matches!(result, Err(ThemeError::WrongKind { .. })),
                 "{at}: the base chart refuses its own kind: {result:?}"
             );
         }
         match result {
             Ok(()) => {}
-            Err(ThemeError::DrawStyle { series_id }) => {
+            Err(ThemeError::UnsupportedDrawStyle { series_id }) => {
                 assert_ne!(
                     theme.chrome.draw_style,
                     DrawStyle::Precise,
@@ -293,9 +364,33 @@ fn sweep_chart(
         let themed = chart.config();
         assert_eq!(themed.background, theme.chrome.background, "{at}");
         assert_eq!(themed.draw_style, theme.chrome.draw_style, "{at}");
+        // A family gives every subplot its own kind's member.
+        let mut mixed = false;
+        if let Some(family) = family {
+            for index in 0..config.subplots.len() {
+                let Some(kind) = ChartKind::of(config, declared, LayerRef::Subplot(index)) else {
+                    continue;
+                };
+                mixed |= kind != chart_kind;
+                let member = family.theme(kind);
+                let cell = &themed.subplots[index].config;
+                assert_eq!(cell.background, member.chrome.background, "{at}: [{index}]");
+                assert_eq!(
+                    cell.chart_title.text.color, member.chrome.ink,
+                    "{at}: subplot {index} ({kind})"
+                );
+            }
+        }
         assert_eq!(themed.validate_chart(), Ok(()), "{at}");
         assert_eq!(themed.validate_series(&series), Ok(()), "{at}");
         round_trip(&at, themed, &series);
+        // Applying the theme again changes nothing more.
+        let mut again = Chart::new(themed.clone());
+        let mut series_again = series.clone();
+        apply(&mut again, &mut series_again, scope)
+            .unwrap_or_else(|error| panic!("{at}: again: {error}"));
+        assert_eq!(again.config(), themed, "{at}: applied twice");
+        assert_eq!(series_again, series, "{at}: applied twice");
 
         let drawn = export(r, &chart, &series, monotonic, 1.0);
         let doubled = export(r, &chart, &series, monotonic, 2.0);
@@ -314,14 +409,23 @@ fn sweep_chart(
             data >= MIN_DATA_PIXELS,
             "{at}: the series change {data} pixels of the data areas"
         );
-        for (other, look) in &looks {
+        for (other, look_config, look_series, look) in &looks {
+            if look_config == themed && *look_series == series {
+                continue;
+            }
             assert!(
                 look.rgba != drawn.rgba,
                 "{at}: drawn as the theme {other:?} before it"
             );
         }
-        looks.push((name, drawn));
+        looks.push((name, themed.clone(), series, drawn));
         tally.applied += 1;
+        if family.is_some() {
+            tally.families += 1;
+            if mixed {
+                tally.mixed += 1;
+            }
+        }
         if scope == SubplotScope::None {
             tally.base_only += 1;
         }
@@ -348,14 +452,20 @@ fn sweep_scenes(kinds: &[SceneKind]) -> Tally {
         );
     }
     eprintln!(
-        "theme matrix: {} scenes, {} themes applied ({} on the base chart alone), {} refused for \
-         their draw style",
+        "theme matrix: {} scenes, {} themes applied ({} family members, {} of them over subplots \
+         of other kinds; {} on the base chart alone), {} refused for their draw style",
         kinds.len(),
         tally.applied,
+        tally.families,
+        tally.mixed,
         tally.base_only,
         tally.refused
     );
-    assert!(tally.applied >= kinds.len(), "every scene takes `default`");
+    assert_eq!(
+        tally.families,
+        kinds.len() * ThemeFamily::ALL.len(),
+        "every scene takes every family"
+    );
     tally
 }
 
@@ -376,12 +486,14 @@ fn the_groups_cover_every_scene() {
     }
 }
 
-// The Subplots scene has cells of other kinds than its base chart, so its
-// rows take the `SubplotScope::None` path; the Scatter and Lines scenes
-// draw series the night-sky styles refuse.
+// The Subplots scene has cells of other kinds than its base chart: the
+// families theme it whole, each cell in its kind's member, and the line
+// kind's own themes take the `SubplotScope::None` path. The Scatter and
+// Lines scenes draw series the night-sky styles refuse.
 #[test]
 fn xy_scenes_take_their_themes() {
     let tally = sweep_scenes(XY_SCENES);
+    assert!(tally.mixed > 0, "no family themed subplots of another kind");
     assert!(tally.base_only > 0, "no row took the base chart alone");
     assert!(tally.refused > 0, "no theme was refused for its draw style");
 }
@@ -411,19 +523,37 @@ fn science_scenes_take_their_themes() {
     sweep_scenes(SCIENCE_SCENES);
 }
 
-// The radial scenes take every radial theme: the chart validates, exports
-// at 1x and 2x, and its slices cover a share of the canvas in colours that
-// are not the background.
+/// The radial themes of the matrix: the families' members, the documented
+/// look and the gallery's sunburst look.
+fn radial_themes() -> Vec<(&'static str, RadialTheme)> {
+    ThemeFamily::ALL
+        .into_iter()
+        .map(|family| (family.name(), family.radial()))
+        .chain([
+            ("documented", RadialTheme::default()),
+            ("sunburst", looks::sunburst()),
+        ])
+        .collect()
+}
+
+// The radial scenes take every radial theme, the families' members first:
+// the chart validates, exports at 1x and 2x, and its slices cover a share
+// of the canvas in colours that are not the background.
 #[test]
 fn radial_scenes_take_their_themes() {
     let mut r = RadialRenderer::headless_blocking().expect("headless radial renderer");
     for &kind in RADIAL_SCENES {
         let declared = scenes::radial::document(kind);
-        for name in RadialTheme::names() {
+        for (name, theme) in radial_themes() {
             let at = format!("{kind:?}: radial theme {name:?}");
-            let theme = RadialTheme::named(name).unwrap_or_else(|| panic!("{at}: not found"));
             let mut chart = declared.clone();
-            theme.apply(&mut chart);
+            if ThemeFamily::named(name).is_some() {
+                chart
+                    .apply_theme(name)
+                    .unwrap_or_else(|error| panic!("{at}: {error}"));
+            } else {
+                theme.apply(&mut chart);
+            }
             chart.format_labels();
             assert_eq!(chart.validate(), Ok(()), "{at}");
             assert_eq!(chart.background, theme.background, "{at}");
@@ -474,7 +604,7 @@ fn radial_scenes_take_their_themes() {
     }
 }
 
-// Every kind has a playground scene, so every theme of the catalogue is
+// Every kind has a playground scene, so every family member is
 // drawn by the groups above. A kind that loses its scene, or a new kind
 // without one, fails here: its themes need a scene to be drawn on.
 #[test]
@@ -520,7 +650,8 @@ fn contrast(a: Color, b: Color) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
-// The catalogue's colours stand off their background. Text (`chrome.ink`,
+// The colours of every family member, every documented look and every
+// gallery look stand off their background. Text (`chrome.ink`,
 // `chrome.label_ink`, a radial theme's `label_color`) reaches the WCAG AA
 // ratio of 4.5 against the theme's background, white where the theme leaves
 // it transparent. Every opaque palette colour reaches 1.5 against the fill
@@ -532,11 +663,11 @@ fn theme_colours_stand_off_their_background() {
     let mut failures = Vec::new();
     let mut themes = 0;
     for kind in ChartKind::ALL {
-        let names = Theme::names(kind);
-        assert_eq!(names.first(), Some(&"default"), "{kind}");
-        for name in names {
+        let members = ThemeFamily::ALL
+            .into_iter()
+            .map(|family| (family.name(), family.theme(kind)));
+        for (name, theme) in members.chain(custom_themes(kind)) {
             themes += 1;
-            let theme = Theme::named(kind, name).unwrap_or_else(|| panic!("{kind} {name}"));
             let chrome = &theme.chrome;
             let background = chrome.background.unwrap_or(Color::WHITE);
             assert_eq!(background.a, 1.0, "{kind} {name}: a translucent background");
@@ -560,11 +691,8 @@ fn theme_colours_stand_off_their_background() {
             }
         }
     }
-    let names = RadialTheme::names();
-    assert_eq!(names.first(), Some(&"default"));
-    for name in names {
+    for (name, theme) in radial_themes() {
         themes += 1;
-        let theme = RadialTheme::named(name).unwrap_or_else(|| panic!("radial {name}"));
         let ratio = contrast(theme.label_color, theme.background);
         if ratio < MIN_TEXT_CONTRAST {
             failures.push(format!(

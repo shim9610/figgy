@@ -21,12 +21,13 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::theme::ChartKind;
+use renderer::theme::ThemeFamily;
 use renderer::{
     CellRef, Chart, Color, Config, ExportOptions, ExportSource, HitMap, LayerRef, Renderer,
     SeriesConfig, Subplot, config::TickVisibility, text::RichText,
 };
 use std::path::Path;
-use styled::{background, save, theme_named, themed};
+use styled::{background, save, themed};
 
 // Small multiples: four sensors in a 2 x 2 grid of subplots sharing the hour
 // axis, each with its own range and colour.
@@ -34,7 +35,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
     // The theme's text sizes are the ones of a full-size chart; each cell
     // draws them at its own text scale (#292). The temperature is drawn in
     // coral, the humidity in teal.
-    let mut theme = theme_named(ChartKind::Line, "cool-slate")?;
+    let mut theme = ThemeFamily::CoolSlate.theme(ChartKind::Line);
     theme.series.palette.swap(0, 1);
     let bg = background(&theme);
     let hour: Vec<f64> = (0..=240).map(|i| f64::from(i) / 10.).collect();
@@ -129,7 +130,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
         linked.bottom_x.max,
         document.subplots[0].config.bottom_x.max
     );
-    let scale = document.subplot_text_scale(1);
+    let scale = document.subplot_text_factor(1);
     assert!((scale - 0.5f32.cbrt()).abs() < 1e-6);
     assert_eq!(
         linked.chart_title.text.font_size,

@@ -15,6 +15,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     BarAlign, Renderer, SeriesConfig,
     config::{AxisScale, Category},
@@ -23,7 +24,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// A deterministic value in `0..1` for row `i` and stream `seed`.
 fn unit(seed: u64, i: u64) -> f64 {
@@ -35,7 +36,7 @@ fn unit(seed: u64, i: u64) -> f64 {
 }
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Parallel, "midnight")?;
+    let theme = ThemeFamily::Midnight.theme(ChartKind::Parallel);
     let bg = background(&theme);
     let mut chart = scene_chart("Hyperparameter sweep / 120 training runs", "", "");
 

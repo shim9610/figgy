@@ -6,12 +6,13 @@
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
-use gallery::{Result, output_directory, save, theme_named, themed, titled, with_renderer};
+use gallery::{Result, output_directory, save, themed, titled, with_renderer};
+use renderer::theme::ThemeFamily;
 use renderer::{Renderer, SeriesConfig, theme::ChartKind};
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Histogram, "gallery")?;
+    let theme = ThemeFamily::Gallery.theme(ChartKind::Histogram);
     let edges: Vec<f64> = (0..41).map(|i| -4.0 + i as f64 * 0.2).collect();
     let counts: Vec<f64> = edges
         .windows(2)

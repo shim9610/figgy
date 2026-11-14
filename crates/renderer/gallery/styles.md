@@ -4,8 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
-Each entry names the built-in theme its example applies
-([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+Each entry names the theme its example applies ([Themes](../USAGE.md#themes)):
+a theme family, or a custom theme the example builds in its support code
+(`examples/support/looks.rs`); some examples edit a copy first, such as the
 palette order or a fill opacity.
 
 ## Precise style
@@ -16,7 +17,7 @@ palette order or a fill opacity.
 
 **Code:** [precise_sketch_preview.rs](../examples/precise_sketch_preview.rs), `main`
 
-**Theme:** `line` theme `default`, with larger text
+**Theme:** the documented look (`Theme::default()`), with larger text
 
 **Run:** `cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/precise-sketch`
 
@@ -28,7 +29,7 @@ palette order or a fill opacity.
 
 **Code:** [precise_sketch_preview.rs](../examples/precise_sketch_preview.rs), `main`
 
-**Theme:** `line` theme `default`, with larger text and `DrawStyle::Sketch`
+**Theme:** the documented look (`Theme::default()`), with larger text and `DrawStyle::Sketch`
 
 **Run:** `cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/precise-sketch`
 
@@ -40,7 +41,7 @@ Milkyway on `Line` series: stars and nebula only.
 
 **Code:** [milkyway_line_preview.rs](../examples/milkyway_line_preview.rs), `main`
 
-**Theme:** `line` theme `milkyway`
+**Theme:** a custom theme, `looks::milkyway()` in the example support
 
 **Run:** `cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png`
 
@@ -52,7 +53,7 @@ Constellation on `ScatterLine` series: stars at the source samples.
 
 **Code:** [constellation_preview.rs](../examples/constellation_preview.rs), `main`
 
-**Theme:** `line` theme `constellation`
+**Theme:** a custom theme, `looks::constellation()` in the example support
 
 **Run:** `cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png`
 
@@ -64,7 +65,7 @@ A dark service-monitoring card.
 
 **Code:** [gallery_concepts.rs](../examples/gallery_concepts.rs), `observability`
 
-**Theme:** `line` theme `midnight`
+**Theme:** the `midnight` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts`
 
@@ -76,7 +77,7 @@ Rounded horizontal stacked bars with inside labels.
 
 **Code:** [gallery_concepts.rs](../examples/gallery_concepts.rs), `revenue`
 
-**Theme:** `category-bars` theme `revenue`
+**Theme:** a custom theme, `looks::revenue()` in the example support
 
 **Run:** `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts`
 
@@ -88,7 +89,7 @@ A warm paper-coloured Sketch figure.
 
 **Code:** [gallery_concepts.rs](../examples/gallery_concepts.rs), `editorial`
 
-**Theme:** `line` theme `editorial`
+**Theme:** a custom theme, `looks::editorial()` in the example support
 
 **Run:** `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts`
 
@@ -100,7 +101,7 @@ A toon-shaded pie with outlines.
 
 **Code:** [gallery_concepts.rs](../examples/gallery_concepts.rs), `radial_concepts`
 
-**Theme:** radial theme `pop-art`
+**Theme:** the `warm-paper` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts`
 
@@ -112,7 +113,7 @@ A pearl donut from the same slice model.
 
 **Code:** [gallery_concepts.rs](../examples/gallery_concepts.rs), `radial_concepts`
 
-**Theme:** radial theme `portfolio`
+**Theme:** the `midnight` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts`
 
@@ -124,6 +125,6 @@ A custom colour ramp under fine isolines.
 
 **Code:** [gallery_concepts.rs](../examples/gallery_concepts.rs), `terrain`
 
-**Theme:** `field` theme `topographic`
+**Theme:** a custom theme, `looks::topographic()` in the example support
 
 **Run:** `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts`

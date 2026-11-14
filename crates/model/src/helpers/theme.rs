@@ -1,13 +1,18 @@
-//! Themes (#265, #291): looks written into the document once, each made for
-//! one kind of chart.
+//! Themes (#265, #291, #295): looks written into the document once.
 //!
-//! A [`Theme`] is a value, not a name stored in the document: applying one
+//! A theme family ([`ThemeFamily`]: `gallery`, `cool-slate`, `midnight`,
+//! `warm-paper`) is the way to theme a chart by name: it has a member
+//! [`Theme`] for every [`ChartKind`] and a member [`RadialTheme`], and
+//! [`Theme::apply_named`] gives each chart in scope its own kind's member,
+//! so one name themes any chart. Any other look is a custom theme: a
+//! [`Theme`] value, made for one kind (a family's member to start from,
+//! [`ThemeFamily::theme`], with any field changed), applied with
+//! [`Theme::apply`] or [`Theme::apply_to_its_kind`]; a chart of another
+//! kind refuses it ([`ThemeError::WrongKind`]).
+//!
+//! A theme is a value, not a name stored in the document: applying one
 //! writes exactly the fields it owns and keeps everything the user set as
-//! content or layout. It is made for one [`ChartKind`]: applying it to a
-//! chart of another kind is refused ([`ThemeError::Kind`]) and changes
-//! nothing. [`Theme::named`] looks one up in a kind's catalogue
-//! ([`Theme::names`]). The radial chart has its own ([`RadialTheme`]). A
-//! theme owns:
+//! content or layout. A theme owns:
 //! - the chrome ([`ChromeTheme`]): the chart and plot fills, the draw style,
 //!   the axis frame, the text look, the grid, the legend box and the
 //!   selection highlight;
@@ -22,8 +27,9 @@
 //! [`SubplotScope`] chooses.
 //!
 //! Font sizes change what the margins must hold. The renderer's
-//! `Chart::apply_theme` refits the layout after applying; a host that applies
-//! a theme to a bare [`Config`] calls `layout::auto_layout` itself.
+//! `Chart::apply_theme` and `Chart::apply_custom_theme` refit the layout
+//! after applying; a host that applies a theme to a bare [`Config`] calls
+//! `layout::auto_layout` itself.
 
 use crate::annotation::AnnotationKind;
 use crate::color::Color;
@@ -44,15 +50,19 @@ use crate::material::Material;
 use crate::preset::{AxisPreset, ColorCycle};
 
 mod catalog;
+mod family;
 mod kind;
 use crate::radial::{RadialChart, RadialOutline, RadialSlice};
 use crate::text::RichText;
+pub use family::ThemeFamily;
 pub use kind::ChartKind;
 
 /// A chart look made for one kind of chart: the chrome and one part per
 /// series family. Every built-in theme defines every part; a host edits any
 /// field before applying.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Theme {
     /// The kind of chart the theme is made for; [`Theme::apply`] refuses
     /// a chart of another kind.
@@ -63,6 +73,8 @@ pub struct Theme {
 
 /// The look of everything around the data.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct ChromeTheme {
     /// [`Config::background`]: the chart area's fill, or none.
     pub background: Option<Color>,
@@ -107,6 +119,8 @@ pub struct ChromeTheme {
 /// The colourbar's look; its map is the field part's
 /// ([`FieldTheme::colormap`]). Its side, alignment, range and offsets stay.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct ColorbarTheme {
     pub border: Color,
     pub border_width: f32,
@@ -125,6 +139,8 @@ pub struct ColorbarTheme {
 
 /// One kind of grid line: whether it is drawn and how.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct GridLine {
     pub show: bool,
     pub color: Color,
@@ -134,6 +150,8 @@ pub struct GridLine {
 
 /// The four kinds of grid line.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct GridTheme {
     pub major_x: GridLine,
     pub major_y: GridLine,
@@ -144,6 +162,8 @@ pub struct GridTheme {
 /// The selection highlight's look ([`DataSelectionsConfig`]); the selected
 /// refs and their visibility stay.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct HighlightTheme {
     pub color: Color,
     pub outline_width_px: f32,
@@ -153,6 +173,8 @@ pub struct HighlightTheme {
 
 /// One part per series family.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct SeriesTheme {
     /// Series `i` takes `palette[i % palette.len()]`, on every part a
     /// palette colours ([`ColorCycle::apply_to_series`] names them). Empty
@@ -175,6 +197,8 @@ pub struct SeriesTheme {
 /// Lines, markers, stems and error bars of x-y and ternary series, and the
 /// polylines of streamline and parallel series.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct LineTheme {
     pub line_width: f32,
     /// The opacity of a filled line's fill, in the line's colour; `None`
@@ -197,6 +221,8 @@ pub struct LineTheme {
 
 /// Histogram bars, category bars and the bars of range series.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct BarTheme {
     /// A histogram bar's border.
     pub border_color: Color,
@@ -222,6 +248,8 @@ pub struct BarTheme {
 
 /// Box plots, violins and the raw points beside them.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct BoxTheme {
     pub material: Material,
     pub gloss: f32,
@@ -255,6 +283,8 @@ pub struct BoxTheme {
 
 /// A text's colour and size.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct TextLook {
     pub color: Color,
     pub size: f32,
@@ -265,6 +295,8 @@ pub struct TextLook {
 /// labels. Which levels are drawn, whether they are labelled and how far
 /// apart the labels sit stay.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct FieldTheme {
     pub colormap: ColorMap,
     pub nan_color: Color,
@@ -289,6 +321,8 @@ pub struct FieldTheme {
 
 /// Vector arrows.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct VectorTheme {
     pub width_px: f32,
     pub head_length_px: f32,
@@ -297,6 +331,8 @@ pub struct VectorTheme {
 
 /// Radar outlines; `None` keeps each series' own value.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct RadarTheme {
     pub line_width_px: Option<f32>,
     pub marker_size_px: Option<f32>,
@@ -309,6 +345,8 @@ pub struct RadarTheme {
 /// how a series is coloured ([`crate::data_config::RangeColor`]): it
 /// recolours the colouring the series has.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct RangeBarTheme {
     /// The rising bars of a series coloured by direction; `None` keeps the
     /// series' own.
@@ -332,6 +370,8 @@ pub struct RangeBarTheme {
 
 /// Ternary region fills and their outlines.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct TernaryTheme {
     /// The fill colours of the series that fill a region: series `i` takes
     /// `regions[i % regions.len()]`. Empty keeps every region colour.
@@ -346,6 +386,8 @@ pub struct TernaryTheme {
 /// Parallel coordinates: the axes take the chrome's frame and tick labels,
 /// the rows the line part.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct ParallelTheme {
     /// The size of the axis names, the labels of the category axis.
     pub name_size: f32,
@@ -353,6 +395,8 @@ pub struct ParallelTheme {
 
 /// 3D surfaces and their lighting response.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct SurfaceTheme {
     pub material: Material,
     pub gloss: f32,
@@ -368,6 +412,8 @@ pub struct SurfaceTheme {
 
 /// Energy-level (Grotrian) diagrams. The levels take the cycle colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct EnergyLevelTheme {
     /// The frame a chart of these series takes.
     pub axis_preset: AxisPreset,
@@ -403,6 +449,8 @@ pub struct EnergyLevelTheme {
 /// Feynman diagrams. The lines take the cycle colour unless their particle
 /// has a colour of its own here.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct FeynmanTheme {
     /// The frame a chart of these series takes.
     pub axis_preset: AxisPreset,
@@ -432,12 +480,16 @@ pub struct FeynmanTheme {
 }
 
 /// A radial (pie, donut, sunburst) chart's look (#291). The radial chart is
-/// a model of its own, so its themes are too: [`RadialTheme::named`] looks
-/// one up and [`RadialTheme::apply`] writes it. Its top-level slices take
+/// a model of its own, so its themes are too: a family's radial member
+/// ([`ThemeFamily::radial`], applied by name with
+/// [`crate::radial::RadialChart::apply_theme`]) or a custom value, which
+/// [`RadialTheme::apply`] writes. Its top-level slices take
 /// the palette; values, labels, the slice structure, the kind (pie or
 /// donut, and the hole), the light, the hover response and the font family
 /// stay, and so does a slice's own style.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct RadialTheme {
     /// Slice `i` of the top level takes `palette[i % palette.len()]`;
     /// empty keeps every slice colour.
@@ -473,42 +525,175 @@ pub struct RadialTheme {
     pub outline: RadialOutline,
 }
 
+/// The defaults of a theme and its parts are the documented default look
+/// of a line chart (the look a default document draws with): the values a theme object a host
+/// saved before a field was added reads for that field (the `serde`
+/// feature), as the document format's defaults do.
+impl Default for Theme {
+    fn default() -> Self {
+        Self::documented(ChartKind::Line)
+    }
+}
+
+macro_rules! part_defaults {
+    ($($part:ty => |$theme:ident| $value:expr;)*) => {$(
+        impl Default for $part {
+            fn default() -> Self {
+                let $theme = Theme::default();
+                $value
+            }
+        }
+    )*};
+}
+
+part_defaults! {
+    ChromeTheme => |theme| theme.chrome;
+    ColorbarTheme => |theme| theme.chrome.colorbar;
+    GridTheme => |theme| theme.chrome.grid;
+    GridLine => |theme| theme.chrome.grid.major_x;
+    HighlightTheme => |theme| theme.chrome.highlight;
+    SeriesTheme => |theme| theme.series;
+    LineTheme => |theme| theme.series.lines;
+    BarTheme => |theme| theme.series.bars;
+    BoxTheme => |theme| theme.series.boxes;
+    FieldTheme => |theme| theme.series.fields;
+    VectorTheme => |theme| theme.series.vectors;
+    RadarTheme => |theme| theme.series.radar;
+    RangeBarTheme => |theme| theme.series.range_bars;
+    TernaryTheme => |theme| theme.series.ternary;
+    ParallelTheme => |theme| theme.series.parallel;
+    SurfaceTheme => |theme| theme.series.surfaces;
+    EnergyLevelTheme => |theme| theme.series.energy_levels;
+    FeynmanTheme => |theme| theme.series.feynman;
+    TextLook => |theme| TextLook {
+        color: theme.chrome.label_ink,
+        size: theme.chrome.tick_label_size,
+    };
+}
+
+/// The documented default radial look.
+impl Default for RadialTheme {
+    fn default() -> Self {
+        Self::documented()
+    }
+}
+
 /// Why a theme was not applied. Nothing is changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemeError {
-    /// A chart in scope is of another kind than the theme is made for.
-    Kind {
+    /// A chart in scope is of another kind than a custom theme is made
+    /// for ([`Theme::apply`]); a family fits every kind.
+    WrongKind {
+        /// The theme's [`Theme::kind`].
         theme: ChartKind,
+        /// The kind of the chart that refused it.
         chart: ChartKind,
         /// The chart: [`LayerRef::Base`] or a [`LayerRef::Subplot`].
         layer: LayerRef,
     },
     /// The theme's draw style cannot draw a series in scope: the renderer
-    /// would drop it (`renderer::draw_style_supports`). The model cannot
-    /// tell; the renderer's `Chart::apply_theme` and the web wrappers
-    /// check it before applying.
-    DrawStyle { series_id: String },
+    /// would drop it (`renderer::draw_style_supports`). Only a custom
+    /// theme can be refused so: every family member draws in the Precise
+    /// style. The model cannot tell; [`Theme::apply_to_its_kind`] takes the
+    /// answer as an argument, and the renderer's `Chart` methods and the
+    /// web wrappers check it before applying.
+    UnsupportedDrawStyle { series_id: String },
+    /// The name is not a family's.
+    UnknownName {
+        name: String,
+        /// The names that work: [`ThemeFamily::NAMES`].
+        names: &'static [&'static str],
+    },
+    /// A subplot index past the chart's subplots, in a
+    /// [`SubplotScope::Only`] or given for a subplot's theme.
+    SubplotIndex(SubplotIndexError),
+}
+
+/// A subplot index past the chart's subplots (`RuleKind::SubplotIndex`):
+/// refused by the subplot setters and getters and, inside
+/// [`ThemeError::SubplotIndex`], by a theme scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubplotIndexError {
+    /// The index asked for.
+    pub index: usize,
+    /// How many subplots the chart has.
+    pub count: usize,
+}
+
+impl SubplotIndexError {
+    /// `Ok(())` when `index` is one of `count` subplots, the error otherwise.
+    pub fn check(index: usize, count: usize) -> Result<(), Self> {
+        if index < count {
+            Ok(())
+        } else {
+            Err(Self { index, count })
+        }
+    }
+}
+
+impl std::fmt::Display for SubplotIndexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { index, count } = *self;
+        write!(f, "{}: no subplot {index}, ", crate::RuleKind::SubplotIndex)?;
+        match count {
+            0 => write!(f, "the chart has no subplots"),
+            1 => write!(f, "the chart has one subplot (index 0)"),
+            _ => write!(
+                f,
+                "the chart has {count} subplots (indices 0 to {})",
+                count - 1
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SubplotIndexError {}
+
+impl From<SubplotIndexError> for ThemeError {
+    fn from(error: SubplotIndexError) -> Self {
+        Self::SubplotIndex(error)
+    }
 }
 
 impl std::fmt::Display for ThemeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Kind {
+            Self::WrongKind {
                 theme,
                 chart,
                 layer,
             } => write!(
                 f,
-                "a {theme} theme does not apply to a {chart} chart ({layer:?})"
+                "a {theme} theme does not apply to the {chart} chart at {layer:?}: apply it \
+                 to the charts of its kind (apply_custom_theme skips the others), leave that \
+                 chart out of the subplot scope, or use a family ({})",
+                ThemeFamily::NAMES.join(", ")
             ),
-            Self::DrawStyle { series_id } => {
-                write!(f, "the theme's draw style cannot draw series {series_id:?}")
-            }
+            Self::UnsupportedDrawStyle { series_id } => write!(
+                f,
+                "the theme's draw style cannot draw series {series_id:?}: use a theme in the \
+                 Precise draw style, such as a family, or remove that series"
+            ),
+            Self::UnknownName { name, names } => write!(
+                f,
+                "no theme family {name:?}: use one of {}",
+                names.join(", ")
+            ),
+            Self::SubplotIndex(error) => error.fmt(f),
         }
     }
 }
 
-impl std::error::Error for ThemeError {}
+impl std::error::Error for ThemeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SubplotIndex(error) => Some(error),
+            Self::WrongKind { .. }
+            | Self::UnsupportedDrawStyle { .. }
+            | Self::UnknownName { .. } => None,
+        }
+    }
+}
 
 /// Which subplots take a theme. The chart's own layers and its overlays
 /// always do.
@@ -549,11 +734,71 @@ fn style_markers(scatter: &mut crate::data_config::DataScatterStyleConfig, lines
     }
 }
 
-/// The base chart and the subplots in scope.
-fn charts_in_scope(config: &Config, subplots: SubplotScope) -> impl Iterator<Item = LayerRef> {
-    std::iter::once(LayerRef::Base).chain(
-        (0..config.subplots.len())
-            .filter(move |&index| subplots.includes(index))
+/// The charts one application of a theme writes: the base chart or not,
+/// and the subplots in scope. [`Theme::apply`] writes the base chart and
+/// the subplots its [`SubplotScope`] names; a theme family writes one chart
+/// at a time, each with its own member ([`Theme::apply_named`]).
+#[derive(Clone, Copy, Debug)]
+struct Charts<'a> {
+    base: bool,
+    subplots: SubplotScope<'a>,
+}
+
+impl<'a> Charts<'a> {
+    /// The base chart and the subplots `subplots` names.
+    fn scope(subplots: SubplotScope<'a>) -> Self {
+        Self {
+            base: true,
+            subplots,
+        }
+    }
+
+    /// The one chart `layer` names: the base chart or a subplot.
+    fn one(layer: &'a LayerRef) -> Self {
+        match layer {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => Self {
+                base: false,
+                subplots: SubplotScope::Only(std::slice::from_ref(index)),
+            },
+            LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => {
+                Self::scope(SubplotScope::None)
+            }
+        }
+    }
+
+    /// Whether the chart a series in `layer` is drawn on is written.
+    fn holds(self, layer: LayerRef) -> bool {
+        match layer {
+            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => self.subplots.includes(i),
+            LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => self.base,
+        }
+    }
+}
+
+/// Every index `subplots` names is a subplot of `config`
+/// ([`ThemeError::SubplotIndex`] for the first that is not).
+fn check_scope(config: &Config, subplots: SubplotScope) -> Result<(), ThemeError> {
+    let count = config.subplots.len();
+    match subplots {
+        SubplotScope::Only(indices) => match indices.iter().find(|&&index| index >= count) {
+            Some(&index) => Err(SubplotIndexError { index, count }.into()),
+            None => Ok(()),
+        },
+        SubplotScope::None | SubplotScope::All => Ok(()),
+    }
+}
+
+/// The charts `charts` writes: the base chart, then the subplots in scope.
+fn charts_in_scope<'a>(config: &Config, charts: Charts<'a>) -> impl Iterator<Item = LayerRef> + 'a {
+    chart_layers(config.subplots.len(), charts)
+}
+
+/// The charts `charts` writes of a document with `subplots` subplots,
+/// without borrowing the document.
+fn chart_layers(subplots: usize, charts: Charts) -> impl Iterator<Item = LayerRef> {
+    (charts.base.then_some(LayerRef::Base)).into_iter().chain(
+        (0..subplots)
+            .filter(move |&index| charts.subplots.includes(index))
             .map(LayerRef::Subplot),
     )
 }
@@ -572,23 +817,17 @@ fn drawn_on(config: &Config, layer: LayerRef, id: &str) -> bool {
 /// [`EnergyLevelTheme::continuum_fill`]: the continuum spans of the
 /// energy-level series in scope, found by the ids
 /// `EnergyLevelSeries::write_continuum` gives them, filled with `fill`.
-fn fill_continuum(
-    config: &mut Config,
-    series: &[SeriesConfig],
-    subplots: SubplotScope,
-    fill: Color,
-) {
+fn fill_continuum(config: &mut Config, series: &[SeriesConfig], charts: Charts, fill: Color) {
     for item in series {
         let DataRenderType::EnergyLevels(levels) = &item.render_type else {
             continue;
         };
-        let chart = match config.layer_of_series(&item.series_id) {
-            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => {
-                if !subplots.includes(i) {
-                    continue;
-                }
-                &mut config.subplots[i].config
-            }
+        let layer = config.layer_of_series(&item.series_id);
+        if !charts.holds(layer) {
+            continue;
+        }
+        let chart = match layer {
+            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => &mut config.subplots[i].config,
             _ => &mut *config,
         };
         for annotation in &mut chart.annotations.items {
@@ -602,18 +841,6 @@ fn fill_continuum(
 }
 
 impl Theme {
-    /// The names in `kind`'s catalogue, `default` first.
-    pub fn names(kind: ChartKind) -> &'static [&'static str] {
-        catalog::names(kind)
-    }
-
-    /// The theme `name` of `kind`'s catalogue ([`Self::names`]), or `None`.
-    /// Every kind has `default`, the documented default look: applying it
-    /// to a default document changes nothing.
-    pub fn named(kind: ChartKind, name: &str) -> Option<Self> {
-        catalog::named(kind, name)
-    }
-
     /// The documented default look of `kind`.
     pub(crate) fn documented(kind: ChartKind) -> Self {
         let config = crate::defaults::config();
@@ -836,38 +1063,43 @@ impl Theme {
         series: &mut [SeriesConfig],
         subplots: SubplotScope,
     ) -> Result<(), ThemeError> {
-        self.check_kind(config, series, subplots)?;
-        // Series are styled before the legends, which show their marks.
+        let charts = Charts::scope(subplots);
+        self.check_kind(config, series, charts)?;
+        self.style_charts(config, series, charts);
+        self.finish_charts(config, series, charts);
+        Ok(())
+    }
+
+    /// The first half of an application: the series drawn on `charts`,
+    /// each as the series of its index in `series`, then their colours per
+    /// category. Series are styled before the legends, which show their
+    /// marks ([`Self::finish_charts`]).
+    fn style_charts(&self, config: &Config, series: &mut [SeriesConfig], charts: Charts) {
         for (index, item) in series.iter_mut().enumerate() {
-            let themed = match config.layer_of_series(&item.series_id) {
-                LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => subplots.includes(i),
-                _ => true,
-            };
-            if themed {
+            if charts.holds(config.layer_of_series(&item.series_id)) {
                 self.style_series(item, index);
             }
         }
-        self.color_categories(config, series, subplots);
-        self.write_chrome(config, series, subplots);
+        self.color_categories(config, series, charts);
+    }
+
+    /// The second half of an application: the chrome of `charts`, then the
+    /// contour levels and continuum fills that read it.
+    fn finish_charts(&self, config: &mut Config, series: &mut [SeriesConfig], charts: Charts) {
+        self.write_chrome(config, series, charts);
         if let Some(shade) = self.series.fields.contour_shade {
-            self.shade_contours(config, series, subplots, shade);
+            self.shade_contours(config, series, charts, shade);
         }
         if let Some(fill) = self.series.energy_levels.continuum_fill {
-            fill_continuum(config, series, subplots, fill);
+            fill_continuum(config, series, charts, fill);
         }
-        Ok(())
     }
 
     /// [`BoxTheme::color_by_category`] and [`BarTheme::color_by_category`]:
     /// on every chart in scope that draws exactly one box plot series, or
     /// exactly one category-bar series, that series' per-category colours
     /// from the palette, in reading order.
-    fn color_categories(
-        &self,
-        config: &Config,
-        series: &mut [SeriesConfig],
-        subplots: SubplotScope,
-    ) {
+    fn color_categories(&self, config: &Config, series: &mut [SeriesConfig], charts: Charts) {
         let palette = &self.series.palette;
         if palette.is_empty() {
             return;
@@ -878,7 +1110,7 @@ impl Theme {
             (self.series.boxes.color_by_category, &boxes),
             (self.series.bars.color_by_category, &bars),
         ];
-        for layer in charts_in_scope(config, subplots) {
+        for layer in charts_in_scope(config, charts) {
             let chart = match layer {
                 LayerRef::Subplot(i) => &config.subplots[i].config,
                 _ => config,
@@ -956,17 +1188,16 @@ impl Theme {
         &self,
         config: &Config,
         series: &mut [SeriesConfig],
-        subplots: SubplotScope,
+        charts: Charts,
         shade: f32,
     ) {
         for item in series {
-            let chart = match config.layer_of_series(&item.series_id) {
-                LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => {
-                    if !subplots.includes(i) {
-                        continue;
-                    }
-                    &config.subplots[i].config
-                }
+            let layer = config.layer_of_series(&item.series_id);
+            if !charts.holds(layer) {
+                continue;
+            }
+            let chart = match layer {
+                LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => &config.subplots[i].config,
                 _ => config,
             };
             let contour = match &mut item.render_type {
@@ -998,8 +1229,9 @@ impl Theme {
         series: &[SeriesConfig],
         subplots: SubplotScope,
     ) -> Result<(), ThemeError> {
-        self.check_kind(config, series, subplots)?;
-        self.write_chrome(config, series, subplots);
+        let charts = Charts::scope(subplots);
+        self.check_kind(config, series, charts)?;
+        self.write_chrome(config, series, charts);
         Ok(())
     }
 
@@ -1008,13 +1240,14 @@ impl Theme {
         &self,
         config: &Config,
         series: &[SeriesConfig],
-        subplots: SubplotScope,
+        charts: Charts,
     ) -> Result<(), ThemeError> {
-        for layer in charts_in_scope(config, subplots) {
+        check_scope(config, charts.subplots)?;
+        for layer in charts_in_scope(config, charts) {
             if let Some(chart) = ChartKind::of(config, series, layer)
                 && chart != self.kind
             {
-                return Err(ThemeError::Kind {
+                return Err(ThemeError::WrongKind {
                     theme: self.kind,
                     chart,
                     layer,
@@ -1024,12 +1257,14 @@ impl Theme {
         Ok(())
     }
 
-    /// The chrome of the chart, its overlays and the subplots in scope.
-    fn write_chrome(&self, config: &mut Config, series: &[SeriesConfig], subplots: SubplotScope) {
-        let preset = self.frame_for(config, series, LayerRef::Base);
-        self.apply_chart_chrome(config, preset, series);
+    /// The chrome of the charts `charts` names and their overlays.
+    fn write_chrome(&self, config: &mut Config, series: &[SeriesConfig], charts: Charts) {
+        if charts.base {
+            let preset = self.frame_for(config, series, LayerRef::Base);
+            self.apply_chart_chrome(config, preset, series);
+        }
         for index in 0..config.subplots.len() {
-            if !subplots.includes(index) {
+            if !charts.subplots.includes(index) {
                 continue;
             }
             let preset = self.frame_for(config, series, LayerRef::Subplot(index));
@@ -1594,18 +1829,6 @@ impl Theme {
 }
 
 impl RadialTheme {
-    /// The names in the radial catalogue, `default` first.
-    pub fn names() -> &'static [&'static str] {
-        catalog::radial_names()
-    }
-
-    /// The radial theme `name` ([`Self::names`]), or `None`. `default` is
-    /// the documented default look: applying it to a default radial chart
-    /// changes nothing.
-    pub fn named(name: &str) -> Option<Self> {
-        catalog::radial_named(name)
-    }
-
     /// The documented default look.
     pub(crate) fn documented() -> Self {
         let radial = crate::defaults::radial_chart();

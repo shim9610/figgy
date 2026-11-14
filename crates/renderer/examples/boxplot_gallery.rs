@@ -2,7 +2,7 @@
 //! `BoxPlotChart` is opened with `Config::from_boxplot`, its positions,
 //! records and outliers uploaded from the borrowed summaries, and exported by
 //! the Cartesian renderer at 960 x 640 without post-render scaling, in the
-//! `document` theme. Every case labels each box with its median
+//! gallery family's distribution member. Every case labels each box with its median
 //! (`BoxPlotLabels::Median`, written into `labels.text` by the reader); the
 //! cases that show a finish vary the theme's box part before applying it.
 //!
@@ -28,6 +28,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
     RecordSource, Renderer, UploadValues, boxplot::*, config::Config,
@@ -39,10 +40,10 @@ use renderer::{
         BarGroups, BoxPoints, BoxPointsStyle, CategoryBarDirection, Violin, ViolinBody, ViolinHalf,
         ViolinStyle,
     },
-    theme::{ChartKind, SubplotScope, Theme},
+    theme::{ChartKind, Theme},
 };
 use std::path::Path;
-use styled::{background, theme_named, themed};
+use styled::{background, themed};
 
 fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Option<BoxSummary> {
     let mut v = BoxSummary::new(low, q1, med, q3, high);
@@ -53,7 +54,7 @@ fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Opt
     Some(v)
 }
 
-/// `document` as a Cartesian chart of box plot series in `theme`, exported
+/// The box plot document as a Cartesian chart of box plot series in `theme`, exported
 /// to `name.png`.
 fn save(
     r: &mut Renderer,
@@ -98,7 +99,7 @@ fn save(
     // The fixed `value_range` of the documents is the value axis; a
     // document without one fits the records' and outliers' statistics.
     let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
-    chart.apply_theme(theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, &mut series)?;
     // The grid marks the value axis, which runs along x for horizontal
     // boxes.
     if document.direction == BoxPlotDirection::Horizontal {
@@ -228,7 +229,7 @@ fn upload_groups(r: &mut Renderer, id: &str, groups: &[Vec<f64>], grid: usize) -
 }
 
 /// A designed scene of [`SCENE`] with its titles and a visible top-left
-/// legend, for a built-in theme applied with its series. The margins are
+/// legend, for a family member applied with its series. The margins are
 /// fitted to the labels when the scene is exported.
 fn designed(title: &str, x: &str, y: &str) -> Chart {
     let mut chart = gallery::titled(title, x, y, SCENE);
@@ -288,7 +289,7 @@ fn save_scene(
 // left half and after a night without sleep on the right. Both halves are
 // the host's density curves on one shared scale, so their widths compare.
 fn violins(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Distribution, "cool-slate")?;
+    let theme = ThemeFamily::CoolSlate.theme(ChartKind::Distribution);
     let bg = background(&theme);
     // The two conditions' legend swatches, in the theme's first two
     // colours as the halves are.
@@ -380,7 +381,7 @@ fn violins(r: &mut Renderer, out: &Path) -> Result {
 // host's density above a narrow box of its quartiles, with every sample
 // jittered below.
 fn raincloud(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Distribution, "warm-paper")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Distribution);
     let bg = background(&theme);
     // (id, label, sample generator), listed top-down: the first category
     // of a horizontal axis is the bottom row, so the axis and the positions
@@ -474,7 +475,7 @@ fn main() -> Result {
 }
 
 fn render(r: &mut Renderer, dir: &Path) -> Result {
-    let document = theme_named(ChartKind::Distribution, "document")?;
+    let document = ThemeFamily::Gallery.theme(ChartKind::Distribution);
     let mut c = BoxPlotChart {
         title: "Classic matte".into(),
         categories: ["Control", "Low", "High"]
