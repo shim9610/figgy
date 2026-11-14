@@ -1,7 +1,7 @@
 //! Chart conveniences: a sized chart, a theme, a legend from the series,
 //! and margins fitted to the text (#265).
 
-use crate::theme::{SubplotScope, Theme};
+use crate::theme::{SubplotScope, Theme, ThemeError};
 use crate::{Chart, SeriesConfig};
 
 impl Chart {
@@ -230,24 +230,21 @@ impl Chart {
     /// chrome of the chart, its overlays and the subplots `subplots` names,
     /// and the series drawn there. The layout is then fitted to the new text
     /// sizes ([`Self::fit_layout`]).
+    ///
+    /// Refused, changing nothing, when a chart in scope is of another kind
+    /// than the theme ([`ThemeError::Kind`]), or when the theme's draw style
+    /// cannot draw a series in scope ([`ThemeError::DrawStyle`],
+    /// [`crate::draw_style_supports`]).
     pub fn apply_theme(
         &mut self,
         theme: &Theme,
         series: &mut [SeriesConfig],
         subplots: SubplotScope,
-    ) {
-        theme.apply(self.config_mut(), series, subplots);
+    ) -> Result<(), ThemeError> {
+        check_theme_draw_style(theme, self.config(), series, subplots)?;
+        theme.apply(self.config_mut(), series, subplots)?;
         self.fit_layout();
-    }
-
-    /// The chart with `theme`'s chrome on it and on every subplot, its
-    /// layout fitted. Its series take the theme through
-    /// [`Theme::style_series`], or together with the chart through
-    /// [`Self::apply_theme`].
-    pub fn with_theme(mut self, theme: &Theme) -> Self {
-        theme.apply_chrome(self.config_mut(), SubplotScope::All);
-        self.fit_layout();
-        self
+        Ok(())
     }
 
     /// Fit the axis bands and margins to their labels and titles
@@ -257,5 +254,30 @@ impl Chart {
         let measure = crate::CpuTextMeasure::for_style(&self.config().draw_style);
         let fitted = crate::layout::auto_layout(self.config(), &measure);
         *self.config_mut() = fitted;
+    }
+}
+
+/// Whether `theme`'s draw style draws every series in scope
+/// ([`crate::draw_style_supports`], the renderer's one answer to what each
+/// style draws). A Precise theme draws everything.
+pub fn check_theme_draw_style(
+    theme: &Theme,
+    config: &crate::Config,
+    series: &[SeriesConfig],
+    subplots: SubplotScope,
+) -> Result<(), ThemeError> {
+    let in_scope = |item: &&SeriesConfig| match config.layer_of_series(&item.series_id) {
+        crate::LayerRef::Subplot(i) | crate::LayerRef::SubplotOverlay(i, _) => subplots.includes(i),
+        _ => true,
+    };
+    match series
+        .iter()
+        .filter(in_scope)
+        .find(|item| !crate::draw_style_supports(&theme.chrome.draw_style, &item.render_type))
+    {
+        Some(item) => Err(ThemeError::DrawStyle {
+            series_id: item.series_id.clone(),
+        }),
+        None => Ok(()),
     }
 }

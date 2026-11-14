@@ -8,6 +8,11 @@
 //!   lattice, one arrow per sample along (u, v, w), coloured by a speed
 //!   column the host computes.
 //!
+//! Each takes its look from a built-in 3D theme (`warm-terrain`,
+//! `midnight`): the ramp, the surface's material and wireframe, the floor
+//! contours' colours, the arrows and the trail. The scenes keep the data,
+//! the ranges, the camera and the labels.
+//!
 //! cargo run --locked -p figgy-renderer --example surface_3d -- target/surface_3d
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -17,16 +22,14 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Chart, Color, ColorMap, LayerRef, Material, Renderer, SeriesConfig,
-    data_config::{
-        ContourConfig, DataLineStyleConfig, DataRenderType, FieldFillConfig, FieldSeries,
-        MatrixRef, ScatterShape, Shading, VectorColorMap, VectorPivot, VectorScale,
-    },
+    Chart, LayerRef, Renderer, SeriesConfig,
+    data_config::{ContourConfig, MatrixRef, Shading, VectorColorMap, VectorPivot, VectorScale},
     text::RichText,
-    view3d::{SurfaceStyle, SurfaceWireframe, View3d},
+    theme::ChartKind,
+    view3d::View3d,
 };
 use std::path::Path;
-use styled::{cartesian, colorbar, export, extent, rgb, rgba, save};
+use styled::{background, export, extent, save, scene_chart, theme_named, themed};
 
 /// The box's z axis is `right_y`: labels and a title in the chrome's style.
 fn z_axis(chart: &mut Chart, title: &str, spacing: f64) {
@@ -66,11 +69,14 @@ fn nice_z(chart: &mut Chart, spacing: f64) {
     z.major_spacing = spacing;
 }
 
-fn colorbar_title(chart: &mut Chart, title: &str, ink: Color) {
-    if let Some(bar) = chart.config_mut().colorbar.as_mut() {
-        bar.axis.title_option.visible = true;
-        bar.axis.title_option.text = RichText::plain(title, ink, 19., "");
-    }
+/// The chart's colourbar over `min..max` with a label every `spacing`; the
+/// theme draws the bar and its ramp.
+fn value_scale(chart: &mut Chart, min: f64, max: f64, spacing: f64) {
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = min;
+    bar.axis.max = max;
+    bar.axis.major_spacing = spacing;
+    chart.config_mut().colorbar = Some(bar);
 }
 
 /// A point on a cubic Bezier segment.
@@ -84,8 +90,8 @@ fn bezier(p: [[f64; 2]; 4], t: f64) -> [f64; 2] {
 // south. A trail climbs from the trailhead over the saddle to the higher
 // summit; the host lifts it a little above the ground it follows.
 fn terrain(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(248, 247, 243);
-    let ink = rgb(58, 62, 72);
+    let theme = theme_named(ChartKind::Surface3d, "warm-terrain")?;
+    let bg = background(&theme);
     let height = |x: f64, y: f64| {
         let peak = |cx: f64, cy: f64, h: f64, w: f64| {
             h * (-((x - cx).powi(2) + (y - cy).powi(2)) / w).exp()
@@ -143,99 +149,39 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("stop-y", &sy)?;
     r.add_column("stop-z", &sz)?;
 
-    let ramp = ColorMap::Custom {
-        stops: vec![
-            rgb(38, 84, 98),
-            rgb(66, 140, 112),
-            rgb(152, 186, 110),
-            rgb(226, 206, 140),
-            rgb(176, 124, 86),
-            rgb(246, 244, 240),
-        ],
-    };
-    let mut chart = cartesian(
+    let mut chart = scene_chart(
         "Alpine massif / trail over the saddle",
         "East (km)",
         "North (km)",
-        bg,
-        ink,
-        rgb(222, 220, 212),
     );
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_x = true;
     chart.set_x_range(-3., 3.);
     chart.set_y_range(-3., 3.);
     chart.config_mut().bottom_x.major_spacing = 1.;
     chart.config_mut().left_y.major_spacing = 1.;
     z_axis(&mut chart, "Elevation (km)", 1.);
-    colorbar(chart.config_mut(), ramp.clone(), 1.5, 4.5, 0.5, ink);
-    // The floor contours take the ramp's colour at their level, darkened so
-    // the light levels stay visible on the light floor.
-    let mut contour = ContourConfig {
-        levels: vec![],
-        line: DataLineStyleConfig {
-            line_color: ink,
-            line_width: 2.6,
-            ..Default::default()
-        },
-        per_level_color: None,
-        labels: None,
-    };
-    let bar = chart.config().colorbar.as_ref().unwrap().axis.clone();
-    contour
-        .set_nice_levels(&bar, 12)
+    value_scale(&mut chart, 1.5, 4.5, 0.5);
+    // Floor contours at about twelve round levels of the colourbar; the
+    // theme colours each from the ramp at its level.
+    let bar = &chart.config().colorbar.as_ref().ok_or("no colourbar")?.axis;
+    let levels = ContourConfig::nice_levels(bar, 12)
         .map_err(|e| format!("terrain contour levels: {e:?}"))?;
-    contour.per_level_color = Some(
-        contour
-            .levels
-            .iter()
-            .map(|level| {
-                let c = ramp.sample(((level - bar.min) / (bar.max - bar.min)) as f32);
-                Color::from_rgba(c.r * 0.72, c.g * 0.72, c.b * 0.72, 1.)
-            })
-            .collect(),
-    );
     chart.config_mut().set_view_3d(Some(View3d {
         azimuth_degrees: -58.,
         elevation_degrees: 26.,
         distance: 2.3,
         ..View3d::default()
     }));
-    let trail_red = rgb(206, 44, 58);
-    let trail = SeriesConfig::line("trail", "hike-x", "hike-y")
-        .color(trail_red)
-        .width(3.5)
-        .z("hike-z");
-    let waypoints = SeriesConfig::scatter("waypoints", "stop-x", "stop-y")
-        .color(trail_red)
-        .marker(ScatterShape::CircleFilled, 13.)
-        .z("stop-z");
-    let specs = [
-        SeriesConfig::of_kind(
-            "terrain",
-            "terrain-x",
-            "terrain-y",
-            DataRenderType::Field(FieldSeries {
-                matrix: MatrixRef::columns_are_x(ids),
-                fill: Some(FieldFillConfig {
-                    shading: Shading::Interpolated,
-                    opacity: 0.9,
-                    ..Default::default()
-                }),
-                contour: Some(contour),
-                surface: Some(SurfaceStyle {
-                    wireframe: Some(SurfaceWireframe {
-                        color: rgba(40, 44, 52, 0.2),
-                        width: 0.7,
-                    }),
-                    material: Material::Matte,
-                    ..SurfaceStyle::default()
-                }),
-            }),
-        ),
-        trail,
-        waypoints,
+    let matrix = MatrixRef::columns_are_x(ids);
+    let mut specs = [
+        // The surface over its contours on the box floor.
+        SeriesConfig::contours("terrain", "terrain-x", "terrain-y", matrix, levels)
+            .filled()
+            .shading(Shading::Interpolated),
+        SeriesConfig::line("trail", "hike-x", "hike-y").z("hike-z"),
+        SeriesConfig::scatter("waypoints", "stop-x", "stop-y").z("stop-z"),
     ];
+    themed(&mut chart, &theme, &mut specs)?;
     chart.auto_fit_view_3d_z(r.pool(), LayerRef::Base, &specs, 0.)?;
     nice_z(&mut chart, 1.);
     // The floor sits at sea level, well below the massif's base.
@@ -249,8 +195,8 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
 // the axis and an updraft that grows with height. The host computes the
 // components and the speed the arrows are coloured by.
 fn vortex(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(14, 20, 34);
-    let ink = rgb(186, 198, 220);
+    let theme = theme_named(ChartKind::Surface3d, "midnight")?;
+    let bg = background(&theme);
     let (circulation, core, strain) = (24., 1.2, 0.16);
     let flow = |x: f64, y: f64, z: f64| -> [f64; 3] {
         let r2 = (x * x + y * y).max(1e-9);
@@ -296,13 +242,10 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
     ] {
         r.add_column(id, &data)?;
     }
-    let specs = [SeriesConfig::vectors_3d(
+    let mut specs = [SeriesConfig::vectors_3d(
         "vortex", "vortex-x", "vortex-y", "vortex-z", "vortex-u", "vortex-v", "vortex-w",
     )
-    .color(ink)
-    .width(2.4)
     .pivot(VectorPivot::Middle)
-    .arrow_head(10., 8.)
     .style_vectors(|style| {
         style.scale = VectorScale::Data { factor: 1. };
         style.min_length_px = 2.;
@@ -310,38 +253,24 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
         // The longest arrow spans 0.9 of the lattice spacing.
         style.fit_scale_3d(ub, vb, wb, 0.9 * spacing);
     })];
-    let mut chart = cartesian(
+    let mut chart = scene_chart(
         "Burgers vortex / swirl, inflow and updraft",
         "x (km)",
         "y (km)",
-        bg,
-        ink,
-        rgb(40, 52, 74),
     );
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_x = true;
     chart.set_x_range(-3.5, 3.5);
     chart.set_y_range(-3.5, 3.5);
     chart.config_mut().bottom_x.major_spacing = 2.;
     chart.config_mut().left_y.major_spacing = 2.;
     z_axis(&mut chart, "z (km)", 1.);
-    colorbar(
-        chart.config_mut(),
-        ColorMap::Custom {
-            stops: vec![
-                rgb(52, 84, 160),
-                rgb(64, 160, 190),
-                rgb(132, 216, 160),
-                rgb(244, 228, 120),
-                rgb(246, 132, 84),
-            ],
-        },
+    value_scale(
+        &mut chart,
         (lo * 2.).floor() / 2.,
         (hi * 2.).ceil() / 2.,
         0.5,
-        ink,
     );
-    colorbar_title(&mut chart, "Speed (m/s)", ink);
+    let mut chart = chart.with_colorbar_title("Speed (m/s)");
     chart.config_mut().set_view_3d(Some(View3d {
         azimuth_degrees: -50.,
         elevation_degrees: 30.,
@@ -349,6 +278,7 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
         box_aspect: Some([1., 1., 1.05]),
         ..View3d::default()
     }));
+    themed(&mut chart, &theme, &mut specs)?;
     chart.auto_fit_view_3d_z(r.pool(), LayerRef::Base, &specs, 0.)?;
     nice_z(&mut chart, 1.);
     short_labels(&mut chart);

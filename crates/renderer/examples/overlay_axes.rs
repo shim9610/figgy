@@ -21,33 +21,29 @@ use gallery::Result;
 use renderer::{
     Anchor, Annotation, AnnotationKind, AnnotationLineStyle, BoxStyle, Color, HitMap, LayerRef,
     Renderer, SeriesConfig, ShapeStyle,
-    config::{LegendCorner, TickVisibility},
-    data_config::ScatterShape,
+    config::{AxisOptions, LegendCorner},
     line::LineStylePreset,
     text::RichText,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{cartesian, export, rgb, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
 
 // Twin axes: a battery discharge with the voltage on the left axis and the
 // current on an overlay layer's right axis.
 fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(18, 20, 34);
-    let ink = rgb(190, 196, 224);
-    let mint = rgb(80, 220, 190);
-    let lavender = rgb(150, 160, 255);
-    let mut chart = cartesian(
+    let theme = theme_named(ChartKind::Line, "midnight")?;
+    let bg = background(&theme);
+    // The voltage in the first colour, the current in the second; each axis
+    // reads in its series' colour.
+    let [mint, lavender, ..] = theme.series.palette[..] else {
+        return Err("the midnight theme has two colours".into());
+    };
+    let mut chart = scene_chart(
         "Battery discharge / one cycle",
         "Minutes",
         "Cell voltage (V)",
-        bg,
-        ink,
-        rgb(38, 42, 66),
     );
-    chart.config_mut().right_y.line_visible = false;
-    chart.config_mut().right_y.tick = TickVisibility::None;
-    chart.config_mut().left_y.title_option.text.color = mint;
-    chart.config_mut().left_y.label_style.color = mint;
     let minutes: Vec<f64> = (0..=360).map(|i| f64::from(i) / 4.).collect();
     let current: Vec<f64> = minutes
         .iter()
@@ -75,16 +71,10 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("minutes", &minutes)?;
     r.add_column("voltage", &voltage)?;
     r.add_column("current", &current)?;
-    let mut current_axis = renderer::default::default_axis_options_y();
-    current_axis.line_visible = false;
-    current_axis.tick = TickVisibility::None;
+    let mut current_axis = AxisOptions::overlay_y("Current (A)", lavender);
     current_axis.min = 0.;
     current_axis.max = 3.5;
     current_axis.major_spacing = 0.5;
-    current_axis.label_style.color = lavender;
-    current_axis.label_style.font_size = 21.;
-    current_axis.title_option.visible = true;
-    current_axis.title_option.text = RichText::plain("Current (A)", lavender, 23., "");
     chart = chart.with_overlay(current_axis, &["current"]);
     chart.set_x_range(0., 90.);
     chart.set_y_range(3.0, 4.3);
@@ -96,18 +86,19 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
         config.left_y.major_spacing = 0.25;
         config.overlays[0].y_axis.major_spacing = 0.5;
     });
-    let specs = [
+    let mut specs = [
         SeriesConfig::line("voltage", "minutes", "voltage")
             .label("Voltage")
-            .color(mint)
-            .width(3.5)
-            .fill_to(3.0)
-            .fill_color(Color::from_rgba(mint.r, mint.g, mint.b, 0.12)),
-        SeriesConfig::line("current", "minutes", "current")
-            .label("Current")
-            .color(lavender)
-            .width(2.5),
+            .fill_to(3.0),
+        SeriesConfig::line("current", "minutes", "current").label("Current"),
     ];
+    themed(&mut chart, &theme, &mut specs)?;
+    let config = chart.config_mut();
+    config.left_y.title_option.text.color = mint;
+    config.left_y.label_style.color = mint;
+    let current_axis = &mut config.overlays[0].y_axis;
+    current_axis.title_option.text.color = lavender;
+    current_axis.label_style.color = lavender;
     chart = chart.with_legend_from(&specs);
     chart.config_mut().legend.corner = LegendCorner::TopRight;
     // The base layer and the overlay are two panels of one data area.
@@ -174,22 +165,21 @@ fn inside_polygon(vertices: &[(f64, f64)], x: f64, y: f64) -> bool {
 // an annotation (an ellipse, a rectangle, a polygon); the host decides which
 // events fall in which gate and colours them by uploading one series per gate.
 fn shapes(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(250, 250, 252);
-    let ink = rgb(48, 54, 78);
-    let grey = rgb(150, 156, 174);
-    let teal = rgb(22, 150, 140);
-    let amber = rgb(222, 132, 30);
-    let violet = rgb(136, 84, 196);
-    let mut chart = cartesian(
+    let theme = theme_named(ChartKind::Scatter, "cool-slate")?;
+    let bg = background(&theme);
+    // The series take the palette in order: the debris in grey, each gate's
+    // events in that gate's colour, and the ungated events, the fifth
+    // series, back in grey. The gates and their labels read the same
+    // colours.
+    let [grey, teal, amber, violet] = theme.series.palette[..] else {
+        return Err("the cool-slate scatter theme has four colours".into());
+    };
+    let mut chart = scene_chart(
         "Blood cell gates / 4000 events",
         "Forward scatter (FSC-A, thousands)",
         "Side scatter (SSC-A, thousands)",
-        bg,
-        ink,
-        rgb(232, 234, 242),
     );
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_x = true;
     // The gates, in data units: an ellipse by its bounding box, a rectangle
     // by two corners and a polygon by its vertices.
     let lymph_box = ((44., 9.), (94., 57.));
@@ -255,12 +245,12 @@ fn shapes(r: &mut Renderer, out: &Path) -> Result {
         format!("Granulocytes  {:.1} %", percent(3)),
     ];
     let mut specs = Vec::new();
-    for (k, (id, color, alpha)) in [
-        ("debris", grey, 0.45),
-        ("lymphocytes", teal, 0.55),
-        ("monocytes", amber, 0.6),
-        ("granulocytes", violet, 0.5),
-        ("ungated", grey, 0.45),
+    for (k, id) in [
+        "debris",
+        "lymphocytes",
+        "monocytes",
+        "granulocytes",
+        "ungated",
     ]
     .into_iter()
     .enumerate()
@@ -268,12 +258,13 @@ fn shapes(r: &mut Renderer, out: &Path) -> Result {
         let (x, y) = std::mem::take(&mut groups[k]);
         r.add_column(format!("{id}-fsc"), &x)?;
         r.add_column(format!("{id}-ssc"), &y)?;
-        specs.push(
-            SeriesConfig::scatter(id, format!("{id}-fsc"), format!("{id}-ssc"))
-                .color(Color::from_rgba(color.r, color.g, color.b, alpha))
-                .marker(ScatterShape::CircleFilled, 4.5),
-        );
+        specs.push(SeriesConfig::scatter(
+            id,
+            format!("{id}-fsc"),
+            format!("{id}-ssc"),
+        ));
     }
+    themed(&mut chart, &theme, &mut specs)?;
     let data = |(x, y): (f64, f64)| Anchor::Data { x, y };
     let gate = |color: Color, style: LineStylePreset, fill: bool| ShapeStyle {
         fill: fill.then(|| Color::from_rgba(color.r, color.g, color.b, 0.08)),

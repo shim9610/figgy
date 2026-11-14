@@ -6,20 +6,19 @@
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
-use gallery::{Result, chart, output_directory, save, with_renderer};
-use renderer::{Color, Renderer, SeriesConfig, config::LegendCorner};
+use gallery::{Result, output_directory, save, theme_named, themed, titled, with_renderer};
+use renderer::{Renderer, SeriesConfig, config::LegendCorner, theme::ChartKind};
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let blue = Color::from_rgb8(34, 104, 198);
-    let orange = Color::from_rgb8(224, 123, 38);
+    let theme = theme_named(ChartKind::ErrorBars, "gallery")?;
     let x: Vec<f64> = (0..18).map(|i| i as f64 * 0.5).collect();
     r.add_column("response-x", &x)?;
     let mut specs = Vec::new();
     // Each curve named with its time constant τ = 1/speed, in TeX.
-    for (name, label, color, speed) in [
-        ("a", r"Fast response, $\tau = 1.5$ s", blue, 0.65),
-        ("b", r"Slow response, $\tau = 3.1$ s", orange, 0.32),
+    for (name, label, speed) in [
+        ("a", r"Fast response, $\tau = 1.5$ s", 0.65),
+        ("b", r"Slow response, $\tau = 3.1$ s", 0.32),
     ] {
         let y: Vec<f64> = x
             .iter()
@@ -32,23 +31,21 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         specs.push(
             SeriesConfig::scatter_line(name, "response-x", format!("response-{name}"))
                 .label(label)
-                .color(color)
-                .width(2.5)
-                .y_errors(format!("error-{name}"))
-                .error_bars(1.5, 7.0),
+                .y_errors(format!("error-{name}")),
         );
     }
     // The error bars are one standard deviation.
-    let mut c = chart(
+    let mut c = titled(
         "Response curves with uncertainty",
         "Time (s)",
         r"Response $\pm 1\sigma$ (%)",
         (960, 600),
-    )
-    .with_legend_from(&specs);
+    );
     c.set_x_range(-0.3, 8.8);
-    c.config_mut().legend.corner = LegendCorner::TopLeft;
     c.set_y_range(-5.0, 115.0);
+    themed(&mut c, &theme, &mut specs)?;
+    let mut c = c.with_legend_from(&specs);
+    c.config_mut().legend.corner = LegendCorner::TopLeft;
     save(r, &mut c, &specs, &out.join("gallery-errorbars.png"))
 }
 

@@ -474,6 +474,25 @@ fn plain_line(
     );
 }
 
+/// The luminance the inside-label ink is chosen by.
+fn ink_luminance(r: f32, g: f32, b: f32) -> f32 {
+    r * 0.2126 + g * 0.7152 + b * 0.0722
+}
+
+/// The ink of an inside label without a colour of its own, on a slice of
+/// colour `slice`: white on a dark slice, the chart's `label_color` on a
+/// light one. A light `label_color` (a chart on a dark background) would
+/// not stand off a light slice, which takes black instead.
+fn inside_label_ink(slice: [f32; 4], label_color: crate::Color) -> crate::Color {
+    if ink_luminance(slice[0], slice[1], slice[2]) < 0.5 {
+        crate::Color::WHITE
+    } else if ink_luminance(label_color.r, label_color.g, label_color.b) >= 0.5 {
+        crate::Color::BLACK
+    } else {
+        label_color
+    }
+}
+
 /// The inside label of slice `index` of circle `g`: its lines on the
 /// slice's face, at the face's lifted place, or at its unlifted place when
 /// `at_rest` (the raster while the shader lifts the inside glyphs).
@@ -513,12 +532,9 @@ fn emit_inside(
         .min(available / (fs * line_count as f32 * 1.2))
         .min(1.);
     let fs = (fs * fit).max(scale);
-    let luminance = s.color[0] * 0.2126 + s.color[1] * 0.7152 + s.color[2] * 0.0722;
-    let color = slice.label_color.unwrap_or(if luminance < 0.5 {
-        crate::Color::WHITE
-    } else {
-        chart.label_color
-    });
+    let color = slice
+        .label_color
+        .unwrap_or_else(|| inside_label_ink(s.color, chart.label_color));
     let offset = chart
         .decorations
         .effective_offset(&DecorationId::RadialLabel(RadialTarget { group: g, index }));
@@ -1135,6 +1151,61 @@ mod title_tests {
             })
             .collect()
     }
+    // An inside label without a colour of its own stands off its slice:
+    // white on a dark slice, the chart's label colour on a light one, and
+    // black on a light slice when the label colour is itself light (a chart
+    // on a dark background, as the `portfolio` theme styles it).
+    #[test]
+    fn an_inside_label_stands_off_its_slice() {
+        let pastel = [0.57, 0.62, 0.96, 1.0];
+        let navy = [0.07, 0.09, 0.15, 1.0];
+        let dark_ink = Color::new(0.1, 0.1, 0.2, 1.0);
+        let pale_ink = Color::new(0.85, 0.88, 0.95, 1.0);
+        assert_eq!(inside_label_ink(navy, dark_ink), Color::WHITE);
+        assert_eq!(inside_label_ink(navy, pale_ink), Color::WHITE);
+        assert_eq!(inside_label_ink(pastel, dark_ink), dark_ink);
+        assert_eq!(inside_label_ink(pastel, pale_ink), Color::BLACK);
+
+        // Drawn: a pale label colour on pastel slices paints dark glyphs,
+        // and a slice's own label colour still wins.
+        let mut c = RadialChart {
+            labels: RadialLabels::Inside,
+            background: Color::new(0.07, 0.09, 0.15, 1.0),
+            label_color: pale_ink,
+            slices: vec![
+                RadialSlice::new("A", 50., Color::new(0.57, 0.62, 0.96, 1.0)),
+                RadialSlice::new("B", 50., Color::new(0.93, 0.65, 0.73, 1.0)),
+            ],
+            ..Default::default()
+        };
+        c.format_labels();
+        let glyphs = |c: &RadialChart, scale: f32| {
+            let l = layout(c, (800, 520), scale, Labels::Raster).unwrap();
+            let label = bounds(&l, c, false).unwrap();
+            let ink: Vec<[u8; 3]> = crop(&l.annotations, label, scale)
+                .chunks_exact(4)
+                .filter(|p| p[3] > 200)
+                .map(|p| [p[0], p[1], p[2]])
+                .collect();
+            assert!(!ink.is_empty(), "{scale}x: the inside label drew no ink");
+            ink
+        };
+        for scale in [1., 2.] {
+            assert!(
+                glyphs(&c, scale).iter().all(|p| p.iter().all(|&v| v < 40)),
+                "{scale}x: a pale label colour on a pastel slice draws black"
+            );
+            let mut own = c.clone();
+            own.slices[0].label_color = Some(Color::WHITE);
+            assert!(
+                glyphs(&own, scale)
+                    .iter()
+                    .any(|p| p.iter().all(|&v| v > 215)),
+                "{scale}x: the slice's own label colour is kept"
+            );
+        }
+    }
+
     #[test]
     fn title_and_label_styles_render_independently() {
         let mut c = RadialChart {

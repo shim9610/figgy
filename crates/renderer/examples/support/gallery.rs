@@ -2,16 +2,17 @@
 //! Chart data and series definitions live in each example, not in this module.
 use renderer::{
     Chart, Color, Renderer, SeriesConfig, encode_png,
-    theme::{SubplotScope, Theme},
+    theme::{ChartKind, SubplotScope, Theme},
 };
 use std::{error::Error, path::Path};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
-/// The gallery look: the light theme with a navy title, a slate frame, a
-/// pale major grid and smaller text.
+/// The gallery chrome for a chart whose series are styled by hand: the
+/// documented default look with a navy title, a slate frame, a pale major
+/// grid and smaller text.
 pub fn theme() -> Theme {
-    let mut theme = Theme::light();
+    let mut theme = Theme::named(ChartKind::Line, "default").expect("every kind has a default");
     let chrome = &mut theme.chrome;
     chrome.ink = Color::from_rgb8(24, 39, 63);
     chrome.frame_ink = Color::from_rgb8(88, 102, 123);
@@ -27,11 +28,33 @@ pub fn theme() -> Theme {
 /// margins are fitted to the labels when the chart is saved.
 pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
     let mut chart = Chart::sized(size.0, size.1);
-    theme().apply_chrome(chart.config_mut(), SubplotScope::All);
+    theme()
+        .apply_chrome(chart.config_mut(), &[], SubplotScope::All)
+        .expect("a chart without series takes any theme");
     chart
         .with_title(title)
         .with_x_title(x_title)
         .with_y_title(y_title)
+}
+
+/// A chart of `size` with its titles, for a built-in theme applied with
+/// its series (`Chart::apply_theme`).
+pub fn titled(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
+    Chart::sized(size.0, size.1)
+        .with_title(title)
+        .with_x_title(x_title)
+        .with_y_title(y_title)
+}
+
+/// The built-in theme `name` of `kind` (#291).
+pub fn theme_named(kind: ChartKind, name: &str) -> Result<Theme> {
+    Ok(Theme::named(kind, name).ok_or_else(|| format!("no {kind} theme {name:?}"))?)
+}
+
+/// Apply `theme` to the chart and its series (`Chart::apply_theme`).
+pub fn themed(chart: &mut Chart, theme: &Theme, series: &mut [SeriesConfig]) -> Result {
+    chart.apply_theme(theme, series, SubplotScope::All)?;
+    Ok(())
 }
 
 /// Fit the chart's margins to its labels, render it on white and write it

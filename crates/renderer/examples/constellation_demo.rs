@@ -7,7 +7,7 @@
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data_config::{ScatterShape, SeriesConfig};
-use renderer::theme::{SubplotScope, Theme};
+use renderer::theme::{ChartKind, SubplotScope, Theme};
 use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 
 /// The deep-space backdrop the exports clear to.
@@ -37,23 +37,15 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
 }
 
 fn build_chart(style: DrawStyle) -> Chart {
-    // Dark-backdrop chrome: the dark theme's light ink, over the backdrop
-    // the export clears to; no grid; no legend.
-    let mut theme = Theme::dark();
-    theme.chrome.background = None;
-    let grid = &mut theme.chrome.grid;
-    for line in [
-        &mut grid.major_x,
-        &mut grid.major_y,
-        &mut grid.minor_x,
-        &mut grid.minor_y,
-    ] {
-        line.show = false;
-    }
+    // The night-sky chrome over the backdrop the export clears to, with no
+    // legend. The demo sweeps the draw style, which it writes into the
+    // theme; the series keep the colours each case picks.
+    let mut theme = Theme::named(ChartKind::Line, "milkyway").expect("a built-in theme");
+    theme.chrome.draw_style = style;
     let mut chart = Chart::sized(960, 620);
-    theme.apply_chrome(chart.config_mut(), SubplotScope::All);
-    // After the theme, which writes the draw style too.
-    chart.config_mut().draw_style = style;
+    theme
+        .apply_chrome(chart.config_mut(), &[], SubplotScope::All)
+        .expect("a chart without series takes any theme");
     chart.config_mut().legend.visible = false;
 
     let mut chart = chart

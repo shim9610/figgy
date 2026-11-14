@@ -4,6 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
+Each entry names the built-in theme its example applies
+([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+palette order or a fill opacity.
 
 ## Twin axes
 
@@ -12,6 +15,8 @@ the images are native renderer output.
 An overlay layer with its own right Y axis, exported as a document.
 
 **Code:** [overlay_axes.rs](../examples/overlay_axes.rs), `twin_axes`
+
+**Theme:** `line` theme `midnight`
 
 **Run:** `cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes`
 
@@ -23,6 +28,8 @@ A 2 × 2 grid: the parent and three subplots linked to its X axis, each with its
 
 **Code:** [subplots.rs](../examples/subplots.rs), `small_multiples`
 
+**Theme:** `line` theme `cool-slate`
+
 **Run:** `cargo run --locked -p figgy-renderer --example subplots -- target/subplots`
 
 ## Broken axis
@@ -33,6 +40,8 @@ A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 an
 
 **Code:** [broken_axes.rs](../examples/broken_axes.rs), `gamma_spectrum`
 
+**Theme:** `line` theme `midnight`
+
 **Run:** `cargo run --locked -p figgy-renderer --example broken_axes -- target/broken-axes`
 
 ## Shape annotations
@@ -42,5 +51,7 @@ A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 an
 4000 flow cytometry events with shape annotations as gates: an ellipse, a rectangle, a polygon and a dashed outline, labelled in text boxes.
 
 **Code:** [overlay_axes.rs](../examples/overlay_axes.rs), `shapes`
+
+**Theme:** `scatter` theme `cool-slate`
 
 **Run:** `cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes`

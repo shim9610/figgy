@@ -1,5 +1,6 @@
 //! Minimal native line chart: upload two columns and write a PNG.
 //! cargo run --locked -p figgy-renderer --example line
+use renderer::theme::{ChartKind, SubplotScope, Theme};
 use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,9 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     renderer.add_column("x", &x)?;
     renderer.add_column("y", &y)?;
 
-    let series = [SeriesConfig::line("sine", "x", "y")
-        .color(Color::from_rgb8(34, 104, 198))
-        .width(2.5)];
+    let mut series = [SeriesConfig::line("sine", "x", "y")];
     let mut chart = Chart::sized(960, 600)
         .with_title("A 0.2 Hz sine wave")
         .with_x_title("Time (s)")
@@ -23,7 +22,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_y_title(r"$\sin(2\pi f t)$");
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
-    chart.fit_layout();
+    // The documented look, with a blue line a little heavier. A theme is a
+    // value: edit any field before applying it. Applying refits the margins
+    // to the labels.
+    let mut theme = Theme::named(ChartKind::Line, "default").ok_or("no default theme")?;
+    theme.series.palette = vec![Color::from_rgb8(34, 104, 198)];
+    theme.series.lines.line_width = 2.5;
+    chart.apply_theme(&theme, &mut series, SubplotScope::All)?;
 
     let output = std::env::args_os()
         .nth(1)

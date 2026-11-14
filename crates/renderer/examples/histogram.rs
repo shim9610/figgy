@@ -6,11 +6,12 @@
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
-use gallery::{Result, chart, output_directory, save, with_renderer};
-use renderer::{Color, Renderer, SeriesConfig};
+use gallery::{Result, output_directory, save, theme_named, themed, titled, with_renderer};
+use renderer::{Renderer, SeriesConfig, theme::ChartKind};
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
+    let theme = theme_named(ChartKind::Histogram, "gallery")?;
     let edges: Vec<f64> = (0..41).map(|i| -4.0 + i as f64 * 0.2).collect();
     let counts: Vec<f64> = edges
         .windows(2)
@@ -23,14 +24,12 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_column("bin-edges", &edges)?;
     r.add_column("bin-counts", &counts)?;
-    let vertical = SeriesConfig::histogram("distribution", "bin-edges", "bin-counts")
-        .color(Color::from_rgb8(19, 154, 139))
-        .bar_border(Color::from_rgb8(10, 102, 95), 0.8)
-        .bar_gap(2.0);
+    let mut vertical = SeriesConfig::histogram("distribution", "bin-edges", "bin-counts");
     let title = "A two-population distribution";
-    let mut c = chart(title, "Measured value", "Count", (960, 600));
+    let mut c = titled(title, "Measured value", "Count", (960, 600));
     c.set_x_range(-4.2, 4.2);
     c.set_y_range(0.0, 120.0);
+    themed(&mut c, &theme, std::slice::from_mut(&mut vertical))?;
     let specs = std::slice::from_ref(&vertical);
     save(r, &mut c, specs, &out.join("gallery-histogram.png"))?;
 
@@ -38,10 +37,11 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     // exchange their bindings together with the axis ranges and titles.
     let mut horizontal = vertical.horizontal();
     std::mem::swap(&mut horizontal.x_column, &mut horizontal.y_column);
-    let mut c = chart(title, "Count", "Measured value", (960, 600));
+    let mut c = titled(title, "Count", "Measured value", (960, 600));
     c.set_x_range(0.0, 120.0);
     c.set_y_range(-4.2, 4.2);
-    let specs = [horizontal];
+    let mut specs = [horizontal];
+    themed(&mut c, &theme, &mut specs)?;
     save(
         r,
         &mut c,

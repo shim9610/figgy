@@ -3,7 +3,9 @@
 //! - `render` writes `gallery-parallel.png`: 120 runs of a hyperparameter
 //!   sweep across six axes (learning rate and batch size on logarithmic
 //!   axes, and dropout among the linear ones), each run coloured by its validation accuracy. The
-//!   host orders the rows by accuracy so the best runs draw on top.
+//!   host orders the rows by accuracy so the best runs draw on top. The
+//!   look is the parallel theme `midnight`: the rows, the axes, the ramp
+//!   and the slim colourbar.
 //!
 //! cargo run --locked -p figgy-renderer --example parallel -- target/parallel
 #[allow(dead_code)]
@@ -14,14 +16,14 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    BarAlign, ColorMap, Renderer, SeriesConfig,
-    config::{AxisScale, Category, TickVisibility},
+    BarAlign, Renderer, SeriesConfig,
+    config::{AxisScale, Category},
     layout::Side,
     parallel::{ParallelAxis, ParallelOptions},
-    text::RichText,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{cartesian, colorbar, export, rgb, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
 
 /// A deterministic value in `0..1` for row `i` and stream `seed`.
 fn unit(seed: u64, i: u64) -> f64 {
@@ -33,16 +35,9 @@ fn unit(seed: u64, i: u64) -> f64 {
 }
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(15, 18, 30);
-    let ink = rgb(186, 194, 216);
-    let mut chart = cartesian(
-        "Hyperparameter sweep / 120 training runs",
-        "",
-        "",
-        bg,
-        ink,
-        bg,
-    );
+    let theme = theme_named(ChartKind::Parallel, "midnight")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart("Hyperparameter sweep / 120 training runs", "", "");
 
     // The sweep: each run draws its settings, and its accuracy is a smooth
     // response surface around a good region plus a small run-to-run spread.
@@ -78,10 +73,8 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         let values: Vec<f64> = runs.iter().map(|run| run[k]).collect();
         r.add_column(format!("sweep-{id}"), &values)?;
     }
-    let specs = [
+    let mut specs = [
         SeriesConfig::parallel("runs", ids.map(|id| format!("sweep-{id}")))
-            .color(ink)
-            .width(1.2)
             .color_by("sweep-accuracy"),
     ];
 
@@ -100,17 +93,10 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         .map(|(label, id)| Category::new(id, *label))
         .collect(),
     );
-    config.bottom_x.label_style.font_size = 20.;
-    config.grid.show_major_x = false;
-    config.grid.show_major_y = false;
     // The parallel axes draw in the left axis' style.
     config.left_y.min = 0.;
     config.left_y.max = 1.;
     config.left_y.title_option.visible = false;
-    config.left_y.line_visible = true;
-    config.left_y.line_color = rgb(96, 104, 130);
-    config.left_y.tick = TickVisibility::Outside;
-    config.left_y.label_style.font_size = 16.;
     // One significant digit: 0.1, 2, 50 and 0.001, without padding zeros.
     config.left_y.label_style.significant_digits = 1;
     // A little air between the axes' ends and their names.
@@ -130,33 +116,18 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             ParallelAxis::new(50., 95.),
         ],
     }));
-    colorbar(
-        config,
-        ColorMap::Custom {
-            stops: vec![
-                rgb(38, 42, 72),
-                rgb(62, 52, 104),
-                rgb(120, 54, 146),
-                rgb(214, 70, 120),
-                rgb(250, 136, 84),
-                rgb(255, 220, 120),
-            ],
-        },
-        50.,
-        95.,
-        10.,
-        ink,
-    );
-    let bar = config.colorbar.as_mut().ok_or("no colourbar")?;
+    // The accuracy scale; the theme draws the bar and its ramp.
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = 50.;
+    bar.axis.max = 95.;
+    bar.axis.major_spacing = 10.;
     bar.axis.label_style.significant_digits = 1;
     // A horizontal bar over the last axes leaves the plot the full width.
     bar.side = Side::Top;
     bar.align = BarAlign::End;
-    bar.length_frac = 0.3;
-    bar.thickness_px = 12.;
-    bar.gap_px = 16.;
-    bar.axis.title_option.visible = true;
-    bar.axis.title_option.text = RichText::plain("Validation accuracy (%)", ink, 19., "");
+    config.colorbar = Some(bar);
+    let mut chart = chart.with_colorbar_title("Validation accuracy (%)");
+    themed(&mut chart, &theme, &mut specs)?;
 
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-parallel.png"))

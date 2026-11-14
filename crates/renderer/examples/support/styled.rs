@@ -1,7 +1,7 @@
-//! The restrained chart chrome shared by the designed gallery scenes: no axis
-//! lines or ticks, a horizontal grid, a quiet legend, an opaque background,
-//! 1200 x 800 pixels.
-use crate::gallery::{self, Result};
+//! What the designed gallery scenes share: the 1200 x 800 scene chart with
+//! a top-left legend, the colourbar, the export and the PNG check. The look
+//! of each scene is a built-in theme of its chart's kind (#291).
+use crate::gallery::Result;
 use renderer::{
     AxisTitleElement, Chart, Color, ColorMap, Config, CpuTextMeasure, LegendElement, RasterImage,
     Renderer, SelectionGeometry,
@@ -9,7 +9,7 @@ use renderer::{
     encode_png,
     layout::Side,
     text::RichSegment,
-    theme::{SubplotScope, Theme},
+    theme::Theme,
 };
 use std::path::Path;
 
@@ -53,35 +53,26 @@ pub fn save(image: &RasterImage, background: Color, path: &Path) -> Result {
     Ok(())
 }
 
-/// The designed scenes' look: the dashboard theme in the scene's background,
-/// ink and grid colours.
-pub fn theme(bg: Color, ink: Color, grid: Color) -> Theme {
-    let mut theme = Theme::dashboard();
-    let chrome = &mut theme.chrome;
-    chrome.background = Some(bg);
-    chrome.ink = ink;
-    chrome.frame_ink = ink;
-    chrome.label_ink = ink;
-    chrome.grid.major_x.color = grid;
-    chrome.grid.major_y.color = grid;
-    chrome.legend_fill = bg;
-    chrome.legend_border = bg;
-    theme
-}
-
-/// The shared chrome: the scene's theme and a top-left legend. The margins
-/// are fitted to the labels when the chart is exported.
-pub fn chrome(config: &mut Config, bg: Color, ink: Color, grid: Color) {
-    theme(bg, ink, grid).apply_chrome(config, SubplotScope::All);
-    config.legend.visible = true;
-    config.legend.corner = LegendCorner::TopLeft;
-    config.legend.padding = 15.;
-}
-
-pub fn cartesian(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -> Chart {
-    let mut chart = gallery::chart(title, x, y, SIZE);
-    chrome(chart.config_mut(), bg, ink, grid);
+/// A scene chart of [`SIZE`] with its titles and a top-left legend, for a
+/// built-in theme applied with its series ([`themed`]).
+pub fn scene_chart(title: &str, x: &str, y: &str) -> Chart {
+    let mut chart = Chart::sized(SIZE.0, SIZE.1)
+        .with_title(title)
+        .with_x_title(x)
+        .with_y_title(y);
+    let legend = &mut chart.config_mut().legend;
+    legend.visible = true;
+    legend.corner = LegendCorner::TopLeft;
     chart
+}
+
+// Not every scene uses them.
+#[allow(unused_imports)]
+pub use crate::gallery::{theme_named, themed};
+
+/// The scene colour of `theme`: its chart-area fill.
+pub fn background(theme: &Theme) -> Color {
+    theme.chrome.background.unwrap_or(Color::WHITE)
 }
 
 pub fn colorbar(config: &mut Config, ramp: ColorMap, min: f64, max: f64, spacing: f64, ink: Color) {

@@ -17,5 +17,6 @@ mod defaults;
 mod headless;
 mod save;
 
+pub use chart::check_theme_draw_style;
 pub use headless::HeadlessOptions;
 pub use save::{ExportFormat, SaveError};

@@ -24,16 +24,22 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Category, Renderer, SeriesConfig,
+    Category, Color, Renderer, SeriesConfig,
     config::LegendCorner,
     data_config::{
         BarGroups, CategoryBarDirection, CategoryBarLabels, DataRenderType, RangeColor,
         RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers,
     },
     format::{LabelFormat, TimestampLabelFormat, TimestampLabelMode},
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{cartesian, export, rgb, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
+
+/// A colour the theme sets, for the legend swatch that names it.
+fn role(color: Option<Color>, name: &str) -> Result<Color> {
+    Ok(color.ok_or_else(|| format!("the theme has no {name} colour"))?)
+}
 
 const DAY: f64 = 86_400.0;
 
@@ -51,18 +57,12 @@ fn noise(seed: u64, i: usize) -> f64 {
 // A profit bridge: each step floats between the running total before and
 // after it; the opening, gross and closing bars stand on zero.
 fn waterfall(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(251, 250, 247);
-    let ink = rgb(46, 52, 64);
-    let up = rgb(42, 157, 122);
-    let down = rgb(221, 96, 78);
-    let total = rgb(56, 86, 140);
-    let mut chart = cartesian(
+    let theme = theme_named(ChartKind::RangeBars, "warm-neutral")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Profit bridge / Q1 to Q2",
         "",
         "Operating profit (EUR million)",
-        bg,
-        ink,
-        rgb(232, 230, 224),
     );
     // (id, label, change, is a total)
     let steps = [
@@ -112,59 +112,52 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
         group_width: 0.66,
         ..BarGroups::default()
     });
-    config.legend.corner = LegendCorner::TopRight;
-    let mut bars = SeriesConfig::range_bars("bridge", "wf-pos", "wf-start", "wf-end", total);
+    // Bars by direction, totals flagged by a column, joined step to step;
+    // the theme colours them and draws the connectors.
+    let mut bars = SeriesConfig::range_bars("bridge", "wf-pos", "wf-start", "wf-end", Color::BLACK);
     if let DataRenderType::RangeBars {
-        style,
         color_by,
         connector,
         labels,
         ..
     } = &mut bars.render_type
     {
-        style.corner_radius = 3.0;
         *color_by = RangeColor::Direction {
-            up,
-            down,
+            up: Color::BLACK,
+            down: Color::BLACK,
             total: Some(RangeTotal {
                 column: "wf-total".into(),
-                color: total,
+                color: Color::BLACK,
             }),
         };
         *connector = Some(RangeConnector {
-            color: rgb(150, 150, 146),
-            width: 1.5,
+            color: Color::BLACK,
+            width: 1.,
         });
         labels.placement = CategoryBarLabels::Outside;
         labels.text = text;
     }
-    chart = chart
-        .with_legend_swatch("Increase", up)
-        .with_legend_swatch("Decrease", down)
-        .with_legend_swatch("Total", total);
+    let mut specs = [bars];
     chart.set_y_range(0., 80.);
     chart.config_mut().left_y.major_spacing = 20.;
     chart.config_mut().left_y.auto_significant_digits();
-    let image = export(r, &mut chart, &[bars], bg)?;
+    themed(&mut chart, &theme, &mut specs)?;
+    let range = &theme.series.range_bars;
+    chart = chart
+        .with_legend_swatch("Increase", role(range.up, "up")?)
+        .with_legend_swatch("Decrease", role(range.down, "down")?)
+        .with_legend_swatch("Total", role(range.total, "total")?);
+    chart.config_mut().legend.corner = LegendCorner::TopRight;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-waterfall.png"))
 }
 
 // Candlesticks: open to close bodies and low to high wicks on a time axis,
 // with the host's moving average of the closes drawn over them.
 fn candlestick(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(16, 21, 31);
-    let ink = rgb(176, 186, 204);
-    let up = rgb(38, 184, 150);
-    let down = rgb(238, 86, 82);
-    let average = rgb(242, 186, 78);
-    let mut chart = cartesian(
-        "Daily prices / synthetic index",
-        "Date (2026)",
-        "Price",
-        bg,
-        ink,
-        rgb(34, 42, 57),
-    );
+    let theme = theme_named(ChartKind::RangeBars, "midnight")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart("Daily prices / synthetic index", "Date (2026)", "Price");
     const T0: f64 = 1_767_225_600.0; // 2026-01-01T00:00:00Z
     let n = 64;
     let (mut t, mut open, mut close, mut low, mut high) =
@@ -204,53 +197,51 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("cd-low", &low)?;
     r.add_column("cd-high", &high)?;
     r.add_column("cd-sma", &sma)?;
-    let mut candles = SeriesConfig::range_bars("price", "cd-t", "cd-open", "cd-close", up);
+    // Bodies by direction over low-to-high wicks; the theme colours them.
+    let mut candles =
+        SeriesConfig::range_bars("price", "cd-t", "cd-open", "cd-close", Color::BLACK);
     if let DataRenderType::RangeBars {
-        style,
         whiskers,
         color_by,
         slot_width,
         ..
     } = &mut candles.render_type
     {
-        style.corner_radius = 0.0;
         *whiskers = Some(RangeWhiskers {
             low: "cd-low".into(),
             high: "cd-high".into(),
-            width: 1.5,
+            width: 1.,
             color: None,
         });
         *color_by = RangeColor::Direction {
-            up,
-            down,
+            up: Color::BLACK,
+            down: Color::BLACK,
             total: None,
         };
         // One row is one day on the numeric time axis.
         *slot_width = Some(DAY);
     }
-    let trend = SeriesConfig::line("sma", "cd-t", "cd-sma")
-        .color(average)
-        .width(2.5)
-        .label("20-day moving average");
+    let trend = SeriesConfig::line("sma", "cd-t", "cd-sma").label("20-day moving average");
     let config = chart.config_mut();
     config.bar_groups = Some(BarGroups {
         group_width: 0.7,
         ..BarGroups::default()
     });
-    config.grid.show_major_x = true;
     config.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
         label: TimestampLabelMode::Pattern("%m/%d".into()),
         ..TimestampLabelFormat::default()
     });
-    let specs = [candles, trend];
-    chart = chart
-        .with_legend_swatch("Close above open", up)
-        .with_legend_swatch("Close below open", down)
-        .with_legend_from(&specs);
+    let mut specs = [candles, trend];
     chart.set_x_range(T0 - DAY, T0 + n as f64 * DAY);
     chart.set_y_range(95., 125.);
     chart.config_mut().left_y.major_spacing = 5.;
     chart.config_mut().left_y.auto_significant_digits();
+    themed(&mut chart, &theme, &mut specs)?;
+    let range = &theme.series.range_bars;
+    chart = chart
+        .with_legend_swatch("Close above open", role(range.up, "up")?)
+        .with_legend_swatch("Close below open", role(range.down, "down")?)
+        .with_legend_from(&specs);
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-candlestick.png"))
 }
@@ -258,16 +249,9 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
 // A Gantt chart: tasks on workstream rows over a date axis, coloured by a
 // state column, their finished part shaded by a progress column.
 fn gantt(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(248, 249, 252);
-    let ink = rgb(40, 48, 66);
-    let mut chart = cartesian(
-        "Release plan / spring 2026",
-        "",
-        "",
-        bg,
-        ink,
-        rgb(228, 232, 240),
-    );
+    let theme = theme_named(ChartKind::RangeBars, "cool-slate")?;
+    let bg = background(&theme);
+    let mut chart = scene_chart("Release plan / spring 2026", "", "");
     const T0: f64 = 1_772_409_600.0; // Monday 2026-03-02T00:00:00Z
     // Listed top-down; the first category of a horizontal axis is the
     // bottom row, so the axis takes them in reverse.
@@ -279,12 +263,8 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         ("qa", "QA"),
         ("launch", "Launch"),
     ];
-    let states = [
-        ("Done", rgb(96, 186, 150)),
-        ("In progress", rgb(112, 156, 236)),
-        ("At risk", rgb(243, 170, 88)),
-        ("Not started", rgb(132, 144, 168)),
-    ];
+    // The states in the order of the theme's state colours.
+    let states = ["Done", "In progress", "At risk", "Not started"];
     // (row, start day, days, state, progress, name)
     let tasks = [
         (0, 0.0, 9.0, 0, 1.0, "Interviews"),
@@ -307,26 +287,27 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
     r.add_hilo_column("gt-end", &pick(&|t| T0 + (t.1 + t.2) * DAY))?;
     r.add_column("gt-state", &pick(&|t| t.3 as f64))?;
     r.add_column("gt-progress", &pick(&|t| t.4))?;
-    let mut bars = SeriesConfig::range_bars("tasks", "gt-row", "gt-start", "gt-end", states[3].1);
+    let mut bars = SeriesConfig::range_bars("tasks", "gt-row", "gt-start", "gt-end", Color::BLACK);
     if let DataRenderType::RangeBars {
         color_by,
         progress,
         labels,
-        style,
         ..
     } = &mut bars.render_type
     {
-        style.corner_radius = 5.0;
+        // One style per state; the theme colours them.
         *color_by = RangeColor::State {
             column: "gt-state".into(),
             styles: states
                 .iter()
-                .map(|&(_, color)| RangeStateStyle { color })
+                .map(|_| RangeStateStyle {
+                    color: Color::BLACK,
+                })
                 .collect(),
         };
         *progress = Some(RangeProgress {
             column: "gt-progress".into(),
-            remaining_opacity: 0.35,
+            remaining_opacity: 1.,
         });
         labels.placement = CategoryBarLabels::Inside;
         labels.text = tasks.iter().map(|t| t.5.to_string()).collect();
@@ -343,18 +324,18 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         group_width: 0.62,
         ..BarGroups::default()
     });
-    config.grid.show_major_x = true;
-    config.grid.show_major_y = false;
-    config.legend.corner = LegendCorner::TopRight;
     config.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
         label: TimestampLabelMode::Pattern("%m/%d".into()),
         ..TimestampLabelFormat::default()
     });
-    for (label, color) in states {
-        chart = chart.with_legend_swatch(label, color);
-    }
     chart.set_x_range(T0 - 2.0 * DAY, T0 + 66.0 * DAY);
-    let image = export(r, &mut chart, &[bars], bg)?;
+    let mut specs = [bars];
+    themed(&mut chart, &theme, &mut specs)?;
+    for (label, color) in states.iter().zip(&theme.series.range_bars.states) {
+        chart = chart.with_legend_swatch(label, *color);
+    }
+    chart.config_mut().legend.corner = LegendCorner::TopRight;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-gantt.png"))
 }
 

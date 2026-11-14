@@ -2424,6 +2424,7 @@ export class FiggyChartElement extends HTMLElement {
     const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
     return this.#mutateChart("apply_theme", name, list);
   }
+  theme_names() { return JSON.parse(this.#kernelForCall().theme_names()); }
   set_background(color) {
     return this.#mutateChart("set_background", JSON.stringify(color ?? null));
   }

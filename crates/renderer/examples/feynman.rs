@@ -5,7 +5,8 @@
 //!   3 x 2 grid (electron-positron annihilation into muons, Compton
 //!   scattering, Higgs production by gluon fusion through a top loop, beta
 //!   decay through a W, the electron's one-loop vertex correction and a
-//!   three-jet event), each line coloured by its particle.
+//!   three-jet event). The `parchment` Feynman theme gives the look:
+//!   each line's colour by its particle, the strokes and the label ink.
 //!
 //! cargo run --locked -p figgy-renderer --example feynman -- target/feynman
 #[allow(dead_code)]
@@ -18,22 +19,21 @@ use ParticleLine::{ChargedBoson, Fermion, Gluon, Photon, Scalar};
 use VertexRole::{Incoming, Internal, Outgoing};
 use gallery::Result;
 use renderer::{
-    Anchor, Annotation, AnnotationKind, AnnotationLineStyle, AxisPreset, Color, Renderer,
-    SeriesConfig, ShapeStyle,
+    Anchor, Annotation, AnnotationKind, AnnotationLineStyle, Color, Renderer, SeriesConfig,
+    ShapeStyle,
     feynman::{
-        FeynmanSeries, FeynmanStyle, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine,
-        Propagator, VertexRole, Wiggle,
+        FeynmanSeries, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine, Propagator,
+        VertexRole,
     },
     text::RichText,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{cartesian, export, rgb, save};
+use styled::{background, export, save, scene_chart, theme_named, themed};
 
-const INK: (u8, u8, u8) = (38, 42, 58);
-
-fn tex(text: &str, size: f32) -> RichText {
-    let (r, g, b) = INK;
-    RichText::from_tex(text, rgb(r, g, b), size, "").expect("valid TeX")
+/// A label: its content, in the look the theme gives it.
+fn tex(text: &str) -> RichText {
+    RichText::from_tex(text, Color::BLACK, 16., "").expect("valid TeX")
 }
 
 /// One diagram on its card: the card's lower-left corner in data units, so
@@ -46,7 +46,7 @@ impl Card {
     fn leg(&self, id: &str, role: VertexRole, [x, y]: [f64; 2], label: &str) -> FeynmanVertex {
         FeynmanVertex {
             at: Some([self.origin[0] + x, self.origin[1] + y]),
-            label: (!label.is_empty()).then(|| tex(label, 22.)),
+            label: (!label.is_empty()).then(|| tex(label)),
             ..FeynmanVertex::new(id, role)
         }
     }
@@ -65,46 +65,18 @@ fn vertex(id: &str) -> FeynmanVertex {
     FeynmanVertex::new(id, Internal)
 }
 
-/// A propagator in its particle's colour.
+/// A propagator; the theme colours it by its particle.
 fn line(id: &str, from: &str, to: &str, particle: ParticleLine, label: &str) -> Propagator {
-    let color = match particle {
-        Photon => rgb(36, 110, 200),
-        Gluon => rgb(24, 140, 92),
-        ChargedBoson => rgb(222, 118, 36),
-        Scalar => rgb(150, 70, 178),
-        _ => {
-            let (r, g, b) = INK;
-            rgb(r, g, b)
-        }
-    };
     Propagator {
-        label: (!label.is_empty()).then(|| tex(label, 21.)),
-        color: Some(color),
+        label: (!label.is_empty()).then(|| tex(label)),
         ..Propagator::new(id, from, to, particle)
     }
 }
 
 fn diagram(vertices: Vec<FeynmanVertex>, propagators: Vec<Propagator>) -> FeynmanSeries {
-    let (r, g, b) = INK;
     FeynmanSeries {
         vertices,
         propagators,
-        style: FeynmanStyle {
-            color: rgb(r, g, b),
-            width: 2.2,
-            wave: Wiggle {
-                amplitude: 5.,
-                wavelength: 15.,
-            },
-            coil: Wiggle {
-                amplitude: 6.,
-                wavelength: 10.,
-            },
-            head_length: 11.,
-            head_width: 8.,
-            dot_radius: 3.5,
-            ..FeynmanStyle::default()
-        },
         ..FeynmanSeries::default()
     }
 }
@@ -212,7 +184,7 @@ fn diagrams() -> [(&'static str, FeynmanSeries); 6] {
     );
     vertex_loop.propagators[4].bend = Some(-50.);
     vertex_loop.propagators[4].momentum = Some(MomentumArrow {
-        label: tex("$k$", 21.),
+        label: tex("$k$"),
         side: MomentumSide::Right,
         reversed: false,
         label_offset: [0.; 2],
@@ -251,19 +223,19 @@ fn diagrams() -> [(&'static str, FeynmanSeries); 6] {
 }
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(244, 241, 234);
-    let (ir, ig, ib) = INK;
-    let ink = rgb(ir, ig, ib);
-    let mut chart = cartesian("Feynman diagrams / six processes", "", "", bg, ink, bg);
+    let theme = theme_named(ChartKind::Feynman, "parchment")?;
+    let bg = background(&theme);
+    let chrome = &theme.chrome;
+    let mut chart = scene_chart("Feynman diagrams / six processes", "", "");
     chart.set_x_range(0., 3.);
     chart.set_y_range(0., 2.);
     let config = chart.config_mut();
-    config.apply_axis_preset(AxisPreset::Hidden);
     config.legend.visible = false;
     let mut specs = Vec::new();
     for (k, (caption, diagram)) in diagrams().into_iter().enumerate() {
         let (x, y) = ((k % 3) as f64, if k < 3 { 1. } else { 0. });
-        // A white card under each diagram, its caption at the top left.
+        // A card under each diagram in the theme's box colours, its
+        // caption at the top left in the theme's ink.
         config
             .annotations
             .items
@@ -277,9 +249,9 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                     y: y + 0.97,
                 },
                 style: ShapeStyle {
-                    fill: Some(Color::WHITE),
+                    fill: Some(chrome.legend_fill),
                     border: AnnotationLineStyle {
-                        color: rgb(222, 216, 204),
+                        color: chrome.legend_border,
                         width: 1.,
                         ..Default::default()
                     },
@@ -294,7 +266,11 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                     x: x + 0.07,
                     y: y + 0.93,
                 },
-                text: tex(caption, 20.),
+                text: RichText {
+                    color: chrome.ink,
+                    font_size: chrome.legend_size,
+                    ..tex(caption)
+                },
                 box_style: None,
                 align: Default::default(),
             }));
@@ -303,6 +279,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             diagram,
         ));
     }
+    themed(&mut chart, &theme, &mut specs)?;
     let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-feynman.png"))
 }

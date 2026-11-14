@@ -570,17 +570,39 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     );
     chart.set_background("null").expect("clear the chart fill");
     assert!(chart_config(&chart).background.is_none());
-    // A theme (#265) writes the look into the chart and leaves the subplot
-    // it is not given alone; a bad name or list changes nothing.
-    let before = chart_config(&chart);
-    assert!(chart.apply_theme("neon", "all").is_err());
-    assert!(chart.apply_theme("dark", "[nope").is_err());
-    assert_eq!(chart_config(&chart), before);
+    // A theme (#291) is one of the chart's kind: the chart draws a line, so
+    // it lists and takes the line themes. It writes the look into the chart
+    // and leaves the subplot it is not given alone; a bad name, a name of
+    // another kind's catalogue or a bad list changes nothing.
+    use renderer::theme::{ChartKind, Theme};
     chart
-        .apply_theme("dark", "none")
-        .expect("apply the dark theme");
+        .register_column_f32("x", &[0.0, 1.0, 2.0])
+        .expect("register x");
+    chart
+        .register_column_f32("y", &[0.0, 1.0, 4.0])
+        .expect("register y");
+    chart
+        .add_line_series("line", "x", "y", 2.0, "")
+        .expect("add a line series");
+    let names: Vec<String> =
+        serde_json::from_str(&chart.theme_names().expect("theme names")).expect("a JSON array");
+    assert_eq!(names, Theme::names(ChartKind::Line));
+    assert!(names.iter().any(|name| name == "midnight"));
+    let before = chart_config(&chart);
+    let series_before = chart.get_series().expect("get_series");
+    assert!(chart.apply_theme("neon", "all").is_err());
+    assert!(chart.apply_theme("midnight", "[nope").is_err());
+    // `parchment` is a Feynman theme: not one of a line chart's.
+    assert!(Theme::named(ChartKind::Feynman, "parchment").is_some());
+    assert!(!names.iter().any(|name| name == "parchment"));
+    assert!(chart.apply_theme("parchment", "all").is_err());
+    assert_eq!(chart_config(&chart), before);
+    assert_eq!(chart.get_series().expect("get_series"), series_before);
+    chart
+        .apply_theme("midnight", "none")
+        .expect("apply the midnight theme");
     let themed = chart_config(&chart);
-    let dark = renderer::theme::Theme::dark();
+    let dark = Theme::named(ChartKind::Line, "midnight").expect("the line kind's midnight");
     assert_eq!(themed.background, dark.chrome.background);
     assert_eq!(themed.bottom_x.line_color, dark.chrome.frame_ink);
     assert_eq!(themed.subplots[0].config.background, None);
@@ -589,7 +611,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         (before.bottom_x.min, before.bottom_x.max)
     );
     chart
-        .apply_theme("dark", "[0]")
+        .apply_theme("midnight", "[0]")
         .expect("theme the subplot too");
     assert_eq!(
         chart_config(&chart).subplots[0].config.background,

@@ -900,41 +900,160 @@ A theme (`renderer::theme::Theme`, `helpers` feature) writes a whole look into
 the document once. It is a value, not a name the document stores: after it is
 applied, the document holds plain values and stays the single source of truth.
 
+A theme belongs to one kind of chart (`ChartKind`): a dashboard look is made
+for line charts, a parchment card for Feynman diagrams. A theme applies only
+to a chart of its kind.
+
 ```rust
-use renderer::theme::{SubplotScope, Theme};
+use renderer::theme::{ChartKind, SubplotScope, Theme};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // refits the layout too
+let theme = Theme::named(ChartKind::Line, "midnight").ok_or("no such theme")?;
+chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // refits the layout too
 ```
 
-- Built in: `Theme::light()` (the documented default look), `dark()`,
-  `paper()` (open frame, no grid, grayscale-safe), `dashboard()` (no axis
-  lines or ticks, horizontal grid, large text) and `sketch()` (hand-drawn
-  strokes). `Theme::named("dark")` looks one up by name. Every field is public,
-  so a host edits a copy before applying it.
-- A theme writes the chrome (`ChromeTheme`): the chart and plot fills, the
-  draw style, the axis frame (`AxisPreset`), axis, tick-label, title and legend
-  colours, fonts and sizes, the grid, the legend box, the colourbar outline and
-  the selection highlight. It writes each series' family part (`SeriesTheme`):
-  colours through its `ColorCycle`, stroke widths, marker sizes and the
-  family's materials. Energy-level and Feynman charts keep a frame of their
-  own (`Grotrian`, `Hidden`).
-- It keeps axis ranges, scales, tick spacing, label formats, categories,
-  axis breaks, the chart area, every offset, all text content, the annotation
-  layer, the overlay and subplot structure, series ids, columns and labels,
-  and the selection itself.
-- Overlays take the theme with their chart; an overlay's own axes take the
-  frame of the chart's bottom and left axes, since they are data axes too.
-  `SubplotScope` chooses the
-  subplots: `None`, `All` or `Only(&[indices])`; a series drawn in a subplot
-  outside the scope keeps its look.
-- `Chart::apply_theme` refits the layout to the new text sizes
-  (`fit_layout`). `Chart::with_theme(&theme)` applies the chrome alone and
-  fits; style the series with `theme.style_series(&mut series, index)`.
-  `theme.apply(&mut config, &mut series, scope)` works on a bare `Config` and
-  leaves the layout to the host. `theme.apply_radial(&mut radial_chart)`
-  themes a radial chart.
+- **Kinds.** `ChartKind::of(&config, &series, layer)` reads the kind of the
+  base chart or of a subplot from its coordinates, its axes and the series
+  drawn on it and on its overlays; a chart that draws no series yet has none
+  (`None`) and takes any theme. The coordinates decide first: a 3D view is
+  `Surface3d`, then `Ternary`, `Parallel`, and on polar coordinates `Radar`
+  when a radar series is drawn and `Polar` otherwise. A rectangular chart
+  that mixes families takes the most specific one, in this order: `Feynman`,
+  `EnergyLevels`, `Probability` (a probability axis), `VectorField`,
+  `TriMesh`, `Field`, `RangeBars`, `Distribution`, `CategoryBars`,
+  `Histogram`, `Stem`, `ErrorBars`, then `Scatter` when no x-y series draws a
+  line and `Line` otherwise. So a candlestick with a moving average is range
+  bars, and wind arrows over a speed field are a vector field.
+  `ChartKind::name()` is the kind's name in the table below, in error
+  messages and in the browser API.
+- **The catalogue.** `Theme::names(kind)` lists a kind's themes and
+  `Theme::named(kind, name)` returns one, or `None`. Every kind has `default`,
+  the documented default look: applying it to a default document changes
+  nothing. Every other theme is the look of a gallery image:
+
+  | Kind (`ChartKind`) | Theme | Look | Gallery image |
+  |---|---|---|---|
+  | `line` (`Line`) | `gallery` | A blue and a coral line on white paper | `gallery-wave.gif`, `gallery-orbit.gif` |
+  | | `cool-slate` | Slate ink on a cool off-white; teal, coral, violet and amber lines with a light fill | `gallery-forecast.png`, `gallery-thermostat.png`, `gallery-subplots.png` |
+  | | `midnight` | Pale ink on midnight navy; mint, lavender, cyan and amber lines | `concept-observability.png`, `gallery-twin-axes.png`, `gallery-broken-axes.png` |
+  | | `editorial` | Hand-drawn strokes (`DrawStyle::Sketch`) and round markers on newsprint | `concept-editorial.png` |
+  | | `milkyway` | `DrawStyle::Milkyway` on deep space, pastel pink and cyan lines | `style-growth-response-milkyway.png` |
+  | | `constellation` | `DrawStyle::Constellation` on deep space | `style-growth-response-constellation.png` |
+  | `scatter` (`Scatter`) | `cool-slate` | Small translucent markers on a cool white with a full grid, a warm-to-indigo colourbar | `gallery-colormap.png`, `gallery-shapes.png` |
+  | | `warm-paper` | Coral, teal and violet translucent markers on cream paper | `gallery-bubbles.png` |
+  | `error-bars` (`ErrorBars`) | `gallery` | Blue and orange lines through markers with capped error bars | `gallery-errorbars.png` |
+  | `histogram` (`Histogram`) | `gallery` | Teal bars with a darker border, two pixels apart | `gallery-histogram.png`, `gallery-histogram-horizontal.png` |
+  | `category-bars` (`CategoryBars`) | `document` | Matte blue, orange and teal bars with rounded ends on a transparent background, navy text | `gallery-categorical.png` |
+  | | `revenue` | Matte violet, lavender and teal bars, no grid, a legend without a box | `concept-revenue.png` |
+  | `distribution` (`Distribution`) | `document` | Matte blue, teal and amber boxes with navy outlines on a transparent background | `gallery-boxplot.png` |
+  | | `cool-slate` | Blue and coral violins outlined in slate | `gallery-violin.png` |
+  | | `warm-paper` | Unoutlined clouds, slim boxes without caps and translucent raw points on cream paper | `gallery-raincloud.png` |
+  | `range-bars` (`RangeBars`) | `warm-neutral` | Green rises, coral falls and navy totals with grey connectors | `gallery-waterfall.png` |
+  | | `midnight` | Square green and red candles with their wicks and an amber line on midnight | `gallery-candlestick.png` |
+  | | `cool-slate` | Rounded task bars coloured by state, the unfinished part faded | `gallery-gantt.png` |
+  | `stem` (`Stem`) | `cool-slate` | Teal stems a shade lighter than their markers, a sand reference line | `gallery-stem.png` |
+  | | `warm-paper` | Thick green and rust stems with large round heads on cream paper | `gallery-lollipop.png` |
+  | `field` (`Field`) | `gallery` | Viridis under white isolines with white labels | `gallery-contours.png` |
+  | | `warm-neutral` | A mint to indigo ramp on a warm off-white, empty cells unpainted | `gallery-hexbin.png` |
+  | | `deep-space` | Pale ink on deep space, no grid, a legend without a box | `gallery-imshow.png` |
+  | | `topographic` | A teal to sand ramp under pale isolines on deep teal | `concept-terrain.png` |
+  | `vector-field` (`VectorField`) | `gallery` | Black arrows, coloured through Viridis when they carry a value | `gradient.png` of `vector_field` (not in the README) |
+  | | `midnight` | Near-white arrows over a navy to mint field on midnight | `gallery-wind.png` |
+  | | `ocean` | Bold arrows from deep blue to yellow on dark teal with a full grid | `gallery-currents.png` |
+  | `surface-3d` (`Surface3d`) | `warm-terrain` | A matte wireframed surface on a lake to snow ramp, darkened floor contours, a red trail | `gallery-surface.png` |
+  | | `warm-diverging` | A matte wireframed surface on a blue to red ramp through cream | `gallery-trisurf.png` |
+  | | `midnight` | Bold arrows from blue through green to orange on midnight | `gallery-quiver3d.png` |
+  | `tri-mesh` (`TriMesh`) | `midnight` | A navy to red ramp under faint white isolines, mesh edges as hairlines | `gallery-trimesh.png` |
+  | `polar` (`Polar`) | `gallery` | Blue, red, green and violet lines with a light fill on white paper | `gallery-polar.png`, `gallery-polar-compass.png` |
+  | | `cool-slate` | A pale green to navy ramp under dark labelled isolines, spokes and rings over the field | `gallery-polar-heatmap.png` |
+  | | `warm-paper` | Flat bars from sand through orange to dark red on cream paper | `gallery-rose.png` |
+  | `radar` (`Radar`) | `document` | Blue, orange, green and grey outlines with a light fill on a transparent background | `gallery-radar.png`, `gallery-radar-circle.png` |
+  | `parallel` (`Parallel`) | `midnight` | Thin rows from indigo through magenta to yellow, slate axes on midnight | `gallery-parallel.png` |
+  | `ternary` (`Ternary`) | `warm-paper` | Twelve earth-toned regions outlined in the paper colour, taupe axes | `gallery-ternary.png` |
+  | `probability` (`Probability`) | `warm-neutral` | Blue and red samples with their fitted lines on a warm off-white with a full grid | `gallery-probability.png` |
+  | `energy-levels` (`EnergyLevels`) | `grotrian` | Navy levels, orange transitions with ochre wavelengths, a pale blue continuum | `gallery-grotrian.png` |
+  | `feynman` (`Feynman`) | `parchment` | Ink fermions, blue photons, green gluons, an orange W and violet scalars on parchment | `gallery-feynman.png` |
+
+  Every field of a theme is public, so a host edits a copy before applying
+  it: `theme.chrome.title_size = 30.0`, another `theme.series.palette`, a
+  different `theme.chrome.draw_style`.
+- **Refusals.** `Chart::apply_theme` returns `Result<(), ThemeError>` and a
+  refusal changes nothing, neither the chart nor its series:
+  - `ThemeError::Kind { theme, chart, layer }`: the base chart or a subplot in
+    scope (`layer`) is of another kind than the theme. Apply the theme with a
+    `SubplotScope` that leaves that subplot out, and give the subplot a theme
+    of its own kind.
+  - `ThemeError::DrawStyle { series_id }`: the theme's draw style cannot draw
+    a series in scope (`renderer::draw_style_supports`), which the renderer
+    would drop: `constellation` draws a line only with its markers. A theme
+    in `DrawStyle::Precise` draws everything. The model cannot tell, so
+    `Chart::apply_theme` and the browser wrappers check it
+    (`renderer::helpers::check_theme_draw_style`) before `Theme::apply`.
+- **What a theme writes.** The chrome (`ChromeTheme`): the chart and plot
+  fills, the draw style, the axis frame (`AxisPreset`, and `ticks: false` for
+  a frame without its ticks), axis, tick-label, title and legend colours,
+  fonts and sizes, the grid, the legend box and its padding, the colourbar
+  (`ColorbarTheme`: border, thickness, length, gap, ticks and text sizes) and
+  the selection highlight. Each series takes its family's part of
+  `SeriesTheme`: a colour from `palette` (series `i` takes
+  `palette[i % len]`; an empty palette keeps every colour), then `lines`,
+  `bars`, `boxes`, `fields`, `vectors`, `radar`, `range_bars`, `ternary`,
+  `parallel`, `surfaces`, `energy_levels` or `feynman`. Energy-level and
+  Feynman charts take a frame of their own (`Grotrian`, `Hidden`). The legend
+  symbols follow the new series look.
+- **What it keeps.** Axis ranges, scales, tick spacing, label formats,
+  categories, axis breaks, the chart area, every offset, all text content,
+  the annotation layer, the overlay and subplot structure, series ids,
+  columns and labels, and the selection itself. An `Option` field of a part
+  that is `None` (a fill opacity, a range bar's `up` colour, a label look)
+  keeps each series' own value.
+- **Per-category colours.** With `bars.color_by_category` or
+  `boxes.color_by_category`, a chart that draws exactly one category-bar
+  series, or exactly one box plot series, takes one palette colour per
+  category in reading order (left to right, top to bottom for horizontal
+  bars), written as the series' per-category overrides. Only `Theme::apply`
+  writes them, since they need the chart's categories.
+- **Contour shading.** `fields.contour_shade: Some(factor)` colours every
+  contour level in the colour map's colour at that level, multiplied by
+  `factor` (less than 1 is darker). The level's place on the map is the
+  colourbar's, so only `Theme::apply` writes it, and only to a chart with a
+  colourbar: add the colourbar before applying the theme. `style_series`
+  alone leaves a contour's per-level colours as they are.
+- **Overlays and subplots.** Overlays take the theme with their chart; an
+  overlay's own axes take the frame of the chart's bottom and left axes,
+  since they are data axes too. `SubplotScope` chooses the subplots: `None`,
+  `All` or `Only(&[indices])`; a series drawn in a subplot outside the scope
+  keeps its look.
+- **The parts on their own.** `Chart::apply_theme` refits the layout to the
+  new text sizes (`fit_layout`). `theme.apply(&mut config, &mut series, scope)`
+  works on a bare `Config`, returns the same `Result` without the draw-style
+  check, and leaves the layout to the host. `theme.apply_chrome(&mut config,
+  &series, scope)` writes the chrome alone (the legend symbols follow
+  `series`; pass `&[]` for a chart without series yet) and
+  `theme.style_series(&mut series, index)` styles one series as the
+  `index`-th of its chart.
+- **Radial charts.** The radial chart is a model of its own and has its own
+  themes: `RadialTheme::names()` and `RadialTheme::named(name)`, applied with
+  `theme.apply(&mut radial_chart)`.
+
+  | Theme | Look | Gallery image |
+  |---|---|---|
+  | `ceramic` | Glazed ceramic slices from an oblique camera with rounded corners and a soft shadow on white | `gallery-donut.png` |
+  | `sunburst` | Flat green, rust and violet groups, each ring a paler step of the one inside it | `gallery-sunburst.png` |
+  | `pop-art` | Toon slices with a bold ink rim and separators, tilted on cream | `concept-pop-art.png` |
+  | `portfolio` | Pearl slices, deep and rounded under an oblique camera, on midnight with pale text | `concept-portfolio.png` |
+
+  A radial theme writes the background, the label colour and size, the title
+  size, the material, the view (tilt and depth), the slice shape (bevel, gap
+  and corners), the outline, the palette on the top-level slices and
+  `child_tint` on the slices below them (a sunburst's outer rings, the detail
+  chart of a split slice). Values, labels, the slice structure, the kind (pie
+  or donut, and the hole), the light, the hover response, the font family
+  and a slice's own style stay. A sunburst draws flat, so it keeps its top
+  view under a tilted theme. An inside label without a colour of its own
+  takes white on a dark slice and the theme's label colour on a light one, or
+  black when that label colour is itself light.
 - Applying the same theme twice changes nothing more.
 
 ### PNG export (memory only — saving is the caller's job)
@@ -1765,33 +1884,135 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
 문서에 이름으로 저장되는 것이 아니라 값이다. 적용하고 나면 문서에는 평범한 값만 남고, 문서가 계속
 하나뿐인 원본(SSOT)으로 남는다.
 
+테마는 차트 종류(`ChartKind`) 하나에 속한다. 대시보드 모양은 선 차트용이고 양피지 카드는 파인만
+도형용이다. 테마는 자기 종류의 차트에만 적용된다.
+
 ```rust
-use renderer::theme::{SubplotScope, Theme};
+use renderer::theme::{ChartKind, SubplotScope, Theme};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
-chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // 레이아웃도 다시 맞춘다
+let theme = Theme::named(ChartKind::Line, "midnight").ok_or("no such theme")?;
+chart.apply_theme(&theme, &mut series, SubplotScope::All)?;  // 레이아웃도 다시 맞춘다
 ```
 
-- 내장 테마는 `Theme::light()`(문서에 적힌 기본 모양), `dark()`, `paper()`(열린 축 틀, 격자 없음,
-  흑백 인쇄에 안전), `dashboard()`(축선·눈금 없음, 가로 격자, 큰 글자), `sketch()`(손으로 그린 선)다.
-  `Theme::named("dark")`로 이름으로 찾을 수 있다. 모든 필드가 공개되어 있어서 복사본을 고친 뒤
-  적용해도 된다.
-- 테마가 쓰는 것은 크롬(`ChromeTheme`)이다. 차트와 플롯 배경, 그리기 스타일, 축 틀(`AxisPreset`),
-  축·눈금 라벨·제목·범례의 색과 글꼴과 크기, 격자, 범례 상자, 색상 막대 테두리, 선택 강조가
-  여기에 든다. 시리즈마다 계열별 부분(`SeriesTheme`)도 쓴다. `ColorCycle`에 따른 색, 선 굵기,
-  마커 크기, 계열별 재질이다. 에너지 준위 차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을
-  유지한다.
-- 축 범위, 스케일, 눈금 간격, 라벨 형식, 범주, 축 끊김, 차트 영역, 모든 오프셋, 모든 텍스트
-  내용, 주석 레이어, 오버레이와 서브플롯 구조, 시리즈 id·컬럼·라벨, 선택 자체는 그대로 둔다.
-- 오버레이는 차트와 함께 테마를 받는다. 오버레이 자기 축도 데이터 축이라 차트의 아래·왼쪽 축과
-  같은 틀을 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
+- **종류.** `ChartKind::of(&config, &series, layer)`는 기본 차트나 서브플롯의 종류를 좌표계와 축,
+  그 차트와 오버레이에 그려지는 시리즈에서 읽는다. 아직 시리즈를 그리지 않는 차트는 종류가
+  없고(`None`) 어떤 테마든 받는다. 좌표계가 먼저 정한다. 3D 뷰는 `Surface3d`이고, 이어서
+  `Ternary`, `Parallel`이며, 극좌표에서는 레이더 시리즈를 그리면 `Radar`, 아니면 `Polar`다. 직교
+  좌표 차트에 여러 계열이 섞이면 다음 순서에서 가장 앞선 것이 종류가 된다. `Feynman`,
+  `EnergyLevels`, `Probability`(확률 축), `VectorField`, `TriMesh`, `Field`, `RangeBars`,
+  `Distribution`, `CategoryBars`, `Histogram`, `Stem`, `ErrorBars` 순이고, 그다음은 선을 그리는 x-y
+  시리즈가 없으면 `Scatter`, 있으면 `Line`이다. 그래서 이동 평균선이 있는 캔들 차트는 범위
+  막대이고, 풍속 필드 위의 바람 화살표는 벡터 필드다. `ChartKind::name()`은 아래 표와 오류
+  메시지, 브라우저 API에 쓰이는 종류 이름이다.
+- **카탈로그.** `Theme::names(kind)`는 그 종류의 테마 이름을 돌려주고, `Theme::named(kind, name)`은
+  테마 하나를 돌려주거나 `None`을 돌려준다. 모든 종류에 `default`가 있다. 문서에 적힌 기본
+  모양이며, 기본 문서에 적용하면 아무것도 바뀌지 않는다. 나머지 테마는 모두 갤러리 이미지의
+  모양이다.
+
+  | 종류(`ChartKind`) | 테마 | 모양 | 갤러리 이미지 |
+  |---|---|---|---|
+  | `line`(`Line`) | `gallery` | 흰 종이 위의 파란 선과 산호색 선 | `gallery-wave.gif`, `gallery-orbit.gif` |
+  | | `cool-slate` | 차가운 흰색 바탕에 슬레이트색 글자, 청록·산호·보라·호박색 선과 옅은 채움 | `gallery-forecast.png`, `gallery-thermostat.png`, `gallery-subplots.png` |
+  | | `midnight` | 짙은 남색 바탕에 옅은 글자, 민트·라벤더·청록·호박색 선 | `concept-observability.png`, `gallery-twin-axes.png`, `gallery-broken-axes.png` |
+  | | `editorial` | 신문지 바탕에 손으로 그린 선(`DrawStyle::Sketch`)과 둥근 마커 | `concept-editorial.png` |
+  | | `milkyway` | 깊은 우주 바탕의 `DrawStyle::Milkyway`, 파스텔 분홍과 청록 선 | `style-growth-response-milkyway.png` |
+  | | `constellation` | 깊은 우주 바탕의 `DrawStyle::Constellation` | `style-growth-response-constellation.png` |
+  | `scatter`(`Scatter`) | `cool-slate` | 전체 격자가 있는 차가운 흰색 바탕에 작고 반투명한 마커, 따뜻한 색에서 남색으로 가는 색상 막대 | `gallery-colormap.png`, `gallery-shapes.png` |
+  | | `warm-paper` | 크림색 종이 위의 산호·청록·보라색 반투명 마커 | `gallery-bubbles.png` |
+  | `error-bars`(`ErrorBars`) | `gallery` | 마커를 지나는 파란 선과 주황 선, 캡이 있는 오차 막대 | `gallery-errorbars.png` |
+  | `histogram`(`Histogram`) | `gallery` | 더 짙은 테두리를 두른 청록 막대, 간격 2픽셀 | `gallery-histogram.png`, `gallery-histogram-horizontal.png` |
+  | `category-bars`(`CategoryBars`) | `document` | 투명한 바탕에 끝이 둥근 무광 파랑·주황·청록 막대, 남색 글자 | `gallery-categorical.png` |
+  | | `revenue` | 무광 보라·라벤더·청록 막대, 격자 없음, 상자 없는 범례 | `concept-revenue.png` |
+  | `distribution`(`Distribution`) | `document` | 투명한 바탕에 남색 외곽선을 두른 무광 파랑·청록·호박색 상자 | `gallery-boxplot.png` |
+  | | `cool-slate` | 슬레이트색 외곽선을 두른 파란색과 산호색 바이올린 | `gallery-violin.png` |
+  | | `warm-paper` | 크림색 종이 위의 외곽선 없는 구름, 캡 없는 가는 상자, 반투명한 원자료 점 | `gallery-raincloud.png` |
+  | `range-bars`(`RangeBars`) | `warm-neutral` | 초록 상승, 산호색 하락, 남색 합계, 회색 연결선 | `gallery-waterfall.png` |
+  | | `midnight` | 짙은 남색 바탕에 각진 초록·빨강 캔들과 심지, 호박색 선 | `gallery-candlestick.png` |
+  | | `cool-slate` | 상태별로 색을 입힌 둥근 작업 막대, 남은 부분은 흐리게 | `gallery-gantt.png` |
+  | `stem`(`Stem`) | `cool-slate` | 마커보다 한 단계 옅은 청록 줄기, 모래색 기준선 | `gallery-stem.png` |
+  | | `warm-paper` | 크림색 종이 위의 굵은 초록·적갈색 줄기와 큰 둥근 머리 | `gallery-lollipop.png` |
+  | `field`(`Field`) | `gallery` | Viridis 위의 흰 등고선과 흰 라벨 | `gallery-contours.png` |
+  | | `warm-neutral` | 따뜻한 흰색 바탕에 민트에서 남색으로 가는 색 띠, 빈 칸은 칠하지 않음 | `gallery-hexbin.png` |
+  | | `deep-space` | 깊은 우주 바탕에 옅은 글자, 격자 없음, 상자 없는 범례 | `gallery-imshow.png` |
+  | | `topographic` | 짙은 청록 바탕에 청록에서 모래색으로 가는 색 띠와 옅은 등고선 | `concept-terrain.png` |
+  | `vector-field`(`VectorField`) | `gallery` | 검은 화살표, 값이 있으면 Viridis로 색을 입힘 | `vector_field`의 `gradient.png`(README에는 없음) |
+  | | `midnight` | 짙은 남색 바탕에 남색에서 민트로 가는 필드와 흰색에 가까운 화살표 | `gallery-wind.png` |
+  | | `ocean` | 전체 격자가 있는 짙은 청록 바탕에 짙은 파랑에서 노랑으로 가는 굵은 화살표 | `gallery-currents.png` |
+  | `surface-3d`(`Surface3d`) | `warm-terrain` | 호수색에서 눈색으로 가는 무광 와이어프레임 곡면, 어둡게 한 바닥 등고선, 빨간 경로 | `gallery-surface.png` |
+  | | `warm-diverging` | 크림색을 지나 파랑에서 빨강으로 가는 무광 와이어프레임 곡면 | `gallery-trisurf.png` |
+  | | `midnight` | 짙은 남색 바탕에 파랑에서 초록을 지나 주황으로 가는 굵은 화살표 | `gallery-quiver3d.png` |
+  | `tri-mesh`(`TriMesh`) | `midnight` | 남색에서 빨강으로 가는 색 띠 위의 희미한 흰 등고선, 가는 메시 모서리 | `gallery-trimesh.png` |
+  | `polar`(`Polar`) | `gallery` | 흰 종이 위의 파랑·빨강·초록·보라 선과 옅은 채움 | `gallery-polar.png`, `gallery-polar-compass.png` |
+  | | `cool-slate` | 옅은 초록에서 남색으로 가는 색 띠 위의 짙은 등고선과 라벨, 필드 위의 방사선과 원 | `gallery-polar-heatmap.png` |
+  | | `warm-paper` | 크림색 종이 위의 모래색에서 주황을 지나 짙은 빨강으로 가는 평평한 막대 | `gallery-rose.png` |
+  | `radar`(`Radar`) | `document` | 투명한 바탕에 파랑·주황·초록·회색 외곽선과 옅은 채움 | `gallery-radar.png`, `gallery-radar-circle.png` |
+  | `parallel`(`Parallel`) | `midnight` | 짙은 남색 바탕에 남색에서 자홍을 지나 노랑으로 가는 가는 선, 슬레이트색 축 | `gallery-parallel.png` |
+  | `ternary`(`Ternary`) | `warm-paper` | 종이색 외곽선을 두른 흙빛 영역 열두 개, 회갈색 축 | `gallery-ternary.png` |
+  | `probability`(`Probability`) | `warm-neutral` | 전체 격자가 있는 따뜻한 흰색 바탕에 파란색과 빨간색 표본, 각각의 적합선 | `gallery-probability.png` |
+  | `energy-levels`(`EnergyLevels`) | `grotrian` | 남색 준위, 주황색 전이와 황토색 파장, 옅은 파란색 연속 영역 | `gallery-grotrian.png` |
+  | `feynman`(`Feynman`) | `parchment` | 양피지 바탕에 먹색 페르미온, 파란 광자, 초록 글루온, 주황 W, 보라 스칼라 | `gallery-feynman.png` |
+
+  테마의 모든 필드가 공개되어 있어서 복사본을 고친 뒤 적용해도 된다.
+  `theme.chrome.title_size = 30.0`처럼 값을 바꾸거나, `theme.series.palette`나
+  `theme.chrome.draw_style`을 다른 것으로 바꾼다.
+- **거부.** `Chart::apply_theme`은 `Result<(), ThemeError>`를 돌려주며, 거부되면 차트도 시리즈도
+  바뀌지 않는다.
+  - `ThemeError::Kind { theme, chart, layer }`: 기본 차트나 범위 안의 서브플롯(`layer`)이 테마와
+    다른 종류다. 그 서브플롯을 뺀 `SubplotScope`로 테마를 적용하고, 그 서브플롯에는 자기 종류의
+    테마를 준다.
+  - `ThemeError::DrawStyle { series_id }`: 테마의 그리기 스타일이 범위 안의 시리즈를 그리지
+    못한다(`renderer::draw_style_supports`). 그대로 두면 렌더러가 그 시리즈를 빼고 그린다.
+    `constellation`은 선을 마커와 함께일 때만 그린다. `DrawStyle::Precise`인 테마는 모든 시리즈를
+    그린다. 모델은 이를 알 수 없으므로 `Chart::apply_theme`과 브라우저 래퍼가 `Theme::apply`
+    전에 검사한다(`renderer::helpers::check_theme_draw_style`).
+- **테마가 쓰는 것.** 크롬(`ChromeTheme`)을 쓴다. 차트와 플롯 배경, 그리기 스타일, 축
+  틀(`AxisPreset`, 눈금 없는 틀은 `ticks: false`), 축·눈금 라벨·제목·범례의 색과 글꼴과 크기,
+  격자, 범례 상자와 안쪽 여백, 색상 막대(`ColorbarTheme`: 테두리, 두께, 길이, 간격, 눈금, 글자
+  크기), 선택 강조가 여기에 든다. 시리즈는 `SeriesTheme`에서 자기 계열의 부분을 받는다. 먼저
+  `palette`의 색을 받고(시리즈 `i`는 `palette[i % len]`, 빈 팔레트는 모든 색을 그대로 둔다),
+  이어서 `lines`, `bars`, `boxes`, `fields`, `vectors`, `radar`, `range_bars`, `ternary`,
+  `parallel`, `surfaces`, `energy_levels`, `feynman` 가운데 해당하는 부분을 받는다. 에너지 준위
+  차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을 받는다. 범례 기호는 바뀐 시리즈
+  모양을 따른다.
+- **그대로 두는 것.** 축 범위, 스케일, 눈금 간격, 라벨 형식, 범주, 축 끊김, 차트 영역, 모든
+  오프셋, 모든 텍스트 내용, 주석 레이어, 오버레이와 서브플롯 구조, 시리즈 id·컬럼·라벨, 선택
+  자체는 그대로 둔다. 부분의 `Option` 필드가 `None`이면(채움 불투명도, 범위 막대의 `up` 색, 라벨
+  모양 등) 시리즈마다 가진 값을 유지한다.
+- **범주별 색.** `bars.color_by_category`나 `boxes.color_by_category`가 켜져 있으면, 범주 막대
+  시리즈를 정확히 하나 그리는 차트나 상자 그림 시리즈를 정확히 하나 그리는 차트는 범주마다
+  팔레트 색을 하나씩 받는다. 읽는 순서(왼쪽에서 오른쪽, 가로 막대는 위에서 아래)를 따르며,
+  시리즈의 범주별 재정의로 쓰인다. 차트의 범주가 필요하므로 `Theme::apply`만 쓴다.
+- **등고선 음영.** `fields.contour_shade: Some(factor)`는 등고선 준위마다 색상 맵에서 그 준위의
+  색에 `factor`를 곱한 색을 입힌다(1보다 작으면 더 어둡다). 준위가 맵의 어디에 놓이는지는 색상
+  막대가 정하므로 `Theme::apply`만 쓰고, 색상 막대가 있는 차트에만 쓴다. 테마를 적용하기 전에
+  색상 막대를 먼저 넣는다. `style_series`만으로는 등고선의 준위별 색이 바뀌지 않는다.
+- **오버레이와 서브플롯.** 오버레이는 차트와 함께 테마를 받는다. 오버레이 자기 축도 데이터 축이라
+  차트의 아래·왼쪽 축과 같은 틀을 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
   `Only(&[인덱스])` 중 하나이고, 범위 밖 서브플롯에 그려지는 시리즈는 모양을 유지한다.
-- `Chart::apply_theme`은 바뀐 글자 크기에 맞춰 레이아웃을 다시 맞춘다(`fit_layout`).
-  `Chart::with_theme(&theme)`는 크롬만 적용하고 맞추며, 시리즈는
-  `theme.style_series(&mut series, index)`로 꾸민다. `theme.apply(&mut config, &mut series, scope)`는
-  `Config`에 바로 적용하고 레이아웃은 호스트에게 맡긴다. `theme.apply_radial(&mut radial_chart)`은
-  원형 차트에 적용한다.
+- **부분만 적용하기.** `Chart::apply_theme`은 바뀐 글자 크기에 맞춰 레이아웃을 다시
+  맞춘다(`fit_layout`). `theme.apply(&mut config, &mut series, scope)`는 `Config`에 바로 적용하며,
+  그리기 스타일 검사 없이 같은 `Result`를 돌려주고 레이아웃은 호스트에게 맡긴다.
+  `theme.apply_chrome(&mut config, &series, scope)`는 크롬만 쓴다(범례 기호는 `series`를 따르며,
+  아직 시리즈가 없는 차트에는 `&[]`를 넘긴다). `theme.style_series(&mut series, index)`는 시리즈
+  하나를 차트의 `index`번째 시리즈로 꾸민다.
+- **원형 차트.** 원형 차트는 모델이 따로 있고 테마도 따로 있다. `RadialTheme::names()`와
+  `RadialTheme::named(name)`으로 찾고 `theme.apply(&mut radial_chart)`로 적용한다.
+
+  | 테마 | 모양 | 갤러리 이미지 |
+  |---|---|---|
+  | `ceramic` | 흰 바탕에 비스듬한 시점의 유약 도자기 조각, 둥근 모서리와 부드러운 그림자 | `gallery-donut.png` |
+  | `sunburst` | 평평한 초록·적갈색·보라 그룹, 고리마다 안쪽 고리보다 한 단계 옅은 색 | `gallery-sunburst.png` |
+  | `pop-art` | 크림색 바탕에 기울인 툰 조각, 굵은 먹색 테두리와 구분선 | `concept-pop-art.png` |
+  | `portfolio` | 짙은 남색 바탕에 비스듬한 시점의 두껍고 둥근 진주 조각, 옅은 글자 | `concept-portfolio.png` |
+
+  원형 테마는 배경, 라벨 색과 크기, 제목 크기, 재질, 시점(기울기와 깊이), 조각 모양(베벨, 간격,
+  모서리), 외곽선을 쓰고, 최상위 조각에는 팔레트를, 그 아래 조각(선버스트의 바깥 고리, 분리된
+  조각의 상세 차트)에는 `child_tint`를 쓴다. 값, 라벨, 조각 구조, 종류(파이나 도넛, 구멍 크기),
+  조명, 호버 반응, 글꼴, 조각이 따로 가진 스타일은 그대로 둔다. 선버스트는 평평하게 그리므로
+  기울어진 테마를 적용해도 위에서 본 시점을 유지한다. 자기 색이 없는 안쪽 라벨은 어두운 조각
+  위에서 흰색을, 밝은 조각 위에서 테마의 라벨 색을 받는다. 그 라벨 색도 밝으면 검은색을 받는다.
 - 같은 테마를 두 번 적용해도 더 바뀌는 것은 없다.
 
 ### PNG 내보내기

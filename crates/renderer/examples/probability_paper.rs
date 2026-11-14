@@ -21,9 +21,10 @@ use renderer::{
     config::{AxisScale, LogTickPolicy, ProbabilityScale},
     data_config::ScatterShape,
     format::LabelFormat,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{chrome, rgb, save};
+use styled::{background, save, theme_named, themed};
 
 /// A deterministic value in `-1..1`, so the sample is the same every run.
 fn jitter(seed: u64, i: usize) -> f64 {
@@ -35,11 +36,14 @@ fn jitter(seed: u64, i: usize) -> f64 {
 }
 
 fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(250, 249, 246);
-    let ink = rgb(48, 52, 70);
-    let grid = rgb(226, 228, 236);
-    let blue = rgb(44, 110, 190);
-    let red = rgb(204, 72, 52);
+    let mut theme = theme_named(ChartKind::Probability, "warm-neutral")?;
+    // Each sample and its fitted line share a colour: the strengths take
+    // the first, the failure times the second.
+    let [first, second, ..] = theme.series.palette[..] else {
+        return Err("the warm-neutral theme has two colours".into());
+    };
+    theme.series.palette = vec![first, first, second, second];
+    let bg = background(&theme);
     let normal = ProbabilityScale::Normal;
     let weibull = ProbabilityScale::Weibull;
 
@@ -84,16 +88,7 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     }
 
     let cell = |x: u32, title: &str, x_title: &str, y_title: &str| -> Config {
-        let mut chart = Chart::placed(x, 0, 600, 800);
-        let config = chart.config_mut();
-        chrome(config, bg, ink, grid);
-        config.chart_title.text.font_size = 28.;
-        config.grid.show_major_x = true;
-        config.legend.visible = false;
-        for axis in [&mut config.left_y, &mut config.right_y] {
-            axis.label_style.font_size = 18.;
-        }
-        chart
+        Chart::placed(x, 0, 600, 800)
             .with_title(title)
             .with_x_title(x_title)
             .with_y_title(y_title)
@@ -123,19 +118,14 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     }
     config.subplots = vec![times];
 
-    let specs = [
-        SeriesConfig::scatter("strength", "strength", "p")
-            .color(blue)
-            .marker(ScatterShape::CircleFilled, 11.),
-        SeriesConfig::line("normal_fit", "fit_strength", "fit_p")
-            .color(blue)
-            .width(3.),
+    let mut specs = [
+        SeriesConfig::scatter("strength", "strength", "p"),
+        SeriesConfig::line("normal_fit", "fit_strength", "fit_p"),
+        // Squares tell the second paper's samples apart; the theme sizes
+        // them.
         SeriesConfig::scatter("failures", "hours", "p")
-            .color(red)
-            .marker(ScatterShape::SquareFilled, 11.),
-        SeriesConfig::line("weibull_fit", "fit_hours", "fit_p")
-            .color(red)
-            .width(3.),
+            .marker(ScatterShape::SquareFilled, theme.series.lines.marker_size),
+        SeriesConfig::line("weibull_fit", "fit_hours", "fit_p"),
     ];
     let mut chart = Chart::new(config);
     chart.auto_fit_x(r.pool(), "strength", 0.08)?;
@@ -146,7 +136,7 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     chart.with_axis_range_change(|c| {
         c.subplots[0].config.bottom_x.label_style.format = LabelFormat::Decimal;
     });
-    chart.fit_layout();
+    themed(&mut chart, &theme, &mut specs)?;
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &specs),
         renderer::ExportOptions::document(1.).with_clear(bg),

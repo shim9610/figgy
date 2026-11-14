@@ -4,6 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
+Each entry names the built-in theme its example applies
+([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+palette order or a fill opacity.
 
 ## Polar plot
 
@@ -12,6 +15,8 @@ the images are native renderer output.
 A line filled to the centre in polar coordinates, degree labels.
 
 **Code:** [polar_plot.rs](../examples/polar_plot.rs), case `01-antenna-pattern`
+
+**Theme:** `polar` theme `gallery`
 
 **Run:** `cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot`
 
@@ -23,6 +28,8 @@ Clockwise from the top, arc segments, radius labels on the 45° ray.
 
 **Code:** [polar_plot.rs](../examples/polar_plot.rs), case `02-compass-rose`
 
+**Theme:** `polar` theme `gallery`
+
 **Run:** `cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot`
 
 ## Polar heatmap
@@ -32,6 +39,8 @@ Clockwise from the top, arc segments, radius labels on the 45° ray.
 A directional wave spectrum as annular cells: direction on a compass axis, frequency outward, energy in dB, with labelled polar contours.
 
 **Code:** [polar_plot.rs](../examples/polar_plot.rs), `wave_spectrum`
+
+**Theme:** `polar` theme `cool-slate`
 
 **Run:** `cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot`
 
@@ -43,6 +52,8 @@ A wind rose: a year's hours from 16 directions as category bars stacked outward 
 
 **Code:** [polar_plot.rs](../examples/polar_plot.rs), `wind_rose`
 
+**Theme:** `polar` theme `warm-paper`
+
 **Run:** `cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot`
 
 ## Radar chart
@@ -52,6 +63,8 @@ A wind rose: a year's hours from 16 directions as category bars stacked outward 
 Two series over six categories on a polygon grid.
 
 **Code:** [radar_gallery.rs](../examples/radar_gallery.rs), case `01-spider-web`
+
+**Theme:** `radar` theme `document`
 
 **Run:** `cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery`
 
@@ -63,6 +76,8 @@ A circular grid with a value label at every vertex.
 
 **Code:** [radar_gallery.rs](../examples/radar_gallery.rs), case `02-circle-values`
 
+**Theme:** `radar` theme `document`
+
 **Run:** `cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery`
 
 ## Donut
@@ -73,6 +88,8 @@ Named values, rounded edges, an oblique view.
 
 **Code:** [radial_gallery.rs](../examples/radial_gallery.rs), case `ceramic`
 
+**Theme:** radial theme `ceramic`
+
 **Run:** `cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery`
 
 ## Sunburst
@@ -82,5 +99,7 @@ Named values, rounded edges, an oblique view.
 A sunburst of electricity generation: groups at the centre, sources on the middle ring and technologies outside, each share relative to its parent.
 
 **Code:** [radial_gallery.rs](../examples/radial_gallery.rs), `sunburst`
+
+**Theme:** radial theme `sunburst`
 
 **Run:** `cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery`

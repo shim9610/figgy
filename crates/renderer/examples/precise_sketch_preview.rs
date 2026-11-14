@@ -7,8 +7,7 @@ use gallery::*;
 use renderer::{
     Chart, Color, SeriesConfig,
     config::{DrawStyle, LegendCorner, SketchOptions},
-    data_config::ScatterShape,
-    theme::{SubplotScope, Theme},
+    theme::ChartKind,
 };
 
 fn main() -> Result {
@@ -23,18 +22,23 @@ fn main() -> Result {
                 .collect();
             r.add_column(id, &values)?;
         }
-        // The style row's text sizes, without minor grid lines.
-        let mut theme = Theme::light();
+        // The documented look at the style row's text sizes, without minor
+        // grid lines, with heavier lines and markers.
+        let mut theme = theme_named(ChartKind::Line, "default")?;
         theme.chrome.tick_label_size = 25.;
         theme.chrome.axis_title_size = 32.;
         theme.chrome.legend_size = 23.;
+        theme.chrome.legend_padding = 9.;
         theme.chrome.grid.minor_x.show = false;
         theme.chrome.grid.minor_y.show = false;
-        for (name, style, colors) in [
+        theme.series.lines.line_width = 2.5;
+        theme.series.lines.marker_size = 8.;
+        // Each draw style with its own pair of colours.
+        for (name, style, palette) in [
             (
                 "precise",
                 DrawStyle::Precise,
-                [Color::BLACK, Color::from_rgb8(230, 45, 50)],
+                vec![Color::BLACK, Color::from_rgb8(230, 45, 50)],
             ),
             (
                 "sketch",
@@ -43,37 +47,24 @@ fn main() -> Result {
                     wavelength_px: 55.,
                     seed: 1,
                 }),
-                [
+                vec![
                     Color::from_rgb8(218, 157, 200),
                     Color::from_rgb8(147, 193, 207),
                 ],
             ),
         ] {
-            let mut chart = Chart::sized(1280, 1024);
-            theme.apply_chrome(chart.config_mut(), SubplotScope::All);
-            let cfg = chart.config_mut();
-            // After the theme, which writes the draw style too.
-            cfg.draw_style = style;
-            cfg.legend.corner = LegendCorner::TopLeft;
-            cfg.legend.padding = 9.;
-            let [control, treated] = colors;
-            let specs = [
-                ("control", "Control mean", control),
-                ("treated", "Treated mean", treated),
-            ]
-            .map(|(id, label, color)| {
-                SeriesConfig::scatter_line(id, "time", id)
-                    .label(label)
-                    .color(color)
-                    .width(2.5)
-                    .marker(ScatterShape::CircleFilled, 8.)
-            });
-            let mut chart = chart
+            theme.chrome.draw_style = style;
+            theme.series.palette = palette;
+            let mut specs = [("control", "Control mean"), ("treated", "Treated mean")]
+                .map(|(id, label)| SeriesConfig::scatter_line(id, "time", id).label(label));
+            let mut chart = Chart::sized(1280, 1024)
                 .with_x_title("Time [min]")
-                .with_y_title("Response mean")
-                .with_legend_from(&specs);
+                .with_y_title("Response mean");
             chart.set_x_range(-6., 126.);
             chart.set_y_range(-0.05, 1.08);
+            themed(&mut chart, &theme, &mut specs)?;
+            let mut chart = chart.with_legend_from(&specs);
+            chart.config_mut().legend.corner = LegendCorner::TopLeft;
             save(
                 r,
                 &mut chart,

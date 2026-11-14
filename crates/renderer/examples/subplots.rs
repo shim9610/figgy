@@ -17,32 +17,30 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ChartKind;
 use renderer::{
     CellRef, Chart, Color, Config, ExportOptions, ExportSource, HitMap, LayerRef, Renderer,
     SeriesConfig, Subplot, text::RichText,
 };
 use std::path::Path;
-use styled::{chrome, rgb, save};
+use styled::{background, save, theme_named, themed};
 
 // Small multiples: four sensors in a 2 x 2 grid of subplots sharing the hour
 // axis, each with its own range and colour.
 fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(247, 248, 253);
-    let ink = rgb(52, 57, 85);
-    let grid = rgb(228, 231, 240);
+    let mut theme = theme_named(ChartKind::Line, "cool-slate")?;
+    // Smaller text for the 600 x 400 cells, and the temperature in coral,
+    // the humidity in teal.
+    theme.chrome.title_size = 26.;
+    theme.chrome.tick_label_size = 18.;
+    theme.chrome.axis_title_size = 19.;
+    theme.series.palette.swap(0, 1);
+    let bg = background(&theme);
     let hour: Vec<f64> = (0..=240).map(|i| f64::from(i) / 10.).collect();
     r.add_column("h", &hour)?;
     let cell = |x: u32, y: u32, title: &str, y_title: &str| -> Config {
         let mut chart = Chart::placed(x, y, 600, 400);
-        let config = chart.config_mut();
-        chrome(config, bg, ink, grid);
-        config.chart_title.text.font_size = 26.;
-        config.legend.visible = false;
-        config.bottom_x.major_spacing = 6.;
-        for a in [&mut config.left_y, &mut config.bottom_x] {
-            a.label_style.font_size = 18.;
-            a.title_option.text.font_size = 19.;
-        }
+        chart.config_mut().bottom_x.major_spacing = 6.;
         chart
             .with_title(title)
             .with_x_title("Hour")
@@ -50,55 +48,15 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             .config()
             .clone()
     };
-    // id, title, unit, colour, mean, daily swing, phase, noise, axis start
+    // id, title, unit, mean, daily swing, phase, noise, axis start
     let sensors = [
-        (
-            "temperature",
-            "Temperature",
-            "°C",
-            rgb(232, 104, 84),
-            18.,
-            7.,
-            -1.2,
-            2.,
-            8.,
-        ),
-        (
-            "humidity",
-            "Humidity",
-            "%",
-            rgb(37, 150, 160),
-            55.,
-            20.,
-            1.9,
-            10.,
-            30.,
-        ),
-        (
-            "co2",
-            "CO₂",
-            "ppm",
-            rgb(112, 92, 212),
-            620.,
-            260.,
-            0.4,
-            60.,
-            300.,
-        ),
-        (
-            "light",
-            "Daylight",
-            "lux",
-            rgb(228, 170, 50),
-            400.,
-            380.,
-            -1.4,
-            60.,
-            0.,
-        ),
+        ("temperature", "Temperature", "°C", 18., 7., -1.2, 2., 8.),
+        ("humidity", "Humidity", "%", 55., 20., 1.9, 10., 30.),
+        ("co2", "CO₂", "ppm", 620., 260., 0.4, 60., 300.),
+        ("light", "Daylight", "lux", 400., 380., -1.4, 60., 0.),
     ];
     let mut specs = Vec::new();
-    for (id, _, _, color, base, swing, phase, noise, floor) in sensors {
+    for (id, _, _, base, swing, phase, noise, floor) in sensors {
         let data: Vec<f64> = hour
             .iter()
             .map(|h| {
@@ -111,13 +69,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             })
             .collect();
         r.add_column(id, &data)?;
-        specs.push(
-            SeriesConfig::line(id, "h", id)
-                .color(color)
-                .width(3.)
-                .fill_to(floor)
-                .fill_color(Color::from_rgba(color.r, color.g, color.b, 0.1)),
-        );
+        specs.push(SeriesConfig::line(id, "h", id).fill_to(floor));
     }
     let mut config = cell(0, 0, sensors[0].1, sensors[0].2);
     config.subplots = [(1usize, 600u32, 0u32), (2, 0, 400), (3, 600, 400)]
@@ -154,7 +106,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             .find("subplot_2:data_area")
             .is_some()
     );
-    chart.fit_layout();
+    themed(&mut chart, &theme, &mut specs)?;
     let image = r.export_rgba_blocking(
         ExportSource::chart(&chart, &specs),
         ExportOptions::document(1.).with_clear(bg),
