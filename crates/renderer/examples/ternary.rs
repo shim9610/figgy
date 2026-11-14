@@ -16,6 +16,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Anchor, Annotation, AnnotationKind, CpuTextMeasure, MeasureText, Renderer, SeriesConfig,
     TextAlign,
@@ -25,7 +26,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// A USDA texture class: its name, the polygon's vertices as (sand, silt,
 /// clay) percentages and the place of its name. Class `k` takes the
@@ -180,7 +181,7 @@ fn cores() -> [Core; 3] {
 }
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Ternary, "warm-paper")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Ternary);
     let bg = background(&theme);
     let ink = theme.chrome.ink;
     let mut chart = scene_chart(

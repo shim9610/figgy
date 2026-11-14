@@ -7,60 +7,21 @@ use super::{
 use crate::color::Color;
 use crate::material::Material;
 
-pub(super) const HISTOGRAM: &[&str] =
-    &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
-pub(super) const CATEGORY_BARS: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "document",
-    "revenue",
-];
-pub(super) const DISTRIBUTION: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "document",
-];
-pub(super) const RANGE_BARS: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "warm-neutral",
-];
-
 /// `family`'s member for `kind`.
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
     match (kind, family) {
         (ChartKind::Histogram, ThemeFamily::Gallery) => histogram_gallery(),
-        (ChartKind::CategoryBars, ThemeFamily::Gallery) => category_bars_document(),
-        (ChartKind::Distribution, ThemeFamily::Gallery) => distribution_document(),
+        (ChartKind::CategoryBars, ThemeFamily::Gallery) => category_bars_gallery(),
+        (ChartKind::Distribution, ThemeFamily::Gallery) => distribution_gallery(),
         (ChartKind::Distribution, ThemeFamily::CoolSlate) => distribution_cool_slate(),
         (ChartKind::Distribution, ThemeFamily::WarmPaper) => distribution_warm_paper(),
         (ChartKind::RangeBars, ThemeFamily::CoolSlate) => range_bars_cool_slate(),
         (ChartKind::RangeBars, ThemeFamily::Midnight) => range_bars_midnight(),
-        (ChartKind::RangeBars, ThemeFamily::WarmPaper) => range_bars_warm_neutral(),
+        (ChartKind::RangeBars, ThemeFamily::WarmPaper) => range_bars_warm_paper(),
         (ChartKind::Histogram, _) => histogram(family),
         (ChartKind::CategoryBars, _) => category_bars(family),
         (ChartKind::Distribution, _) => distribution_midnight(),
         _ => range_bars_gallery(),
-    }
-}
-
-/// The theme `name` of `kind`'s own catalogue, past `default`.
-pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
-    match (kind, name) {
-        (ChartKind::CategoryBars, "document") => Some(category_bars_document()),
-        (ChartKind::CategoryBars, "revenue") => Some(category_bars_revenue()),
-        (ChartKind::Distribution, "document") => Some(distribution_document()),
-        (ChartKind::RangeBars, "warm-neutral") => Some(range_bars_warm_neutral()),
-        _ => None,
     }
 }
 
@@ -79,7 +40,7 @@ fn histogram_gallery() -> Theme {
 /// A categorical document: matte blue, orange and teal bars with rounded
 /// ends on a transparent background, the open frame and the text in navy.
 /// A single series takes one colour per category.
-fn category_bars_document() -> Theme {
+fn category_bars_gallery() -> Theme {
     let mut theme = document(ChartKind::CategoryBars, rgb(35, 45, 65));
     theme.series.palette = vec![
         rgb(85, 143, 211),
@@ -93,34 +54,10 @@ fn category_bars_document() -> Theme {
     theme
 }
 
-/// The product analytics card: matte violet, lavender and teal bars with
-/// well-rounded ends and no texture, slate text on a cool off-white, no
-/// grid and a legend without a box.
-fn category_bars_revenue() -> Theme {
-    let bg = rgb(247, 248, 253);
-    let mut theme = document(ChartKind::CategoryBars, rgb(52, 57, 85));
-    let chrome = &mut theme.chrome;
-    chrome.background = Some(bg);
-    chrome.title_size = 30.0;
-    chrome.axis_title_size = 20.0;
-    chrome.tick_label_size = 20.0;
-    chrome.legend_size = 20.0;
-    chrome.grid.major_y.show = false;
-    chrome.legend_fill = Color::new(0.0, 0.0, 0.0, 0.0);
-    chrome.legend_border = Color::new(0.0, 0.0, 0.0, 0.0);
-    chrome.legend_padding = 4.0;
-    theme.series.palette = vec![rgb(98, 86, 225), rgb(157, 141, 242), rgb(37, 181, 167)];
-    let bars = &mut theme.series.bars;
-    bars.material = Material::Matte;
-    bars.corner_radius = 12.0;
-    bars.texture_strength = 0.0;
-    theme
-}
-
 /// A box plot document: matte blue, teal and amber boxes with navy
 /// outlines, medians and whiskers on a transparent background. A single
 /// series takes one colour per category.
-fn distribution_document() -> Theme {
+fn distribution_gallery() -> Theme {
     let mut theme = document(ChartKind::Distribution, rgb(32, 46, 60));
     theme.series.palette = vec![rgb(65, 144, 208), rgb(42, 168, 162), rgb(230, 169, 64)];
     theme.series.boxes.color_by_category = true;
@@ -179,7 +116,7 @@ fn distribution_warm_paper() -> Theme {
 
 /// The profit bridge: green rises, coral falls and navy totals with small
 /// round corners, grey connectors, slate ink on a warm off-white.
-fn range_bars_warm_neutral() -> Theme {
+fn range_bars_warm_paper() -> Theme {
     let total = rgb(56, 86, 140);
     let mut theme = scene(
         ChartKind::RangeBars,

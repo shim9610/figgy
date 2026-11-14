@@ -1,15 +1,18 @@
-//! Themes (#265, #291): looks written into the document once, each made for
-//! one kind of chart.
+//! Themes (#265, #291, #295): looks written into the document once.
 //!
-//! A [`Theme`] is a value, not a name stored in the document: applying one
+//! A theme family ([`ThemeFamily`]: `gallery`, `cool-slate`, `midnight`,
+//! `warm-paper`) is the way to theme a chart by name: it has a member
+//! [`Theme`] for every [`ChartKind`] and a member [`RadialTheme`], and
+//! [`Theme::apply_named`] gives each chart in scope its own kind's member,
+//! so one name themes any chart. Any other look is a custom theme: a
+//! [`Theme`] value, made for one kind (a family's member to start from,
+//! [`ThemeFamily::theme`], with any field changed), applied with
+//! [`Theme::apply`] or [`Theme::apply_to_its_kind`]; a chart of another
+//! kind refuses it ([`ThemeError::WrongKind`]).
+//!
+//! A theme is a value, not a name stored in the document: applying one
 //! writes exactly the fields it owns and keeps everything the user set as
-//! content or layout. It is made for one [`ChartKind`]: applying it to a
-//! chart of another kind is refused ([`ThemeError::WrongKind`]) and changes
-//! nothing. [`Theme::named`] looks one up in a kind's catalogue
-//! ([`Theme::names`]). A [`ThemeFamily`] (#295) is one look with a member
-//! for every kind, so one name themes any chart: [`Theme::apply_named`]
-//! gives each chart in scope the theme of its own kind. The radial chart
-//! has its own ([`RadialTheme`]). A theme owns:
+//! content or layout. A theme owns:
 //! - the chrome ([`ChromeTheme`]): the chart and plot fills, the draw style,
 //!   the axis frame, the text look, the grid, the legend box and the
 //!   selection highlight;
@@ -59,6 +62,7 @@ pub use kind::ChartKind;
 /// field before applying.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Theme {
     /// The kind of chart the theme is made for; [`Theme::apply`] refuses
     /// a chart of another kind.
@@ -70,6 +74,7 @@ pub struct Theme {
 /// The look of everything around the data.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct ChromeTheme {
     /// [`Config::background`]: the chart area's fill, or none.
     pub background: Option<Color>,
@@ -115,6 +120,7 @@ pub struct ChromeTheme {
 /// ([`FieldTheme::colormap`]). Its side, alignment, range and offsets stay.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct ColorbarTheme {
     pub border: Color,
     pub border_width: f32,
@@ -134,6 +140,7 @@ pub struct ColorbarTheme {
 /// One kind of grid line: whether it is drawn and how.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct GridLine {
     pub show: bool,
     pub color: Color,
@@ -144,6 +151,7 @@ pub struct GridLine {
 /// The four kinds of grid line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct GridTheme {
     pub major_x: GridLine,
     pub major_y: GridLine,
@@ -155,6 +163,7 @@ pub struct GridTheme {
 /// refs and their visibility stay.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct HighlightTheme {
     pub color: Color,
     pub outline_width_px: f32,
@@ -165,6 +174,7 @@ pub struct HighlightTheme {
 /// One part per series family.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct SeriesTheme {
     /// Series `i` takes `palette[i % palette.len()]`, on every part a
     /// palette colours ([`ColorCycle::apply_to_series`] names them). Empty
@@ -188,6 +198,7 @@ pub struct SeriesTheme {
 /// polylines of streamline and parallel series.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct LineTheme {
     pub line_width: f32,
     /// The opacity of a filled line's fill, in the line's colour; `None`
@@ -211,6 +222,7 @@ pub struct LineTheme {
 /// Histogram bars, category bars and the bars of range series.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct BarTheme {
     /// A histogram bar's border.
     pub border_color: Color,
@@ -237,6 +249,7 @@ pub struct BarTheme {
 /// Box plots, violins and the raw points beside them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct BoxTheme {
     pub material: Material,
     pub gloss: f32,
@@ -271,6 +284,7 @@ pub struct BoxTheme {
 /// A text's colour and size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct TextLook {
     pub color: Color,
     pub size: f32,
@@ -282,6 +296,7 @@ pub struct TextLook {
 /// apart the labels sit stay.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct FieldTheme {
     pub colormap: ColorMap,
     pub nan_color: Color,
@@ -307,6 +322,7 @@ pub struct FieldTheme {
 /// Vector arrows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct VectorTheme {
     pub width_px: f32,
     pub head_length_px: f32,
@@ -316,6 +332,7 @@ pub struct VectorTheme {
 /// Radar outlines; `None` keeps each series' own value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct RadarTheme {
     pub line_width_px: Option<f32>,
     pub marker_size_px: Option<f32>,
@@ -329,6 +346,7 @@ pub struct RadarTheme {
 /// recolours the colouring the series has.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct RangeBarTheme {
     /// The rising bars of a series coloured by direction; `None` keeps the
     /// series' own.
@@ -353,6 +371,7 @@ pub struct RangeBarTheme {
 /// Ternary region fills and their outlines.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct TernaryTheme {
     /// The fill colours of the series that fill a region: series `i` takes
     /// `regions[i % regions.len()]`. Empty keeps every region colour.
@@ -368,6 +387,7 @@ pub struct TernaryTheme {
 /// the rows the line part.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct ParallelTheme {
     /// The size of the axis names, the labels of the category axis.
     pub name_size: f32,
@@ -376,6 +396,7 @@ pub struct ParallelTheme {
 /// 3D surfaces and their lighting response.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct SurfaceTheme {
     pub material: Material,
     pub gloss: f32,
@@ -392,6 +413,7 @@ pub struct SurfaceTheme {
 /// Energy-level (Grotrian) diagrams. The levels take the cycle colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct EnergyLevelTheme {
     /// The frame a chart of these series takes.
     pub axis_preset: AxisPreset,
@@ -428,6 +450,7 @@ pub struct EnergyLevelTheme {
 /// has a colour of its own here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct FeynmanTheme {
     /// The frame a chart of these series takes.
     pub axis_preset: AxisPreset,
@@ -457,13 +480,16 @@ pub struct FeynmanTheme {
 }
 
 /// A radial (pie, donut, sunburst) chart's look (#291). The radial chart is
-/// a model of its own, so its themes are too: [`RadialTheme::named`] looks
-/// one up and [`RadialTheme::apply`] writes it. Its top-level slices take
+/// a model of its own, so its themes are too: a family's radial member
+/// ([`ThemeFamily::radial`], applied by name with
+/// [`crate::radial::RadialChart::apply_theme`]) or a custom value, which
+/// [`RadialTheme::apply`] writes. Its top-level slices take
 /// the palette; values, labels, the slice structure, the kind (pie or
 /// donut, and the hole), the light, the hover response and the font family
 /// stay, and so does a slice's own style.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct RadialTheme {
     /// Slice `i` of the top level takes `palette[i % palette.len()]`;
     /// empty keeps every slice colour.
@@ -499,27 +525,66 @@ pub struct RadialTheme {
     pub outline: RadialOutline,
 }
 
-/// What a theme name was looked up for ([`ThemeError::UnknownName`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThemeTarget {
-    /// A chart of this kind ([`ChartKind::of`]).
-    Chart(ChartKind),
-    /// A chart that draws no series yet, so has no kind.
-    EmptyChart,
-    /// The radial chart ([`RadialTheme`]).
-    Radial,
+/// The defaults of a theme and its parts are the documented default look
+/// of a line chart (the look a default document draws with): the values a theme object a host
+/// saved before a field was added reads for that field (the `serde`
+/// feature), as the document format's defaults do.
+impl Default for Theme {
+    fn default() -> Self {
+        Self::documented(ChartKind::Line)
+    }
+}
+
+macro_rules! part_defaults {
+    ($($part:ty => |$theme:ident| $value:expr;)*) => {$(
+        impl Default for $part {
+            fn default() -> Self {
+                let $theme = Theme::default();
+                $value
+            }
+        }
+    )*};
+}
+
+part_defaults! {
+    ChromeTheme => |theme| theme.chrome;
+    ColorbarTheme => |theme| theme.chrome.colorbar;
+    GridTheme => |theme| theme.chrome.grid;
+    GridLine => |theme| theme.chrome.grid.major_x;
+    HighlightTheme => |theme| theme.chrome.highlight;
+    SeriesTheme => |theme| theme.series;
+    LineTheme => |theme| theme.series.lines;
+    BarTheme => |theme| theme.series.bars;
+    BoxTheme => |theme| theme.series.boxes;
+    FieldTheme => |theme| theme.series.fields;
+    VectorTheme => |theme| theme.series.vectors;
+    RadarTheme => |theme| theme.series.radar;
+    RangeBarTheme => |theme| theme.series.range_bars;
+    TernaryTheme => |theme| theme.series.ternary;
+    ParallelTheme => |theme| theme.series.parallel;
+    SurfaceTheme => |theme| theme.series.surfaces;
+    EnergyLevelTheme => |theme| theme.series.energy_levels;
+    FeynmanTheme => |theme| theme.series.feynman;
+    TextLook => |theme| TextLook {
+        color: theme.chrome.label_ink,
+        size: theme.chrome.tick_label_size,
+    };
+}
+
+/// The documented default radial look.
+impl Default for RadialTheme {
+    fn default() -> Self {
+        Self::documented()
+    }
 }
 
 /// Why a theme was not applied. Nothing is changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemeError {
-    /// A chart in scope is of another kind than the theme is made for.
+    /// A chart in scope is of another kind than a custom theme is made
+    /// for ([`Theme::apply`]); a family fits every kind.
     WrongKind {
-        /// The name that was applied ([`Theme::apply_named`]); `None` for a
-        /// theme applied as a value ([`Theme::apply`]).
-        name: Option<String>,
-        /// The kind the theme is made for: a theme's [`Theme::kind`], or
-        /// the first kind ([`ChartKind::ALL`]) whose names have `name`.
+        /// The theme's [`Theme::kind`].
         theme: ChartKind,
         chart: ChartKind,
         /// The chart: [`LayerRef::Base`] or a [`LayerRef::Subplot`].
@@ -531,15 +596,10 @@ pub enum ThemeError {
     /// the renderer's `Chart` methods and the web wrappers check it before
     /// applying.
     UnsupportedDrawStyle { series_id: String },
-    /// No theme of this name applies to `target`: neither a family
-    /// ([`ThemeFamily`]) nor a name of the chart's kind ([`Theme::names`]),
-    /// nor a name of any other kind (that is [`Self::WrongKind`]).
+    /// The name is not a family's.
     UnknownName {
         name: String,
-        target: ThemeTarget,
-        /// The names `target` takes: the families first, then the kind's
-        /// own ([`Theme::names`]); the families alone for an empty chart;
-        /// the radial names for the radial chart ([`RadialTheme::names`]).
+        /// The names that work: [`ThemeFamily::NAMES`].
         names: &'static [&'static str],
     },
     /// A subplot index past the chart's subplots, in a
@@ -597,46 +657,26 @@ impl std::fmt::Display for ThemeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::WrongKind {
-                name: Some(name),
-                theme,
-                chart,
-                layer,
-            } => write!(
-                f,
-                "the {theme} theme {name:?} does not apply to the {chart} chart at {layer:?}: \
-                 use a family ({}), or leave that chart out of the subplot scope",
-                ThemeFamily::NAMES.join(", ")
-            ),
-            Self::WrongKind {
-                name: None,
                 theme,
                 chart,
                 layer,
             } => write!(
                 f,
                 "a {theme} theme does not apply to the {chart} chart at {layer:?}: apply it \
-                 to the charts of its kind (apply_custom_theme skips the others), or leave \
-                 that chart out of the subplot scope"
+                 to the charts of its kind (apply_custom_theme skips the others), leave that \
+                 chart out of the subplot scope, or use a family ({})",
+                ThemeFamily::NAMES.join(", ")
             ),
             Self::UnsupportedDrawStyle { series_id } => write!(
                 f,
                 "the theme's draw style cannot draw series {series_id:?}: use a theme in the \
                  Precise draw style, such as a family, or remove that series"
             ),
-            Self::UnknownName {
-                name,
-                target,
-                names,
-            } => {
-                match target {
-                    ThemeTarget::Chart(kind) => write!(f, "no theme {name:?} for a {kind} chart")?,
-                    ThemeTarget::EmptyChart => {
-                        write!(f, "no theme {name:?} for a chart without series")?
-                    }
-                    ThemeTarget::Radial => write!(f, "no radial theme {name:?}")?,
-                }
-                write!(f, ": use one of {}", names.join(", "))
-            }
+            Self::UnknownName { name, names } => write!(
+                f,
+                "no theme family {name:?}: use one of {}",
+                names.join(", ")
+            ),
             Self::SubplotIndex(error) => error.fmt(f),
         }
     }
@@ -799,23 +839,6 @@ fn fill_continuum(config: &mut Config, series: &[SeriesConfig], charts: Charts, 
 }
 
 impl Theme {
-    /// The names `kind` takes: the families first ([`ThemeFamily::NAMES`]),
-    /// then `default` and the kind's own themes.
-    pub fn names(kind: ChartKind) -> &'static [&'static str] {
-        catalog::names(kind)
-    }
-
-    /// The theme `name` of `kind` ([`Self::names`]), or `None`: a family's
-    /// member for `kind` ([`ThemeFamily::theme`]), or a theme of the kind's
-    /// own catalogue. Every kind has `default`, the documented default
-    /// look: applying it to a default document changes nothing.
-    pub fn named(kind: ChartKind, name: &str) -> Option<Self> {
-        match ThemeFamily::named(name) {
-            Some(family) => Some(family.theme(kind)),
-            None => catalog::named(kind, name),
-        }
-    }
-
     /// The documented default look of `kind`.
     pub(crate) fn documented(kind: ChartKind) -> Self {
         let config = crate::defaults::config();
@@ -1223,7 +1246,6 @@ impl Theme {
                 && chart != self.kind
             {
                 return Err(ThemeError::WrongKind {
-                    name: None,
                     theme: self.kind,
                     chart,
                     layer,
@@ -1805,23 +1827,6 @@ impl Theme {
 }
 
 impl RadialTheme {
-    /// The radial theme names: the families first ([`ThemeFamily::NAMES`]),
-    /// then `default` and the radial chart's own themes.
-    pub fn names() -> &'static [&'static str] {
-        catalog::radial_names()
-    }
-
-    /// The radial theme `name` ([`Self::names`]), or `None`: a family's
-    /// radial member ([`ThemeFamily::radial`]) or a theme of the radial
-    /// catalogue. `default` is the documented default look: applying it to
-    /// a default radial chart changes nothing.
-    pub fn named(name: &str) -> Option<Self> {
-        match ThemeFamily::named(name) {
-            Some(family) => Some(family.radial()),
-            None => catalog::radial_named(name),
-        }
-    }
-
     /// The documented default look.
     pub(crate) fn documented() -> Self {
         let radial = crate::defaults::radial_chart();

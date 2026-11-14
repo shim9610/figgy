@@ -113,10 +113,10 @@ into. The readers are removed in the next milestone.
 ### Visual concepts
 
 Each function in [gallery_concepts.rs](gallery_concepts.rs) holds its data and
-applies a built-in theme of its chart's kind (`Theme::named(kind, name)`, or
-`RadialTheme::named(name)` for the radial charts): `midnight` and `editorial`
-of the line kind, `revenue` of the category-bar kind, `topographic` of the
-field kind, and the radial `pop-art` and `portfolio`.
+applies a theme: the `midnight` family to the dark card and the
+`warm-paper` and `midnight` families to the two radial charts
+(`ThemeFamily::radial()`); `editorial`, `revenue` and `topographic` are custom
+themes built in [support/looks.rs](support/looks.rs).
 
 | Image | Asset | Drawn by | Shows |
 |---|---|---|---|
@@ -166,11 +166,12 @@ field kind, and the radial `pop-art` and `portfolio`.
 | [constellation_preview.rs](constellation_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png` |
 
 [support/gallery.rs](support/gallery.rs) holds device setup, the theme
-helpers (`theme_named`, `themed`), a plain chart frame and PNG checks.
+helpers (`themed`, and the custom looks in [support/looks.rs](support/looks.rs)),
+a plain chart frame and PNG checks.
 [support/styled.rs](support/styled.rs) holds the scene chart, colourbar and
 export of the 1200 × 800 designed scenes. Each chart's data, series and
-settings are in its own example file, and its look is a built-in theme of
-its kind ([Themes](../USAGE.md#themes)); the
+settings are in its own example file, and its look is a theme family or a
+custom theme ([Themes](../USAGE.md#themes)); the
 [gallery pages](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/lines.md) name the theme of every image.
 
 ## Interactive examples

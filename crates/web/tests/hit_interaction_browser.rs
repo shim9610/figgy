@@ -655,11 +655,11 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     );
     chart.set_background("null").expect("clear the chart fill");
     assert!(chart_config(&chart).background.is_none());
-    // A theme (#291) is one of the chart's kind: the chart draws a line, so
-    // it lists and takes the line themes. It writes the look into the chart
-    // and leaves the subplot it is not given alone; a bad name, a name of
-    // another kind's catalogue or a bad list changes nothing.
-    use renderer::theme::{ChartKind, Theme};
+    // A theme is a family by name (#291, #295): the chart draws a line, so
+    // it takes the family's line member. It writes the look into the chart
+    // and leaves the subplot it is not given alone; a name that is not a
+    // family or a bad list changes nothing.
+    use renderer::theme::{ChartKind, ThemeFamily};
     chart
         .register_column_f32("x", &[0.0, 1.0, 2.0])
         .expect("register x");
@@ -671,19 +671,15 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         .expect("add a line series");
     let names: Vec<String> = chart
         .theme_names()
-        .expect("theme names")
         .iter()
         .filter_map(|name| name.as_string())
         .collect();
-    assert_eq!(names, Theme::names(ChartKind::Line));
-    assert!(names.iter().any(|name| name == "midnight"));
+    assert_eq!(names, ThemeFamily::NAMES);
     let before = chart_config(&chart);
     let series_before = chart.get_series().expect("get_series");
     assert!(chart.apply_theme("neon", "all").is_err());
     assert!(chart.apply_theme("midnight", "[nope").is_err());
-    // `parchment` is a Feynman theme: not one of a line chart's.
-    assert!(Theme::named(ChartKind::Feynman, "parchment").is_some());
-    assert!(!names.iter().any(|name| name == "parchment"));
+    // A look that is not a family is no name.
     assert!(chart.apply_theme("parchment", "all").is_err());
     assert_eq!(chart_config(&chart), before);
     assert_eq!(chart.get_series().expect("get_series"), series_before);
@@ -691,7 +687,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         .apply_theme("midnight", "none")
         .expect("apply the midnight theme");
     let themed = chart_config(&chart);
-    let dark = Theme::named(ChartKind::Line, "midnight").expect("the line kind's midnight");
+    let dark = ThemeFamily::Midnight.theme(ChartKind::Line);
     assert_eq!(themed.background, dark.chrome.background);
     assert_eq!(themed.bottom_x.line_color, dark.chrome.frame_ink);
     assert_eq!(themed.subplots[0].config.background, None);
@@ -708,9 +704,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     );
     // A family (#295) themes a chart whose subplot is of another kind in
     // one call: the line chart takes the family's line member, the scatter
-    // inset its scatter member. A kind's own name refuses the inset and
-    // changes nothing.
-    use renderer::theme::ThemeFamily;
+    // inset its scatter member.
     let mut series: Vec<renderer::SeriesConfig> =
         serde_json::from_str(&chart.get_series().expect("get_series")).expect("series json");
     series.push(renderer::SeriesConfig::scatter("dots", "x", "y"));
@@ -729,16 +723,6 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         (base, inset),
         (Some(ChartKind::Line), Some(ChartKind::Scatter))
     );
-    let names: Vec<String> = chart
-        .theme_names()
-        .expect("theme names")
-        .iter()
-        .filter_map(|name| name.as_string())
-        .collect();
-    assert_eq!(names[..ThemeFamily::NAMES.len()], *ThemeFamily::NAMES);
-    let before = chart_config(&chart);
-    assert!(chart.apply_theme("editorial", "all").is_err());
-    assert_eq!(chart_config(&chart), before);
     chart
         .apply_theme("warm-paper", "all")
         .expect("a family over both kinds");
@@ -778,14 +762,10 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         .iter()
         .filter_map(|name| name.as_string())
         .collect();
-    assert_eq!(names, Theme::names(ChartKind::Line));
+    assert_eq!(names, ThemeFamily::NAMES);
     assert_eq!(
         code(&chart.apply_theme("editorial", "all").unwrap_err()),
-        "theme_wrong_kind"
-    );
-    assert_eq!(
-        code(&chart.apply_theme("constellation", "none").unwrap_err()),
-        "theme_draw_style"
+        "theme_unknown_name"
     );
     let index = chart.apply_theme("gallery", "[4]").unwrap_err();
     assert_eq!(code(&index), "subplot_index");
@@ -873,4 +853,27 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         ),
         "theme_invalid"
     );
+    // A custom theme in a draw style that cannot draw the line series
+    // (Constellation draws lines only with their markers), built from a
+    // partial object: the missing fields take the documented look's.
+    let night = js_sys::JSON::parse(
+        r#"{"kind": "line", "chrome": {"draw_style": {"mode": "constellation"}}}"#,
+    )
+    .expect("a JSON object");
+    let partial: renderer::theme::Theme = serde_json::from_str(
+        &js_sys::JSON::stringify(&night)
+            .unwrap()
+            .as_string()
+            .unwrap(),
+    )
+    .expect("a partial theme parses");
+    assert_eq!(partial.series, renderer::theme::Theme::default().series);
+    let before = chart_config(&chart);
+    let error = chart.apply_custom_theme_to(night, "none").unwrap_err();
+    assert_eq!(code(&error), "theme_draw_style");
+    assert_eq!(
+        field(&error, "series_id").as_string().as_deref(),
+        Some("line")
+    );
+    assert_eq!(chart_config(&chart), before);
 }

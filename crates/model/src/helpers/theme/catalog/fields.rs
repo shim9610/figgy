@@ -10,53 +10,11 @@ use crate::colormap::ColorMap;
 use crate::material::Material;
 use crate::preset::AxisPreset;
 
-pub(super) const FIELD: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "warm-neutral",
-    "deep-space",
-    "topographic",
-];
-pub(super) const VECTOR_FIELD: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "ocean",
-];
-pub(super) const SURFACE_3D: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "warm-terrain",
-    "warm-diverging",
-];
-pub(super) const TRI_MESH: &[&str] =
-    &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
-pub(super) const POLAR: &[&str] = &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
-pub(super) const RADAR: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "document",
-];
-pub(super) const PARALLEL: &[&str] =
-    &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
-pub(super) const TERNARY: &[&str] = &["gallery", "cool-slate", "midnight", "warm-paper", "default"];
-
 /// `family`'s member for `kind`.
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
     match (kind, family) {
         (ChartKind::Field, ThemeFamily::Gallery) => field_gallery(),
-        (ChartKind::Field, ThemeFamily::WarmPaper) => field_warm_neutral(),
+        (ChartKind::Field, ThemeFamily::WarmPaper) => field_warm_paper(),
         (ChartKind::VectorField, ThemeFamily::Gallery) => vector_field_gallery(),
         (ChartKind::VectorField, ThemeFamily::Midnight) => vector_field_midnight(),
         (ChartKind::Surface3d, ThemeFamily::Midnight) => surface_3d_midnight(),
@@ -64,7 +22,7 @@ pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
         (ChartKind::Polar, ThemeFamily::Gallery) => polar_gallery(),
         (ChartKind::Polar, ThemeFamily::CoolSlate) => polar_cool_slate(),
         (ChartKind::Polar, ThemeFamily::WarmPaper) => polar_warm_paper(),
-        (ChartKind::Radar, ThemeFamily::Gallery) => radar_document(),
+        (ChartKind::Radar, ThemeFamily::Gallery) => radar_gallery(),
         (ChartKind::Parallel, ThemeFamily::Midnight) => parallel_midnight(),
         (ChartKind::Ternary, ThemeFamily::WarmPaper) => ternary_warm_paper(),
         (ChartKind::Field, _) => field(family),
@@ -75,20 +33,6 @@ pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
         (ChartKind::Radar, _) => radar(family),
         (ChartKind::Parallel, _) => parallel(family),
         _ => ternary(family),
-    }
-}
-
-/// The theme `name` of `kind`'s own catalogue, past `default`.
-pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
-    match (kind, name) {
-        (ChartKind::Field, "warm-neutral") => Some(field_warm_neutral()),
-        (ChartKind::Field, "deep-space") => Some(field_deep_space()),
-        (ChartKind::Field, "topographic") => Some(field_topographic()),
-        (ChartKind::VectorField, "ocean") => Some(vector_field_ocean()),
-        (ChartKind::Surface3d, "warm-terrain") => Some(surface_3d_warm_terrain()),
-        (ChartKind::Surface3d, "warm-diverging") => Some(surface_3d_warm_diverging()),
-        (ChartKind::Radar, "document") => Some(radar_document()),
-        _ => None,
     }
 }
 
@@ -109,7 +53,7 @@ fn field_gallery() -> Theme {
 
 /// The hexbin density map: slate ink on a warm off-white, a mint to
 /// indigo ramp, empty cells unpainted.
-fn field_warm_neutral() -> Theme {
+fn field_warm_paper() -> Theme {
     let mut theme = covered(inked_scene(
         ChartKind::Field,
         rgb(250, 250, 247),
@@ -127,47 +71,6 @@ fn field_warm_neutral() -> Theme {
         rgb(30, 16, 58),
     ]);
     fields.nan_color = Color::new(0.0, 0.0, 0.0, 0.0);
-    theme
-}
-
-/// The astronomical image: pale ink on deep space, no grid, a legend
-/// without a box, and a red and a cyan for the channels a legend names.
-fn field_deep_space() -> Theme {
-    let bg = rgb(8, 10, 18);
-    let mut theme = covered(inked_scene(ChartKind::Field, bg, rgb(170, 180, 202), bg));
-    let chrome = &mut theme.chrome;
-    chrome.legend_fill = alpha(bg, 0.0);
-    chrome.legend_border = alpha(bg, 0.0);
-    chrome.legend_padding = 4.0;
-    chrome.legend_size = 19.0;
-    theme.series.palette = vec![rgb(236, 88, 64), rgb(60, 196, 214)];
-    theme
-}
-
-/// The topographic poster: sand ink on deep teal, a teal to sand ramp
-/// under pale isolines, and the documented colourbar in the poster's
-/// colours.
-fn field_topographic() -> Theme {
-    let bg = rgb(12, 40, 43);
-    let mut theme = covered(inked_scene(ChartKind::Field, bg, rgb(222, 230, 197), bg));
-    let chrome = &mut theme.chrome;
-    // The colourbar's axis line and ticks.
-    chrome.frame_ink = rgb(164, 185, 120);
-    let bar = Theme::documented(ChartKind::Field).chrome.colorbar;
-    chrome.colorbar.border = bar.border;
-    chrome.colorbar.thickness = bar.thickness;
-    chrome.colorbar.length = bar.length;
-    chrome.colorbar.ticks = bar.ticks;
-    let fields = &mut theme.series.fields;
-    fields.colormap = ramp([
-        bg,
-        rgb(29, 89, 85),
-        rgb(73, 132, 112),
-        rgb(164, 185, 120),
-        rgb(239, 221, 150),
-    ]);
-    fields.contour_color = Some(Color::new(0.92, 0.98, 0.8, 0.65));
-    fields.contour_width = 1.1;
     theme
 }
 
@@ -209,99 +112,6 @@ fn vector_field_midnight() -> Theme {
     vectors.width_px = 1.8;
     vectors.head_length_px = 7.0;
     vectors.head_width_px = 6.0;
-    theme
-}
-
-/// The ocean current chart: bold arrows coloured from deep blue to yellow,
-/// sea-green ink on dark teal with a full grid.
-fn vector_field_ocean() -> Theme {
-    let ink = rgb(170, 205, 205);
-    let mut theme = gridded(inked_scene(
-        ChartKind::VectorField,
-        rgb(9, 30, 40),
-        ink,
-        rgb(19, 47, 58),
-    ));
-    theme.chrome.colorbar.title_size = 19.0;
-    theme.series.palette = vec![ink];
-    theme.series.fields.colormap = ramp([
-        rgb(36, 92, 120),
-        rgb(70, 170, 160),
-        rgb(173, 226, 150),
-        rgb(250, 230, 120),
-    ]);
-    let vectors = &mut theme.series.vectors;
-    vectors.width_px = 2.2;
-    vectors.head_length_px = 8.0;
-    vectors.head_width_px = 7.0;
-    theme
-}
-
-/// The relief map: a matte, finely wireframed surface in a lake to snow
-/// ramp, bold floor contours in the ramp's colours darkened, a red trail
-/// with round waypoints, slate ink on warm paper with a floor grid.
-fn surface_3d_warm_terrain() -> Theme {
-    let ink = rgb(58, 62, 72);
-    let mut theme = gridded(inked_scene(
-        ChartKind::Surface3d,
-        rgb(248, 247, 243),
-        ink,
-        rgb(222, 220, 212),
-    ));
-    theme.chrome.colorbar.title_size = 19.0;
-    theme.series.palette = vec![rgb(206, 44, 58)];
-    theme.series.lines.line_width = 3.5;
-    theme.series.lines.marker_size = 13.0;
-    let fields = &mut theme.series.fields;
-    fields.colormap = ramp([
-        rgb(38, 84, 98),
-        rgb(66, 140, 112),
-        rgb(152, 186, 110),
-        rgb(226, 206, 140),
-        rgb(176, 124, 86),
-        rgb(246, 244, 240),
-    ]);
-    fields.fill_opacity = Some(0.9);
-    fields.contour_color = Some(ink);
-    fields.contour_width = 2.6;
-    fields.contour_shade = Some(0.72);
-    let surfaces = &mut theme.series.surfaces;
-    surfaces.material = Material::Matte;
-    surfaces.wireframe = true;
-    surfaces.wireframe_color = alpha(rgb(40, 44, 52), 0.2);
-    surfaces.wireframe_width = 0.7;
-    theme
-}
-
-/// The signed surface: a matte, finely wireframed surface in a blue to
-/// red ramp through cream, floor contours in the ramp's colours darkened,
-/// slate ink on warm paper with a floor grid.
-fn surface_3d_warm_diverging() -> Theme {
-    let ink = rgb(56, 60, 74);
-    let mut theme = gridded(inked_scene(
-        ChartKind::Surface3d,
-        rgb(248, 247, 244),
-        ink,
-        rgb(222, 220, 214),
-    ));
-    theme.chrome.colorbar.title_size = 19.0;
-    theme.series.palette = vec![ink];
-    let fields = &mut theme.series.fields;
-    fields.colormap = ramp([
-        rgb(36, 72, 150),
-        rgb(96, 150, 206),
-        rgb(236, 232, 222),
-        rgb(226, 132, 92),
-        rgb(170, 40, 50),
-    ]);
-    fields.contour_color = Some(alpha(ink, 0.85));
-    fields.contour_width = 2.2;
-    fields.contour_shade = Some(0.7);
-    let surfaces = &mut theme.series.surfaces;
-    surfaces.material = Material::Matte;
-    surfaces.wireframe = true;
-    surfaces.wireframe_color = alpha(rgb(30, 34, 44), 0.25);
-    surfaces.wireframe_width = 0.6;
     theme
 }
 
@@ -437,7 +247,7 @@ fn polar_warm_paper() -> Theme {
 /// A radar document: blue, orange, green and grey outlines with a light
 /// fill and round markers on a transparent background, pale rings and
 /// spokes, the text in navy.
-fn radar_document() -> Theme {
+fn radar_gallery() -> Theme {
     let rings = rgb(224, 229, 235);
     let mut theme = document(ChartKind::Radar, rgb(32, 46, 60));
     let chrome = &mut theme.chrome;

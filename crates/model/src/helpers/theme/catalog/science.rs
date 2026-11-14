@@ -5,39 +5,13 @@ use super::{alpha, family_chrome, gallery, gridless, rgb, scene};
 use crate::color::Color;
 use crate::feynman::Wiggle;
 
-pub(super) const ENERGY_LEVELS: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "grotrian",
-];
-pub(super) const FEYNMAN: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "parchment",
-];
-
 /// `family`'s member for `kind`.
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
     match (kind, family) {
-        (ChartKind::EnergyLevels, ThemeFamily::Gallery) => grotrian(),
-        (ChartKind::Feynman, ThemeFamily::WarmPaper) => parchment(),
+        (ChartKind::EnergyLevels, ThemeFamily::Gallery) => energy_levels_gallery(),
+        (ChartKind::Feynman, ThemeFamily::WarmPaper) => feynman_warm_paper(),
         (ChartKind::EnergyLevels, _) => energy_levels(family),
         _ => feynman(family),
-    }
-}
-
-/// The theme `name` of `kind`'s own catalogue, past `default`.
-pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
-    match (kind, name) {
-        (ChartKind::EnergyLevels, "grotrian") => Some(grotrian()),
-        (ChartKind::Feynman, "parchment") => Some(parchment()),
-        _ => None,
     }
 }
 
@@ -49,7 +23,7 @@ fn text(color: Color, size: f32) -> Option<TextLook> {
 /// arrows with their wavelengths in ochre, grey level labels, an indigo
 /// limit under a pale blue continuum and navy headers over the term
 /// columns, in the Grotrian frame on white paper.
-fn grotrian() -> Theme {
+fn energy_levels_gallery() -> Theme {
     let mut theme = gallery(ChartKind::EnergyLevels);
     let chrome = &mut theme.chrome;
     // Read at a column's width: ticks at 18, titles at 20.
@@ -84,7 +58,7 @@ fn grotrian() -> Theme {
 /// blue photons, green gluons, an orange W and violet scalars, ink labels,
 /// no frame and no grid. The legend box is a white card with a sand
 /// border, the look of the cards a host lays under its diagrams.
-fn parchment() -> Theme {
+fn feynman_warm_paper() -> Theme {
     let bg = rgb(244, 241, 234);
     let ink = rgb(38, 42, 58);
     let mut theme = scene(ChartKind::Feynman, bg, ink, bg);
@@ -130,7 +104,7 @@ struct LevelInks {
 }
 
 /// A family's Grotrian diagram (cool slate, midnight, warm paper), laid
-/// out as the gallery's ([`grotrian`]): levels in a strong ink, transition
+/// out as the gallery's ([`energy_levels_gallery`]): levels in a strong ink, transition
 /// arrows and their wavelengths in the family's accent, quieter level
 /// labels, a limit under a faint continuum and headers over the term
 /// columns, in the Grotrian frame without a grid.
@@ -193,7 +167,7 @@ fn energy_levels(family: ThemeFamily) -> Theme {
 }
 
 /// A family's Feynman diagrams (gallery, cool slate, midnight), drawn as
-/// the parchment card's ([`parchment`]): fermions in the family's ink with
+/// the parchment card's ([`feynman_warm_paper`]): fermions in the family's ink with
 /// bold arrowheads, photons, gluons, the W and scalars each in a colour of
 /// the family, ink labels, no frame and no grid, and a legend card a shade
 /// off the paper.

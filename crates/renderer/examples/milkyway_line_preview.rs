@@ -2,9 +2,11 @@
 //! cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png
 //! Do not replace Line with ScatterLine/LineScatterErrorbar: those add planets/jets.
 use renderer::config::LegendCorner;
-use renderer::theme::{ChartKind, Theme};
+
 use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
+#[path = "support/looks.rs"]
+mod looks;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let output = PathBuf::from(
@@ -18,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut r = Renderer::headless_blocking()?;
     // The night-sky Milkyway look: pale ink on deep space at the style
     // row's text sizes, no grid, pastel lines drawn as star fields.
-    let theme = Theme::named(ChartKind::Line, "milkyway").ok_or("no milkyway theme")?;
+    let theme = looks::milkyway();
     let bg = theme.chrome.background.unwrap_or(Color::BLACK);
     let mut chart = Chart::sized(1280, 1024)
         .with_x_title("Time [min]")

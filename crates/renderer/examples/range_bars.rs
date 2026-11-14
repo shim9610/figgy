@@ -23,6 +23,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Category, Color, Renderer, SeriesConfig,
     config::LegendCorner,
@@ -34,7 +35,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// A colour the theme sets, for the legend swatch that names it.
 fn role(color: Option<Color>, name: &str) -> Result<Color> {
@@ -57,7 +58,7 @@ fn noise(seed: u64, i: usize) -> f64 {
 // A profit bridge: each step floats between the running total before and
 // after it; the opening, gross and closing bars stand on zero.
 fn waterfall(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::RangeBars, "warm-neutral")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::RangeBars);
     let bg = background(&theme);
     let mut chart = scene_chart(
         "Profit bridge / Q1 to Q2",
@@ -155,7 +156,7 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
 // Candlesticks: open to close bodies and low to high wicks on a time axis,
 // with the host's moving average of the closes drawn over them.
 fn candlestick(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::RangeBars, "midnight")?;
+    let theme = ThemeFamily::Midnight.theme(ChartKind::RangeBars);
     let bg = background(&theme);
     let mut chart = scene_chart("Daily prices / synthetic index", "Date (2026)", "Price");
     const T0: f64 = 1_767_225_600.0; // 2026-01-01T00:00:00Z
@@ -249,7 +250,7 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
 // A Gantt chart: tasks on workstream rows over a date axis, coloured by a
 // state column, their finished part shaded by a progress column.
 fn gantt(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::RangeBars, "cool-slate")?;
+    let theme = ThemeFamily::CoolSlate.theme(ChartKind::RangeBars);
     let bg = background(&theme);
     let mut chart = scene_chart("Release plan / spring 2026", "", "");
     const T0: f64 = 1_772_409_600.0; // Monday 2026-03-02T00:00:00Z

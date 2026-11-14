@@ -4,8 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
-Each entry names the built-in theme its example applies
-([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+Each entry names the theme its example applies ([Themes](../USAGE.md#themes)):
+a theme family, or a custom theme the example builds in its support code
+(`examples/support/looks.rs`); some examples edit a copy first, such as the
 palette order or a fill opacity.
 
 ## Twin axes
@@ -16,7 +17,7 @@ An overlay layer with its own right Y axis, exported as a document.
 
 **Code:** [overlay_axes.rs](../examples/overlay_axes.rs), `twin_axes`
 
-**Theme:** `line` theme `midnight`
+**Theme:** the `midnight` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes`
 
@@ -28,7 +29,7 @@ A 2 × 2 grid of four subplots in one figure, three linked to the first one's X 
 
 **Code:** [subplots.rs](../examples/subplots.rs), `small_multiples`
 
-**Theme:** `line` theme `cool-slate`
+**Theme:** the `cool-slate` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example subplots -- target/subplots`
 
@@ -40,7 +41,7 @@ A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 an
 
 **Code:** [broken_axes.rs](../examples/broken_axes.rs), `gamma_spectrum`
 
-**Theme:** `line` theme `midnight`
+**Theme:** the `midnight` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example broken_axes -- target/broken-axes`
 
@@ -52,6 +53,6 @@ A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 an
 
 **Code:** [overlay_axes.rs](../examples/overlay_axes.rs), `shapes`
 
-**Theme:** `scatter` theme `cool-slate`
+**Theme:** the `cool-slate` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes`

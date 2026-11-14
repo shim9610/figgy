@@ -9,8 +9,8 @@
 //!   (`DataRenderType::RgbImage`), three narrowband channels on one lattice,
 //!   in the shared gallery chrome.
 //!
-//! Each takes its look from a built-in field theme (`gallery`,
-//! `warm-neutral`, `deep-space`); the scenes keep the data, the ranges, the
+//! Each takes its look from the gallery and warm-paper families' field
+//! members or the example's deep-space look; the scenes keep the data, the ranges, the
 //! colourbar's scale and the labels.
 //!
 //! Run from the workspace root:
@@ -22,7 +22,9 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
+use gallery::looks;
 use gallery::{Result, output_directory, save, titled, with_renderer};
+use renderer::theme::ThemeFamily;
 use renderer::{
     Renderer, SeriesConfig,
     config::{AxisScale, LegendEntryKind},
@@ -32,7 +34,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, scene_chart, theme_named, themed};
+use styled::{background, scene_chart, themed};
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
     contours(r, out)?;
@@ -85,7 +87,7 @@ fn contours(r: &mut Renderer, out: &Path) -> Result {
     let mut c = c.with_colorbar_title(r"$z = f(x, y)$");
     themed(
         &mut c,
-        &theme_named(ChartKind::Field, "gallery")?,
+        &ThemeFamily::Gallery.theme(ChartKind::Field),
         &mut specs,
     )?;
     save(r, &mut c, &specs, &out.join("gallery-contours.png"))
@@ -125,7 +127,7 @@ fn normal_pair(seed: u64, i: usize) -> (f64, f64) {
 // draws the supplied counts through a logarithmic colourbar; empty cells
 // are NaN and unpainted.
 fn hexbin(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Field, "warm-neutral")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Field);
     let bg = background(&theme);
     let mut chart = scene_chart("Taxi pickups / 100,000 rides", "East (km)", "North (km)");
     chart.config_mut().legend.visible = false;
@@ -240,7 +242,7 @@ fn hexbin(r: &mut Renderer, out: &Path) -> Result {
 // lattice of 1 arcsec pixels. The renderer maps each channel from its range
 // and blends the samples; no colourbar is involved.
 fn imshow(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Field, "deep-space")?;
+    let theme = looks::deep_space();
     let bg = background(&theme);
     // The channels' legend marks, in the theme's two colours.
     let (red, cyan) = match theme.series.palette.as_slice() {

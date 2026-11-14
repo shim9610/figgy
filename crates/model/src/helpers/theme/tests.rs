@@ -6,16 +6,44 @@ use crate::layer::{OverlayLayer, Subplot};
 use crate::layout::{ChartArea, Rect};
 use crate::legend::{append_legend_entry_rich, series_symbol_segments};
 
-/// Every built-in theme of `kind`, `default` first.
+/// The themes of `kind` a test sweeps: the documented default look, then
+/// every family's member.
 fn themes(kind: ChartKind) -> Vec<Theme> {
-    Theme::names(kind)
-        .iter()
-        .map(|name| Theme::named(kind, name).expect("a listed name"))
+    std::iter::once(Theme::documented(kind))
+        .chain(
+            ThemeFamily::ALL
+                .into_iter()
+                .map(|family| family.theme(kind)),
+        )
         .collect()
 }
 
+/// The radial themes a test sweeps: the documented default look, then
+/// every family's radial member.
+fn radial_themes() -> Vec<(&'static str, RadialTheme)> {
+    std::iter::once(("default", RadialTheme::documented()))
+        .chain(
+            ThemeFamily::ALL
+                .into_iter()
+                .map(|family| (family.name(), family.radial())),
+        )
+        .collect()
+}
+
+/// `default`, the documented default look of `kind`, or a family's member.
 fn named(kind: ChartKind, name: &str) -> Theme {
-    Theme::named(kind, name).expect("a built-in theme")
+    match name {
+        "default" => Theme::documented(kind),
+        _ => ThemeFamily::named(name).expect("a family").theme(kind),
+    }
+}
+
+/// A custom line theme drawn in `style`, which draws a line only with
+/// markers or not at all: the documented look in another draw style.
+fn line_in(style: crate::config::DrawStyle) -> Theme {
+    let mut theme = Theme::documented(ChartKind::Line);
+    theme.chrome.draw_style = style;
+    theme
 }
 
 /// The palette colour of series `index`.
@@ -144,7 +172,7 @@ fn default_on_a_default_document_changes_nothing() {
     }
     let mut radial = crate::defaults::radial_chart();
     let before = radial.clone();
-    RadialTheme::named("default").unwrap().apply(&mut radial);
+    RadialTheme::documented().apply(&mut radial);
     assert_eq!(radial, before);
 }
 
@@ -282,7 +310,6 @@ fn a_theme_refuses_a_chart_of_another_kind() {
     assert_eq!(
         theme.apply(&mut config, &mut series, SubplotScope::None),
         Err(ThemeError::WrongKind {
-            name: None,
             theme: ChartKind::Scatter,
             chart: ChartKind::Line,
             layer: LayerRef::Base,
@@ -308,7 +335,6 @@ fn a_theme_refuses_a_chart_of_another_kind() {
     assert_eq!(
         line.apply(&mut config, &mut series, SubplotScope::All),
         Err(ThemeError::WrongKind {
-            name: None,
             theme: ChartKind::Line,
             chart: ChartKind::Stem,
             layer: LayerRef::Subplot(0),
@@ -486,7 +512,8 @@ fn the_highlight_look_reaches_a_chart_without_a_selection() {
         .apply_chrome(&mut config, &[], SubplotScope::All)
         .unwrap();
     assert!(config.picked_data.is_none());
-    let theme = named(ChartKind::Line, "milkyway");
+    let mut theme = line_in(crate::config::DrawStyle::Milkyway(Default::default()));
+    theme.chrome.highlight.color = Color::new(1.0, 0.84, 0.04, 1.0);
     theme
         .apply_chrome(&mut config, &[], SubplotScope::All)
         .unwrap();
@@ -549,7 +576,7 @@ fn applying_a_theme_again_changes_nothing() {
 // the palette on its top-level slices; values and labels stay.
 #[test]
 fn the_radial_chart_takes_its_part() {
-    let mut theme = RadialTheme::named("default").unwrap();
+    let mut theme = RadialTheme::documented();
     theme.palette = vec![
         Color::new(1.0, 0.0, 0.0, 1.0),
         Color::new(0.0, 0.0, 1.0, 1.0),
@@ -570,23 +597,22 @@ fn the_radial_chart_takes_its_part() {
     );
 }
 
-// Every kind lists the families first, then `default`; every listed name
-// is a theme of that kind, and other names are none.
+// The family names are the only theme names: each parses to its family,
+// and any other name is refused with the family names.
 #[test]
-fn the_built_in_themes_have_names() {
-    let families = ThemeFamily::NAMES.len();
-    for kind in ChartKind::ALL {
-        let names = Theme::names(kind);
-        assert_eq!(names[..families], *ThemeFamily::NAMES, "{kind}");
-        assert_eq!(names[families], "default", "{kind}");
-        for name in names {
-            assert_eq!(named(kind, name).kind, kind, "{kind} {name}");
-        }
-        assert!(Theme::named(kind, "neon").is_none());
+fn the_family_names_are_the_theme_names() {
+    for family in ThemeFamily::ALL {
+        assert_eq!(ThemeFamily::parse(family.name()), Ok(family));
     }
-    assert_eq!(RadialTheme::names()[..families], *ThemeFamily::NAMES);
-    assert_eq!(RadialTheme::names()[families], "default");
-    assert!(RadialTheme::named("neon").is_none());
+    for name in ["default", "neon", "editorial", "document", ""] {
+        assert_eq!(
+            ThemeFamily::parse(name),
+            Err(ThemeError::UnknownName {
+                name: name.into(),
+                names: ThemeFamily::NAMES,
+            })
+        );
+    }
 }
 
 // An overlay's own axes take the theme's frame like the chart's data axes,
@@ -635,7 +661,7 @@ fn the_bar_family_takes_borders_corners_and_materials() {
     assert_eq!(bar.border_width, bars.border_width);
     assert_eq!(bar.gap_px, 2.0);
 
-    let theme = named(ChartKind::CategoryBars, "revenue");
+    let theme = named(ChartKind::CategoryBars, "cool-slate");
     let mut series = SeriesConfig::category_bars("a", "i", "v", Color::BLACK);
     theme.style_series(&mut series, 1);
     let DataRenderType::CategoryBars { color, style, .. } = &series.render_type else {
@@ -643,7 +669,7 @@ fn the_bar_family_takes_borders_corners_and_materials() {
     };
     assert_eq!(*color, palette_color(&theme, 1));
     assert_eq!(style.material, crate::material::Material::Matte);
-    assert_eq!(style.corner_radius, 12.0);
+    assert_eq!(style.corner_radius, theme.series.bars.corner_radius);
     assert_eq!(style.texture_strength, 0.0);
 }
 
@@ -730,7 +756,7 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
     assert_eq!(low.outline_color, theme.series.boxes.ink);
 
     // A finish varied on the part reaches the boxes.
-    let mut theme = named(ChartKind::Distribution, "document");
+    let mut theme = named(ChartKind::Distribution, "gallery");
     theme.series.boxes.gloss = 0.6;
     theme.series.boxes.outline = false;
     let mut series = SeriesConfig::box_plot("a", "i", "records", Color::BLACK);
@@ -774,7 +800,7 @@ fn the_range_bar_family_recolours_directions_and_states() {
             });
         })
     };
-    let theme = named(ChartKind::RangeBars, "warm-neutral");
+    let theme = named(ChartKind::RangeBars, "warm-paper");
     let range = &theme.series.range_bars;
     let mut series = directed();
     theme.style_series(&mut series, 0);
@@ -846,7 +872,7 @@ fn the_range_bar_family_recolours_directions_and_states() {
 #[test]
 fn the_document_themes_draw_an_open_frame_without_ticks() {
     for kind in [ChartKind::CategoryBars, ChartKind::Distribution] {
-        let theme = named(kind, "document");
+        let theme = named(kind, "gallery");
         let mut config = categorical();
         theme
             .apply(&mut config, &mut [], SubplotScope::All)
@@ -943,7 +969,7 @@ fn the_field_family_takes_fills_contours_and_labels() {
 // their per-level colours.
 #[test]
 fn a_contour_shade_colours_each_level_from_the_colourbar() {
-    let theme = named(ChartKind::Surface3d, "warm-terrain");
+    let theme = named(ChartKind::Surface3d, "warm-paper");
     let shade = theme.series.fields.contour_shade.unwrap();
     let levels = vec![1.0, 2.0, 3.0];
     let contours = || SeriesConfig::contours("a", "x", "y", grid("z"), levels.clone()).filled();
@@ -1011,7 +1037,7 @@ fn a_3d_theme_decides_the_surface_and_its_wireframe() {
     let mut config = Config::default();
     config.set_view_3d(Some(crate::defaults::view3d()));
 
-    let theme = named(ChartKind::Surface3d, "warm-terrain");
+    let theme = named(ChartKind::Surface3d, "warm-paper");
     let surfaces = &theme.series.surfaces;
     let mut series = filled();
     theme.style_series(&mut series, 0);
@@ -1064,7 +1090,7 @@ fn a_3d_theme_decides_the_surface_and_its_wireframe() {
 #[test]
 fn the_vector_family_takes_widths_and_heads() {
     use crate::data_config::{VectorPivot, VectorScale};
-    let theme = named(ChartKind::VectorField, "ocean");
+    let theme = named(ChartKind::VectorField, "cool-slate");
     let mut series = SeriesConfig::vectors("a", "x", "y", "u", "v")
         .pivot(VectorPivot::Middle)
         .vector_scale(VectorScale::Pixels { px_per_unit: 16.0 });
@@ -1075,7 +1101,7 @@ fn the_vector_family_takes_widths_and_heads() {
     assert_eq!(style.color, palette_color(&theme, 0));
     assert_eq!(
         (style.width_px, style.head_length_px, style.head_width_px),
-        (2.2, 8.0, 7.0)
+        (1.8, 7.0, 6.0)
     );
     assert_eq!(style.pivot, VectorPivot::Middle);
     assert_eq!(style.scale, VectorScale::Pixels { px_per_unit: 16.0 });
@@ -1101,7 +1127,7 @@ fn the_radar_part_keeps_what_it_does_not_name() {
     default.style_series(&mut series, 0);
     assert_eq!(series, before);
 
-    let theme = named(ChartKind::Radar, "document");
+    let theme = named(ChartKind::Radar, "gallery");
     let mut series = own();
     theme.style_series(&mut series, 3);
     let DataRenderType::Radar { color, style, .. } = &series.render_type else {
@@ -1250,9 +1276,9 @@ fn a_parallel_chart_frames_its_axes_and_sizes_their_names() {
 #[test]
 fn a_colourbar_takes_the_field_part_s_map() {
     for (kind, name) in [
-        (ChartKind::Field, "warm-neutral"),
-        (ChartKind::Field, "topographic"),
-        (ChartKind::VectorField, "ocean"),
+        (ChartKind::Field, "warm-paper"),
+        (ChartKind::Field, "midnight"),
+        (ChartKind::VectorField, "cool-slate"),
         (ChartKind::TriMesh, "midnight"),
     ] {
         let theme = named(kind, name);
@@ -1295,8 +1321,8 @@ fn a_single_series_takes_one_palette_colour_per_category() {
     let bars: Make = || SeriesConfig::category_bars("s", "pos", "v", Color::BLACK);
     for (kind, name, make) in [
         (ChartKind::Distribution, "warm-paper", boxes),
-        (ChartKind::Distribution, "document", boxes),
-        (ChartKind::CategoryBars, "document", bars),
+        (ChartKind::Distribution, "gallery", boxes),
+        (ChartKind::CategoryBars, "gallery", bars),
     ] {
         let theme = named(kind, name);
         let palette = |k: usize| Some(palette_color(&theme, k));
@@ -1381,7 +1407,7 @@ fn the_grotrian_theme_writes_the_diagram_s_texts_and_continuum() {
     use crate::energy_levels::{
         EnergyLevel, IonizationLimit, LevelBand, LevelRole, Transition, WavelengthLabels,
     };
-    let theme = named(ChartKind::EnergyLevels, "grotrian");
+    let theme = named(ChartKind::EnergyLevels, "gallery");
     let energy = theme.series.energy_levels;
     let text = |s: &str| RichText::plain(s, Color::BLACK, 9.0, "");
     let level = |id: &str, energy: f64| EnergyLevel {
@@ -1539,7 +1565,7 @@ fn the_grotrian_theme_writes_the_diagram_s_texts_and_continuum() {
 #[test]
 fn the_parchment_theme_colours_lines_by_particle() {
     use crate::feynman::{FeynmanSeries, FeynmanVertex, MomentumArrow, Propagator, VertexRole};
-    let theme = named(ChartKind::Feynman, "parchment");
+    let theme = named(ChartKind::Feynman, "warm-paper");
     let feynman = theme.series.feynman;
     let text = |s: &str| RichText::plain(s, Color::BLACK, 9.0, "");
     let line = |id: &str, particle| Propagator {
@@ -1627,8 +1653,7 @@ fn the_parchment_theme_colours_lines_by_particle() {
 fn the_radial_themes_write_the_view_shape_and_ring_tints() {
     use crate::radial::{RadialKind, RadialSlice};
     let slice = |label: &str| RadialSlice::new(label, 1.0, Color::BLACK);
-    for name in RadialTheme::names() {
-        let theme = RadialTheme::named(name).unwrap();
+    for (name, theme) in radial_themes() {
         let mut chart = crate::defaults::radial_chart().with_title("Title");
         chart.kind = RadialKind::Donut { inner_radius: 0.4 };
         chart.slices = vec![slice("A"), slice("B")];
@@ -1674,18 +1699,18 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
         assert_eq!(chart.slices[1].style, Some(own));
         assert_eq!(chart.kind, RadialKind::Donut { inner_radius: 0.4 });
         assert_eq!(chart.validate(), Ok(()), "{name}");
-        if *name != "default" {
+        if name != "default" {
             assert_eq!(chart.slices[0].color, theme.palette[0], "{name}");
-            assert_ne!(theme, RadialTheme::named("default").unwrap(), "{name}");
+            assert_ne!(theme, RadialTheme::documented(), "{name}");
         }
     }
     // The default look on a titled default chart changes nothing.
     let mut chart = crate::defaults::radial_chart().with_title("Title");
     let before = chart.clone();
-    RadialTheme::named("default").unwrap().apply(&mut chart);
+    RadialTheme::documented().apply(&mut chart);
     assert_eq!(chart, before);
 
-    let theme = RadialTheme::named("sunburst").unwrap();
+    let theme = ThemeFamily::CoolSlate.radial();
     let mut chart = crate::defaults::radial_chart();
     chart.slices = vec![RadialSlice {
         children: vec![
@@ -1713,12 +1738,11 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
         children: vec![slice("child")],
         ..slice("root")
     }];
-    RadialTheme::named("ceramic").unwrap().apply(&mut chart);
+    ThemeFamily::Gallery.radial().apply(&mut chart);
     assert_eq!(chart.slices[0].children[0].color, Color::BLACK);
     // A sunburst draws flat, so it keeps its top view under a tilted theme
     // and stays a valid document under every theme.
-    for name in RadialTheme::names() {
-        let theme = RadialTheme::named(name).unwrap();
+    for (name, theme) in radial_themes() {
         let mut chart = crate::defaults::radial_chart();
         chart.slices = vec![RadialSlice {
             children: vec![slice("child")],
@@ -1798,7 +1822,6 @@ fn every_family_has_a_member_for_every_kind() {
                 assert_ne!(other.theme(kind), member, "{family} {other} {kind}");
             }
         }
-        assert_eq!(RadialTheme::named(family.name()), Some(family.radial()));
         assert!(!family.radial().palette.is_empty(), "{family}");
     }
     assert_eq!(ThemeFamily::named("neon"), None);
@@ -1821,40 +1844,6 @@ fn every_family_has_a_member_for_every_kind() {
                 "{family} {kind}"
             );
         }
-    }
-}
-
-// The #291 themes whose chrome is a family's are that family's members.
-#[test]
-fn the_kind_themes_of_a_family_s_chrome_are_its_members() {
-    let reused = [
-        (ThemeFamily::Gallery, ChartKind::CategoryBars, "document"),
-        (ThemeFamily::Gallery, ChartKind::Distribution, "document"),
-        (ThemeFamily::Gallery, ChartKind::Radar, "document"),
-        (ThemeFamily::Gallery, ChartKind::EnergyLevels, "grotrian"),
-        (
-            ThemeFamily::WarmPaper,
-            ChartKind::Probability,
-            "warm-neutral",
-        ),
-        (ThemeFamily::WarmPaper, ChartKind::RangeBars, "warm-neutral"),
-        (ThemeFamily::WarmPaper, ChartKind::Field, "warm-neutral"),
-        (ThemeFamily::WarmPaper, ChartKind::Feynman, "parchment"),
-    ];
-    for (family, kind, name) in reused {
-        assert_eq!(
-            family.theme(kind),
-            named(kind, name),
-            "{family} {kind} {name}"
-        );
-    }
-    let radial = [
-        (ThemeFamily::Gallery, "ceramic"),
-        (ThemeFamily::Midnight, "portfolio"),
-        (ThemeFamily::WarmPaper, "pop-art"),
-    ];
-    for (family, name) in radial {
-        assert_eq!(Some(family.radial()), RadialTheme::named(name), "{family}");
     }
 }
 
@@ -1934,7 +1923,6 @@ fn a_family_name_applies_its_member_to_every_kind() {
                 &mut by_name,
                 &mut named_series,
                 SubplotScope::All,
-                precise_only,
             )
             .unwrap_or_else(|error| panic!("{family} {kind}: {error}"));
             let (mut by_member, mut member_series) = (config.clone(), series.clone());
@@ -1957,14 +1945,7 @@ fn a_family_name_applies_its_member_to_every_kind() {
 fn a_family_themes_subplots_of_mixed_kinds_each_in_its_kind_s_member() {
     for family in ThemeFamily::ALL {
         let (mut config, mut series) = dashboard();
-        Theme::apply_named(
-            family.name(),
-            &mut config,
-            &mut series,
-            SubplotScope::All,
-            precise_only,
-        )
-        .unwrap();
+        Theme::apply_named(family.name(), &mut config, &mut series, SubplotScope::All).unwrap();
         let kinds = [
             ChartKind::Scatter,
             ChartKind::Field,
@@ -2036,14 +2017,7 @@ fn a_family_themes_subplots_of_mixed_kinds_each_in_its_kind_s_member() {
 fn a_family_writes_each_chart_s_colourbar_from_its_member() {
     for family in ThemeFamily::ALL {
         let (mut config, mut series) = dashboard();
-        Theme::apply_named(
-            family.name(),
-            &mut config,
-            &mut series,
-            SubplotScope::All,
-            precise_only,
-        )
-        .unwrap();
+        Theme::apply_named(family.name(), &mut config, &mut series, SubplotScope::All).unwrap();
         let bar = config.subplots[2].config.colorbar.as_ref().unwrap();
         let member = family.theme(ChartKind::Histogram);
         assert_eq!(bar.colormap, member.series.fields.colormap, "{family}");
@@ -2062,7 +2036,6 @@ fn a_family_keeps_the_subplots_out_of_scope() {
         &mut config,
         &mut series,
         SubplotScope::Only(&[2]),
-        precise_only,
     )
     .unwrap();
     let midnight = ThemeFamily::Midnight;
@@ -2082,135 +2055,49 @@ fn a_family_keeps_the_subplots_out_of_scope() {
     assert_ne!(series[3], declared_series[3]);
 }
 
-// A kind's own name applies to the charts of a kind that has it and is
-// refused, changing nothing, by a chart of another kind in scope; out of
-// scope, that chart does not matter. A name several kinds have gives each
-// chart its own kind's theme of that name.
+// A name that is not a family's is refused with the family names, by a
+// document of any kind and by an empty one, and changes nothing; the
+// names of the former per-kind catalogue are not theme names.
 #[test]
-fn a_kind_s_own_name_refuses_other_kinds() {
+fn an_unknown_name_lists_the_family_names() {
     let (declared, declared_series) = dashboard();
-    let (mut config, mut series) = (declared.clone(), declared_series.clone());
-    assert_eq!(
-        Theme::apply_named(
-            "editorial",
-            &mut config,
-            &mut series,
-            SubplotScope::All,
-            |_, _| true
-        ),
-        Err(ThemeError::WrongKind {
-            name: Some("editorial".into()),
-            theme: ChartKind::Line,
-            chart: ChartKind::Scatter,
-            layer: LayerRef::Subplot(0),
-        })
-    );
-    assert_eq!((&config, &series), (&declared, &declared_series));
-    // The base chart and the empty subplot are line charts.
-    Theme::apply_named(
-        "editorial",
-        &mut config,
-        &mut series,
-        SubplotScope::Only(&[3]),
-        |_, _| true,
-    )
-    .unwrap();
-    let editorial = named(ChartKind::Line, "editorial");
-    assert_eq!(config.background, editorial.chrome.background);
-    assert_eq!(
-        config.subplots[3].config.background,
-        editorial.chrome.background
-    );
-    assert_eq!(config.subplots[0], declared.subplots[0]);
-
-    // `document` is a category-bar theme and a box plot theme.
-    let mut config = categorical();
-    let mut boxes = Subplot::default();
-    boxes.series.push("b".into());
-    boxes.config = categorical();
-    config.subplots.push(boxes);
-    let mut series = vec![
-        SeriesConfig::category_bars("a", "i", "v", Color::BLACK),
-        SeriesConfig::box_plot("b", "i", "records", Color::BLACK),
-    ];
-    Theme::apply_named(
-        "document",
-        &mut config,
-        &mut series,
-        SubplotScope::All,
-        precise_only,
-    )
-    .unwrap();
-    let DataRenderType::BoxPlot { style, .. } = &series[1].render_type else {
-        panic!("a box plot");
-    };
-    let document = named(ChartKind::Distribution, "document");
-    assert_eq!(style.outline_color, document.series.boxes.ink);
-    assert_eq!(
-        config.subplots[0].config.chart_title.text.color,
-        document.chrome.ink
-    );
-}
-
-// A name no kind has is refused with the names the chart takes, the
-// families first, and changes nothing; a chart without a kind lists the
-// families.
-#[test]
-fn an_unknown_name_lists_the_names_the_chart_takes() {
-    let (declared, declared_series) = dashboard();
-    let (mut config, mut series) = (declared.clone(), declared_series.clone());
-    let error = Theme::apply_named(
-        "neon",
-        &mut config,
-        &mut series,
-        SubplotScope::All,
-        precise_only,
-    )
-    .unwrap_err();
-    assert_eq!(
-        error,
-        ThemeError::UnknownName {
-            name: "neon".into(),
-            target: ThemeTarget::Chart(ChartKind::Line),
-            names: Theme::names(ChartKind::Line),
-        }
-    );
-    assert!(
-        error
-            .to_string()
-            .contains("gallery, cool-slate, midnight, warm-paper, default"),
-        "{error}"
-    );
-    assert_eq!((&config, &series), (&declared, &declared_series));
-
+    for name in ["neon", "default", "editorial", "document", "ceramic"] {
+        let (mut config, mut series) = (declared.clone(), declared_series.clone());
+        let error =
+            Theme::apply_named(name, &mut config, &mut series, SubplotScope::All).unwrap_err();
+        assert_eq!(
+            error,
+            ThemeError::UnknownName {
+                name: name.into(),
+                names: ThemeFamily::NAMES,
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .ends_with(": use one of gallery, cool-slate, midnight, warm-paper"),
+            "{error}"
+        );
+        assert_eq!((&config, &series), (&declared, &declared_series));
+        assert_eq!(
+            Theme::for_chart(name, &declared, &declared_series, LayerRef::Base),
+            Err(error)
+        );
+    }
     let mut empty = Config::default();
-    let error = Theme::apply_named("neon", &mut empty, &mut [], SubplotScope::All, precise_only)
-        .unwrap_err();
-    assert_eq!(
-        error,
-        ThemeError::UnknownName {
-            name: "neon".into(),
-            target: ThemeTarget::EmptyChart,
-            names: ThemeFamily::NAMES,
-        }
-    );
+    assert!(matches!(
+        Theme::apply_named("neon", &mut empty, &mut [], SubplotScope::All),
+        Err(ThemeError::UnknownName { .. })
+    ));
     assert_eq!(empty, Config::default());
 }
 
-// A chart that draws no series yet takes a family's line member, and a
-// kind's own name as the first kind that has it.
+// A chart that draws no series yet takes a family's line member.
 #[test]
-fn a_chart_without_series_takes_any_name() {
+fn a_chart_without_series_takes_the_line_member() {
     for family in ThemeFamily::ALL {
         let mut config = Config::default();
-        Theme::apply_named(
-            family.name(),
-            &mut config,
-            &mut [],
-            SubplotScope::All,
-            precise_only,
-        )
-        .unwrap();
+        Theme::apply_named(family.name(), &mut config, &mut [], SubplotScope::All).unwrap();
         let mut expected = Config::default();
         family
             .theme(ChartKind::Line)
@@ -2218,57 +2105,33 @@ fn a_chart_without_series_takes_any_name() {
             .unwrap();
         assert_eq!(config, expected, "{family}");
     }
-    let mut config = Config::default();
-    Theme::apply_named(
-        "parchment",
-        &mut config,
-        &mut [],
-        SubplotScope::All,
-        |_, _| true,
-    )
-    .unwrap();
-    assert_eq!(
-        config.background,
-        named(ChartKind::Feynman, "parchment").chrome.background
-    );
 }
 
 // A theme whose draw style cannot draw a series in scope is refused before
-// any chart is written; the families' Precise members never are.
+// A custom theme whose draw style cannot draw a series on a chart it
+// themes is refused before any chart is written; a family's members all
+// draw in the Precise style, which draws every series.
 #[test]
 fn a_draw_style_refusal_changes_nothing() {
     let (declared, declared_series) = dashboard();
     let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    let milkyway = line_in(crate::config::DrawStyle::Milkyway(Default::default()));
     assert_eq!(
-        Theme::apply_named(
-            "milkyway",
-            &mut config,
-            &mut series,
-            SubplotScope::None,
-            precise_only
-        ),
+        milkyway.apply_to_its_kind(&mut config, &mut series, precise_only),
         Err(ThemeError::UnsupportedDrawStyle {
             series_id: "a".into()
         })
     );
     assert_eq!((&config, &series), (&declared, &declared_series));
-    // The refusal of a subplot's series leaves the base chart alone too.
-    let refuse_histograms = |_: &crate::config::DrawStyle, render_type: &DataRenderType| {
-        !matches!(render_type, DataRenderType::Histogram { .. })
-    };
-    assert_eq!(
-        Theme::apply_named(
-            "gallery",
-            &mut config,
-            &mut series,
-            SubplotScope::All,
-            refuse_histograms
-        ),
-        Err(ThemeError::UnsupportedDrawStyle {
-            series_id: "s2".into()
-        })
-    );
-    assert_eq!((&config, &series), (&declared, &declared_series));
+    for family in ThemeFamily::ALL {
+        for kind in ChartKind::ALL {
+            assert_eq!(
+                family.theme(kind).chrome.draw_style,
+                crate::config::DrawStyle::Precise,
+                "{family} {kind}"
+            );
+        }
+    }
 }
 
 // Applying a family twice is applying it once.
@@ -2277,14 +2140,7 @@ fn applying_a_family_again_changes_nothing() {
     for family in ThemeFamily::ALL {
         let (mut config, mut series) = dashboard();
         for _ in 0..2 {
-            Theme::apply_named(
-                family.name(),
-                &mut config,
-                &mut series,
-                SubplotScope::All,
-                precise_only,
-            )
-            .unwrap();
+            Theme::apply_named(family.name(), &mut config, &mut series, SubplotScope::All).unwrap();
         }
         let (mut once, mut once_series) = dashboard();
         Theme::apply_named(
@@ -2292,7 +2148,6 @@ fn applying_a_family_again_changes_nothing() {
             &mut once,
             &mut once_series,
             SubplotScope::All,
-            precise_only,
         )
         .unwrap();
         assert_eq!(config, once, "{family}");
@@ -2307,14 +2162,7 @@ fn applying_a_family_again_changes_nothing() {
 fn a_family_themed_document_round_trips_through_json() {
     for family in ThemeFamily::ALL {
         let (mut config, mut series) = dashboard();
-        Theme::apply_named(
-            family.name(),
-            &mut config,
-            &mut series,
-            SubplotScope::All,
-            precise_only,
-        )
-        .unwrap();
+        Theme::apply_named(family.name(), &mut config, &mut series, SubplotScope::All).unwrap();
         let json = serde_json::to_string(&config).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back, config, "{family}");
@@ -2345,23 +2193,11 @@ fn a_name_resolves_to_its_chart_s_theme() {
         at(LayerRef::Subplot(3)),
         Ok(ThemeFamily::Midnight.theme(ChartKind::Line))
     );
-    let refused = Theme::for_chart("editorial", &config, &series, LayerRef::Subplot(0));
-    assert_eq!(
-        refused,
-        Err(ThemeError::WrongKind {
-            name: Some("editorial".into()),
-            theme: ChartKind::Line,
-            chart: ChartKind::Scatter,
-            layer: LayerRef::Subplot(0),
-        })
-    );
-    let message = refused.unwrap_err().to_string();
-    assert!(message.contains("\"editorial\""), "{message}");
     assert!(matches!(
         Theme::for_chart("neon", &config, &series, LayerRef::Base),
         Err(ThemeError::UnknownName { .. })
     ));
-    // A theme applied as a value names no theme.
+    // A custom theme applied to a chart of another kind.
     let error = named(ChartKind::Scatter, "default")
         .apply(&mut config.clone(), &mut series.clone(), SubplotScope::None)
         .unwrap_err();
@@ -2376,50 +2212,50 @@ fn a_name_resolves_to_its_chart_s_theme() {
     );
 }
 
-// A radial chart takes a theme by name: a family's radial member or a
-// radial catalogue theme; an unknown name lists the radial names and
-// changes nothing (#295).
+// A radial chart takes a family's radial member by name; any other name
+// is refused with the family names and changes nothing (#295).
 #[test]
-fn a_radial_chart_takes_a_theme_by_name() {
+fn a_radial_chart_takes_a_family_by_name() {
     let mut chart = crate::defaults::radial_chart();
     chart.slices = vec![
         crate::radial::RadialSlice::new("A", 1.0, Color::BLACK),
         crate::radial::RadialSlice::new("B", 2.0, Color::BLACK),
     ];
     let before = chart.clone();
-    let error = chart.apply_theme("neon").unwrap_err();
-    assert_eq!(
-        error,
-        ThemeError::UnknownName {
-            name: "neon".into(),
-            target: ThemeTarget::Radial,
-            names: RadialTheme::names(),
-        }
-    );
-    assert!(error.to_string().contains("ceramic"), "{error}");
-    assert_eq!(chart, before);
-    for name in RadialTheme::names() {
+    for name in ["neon", "ceramic", "default"] {
+        assert_eq!(
+            chart.apply_theme(name),
+            Err(ThemeError::UnknownName {
+                name: name.into(),
+                names: ThemeFamily::NAMES,
+            })
+        );
+        assert_eq!(chart, before);
+    }
+    for family in ThemeFamily::ALL {
         let mut themed = before.clone();
-        themed.apply_theme(name).unwrap();
+        themed.apply_theme(family.name()).unwrap();
         let mut expected = before.clone();
-        RadialTheme::named(name).unwrap().apply(&mut expected);
-        assert_eq!(themed, expected, "{name}");
+        family.radial().apply(&mut expected);
+        assert_eq!(themed, expected, "{family}");
     }
 }
 
 // Every error says what to do next: a wrong kind names the families and
-// the scope, a draw style the Precise style, an unknown name the names the
-// target takes, and a subplot index the indices there are.
+// the scope, a draw style the Precise style, an unknown name the family
+// names, and a subplot index the indices there are.
 #[test]
 fn theme_errors_say_what_to_do_next() {
     let wrong = ThemeError::WrongKind {
-        name: Some("editorial".into()),
         theme: ChartKind::Line,
         chart: ChartKind::Scatter,
         layer: LayerRef::Subplot(0),
     }
     .to_string();
-    assert!(wrong.contains("\"editorial\""), "{wrong}");
+    assert!(
+        wrong.starts_with("a line theme does not apply to the scatter chart at Subplot(0)"),
+        "{wrong}"
+    );
     assert!(
         wrong.contains("gallery, cool-slate, midnight, warm-paper"),
         "{wrong}"
@@ -2430,26 +2266,15 @@ fn theme_errors_say_what_to_do_next() {
     }
     .to_string();
     assert!(style.contains("Precise"), "{style}");
-    for (target, start) in [
-        (
-            ThemeTarget::Chart(ChartKind::Line),
-            "no theme \"neon\" for a line chart",
-        ),
-        (
-            ThemeTarget::EmptyChart,
-            "no theme \"neon\" for a chart without series",
-        ),
-        (ThemeTarget::Radial, "no radial theme \"neon\""),
-    ] {
-        let message = ThemeError::UnknownName {
-            name: "neon".into(),
-            target,
-            names: ThemeFamily::NAMES,
-        }
-        .to_string();
-        assert!(message.starts_with(start), "{message}");
-        assert!(message.ends_with(": use one of gallery, cool-slate, midnight, warm-paper"));
+    let unknown = ThemeError::UnknownName {
+        name: "neon".into(),
+        names: ThemeFamily::NAMES,
     }
+    .to_string();
+    assert_eq!(
+        unknown,
+        "no theme family \"neon\": use one of gallery, cool-slate, midnight, warm-paper"
+    );
     // A subplot index error is a type of its own, which a theme error
     // wraps and names as its source.
     assert_eq!(SubplotIndexError::check(1, 2), Ok(()));
@@ -2486,8 +2311,7 @@ fn a_scope_past_the_subplots_is_refused() {
             "gallery",
             &mut config,
             &mut series,
-            SubplotScope::Only(&[1, 9]),
-            precise_only
+            SubplotScope::Only(&[1, 9])
         ),
         refused
     );
@@ -2542,7 +2366,6 @@ fn a_theme_applies_to_the_charts_of_its_kind() {
     assert_eq!(
         polar.apply_to_its_kind(&mut config, &mut series, precise_only),
         Err(ThemeError::WrongKind {
-            name: None,
             theme: ChartKind::Polar,
             chart: ChartKind::Line,
             layer: LayerRef::Base,
@@ -2551,7 +2374,7 @@ fn a_theme_applies_to_the_charts_of_its_kind() {
     assert_eq!((config, series), before);
 
     // The draw style is checked on the charts it themes only.
-    let mut milkyway = named(ChartKind::Line, "milkyway");
+    let mut milkyway = line_in(crate::config::DrawStyle::Milkyway(Default::default()));
     milkyway.kind = ChartKind::Histogram;
     let (mut config, mut series) = (declared.clone(), declared_series.clone());
     assert_eq!(
@@ -2565,8 +2388,7 @@ fn a_theme_applies_to_the_charts_of_its_kind() {
 
 // A theme and its parts serialize behind the `serde` feature, for a host
 // that edits a theme as JSON (the browser's `theme(name)`): every member
-// and every catalogue theme reads back equal. A kind serializes as its
-// name.
+// and the documented looks read back equal. A kind serializes as its name.
 #[cfg(feature = "serde")]
 #[test]
 fn a_theme_round_trips_through_json() {
@@ -2575,17 +2397,61 @@ fn a_theme_round_trips_through_json() {
             serde_json::to_string(&kind).unwrap(),
             format!("\"{}\"", kind.name())
         );
-        for name in Theme::names(kind) {
-            let theme = named(kind, name);
+        for theme in themes(kind) {
             let json = serde_json::to_string(&theme).unwrap();
             let back: Theme = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, theme, "{kind} {name}");
+            assert_eq!(back, theme, "{kind}");
         }
     }
-    for name in RadialTheme::names() {
-        let theme = RadialTheme::named(name).unwrap();
+    for (name, theme) in radial_themes() {
         let json = serde_json::to_string(&theme).unwrap();
         let back: RadialTheme = serde_json::from_str(&json).unwrap();
         assert_eq!(back, theme, "radial {name}");
     }
+}
+
+// A theme object saved before a field was added still parses: every field
+// a theme and its parts miss reads the documented default look's (the
+// rule the document format follows, CLAUDE.md).
+#[cfg(feature = "serde")]
+#[test]
+fn a_theme_missing_fields_parses() {
+    let member = ThemeFamily::Midnight.theme(ChartKind::Scatter);
+    let mut json = serde_json::to_value(&member).unwrap();
+    let object = json.as_object_mut().unwrap();
+    object["chrome"]
+        .as_object_mut()
+        .unwrap()
+        .remove("highlight");
+    object["chrome"]["grid"]
+        .as_object_mut()
+        .unwrap()
+        .remove("minor_y");
+    object["series"].as_object_mut().unwrap().remove("feynman");
+    object["series"]["lines"]
+        .as_object_mut()
+        .unwrap()
+        .remove("marker_size");
+    let back: Theme = serde_json::from_value(json).unwrap();
+    let documented = Theme::default();
+    assert_eq!(back.kind, ChartKind::Scatter);
+    assert_eq!(back.chrome.background, member.chrome.background);
+    assert_eq!(back.chrome.highlight, documented.chrome.highlight);
+    assert_eq!(back.chrome.grid.minor_y, documented.chrome.grid.minor_y);
+    assert_eq!(back.series.feynman, documented.series.feynman);
+    assert_eq!(
+        back.series.lines.marker_size,
+        documented.series.lines.marker_size
+    );
+    assert_eq!(back.series.palette, member.series.palette);
+    // An empty object is the documented line look; so is an empty radial
+    // object the documented radial look.
+    assert_eq!(
+        serde_json::from_str::<Theme>("{}").unwrap(),
+        Theme::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<RadialTheme>("{}").unwrap(),
+        RadialTheme::documented()
+    );
 }

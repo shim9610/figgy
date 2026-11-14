@@ -1,11 +1,14 @@
 //! Actual native shader renders: materials, rounded corners, outlines, selection.
-//! The look is the `ceramic` radial theme (#291); each case varies the theme
+//! The look is the gallery family's radial member; each case varies the theme
 //! and applies it to a chart that holds only names and values.
 //! `sunburst` builds `gallery-sunburst.png`: a flat sunburst, slices with
 //! `children` drawn as nested rings (source group, source, technology).
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 use renderer::{Color, ExportOptions, Material, radial::*, theme::RadialTheme};
 use std::path::PathBuf;
+#[path = "support/looks.rs"]
+mod looks;
+use renderer::theme::ThemeFamily;
 
 /// A slice by its name and value; the theme colours it.
 fn slice(label: &str, value: f64) -> RadialSlice {
@@ -35,7 +38,7 @@ fn base(theme: &RadialTheme) -> RadialChart {
 /// A flat sunburst: a year's electricity generation by source group at the
 /// centre, the sources around it and their technologies outside. Every node
 /// keeps its share of its parent's span; the leaves on the inner rings leave
-/// the outer ring empty past them. The `sunburst` theme colours the groups
+/// the outer ring empty past them. The sunburst look (`looks::sunburst`) colours the groups
 /// and steps each ring paler.
 fn sunburst(theme: &RadialTheme) -> RadialChart {
     let node = |label: &str, value: f64, children: Vec<RadialSlice>| RadialSlice {
@@ -98,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = RadialRenderer::headless_blocking()?;
     // The gallery's raised look; each case varies the theme before applying
     // it.
-    let ceramic = RadialTheme::named("ceramic").ok_or("no ceramic radial theme")?;
+    let ceramic = ThemeFamily::Gallery.radial();
     let matte = RadialTheme {
         material: Material::Matte,
         ..ceramic.clone()
@@ -202,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     });
     cases.push(("pie-of-pie".into(), split));
-    let burst = RadialTheme::named("sunburst").ok_or("no sunburst radial theme")?;
+    let burst = looks::sunburst();
     cases.push(("gallery-sunburst".into(), sunburst(&burst)));
     // Deterministic time samples: host calls the same model transition on pointer events.
     let mut hover = base(&ceramic).with_title("Hover lift / Search");

@@ -6,13 +6,17 @@ use renderer::{
 };
 use std::{error::Error, path::Path};
 
+/// The gallery's scene-specific looks, built as theme values.
+#[path = "looks.rs"]
+pub mod looks;
+
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
 /// The gallery chrome for a chart whose series are styled by hand: the
 /// documented default look with a navy title, a slate frame, a pale major
 /// grid and smaller text.
 pub fn theme() -> Theme {
-    let mut theme = Theme::named(ChartKind::Line, "default").expect("every kind has a default");
+    let mut theme = looks::documented(ChartKind::Line);
     let chrome = &mut theme.chrome;
     chrome.ink = Color::from_rgb8(24, 39, 63);
     chrome.frame_ink = Color::from_rgb8(88, 102, 123);
@@ -37,18 +41,13 @@ pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Cha
         .with_y_title(y_title)
 }
 
-/// A chart of `size` with its titles, for a built-in theme applied with
-/// its series (`Chart::apply_custom_theme`).
+/// A chart of `size` with its titles, for a theme applied with its series
+/// (`Chart::apply_custom_theme`).
 pub fn titled(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
     Chart::sized(size.0, size.1)
         .with_title(title)
         .with_x_title(x_title)
         .with_y_title(y_title)
-}
-
-/// The built-in theme `name` of `kind` (#291).
-pub fn theme_named(kind: ChartKind, name: &str) -> Result<Theme> {
-    Ok(Theme::named(kind, name).ok_or_else(|| format!("no {kind} theme {name:?}"))?)
 }
 
 /// Apply `theme`, as given or edited, to the chart and its series

@@ -390,24 +390,24 @@ impl FiggyRadialChart {
         self.annotations = annotations;
         Ok(true)
     }
-    /// Apply the radial theme `name` (#291, #295; the names are in
-    /// [`Self::theme_names`]), a family's radial member or a theme of the
-    /// radial catalogue: the background, label look, material, view,
+    /// Apply the radial member of the theme family `name` (#291, #295:
+    /// `gallery`, `cool-slate`, `midnight` or `warm-paper`, as
+    /// [`Self::theme_names`] lists them): the background, label look, material, view,
     /// slice shape and outline, the palette on the top-level slices and the
     /// theme's tint on the slices below them. Values, labels, the slice
-    /// structure and the kind stay. An unknown name changes nothing and
-    /// errors.
+    /// structure and the kind stay. A name that is not a family changes
+    /// nothing and throws `code` `"theme_unknown_name"` with the family
+    /// `names`.
     pub fn apply_theme(&mut self, name: &str) -> Result<(), JsValue> {
         let mut next = self.chart.clone();
         next.apply_theme(name)
             .map_err(crate::web::convert::theme_error)?;
         self.adopt(next)
     }
-    /// The names of the radial themes (#291, #295), as an array of
-    /// strings: the families first, then `default` and the radial
-    /// catalogue.
+    /// The theme names (#291, #295), as an array of strings: the four
+    /// families.
     pub fn theme_names(&self) -> js_sys::Array {
-        crate::web::convert::js_names(renderer::theme::RadialTheme::names())
+        crate::web::convert::js_names(renderer::theme::ThemeFamily::NAMES)
     }
     /// Validate and prepare an edited document, then adopt it; the previous
     /// chart and frames stay on failure.

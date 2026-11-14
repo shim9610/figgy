@@ -3,6 +3,7 @@
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
+use gallery::looks;
 use gallery::*;
 use renderer::{
     Chart, Color, SeriesConfig,
@@ -24,7 +25,7 @@ fn main() -> Result {
         }
         // The documented look at the style row's text sizes, without minor
         // grid lines, with heavier lines and markers.
-        let mut theme = theme_named(ChartKind::Line, "default")?;
+        let mut theme = looks::documented(ChartKind::Line);
         theme.chrome.tick_label_size = 25.;
         theme.chrome.axis_title_size = 32.;
         theme.chrome.legend_size = 23.;

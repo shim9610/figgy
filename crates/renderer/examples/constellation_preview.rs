@@ -2,9 +2,10 @@
 //! cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png
 //! Constellation uses ScatterLine; Milkyway uses Line in its separate preview.
 use renderer::config::{LegendCorner, LegendEntryKind};
-use renderer::theme::{ChartKind, Theme};
 use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
+#[path = "support/looks.rs"]
+mod looks;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let output = PathBuf::from(
@@ -18,7 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut r = Renderer::headless_blocking()?;
     // The night-sky Constellation look: pale ink on deep space at the style
     // row's text sizes, no grid, pastel lines joining star-like samples.
-    let theme = Theme::named(ChartKind::Line, "constellation").ok_or("no constellation theme")?;
+    let theme = looks::constellation();
     let bg = theme.chrome.background.unwrap_or(Color::BLACK);
     let mut chart = Chart::sized(1280, 1024)
         .with_x_title("Time [min]")

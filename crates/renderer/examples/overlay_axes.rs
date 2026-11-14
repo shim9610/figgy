@@ -18,6 +18,7 @@ mod gallery;
 #[path = "support/styled.rs"]
 mod styled;
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Anchor, Annotation, AnnotationKind, AnnotationLineStyle, BoxStyle, Color, HitMap, LayerRef,
     Renderer, SeriesConfig, ShapeStyle,
@@ -27,12 +28,12 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 // Twin axes: a battery discharge with the voltage on the left axis and the
 // current on an overlay layer's right axis.
 fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Line, "midnight")?;
+    let theme = ThemeFamily::Midnight.theme(ChartKind::Line);
     let bg = background(&theme);
     // The voltage in the first colour, the current in the second; each axis
     // reads in its series' colour.
@@ -165,7 +166,7 @@ fn inside_polygon(vertices: &[(f64, f64)], x: f64, y: f64) -> bool {
 // an annotation (an ellipse, a rectangle, a polygon); the host decides which
 // events fall in which gate and colours them by uploading one series per gate.
 fn shapes(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Scatter, "cool-slate")?;
+    let theme = ThemeFamily::CoolSlate.theme(ChartKind::Scatter);
     let bg = background(&theme);
     // The series take the palette in order: the debris in grey, each gate's
     // events in that gate's colour, and the ungated events, the fifth

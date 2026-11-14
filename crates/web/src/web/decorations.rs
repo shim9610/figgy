@@ -794,38 +794,29 @@ impl FiggyChart {
         self.replace_chart_config(config)
     }
 
-    /// Apply the theme `name` (#291, #295; the names are in
-    /// [`Self::theme_names`]) to the chart, its overlays and the series
-    /// drawn there, then fit the layout to the theme's text sizes.
-    /// `subplots` names the subplots that take it too: `"all"`, `"none"`
-    /// or a JSON array of indices. A family name (`gallery`, `cool-slate`,
-    /// `midnight`, `warm-paper`) gives the chart and every subplot in scope
-    /// the member of its own kind, so subplots of other kinds take it too;
-    /// a name of one kind's catalogue applies to charts of that kind
-    /// (`Theme::apply_named`). Ranges, text, annotations, the layer
-    /// structure and the selection stay. An unknown name, a bad list, a
-    /// subplot of a kind without the name, or a draw style that cannot
-    /// draw a series in scope changes nothing and errors. A chart with
-    /// monotonic series keeps its layout (#271): `fit_layout`, which takes
-    /// the groups' sources, fits it.
+    /// Apply the theme family `name` (#291, #295: `gallery`, `cool-slate`,
+    /// `midnight` or `warm-paper`, as [`Self::theme_names`] lists them) to
+    /// the chart, its overlays and the series drawn there, then fit the
+    /// layout to the theme's text sizes. `subplots` names the subplots that
+    /// take it too: `"all"`, `"none"` or a JSON array of indices. The chart
+    /// and every subplot in scope take the family's member for their own
+    /// kind, so subplots of other kinds take it too (`Theme::apply_named`).
+    /// Ranges, text, annotations, the layer structure and the selection
+    /// stay. A name that is not a family (`code` `"theme_unknown_name"`,
+    /// with the family `names`) or a bad list changes nothing and errors.
+    /// A chart with monotonic series keeps its layout (#271): `fit_layout`,
+    /// which takes the groups' sources, fits it.
     pub fn apply_theme(&mut self, name: &str, subplots: &str) -> Result<(), JsValue> {
         self.write_theme(subplots, |config, series, scope| {
-            renderer::theme::Theme::apply_named(
-                name,
-                config,
-                series,
-                scope,
-                renderer::draw_style_supports,
-            )
+            renderer::theme::Theme::apply_named(name, config, series, scope)
         })
     }
 
-    /// The theme `name` resolves to on the chart (#295), as a plain object
-    /// (`Theme`'s fields, colours as `{r, g, b, a}`): a family's member for
-    /// the chart's kind or the kind's own theme. Edit it and pass it to
-    /// [`Self::apply_custom_theme`]. An unknown name throws an `Error` with
-    /// `code` `"theme_unknown_name"` and the `names` the chart takes, a
-    /// name of another kind `"theme_wrong_kind"`.
+    /// The member of the family `name` the chart takes (#295), as a plain
+    /// object (`Theme`'s fields, colours as `{r, g, b, a}`). Edit it and
+    /// pass it to [`Self::apply_custom_theme`]. A name that is not a family
+    /// throws an `Error` with `code` `"theme_unknown_name"` and the family
+    /// `names`.
     pub fn theme(&self, name: &str) -> Result<JsValue, JsValue> {
         let theme = renderer::theme::Theme::for_chart(
             name,
@@ -837,9 +828,9 @@ impl FiggyChart {
         theme_to_js(&theme)
     }
 
-    /// The theme `name` resolves to on subplot `index` (#295), as
-    /// [`Self::apply_theme`] resolves it there, as a plain object to edit
-    /// and pass to [`Self::apply_custom_theme`]. Refused as [`Self::theme`]
+    /// The member of the family `name` subplot `index` takes (#295), as
+    /// [`Self::apply_theme`] gives it there, as a plain object to edit and
+    /// pass to [`Self::apply_custom_theme`]. Refused as [`Self::theme`]
     /// refuses the name, and with `code` `"subplot_index"` for an index
     /// past the subplots.
     pub fn subplot_theme(&self, index: usize, name: &str) -> Result<JsValue, JsValue> {
@@ -932,18 +923,10 @@ impl FiggyChart {
         self.replace_chart_state(config, series)
     }
 
-    /// The names of the themes the chart takes (#291, #295), as an array
-    /// of strings: the families first, then `default` and the chart kind's
-    /// own themes; the families alone for a chart that draws no series yet.
-    pub fn theme_names(&self) -> Result<js_sys::Array, JsValue> {
-        use renderer::theme::{ChartKind, Theme, ThemeFamily};
-        let names = ChartKind::of(
-            self.chart_config()?,
-            self.chart_series()?,
-            renderer::LayerRef::Base,
-        )
-        .map_or(ThemeFamily::NAMES, Theme::names);
-        Ok(js_names(names))
+    /// The theme names (#291, #295), as an array of strings: the four
+    /// families, `gallery`, `cool-slate`, `midnight` and `warm-paper`.
+    pub fn theme_names(&self) -> js_sys::Array {
+        js_names(renderer::theme::ThemeFamily::NAMES)
     }
 
     /// Fill subplot `index`'s plot with a colour (JSON `{"r":1,"g":1,"b":1,

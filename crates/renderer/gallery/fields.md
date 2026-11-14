@@ -4,8 +4,9 @@
 
 Click an image to open the example code that draws it. All data is synthetic;
 the images are native renderer output.
-Each entry names the built-in theme its example applies
-([Themes](../USAGE.md#themes)); some examples edit a copy first, such as the
+Each entry names the theme its example applies ([Themes](../USAGE.md#themes)):
+a theme family, or a custom theme the example builds in its support code
+(`examples/support/looks.rs`); some examples edit a copy first, such as the
 palette order or a fill opacity.
 
 ## Heatmap with contours
@@ -16,7 +17,7 @@ An interpolated matrix fill, labelled isolines with line gaps, a colourbar.
 
 **Code:** [heatmap_contours.rs](../examples/heatmap_contours.rs), `contours`
 
-**Theme:** `field` theme `gallery`
+**Theme:** the `gallery` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours`
 
@@ -28,7 +29,7 @@ An interpolated matrix fill, labelled isolines with line gaps, a colourbar.
 
 **Code:** [heatmap_contours.rs](../examples/heatmap_contours.rs), `hexbin`
 
-**Theme:** `field` theme `warm-neutral`
+**Theme:** the `warm-paper` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours`
 
@@ -40,7 +41,7 @@ A planetary nebula as one `RgbImage`: three host-composited channel grids on one
 
 **Code:** [heatmap_contours.rs](../examples/heatmap_contours.rs), `imshow`
 
-**Theme:** `field` theme `deep-space`
+**Theme:** a custom theme, `looks::deep_space()` in the example support
 
 **Run:** `cargo run --locked -p figgy-renderer --example heatmap_contours -- target/heatmap-contours`
 
@@ -52,7 +53,7 @@ Von Mises stress around a hole in a plate under tension (Kirsch's solution) on t
 
 **Code:** [trimesh.rs](../examples/trimesh.rs), `plate`
 
-**Theme:** `tri-mesh` theme `midnight`
+**Theme:** the `midnight` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example trimesh -- target/trimesh`
 
@@ -64,7 +65,7 @@ Grid vectors from two matrices over a speed heatmap.
 
 **Code:** [vector_field.rs](../examples/vector_field.rs), `wind`
 
-**Theme:** `vector-field` theme `midnight`
+**Theme:** the `midnight` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field`
 
@@ -76,7 +77,7 @@ Point vectors coloured by a speed column, scaled with `fit_scale`.
 
 **Code:** [vector_field.rs](../examples/vector_field.rs), `currents`
 
-**Theme:** `vector-field` theme `ocean`
+**Theme:** a custom theme, `looks::ocean()` in the example support
 
 **Run:** `cargo run --locked -p figgy-renderer --example vector_field -- target/vector-field`
 
@@ -88,7 +89,7 @@ Point vectors coloured by a speed column, scaled with `fit_scale`.
 
 **Code:** [value_maps.rs](../examples/value_maps.rs), `colormap_scatter`
 
-**Theme:** `scatter` theme `cool-slate`
+**Theme:** the `cool-slate` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps`
 
@@ -100,6 +101,6 @@ Point vectors coloured by a speed column, scaled with `fit_scale`.
 
 **Code:** [value_maps.rs](../examples/value_maps.rs), `bubbles`
 
-**Theme:** `scatter` theme `warm-paper`
+**Theme:** the `warm-paper` family
 
 **Run:** `cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps`

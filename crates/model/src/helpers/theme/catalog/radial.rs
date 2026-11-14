@@ -4,18 +4,6 @@ use super::super::{RadialTheme, ThemeFamily};
 use super::{COOL_BG, COOL_INK, rgb};
 use crate::material::Material;
 
-pub(super) const NAMES: &[&str] = &[
-    "gallery",
-    "cool-slate",
-    "midnight",
-    "warm-paper",
-    "default",
-    "ceramic",
-    "sunburst",
-    "pop-art",
-    "portfolio",
-];
-
 /// `family`'s radial member: the gallery's ceramic chart, a flat dashboard
 /// donut for cool slate, the night portfolio and the pop-art pie on cream.
 pub(super) fn member(family: ThemeFamily) -> RadialTheme {
@@ -24,17 +12,6 @@ pub(super) fn member(family: ThemeFamily) -> RadialTheme {
         ThemeFamily::CoolSlate => cool_slate(),
         ThemeFamily::Midnight => portfolio(),
         ThemeFamily::WarmPaper => pop_art(),
-    }
-}
-
-/// The radial theme `name`, past `default`.
-pub(super) fn named(name: &str) -> Option<RadialTheme> {
-    match name {
-        "ceramic" => Some(ceramic()),
-        "sunburst" => Some(sunburst()),
-        "pop-art" => Some(pop_art()),
-        "portfolio" => Some(portfolio()),
-        _ => None,
     }
 }
 
@@ -60,21 +37,6 @@ fn ceramic() -> RadialTheme {
     theme.roughness = 0.3;
     theme.texture_strength = 0.12;
     theme.shadow = true;
-    theme
-}
-
-/// A flat sunburst: green, rust and violet groups, each ring a paler step
-/// of the one inside it, with hairline gaps and barely rounded corners.
-fn sunburst() -> RadialTheme {
-    let mut theme = RadialTheme::documented();
-    theme.palette = vec![rgb(38, 140, 112), rgb(196, 112, 64), rgb(128, 110, 196)];
-    theme.child_tint = Some(0.22);
-    theme.label_color = rgb(40, 44, 52);
-    theme.material = Material::Flat;
-    theme.gloss = 0.15;
-    theme.gap_degrees = 0.6;
-    theme.inner_corner = 0.012;
-    theme.outer_corner = 0.012;
     theme
 }
 

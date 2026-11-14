@@ -2,14 +2,14 @@
 //!
 //! A [`ThemeFamily`] is a look with a member [`Theme`] for every
 //! [`ChartKind`] and a member [`RadialTheme`]. [`Theme::apply_named`]
-//! applies a name to a document: a family name gives every chart in scope
-//! its own kind's member, so a dashboard that mixes kinds is themed in one
-//! call, and a name of one kind's catalogue applies to charts of that kind
-//! only.
+//! applies a family by name to a document: every chart in scope takes its
+//! own kind's member, so a dashboard that mixes kinds is themed in one
+//! call. The family names are the only theme names; any other look is a
+//! custom [`Theme`] value.
 
 use super::{
-    ChartKind, Charts, RadialTheme, SubplotScope, Theme, ThemeError, ThemeTarget, catalog,
-    chart_layers, charts_in_scope, check_scope, drawn_on,
+    ChartKind, Charts, RadialTheme, SubplotScope, Theme, ThemeError, catalog, chart_layers,
+    charts_in_scope, check_scope, drawn_on,
 };
 use crate::config::{Config, DrawStyle};
 use crate::data_config::{DataRenderType, SeriesConfig};
@@ -39,8 +39,8 @@ impl ThemeFamily {
         Self::WarmPaper,
     ];
 
-    /// The families' names, the first names of every kind's list
-    /// ([`Theme::names`]) and of the radial list ([`RadialTheme::names`]).
+    /// The families' names: the names `Chart::apply_theme`, the web's
+    /// `apply_theme` and [`crate::radial::RadialChart::apply_theme`] take.
     pub const NAMES: &'static [&'static str] = &["gallery", "cool-slate", "midnight", "warm-paper"];
 
     /// The family's name.
@@ -56,6 +56,21 @@ impl ThemeFamily {
     /// The family `name`, or `None`.
     pub fn named(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|family| family.name() == name)
+    }
+
+    /// The family `name`, or [`ThemeError::UnknownName`] listing the
+    /// family names.
+    pub fn parse(name: &str) -> Result<Self, ThemeError> {
+        Self::named(name).ok_or_else(|| ThemeError::UnknownName {
+            name: name.to_owned(),
+            names: Self::NAMES,
+        })
+    }
+
+    /// The member the family gives the chart `layer` names: its member for
+    /// the chart's kind, the line member while the chart draws no series.
+    fn member_for(self, config: &Config, series: &[SeriesConfig], layer: LayerRef) -> Theme {
+        self.theme(ChartKind::of(config, series, layer).unwrap_or(ChartKind::Line))
     }
 
     /// The family's member for `kind`: a theme to apply as it is or to edit
@@ -77,57 +92,36 @@ impl std::fmt::Display for ThemeFamily {
 }
 
 impl Theme {
-    /// Apply the theme `name` to a chart and its series, each chart in
-    /// scope taking the theme of its own kind ([`ChartKind::of`]): the base
-    /// chart and the subplots `subplots` names, with their overlays and the
-    /// series drawn there, as [`Self::apply`] writes them.
+    /// Apply the theme family `name` ([`ThemeFamily::NAMES`]) to a chart
+    /// and its series, each chart in scope taking the family's member for
+    /// its own kind ([`ChartKind::of`]): the base chart and the subplots
+    /// `subplots` names, with their overlays and the series drawn there, as
+    /// [`Self::apply`] writes them. A dashboard whose subplots mix kinds is
+    /// themed in one call; a chart that draws no series yet takes the
+    /// line member.
     ///
-    /// - A family name ([`ThemeFamily::NAMES`]) gives every chart its
-    ///   kind's member, so the base chart and subplots of other kinds are
-    ///   themed in one call.
-    /// - A name of a kind's own catalogue ([`Theme::names`]) applies to the
-    ///   charts of a kind that has it; a chart of another kind refuses it
-    ///   ([`ThemeError::WrongKind`]).
-    /// - Any other name is refused ([`ThemeError::UnknownName`], with the names
-    ///   the chart takes).
-    /// - A chart that draws no series yet takes the theme of the first kind
-    ///   ([`ChartKind::ALL`]) that has the name: a family's line member.
-    ///
-    /// `draws` tells whether a draw style draws a series
-    /// (`renderer::draw_style_supports`, which the model cannot answer); a
-    /// series in scope that its chart's theme cannot draw is refused
-    /// ([`ThemeError::UnsupportedDrawStyle`]). Every chart is checked before any is
-    /// written, so a refusal changes nothing.
+    /// Refused, changing nothing, for a name that is not a family's
+    /// ([`ThemeError::UnknownName`]) and for a scope that names a subplot
+    /// the chart does not have ([`ThemeError::SubplotIndex`]). Every member
+    /// draws in the Precise style, which draws every series.
     pub fn apply_named(
         name: &str,
         config: &mut Config,
         series: &mut [SeriesConfig],
         subplots: SubplotScope,
-        draws: impl Fn(&DrawStyle, &DataRenderType) -> bool,
     ) -> Result<(), ThemeError> {
+        let family = ThemeFamily::parse(name)?;
         check_scope(config, subplots)?;
         let scope = Charts::scope(subplots);
-        for layer in charts_in_scope(config, scope) {
-            let theme = Self::for_chart(name, config, series, layer)?;
-            let style = &theme.chrome.draw_style;
-            if let Some(item) = series.iter().find(|item| {
-                drawn_on(config, layer, &item.series_id) && !draws(style, &item.render_type)
-            }) {
-                return Err(ThemeError::UnsupportedDrawStyle {
-                    series_id: item.series_id.clone(),
-                });
-            }
-        }
-        // Styling keeps every chart's kind, so each chart resolves to the
-        // theme it was checked with. All series are styled before any
-        // chrome is written: a legend shows the marks of the series it
-        // names.
+        // Styling keeps every chart's kind, so each chart takes the same
+        // member in both passes. All series are styled before any chrome
+        // is written: a legend shows the marks of the series it names.
         for layer in chart_layers(config.subplots.len(), scope) {
-            let theme = Self::for_chart(name, config, series, layer)?;
+            let theme = family.member_for(config, series, layer);
             theme.style_charts(config, series, Charts::one(&layer));
         }
         for layer in chart_layers(config.subplots.len(), scope) {
-            let theme = Self::for_chart(name, config, series, layer)?;
+            let theme = family.member_for(config, series, layer);
             theme.finish_charts(config, series, Charts::one(&layer));
         }
         Ok(())
@@ -173,7 +167,6 @@ impl Theme {
         }
         if let (false, Some((chart, layer))) = (themed, refused) {
             return Err(ThemeError::WrongKind {
-                name: None,
                 theme: self.kind,
                 chart,
                 layer,
@@ -193,63 +186,29 @@ impl Theme {
         Ok(())
     }
 
-    /// The theme `name` resolves to on the chart `layer` names, the base
-    /// chart or a subplot, as [`Self::apply_named`] resolves it: a family's
-    /// member for the chart's kind or the kind's own theme of that name, a
-    /// value to edit and apply with [`Self::apply`]. Refused with
-    /// [`ThemeError::WrongKind`] for a kind without the name and with
-    /// [`ThemeError::UnknownName`] for a name no kind has.
+    /// The theme the family `name` gives the chart `layer` names, the base
+    /// chart or a subplot, as [`Self::apply_named`] gives it: the family's
+    /// member for the chart's kind (the line member while it draws no
+    /// series), a value to edit and apply with [`Self::apply`] or
+    /// [`Self::apply_to_its_kind`]. Refused for a name that is not a
+    /// family's ([`ThemeError::UnknownName`]).
     pub fn for_chart(
         name: &str,
         config: &Config,
         series: &[SeriesConfig],
         layer: LayerRef,
     ) -> Result<Self, ThemeError> {
-        let kind = ChartKind::of(config, series, layer);
-        // The first kind whose names have `name`: the kind a chart without
-        // series takes it as, and the kind a refusal names.
-        let first = || {
-            ChartKind::ALL
-                .into_iter()
-                .find(|&kind| catalog::names(kind).contains(&name))
-        };
-        match kind.or_else(first).and_then(|kind| Self::named(kind, name)) {
-            Some(theme) => Ok(theme),
-            None => Err(match (kind, first()) {
-                (Some(chart), Some(theme)) => ThemeError::WrongKind {
-                    name: Some(name.to_owned()),
-                    theme,
-                    chart,
-                    layer,
-                },
-                (Some(chart), None) => ThemeError::UnknownName {
-                    name: name.to_owned(),
-                    target: ThemeTarget::Chart(chart),
-                    names: catalog::names(chart),
-                },
-                (None, _) => ThemeError::UnknownName {
-                    name: name.to_owned(),
-                    target: ThemeTarget::EmptyChart,
-                    names: ThemeFamily::NAMES,
-                },
-            }),
-        }
+        Ok(ThemeFamily::parse(name)?.member_for(config, series, layer))
     }
 }
 
 impl crate::radial::RadialChart {
-    /// Apply the radial theme `name` ([`RadialTheme::names`]): a family's
-    /// radial member ([`ThemeFamily::radial`]) or a theme of the radial
-    /// catalogue, as [`RadialTheme::apply`] writes it. An unknown name is
-    /// refused with [`ThemeError::UnknownName`], which lists the radial names,
-    /// and changes nothing.
+    /// Apply the theme family `name`'s radial member
+    /// ([`ThemeFamily::radial`]), as [`RadialTheme::apply`] writes it.
+    /// Refused, changing nothing, for a name that is not a family's
+    /// ([`ThemeError::UnknownName`]).
     pub fn apply_theme(&mut self, name: &str) -> Result<(), ThemeError> {
-        let theme = RadialTheme::named(name).ok_or_else(|| ThemeError::UnknownName {
-            name: name.to_owned(),
-            target: ThemeTarget::Radial,
-            names: RadialTheme::names(),
-        })?;
-        theme.apply(self);
+        ThemeFamily::parse(name)?.radial().apply(self);
         Ok(())
     }
 }

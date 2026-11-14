@@ -19,16 +19,17 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::theme::ChartKind;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Color, Renderer, SeriesConfig, data_config::LineInterpolation, line::LineStylePreset,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 // A forecast: the history as a solid line, the forecast dashed, with 80% and
 // 95% bands filled between their edge series.
 fn forecast(r: &mut Renderer, out: &Path) -> Result {
-    let mut theme = theme_named(ChartKind::Line, "cool-slate")?;
+    let mut theme = ThemeFamily::CoolSlate.theme(ChartKind::Line);
     let ink = theme.chrome.ink;
     let teal = theme.series.palette[0];
     // The colours carry meaning here: the history in ink, the forecast and
@@ -139,7 +140,7 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
 // A thermostat schedule: the setpoint as a step line with a filled area, the
 // measured room temperature as a smooth line over it.
 fn thermostat(r: &mut Renderer, out: &Path) -> Result {
-    let mut theme = theme_named(ChartKind::Line, "cool-slate")?;
+    let mut theme = ThemeFamily::CoolSlate.theme(ChartKind::Line);
     // The setpoint in violet over a stronger fill, the room in coral.
     theme.series.palette = vec![theme.series.palette[2], theme.series.palette[1]];
     theme.series.lines.fill_opacity = Some(0.16);

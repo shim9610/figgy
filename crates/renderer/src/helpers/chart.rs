@@ -226,21 +226,18 @@ impl Chart {
         self
     }
 
-    /// Apply the theme `name` to the whole document: the chart, its
-    /// overlays, every subplot and every series ([`Self::apply_theme_to`]
-    /// with [`SubplotScope::All`]). A family name
-    /// ([`crate::theme::ThemeFamily`]: `gallery`, `cool-slate`, `midnight`,
-    /// `warm-paper`) gives the base chart and every subplot the member of
-    /// its own kind, so a dashboard whose subplots mix kinds takes one
-    /// name; a name of one kind's catalogue ([`Self::theme_names`]) applies
-    /// to charts of that kind. The layout is then fitted to the new text
-    /// sizes ([`Self::fit_layout`]).
+    /// Apply the theme family `name` (`gallery`, `cool-slate`, `midnight`
+    /// or `warm-paper`, [`Self::theme_names`]) to the whole document: the
+    /// chart, its overlays, every subplot and every series
+    /// ([`Self::apply_theme_to`] with [`SubplotScope::All`]). The base chart
+    /// and every subplot take the family's member for their own kind, so a
+    /// dashboard whose subplots mix kinds takes one name. The layout is
+    /// then fitted to the new text sizes ([`Self::fit_layout`]). For any
+    /// other look, edit a member ([`Self::theme`]) and apply it with
+    /// [`Self::apply_custom_theme`].
     ///
-    /// Refused, changing nothing, when a chart is of a kind without that
-    /// name ([`ThemeError::WrongKind`]), when no kind has it
-    /// ([`ThemeError::UnknownName`], which lists the names the chart takes), or
-    /// when a theme's draw style cannot draw a series
-    /// ([`ThemeError::UnsupportedDrawStyle`], [`crate::draw_style_supports`]).
+    /// Refused, changing nothing, for a name that is not a family's
+    /// ([`ThemeError::UnknownName`], which lists the family names).
     pub fn apply_theme(
         &mut self,
         name: &str,
@@ -251,51 +248,45 @@ impl Chart {
 
     /// [`Self::apply_theme`] to the chart, its overlays and the subplots
     /// `subplots` names, and the series drawn there ([`Theme::apply_named`]);
-    /// a series drawn in a subplot out of scope keeps its look.
+    /// a series drawn in a subplot out of scope keeps its look. Refused
+    /// also for a scope that names a subplot the chart does not have
+    /// ([`ThemeError::SubplotIndex`]).
     pub fn apply_theme_to(
         &mut self,
         name: &str,
         series: &mut [SeriesConfig],
         subplots: SubplotScope,
     ) -> Result<(), ThemeError> {
-        Theme::apply_named(
-            name,
-            self.config_mut(),
-            series,
-            subplots,
-            crate::draw_style_supports,
-        )?;
+        Theme::apply_named(name, self.config_mut(), series, subplots)?;
         self.fit_layout();
         Ok(())
     }
 
     /// The kind of the base chart ([`ChartKind::of`]), read from its
-    /// coordinates, axes and `series`; `None` while it draws no series.
+    /// coordinates, axes and `series`: the kind a custom theme for it is
+    /// made for. `None` while it draws no series.
     pub fn chart_kind(&self, series: &[SeriesConfig]) -> Option<ChartKind> {
         ChartKind::of(self.config(), series, crate::LayerRef::Base)
     }
 
-    /// The theme names the chart takes ([`Theme::names`] of its kind): the
-    /// families first, then `default` and the kind's own themes; the
-    /// families alone while the chart draws no series.
-    pub fn theme_names(&self, series: &[SeriesConfig]) -> &'static [&'static str] {
-        self.chart_kind(series)
-            .map_or(ThemeFamily::NAMES, Theme::names)
+    /// The theme names [`Self::apply_theme`] takes: the family names
+    /// ([`ThemeFamily::NAMES`]).
+    pub fn theme_names(&self) -> &'static [&'static str] {
+        ThemeFamily::NAMES
     }
 
-    /// The theme `name` resolves to on the base chart ([`Theme::for_chart`]):
-    /// a family's member for the chart's kind or the kind's own theme of
-    /// that name, to edit and apply with [`Self::apply_custom_theme`].
-    /// Refused as [`Self::apply_theme`] refuses the name
-    /// ([`ThemeError::WrongKind`], [`ThemeError::UnknownName`]).
+    /// The theme the family `name` gives the base chart
+    /// ([`Theme::for_chart`]): the member for its kind (the line member
+    /// while it draws no series), to edit and apply with
+    /// [`Self::apply_custom_theme`]. Refused for a name that is not a
+    /// family's ([`ThemeError::UnknownName`]).
     pub fn theme(&self, name: &str, series: &[SeriesConfig]) -> Result<Theme, ThemeError> {
         Theme::for_chart(name, self.config(), series, crate::LayerRef::Base)
     }
 
-    /// The theme `name` resolves to on subplot `index`, as
-    /// [`Self::apply_theme`] resolves it there ([`Theme::for_chart`]): a
-    /// family's member for the subplot's kind or the kind's own theme, to
-    /// edit and apply with [`Self::apply_custom_theme`]. Refused as
+    /// The theme the family `name` gives subplot `index`
+    /// ([`Theme::for_chart`]): the member for the subplot's kind, to edit
+    /// and apply with [`Self::apply_custom_theme`]. Refused as
     /// [`Self::theme`] refuses the name, and for an index past the
     /// subplots ([`ThemeError::SubplotIndex`]).
     pub fn subplot_theme(
@@ -309,9 +300,9 @@ impl Chart {
     }
 
     /// Apply `theme`, a theme the host built or edited (the theme
-    /// [`Self::theme`] hands out, a family's member from
-    /// [`crate::theme::ThemeFamily::theme`], a kind's from
-    /// [`Theme::named`]), to the charts of its kind
+    /// [`Self::theme`] hands out or a family's member from
+    /// [`crate::theme::ThemeFamily::theme`], with any field changed), to
+    /// the charts of its kind
     /// ([`Theme::apply_to_its_kind`]): the base chart and every subplot of
     /// [`Theme::kind`], or that draws no series yet, with their overlays
     /// and the series drawn there. Charts of another kind are left as they

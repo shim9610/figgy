@@ -1,17 +1,13 @@
-//! The built-in themes, one catalogue per chart kind (#291), and the
-//! families' members (#295).
+//! The families' members (#295): a theme for every chart kind in each
+//! family's chrome and colours ([`member`], [`radial_member`]).
 //!
-//! A kind's own themes are gallery looks: the values the gallery images
-//! use. A family ([`ThemeFamily`]) has a member for every kind: one of
-//! those looks where its chrome is the family's, a theme designed in the
-//! family's chrome otherwise ([`member`]). Bases carry the chrome several
-//! looks share, and each kind's themes add their palette and their
-//! family's part:
+//! Bases carry the chrome several members share, and each member adds its
+//! palette and its series family's part:
 //! - [`gallery`]: white paper, a navy title, a slate frame and a pale grid;
 //! - [`scene`]: the designed scenes' chrome, an opaque background with no
 //!   axis lines or ticks, a horizontal grid and large text;
-//! - [`document`]: the legacy documents' chrome, a transparent background,
-//!   an open frame without ticks in the text colour and a pale value grid;
+//! - [`document`]: a transparent background, an open frame without ticks in
+//!   the text colour and a pale value grid;
 //! - [`cool_slate`], [`midnight`] and [`warm_paper`]: the scene chrome in
 //!   the colours of those families.
 
@@ -26,31 +22,6 @@ mod fields;
 mod radial;
 mod science;
 mod xy;
-
-/// The names `kind` takes: the families, then `default` and the kind's own.
-pub(super) fn names(kind: ChartKind) -> &'static [&'static str] {
-    match kind {
-        ChartKind::Line => xy::LINE,
-        ChartKind::Scatter => xy::SCATTER,
-        ChartKind::ErrorBars => xy::ERROR_BARS,
-        ChartKind::Stem => xy::STEM,
-        ChartKind::Probability => xy::PROBABILITY,
-        ChartKind::Histogram => bars::HISTOGRAM,
-        ChartKind::CategoryBars => bars::CATEGORY_BARS,
-        ChartKind::Distribution => bars::DISTRIBUTION,
-        ChartKind::RangeBars => bars::RANGE_BARS,
-        ChartKind::Field => fields::FIELD,
-        ChartKind::VectorField => fields::VECTOR_FIELD,
-        ChartKind::Surface3d => fields::SURFACE_3D,
-        ChartKind::TriMesh => fields::TRI_MESH,
-        ChartKind::Polar => fields::POLAR,
-        ChartKind::Radar => fields::RADAR,
-        ChartKind::Parallel => fields::PARALLEL,
-        ChartKind::Ternary => fields::TERNARY,
-        ChartKind::EnergyLevels => science::ENERGY_LEVELS,
-        ChartKind::Feynman => science::FEYNMAN,
-    }
-}
 
 /// `family`'s member for `kind`.
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
@@ -79,47 +50,6 @@ pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
 /// `family`'s radial member.
 pub(super) fn radial_member(family: ThemeFamily) -> RadialTheme {
     radial::member(family)
-}
-
-/// The theme `name` of `kind`'s own catalogue: `default` or a theme of the
-/// kind's own, not a family.
-pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
-    if name == "default" {
-        return Some(Theme::documented(kind));
-    }
-    match kind {
-        ChartKind::Line
-        | ChartKind::Scatter
-        | ChartKind::ErrorBars
-        | ChartKind::Stem
-        | ChartKind::Probability => xy::named(kind, name),
-        ChartKind::Histogram
-        | ChartKind::CategoryBars
-        | ChartKind::Distribution
-        | ChartKind::RangeBars => bars::named(kind, name),
-        ChartKind::Field
-        | ChartKind::VectorField
-        | ChartKind::Surface3d
-        | ChartKind::TriMesh
-        | ChartKind::Polar
-        | ChartKind::Radar
-        | ChartKind::Parallel
-        | ChartKind::Ternary => fields::named(kind, name),
-        ChartKind::EnergyLevels | ChartKind::Feynman => science::named(kind, name),
-    }
-}
-
-/// The radial names: the families, then `default` and the radial themes.
-pub(super) fn radial_names() -> &'static [&'static str] {
-    radial::NAMES
-}
-
-/// The radial theme `name` of the radial catalogue, not a family.
-pub(super) fn radial_named(name: &str) -> Option<RadialTheme> {
-    match name {
-        "default" => Some(RadialTheme::documented()),
-        _ => radial::named(name),
-    }
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {

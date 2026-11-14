@@ -5,7 +5,7 @@
 //!   3 x 2 grid (electron-positron annihilation into muons, Compton
 //!   scattering, Higgs production by gluon fusion through a top loop, beta
 //!   decay through a W, the electron's one-loop vertex correction and a
-//!   three-jet event). The `parchment` Feynman theme gives the look:
+//!   three-jet event). The warm-paper family's Feynman member gives the look:
 //!   each line's colour by its particle, the strokes and the label ink.
 //!
 //! cargo run --locked -p figgy-renderer --example feynman -- target/feynman
@@ -18,6 +18,7 @@ mod styled;
 use ParticleLine::{ChargedBoson, Fermion, Gluon, Photon, Scalar};
 use VertexRole::{Incoming, Internal, Outgoing};
 use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
     Anchor, Annotation, AnnotationKind, AnnotationLineStyle, Color, Renderer, SeriesConfig,
     ShapeStyle,
@@ -29,7 +30,7 @@ use renderer::{
     theme::ChartKind,
 };
 use std::path::Path;
-use styled::{background, export, save, scene_chart, theme_named, themed};
+use styled::{background, export, save, scene_chart, themed};
 
 /// A label: its content, in the look the theme gives it.
 fn tex(text: &str) -> RichText {
@@ -223,7 +224,7 @@ fn diagrams() -> [(&'static str, FeynmanSeries); 6] {
 }
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Feynman, "parchment")?;
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Feynman);
     let bg = background(&theme);
     let chrome = &theme.chrome;
     let mut chart = scene_chart("Feynman diagrams / six processes", "", "");

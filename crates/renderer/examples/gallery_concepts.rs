@@ -17,20 +17,21 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::Result;
+use gallery::{Result, looks};
+use renderer::theme::ThemeFamily;
 use renderer::{
     Color, Renderer, SeriesConfig,
     categorical::*,
     data_config::{MatrixRef, Shading},
     radial::*,
-    theme::{ChartKind, RadialTheme},
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{SIZE, background, export, save, scene_chart, theme_named, themed};
+use styled::{SIZE, background, export, save, scene_chart, themed};
 
 // 1. A dashboard card: restrained chrome and two high-contrast service metrics.
 fn observability(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Line, "midnight")?;
+    let theme = ThemeFamily::Midnight.theme(ChartKind::Line);
     let bg = background(&theme);
     let mut chart = scene_chart("Traffic / last 24 hours", "Hour (UTC)", "Requests / s");
     chart.set_x_range(0., 24.);
@@ -60,7 +61,7 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
 
 // 2. A warm editorial figure, with deterministic path wobble and sparse markers.
 fn editorial(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Line, "editorial")?;
+    let theme = looks::editorial();
     let bg = background(&theme);
     let mut chart = scene_chart(
         "Small habits, lasting growth",
@@ -94,7 +95,7 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
 // 3. A product analytics card: horizontal stacks and rounded ends, a
 // categorical document opened as a Cartesian chart of category bars.
 fn revenue(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::CategoryBars, "revenue")?;
+    let theme = looks::revenue();
     let bg = background(&theme);
     let chart = CategoricalChart {
         title: "Revenue mix / by region".into(),
@@ -173,7 +174,7 @@ fn radial_concepts(out: &Path) -> Result {
     // The radial renderer takes a device of its own making.
     let mut r = RadialRenderer::headless_blocking()?;
     let slice = |label: &str, value: f64| RadialSlice::new(label, value, Color::BLACK);
-    let theme = RadialTheme::named("pop-art").ok_or("no pop-art radial theme")?;
+    let theme = ThemeFamily::WarmPaper.radial();
     let mut chart = RadialChart {
         slices: vec![
             slice("Design", 38.),
@@ -191,7 +192,7 @@ fn radial_concepts(out: &Path) -> Result {
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
 
-    let theme = RadialTheme::named("portfolio").ok_or("no portfolio radial theme")?;
+    let theme = ThemeFamily::Midnight.radial();
     chart.kind = RadialKind::Donut { inner_radius: 0.57 };
     chart.set_title_text("Portfolio / a different perspective");
     chart.slices = vec![
@@ -208,10 +209,10 @@ fn radial_concepts(out: &Path) -> Result {
     Ok(())
 }
 
-// 6. A topographic poster: the `topographic` field theme's ramp and isolines
+// 6. A topographic poster: the example's topographic look (`looks::topographic`), its ramp and isolines
 // over a synthetic terrain.
 fn terrain(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::Field, "topographic")?;
+    let theme = looks::topographic();
     let bg = background(&theme);
     let mut chart = scene_chart(
         "Contours of an imagined landscape",

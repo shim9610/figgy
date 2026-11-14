@@ -6,12 +6,13 @@
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
-use gallery::{Result, output_directory, save, theme_named, themed, titled, with_renderer};
+use gallery::{Result, output_directory, save, themed, titled, with_renderer};
+use renderer::theme::ThemeFamily;
 use renderer::{Renderer, SeriesConfig, config::LegendCorner, theme::ChartKind};
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let theme = theme_named(ChartKind::ErrorBars, "gallery")?;
+    let theme = ThemeFamily::Gallery.theme(ChartKind::ErrorBars);
     let x: Vec<f64> = (0..18).map(|i| i as f64 * 0.5).collect();
     r.add_column("response-x", &x)?;
     let mut specs = Vec::new();
