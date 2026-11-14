@@ -1837,7 +1837,6 @@ fn the_kind_themes_of_a_family_s_chrome_are_its_members() {
         ),
         (ThemeFamily::WarmPaper, ChartKind::RangeBars, "warm-neutral"),
         (ThemeFamily::WarmPaper, ChartKind::Field, "warm-neutral"),
-        (ThemeFamily::WarmPaper, ChartKind::Surface3d, "warm-terrain"),
         (ThemeFamily::WarmPaper, ChartKind::Feynman, "parchment"),
     ];
     for (family, kind, name) in reused {

@@ -930,7 +930,7 @@ chart.apply_theme("midnight", &mut series, SubplotScope::All)?;  // refits the l
   family's member: `document` is the `gallery` member for category bars,
   distributions and radar charts, `grotrian` for energy levels; `warm-neutral`
   is the `warm-paper` member for probability paper, range bars and fields,
-  `warm-terrain` for 3D charts and `parchment` for Feynman diagrams; a theme
+  and `parchment` for Feynman diagrams; a theme
   a kind already had under a family's name (the line `cool-slate`, the
   range-bar `midnight`) is that family's member. The radial members are `ceramic` (`gallery`),
   `portfolio` (`midnight`), `pop-art` (`warm-paper`) and a flat dashboard
@@ -1972,7 +1972,7 @@ chart.apply_theme("midnight", &mut series, SubplotScope::All)?;  // 레이아웃
   종류마다 이미 있던 테마의 크롬이 계열의 크롬과 같으면 그 테마가 계열의 구성원이다.
   `document`는 범주 막대, 분포, 레이더 차트의 `gallery` 구성원이고 `grotrian`은 에너지 준위의
   `gallery` 구성원이다. `warm-neutral`은 확률지, 범위 막대, 필드의 `warm-paper` 구성원이고,
-  `warm-terrain`은 3D 차트의, `parchment`는 파인만 도형의 `warm-paper` 구성원이다. 종류가 이미
+  `parchment`는 파인만 도형의 `warm-paper` 구성원이다. 종류가 이미
   계열 이름으로 가지고 있던 테마(선 차트의 `cool-slate`, 범위 막대의 `midnight` 등)는 그 계열의
   구성원이다. 원형 차트의 구성원은 `ceramic`(`gallery`), `portfolio`(`midnight`),
   `pop-art`(`warm-paper`)이고, `cool-slate`에는 평평한 대시보드 도넛을 새로 두었다.

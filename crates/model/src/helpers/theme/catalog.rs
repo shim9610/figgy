@@ -339,14 +339,17 @@ fn mark_colormap(family: ThemeFamily) -> ColorMap {
 }
 
 /// `family`'s chrome for `kind`, the base of the members designed for the
-/// family. The scene families write contour labels in their ink.
+/// family, with the family's mark map on its colourbar. The scene families
+/// write contour labels in their ink.
 fn family_chrome(family: ThemeFamily, kind: ChartKind) -> Theme {
-    match family {
+    let mut theme = match family {
         ThemeFamily::Gallery => gallery(kind),
         ThemeFamily::CoolSlate => cool_slate(kind),
         ThemeFamily::Midnight => midnight(kind),
         ThemeFamily::WarmPaper => warm_paper(kind),
-    }
+    };
+    theme.series.fields.colormap = mark_colormap(family);
+    theme
 }
 
 /// The scene chrome ([`scene`]) with contour labels in its ink.

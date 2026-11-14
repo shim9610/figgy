@@ -60,7 +60,6 @@ pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
         (ChartKind::VectorField, ThemeFamily::Gallery) => vector_field_gallery(),
         (ChartKind::VectorField, ThemeFamily::Midnight) => vector_field_midnight(),
         (ChartKind::Surface3d, ThemeFamily::Midnight) => surface_3d_midnight(),
-        (ChartKind::Surface3d, ThemeFamily::WarmPaper) => surface_3d_warm_terrain(),
         (ChartKind::TriMesh, ThemeFamily::Midnight) => tri_mesh_midnight(),
         (ChartKind::Polar, ThemeFamily::Gallery) => polar_gallery(),
         (ChartKind::Polar, ThemeFamily::CoolSlate) => polar_cool_slate(),
@@ -571,7 +570,7 @@ fn vector_field(family: ThemeFamily) -> Theme {
     theme
 }
 
-/// A family's 3D charts (gallery, cool slate): a matte, finely wireframed
+/// A family's 3D charts (gallery, cool slate, warm paper): a matte, finely wireframed
 /// surface in the family's mark map, floor contours in the map's colours
 /// darkened, lines and arrows in the family's colours, a floor grid.
 fn surface_3d(family: ThemeFamily) -> Theme {
