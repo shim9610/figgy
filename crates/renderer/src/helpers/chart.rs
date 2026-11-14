@@ -1,7 +1,7 @@
 //! Chart conveniences: a sized chart, a theme, a legend from the series,
 //! and margins fitted to the text (#265).
 
-use crate::theme::{SubplotScope, Theme, ThemeError};
+use crate::theme::{ChartKind, SubplotScope, Theme, ThemeError, ThemeFamily};
 use crate::{Chart, SeriesConfig};
 
 impl Chart {
@@ -226,22 +226,33 @@ impl Chart {
         self
     }
 
-    /// Apply the theme `name` to the chart and its series
-    /// ([`Theme::apply_named`]): the chrome of the chart, its overlays and
-    /// the subplots `subplots` names, and the series drawn there. A family
-    /// name ([`crate::theme::ThemeFamily`]) gives the base chart and every
-    /// subplot in scope the member of its own kind
-    /// ([`crate::theme::ChartKind::of`]), so a chart whose subplots mix
-    /// kinds takes one name; a name of one kind's catalogue
-    /// ([`Theme::names`]) applies to charts of that kind. The layout is
-    /// then fitted to the new text sizes ([`Self::fit_layout`]).
+    /// Apply the theme `name` to the whole document: the chart, its
+    /// overlays, every subplot and every series ([`Self::apply_theme_to`]
+    /// with [`SubplotScope::All`]). A family name
+    /// ([`crate::theme::ThemeFamily`]: `gallery`, `cool-slate`, `midnight`,
+    /// `warm-paper`) gives the base chart and every subplot the member of
+    /// its own kind, so a dashboard whose subplots mix kinds takes one
+    /// name; a name of one kind's catalogue ([`Self::theme_names`]) applies
+    /// to charts of that kind. The layout is then fitted to the new text
+    /// sizes ([`Self::fit_layout`]).
     ///
-    /// Refused, changing nothing, when a chart in scope is of a kind
-    /// without that name ([`ThemeError::Kind`]), when no kind has it
-    /// ([`ThemeError::Unknown`]), or when a theme's draw style cannot draw a
-    /// series in scope ([`ThemeError::DrawStyle`],
-    /// [`crate::draw_style_supports`]).
+    /// Refused, changing nothing, when a chart is of a kind without that
+    /// name ([`ThemeError::Kind`]), when no kind has it
+    /// ([`ThemeError::Unknown`], which lists the names the chart takes), or
+    /// when a theme's draw style cannot draw a series
+    /// ([`ThemeError::DrawStyle`], [`crate::draw_style_supports`]).
     pub fn apply_theme(
+        &mut self,
+        name: &str,
+        series: &mut [SeriesConfig],
+    ) -> Result<(), ThemeError> {
+        self.apply_theme_to(name, series, SubplotScope::All)
+    }
+
+    /// [`Self::apply_theme`] to the chart, its overlays and the subplots
+    /// `subplots` names, and the series drawn there ([`Theme::apply_named`]);
+    /// a series drawn in a subplot out of scope keeps its look.
+    pub fn apply_theme_to(
         &mut self,
         name: &str,
         series: &mut [SeriesConfig],
@@ -256,6 +267,29 @@ impl Chart {
         )?;
         self.fit_layout();
         Ok(())
+    }
+
+    /// The kind of the base chart ([`ChartKind::of`]), read from its
+    /// coordinates, axes and `series`; `None` while it draws no series.
+    pub fn chart_kind(&self, series: &[SeriesConfig]) -> Option<ChartKind> {
+        ChartKind::of(self.config(), series, crate::LayerRef::Base)
+    }
+
+    /// The theme names the chart takes ([`Theme::names`] of its kind): the
+    /// families first, then `default` and the kind's own themes; the
+    /// families alone while the chart draws no series.
+    pub fn theme_names(&self, series: &[SeriesConfig]) -> &'static [&'static str] {
+        self.chart_kind(series)
+            .map_or(ThemeFamily::NAMES, Theme::names)
+    }
+
+    /// The theme `name` resolves to on the base chart ([`Theme::for_chart`]):
+    /// a family's member for the chart's kind or the kind's own theme of
+    /// that name, to edit and apply with [`Self::apply_custom_theme`].
+    /// Refused as [`Self::apply_theme`] refuses the name
+    /// ([`ThemeError::Kind`], [`ThemeError::Unknown`]).
+    pub fn theme(&self, name: &str, series: &[SeriesConfig]) -> Result<Theme, ThemeError> {
+        Theme::for_chart(name, self.config(), series, crate::LayerRef::Base)
     }
 
     /// Apply `theme`, a theme the host built or edited (a family's member

@@ -129,7 +129,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
         linked.bottom_x.max,
         document.subplots[0].config.bottom_x.max
     );
-    let scale = document.subplot_text_scale(1);
+    let scale = document.subplot_text_factor(1);
     assert!((scale - 0.5f32.cbrt()).abs() < 1e-6);
     assert_eq!(
         linked.chart_title.text.font_size,

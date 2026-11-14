@@ -6,7 +6,7 @@
 //! scene of the playground catalogue (`support/playground_scenes.rs`) the
 //! kind of its base chart (`ChartKind::of`) and, for every name that kind
 //! takes (`Theme::names`: the four families, then the kind's own),
-//! `Chart::apply_theme` by name over the whole document. A family gives
+//! `Chart::apply_theme_to` by name over the whole document. A family gives
 //! every chart its own kind's member, so a scene whose subplots mix kinds
 //! takes it whole, each subplot in its kind's member. The radial scenes
 //! take the radial names (`RadialTheme`). After a theme is applied:
@@ -272,7 +272,7 @@ fn sweep_chart(
         let mut series = declared.to_vec();
 
         let mut scope = SubplotScope::All;
-        let mut result = chart.apply_theme(name, &mut series, scope);
+        let mut result = chart.apply_theme_to(name, &mut series, scope);
         if let Err(ThemeError::Kind { layer, .. }) = &result {
             // A subplot of a kind without the name: the theme styles the
             // base chart alone. A family has a member for every kind.
@@ -281,7 +281,7 @@ fn sweep_chart(
             assert_eq!(chart.config(), config, "{at}: a refusal changed the chart");
             assert_eq!(series, declared, "{at}: a refusal changed the series");
             scope = SubplotScope::None;
-            result = chart.apply_theme(name, &mut series, scope);
+            result = chart.apply_theme_to(name, &mut series, scope);
             assert!(
                 !matches!(result, Err(ThemeError::Kind { .. })),
                 "{at}: the base chart refuses its own kind: {result:?}"
@@ -334,7 +334,7 @@ fn sweep_chart(
         let mut again = Chart::new(themed.clone());
         let mut series_again = series.clone();
         again
-            .apply_theme(name, &mut series_again, scope)
+            .apply_theme_to(name, &mut series_again, scope)
             .unwrap_or_else(|error| panic!("{at}: again: {error}"));
         assert_eq!(again.config(), themed, "{at}: applied twice");
         assert_eq!(series_again, series, "{at}: applied twice");

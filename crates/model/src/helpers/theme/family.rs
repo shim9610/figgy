@@ -132,9 +132,13 @@ impl Theme {
         Ok(())
     }
 
-    /// The theme `name` resolves to on the chart `layer` names
-    /// ([`Self::apply_named`]).
-    fn for_chart(
+    /// The theme `name` resolves to on the chart `layer` names, the base
+    /// chart or a subplot, as [`Self::apply_named`] resolves it: a family's
+    /// member for the chart's kind or the kind's own theme of that name, a
+    /// value to edit and apply with [`Self::apply`]. Refused with
+    /// [`ThemeError::Kind`] for a kind without the name and with
+    /// [`ThemeError::Unknown`] for a name no kind has.
+    pub fn for_chart(
         name: &str,
         config: &Config,
         series: &[SeriesConfig],
@@ -152,6 +156,7 @@ impl Theme {
             Some(theme) => Ok(theme),
             None => Err(match (kind, first()) {
                 (Some(chart), Some(theme)) => ThemeError::Kind {
+                    name: Some(name.to_owned()),
                     theme,
                     chart,
                     layer,
@@ -168,5 +173,22 @@ impl Theme {
                 },
             }),
         }
+    }
+}
+
+impl crate::radial::RadialChart {
+    /// Apply the radial theme `name` ([`RadialTheme::names`]): a family's
+    /// radial member ([`ThemeFamily::radial`]) or a theme of the radial
+    /// catalogue, as [`RadialTheme::apply`] writes it. An unknown name is
+    /// refused with [`ThemeError::Unknown`], which lists the radial names,
+    /// and changes nothing.
+    pub fn apply_theme(&mut self, name: &str) -> Result<(), ThemeError> {
+        let theme = RadialTheme::named(name).ok_or_else(|| ThemeError::Unknown {
+            name: name.to_owned(),
+            kind: None,
+            names: RadialTheme::names(),
+        })?;
+        theme.apply(self);
+        Ok(())
     }
 }

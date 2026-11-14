@@ -769,7 +769,7 @@ magnifies, clipped to the parent's plot, and connectors to the inset's plot;
 it is not selectable.
 
 **Text scale** ([#292](https://github.com/shim9610/figgy/issues/292)). A subplot's text is drawn at its stored sizes
-times `Config::subplot_text_scale(i)`, a factor of `0.5..=1` chosen from the
+times `Config::subplot_text_factor(i)`, a factor of `0.5..=1` chosen from the
 cell's size against the parent chart's (see
 [`Subplot`](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#subplot-configsubplots);
 `SubplotTextScale::Fixed` opts a subplot out). `Config::subplot_config`

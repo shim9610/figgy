@@ -483,6 +483,11 @@ pub struct RadialTheme {
 pub enum ThemeError {
     /// A chart in scope is of another kind than the theme is made for.
     Kind {
+        /// The name that was applied ([`Theme::apply_named`]); `None` for a
+        /// theme applied as a value ([`Theme::apply`]).
+        name: Option<String>,
+        /// The kind the theme is made for: a theme's [`Theme::kind`], or
+        /// the first kind ([`ChartKind::ALL`]) whose names have `name`.
         theme: ChartKind,
         chart: ChartKind,
         /// The chart: [`LayerRef::Base`] or a [`LayerRef::Subplot`].
@@ -498,11 +503,13 @@ pub enum ThemeError {
     /// nor a name of any other kind (that is [`Self::Kind`]).
     Unknown {
         name: String,
-        /// The chart's kind; `None` for a chart that draws no series yet.
+        /// The chart's kind; `None` for a chart that draws no series yet
+        /// and for the radial chart.
         kind: Option<ChartKind>,
         /// The names the chart takes: the families first, then the kind's
         /// own ([`Theme::names`]); the families alone for a chart without a
-        /// kind.
+        /// kind; the radial names for the radial chart
+        /// ([`RadialTheme::names`]).
         names: &'static [&'static str],
     },
 }
@@ -511,13 +518,20 @@ impl std::fmt::Display for ThemeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Kind {
+                name,
                 theme,
                 chart,
                 layer,
-            } => write!(
-                f,
-                "a {theme} theme does not apply to a {chart} chart ({layer:?})"
-            ),
+            } => match name {
+                Some(name) => write!(
+                    f,
+                    "the {theme} theme {name:?} does not apply to a {chart} chart ({layer:?})"
+                ),
+                None => write!(
+                    f,
+                    "a {theme} theme does not apply to a {chart} chart ({layer:?})"
+                ),
+            },
             Self::DrawStyle { series_id } => {
                 write!(f, "the theme's draw style cannot draw series {series_id:?}")
             }
@@ -1090,6 +1104,7 @@ impl Theme {
                 && chart != self.kind
             {
                 return Err(ThemeError::Kind {
+                    name: None,
                     theme: self.kind,
                     chart,
                     layer,

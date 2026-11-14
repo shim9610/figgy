@@ -674,7 +674,7 @@ fn ink(image: &renderer::RasterImage, within: RectF) -> Option<RectF> {
 #[test]
 fn auto_layout_fits_a_small_subplot_cell_to_its_scaled_text() {
     let doc = small_cell_document();
-    let scale = doc.subplot_text_scale(0);
+    let scale = doc.subplot_text_factor(0);
     assert!((scale - 0.5f32.cbrt()).abs() < 1e-6, "{scale}");
     let out = laid_out(&doc);
     assert_eq!(laid_out(&out), out, "idempotent");
@@ -764,7 +764,7 @@ fn a_scaled_subplots_decorations_are_hit_and_dragged_where_they_are_drawn() {
     use renderer::SelectionGeometry as _;
     let mut r = renderer();
     let doc = laid_out(&small_cell_document());
-    let scale = doc.subplot_text_scale(0);
+    let scale = doc.subplot_text_factor(0);
     let export = |r: &mut Renderer, config: &Config, at: f32| {
         r.export_rgba(
             renderer::ExportSource::chart(&renderer::Chart::new(config.clone()), &[]),
@@ -860,7 +860,7 @@ fn a_scaled_subplots_decorations_are_hit_and_dragged_where_they_are_drawn() {
         cell.left_y.label_style.font_size,
         before.left_y.label_style.font_size
     );
-    assert_eq!(dragged.subplot_text_scale(0), scale);
+    assert_eq!(dragged.subplot_text_factor(0), scale);
     let moved = export(&mut r, &dragged, 1.0);
     assert!(moved.rgba != export(&mut r, &doc, 1.0).rgba);
 
@@ -883,7 +883,7 @@ fn a_scaled_subplots_decorations_are_hit_and_dragged_where_they_are_drawn() {
     r.set_chart_config(id, resized.clone()).expect("apply");
     assert_ne!(r.chart_render_stamp(id).expect("stamp"), stamp);
     let stored = r.chart_config(id).unwrap();
-    assert!((stored.subplot_text_scale(0) - 0.75f32.cbrt()).abs() < 1e-6);
+    assert!((stored.subplot_text_factor(0) - 0.75f32.cbrt()).abs() < 1e-6);
     assert_eq!(
         stored.subplots[0].config.chart_title.text,
         doc.subplots[0].config.chart_title.text

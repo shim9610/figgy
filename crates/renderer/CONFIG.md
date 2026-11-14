@@ -574,7 +574,7 @@ document so its coordinates stay non-negative. See the interaction guide's
 | `link_x` | `Option<CellRef>` | `None` (default, omitted): the X axis is the subplot's own. `Some(CellRef::Parent)` or `Some(CellRef::Subplot(j))` with `j` below this subplot's index: `bottom_x` follows the target's `bottom_x` range, scale, direction and tick spacing (`major_spacing`, `minor_count`, `log_ticks`, and the `unit` the spacing is read in). Line, label and title style stay the subplot's own. |
 | `link_y` | `Option<CellRef>` | The same for `left_y`. |
 | `marker` | `Option<InsetMarker>` | What this subplot magnifies, marked on the parent ([#205](https://github.com/shim9610/figgy/issues/205)). `window: Option<[[f64; 2]; 2]>` is `[[x0, x1], [y0, y1]]` in the parent's data coordinates; `None` (default, omitted) derives it from the inset (`Config::inset_window`): its `left_y` range, and on a categorical `bottom_x` the parent slots of the categories the inset names by id, cut to the inset's own window, else the inset's `bottom_x` range. `line` (an `AnnotationLineStyle`, default a thin grey line) draws the window's border and the `connectors` (default `true`) from the window's facing corners to the inset's plot. The marker is placed on every draw (`Config::emit_inset_markers`, on the parent's annotation layer under the insets, the window clipped to the parent's plot; a window finer than the parent can show is drawn ten line widths across), so raster, SVG and PDF follow a moved, resized or zoomed inset and a parent view change. Not selectable: the inset itself is. `None` (default, omitted from JSON) marks nothing |
-| `text_scale` | `SubplotTextScale` | How the subplot's text follows its cell ([#292](https://github.com/shim9610/figgy/issues/292)). `Auto` (default, omitted from JSON): the subplot's text is drawn at its stored sizes times `Config::subplot_text_scale(i)`, see "Text scale" below. `Fixed`: at the stored sizes. |
+| `text_scale` | `SubplotTextScale` | How the subplot's text follows its cell ([#292](https://github.com/shim9610/figgy/issues/292)). `Auto` (default, omitted from JSON): the subplot's text is drawn at its stored sizes times `Config::subplot_text_factor(i)`, see "Text scale" below. `Fixed`: at the stored sizes. |
 
 A link group has one value: `Config::subplot_config(i)` resolves subplot `i`
 with its linked axes copied from the root of their chain, and
@@ -595,7 +595,7 @@ Auto` the subplot draws them times one factor chosen from its cell: `r` is
 the smaller of cell width / parent chart width and cell height / parent
 chart height (the two `chart_area`s), and the factor is the cube root of `r`
 held to `0.5..=1` (`expand::subplot_text_factor(r)`;
-`Config::subplot_text_scale(i)` gives a subplot's). A cell as large as the
+`Config::subplot_text_factor(i)` gives a subplot's). A cell as large as the
 parent chart or larger draws as stored, a cell half its size at 0.79, a
 quarter at 0.63 and an eighth or smaller at 0.5. The factor covers the
 subplot's chart title, axis titles, tick labels, legend text and symbols,
@@ -1797,7 +1797,7 @@ pub struct Config {
 | `link_x` | `Option<CellRef>` | `None`(기본값, 생략)이면 X 축은 서브플롯 자신의 것이다. `Some(CellRef::Parent)` 또는 이 서브플롯보다 작은 `j`의 `Some(CellRef::Subplot(j))`이면 `bottom_x`의 범위·스케일·방향·눈금 간격(`major_spacing`, `minor_count`, `log_ticks`, 그 간격을 읽는 단위 `unit`)이 대상의 `bottom_x`를 따른다. 축선·라벨·제목 스타일은 서브플롯 자신의 것이다. |
 | `link_y` | `Option<CellRef>` | `left_y`에 대해 같은 규칙. |
 | `marker` | `Option<InsetMarker>` | 이 서브플롯이 확대해 보여 주는 곳을 부모에 표시한다([#205](https://github.com/shim9610/figgy/issues/205)). `window: Option<[[f64; 2]; 2]>`는 부모 데이터 좌표의 `[[x0, x1], [y0, y1]]`이며, `None`(기본값, 생략)이면 인셋에서 유도한다(`Config::inset_window`): y는 인셋의 `left_y` 범위이고, x는 범주형 `bottom_x`이면 인셋이 id로 가리키는 범주들의 부모 칸(인셋 자신의 창으로 잘라서), 아니면 인셋의 `bottom_x` 범위다. `line`(`AnnotationLineStyle`, 기본값은 가는 회색 선)은 창의 테두리와 연결선을 그리고, `connectors`(기본값 `true`)는 창의 마주보는 모서리에서 인셋의 플롯으로 가는 연결선을 그릴지 정한다. 마커는 그릴 때마다 다시 놓이므로(`Config::emit_inset_markers`, 부모의 주석 레이어에 인셋 아래로, 창은 부모의 플롯에 맞춰 잘라서. 부모가 보여 줄 수 있는 것보다 가는 창은 선 두께의 열 배로 그린다) 래스터·SVG·PDF가 옮기거나 크기를 바꾸거나 확대한 인셋과 부모의 뷰 변화를 따른다. 선택할 수는 없다. 인셋 자체를 선택한다. `None`(기본값, JSON에서 생략)이면 아무것도 표시하지 않는다 |
-| `text_scale` | `SubplotTextScale` | 서브플롯의 글자가 셀 크기를 따르는 방식([#292](https://github.com/shim9610/figgy/issues/292)). `Auto`(기본값, JSON에서 생략)이면 서브플롯의 글자를 저장된 크기에 `Config::subplot_text_scale(i)`를 곱한 크기로 그린다(아래 "글자 배율" 참고). `Fixed`이면 저장된 크기 그대로 그린다. |
+| `text_scale` | `SubplotTextScale` | 서브플롯의 글자가 셀 크기를 따르는 방식([#292](https://github.com/shim9610/figgy/issues/292)). `Auto`(기본값, JSON에서 생략)이면 서브플롯의 글자를 저장된 크기에 `Config::subplot_text_factor(i)`를 곱한 크기로 그린다(아래 "글자 배율" 참고). `Fixed`이면 저장된 크기 그대로 그린다. |
 
 링크 묶음에는 값이 하나뿐이다. `Config::subplot_config(i)`는 링크된 축을 체인의 뿌리에서 복사해
 서브플롯 `i`를 해석하고, `Config::sync_subplot_links(previous)`는 링크된 필드를 뿌리와 같게
@@ -1813,7 +1813,7 @@ pub struct Config {
 픽셀로 저장된다. `text_scale`이 `Auto`이면 서브플롯은 그 크기에 셀 크기로 정한 배율 하나를 곱해
 그린다. `r`은 셀 너비 / 부모 차트 너비와 셀 높이 / 부모 차트 높이(두 `chart_area`) 가운데 작은
 값이고, 배율은 `r`의 세제곱근을 `0.5..=1`로 제한한 값이다(`expand::subplot_text_factor(r)`. 서브플롯의
-배율은 `Config::subplot_text_scale(i)`가 돌려준다). 셀이 부모 차트와 같거나 더 크면 저장된 크기
+배율은 `Config::subplot_text_factor(i)`가 돌려준다). 셀이 부모 차트와 같거나 더 크면 저장된 크기
 그대로, 절반이면 0.79배, 4분의 1이면 0.63배, 8분의 1 이하이면 0.5배로 그린다. 배율은 서브플롯의
 차트 제목, 축 제목, 눈금 라벨, 범례의 글자와 기호, 색상 막대의 라벨과 제목, 범주 라벨과 묶음 머리글,
 값 라벨, 그리고 서브플롯 오버레이 레이어의 같은 글자에 적용된다. 띠와 오프셋(`out_margin`,

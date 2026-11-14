@@ -62,18 +62,6 @@ impl JsErrorSource for wgpu::CreateSurfaceError {}
 
 impl JsErrorSource for renderer::theme::ThemeError {}
 
-/// The radial theme `name` (#291): a family's radial member (#295) or a
-/// theme of the radial catalogue, or an error naming the radial themes.
-pub(crate) fn radial_theme_named(name: &str) -> Result<renderer::theme::RadialTheme, JsValue> {
-    use renderer::theme::RadialTheme;
-    RadialTheme::named(name).ok_or_else(|| {
-        js_err(format!(
-            "no radial theme {name:?}: use {}",
-            RadialTheme::names().join(", ")
-        ))
-    })
-}
-
 pub(crate) fn js_err(e: impl JsErrorSource) -> JsValue {
     let message = e.to_string();
     let Some(kind) = e.rule() else {

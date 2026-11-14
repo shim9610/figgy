@@ -856,8 +856,9 @@ impl FiggyChart {
 
     /// How subplot `index`'s text follows its cell (#292): `"Auto"` (the
     /// default) draws its titles, tick labels, legend and colourbar text at
-    /// the stored sizes times `subplot_text_scale(index)`; `"Fixed"` draws
-    /// the stored sizes. The stored sizes are never changed.
+    /// the stored sizes times `subplot_text_factor(index)`; `"Fixed"` draws
+    /// the stored sizes. The stored sizes are never changed;
+    /// [`Self::subplot_text_scale`] reads the mode back.
     /// JS: `chart.set_subplot_text_scale(0, "Fixed");`
     pub fn set_subplot_text_scale(&mut self, index: usize, mode: &str) -> Result<(), JsValue> {
         let text_scale = match mode {
@@ -878,16 +879,32 @@ impl FiggyChart {
         self.replace_chart_config(config)
     }
 
-    /// The factor subplot `index` draws its text with now (#292): 1 for a
-    /// `"Fixed"` subplot or a cell as large as the parent chart, down to 0.5
-    /// for a small cell. It follows `set_subplot_area`, a frame drag and a
-    /// resize of the parent chart.
-    pub fn subplot_text_scale(&self, index: usize) -> Result<f32, JsValue> {
+    /// Subplot `index`'s text mode (#292, #295), as its setter
+    /// [`Self::set_subplot_text_scale`] takes it: `"Auto"` or `"Fixed"`.
+    pub fn subplot_text_scale(&self, index: usize) -> Result<String, JsValue> {
+        let subplot = self
+            .chart_config()?
+            .subplots
+            .get(index)
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+        Ok(match subplot.text_scale {
+            renderer::SubplotTextScale::Auto => "Auto",
+            renderer::SubplotTextScale::Fixed => "Fixed",
+        }
+        .to_owned())
+    }
+
+    /// The factor subplot `index` draws its text with now (#292,
+    /// `Config::subplot_text_factor`): 1 for a `"Fixed"` subplot or a cell
+    /// as large as the parent chart, down to 0.5 for a small cell. It
+    /// follows `set_subplot_area`, a frame drag and a resize of the parent
+    /// chart.
+    pub fn subplot_text_factor(&self, index: usize) -> Result<f32, JsValue> {
         let config = self.chart_config()?;
         if index >= config.subplots.len() {
             return Err(js_err(format!("no subplot {index}")));
         }
-        Ok(config.subplot_text_scale(index))
+        Ok(config.subplot_text_factor(index))
     }
 
     /// The subplots that are insets now (nested in another panel's plot),

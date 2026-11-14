@@ -282,6 +282,7 @@ fn a_theme_refuses_a_chart_of_another_kind() {
     assert_eq!(
         theme.apply(&mut config, &mut series, SubplotScope::None),
         Err(ThemeError::Kind {
+            name: None,
             theme: ChartKind::Scatter,
             chart: ChartKind::Line,
             layer: LayerRef::Base,
@@ -307,6 +308,7 @@ fn a_theme_refuses_a_chart_of_another_kind() {
     assert_eq!(
         line.apply(&mut config, &mut series, SubplotScope::All),
         Err(ThemeError::Kind {
+            name: None,
             theme: ChartKind::Line,
             chart: ChartKind::Stem,
             layer: LayerRef::Subplot(0),
@@ -2097,6 +2099,7 @@ fn a_kind_s_own_name_refuses_other_kinds() {
             |_, _| true
         ),
         Err(ThemeError::Kind {
+            name: Some("editorial".into()),
             theme: ChartKind::Line,
             chart: ChartKind::Scatter,
             layer: LayerRef::Subplot(0),
@@ -2320,5 +2323,81 @@ fn a_family_themed_document_round_trips_through_json() {
         let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, series, "{family}");
         assert_eq!(serde_json::to_string(&back).unwrap(), json, "{family}");
+    }
+}
+
+// The theme a name resolves to on one chart is the one `apply_named`
+// writes there: a value to edit, refused as the name is (#295).
+#[test]
+fn a_name_resolves_to_its_chart_s_theme() {
+    let (config, series) = dashboard();
+    let at = |layer| Theme::for_chart("midnight", &config, &series, layer);
+    assert_eq!(
+        at(LayerRef::Base),
+        Ok(ThemeFamily::Midnight.theme(ChartKind::Line))
+    );
+    assert_eq!(
+        at(LayerRef::Subplot(1)),
+        Ok(ThemeFamily::Midnight.theme(ChartKind::Field))
+    );
+    // The empty subplot takes the line member.
+    assert_eq!(
+        at(LayerRef::Subplot(3)),
+        Ok(ThemeFamily::Midnight.theme(ChartKind::Line))
+    );
+    let refused = Theme::for_chart("editorial", &config, &series, LayerRef::Subplot(0));
+    assert_eq!(
+        refused,
+        Err(ThemeError::Kind {
+            name: Some("editorial".into()),
+            theme: ChartKind::Line,
+            chart: ChartKind::Scatter,
+            layer: LayerRef::Subplot(0),
+        })
+    );
+    let message = refused.unwrap_err().to_string();
+    assert!(message.contains("\"editorial\""), "{message}");
+    assert!(matches!(
+        Theme::for_chart("neon", &config, &series, LayerRef::Base),
+        Err(ThemeError::Unknown { .. })
+    ));
+    // A theme applied as a value names no theme.
+    let error = named(ChartKind::Scatter, "default")
+        .apply(&mut config.clone(), &mut series.clone(), SubplotScope::None)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "a scatter theme does not apply to a line chart (Base)"
+    );
+}
+
+// A radial chart takes a theme by name: a family's radial member or a
+// radial catalogue theme; an unknown name lists the radial names and
+// changes nothing (#295).
+#[test]
+fn a_radial_chart_takes_a_theme_by_name() {
+    let mut chart = crate::defaults::radial_chart();
+    chart.slices = vec![
+        crate::radial::RadialSlice::new("A", 1.0, Color::BLACK),
+        crate::radial::RadialSlice::new("B", 2.0, Color::BLACK),
+    ];
+    let before = chart.clone();
+    let error = chart.apply_theme("neon").unwrap_err();
+    assert_eq!(
+        error,
+        ThemeError::Unknown {
+            name: "neon".into(),
+            kind: None,
+            names: RadialTheme::names(),
+        }
+    );
+    assert!(error.to_string().contains("ceramic"), "{error}");
+    assert_eq!(chart, before);
+    for name in RadialTheme::names() {
+        let mut themed = before.clone();
+        themed.apply_theme(name).unwrap();
+        let mut expected = before.clone();
+        RadialTheme::named(name).unwrap().apply(&mut expected);
+        assert_eq!(themed, expected, "{name}");
     }
 }

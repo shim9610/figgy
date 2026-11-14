@@ -1640,7 +1640,7 @@ pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
     for (index, subplot) in out.subplots.iter_mut().enumerate() {
         subplot
             .config
-            .scale_text_sizes(None, cfg.subplot_text_scale(index));
+            .scale_text_sizes(None, cfg.subplot_text_factor(index));
         subplot.text_scale = crate::layer::SubplotTextScale::Fixed;
     }
     lay_out_chart(&mut out, measure);
@@ -4075,7 +4075,7 @@ mod tests {
         assert!(outer >= padding - 1.0, "{outer}");
         // The subplot is fitted at the text sizes its cell draws (#292).
         let chart = out.subplot_config(0).unwrap();
-        let scale = out.subplot_text_scale(0);
+        let scale = out.subplot_text_factor(0);
         assert!(scale < 1.0, "{scale}");
         let gap = title_gap(chart.left_y.label_style.font_size);
         assert!((gap - GAP * scale).abs() < 1e-3, "{gap}");
@@ -4127,7 +4127,7 @@ mod tests {
 
         for export in [1.0, 2.0] {
             let (cfg, fixed) = (cfg.scaled(export), fixed.scaled(export));
-            let scale = cfg.subplot_text_scale(0);
+            let scale = cfg.subplot_text_factor(0);
             assert!((scale - 0.5f32.cbrt()).abs() < 1e-6);
             let out = auto_layout(&cfg, &measure);
             let plain = auto_layout(&fixed, &measure);
@@ -4265,8 +4265,8 @@ mod tests {
         alone.extend(
             (0..doc.subplots.len()).map(|i| auto_layout(&doc.subplot_config(i).unwrap(), &measure)),
         );
-        assert_eq!(doc.subplot_text_scale(2), 1.0);
-        assert!(doc.subplot_text_scale(3) < 1.0);
+        assert_eq!(doc.subplot_text_factor(2), 1.0);
+        assert!(doc.subplot_text_factor(3) < 1.0);
         let fitted: Vec<Rect> = alone.iter().map(|c| c.data_area().unwrap().0).collect();
         assert_ne!(
             fitted[0].x, fitted[2].x,

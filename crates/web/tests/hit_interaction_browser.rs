@@ -562,13 +562,14 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
             .text
             .font_size
     };
-    let small = chart.subplot_text_scale(0).unwrap();
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), "Auto");
+    let small = chart.subplot_text_factor(0).unwrap();
     assert!((small - (300.0f32 / 960.0).cbrt()).abs() < 1e-6, "{small}");
     assert_eq!(drawn_size(&chart), stored_size * small);
     chart
         .set_subplot_area(0, 1000, 40, 600, 440)
         .expect("a larger frame");
-    let large = chart.subplot_text_scale(0).unwrap();
+    let large = chart.subplot_text_factor(0).unwrap();
     assert!((large - (600.0f32 / 960.0).cbrt()).abs() < 1e-6, "{large}");
     assert_eq!(drawn_size(&chart), stored_size * large);
     chart
@@ -578,15 +579,18 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     chart
         .set_subplot_text_scale(0, "Fixed")
         .expect("draw the stored sizes");
-    assert_eq!(chart.subplot_text_scale(0).unwrap(), 1.0);
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), "Fixed");
+    assert_eq!(chart.subplot_text_factor(0).unwrap(), 1.0);
     assert_eq!(drawn_size(&chart), stored_size);
     assert!(chart.set_subplot_text_scale(0, "Half").is_err());
     assert!(chart.set_subplot_text_scale(3, "Auto").is_err());
     assert!(chart.subplot_text_scale(3).is_err());
+    assert!(chart.subplot_text_factor(3).is_err());
     chart
         .set_subplot_text_scale(0, "Auto")
         .expect("follow the cell again");
-    assert_eq!(chart.subplot_text_scale(0).unwrap(), large);
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), "Auto");
+    assert_eq!(chart.subplot_text_factor(0).unwrap(), large);
     assert_eq!(
         chart_config(&chart).subplots[0]
             .config

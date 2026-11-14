@@ -1365,7 +1365,7 @@ fn a_scaled_subplot_exports_the_text_sizes_it_draws() {
     let gpu = gpu();
     let mut r = renderer(&gpu);
     let auto = small_cell_document();
-    let scale = auto.subplot_text_scale(0);
+    let scale = auto.subplot_text_factor(0);
     assert!((scale - 0.5f32.cbrt()).abs() < 1e-6, "{scale}");
     let fixed = |written: Config| {
         let mut document = auto.clone();
