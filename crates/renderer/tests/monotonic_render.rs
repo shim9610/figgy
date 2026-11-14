@@ -2109,6 +2109,7 @@ fn overlays_and_subplots_draw_their_envelopes() {
             link_x: None,
             link_y: None,
             marker: None,
+            text_scale: Default::default(),
         }];
         parent
     };

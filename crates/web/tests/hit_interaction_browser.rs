@@ -545,6 +545,59 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         r#"{"x":1000,"y":40,"width":300,"height":220}"#
     );
     assert_eq!(chart.insets().unwrap(), "[]");
+    // The subplot's text follows its cell (#292): the factor is the cube
+    // root of the cell's smaller share of the 960x640 parent chart, the
+    // resolved chart draws the stored sizes times it and the stored sizes
+    // stay through a resize, a re-fit and both modes.
+    let stored_size = chart_config(&chart).subplots[0]
+        .config
+        .chart_title
+        .text
+        .font_size;
+    let drawn_size = |chart: &FiggyChart| {
+        chart_config(chart)
+            .subplot_config(0)
+            .unwrap()
+            .chart_title
+            .text
+            .font_size
+    };
+    let small = chart.subplot_text_scale(0).unwrap();
+    assert!((small - (300.0f32 / 960.0).cbrt()).abs() < 1e-6, "{small}");
+    assert_eq!(drawn_size(&chart), stored_size * small);
+    chart
+        .set_subplot_area(0, 1000, 40, 600, 440)
+        .expect("a larger frame");
+    let large = chart.subplot_text_scale(0).unwrap();
+    assert!((large - (600.0f32 / 960.0).cbrt()).abs() < 1e-6, "{large}");
+    assert_eq!(drawn_size(&chart), stored_size * large);
+    chart
+        .fit_layout(js_sys::Array::new())
+        .expect("fit the resized cell");
+    assert_eq!(drawn_size(&chart), stored_size * large);
+    chart
+        .set_subplot_text_scale(0, "Fixed")
+        .expect("draw the stored sizes");
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), 1.0);
+    assert_eq!(drawn_size(&chart), stored_size);
+    assert!(chart.set_subplot_text_scale(0, "Half").is_err());
+    assert!(chart.set_subplot_text_scale(3, "Auto").is_err());
+    assert!(chart.subplot_text_scale(3).is_err());
+    chart
+        .set_subplot_text_scale(0, "Auto")
+        .expect("follow the cell again");
+    assert_eq!(chart.subplot_text_scale(0).unwrap(), large);
+    assert_eq!(
+        chart_config(&chart).subplots[0]
+            .config
+            .chart_title
+            .text
+            .font_size,
+        stored_size
+    );
+    chart
+        .set_subplot_area(0, 1000, 40, 300, 220)
+        .expect("the small frame again");
     // A frame too small for its plot is refused and nothing changes.
     assert!(chart.set_subplot_area(0, 0, 0, 4, 4).is_err());
     assert_eq!(

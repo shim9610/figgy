@@ -542,7 +542,10 @@ constructors too, and `Chart` takes them in a chain:
   offset` ([#273](https://github.com/shim9610/figgy/issues/273)); see
   [Axis units](#axis-units).
 - `Subplot::new(config, &series_ids)`, then `with_link_x(cell)` and
-  `with_link_y(cell)`.
+  `with_link_y(cell)`. A subplot's text is drawn smaller in a cell smaller
+  than the parent chart (([#292](https://github.com/shim9610/figgy/issues/292)), see
+  [`Subplot`](CONFIG.md#subplot-configsubplots));
+  `with_text_scale(SubplotTextScale::Fixed)` keeps the stored sizes.
 - `Chart::with_annotation`, `with_label_format` (both main axes),
   `with_x_unit` and `with_y_unit` (the bottom and left axes' units, see
   [Axis units](#axis-units)), `without_grid`, `with_colorbar_title`,
@@ -1584,6 +1587,9 @@ let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb
 - `AxisOptions::unit(scale, offset)`: 축이 `scale * value + offset`을 찍는다
   ([#273](https://github.com/shim9610/figgy/issues/273)). 아래 [축 단위](#축-단위)를 참고한다.
 - `Subplot::new(config, &series_ids)`. 축을 이으려면 `with_link_x(cell)`, `with_link_y(cell)`를 붙인다.
+  셀이 부모 차트보다 작으면 서브플롯의 글자를 더 작게 그린다(([#292](https://github.com/shim9610/figgy/issues/292)),
+  [`Subplot`](CONFIG.md#subplot-configsubplots) 참고). 저장된 크기 그대로 그리려면
+  `with_text_scale(SubplotTextScale::Fixed)`를 붙인다.
 - `Chart::with_annotation`, `with_label_format`(두 주 축), `with_x_unit`과 `with_y_unit`(아래쪽·왼쪽
   축의 단위, [축 단위](#축-단위) 참고), `without_grid`, `with_colorbar_title`, `with_polar`,
   `with_subplot`.

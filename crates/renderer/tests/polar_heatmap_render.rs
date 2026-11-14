@@ -1232,6 +1232,7 @@ fn a_polar_heatmap_subplot_draws_its_cells() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let doc = Chart::new(parent);
     let series = [field(&ids, GridLayout::Edges, Shading::Flat, None, true)];

@@ -1075,6 +1075,7 @@ fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let pair = |a: [f64; 2], b: [f64; 2]| FeynmanSeries {
         vertices: vec![

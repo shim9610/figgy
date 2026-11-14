@@ -101,6 +101,7 @@ fn document() -> Config {
             link_x: None,
             link_y: None,
             marker: None,
+            text_scale: Default::default(),
         },
         Subplot {
             config: second,
@@ -108,6 +109,7 @@ fn document() -> Config {
             link_x: Some(CellRef::Parent),
             link_y: Some(CellRef::Subplot(0)),
             marker: None,
+            text_scale: Default::default(),
         },
     ];
     c.sync_subplot_links(None);

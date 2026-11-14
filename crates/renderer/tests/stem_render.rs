@@ -646,6 +646,7 @@ fn stems_draw_on_overlays_subplots_and_broken_axes() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let img = export_document(&mut r, &doc, &series);
     save("subplot_stems", &img);

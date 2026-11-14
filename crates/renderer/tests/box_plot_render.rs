@@ -950,6 +950,7 @@ fn overlays_and_subplots_draw_their_own_box_groups() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let mut below = boxes("below", GREEN);
     below.y_column = "one.record".into();

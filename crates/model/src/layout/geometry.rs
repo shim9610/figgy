@@ -1634,6 +1634,15 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 /// collide with each other along an axis or at a corner.
 pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
     let mut out = cfg.clone();
+    // Every pass below reads a subplot's text at the sizes it is drawn
+    // with (#292): they are written into the working copy, which then
+    // draws them as they are, and the stored sizes are put back at the end.
+    for (index, subplot) in out.subplots.iter_mut().enumerate() {
+        subplot
+            .config
+            .scale_text_sizes(None, cfg.subplot_text_scale(index));
+        subplot.text_scale = crate::layer::SubplotTextScale::Fixed;
+    }
     lay_out_chart(&mut out, measure);
     for index in 0..out.subplots.len() {
         let Some(mut chart) = out.subplot_config(index) else {
@@ -1643,6 +1652,10 @@ pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
         adopt_chart_layout(&mut out.subplots[index].config, &chart);
     }
     align_cells(&mut out, measure);
+    for (subplot, stored) in out.subplots.iter_mut().zip(&cfg.subplots) {
+        subplot.config.scale_text_sizes(Some(&stored.config), 1.0);
+        subplot.text_scale = stored.text_scale;
+    }
     out
 }
 
@@ -4060,14 +4073,108 @@ mod tests {
         assert!(title_clearance(&panel, Side::Right, &measure) >= gap - 1e-3);
         let outer = title_outer_gap(&panel, Side::Right, &measure);
         assert!(outer >= padding - 1.0, "{outer}");
+        // The subplot is fitted at the text sizes its cell draws (#292).
         let chart = out.subplot_config(0).unwrap();
-        assert!(title_clearance(&chart, Side::Left, &measure) >= GAP - 1e-3);
+        let scale = out.subplot_text_scale(0);
+        assert!(scale < 1.0, "{scale}");
+        let gap = title_gap(chart.left_y.label_style.font_size);
+        assert!((gap - GAP * scale).abs() < 1e-3, "{gap}");
+        assert!(title_clearance(&chart, Side::Left, &measure) >= gap - 1e-3);
         assert_padded(&chart, &measure);
         assert_eq!(
             out.subplots[0].config.chart_area,
             cfg.subplots[0].config.chart_area
         );
         assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    /// A measure in ems: every glyph half its text's size wide, 0.8 up
+    /// and 0.2 down.
+    struct Ems;
+    impl MeasureText for Ems {
+        fn measure_rich(&self, rt: &crate::text::RichText) -> TextExtents {
+            TextExtents {
+                width: rt.segments.len() as f32 * rt.font_size * 0.5,
+                ascent: rt.font_size * 0.8,
+                descent: rt.font_size * 0.2,
+            }
+        }
+    }
+
+    // A small cell's bands are fitted to the text it draws (#292): narrower
+    // than the same cell's with `Fixed` sizes, each title the scaled gap
+    // past its labels and inside the cell, the stored text sizes untouched
+    // and a second call changing nothing. The same at an export scale.
+    #[test]
+    fn auto_layout_fits_a_small_cell_to_its_scaled_text() {
+        let measure = Ems;
+        let mut cfg = with_titles("Optical depth");
+        cfg.chart_title.text.segments = crate::text::rich_segments_from_text("Parent");
+        let mut sub = crate::defaults::subplot();
+        sub.config = with_titles("Optical depth");
+        sub.config.chart_title.text.segments = crate::text::rich_segments_from_text("Cell");
+        long_labels(&mut sub.config.left_y);
+        let parent = cfg.chart_area.0;
+        sub.config.chart_area = ChartArea(Rect {
+            x: parent.x + parent.width,
+            y: parent.y,
+            width: parent.width / 2,
+            height: parent.height / 2,
+        });
+        cfg.subplots.push(sub);
+        let mut fixed = cfg.clone();
+        fixed.subplots[0].text_scale = crate::layer::SubplotTextScale::Fixed;
+
+        for export in [1.0, 2.0] {
+            let (cfg, fixed) = (cfg.scaled(export), fixed.scaled(export));
+            let scale = cfg.subplot_text_scale(0);
+            assert!((scale - 0.5f32.cbrt()).abs() < 1e-6);
+            let out = auto_layout(&cfg, &measure);
+            let plain = auto_layout(&fixed, &measure);
+            let (cell, wide) = (&out.subplots[0].config, &plain.subplots[0].config);
+            for (side, band, fixed_band) in [
+                ("left", cell.left_y.out_margin, wide.left_y.out_margin),
+                ("bottom", cell.bottom_x.out_margin, wide.bottom_x.out_margin),
+                (
+                    "title",
+                    cell.chart_title.top_margin,
+                    wide.chart_title.top_margin,
+                ),
+            ] {
+                assert!(
+                    band > 0.0 && band < fixed_band,
+                    "{side}: {band} {fixed_band}"
+                );
+            }
+            // The left band holds the scaled labels, gap, title and padding.
+            let chart = out.subplot_config(0).unwrap();
+            let axis = &chart.left_y;
+            let stored = &cfg.subplots[0].config.left_y;
+            assert_eq!(
+                axis.label_style.font_size,
+                stored.label_style.font_size * scale
+            );
+            let gap = title_gap(axis.label_style.font_size);
+            for side in [Side::Left, Side::Bottom] {
+                let clearance = title_clearance(&chart, side.clone(), &measure);
+                assert!(clearance >= gap - 1e-3, "{side:?}: {clearance}");
+                assert!(clearance < gap + 1.0 * export, "{side:?}: {clearance}");
+            }
+            assert_padded(&chart, &measure);
+            // Nothing but the layout fields changed in the document.
+            assert_eq!(
+                cell.chart_title.text,
+                cfg.subplots[0].config.chart_title.text
+            );
+            assert_eq!(
+                cell.left_y.label_style.font_size,
+                stored.label_style.font_size
+            );
+            assert_eq!(cell.left_y.title_option.text, stored.title_option.text);
+            assert_eq!(out.subplots[0].text_scale, cfg.subplots[0].text_scale);
+            assert_eq!(plain.subplots[0].text_scale, fixed.subplots[0].text_scale);
+            assert_eq!(auto_layout(&out, &measure), out, "idempotent");
+        }
     }
 
     /// An overlay with an X axis of its own gets its top band fitted like
@@ -4152,13 +4259,14 @@ mod tests {
             doc.subplots.push(sub);
         }
 
-        // Each cell fitted alone, as before the alignment.
+        // Each cell fitted alone, as before the alignment, at the text
+        // sizes it draws (#292: the lone cell is lower than the parent).
         let mut alone = vec![auto_layout(&doc_without_subplots(&doc), &measure)];
         alone.extend(
-            doc.subplots
-                .iter()
-                .map(|s| auto_layout(&s.config, &measure)),
+            (0..doc.subplots.len()).map(|i| auto_layout(&doc.subplot_config(i).unwrap(), &measure)),
         );
+        assert_eq!(doc.subplot_text_scale(2), 1.0);
+        assert!(doc.subplot_text_scale(3) < 1.0);
         let fitted: Vec<Rect> = alone.iter().map(|c| c.data_area().unwrap().0).collect();
         assert_ne!(
             fitted[0].x, fitted[2].x,
@@ -4201,7 +4309,16 @@ mod tests {
         );
         // The lone cell keeps its own fit.
         assert_eq!(plot[4], fitted[4]);
-        assert_eq!(out.subplots[3].config, alone[4]);
+        assert_eq!(out.subplot_config(3).unwrap(), alone[4]);
+        // Its stored text sizes are the ones it was written with.
+        assert_eq!(
+            out.subplots[3].config.chart_title.text,
+            doc.subplots[3].config.chart_title.text
+        );
+        assert_eq!(
+            out.subplots[3].config.left_y.label_style.font_size,
+            doc.subplots[3].config.left_y.label_style.font_size
+        );
         // The parent's left band, widened to the lower-left cell's, keeps
         // its title the gap past its labels; the overlay's title clears its
         // labels in the right band of its group.

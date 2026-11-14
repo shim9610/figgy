@@ -260,6 +260,11 @@ fn subplot_new_and_links() {
         .with_link_y(CellRef::Parent);
     assert_eq!(linked.link_x, Some(CellRef::Parent));
     assert_eq!(linked.link_y, Some(CellRef::Parent));
+    assert_eq!(linked.text_scale, crate::SubplotTextScale::Auto);
+    let fixed = linked
+        .clone()
+        .with_text_scale(crate::SubplotTextScale::Fixed);
+    assert_eq!(fixed.text_scale, crate::SubplotTextScale::Fixed);
 
     let mut config = crate::defaults::config();
     config.subplots.push(linked);

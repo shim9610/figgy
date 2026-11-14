@@ -61,7 +61,7 @@ use crate::config::{
     AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
     TickVisibility,
 };
-use crate::layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer};
+use crate::layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, SubplotTextScale};
 use crate::layout::{DataArea, LayoutError, Margins, Rect, Side};
 
 /// One internal panel of an expanded document.
@@ -424,7 +424,39 @@ impl Config {
         }
         config.active_layer = LayerRef::Base;
         config.annotations = AnnotationLayer::empty();
+        let scale = self.subplot_text_scale(index);
+        if scale != 1.0 {
+            config.scale_text_sizes(None, scale);
+        }
         Some(config)
+    }
+
+    /// The factor subplot `index` draws its text with (#292): `1.0` for
+    /// [`SubplotTextScale::Fixed`], else [`subplot_text_factor`] of the
+    /// smaller of the cell's width and height as a share of the parent
+    /// chart's (`chart_area`). `1.0` for an index out of range and while
+    /// the parent's chart area is empty.
+    ///
+    /// A display parameter chosen from the layout, like the tick plan: it
+    /// is read whenever the subplot's chart is resolved
+    /// ([`Self::subplot_config`]), so drawing, measuring, `auto_layout`,
+    /// hit regions, drags and exports use the same sizes, and it is never
+    /// stored. An export scale multiplies both chart areas, so the factor
+    /// is the same at 1x and 2x.
+    pub fn subplot_text_scale(&self, index: usize) -> f32 {
+        let Some(subplot) = self.subplots.get(index) else {
+            return 1.0;
+        };
+        if subplot.text_scale == SubplotTextScale::Fixed {
+            return 1.0;
+        }
+        let (parent, cell) = (&self.chart_area.0, &subplot.config.chart_area.0);
+        if parent.width == 0 || parent.height == 0 {
+            return 1.0;
+        }
+        let across = cell.width as f32 / parent.width as f32;
+        let down = cell.height as f32 / parent.height as f32;
+        subplot_text_factor(across.min(down))
     }
 
     /// The rectangle the whole document covers: the union of the parent's
@@ -1031,6 +1063,25 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
     hidden.colormap = colormap.clone();
     hidden.nan_color = *nan_color;
     hidden
+}
+
+/// The smallest factor a subplot's text is drawn with
+/// ([`subplot_text_factor`]).
+pub const SUBPLOT_TEXT_SCALE_MIN: f32 = 0.5;
+
+/// The text factor of a cell whose smaller side is the share `r` of the
+/// parent chart's (#292): the cube root of `r`, held to
+/// [`SUBPLOT_TEXT_SCALE_MIN`]`..=1`.
+///
+/// Text shrinks more slowly than its cell: a cell half the parent's size
+/// draws its text at 0.79, a quarter at 0.63, and an eighth or less at 0.5.
+/// A cell as large as the parent or larger draws at `1.0`, as does an `r`
+/// that is not a number.
+pub fn subplot_text_factor(r: f32) -> f32 {
+    if r.is_nan() {
+        return 1.0;
+    }
+    r.cbrt().clamp(SUBPLOT_TEXT_SCALE_MIN, 1.0)
 }
 
 /// The linked part of an axis: range, scale, direction and tick spacing
@@ -1847,6 +1898,269 @@ mod tests {
         cfg.subplots = vec![first, second];
         cfg.sync_subplot_links(None);
         cfg
+    }
+
+    /// Every text size [`Config::scale_text_sizes`] scales, in one fixed
+    /// order: the chart title's, each axis' tick labels, title, rich
+    /// category labels and group headers, and each legend's.
+    fn text_sizes(chart: &Config) -> Vec<f32> {
+        fn rich(text: &crate::text::RichText, out: &mut Vec<f32>) {
+            out.push(text.font_size);
+            out.extend(text.segments.iter().filter_map(|s| s.font_size));
+        }
+        fn axis(axis: &AxisOptions, out: &mut Vec<f32>) {
+            out.push(axis.label_style.font_size);
+            rich(&axis.title_option.text, out);
+            for category in axis.categories.iter().flatten() {
+                if let Some(label) = &category.rich_label {
+                    rich(label, out);
+                }
+            }
+            for group in axis.category_groups.iter().flat_map(|g| &g.groups) {
+                rich(&group.label, out);
+            }
+        }
+        let mut out = Vec::new();
+        rich(&chart.chart_title.text, &mut out);
+        for a in [&chart.top_x, &chart.bottom_x, &chart.left_y, &chart.right_y] {
+            axis(a, &mut out);
+        }
+        rich(&chart.legend.content, &mut out);
+        for overlay in &chart.overlays {
+            axis(&overlay.y_axis, &mut out);
+            axis(&overlay.x_axis, &mut out);
+            if let Some(legend) = &overlay.legend {
+                rich(&legend.content, &mut out);
+            }
+        }
+        if let Some(bar) = &chart.colorbar {
+            axis(&bar.axis, &mut out);
+        }
+        out
+    }
+
+    /// An 800x600 parent and one subplot `width` x `height`, carrying
+    /// every kind of text the factor covers: a title with a segment of its
+    /// own size, rich category labels and group headers on `bottom_x`, an
+    /// overlay with a legend of its own and a colourbar.
+    fn text_document(width: u32, height: u32) -> Config {
+        use crate::text::{RichText, rich_segments_from_text};
+        let mut cfg = crate::defaults::config();
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
+        let mut sub = crate::defaults::subplot();
+        let chart = &mut sub.config;
+        chart.chart_area = ChartArea(Rect {
+            x: 800,
+            y: 0,
+            width,
+            height,
+        });
+        chart.chart_title.text.segments = rich_segments_from_text("Title");
+        chart.chart_title.text.segments[1].font_size = Some(40.0);
+        let label = |text: &str| RichText::plain(text, crate::color::Color::BLACK, 14.0, "");
+        chart.bottom_x.categories = Some(
+            ["a", "b"]
+                .into_iter()
+                .map(|id| crate::config::Category {
+                    rich_label: Some(label(id)),
+                    ..crate::config::Category::new(id, id)
+                })
+                .collect(),
+        );
+        chart.bottom_x.category_groups = Some(crate::config::CategoryGroups {
+            groups: vec![crate::config::CategoryGroup {
+                label: label("both"),
+                first: "a".into(),
+                last: "b".into(),
+                bracket: true,
+            }],
+            offset: [0.0; 2],
+        });
+        chart.legend.visible = true;
+        chart.legend.content.segments = rich_segments_from_text("legend");
+        let mut overlay = crate::defaults::overlay_layer();
+        overlay.legend = Some(chart.legend.clone());
+        chart.overlays.push(overlay);
+        chart.colorbar = Some(crate::defaults::color_bar_options());
+        cfg.subplots.push(sub);
+        cfg
+    }
+
+    // The factor is the cube root of the cell's smaller share of the parent
+    // chart, held to 0.5..=1: a full-size cell and a larger one draw as
+    // stored, a half-size one at 0.79, a tiny one at the floor.
+    #[test]
+    fn the_subplot_text_factor_follows_the_smaller_share_of_the_parent() {
+        assert_eq!(subplot_text_factor(1.0), 1.0);
+        assert_eq!(subplot_text_factor(2.5), 1.0);
+        assert!((subplot_text_factor(0.5) - 0.5f32.cbrt()).abs() < 1e-6);
+        assert!((subplot_text_factor(0.5) - 0.7937).abs() < 1e-4);
+        assert!((subplot_text_factor(0.25) - 0.62996).abs() < 1e-4);
+        assert_eq!(subplot_text_factor(0.125), SUBPLOT_TEXT_SCALE_MIN);
+        assert_eq!(subplot_text_factor(0.01), SUBPLOT_TEXT_SCALE_MIN);
+        assert_eq!(subplot_text_factor(0.0), SUBPLOT_TEXT_SCALE_MIN);
+        assert_eq!(subplot_text_factor(-1.0), SUBPLOT_TEXT_SCALE_MIN);
+        assert_eq!(subplot_text_factor(f32::NAN), 1.0);
+        assert_eq!(subplot_text_factor(f32::INFINITY), 1.0);
+        // Never larger for a smaller cell.
+        let mut last = 0.0;
+        for step in 0..=200 {
+            let factor = subplot_text_factor(step as f32 / 100.0);
+            assert!(factor >= last && (SUBPLOT_TEXT_SCALE_MIN..=1.0).contains(&factor));
+            last = factor;
+        }
+
+        for (width, height, expected) in [
+            (800, 600, 1.0),
+            (1600, 1200, 1.0),
+            // The smaller share decides.
+            (400, 600, 0.5f32.cbrt()),
+            (800, 300, 0.5f32.cbrt()),
+            (400, 300, 0.5f32.cbrt()),
+            (200, 450, 0.25f32.cbrt()),
+            (40, 30, 0.5),
+            (1, 1, 0.5),
+        ] {
+            let cfg = text_document(width, height);
+            let scale = cfg.subplot_text_scale(0);
+            assert!((scale - expected).abs() < 1e-6, "{width}x{height}: {scale}");
+        }
+        let mut cfg = text_document(400, 300);
+        assert_eq!(cfg.subplot_text_scale(1), 1.0, "past the list");
+        cfg.chart_area.0.width = 0;
+        assert_eq!(cfg.subplot_text_scale(0), 1.0, "an empty parent");
+    }
+
+    // The resolved chart carries every text size times the factor and
+    // nothing else changed; the stored chart keeps its sizes. `Fixed` and a
+    // full-size cell resolve to the stored sizes.
+    #[test]
+    fn a_subplot_resolves_with_its_text_scaled_and_stores_it_unscaled() {
+        let cfg = text_document(400, 300);
+        let scale = cfg.subplot_text_scale(0);
+        let stored = &cfg.subplots[0].config;
+        let resolved = cfg.subplot_config(0).unwrap();
+        let (from, to) = (text_sizes(stored), text_sizes(&resolved));
+        // Title and its own-size segment, 4 axes x 2, 2 category labels, a
+        // group header, 2 legends, 2 overlay axes x 2, the colourbar's 2.
+        assert_eq!(from.len(), 2 + 8 + 3 + 1 + 4 + 1 + 2);
+        assert_eq!(from.len(), to.len());
+        for (from, to) in from.iter().zip(&to) {
+            assert!(*from > 0.0);
+            assert_eq!(*to, from * scale);
+        }
+        // Only text sizes differ: with the stored ones back, the resolved
+        // chart is the stored one.
+        let mut back = resolved.clone();
+        back.scale_text_sizes(Some(stored), 1.0);
+        assert_eq!(&back, stored);
+        // Bands, offsets and the plot are the stored chart's.
+        assert_eq!(resolved.margins(), stored.margins());
+        assert_eq!(resolved.data_area(), stored.data_area());
+
+        let mut fixed = cfg.clone();
+        fixed.subplots[0].text_scale = SubplotTextScale::Fixed;
+        assert_eq!(fixed.subplot_text_scale(0), 1.0);
+        assert_eq!(&fixed.subplot_config(0).unwrap(), stored);
+        let full = text_document(800, 600);
+        assert_eq!(full.subplot_config(0).unwrap(), full.subplots[0].config);
+
+        // The expanded panel the renderer draws is the resolved chart's.
+        let panels = cfg.expand().unwrap().panels;
+        let panel = panels
+            .iter()
+            .find(|panel| panel.layer == LayerRef::Subplot(0))
+            .unwrap();
+        assert_eq!(
+            panel.config.chart_title.text.font_size,
+            stored.chart_title.text.font_size * scale
+        );
+        assert_eq!(
+            panel.config.left_y.label_style.font_size,
+            stored.left_y.label_style.font_size * scale
+        );
+        // The parent's own text is not a subplot's: it draws as stored.
+        assert_eq!(panels[0].config.chart_title, cfg.chart_title);
+        assert_eq!(panels[0].config.left_y, cfg.left_y);
+    }
+
+    // Resizing the cell or the parent chart moves the factor with it; an
+    // export scale multiplies both areas and leaves it.
+    #[test]
+    fn the_subplot_text_scale_follows_its_cell_and_not_the_export_scale() {
+        let mut cfg = text_document(400, 300);
+        let small = cfg.subplot_text_scale(0);
+        cfg.set_subplot_area(
+            0,
+            ChartArea(Rect {
+                x: 800,
+                y: 0,
+                width: 600,
+                height: 450,
+            }),
+        )
+        .unwrap();
+        let larger = cfg.subplot_text_scale(0);
+        assert!((larger - 0.75f32.cbrt()).abs() < 1e-6 && larger > small);
+        assert_eq!(
+            cfg.subplot_config(0).unwrap().chart_title.text.font_size,
+            cfg.subplots[0].config.chart_title.text.font_size * larger
+        );
+        cfg.chart_area.0.width = 1600;
+        cfg.chart_area.0.height = 1200;
+        assert!((cfg.subplot_text_scale(0) - 0.375f32.cbrt()).abs() < 1e-6);
+        for scale in [2.0, 3.0] {
+            let scaled = cfg.scaled(scale);
+            assert_eq!(scaled.subplot_text_scale(0), cfg.subplot_text_scale(0));
+            assert_eq!(
+                scaled.subplot_config(0).unwrap().chart_title.text.font_size,
+                cfg.subplot_config(0).unwrap().chart_title.text.font_size * scale
+            );
+        }
+    }
+
+    // `text_scale` is omitted while `Auto`, so a document written before
+    // the field parses to `Auto` and re-serializes byte for byte; `Fixed`
+    // round-trips. No computed size is ever written.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_subplot_text_scale_serializes_additively() {
+        let cfg = text_document(400, 300);
+        let written = serde_json::to_string(&cfg).unwrap();
+        assert!(!written.contains("text_scale"), "{written}");
+        let older: Config = serde_json::from_str(&written).unwrap();
+        assert_eq!(older.subplots[0].text_scale, SubplotTextScale::Auto);
+        assert_eq!(older, cfg);
+        assert_eq!(serde_json::to_string(&older).unwrap(), written);
+        // The stored sizes are the document's, not the drawn ones.
+        let json: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(
+            json["subplots"][0]["config"]["chart_title"]["text"]["font_size"],
+            serde_json::json!(cfg.subplots[0].config.chart_title.text.font_size)
+        );
+
+        let mut fixed = cfg.clone();
+        fixed.subplots[0].text_scale = SubplotTextScale::Fixed;
+        let json = serde_json::to_value(&fixed).unwrap();
+        assert_eq!(
+            json["subplots"][0]["text_scale"],
+            serde_json::json!("Fixed")
+        );
+        let back: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(back, fixed);
+        assert_eq!(back.subplot_text_scale(0), 1.0);
+        let explicit = written.replacen(
+            r#""subplots":[{"#,
+            r#""subplots":[{"text_scale":"Auto","#,
+            1,
+        );
+        assert_ne!(explicit, written);
+        assert_eq!(serde_json::from_str::<Config>(&explicit).unwrap(), cfg);
     }
 
     #[test]

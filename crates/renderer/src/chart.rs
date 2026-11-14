@@ -1639,6 +1639,7 @@ mod tests {
             link_x: None,
             link_y: None,
             marker: None,
+            text_scale: Default::default(),
         });
         for config in [left, subplot] {
             validate_renderer_config(&config).expect("a probability axis draws");

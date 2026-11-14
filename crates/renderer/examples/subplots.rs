@@ -1,10 +1,13 @@
 //! Subplots: a document of several charts, each with its own axes, laid out
 //! by their chart areas.
 //! - `small_multiples` writes `gallery-subplots.png`: four sensors in a 2 x 2
-//!   grid; the three subplots link their X axis to the parent chart
-//!   (`CellRef::Parent`) and keep their own Y ranges, exported as one
-//!   document.
-//! - `mixed_axes` writes `mixed-axes.png`: a 2 x 2 grid where only the
+//!   grid. The document's own chart is the whole figure and draws only its
+//!   background; the four cells are subplots, half its width and height, so
+//!   each draws the theme's text sizes at its text scale (0.79). Subplots 1
+//!   to 3 link their X axis to subplot 0 (`CellRef::Subplot(0)`) and keep
+//!   their own Y ranges, exported as one document.
+//! - `mixed_axes` writes `mixed-axes.png`: a 2 x 2 grid of the parent and
+//!   three subplots of its size, which draw their text as stored. Only the
 //!   upper-right chart links its X axis, the lower-left one plots humidity
 //!   against temperature, and the lower-right one has its own X range and a
 //!   twin Y axis from an overlay layer inside the subplot.
@@ -20,7 +23,7 @@ use gallery::Result;
 use renderer::theme::ChartKind;
 use renderer::{
     CellRef, Chart, Color, Config, ExportOptions, ExportSource, HitMap, LayerRef, Renderer,
-    SeriesConfig, Subplot, text::RichText,
+    SeriesConfig, Subplot, config::TickVisibility, text::RichText,
 };
 use std::path::Path;
 use styled::{background, save, theme_named, themed};
@@ -28,12 +31,10 @@ use styled::{background, save, theme_named, themed};
 // Small multiples: four sensors in a 2 x 2 grid of subplots sharing the hour
 // axis, each with its own range and colour.
 fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
+    // The theme's text sizes are the ones of a full-size chart; each cell
+    // draws them at its own text scale (#292). The temperature is drawn in
+    // coral, the humidity in teal.
     let mut theme = theme_named(ChartKind::Line, "cool-slate")?;
-    // Smaller text for the 600 x 400 cells, and the temperature in coral,
-    // the humidity in teal.
-    theme.chrome.title_size = 26.;
-    theme.chrome.tick_label_size = 18.;
-    theme.chrome.axis_title_size = 19.;
     theme.series.palette.swap(0, 1);
     let bg = background(&theme);
     let hour: Vec<f64> = (0..=240).map(|i| f64::from(i) / 10.).collect();
@@ -71,32 +72,69 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
         r.add_column(id, &data)?;
         specs.push(SeriesConfig::line(id, "h", id).fill_to(floor));
     }
-    let mut config = cell(0, 0, sensors[0].1, sensors[0].2);
-    config.subplots = [(1usize, 600u32, 0u32), (2, 0, 400), (3, 600, 400)]
+    // The document's own chart is the whole 1200 x 800 figure and draws
+    // only its background; the four sensors are subplots in its quarters.
+    // A cell is half the figure's width and height, so its text is drawn at
+    // 0.79 of the theme's sizes. Subplots 1 to 3 follow subplot 0's X axis.
+    let mut config = Chart::sized(1200, 800).config().clone();
+    config.subplots = [(0u32, 0u32), (600, 0), (0, 400), (600, 400)]
         .into_iter()
-        .map(|(k, x, y)| Subplot {
-            config: cell(x, y, sensors[k].1, sensors[k].2),
-            series: vec![sensors[k].0.to_string()],
-            link_x: Some(CellRef::Parent),
+        .zip(sensors)
+        .enumerate()
+        .map(|(k, ((x, y), sensor))| Subplot {
+            config: cell(x, y, sensor.1, sensor.2),
+            series: vec![sensor.0.to_string()],
+            link_x: (k > 0).then_some(CellRef::Subplot(0)),
             ..Default::default()
         })
         .collect();
     let mut chart = Chart::new(config);
-    chart.set_x_range(0., 24.);
-    chart.set_y_range(8., 28.);
-    chart.set_subplot_y_range(0, 30., 80.);
-    chart.set_subplot_y_range(1, 300., 950.);
-    chart.set_subplot_y_range(2, 0., 850.);
+    chart.set_subplot_x_range(0, 0., 24.);
+    chart.set_subplot_y_range(0, 8., 28.);
+    chart.set_subplot_y_range(1, 30., 80.);
+    chart.set_subplot_y_range(2, 300., 950.);
+    chart.set_subplot_y_range(3, 0., 850.);
     chart.with_axis_range_change(|config| {
-        config.left_y.major_spacing = 5.;
-        config.subplots[0].config.left_y.major_spacing = 10.;
-        config.subplots[1].config.left_y.major_spacing = 150.;
-        config.subplots[2].config.left_y.major_spacing = 200.;
+        for (subplot, spacing) in config.subplots.iter_mut().zip([5., 10., 150., 200.]) {
+            subplot.config.left_y.major_spacing = spacing;
+        }
     });
-    // Subplot 0 follows the parent's X range; every Y range is its own.
+    themed(&mut chart, &theme, &mut specs)?;
+    // Nothing of the figure itself is drawn over its background.
+    chart.with_axis_range_change(|config| {
+        for axis in [
+            &mut config.top_x,
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.line_visible = false;
+            axis.tick = TickVisibility::None;
+            axis.label_style.visible = false;
+            axis.title_option.visible = false;
+        }
+        config.chart_title.visible = false;
+        config.legend.visible = false;
+        config.plot_background = None;
+        config.grid.show_major_x = false;
+        config.grid.show_major_y = false;
+        config.grid.show_minor_x = false;
+        config.grid.show_minor_y = false;
+    });
+    // Subplot 1 follows subplot 0's X range; every Y range is its own. Its
+    // text is the stored size times the cell's factor.
     let document = chart.config();
-    let linked = document.subplot_config(0).ok_or("subplot 0 is missing")?;
-    assert_eq!(linked.bottom_x.max, document.bottom_x.max);
+    let linked = document.subplot_config(1).ok_or("subplot 1 is missing")?;
+    assert_eq!(
+        linked.bottom_x.max,
+        document.subplots[0].config.bottom_x.max
+    );
+    let scale = document.subplot_text_scale(1);
+    assert!((scale - 0.5f32.cbrt()).abs() < 1e-6);
+    assert_eq!(
+        linked.chart_title.text.font_size,
+        document.subplots[1].config.chart_title.text.font_size * scale
+    );
     // Pointer interaction addresses one chart at a time; a subplot answers
     // with its own elements under `subplot_<n>:` ids.
     let mut interactive = document.clone();
@@ -106,7 +144,6 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             .find("subplot_2:data_area")
             .is_some()
     );
-    themed(&mut chart, &theme, &mut specs)?;
     let image = r.export_rgba_blocking(
         ExportSource::chart(&chart, &specs),
         ExportOptions::document(1.).with_clear(bg),

@@ -2008,6 +2008,7 @@ fn a_3d_subplot_draws_arrows_beside_a_flat_panel() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let series = [flat_arrows, arrows_3d_sub];
     for scale in [1.0f32, 2.0] {
@@ -2779,6 +2780,7 @@ fn a_3d_subplot_draws_a_mesh_surface_beside_a_flat_panel() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let series = [flat_mesh, mesh_3d];
     for scale in [1.0f32, 2.0] {

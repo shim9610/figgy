@@ -122,6 +122,7 @@ pub(crate) fn subplot() -> Subplot {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: crate::layer::SubplotTextScale::Auto,
     }
 }
 

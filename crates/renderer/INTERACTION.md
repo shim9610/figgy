@@ -768,14 +768,31 @@ layer, under the insets: the window the inset
 magnifies, clipped to the parent's plot, and connectors to the inset's plot;
 it is not selectable.
 
+**Text scale** ([#292](https://github.com/shim9610/figgy/issues/292)). A subplot's text is drawn at its stored sizes
+times `Config::subplot_text_scale(i)`, a factor of `0.5..=1` chosen from the
+cell's size against the parent chart's (see
+[`Subplot`](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#subplot-configsubplots);
+`SubplotTextScale::Fixed` opts a subplot out). `Config::subplot_config`
+carries the scaled sizes, so every `subplot_<i>:` element is hit, outlined
+and dragged where its text is drawn: the title, the axis titles, the tick
+labels, the legend and the colourbar labels of a small cell have the smaller
+regions of their smaller text. A drag stores what the element's policy moves
+(an offset, a band) and never a drawn size; `subplots[i].config` keeps its
+text sizes. Resizing the cell (a frame handle, `Config::set_subplot_area`) or
+the parent chart changes the factor: the subplot's text is rasterized again
+at the new size (the `raster` revision), and `fit_layout` fits the bands to
+it. PNG export at any scale and SVG / PDF export draw the same scaled sizes.
+
 **Limits.** Subplots nest one level (a subplot's chart has overlays but no
 subplots), are Cartesian only and keep no annotation layer of their own. A
 subplot cannot draw a nonresident streaming series, and streaming rejects a
 document with subplots as a whole.
 Run `cargo run --locked -p figgy-renderer --example subplots -- target/subplots`
-for two native 2×2 exports: `gallery-subplots.png`, the parent and three
-subplots linked to its X axis, and `mixed-axes.png` with one linked axis, a
-different X column and a twin Y axis inside a subplot. See
+for two native 2×2 exports: `gallery-subplots.png`, four subplots in a
+figure-sized parent that draws only its background, three of them linked to
+the first one's X axis and each drawing its text at its cell's scale, and
+`mixed-axes.png`, the parent and three subplots of its size with one linked
+axis, a different X column and a twin Y axis inside a subplot. See
 [the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/subplots.rs).
 
 ## Offset spectra

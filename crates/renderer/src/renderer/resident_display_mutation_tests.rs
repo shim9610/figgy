@@ -223,6 +223,7 @@ fn subplot_config() -> (Config, (u32, u32)) {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     (c, (SIZE.0, SIZE.1 * 2))
 }

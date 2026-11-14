@@ -949,6 +949,9 @@ impl SubplotElement {
         let result = edit(&mut chart);
         if result == NudgeResult::Moved {
             let stored = &mut cfg.subplots[self.subplot].config;
+            // The chart was edited at its drawn text sizes (#292); the
+            // stored ones stay.
+            chart.scale_text_sizes(Some(stored), 1.0);
             // Every field of the edited chart is named: a new one is stored
             // from the edit unless it is one `subplot_config` overrides.
             let Config {
@@ -2902,6 +2905,180 @@ pub(crate) mod tests {
         );
         assert_eq!(cfg.subplots[0].config.bottom_x.line_offset, 5.0);
         assert_eq!(cfg.bottom_x, before.bottom_x);
+    }
+
+    /// A measure in ems: every glyph half its text's size wide, 0.8 up and
+    /// 0.2 down, so a hit region shows the size its text is laid out at.
+    struct EmMeasure;
+    impl MeasureText for EmMeasure {
+        fn measure_rich(&self, rt: &RichText) -> TextExtents {
+            TextExtents {
+                width: rt.segments.len() as f32 * rt.font_size * 0.5,
+                ascent: rt.font_size * 0.8,
+                descent: rt.font_size * 0.2,
+            }
+        }
+    }
+
+    /// An 800x600 parent and a 400x300 subplot right of it with a chart
+    /// title, axis titles and a legend.
+    fn cfg_with_small_cell() -> Config {
+        let mut cfg = cfg_800x600();
+        let mut subplot = crate::defaults::subplot();
+        let chart = &mut subplot.config;
+        chart.chart_area = ChartArea(Rect {
+            x: 800,
+            y: 0,
+            width: 400,
+            height: 300,
+        });
+        chart.chart_title.visible = true;
+        chart.chart_title.text.segments = rich_segments_from_text("Cell title");
+        for axis in [&mut chart.bottom_x, &mut chart.left_y] {
+            axis.title_option.visible = true;
+            axis.title_option.text.segments = rich_segments_from_text("axis");
+        }
+        chart.legend.visible = true;
+        chart.legend.content.segments = rich_segments_from_text("legend");
+        cfg.subplots.push(subplot);
+        cfg
+    }
+
+    // The hit regions of a subplot's text are the regions of the text its
+    // cell draws (#292): each is the region of the resolved chart, smaller
+    // than the stored sizes' by the factor, on the base layer and with the
+    // subplot active. `Fixed` gives the stored sizes' regions.
+    #[test]
+    fn a_scaled_subplots_text_is_hit_where_it_is_drawn() {
+        let cfg = cfg_with_small_cell();
+        let scale = cfg.subplot_text_scale(0);
+        assert!((scale - 0.5f32.cbrt()).abs() < 1e-6);
+        let resolved = cfg.subplot_config(0).unwrap();
+        let mut fixed = cfg.clone();
+        fixed.subplots[0].text_scale = crate::layer::SubplotTextScale::Fixed;
+        let mut active = cfg.clone();
+        active.set_active_layer(LayerRef::Subplot(0));
+        let own = HitMap::for_active_layer(&resolved);
+        for id in [
+            "chart_title",
+            "axis_title_bottom",
+            "axis_title_left",
+            "tick_labels_bottom",
+            "tick_labels_left",
+            "legend",
+        ] {
+            let drawn = own
+                .get(own.find(id).unwrap())
+                .unwrap()
+                .bounds(&resolved, &EmMeasure)
+                .unwrap_or_else(|| panic!("{id} draws"));
+            let name = format!("subplot_0:{id}");
+            for doc in [&cfg, &active] {
+                let map = HitMap::for_active_layer(doc);
+                let element = map.get(map.find(&name).unwrap()).unwrap();
+                assert_eq!(element.bounds(doc, &EmMeasure), Some(drawn), "{id}");
+                let (x, y) = (drawn.x + drawn.width / 2.0, drawn.y + drawn.height / 2.0);
+                assert!(element.contains(doc, &EmMeasure, x, y), "{id}");
+            }
+            let map = HitMap::for_active_layer(&fixed);
+            let stored = map
+                .get(map.find(&name).unwrap())
+                .unwrap()
+                .bounds(&fixed, &EmMeasure)
+                .unwrap();
+            // A row of text is as high as its size.
+            let (drawn_size, stored_size) = match id {
+                "axis_title_left" => (drawn.width, stored.width),
+                "legend" | "tick_labels_left" => continue,
+                _ => (drawn.height, stored.height),
+            };
+            assert!(
+                (drawn_size - stored_size * scale).abs() < 0.01,
+                "{id}: {drawn_size} against {stored_size}"
+            );
+        }
+        let legend = |doc: &Config| {
+            let map = HitMap::for_active_layer(doc);
+            let element = map.get(map.find("subplot_0:legend").unwrap()).unwrap();
+            element.bounds(doc, &EmMeasure).unwrap()
+        };
+        assert!(legend(&cfg).width < legend(&fixed).width);
+        assert!(legend(&cfg).height < legend(&fixed).height);
+    }
+
+    // Dragging a scaled subplot's title, legend, axis, tick labels and axis
+    // title moves what the element's own policy moves and stores no drawn
+    // size (#292): the stored text sizes stay, so the next resolve scales
+    // them once.
+    #[test]
+    fn dragging_a_scaled_subplots_text_keeps_the_stored_sizes() {
+        let before = cfg_with_small_cell();
+        let scale = before.subplot_text_scale(0);
+        for active in [LayerRef::Base, LayerRef::Subplot(0)] {
+            let mut cfg = before.clone();
+            cfg.set_active_layer(active);
+            let map = HitMap::for_active_layer(&cfg);
+            for (id, dx, dy) in [
+                ("chart_title", 6.0, 4.0),
+                ("legend", -7.0, 5.0),
+                ("axis_bottom", 0.0, 5.0),
+                ("tick_labels_left", -3.0, 0.0),
+                ("axis_title_bottom", 0.0, 4.0),
+            ] {
+                let name = format!("subplot_0:{id}");
+                let element = map.get(map.find(&name).unwrap()).unwrap();
+                let from = element.bounds(&cfg, &EmMeasure).unwrap();
+                let drag = element.as_draggable().unwrap();
+                assert_eq!(
+                    drag.drag_by(&mut cfg, &EmMeasure, dx, dy),
+                    NudgeResult::Moved,
+                    "{id}"
+                );
+                let to = element.bounds(&cfg, &EmMeasure).unwrap();
+                assert!(
+                    (to.x - from.x - dx).abs() < 0.01 && (to.y - from.y - dy).abs() < 0.01,
+                    "{id}: {from:?} to {to:?}"
+                );
+                assert_eq!((to.width, to.height), (from.width, from.height), "{id}");
+            }
+            let (stored, was) = (&cfg.subplots[0].config, &before.subplots[0].config);
+            assert_ne!(stored, was);
+            assert_eq!(stored.chart_title.text, was.chart_title.text);
+            assert_eq!(stored.legend.content, was.legend.content);
+            for (axis, old) in [
+                (&stored.bottom_x, &was.bottom_x),
+                (&stored.left_y, &was.left_y),
+                (&stored.top_x, &was.top_x),
+                (&stored.right_y, &was.right_y),
+            ] {
+                assert_eq!(axis.label_style.font_size, old.label_style.font_size);
+                assert_eq!(axis.title_option.text, old.title_option.text);
+            }
+            assert_eq!(cfg.subplot_text_scale(0), scale);
+            assert_eq!(
+                cfg.subplot_config(0).unwrap().chart_title.text.font_size,
+                was.chart_title.text.font_size * scale
+            );
+        }
+        // A resize of the cell changes the factor, never the stored sizes.
+        let mut cfg = before.clone();
+        let map = HitMap::for_active_layer(&cfg);
+        let frame = map.get(map.find("subplot_0:frame").unwrap()).unwrap();
+        assert_eq!(
+            frame.as_resizable().unwrap().resize_by(
+                &mut cfg,
+                &EmMeasure,
+                crate::resize::ResizeHandle::SE,
+                200.0,
+                150.0
+            ),
+            NudgeResult::Moved
+        );
+        assert!((cfg.subplot_text_scale(0) - 0.75f32.cbrt()).abs() < 1e-6);
+        assert_eq!(
+            cfg.subplots[0].config.chart_title.text,
+            before.subplots[0].config.chart_title.text
+        );
     }
 
     #[test]

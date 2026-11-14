@@ -188,6 +188,13 @@ impl Subplot {
         self.link_y = Some(target);
         self
     }
+
+    /// The subplot with its text following its cell (`Auto`, the default)
+    /// or drawn at its stored sizes (`Fixed`) (#292).
+    pub fn with_text_scale(mut self, text_scale: crate::layer::SubplotTextScale) -> Self {
+        self.text_scale = text_scale;
+        self
+    }
 }
 
 #[cfg(test)]

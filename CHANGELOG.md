@@ -34,12 +34,18 @@ chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
 breaks' `sizing`, the energy-level `bands` and `band` style, a
 subplot's `marker`, the energy-level `wavelength_labels`, a text
-annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
-`MonotonicLine` series kind) are additive.
+annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
+`MonotonicLine` series kind and a subplot's `text_scale`) are additive.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
+
+- **Subplot text scales with its cell** ([#292](https://github.com/shim9610/figgy/issues/292)). A subplot's `config` stores its text sizes in logical pixels, as a full-size chart would, so a small cell used to draw full-size text unless the host shrank every font by hand. A subplot's text is now drawn at its stored size times one factor chosen from its cell: `r` is the smaller of cell width / parent chart width and cell height / parent chart height (the two `chart_area`s), and the factor is the cube root of `r` held to `0.5..=1` (`expand::subplot_text_factor(r)`, `expand::SUBPLOT_TEXT_SCALE_MIN`; `Config::subplot_text_scale(index)` gives a subplot's). A cell half the parent's size draws at 0.79, a quarter at 0.63, an eighth or smaller at 0.5, and a cell as large as the parent or larger as stored. The one factor covers the subplot's chart title, axis titles, tick labels, legend text and symbols, colourbar labels and title, category labels and group headers and value labels, on the subplot and on its overlay layers. Bands, offsets, line widths, tick lengths, annotation text and text a series carries (contour labels, energy-level labels) are not scaled, and neither is the parent chart's own text. Insets ([#205](https://github.com/shim9610/figgy/issues/205)) are subplots and follow the same rule.
+  - **Not stored.** The factor is a display parameter chosen from the layout, like the tick plan. `Config::subplot_config(index)` resolves a subplot with the scaled sizes, so `Config::expand` (drawing), `layout::auto_layout` (which fits a subplot's bands to its drawn text), the hit map's `subplot_<i>:` elements, drags and resizes read the same sizes; a drag stores what its policy moves and the stored text sizes back. `subplots[i].config` keeps the sizes it was written with. The factor follows the cell when the cell or the parent chart is resized and is the same at every `Config::scaled` scale.
+  - **Opting out.** `Subplot::text_scale: SubplotTextScale` is `Auto` (the default, omitted from JSON) or `Fixed`, which draws the stored sizes; with the `helpers` feature, `Subplot::with_text_scale(SubplotTextScale::Fixed)`. `SubplotTextScale` is exported from `figgy-model` and `figgy-renderer`.
+  - **Behaviour change for existing documents.** A document written before the field parses to `Auto` and re-serializes byte for byte, but a subplot of it that is smaller than its parent chart (an inset, a side panel) now draws its text smaller than 0.12 drew it; a subplot as large as the parent, as in a grid of the parent and equal cells, draws exactly as before. Its bands keep the widths they were stored with until the next `auto_layout` / `Chart::fit_layout`, which fits them to the smaller text. To keep the former drawing, set `text_scale: SubplotTextScale::Fixed` on the subplot (`"text_scale": "Fixed"` in JSON); a host that had shrunk a subplot's fonts by hand either does that or writes the full sizes back and lets the cell scale them.
+  - **Migration.** An exhaustive `Subplot { .. }` literal adds `text_scale: SubplotTextScale::Auto` (or ends with `..Default::default()`), and an exhaustive `Subplot { .. }` pattern names the field.
 
 - **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271)).
   - **The core** (`model::monotonic`): fast, large, evenly spaced data (`x = start + i × interval`) reduced on the CPU to its **M4** envelope per pixel column (first, lowest, highest and last sample; a column of at most 4 keeps them all). The host lends its samples through the `MonotonicSource` trait on every call, as contiguous runs (`MonotonicRun`; a ring buffer lends two); a source carries the values, their `start` and `interval` (sample `i` at `start + i × interval`), and no call takes those separately; `MonotonicSlices::new(start, interval, channels)` (one slice per channel) and `MonotonicInterleaved::new(start, interval, values, stride, columns)` (one sample-major buffer with a stride and the frame columns its channels read) are built in; elements are `f64`, `f32`, `i32`, `i16`, `u16` or `u8` (`MonotonicElement`, sealed). `MonotonicEnvelope` holds the envelope: `set_monotonic(&source, &MonotonicMapping)` reduces in full on the source's grid, `append_monotonic(&new, MonotonicAppend { sliding })` merges only the new samples (continuing the full call's grid; it reads neither `start` nor `interval`) and, sliding, moves the window by exactly their span on the anchored column grid (`pixel_offset`), without the old samples; `check_mapping` refuses another mapping with `MonotonicError::SourceRequired { change: MappingChange }`. `MonotonicSourceRef` erases the element type for calls that take several sources. `MonotonicConfig` (with `MonotonicAxis`) edits a monotonic chart's document: everything but the x-to-pixel mapping, which `same_mapping` checks; new rules `MonotonicGeneralChart`, `MonotonicMappingEdit`, `MonotonicRange`. The envelope's size depends on the plot width and the channel count, not on the sample count; a `MonotonicMapping` keeps `margin_px` whole columns beyond each edge of the plot, fixed when it is built. A NaN gap narrower than one column is drawn joined. Rules M1–M7 in `MONOTONIC.md`.
@@ -1503,6 +1509,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Subplot text scales with its cell** ([#292](https://github.com/shim9610/figgy/issues/292)). The renderer draws every subplot panel from `Config::expand`, so a subplot's text is rasterized at its stored sizes times `Config::subplot_text_scale` on screen and in the PNG export at every scale, and written at the same sizes by the SVG and PDF exports; hit regions, selection outlines and drags of a subplot's title, legend, axes, tick labels and axis titles use the drawn sizes. `Chart::fit_layout` fits a subplot's bands to its drawn text. `Subplot::text_scale` moves the `raster` revision only; a resize of the cell or of the parent chart, which moves the `view` revision already, draws the subplot's text again at the new factor. `renderer::SubplotTextScale` is re-exported. `examples/subplots.rs` no longer shrinks the `cool-slate` theme's text by hand: `small_multiples` makes the document's own chart the whole 1200 × 800 figure, drawing only its background, with the four sensors as subplots half its size, which draw the theme's sizes at 0.79; `gallery-subplots.png` and its thumbnail are regenerated. See the model entry for the rule, the opt-out and what changes for existing documents.
+
 - **Streamed histograms are removed** ([#284](https://github.com/shim9610/figgy/issues/284)). A histogram's columns are the host's bins, one row per bin, so they never need streaming. A histogram series in a streamed (nonresident) display is now refused with `FiggyError::InvalidSeriesConfig { kind: RuleKind::StreamedHistogram }`. The refusal is reported by `inspect_streaming_capability`, the browser's `streaming_capabilities()`, `begin_chart_stream_draw` and the stream export preflight, before anything is allocated. Resident histograms are unchanged: draw, subpixel envelope, pick, selection, fit and export. Streamed lines, scatter, error bars and heatmaps are unchanged. The streamed histogram reduction, its six GPU pipelines and its streamed pick and selection paths are gone, so `bar_envelope::Pipelines` builds two pipelines instead of six. **Migration:** register histogram edges and values as resident columns (`add_column`, `register_column_f32`), not as a streamed source.
 
 - **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271)).
@@ -2935,6 +2943,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and the
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Subplot text scales with its cell** ([#292](https://github.com/shim9610/figgy/issues/292)). A subplot's text follows its cell in the browser as in the library, through `set_config`, a frame drag and `set_subplot_area`. `FiggyChart.set_subplot_text_scale(index, "Auto" | "Fixed")` sets the mode (an unknown mode or index is an error and changes nothing) and `subplot_text_scale(index)` returns the factor the subplot draws its text with now; both are on `<figgy-chart>` too. `subplots[i].text_scale` in the config JSON is `"Auto"` (omitted) or `"Fixed"`.
+
 - **Monotonic-x line series** ([#271](https://github.com/shim9610/figgy/issues/271)).
   Monotonic series live only in a monotonic chart: a general chart refuses
   them, and `FiggyChart.set_monotonic_document(config,
@@ -3429,6 +3439,8 @@ entries above describe the changes.
 
 ### Tests and guards
 
+- **Subplot text scale** ([#292](https://github.com/shim9610/figgy/issues/292)). The model tests pin the factor for full-size, larger, half-size and tiny cells with both clamps, the resolved chart against the stored one for every covered text size, `Fixed`, the JSON round trip and an older document, the hit regions and drags of a scaled subplot's text, and `auto_layout` fitting a small cell at 1x and 2x. `tests/auto_layout.rs` fits a small cell with the real text measure and checks at 1x and 2x that titles clear labels, nothing overlaps or leaves the cell, the title's ink in the PNG fills its hit region, drags keep the stored sizes and a resized cell invalidates the chart. `tests/vector_export.rs` compares the SVG, PDF and PNG of an `Auto` cell with the same cell written at its drawn sizes, at 1x and 2x. The SSOT matrix gains the mode and the two resizes that move the factor. The playground's energy-level scene writes its inset's text at full-chart sizes instead of shrinking its tick labels by hand; it draws them at 10 px as before.
+
 - **Monotonic-x lines** ([#271](https://github.com/shim9610/figgy/issues/271)).
   `tests/monotonic_render.rs` compares the envelope draw with the full line
   draw (byte-identical for sparse views at 1x and 2x, within one pixel for
@@ -3529,6 +3541,8 @@ entries above describe the changes.
   executor in `tests/support/gpu.rs`. No product dependency changes.
 
 ### Documentation
+
+- **Subplot text scale** ([#292](https://github.com/shim9610/figgy/issues/292)). `CONFIG.md` (English and Korean) documents `Subplot::text_scale` and the rule, `INTERACTION.md` the hit regions, drags and invalidation, `USAGE.md` (both languages) `Subplot::with_text_scale`, `WASM.md` the two wrapper calls and `crates/web/SCHEMA.md` the JSON key. The gallery pages describe the regenerated small-multiples figure.
 
 - **Monotonic-x lines** ([#271](https://github.com/shim9610/figgy/issues/271)).
   `crates/model/MONOTONIC.md` (English and Korean) describes the core, the

@@ -276,7 +276,7 @@ pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
     AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, InsetMarker, LayerRef, NoteAlign,
-    OverlayLayer, PixelSpace, ShapeStyle, Subplot,
+    OverlayLayer, PixelSpace, ShapeStyle, Subplot, SubplotTextScale,
 };
 pub mod decoration;
 

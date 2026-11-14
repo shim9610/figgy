@@ -951,6 +951,7 @@ fn overlays_and_subplots_draw_their_violins_and_points() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let base = with_points(
         violin_series("base", ViolinBody::Symmetric(half("sym", RED)), 0.0),

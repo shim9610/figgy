@@ -265,6 +265,45 @@ pub struct Subplot {
     /// marks nothing.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub marker: Option<InsetMarker>,
+    /// How this subplot's text follows the size of its cell (#292). `Auto`
+    /// (default, omitted) draws its text at the stored sizes times
+    /// [`Config::subplot_text_scale`](crate::config::Config::subplot_text_scale);
+    /// `Fixed` draws the stored sizes as they are.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "SubplotTextScale::is_auto")
+    )]
+    pub text_scale: SubplotTextScale,
+}
+
+/// How a subplot's text follows the size of its cell
+/// ([`Subplot::text_scale`], #292).
+///
+/// A subplot's `config` stores its text sizes in logical pixels, as a chart
+/// of the parent's size would. With `Auto` the subplot's chart title, axis
+/// titles, tick labels, legend (text and symbols), colourbar labels and
+/// title, category group headers and value labels are drawn at those sizes
+/// times one factor chosen from the cell,
+/// [`Config::subplot_text_scale`](crate::config::Config::subplot_text_scale).
+/// The factor is a display parameter: it is computed from the chart areas
+/// whenever the subplot's chart is resolved
+/// ([`Config::subplot_config`](crate::config::Config::subplot_config)) and
+/// never stored, so the document keeps the sizes it was written with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SubplotTextScale {
+    /// Draw the text at the stored sizes times the cell's factor.
+    #[default]
+    Auto,
+    /// Draw the text at the stored sizes.
+    Fixed,
+}
+
+impl SubplotTextScale {
+    /// `true` for the default, `Auto`; used to omit the field from JSON.
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
 }
 
 /// The mark of what an inset magnifies (#205), drawn on the parent's
@@ -322,7 +361,7 @@ mod tests {
     fn subplots_round_trip_and_omit_their_defaults() {
         let json = serde_json::to_value(crate::defaults::subplot()).unwrap();
         assert!(json.get("config").is_some());
-        for key in ["series", "link_x", "link_y"] {
+        for key in ["series", "link_x", "link_y", "marker", "text_scale"] {
             assert!(json.get(key).is_none(), "{key}: {json}");
         }
         let subplot = Subplot {

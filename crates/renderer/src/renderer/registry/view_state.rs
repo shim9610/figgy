@@ -223,6 +223,8 @@ impl ChartViewState {
                 link_x: _,
                 link_y: _,
                 marker: _,
+                // A mode, not a range or an area.
+                text_scale: _,
             } = subplot;
             state.apply_to(config);
         }
