@@ -542,14 +542,55 @@ pub enum ThemeError {
         /// the radial names for the radial chart ([`RadialTheme::names`]).
         names: &'static [&'static str],
     },
-    /// A subplot index past the chart's subplots: in a
-    /// [`SubplotScope::Only`], or given to a subplot setter
-    /// (`RuleKind::SubplotIndex`).
-    SubplotIndex {
-        index: usize,
-        /// How many subplots the chart has.
-        count: usize,
-    },
+    /// A subplot index past the chart's subplots, in a
+    /// [`SubplotScope::Only`] or given for a subplot's theme.
+    SubplotIndex(SubplotIndexError),
+}
+
+/// A subplot index past the chart's subplots (`RuleKind::SubplotIndex`):
+/// refused by the subplot setters and getters and, inside
+/// [`ThemeError::SubplotIndex`], by a theme scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubplotIndexError {
+    /// The index asked for.
+    pub index: usize,
+    /// How many subplots the chart has.
+    pub count: usize,
+}
+
+impl SubplotIndexError {
+    /// `Ok(())` when `index` is one of `count` subplots, the error otherwise.
+    pub fn check(index: usize, count: usize) -> Result<(), Self> {
+        if index < count {
+            Ok(())
+        } else {
+            Err(Self { index, count })
+        }
+    }
+}
+
+impl std::fmt::Display for SubplotIndexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { index, count } = *self;
+        write!(f, "{}: no subplot {index}, ", crate::RuleKind::SubplotIndex)?;
+        match count {
+            0 => write!(f, "the chart has no subplots"),
+            1 => write!(f, "the chart has one subplot (index 0)"),
+            _ => write!(
+                f,
+                "the chart has {count} subplots (indices 0 to {})",
+                count - 1
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SubplotIndexError {}
+
+impl From<SubplotIndexError> for ThemeError {
+    fn from(error: SubplotIndexError) -> Self {
+        Self::SubplotIndex(error)
+    }
 }
 
 impl std::fmt::Display for ThemeError {
@@ -596,23 +637,21 @@ impl std::fmt::Display for ThemeError {
                 }
                 write!(f, ": use one of {}", names.join(", "))
             }
-            Self::SubplotIndex { index, count } => {
-                write!(f, "{}: no subplot {index}, ", crate::RuleKind::SubplotIndex)?;
-                match count {
-                    0 => write!(f, "the chart has no subplots"),
-                    1 => write!(f, "the chart has one subplot (index 0)"),
-                    _ => write!(
-                        f,
-                        "the chart has {count} subplots (indices 0 to {})",
-                        count - 1
-                    ),
-                }
-            }
+            Self::SubplotIndex(error) => error.fmt(f),
         }
     }
 }
 
-impl std::error::Error for ThemeError {}
+impl std::error::Error for ThemeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SubplotIndex(error) => Some(error),
+            Self::WrongKind { .. }
+            | Self::UnsupportedDrawStyle { .. }
+            | Self::UnknownName { .. } => None,
+        }
+    }
+}
 
 /// Which subplots take a theme. The chart's own layers and its overlays
 /// always do.
@@ -700,7 +739,7 @@ fn check_scope(config: &Config, subplots: SubplotScope) -> Result<(), ThemeError
     let count = config.subplots.len();
     match subplots {
         SubplotScope::Only(indices) => match indices.iter().find(|&&index| index >= count) {
-            Some(&index) => Err(ThemeError::SubplotIndex { index, count }),
+            Some(&index) => Err(SubplotIndexError { index, count }.into()),
             None => Ok(()),
         },
         SubplotScope::None | SubplotScope::All => Ok(()),

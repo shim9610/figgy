@@ -2450,7 +2450,19 @@ fn theme_errors_say_what_to_do_next() {
         assert!(message.starts_with(start), "{message}");
         assert!(message.ends_with(": use one of gallery, cool-slate, midnight, warm-paper"));
     }
-    let index = |count| ThemeError::SubplotIndex { index: 3, count }.to_string();
+    // A subplot index error is a type of its own, which a theme error
+    // wraps and names as its source.
+    assert_eq!(SubplotIndexError::check(1, 2), Ok(()));
+    assert_eq!(
+        SubplotIndexError::check(2, 2),
+        Err(SubplotIndexError { index: 2, count: 2 })
+    );
+    let wrapped = ThemeError::from(SubplotIndexError { index: 3, count: 2 });
+    assert_eq!(
+        std::error::Error::source(&wrapped).map(ToString::to_string),
+        Some(SubplotIndexError { index: 3, count: 2 }.to_string())
+    );
+    let index = |count| ThemeError::SubplotIndex(SubplotIndexError { index: 3, count }).to_string();
     assert_eq!(
         index(2),
         "subplot index out of range: no subplot 3, the chart has 2 subplots (indices 0 to 1)"
@@ -2465,7 +2477,10 @@ fn theme_errors_say_what_to_do_next() {
 fn a_scope_past_the_subplots_is_refused() {
     let (declared, declared_series) = dashboard();
     let (mut config, mut series) = (declared.clone(), declared_series.clone());
-    let refused = Err(ThemeError::SubplotIndex { index: 9, count: 4 });
+    let refused = Err(ThemeError::SubplotIndex(SubplotIndexError {
+        index: 9,
+        count: 4,
+    }));
     assert_eq!(
         Theme::apply_named(
             "gallery",

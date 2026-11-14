@@ -2429,8 +2429,9 @@ export class FiggyChartElement extends HTMLElement {
     const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
     return this.#mutateChart("apply_theme", name, list);
   }
-  theme_names() { return JSON.parse(this.#kernelForCall().theme_names()); }
+  theme_names() { return this.#kernelForCall().theme_names(); }
   theme(name) { return this.#kernelForCall().theme(name); }
+  subplot_theme(index, name) { return this.#kernelForCall().subplot_theme(index, name); }
   apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
   apply_custom_theme_to(theme, subplots = "all") {
     const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);

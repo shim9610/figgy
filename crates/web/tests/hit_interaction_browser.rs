@@ -582,7 +582,20 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     assert_eq!(chart.subplot_text_scale(0).unwrap(), "Fixed");
     assert_eq!(chart.subplot_text_factor(0).unwrap(), 1.0);
     assert_eq!(drawn_size(&chart), stored_size);
-    assert!(chart.set_subplot_text_scale(0, "Half").is_err());
+    let half = chart.set_subplot_text_scale(0, "Half").unwrap_err();
+    assert_eq!(
+        js_sys::Reflect::get(&half, &JsValue::from_str("code"))
+            .unwrap()
+            .as_string()
+            .as_deref(),
+        Some("subplot_text_mode")
+    );
+    let accepted: Vec<String> =
+        js_sys::Array::from(&js_sys::Reflect::get(&half, &JsValue::from_str("accepted")).unwrap())
+            .iter()
+            .filter_map(|mode| mode.as_string())
+            .collect();
+    assert_eq!(accepted, ["Auto", "Fixed"]);
     assert!(chart.set_subplot_text_scale(3, "Auto").is_err());
     assert!(chart.subplot_text_scale(3).is_err());
     assert!(chart.subplot_text_factor(3).is_err());
@@ -603,7 +616,22 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         .set_subplot_area(0, 1000, 40, 300, 220)
         .expect("the small frame again");
     // A frame too small for its plot is refused and nothing changes.
-    assert!(chart.set_subplot_area(0, 0, 0, 4, 4).is_err());
+    let small = chart.set_subplot_area(0, 0, 0, 4, 4).unwrap_err();
+    assert_eq!(
+        js_sys::Reflect::get(&small, &JsValue::from_str("code"))
+            .unwrap()
+            .as_string()
+            .as_deref(),
+        Some("subplot_area")
+    );
+    let past = chart.set_subplot_area(7, 0, 0, 400, 400).unwrap_err();
+    assert_eq!(
+        js_sys::Reflect::get(&past, &JsValue::from_str("code"))
+            .unwrap()
+            .as_string()
+            .as_deref(),
+        Some("subplot_index")
+    );
     assert_eq!(
         chart.subplot_area(0).unwrap(),
         r#"{"x":1000,"y":40,"width":300,"height":220}"#
@@ -641,8 +669,12 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     chart
         .add_line_series("line", "x", "y", 2.0, "")
         .expect("add a line series");
-    let names: Vec<String> =
-        serde_json::from_str(&chart.theme_names().expect("theme names")).expect("a JSON array");
+    let names: Vec<String> = chart
+        .theme_names()
+        .expect("theme names")
+        .iter()
+        .filter_map(|name| name.as_string())
+        .collect();
     assert_eq!(names, Theme::names(ChartKind::Line));
     assert!(names.iter().any(|name| name == "midnight"));
     let before = chart_config(&chart);
@@ -697,8 +729,12 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         (base, inset),
         (Some(ChartKind::Line), Some(ChartKind::Scatter))
     );
-    let names: Vec<String> =
-        serde_json::from_str(&chart.theme_names().expect("theme names")).expect("a JSON array");
+    let names: Vec<String> = chart
+        .theme_names()
+        .expect("theme names")
+        .iter()
+        .filter_map(|name| name.as_string())
+        .collect();
     assert_eq!(names[..ThemeFamily::NAMES.len()], *ThemeFamily::NAMES);
     let before = chart_config(&chart);
     assert!(chart.apply_theme("editorial", "all").is_err());
@@ -768,6 +804,32 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         code(&chart.theme("neon").unwrap_err()),
         "theme_unknown_name"
     );
+    assert_eq!(
+        code(&chart.subplot_theme(4, "midnight").unwrap_err()),
+        "subplot_index"
+    );
+    assert_eq!(
+        code(&chart.apply_theme("gallery", "[nope").unwrap_err()),
+        "subplot_scope"
+    );
+    assert_eq!(
+        code(&chart.set_subplot_background(0, "{\"red\":1}").unwrap_err()),
+        "subplot_background"
+    );
+    assert_eq!(
+        code(&chart.set_background("blue").unwrap_err()),
+        "background"
+    );
+    // The inset's theme, as an object: its own kind's member.
+    let inset = chart
+        .subplot_theme(0, "cool-slate")
+        .expect("the scatter member");
+    let json = js_sys::JSON::stringify(&inset)
+        .unwrap()
+        .as_string()
+        .unwrap();
+    let inset: renderer::theme::Theme = serde_json::from_str(&json).expect("a theme");
+    assert_eq!(inset, ThemeFamily::CoolSlate.theme(ChartKind::Scatter));
 
     // Edit and apply (#295): the theme a name resolves to comes out as an
     // object, reads back equal, and applies to the charts of its kind.

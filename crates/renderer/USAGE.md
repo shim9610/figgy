@@ -962,7 +962,9 @@ chart.apply_custom_theme(&theme, &mut series)?;
   the names it takes (the families first, then `default` and the kind's own;
   the families alone without a kind) and `chart.theme(name, &series)` the
   theme `name` resolves to on the base chart, a `Result` refused as
-  `apply_theme` refuses the name (`Theme::for_chart` for any chart).
+  `apply_theme` refuses the name; `chart.subplot_theme(i, name, &series)` is
+  the theme it resolves to on subplot `i` (`Theme::for_chart` for any
+  chart).
 - **Custom themes.** `Chart::apply_custom_theme(&theme, &mut series)`
   applies a theme the host built or edited, made for one kind (the theme
   `chart.theme(name, &series)` hands out, a family member
@@ -976,7 +978,7 @@ chart.apply_custom_theme(&theme, &mut series)?;
 - **Subplot text.** `chart.subplot_text_scale(i)` reads how subplot `i`'s
   text follows its cell (`Some(SubplotTextScale::Auto | Fixed)`, `None` past
   the subplots), `chart.set_subplot_text_scale(i, mode)` sets it
-  (`ThemeError::SubplotIndex` past the subplots) and
+  (`SubplotIndexError { index, count }` past the subplots) and
   `chart.subplot_text_factor(i)` is the factor it draws with now. The names
   are the browser's.
 
@@ -1064,8 +1066,9 @@ chart.apply_custom_theme(&theme, &mut series)?;
     takes: the families, then `default` and the kind's own themes; the
     families alone for an empty chart; the radial names for the radial
     chart.
-  - `ThemeError::SubplotIndex { index, count }`: a `SubplotScope::Only` or a
-    subplot setter names a subplot past the chart's `count`.
+  - `ThemeError::SubplotIndex(SubplotIndexError { index, count })`: a
+    `SubplotScope::Only` or `subplot_theme` names a subplot past the chart's
+    `count`. The subplot setters return the `SubplotIndexError` itself.
   - `ThemeError::UnsupportedDrawStyle { series_id }`: the theme's draw style cannot draw
     a series in scope (`renderer::draw_style_supports`), which the renderer
     would drop: `constellation` draws a line only with its markers. A theme
@@ -2031,7 +2034,8 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `chart.theme_names(&series)`는 그 차트가 받는 이름(계열이 먼저 오고 `default`와 종류 고유의
   테마가 이어지며, 종류가 없으면 계열만)을, `chart.theme(name, &series)`는 기본 차트에서 `name`이
   가리키는 테마를 돌려준다. `apply_theme`이 그 이름을 거부할 때와 같은 오류를 `Result`로
-  돌려준다(아무 차트에나 쓰려면 `Theme::for_chart`).
+  돌려준다. `chart.subplot_theme(i, name, &series)`는 서브플롯 `i`에서 가리키는 테마를 돌려준다(아무
+  차트에나 쓰려면 `Theme::for_chart`).
 - **직접 만든 테마.** `Chart::apply_custom_theme(&theme, &mut series)`는 호스트가 만들거나 고친
   테마, 즉 한 종류에 속한 테마(`chart.theme(name, &series)`가 돌려준 테마나 계열의 구성원
   `ThemeFamily::Midnight.theme(ChartKind::Line)`, 종류의 테마 `Theme::named(kind, name)`의 필드를
@@ -2042,7 +2046,7 @@ chart.apply_custom_theme(&theme, &mut series)?;
 - **서브플롯 글자.** `chart.subplot_text_scale(i)`는 서브플롯 `i`의 글자가 셀을 따르는 방식을
   읽고(`Some(SubplotTextScale::Auto | Fixed)`, 서브플롯 범위를 넘으면 `None`),
   `chart.set_subplot_text_scale(i, mode)`는 그 방식을 정하며(범위를 넘으면
-  `ThemeError::SubplotIndex`), `chart.subplot_text_factor(i)`는 지금 그리는 배율을 돌려준다. 이름은
+  `SubplotIndexError { index, count }`), `chart.subplot_text_factor(i)`는 지금 그리는 배율을 돌려준다. 이름은
   브라우저 메서드와 같다.
 
 - **종류.** `ChartKind::of(&config, &series, layer)`는 기본 차트나 서브플롯의 종류를 좌표계와 축,
@@ -2119,8 +2123,9 @@ chart.apply_custom_theme(&theme, &mut series)?;
     찾은 대상(`ThemeTarget::Chart(kind)`, 시리즈가 없는 차트는 `EmptyChart`, 원형 차트는
     `Radial`)이고 `names`는 그 대상이 받는 이름이다. 계열이 먼저 오고 `default`와 그 종류 고유의
     테마가 이어진다. 빈 차트에는 계열만, 원형 차트에는 원형 테마 이름을 나열한다.
-  - `ThemeError::SubplotIndex { index, count }`: `SubplotScope::Only`나 서브플롯 설정 메서드가
-    차트의 서브플롯 수(`count`)를 넘는 서브플롯을 가리킨다.
+  - `ThemeError::SubplotIndex(SubplotIndexError { index, count })`: `SubplotScope::Only`나
+    `subplot_theme`이 차트의 서브플롯 수(`count`)를 넘는 서브플롯을 가리킨다. 서브플롯 설정
+    메서드는 `SubplotIndexError`를 그대로 돌려준다.
   - `ThemeError::UnsupportedDrawStyle { series_id }`: 테마의 그리기 스타일이 범위 안의 시리즈를 그리지
     못한다(`renderer::draw_style_supports`). 그대로 두면 렌더러가 그 시리즈를 빼고 그린다.
     `constellation`은 선을 마커와 함께일 때만 그린다. `DrawStyle::Precise`인 테마는 모든 시리즈를

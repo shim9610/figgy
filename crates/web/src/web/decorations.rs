@@ -744,6 +744,7 @@ impl FiggyChart {
         height: u32,
     ) -> Result<(), JsValue> {
         let mut config = self.chart_config()?.clone();
+        check_subplot(index, config.subplots.len())?;
         let area = renderer::layout::ChartArea(Rect {
             x,
             y,
@@ -751,7 +752,14 @@ impl FiggyChart {
             height,
         });
         config.set_subplot_area(index, area).map_err(|error| {
-            js_err(format!("subplot {index} cannot take that frame: {error:?}"))
+            coded_error(
+                &format!(
+                    "subplot {index} cannot take a {width}x{height} frame ({error:?}): its plot \
+                     would be empty; give it a larger frame"
+                ),
+                "subplot_area",
+                [("index", JsValue::from(index as f64))],
+            )
         })?;
         self.replace_chart_config(config)
     }
@@ -760,9 +768,10 @@ impl FiggyChart {
     /// in document pixels.
     pub fn subplot_area(&self, index: usize) -> Result<String, JsValue> {
         let subplots = &self.chart_config()?.subplots;
+        check_subplot(index, subplots.len())?;
         let subplot = subplots
             .get(index)
-            .ok_or_else(|| subplot_index_error(index, subplots.len()))?;
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
         serde_json::to_string(&subplot.config.chart_area.0).map_err(js_err)
     }
 
@@ -770,7 +779,16 @@ impl FiggyChart {
     /// (JSON `{"r":1,"g":1,"b":1,"a":1}`), or leave it transparent (`null`)
     /// so the page or the export's clear colour shows through (#265).
     pub fn set_background(&mut self, json: &str) -> Result<(), JsValue> {
-        let color: Option<Color> = serde_json::from_str(json).map_err(js_err)?;
+        let color: Option<Color> = serde_json::from_str(json).map_err(|error| {
+            coded_error(
+                &format!(
+                    "background {json:?} is not a colour JSON \
+                     {{\"r\":..,\"g\":..,\"b\":..,\"a\":..}} or null: {error}"
+                ),
+                "background",
+                [],
+            )
+        })?;
         let mut config = self.chart_config()?.clone();
         config.background = color;
         self.replace_chart_config(config)
@@ -816,8 +834,25 @@ impl FiggyChart {
             renderer::LayerRef::Base,
         )
         .map_err(theme_error)?;
-        let json = serde_json::to_string(&theme).map_err(js_err)?;
-        js_sys::JSON::parse(&json)
+        theme_to_js(&theme)
+    }
+
+    /// The theme `name` resolves to on subplot `index` (#295), as
+    /// [`Self::apply_theme`] resolves it there, as a plain object to edit
+    /// and pass to [`Self::apply_custom_theme`]. Refused as [`Self::theme`]
+    /// refuses the name, and with `code` `"subplot_index"` for an index
+    /// past the subplots.
+    pub fn subplot_theme(&self, index: usize, name: &str) -> Result<JsValue, JsValue> {
+        let config = self.chart_config()?;
+        check_subplot(index, config.subplots.len())?;
+        let theme = renderer::theme::Theme::for_chart(
+            name,
+            config,
+            self.chart_series()?,
+            renderer::LayerRef::Subplot(index),
+        )
+        .map_err(theme_error)?;
+        theme_to_js(&theme)
     }
 
     /// Apply `theme`, an object [`Self::theme`] handed out and the host
@@ -864,9 +899,14 @@ impl FiggyChart {
         let indices: Vec<usize> = match subplots.trim() {
             "all" | "none" => Vec::new(),
             list => serde_json::from_str(list).map_err(|error| {
-                js_err(format!(
-                    "subplots {list:?} is not \"all\", \"none\" or a JSON array of indices: {error}"
-                ))
+                coded_error(
+                    &format!(
+                        "subplots {list:?} is not \"all\", \"none\" or a JSON array of \
+                         indices: {error}"
+                    ),
+                    "subplot_scope",
+                    [("accepted", js_names(&["all", "none", "[indices]"]).into())],
+                )
             })?,
         };
         let scope = match subplots.trim() {
@@ -892,10 +932,10 @@ impl FiggyChart {
         self.replace_chart_state(config, series)
     }
 
-    /// The names of the themes the chart takes (#291, #295), as a JSON
-    /// array: the families first, then `default` and the chart kind's own
-    /// themes; the families alone for a chart that draws no series yet.
-    pub fn theme_names(&self) -> Result<String, JsValue> {
+    /// The names of the themes the chart takes (#291, #295), as an array
+    /// of strings: the families first, then `default` and the chart kind's
+    /// own themes; the families alone for a chart that draws no series yet.
+    pub fn theme_names(&self) -> Result<js_sys::Array, JsValue> {
         use renderer::theme::{ChartKind, Theme, ThemeFamily};
         let names = ChartKind::of(
             self.chart_config()?,
@@ -903,20 +943,29 @@ impl FiggyChart {
             renderer::LayerRef::Base,
         )
         .map_or(ThemeFamily::NAMES, Theme::names);
-        serde_json::to_string(names).map_err(js_err)
+        Ok(js_names(names))
     }
 
     /// Fill subplot `index`'s plot with a colour (JSON `{"r":1,"g":1,"b":1,
     /// "a":1}`) or leave it transparent (`null`): an inset usually covers
     /// the parent's data under it.
     pub fn set_subplot_background(&mut self, index: usize, json: &str) -> Result<(), JsValue> {
-        let color: Option<Color> = serde_json::from_str(json).map_err(js_err)?;
+        check_subplot(index, self.chart_config()?.subplots.len())?;
+        let color: Option<Color> = serde_json::from_str(json).map_err(|error| {
+            coded_error(
+                &format!(
+                    "subplot background {json:?} is not a colour JSON \
+                     {{\"r\":..,\"g\":..,\"b\":..,\"a\":..}} or null: {error}"
+                ),
+                "subplot_background",
+                [],
+            )
+        })?;
         let mut config = self.chart_config()?.clone();
-        let count = config.subplots.len();
         let subplot = config
             .subplots
             .get_mut(index)
-            .ok_or_else(|| subplot_index_error(index, count))?;
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
         subplot.config.plot_background = color;
         self.replace_chart_config(config)
     }
@@ -932,17 +981,19 @@ impl FiggyChart {
             "Auto" => renderer::SubplotTextScale::Auto,
             "Fixed" => renderer::SubplotTextScale::Fixed,
             other => {
-                return Err(js_err(format!(
-                    "subplot text scale {other:?} is not \"Auto\" or \"Fixed\""
-                )));
+                return Err(coded_error(
+                    &format!("subplot text mode {other:?} is not \"Auto\" or \"Fixed\""),
+                    "subplot_text_mode",
+                    [("accepted", js_names(&["Auto", "Fixed"]).into())],
+                ));
             }
         };
         let mut config = self.chart_config()?.clone();
-        let count = config.subplots.len();
+        check_subplot(index, config.subplots.len())?;
         let subplot = config
             .subplots
             .get_mut(index)
-            .ok_or_else(|| subplot_index_error(index, count))?;
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
         subplot.text_scale = text_scale;
         self.replace_chart_config(config)
     }
@@ -951,9 +1002,10 @@ impl FiggyChart {
     /// [`Self::set_subplot_text_scale`] takes it: `"Auto"` or `"Fixed"`.
     pub fn subplot_text_scale(&self, index: usize) -> Result<String, JsValue> {
         let subplots = &self.chart_config()?.subplots;
+        check_subplot(index, subplots.len())?;
         let subplot = subplots
             .get(index)
-            .ok_or_else(|| subplot_index_error(index, subplots.len()))?;
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
         Ok(match subplot.text_scale {
             renderer::SubplotTextScale::Auto => "Auto",
             renderer::SubplotTextScale::Fixed => "Fixed",
@@ -968,9 +1020,7 @@ impl FiggyChart {
     /// chart.
     pub fn subplot_text_factor(&self, index: usize) -> Result<f32, JsValue> {
         let config = self.chart_config()?;
-        if index >= config.subplots.len() {
-            return Err(subplot_index_error(index, config.subplots.len()));
-        }
+        check_subplot(index, config.subplots.len())?;
         Ok(config.subplot_text_factor(index))
     }
 

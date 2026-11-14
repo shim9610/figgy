@@ -424,7 +424,7 @@ fn a_chart_names_its_kind_and_themes() {
 // past the subplots is refused with the index (#295).
 #[test]
 fn a_custom_theme_themes_the_charts_of_its_kind() {
-    use renderer::theme::{ChartKind, SubplotScope, ThemeError, ThemeFamily};
+    use renderer::theme::{ChartKind, SubplotIndexError, SubplotScope, ThemeError, ThemeFamily};
     let mut series = vec![
         SeriesConfig::line("sine", "x", "y"),
         SeriesConfig::scatter("dots", "x", "y"),
@@ -437,7 +437,28 @@ fn a_custom_theme_themes_the_charts_of_its_kind() {
     let mut chart = Chart::new(config);
     let (before, before_series) = (chart.config().clone(), series.clone());
 
-    let mut scatter = ThemeFamily::Midnight.theme(ChartKind::Scatter);
+    // The inset's theme by name: its own kind's member.
+    assert_eq!(
+        chart.subplot_theme(0, "midnight", &series),
+        Ok(ThemeFamily::Midnight.theme(ChartKind::Scatter))
+    );
+    assert_eq!(
+        chart.subplot_theme(2, "midnight", &series),
+        Err(ThemeError::SubplotIndex(SubplotIndexError {
+            index: 2,
+            count: 1
+        }))
+    );
+    assert!(matches!(
+        chart.subplot_theme(0, "editorial", &series),
+        Err(ThemeError::WrongKind {
+            chart: ChartKind::Scatter,
+            ..
+        })
+    ));
+    let mut scatter = chart
+        .subplot_theme(0, "midnight", &series)
+        .expect("a member");
     scatter.series.palette[0] = Color::from_rgb8(255, 120, 0);
     chart
         .apply_custom_theme(&scatter, &mut series)
@@ -466,11 +487,17 @@ fn a_custom_theme_themes_the_charts_of_its_kind() {
     let line = ThemeFamily::Midnight.theme(ChartKind::Line);
     assert_eq!(
         chart.apply_custom_theme_to(&line, &mut series, SubplotScope::Only(&[3])),
-        Err(ThemeError::SubplotIndex { index: 3, count: 1 })
+        Err(ThemeError::SubplotIndex(SubplotIndexError {
+            index: 3,
+            count: 1
+        }))
     );
     assert_eq!(
         chart.apply_theme_to("gallery", &mut series, SubplotScope::Only(&[3])),
-        Err(ThemeError::SubplotIndex { index: 3, count: 1 })
+        Err(ThemeError::SubplotIndex(SubplotIndexError {
+            index: 3,
+            count: 1
+        }))
     );
     // No chart of a polar theme's kind.
     let polar = ThemeFamily::Midnight.theme(ChartKind::Polar);
@@ -489,7 +516,7 @@ fn a_custom_theme_themes_the_charts_of_its_kind() {
 #[test]
 fn a_chart_reads_and_sets_its_subplot_text_mode() {
     use renderer::SubplotTextScale;
-    use renderer::theme::ThemeError;
+    use renderer::theme::SubplotIndexError;
     let mut config = Chart::sized(960, 640).config().clone();
     let mut cell = renderer::Subplot::new(renderer::Config::default(), &[]);
     cell.config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
@@ -511,7 +538,7 @@ fn a_chart_reads_and_sets_its_subplot_text_mode() {
     let before = chart.config().clone();
     assert_eq!(
         chart.set_subplot_text_scale(1, SubplotTextScale::Auto),
-        Err(ThemeError::SubplotIndex { index: 1, count: 1 })
+        Err(SubplotIndexError { index: 1, count: 1 })
     );
     assert_eq!(chart.config(), &before);
     assert_eq!(chart.subplot_text_scale(1), None);

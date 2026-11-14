@@ -403,11 +403,11 @@ impl FiggyRadialChart {
             .map_err(crate::web::convert::theme_error)?;
         self.adopt(next)
     }
-    /// The names of the radial themes (#291, #295), as a JSON array: the
-    /// families first, then `default` and the radial catalogue.
-    pub fn theme_names(&self) -> Result<String, JsValue> {
-        serde_json::to_string(renderer::theme::RadialTheme::names())
-            .map_err(crate::web::convert::js_err)
+    /// The names of the radial themes (#291, #295), as an array of
+    /// strings: the families first, then `default` and the radial
+    /// catalogue.
+    pub fn theme_names(&self) -> js_sys::Array {
+        crate::web::convert::js_names(renderer::theme::RadialTheme::names())
     }
     /// Validate and prepare an edited document, then adopt it; the previous
     /// chart and frames stay on failure.

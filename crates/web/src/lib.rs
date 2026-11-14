@@ -1496,8 +1496,8 @@ mod web {
     pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};
     use convert::{
-        column_registration_error, js_err, js_safe_u64, subplot_index_error, theme_error,
-        theme_from_js,
+        check_subplot, coded_error, column_registration_error, js_err, js_names, js_safe_u64,
+        theme_error, theme_from_js, theme_to_js,
     };
     mod decorations;
     pub use decorations::AxisPreset;

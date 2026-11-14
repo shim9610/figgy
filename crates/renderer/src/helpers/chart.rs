@@ -1,7 +1,7 @@
 //! Chart conveniences: a sized chart, a theme, a legend from the series,
 //! and margins fitted to the text (#265).
 
-use crate::theme::{ChartKind, SubplotScope, Theme, ThemeError, ThemeFamily};
+use crate::theme::{ChartKind, SubplotIndexError, SubplotScope, Theme, ThemeError, ThemeFamily};
 use crate::{Chart, SeriesConfig};
 
 impl Chart {
@@ -292,6 +292,22 @@ impl Chart {
         Theme::for_chart(name, self.config(), series, crate::LayerRef::Base)
     }
 
+    /// The theme `name` resolves to on subplot `index`, as
+    /// [`Self::apply_theme`] resolves it there ([`Theme::for_chart`]): a
+    /// family's member for the subplot's kind or the kind's own theme, to
+    /// edit and apply with [`Self::apply_custom_theme`]. Refused as
+    /// [`Self::theme`] refuses the name, and for an index past the
+    /// subplots ([`ThemeError::SubplotIndex`]).
+    pub fn subplot_theme(
+        &self,
+        index: usize,
+        name: &str,
+        series: &[SeriesConfig],
+    ) -> Result<Theme, ThemeError> {
+        SubplotIndexError::check(index, self.config().subplots.len())?;
+        Theme::for_chart(name, self.config(), series, crate::LayerRef::Subplot(index))
+    }
+
     /// Apply `theme`, a theme the host built or edited (the theme
     /// [`Self::theme`] hands out, a family's member from
     /// [`crate::theme::ThemeFamily::theme`], a kind's from
@@ -349,16 +365,13 @@ impl Chart {
     /// Set how subplot `index`'s text follows its cell
     /// ([`Self::subplot_text_scale`]); the stored text sizes stay. Refused,
     /// changing nothing, for an index past the subplots
-    /// ([`ThemeError::SubplotIndex`]).
+    /// ([`SubplotIndexError`]).
     pub fn set_subplot_text_scale(
         &mut self,
         index: usize,
         mode: crate::SubplotTextScale,
-    ) -> Result<(), ThemeError> {
-        let count = self.config().subplots.len();
-        if index >= count {
-            return Err(ThemeError::SubplotIndex { index, count });
-        }
+    ) -> Result<(), SubplotIndexError> {
+        SubplotIndexError::check(index, self.config().subplots.len())?;
         if let Some(subplot) = self.config_mut().subplots.get_mut(index) {
             subplot.text_scale = mode;
         }
