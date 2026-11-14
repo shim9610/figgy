@@ -739,6 +739,7 @@ fn a_polar_subplot_draws_its_own_radar_series() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let chart = Chart::new(parent);
     let series = [radar("one", "one", RED, outline_and_fill())];

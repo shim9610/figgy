@@ -811,6 +811,7 @@ fn a_polar_subplot_draws_its_own_rose() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let chart = Chart::new(parent);
     let series = [bars("one", RED), bars("two", BLUE)];

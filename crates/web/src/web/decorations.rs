@@ -848,6 +848,42 @@ impl FiggyChart {
         self.replace_chart_config(config)
     }
 
+    /// How subplot `index`'s text follows its cell (#292): `"Auto"` (the
+    /// default) draws its titles, tick labels, legend and colourbar text at
+    /// the stored sizes times `subplot_text_scale(index)`; `"Fixed"` draws
+    /// the stored sizes. The stored sizes are never changed.
+    /// JS: `chart.set_subplot_text_scale(0, "Fixed");`
+    pub fn set_subplot_text_scale(&mut self, index: usize, mode: &str) -> Result<(), JsValue> {
+        let text_scale = match mode {
+            "Auto" => renderer::SubplotTextScale::Auto,
+            "Fixed" => renderer::SubplotTextScale::Fixed,
+            other => {
+                return Err(js_err(format!(
+                    "subplot text scale {other:?} is not \"Auto\" or \"Fixed\""
+                )));
+            }
+        };
+        let mut config = self.chart_config()?.clone();
+        let subplot = config
+            .subplots
+            .get_mut(index)
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+        subplot.text_scale = text_scale;
+        self.replace_chart_config(config)
+    }
+
+    /// The factor subplot `index` draws its text with now (#292): 1 for a
+    /// `"Fixed"` subplot or a cell as large as the parent chart, down to 0.5
+    /// for a small cell. It follows `set_subplot_area`, a frame drag and a
+    /// resize of the parent chart.
+    pub fn subplot_text_scale(&self, index: usize) -> Result<f32, JsValue> {
+        let config = self.chart_config()?;
+        if index >= config.subplots.len() {
+            return Err(js_err(format!("no subplot {index}")));
+        }
+        Ok(config.subplot_text_scale(index))
+    }
+
     /// The subplots that are insets now (nested in another panel's plot),
     /// bottom to top, as a JSON array of indices.
     pub fn insets(&self) -> Result<String, JsValue> {

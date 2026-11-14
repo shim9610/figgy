@@ -2420,6 +2420,10 @@ export class FiggyChartElement extends HTMLElement {
   set_subplot_background(index, color) {
     return this.#mutateChart("set_subplot_background", index, JSON.stringify(color ?? null));
   }
+  set_subplot_text_scale(index, mode) {
+    return this.#mutateChart("set_subplot_text_scale", index, mode);
+  }
+  subplot_text_scale(index) { return this.#kernelForCall().subplot_text_scale(index); }
   apply_theme(name, subplots = "all") {
     const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
     return this.#mutateChart("apply_theme", name, list);

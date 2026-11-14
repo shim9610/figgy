@@ -1491,8 +1491,54 @@ fn baseline_with_subplot() -> Config {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     c
+}
+
+/// [`baseline_with_subplot`] with the subplot's cell half as wide as the
+/// parent chart, so its text is drawn below its stored sizes (#292).
+fn baseline_with_small_subplot() -> Config {
+    let mut c = baseline_with_subplot();
+    c.subplots[0].config.chart_area.0.width = 160;
+    assert!(c.subplot_text_scale(0) < 0.8);
+    c
+}
+
+/// A subplot's text scale (#292) is chrome computed from the chart areas:
+/// the mode re-rasterizes the subplot's text only, and a resize of the cell
+/// or of the parent chart, which is geometry already, carries the new
+/// factor with it.
+fn subplot_text_scale_edits() -> Vec<Edit> {
+    fn case(name: &'static str, apply: fn(&mut Config), work: Work) -> Edit {
+        Edit {
+            name,
+            apply,
+            work,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            streams: false,
+        }
+    }
+    vec![
+        case(
+            "subplots[0].text_scale (Auto -> Fixed)",
+            |c| c.subplots[0].text_scale = crate::SubplotTextScale::Fixed,
+            Work::Prefix,
+        ),
+        case(
+            "subplots[0].config.chart_area.width (text scale follows)",
+            |c| c.subplots[0].config.chart_area.0.width = 300,
+            Work::Packed,
+        ),
+        case(
+            "chart_area.height (a subplot's text scale follows)",
+            |c| c.chart_area.0.height = 100,
+            Work::Packed,
+        ),
+    ]
 }
 
 /// Annotation edits run against a baseline that already has one item of each
@@ -1832,6 +1878,7 @@ fn matrix(resident: bool, cache: bool) {
         (baseline_with_overlay(), overlay_edits()),
         (baseline_with_overlay_x(), overlay_x_edits()),
         (baseline_with_subplot(), subplot_edits()),
+        (baseline_with_small_subplot(), subplot_text_scale_edits()),
         (baseline_with_annotations(), annotation_edits()),
         (baseline_with_categories(), category_edits()),
         (baseline_with_log_axes(), log_tick_edits()),
@@ -2144,6 +2191,7 @@ fn config_fields_are_classified() {
         link_x: _, // same rule as link_y
         link_y: _, // subplots[0].link_y (None -> Parent)
         marker: _,
+        text_scale: _, // subplot_text_scale_edits(): chrome Prefix
     } = subplots.into_iter().next().unwrap_or_default();
     let _ = baseline_with_subplot();
 }

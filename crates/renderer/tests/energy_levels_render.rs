@@ -699,6 +699,7 @@ fn chart_with_inset() -> Chart {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     chart
 }
@@ -848,6 +849,7 @@ fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
             link_x: None,
             link_y: None,
             marker: None,
+            text_scale: Default::default(),
         }
     };
     const GREEN: Color = Color::from_rgb8(190, 235, 190);

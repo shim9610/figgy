@@ -1727,6 +1727,7 @@ fn a_mesh_subplot_draws_and_picks_its_triangles() {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let doc = Chart::new(document.clone());
     let series = vec![mesh_series(

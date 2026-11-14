@@ -810,6 +810,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     });
     let mut polar_points = scatter("polar_points", 8.0);
     polar_points.series_id = "polar_points".into();

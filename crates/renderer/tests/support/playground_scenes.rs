@@ -1220,6 +1220,7 @@ fn probability_paper(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     };
     for axis in [&mut times.config.left_y, &mut times.config.right_y] {
         axis.scale = AxisScale::Probability(weibull);
@@ -2302,6 +2303,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     };
     let rust = Color::from_rgb8(176, 64, 32);
     let green = Color::from_rgb8(40, 140, 90);
@@ -4590,6 +4592,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         link_x: None,
         link_y: None,
         marker: None,
+        text_scale: Default::default(),
     }];
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 100.0);
@@ -5351,6 +5354,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         // inset's energy range, drawn on every frame so it follows the
         // inset and the view.
         marker: Some(renderer::InsetMarker::default()),
+        text_scale: Default::default(),
     });
 
     let mut fine_style = series.style.clone();
