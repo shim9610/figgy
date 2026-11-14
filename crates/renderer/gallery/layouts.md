@@ -24,7 +24,7 @@ An overlay layer with its own right Y axis, exported as a document.
 
 <a href="../examples/subplots.rs"><img src="../assets/gallery-subplots.png" alt="Small multiples" width="760"></a>
 
-A 2 × 2 grid: the parent and three subplots linked to its X axis, each with its own Y range.
+A 2 × 2 grid of four subplots in one figure, three linked to the first one's X axis, each with its own Y range. Each cell is half the figure's size and draws the theme's text sizes at its text scale (0.79).
 
 **Code:** [subplots.rs](../examples/subplots.rs), `small_multiples`
 

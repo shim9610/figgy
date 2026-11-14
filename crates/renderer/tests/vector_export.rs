@@ -1322,3 +1322,103 @@ fn an_axis_unit_exports_its_converted_labels() {
         );
     }
 }
+
+/// An 800x600 chart and a 400x300 subplot beside it with a title, axis
+/// titles, a legend and a colourbar: half the parent's size, so its text is
+/// drawn at 0.79 of its stored sizes (#292).
+fn small_cell_document() -> Config {
+    let titled = |title: &str| {
+        Chart::sized(800, 600)
+            .with_title(title)
+            .with_x_title("Hour")
+            .with_y_title("Level")
+            .config()
+            .clone()
+    };
+    let mut config = titled("Parent");
+    let mut cell = titled("Cell");
+    cell.chart_area.0 = Rect {
+        x: 800,
+        y: 0,
+        width: 400,
+        height: 300,
+    };
+    cell.legend.visible = true;
+    cell.legend.content.segments = renderer::text::rich_segments_from_text("legend");
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.title_option.visible = true;
+    bar.axis.title_option.text.segments = renderer::text::rich_segments_from_text("z");
+    cell.colorbar = Some(bar);
+    config.subplots.push(renderer::Subplot::new(cell, &[]));
+    renderer::layout::auto_layout(
+        &config,
+        &renderer::CpuTextMeasure::for_style(&config.draw_style),
+    )
+}
+
+// A subplot's text scale (#292) reaches every export: the SVG, the PDF and
+// the PNG at 1x and 2x of a document whose small cell is `Auto` are those
+// of the same document with the cell `Fixed` and its text sizes written at
+// the drawn size, and differ from the cell `Fixed` at its stored sizes.
+#[test]
+fn a_scaled_subplot_exports_the_text_sizes_it_draws() {
+    let gpu = gpu();
+    let mut r = renderer(&gpu);
+    let auto = small_cell_document();
+    let scale = auto.subplot_text_scale(0);
+    assert!((scale - 0.5f32.cbrt()).abs() < 1e-6, "{scale}");
+    let fixed = |written: Config| {
+        let mut document = auto.clone();
+        document.subplots[0].config = written;
+        document.subplots[0].text_scale = renderer::SubplotTextScale::Fixed;
+        document
+    };
+    let written_scaled = fixed(auto.subplot_config(0).unwrap());
+    assert_eq!(
+        written_scaled.subplots[0].config.chart_title.text.font_size,
+        auto.subplots[0].config.chart_title.text.font_size * scale
+    );
+    let stored = fixed(auto.subplots[0].config.clone());
+    let [auto, written_scaled, stored] = [auto, written_scaled, stored].map(Chart::new);
+    for export in SCALES {
+        let options = renderer::ExportOptions::document(export);
+        let svg = |r: &mut Renderer, chart: &Chart| {
+            r.export_svg(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+        };
+        let pdf = |r: &mut Renderer, chart: &Chart| {
+            r.export_pdf(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+        };
+        let png = |r: &mut Renderer, chart: &Chart| {
+            r.export_rgba(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+                .rgba
+        };
+        let text = svg(&mut r, &auto);
+        assert_eq!(text, svg(&mut r, &written_scaled), "SVG at {export}x");
+        assert_ne!(text, svg(&mut r, &stored), "SVG at {export}x");
+        let document = pdf(&mut r, &auto);
+        assert_eq!(document, pdf(&mut r, &written_scaled), "PDF at {export}x");
+        assert_ne!(document, pdf(&mut r, &stored), "PDF at {export}x");
+        let image = png(&mut r, &auto);
+        assert!(
+            image == png(&mut r, &written_scaled),
+            "PNG at {export}x differs"
+        );
+        assert!(image != png(&mut r, &stored), "PNG at {export}x");
+        // The parts the SVG was handed are the ones it reads back as.
+        let mut written = Vec::new();
+        written_document_parts(&auto, &[], export, &mut |part| written.push(part)).unwrap();
+        assert_parts_match(
+            &svg_parts::read(&text).parts,
+            &written,
+            TOLERANCE,
+            0.0,
+            &format!("a scaled subplot at {export}x"),
+        );
+    }
+}

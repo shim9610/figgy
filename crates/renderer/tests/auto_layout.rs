@@ -608,3 +608,287 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
         .map(|e| e.element_id());
     assert_eq!(hit.as_deref(), Some("axis_title_left"));
 }
+
+/// An 800x600 chart and a 400x300 subplot beside it with a title, axis
+/// titles, long tick labels and a legend: half the parent's size, so its
+/// text is drawn at 0.79 of its stored sizes (#292).
+fn small_cell_document() -> Config {
+    let titled = |title: &str| {
+        renderer::Chart::sized(800, 600)
+            .with_title(title)
+            .with_x_title("Time [min]")
+            .with_y_title("Response mean")
+            .config()
+            .clone()
+    };
+    let mut config = titled("Parent");
+    let mut cell = titled("Optical depth");
+    cell.chart_area.0 = renderer::layout::Rect {
+        x: 800,
+        y: 0,
+        width: 400,
+        height: 300,
+    };
+    cell.left_y.min = 0.0;
+    cell.left_y.max = 0.006;
+    cell.left_y.major_spacing = 0.003;
+    cell.legend.visible = true;
+    cell.legend.content.segments = renderer::text::rich_segments_from_text("legend");
+    config.subplots.push(renderer::Subplot::new(cell, &[]));
+    config
+}
+
+/// The rect that holds every pixel of `image` inside `within` that is
+/// darker than mid grey, in image pixels.
+fn ink(image: &renderer::RasterImage, within: RectF) -> Option<RectF> {
+    let (x0, y0) = (
+        within.x.floor().max(0.0) as u32,
+        within.y.floor().max(0.0) as u32,
+    );
+    let x1 = ((within.x + within.width).ceil() as u32).min(image.width);
+    let y1 = ((within.y + within.height).ceil() as u32).min(image.height);
+    let mut found: Option<(u32, u32, u32, u32)> = None;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let at = ((y * image.width + x) * 4) as usize;
+            let pixel = &image.rgba[at..at + 4];
+            if pixel[..3].iter().map(|c| u32::from(*c)).sum::<u32>() < 3 * 128 {
+                let (l, t, r, b) = found.unwrap_or((x, y, x, y));
+                found = Some((l.min(x), t.min(y), r.max(x), b.max(y)));
+            }
+        }
+    }
+    found.map(|(l, t, r, b)| RectF {
+        x: l as f32,
+        y: t as f32,
+        width: (r - l + 1) as f32,
+        height: (b - t + 1) as f32,
+    })
+}
+
+// A small cell is fitted to the text it draws (#292). Its bands are the
+// ones of the same cell with the drawn sizes written in, smaller than the
+// stored sizes'; at 1x and 2x its titles clear its labels by half the drawn
+// label font, no title overlaps a label and every text part lies inside the
+// cell; the stored text sizes stay.
+#[test]
+fn auto_layout_fits_a_small_subplot_cell_to_its_scaled_text() {
+    let doc = small_cell_document();
+    let scale = doc.subplot_text_scale(0);
+    assert!((scale - 0.5f32.cbrt()).abs() < 1e-6, "{scale}");
+    let out = laid_out(&doc);
+    assert_eq!(laid_out(&out), out, "idempotent");
+
+    let mut written = doc.clone();
+    written.subplots[0].config = doc.subplot_config(0).unwrap();
+    written.subplots[0].text_scale = renderer::SubplotTextScale::Fixed;
+    let mut stored = doc.clone();
+    stored.subplots[0].text_scale = renderer::SubplotTextScale::Fixed;
+    let (as_written, as_stored) = (laid_out(&written), laid_out(&stored));
+    let bands = |c: &Config| {
+        let cell = &c.subplots[0].config;
+        [
+            cell.chart_title.top_margin,
+            cell.left_y.out_margin,
+            cell.bottom_x.out_margin,
+            cell.right_y.out_margin,
+            cell.top_x.out_margin,
+        ]
+    };
+    assert_eq!(bands(&out), bands(&as_written));
+    for (band, wide) in bands(&out).iter().zip(bands(&as_stored)).take(3) {
+        assert!(*band > 0.0 && *band < wide, "{band} against {wide}");
+    }
+    assert_eq!(
+        out.subplot_config(0).unwrap(),
+        as_written.subplot_config(0).unwrap()
+    );
+    // Only layout fields changed in the stored cell.
+    let (cell, before) = (&out.subplots[0].config, &doc.subplots[0].config);
+    assert_eq!(cell.chart_title.text, before.chart_title.text);
+    assert_eq!(cell.legend.content, before.legend.content);
+    for (axis, old) in [
+        (&cell.left_y, &before.left_y),
+        (&cell.bottom_x, &before.bottom_x),
+    ] {
+        assert_eq!(axis.label_style.font_size, old.label_style.font_size);
+        assert_eq!(axis.title_option.text, old.title_option.text);
+    }
+
+    for export in [1.0f32, 2.0] {
+        let chart = out.scaled(export).subplot_config(0).unwrap();
+        let label = chart.left_y.label_style.font_size;
+        assert!((label - before.left_y.label_style.font_size * scale * export).abs() < 1e-3);
+        let gap = f32::max(4.0 * export, 0.5 * label);
+        for side in [Side::Bottom, Side::Left] {
+            let clearance = title_clearance(&chart, side.clone());
+            assert!(
+                clearance >= gap - 1.0 && clearance < gap + 2.0 * export,
+                "{side:?} at {export}x: {clearance} against {gap}"
+            );
+        }
+        assert_eq!(title_overlaps(&chart), 0, "at {export}x");
+        let area = RectF::from_rect(&chart.chart_area.0);
+        for element in [
+            Element::ChartTitle,
+            Element::AxisTitle(Side::Bottom),
+            Element::AxisTitle(Side::Left),
+            Element::AxisLabel(Side::Bottom),
+            Element::AxisLabel(Side::Left),
+            Element::Legend,
+        ] {
+            let parts = rects(&chart, element.clone());
+            assert!(!parts.is_empty(), "{element:?} draws");
+            for part in parts {
+                assert!(
+                    part.x >= area.x
+                        && part.y >= area.y
+                        && part.x + part.width <= area.x + area.width
+                        && part.y + part.height <= area.y + area.height,
+                    "{element:?} at {export}x: {part:?} outside {area:?}"
+                );
+            }
+        }
+    }
+}
+
+// A scaled subplot's decorations are hit where they are drawn and drag as
+// on any chart (#292). In the PNG export at 1x and 2x the ink of the cell's
+// chart title fills its hit region (the region of the drawn size, not of
+// the stored one); the title, the legend, an axis, the tick labels and an
+// axis title each move by the drag and keep their size; the stored text
+// sizes stay; and a resize of the cell is an edit that draws its text
+// again at the new factor.
+#[test]
+fn a_scaled_subplots_decorations_are_hit_and_dragged_where_they_are_drawn() {
+    use renderer::SelectionGeometry as _;
+    let mut r = renderer();
+    let doc = laid_out(&small_cell_document());
+    let scale = doc.subplot_text_scale(0);
+    let export = |r: &mut Renderer, config: &Config, at: f32| {
+        r.export_rgba(
+            renderer::ExportSource::chart(&renderer::Chart::new(config.clone()), &[]),
+            renderer::ExportOptions::document(at).with_clear(renderer::Color::WHITE),
+        )
+        .block_on()
+        .expect("export")
+    };
+    let bounds = |config: &Config, id: &str| {
+        let map = HitMap::for_active_layer(config);
+        let element = map
+            .get(map.find(id).unwrap_or_else(|| panic!("{id}")))
+            .unwrap();
+        element
+            .bounds(config, &measure(config))
+            .unwrap_or_else(|| panic!("{id} draws"))
+    };
+    let mut fixed = doc.clone();
+    fixed.subplots[0].text_scale = renderer::SubplotTextScale::Fixed;
+    let stored_title = bounds(&fixed, "subplot_0:chart_title");
+    for at in [1.0f32, 2.0] {
+        let shown = doc.scaled(at);
+        let title = bounds(&shown, "subplot_0:chart_title");
+        assert!(
+            (title.height - stored_title.height * scale * at).abs() < 1.5 * at,
+            "at {at}x: {title:?} against {stored_title:?}"
+        );
+        let image = export(&mut r, &doc, at);
+        let cell = RectF::from_rect(&shown.subplots[0].config.chart_area.0);
+        // The title band above the cell's plot, its whole width.
+        let band = RectF {
+            x: cell.x,
+            y: cell.y,
+            width: cell.width,
+            height: title.y + title.height + 2.0 * at - cell.y,
+        };
+        let drawn = ink(&image, band).expect("the title's ink");
+        let slack = 1.5 * at;
+        assert!(
+            drawn.x >= title.x - slack
+                && drawn.y >= title.y - slack
+                && drawn.x + drawn.width <= title.x + title.width + slack
+                && drawn.y + drawn.height <= title.y + title.height + slack,
+            "at {at}x: ink {drawn:?} outside the hit region {title:?}"
+        );
+        assert!(
+            drawn.width >= title.width - 4.0 * at && drawn.width > 0.85 * title.width,
+            "at {at}x: ink {drawn:?} narrower than the hit region {title:?}"
+        );
+        // A press on the ink's centre is the title's.
+        let map = HitMap::for_active_layer(&shown);
+        let (x, y) = drawn.center();
+        let hit = map
+            .hit_test(&shown, &measure(&shown), x, y)
+            .and_then(|id| map.get(id))
+            .map(|e| e.element_id());
+        assert_eq!(hit.as_deref(), Some("subplot_0:chart_title"), "at {at}x");
+    }
+
+    let mut dragged = doc.clone();
+    let map = HitMap::for_active_layer(&dragged);
+    for (id, dx, dy) in [
+        ("subplot_0:chart_title", 5.0, 3.0),
+        ("subplot_0:legend", -6.0, 4.0),
+        ("subplot_0:axis_bottom", 0.0, 4.0),
+        ("subplot_0:tick_labels_left", -3.0, 0.0),
+        ("subplot_0:axis_title_bottom", 0.0, 3.0),
+    ] {
+        let from = bounds(&dragged, id);
+        let element = map.get(map.find(id).unwrap()).unwrap();
+        let config = dragged.clone();
+        let result =
+            element
+                .as_draggable()
+                .unwrap()
+                .drag_by(&mut dragged, &measure(&config), dx, dy);
+        assert_eq!(result, renderer::layout::NudgeResult::Moved, "{id}");
+        let to = bounds(&dragged, id);
+        assert!(
+            (to.x - from.x - dx).abs() < 0.01 && (to.y - from.y - dy).abs() < 0.01,
+            "{id}: {from:?} to {to:?}"
+        );
+        assert!(
+            (to.width - from.width).abs() < 0.01 && (to.height - from.height).abs() < 0.01,
+            "{id}: {from:?} to {to:?}"
+        );
+    }
+    let (cell, before) = (&dragged.subplots[0].config, &doc.subplots[0].config);
+    assert_ne!(cell, before);
+    assert_eq!(cell.chart_title.text, before.chart_title.text);
+    assert_eq!(cell.legend.content, before.legend.content);
+    assert_eq!(
+        cell.left_y.label_style.font_size,
+        before.left_y.label_style.font_size
+    );
+    assert_eq!(dragged.subplot_text_scale(0), scale);
+    let moved = export(&mut r, &dragged, 1.0);
+    assert!(moved.rgba != export(&mut r, &doc, 1.0).rgba);
+
+    // A registered chart follows a resized cell: the edit invalidates it
+    // and the stored sizes are drawn at the new factor.
+    let id = r.register_chart(doc.clone(), Vec::new()).expect("register");
+    let stamp = r.chart_render_stamp(id).expect("stamp");
+    let mut resized = doc.clone();
+    resized
+        .set_subplot_area(
+            0,
+            renderer::layout::ChartArea(renderer::layout::Rect {
+                x: 800,
+                y: 0,
+                width: 600,
+                height: 450,
+            }),
+        )
+        .expect("a larger cell");
+    r.set_chart_config(id, resized.clone()).expect("apply");
+    assert_ne!(r.chart_render_stamp(id).expect("stamp"), stamp);
+    let stored = r.chart_config(id).unwrap();
+    assert!((stored.subplot_text_scale(0) - 0.75f32.cbrt()).abs() < 1e-6);
+    assert_eq!(
+        stored.subplots[0].config.chart_title.text,
+        doc.subplots[0].config.chart_title.text
+    );
+    let larger = bounds(&resized, "subplot_0:chart_title");
+    let smaller = bounds(&doc, "subplot_0:chart_title");
+    assert!(larger.height > smaller.height, "{larger:?} {smaller:?}");
+}

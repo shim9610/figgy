@@ -788,9 +788,11 @@ subplots), are Cartesian only and keep no annotation layer of their own. A
 subplot cannot draw a nonresident streaming series, and streaming rejects a
 document with subplots as a whole.
 Run `cargo run --locked -p figgy-renderer --example subplots -- target/subplots`
-for two native 2×2 exports: `gallery-subplots.png`, the parent and three
-subplots linked to its X axis, and `mixed-axes.png` with one linked axis, a
-different X column and a twin Y axis inside a subplot. See
+for two native 2×2 exports: `gallery-subplots.png`, four subplots in a
+figure-sized parent that draws only its background, three of them linked to
+the first one's X axis and each drawing its text at its cell's scale, and
+`mixed-axes.png`, the parent and three subplots of its size with one linked
+axis, a different X column and a twin Y axis inside a subplot. See
 [the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/subplots.rs).
 
 ## Offset spectra

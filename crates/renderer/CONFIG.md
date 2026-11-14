@@ -604,7 +604,10 @@ and the same text of the subplot's overlay layers. It does not cover bands
 and offsets (`out_margin`, `top_margin`, label and title offsets), line
 widths, tick lengths, annotation text or text a series carries (contour
 labels, energy-level labels). The parent chart's own text is never scaled,
-so a grid made of the parent and subplots of its size draws as stored.
+so a grid made of the parent and subplots of its size draws as stored. For a
+grid whose cells all follow their size, make the document's own chart the
+whole figure with its axes, title and grid hidden and every cell a subplot,
+as `small_multiples` in [examples/subplots.rs](examples/subplots.rs) does.
 
 The factor is a display parameter chosen from the layout, like the tick
 plan, and is never stored: `Config::subplot_config(i)` resolves the subplot
@@ -626,8 +629,8 @@ renders it, a display fits it to the surface and moves every chart with the
 parent (`Config::translate_areas`, `display_config_for_surface`,
 `place_document`). `Config::scaled` scales each subplot like the parent.
 [INTERACTION.md](INTERACTION.md#subplots) covers selection and dragging, and
-[examples/subplots.rs](examples/subplots.rs) draws a 2×2 grid with a linked X
-axis.
+[examples/subplots.rs](examples/subplots.rs) draws two 2×2 grids with linked X
+axes.
 
 ### `Legend`
 | Field | Type | Meaning |
@@ -1816,7 +1819,9 @@ pub struct Config {
 값 라벨, 그리고 서브플롯 오버레이 레이어의 같은 글자에 적용된다. 띠와 오프셋(`out_margin`,
 `top_margin`, 라벨·제목 오프셋), 선 굵기, 눈금 길이, 주석 글자, 시리즈가 가진 글자(등고선 라벨,
 에너지 준위 라벨)에는 적용되지 않는다. 부모 차트 자신의 글자는 배율을 받지 않으므로, 부모와 같은
-크기의 서브플롯으로 짠 그리드는 저장된 크기 그대로 그려진다.
+크기의 서브플롯으로 짠 그리드는 저장된 크기 그대로 그려진다. 그리드의 모든 셀이 자기 크기를 따르게
+하려면 [examples/subplots.rs](examples/subplots.rs)의 `small_multiples`처럼 문서 자신의 차트를 그림
+전체 크기로 두고 축·제목·격자를 숨긴 다음 모든 셀을 서브플롯으로 넣는다.
 
 배율은 눈금 계획처럼 레이아웃에서 정하는 표시 매개변수이며 저장하지 않는다.
 `Config::subplot_config(i)`가 배율을 곱한 크기로 서브플롯을 해석하므로 그리기, `auto_layout` /
