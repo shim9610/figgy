@@ -26,19 +26,26 @@ pub(super) fn named(kind: ChartKind, name: &str) -> Option<Theme> {
         (ChartKind::Line, "cool-slate") => Some(line_cool_slate()),
         (ChartKind::Line, "midnight") => Some(line_midnight()),
         (ChartKind::Line, "editorial") => Some(line_editorial()),
-        (ChartKind::Line, "milkyway") => Some(night_sky(DrawStyle::Milkyway(MilkywayOptions {
-            star_density: 70.0,
-            ribbon_width_px: 24.0,
-            ribbon_intensity: 0.08,
-            star_brightness: 0.32,
-            spread_px: 8.0,
-            faint_bias: 4.5,
-            glow: 0.35,
-            nebula: 0.6,
-            dust: 0.7,
-            planet_rim: 0.0,
-            ..crate::defaults::milkyway_options()
-        }))),
+        (ChartKind::Line, "milkyway") => {
+            // Every field is named (#46); the scales and the seed are the
+            // documented defaults.
+            let documented = crate::defaults::milkyway_options();
+            Some(night_sky(DrawStyle::Milkyway(MilkywayOptions {
+                star_density: 70.0,
+                ribbon_width_px: 24.0,
+                ribbon_intensity: 0.08,
+                star_scale: documented.star_scale,
+                star_brightness: 0.32,
+                spread_px: 8.0,
+                structure_scale: documented.structure_scale,
+                faint_bias: 4.5,
+                glow: 0.35,
+                nebula: 0.6,
+                dust: 0.7,
+                planet_rim: 0.0,
+                seed: documented.seed,
+            })))
+        }
         (ChartKind::Line, "constellation") => Some(night_sky(DrawStyle::Constellation(
             crate::defaults::constellation_options(),
         ))),

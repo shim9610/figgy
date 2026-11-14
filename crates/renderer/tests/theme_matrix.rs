@@ -9,7 +9,7 @@
 //! radial scenes take the radial catalogue (`RadialTheme`). After a theme
 //! is applied:
 //! - the document validates with its series;
-//! - it serializes and reads back as the same document (`serde` feature);
+//! - once saved, it serializes unchanged (`serde` feature);
 //! - it exports at 1x and at 2x, and its image is not the image of a theme
 //!   applied before it, so no frame is left stale;
 //! - the data is drawn: the 1x export differs from the export of the same
@@ -26,8 +26,8 @@
 //!
 //! The scenes keep the playground's document size. Every kind has a scene
 //! (`every_kind_has_a_scene`), so every theme of the catalogue is drawn at
-//! least once. The catalogue's colours are held to a contrast floor against the
-//! theme's background in a test of their own, without a GPU.
+//! least once. The catalogue's colours are held to a contrast floor against
+//! the theme's background in a test of their own, without a GPU.
 #![cfg(not(target_arch = "wasm32"))]
 
 #[path = "support/playground_scenes.rs"]
