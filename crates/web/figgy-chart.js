@@ -2430,6 +2430,12 @@ export class FiggyChartElement extends HTMLElement {
     return this.#mutateChart("apply_theme", name, list);
   }
   theme_names() { return JSON.parse(this.#kernelForCall().theme_names()); }
+  theme(name) { return this.#kernelForCall().theme(name); }
+  apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
+  apply_custom_theme_to(theme, subplots = "all") {
+    const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
+    return this.#mutateChart("apply_custom_theme_to", theme, list);
+  }
   set_background(color) {
     return this.#mutateChart("set_background", JSON.stringify(color ?? null));
   }

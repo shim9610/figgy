@@ -237,10 +237,10 @@ impl Chart {
     /// sizes ([`Self::fit_layout`]).
     ///
     /// Refused, changing nothing, when a chart is of a kind without that
-    /// name ([`ThemeError::Kind`]), when no kind has it
-    /// ([`ThemeError::Unknown`], which lists the names the chart takes), or
+    /// name ([`ThemeError::WrongKind`]), when no kind has it
+    /// ([`ThemeError::UnknownName`], which lists the names the chart takes), or
     /// when a theme's draw style cannot draw a series
-    /// ([`ThemeError::DrawStyle`], [`crate::draw_style_supports`]).
+    /// ([`ThemeError::UnsupportedDrawStyle`], [`crate::draw_style_supports`]).
     pub fn apply_theme(
         &mut self,
         name: &str,
@@ -287,23 +287,44 @@ impl Chart {
     /// a family's member for the chart's kind or the kind's own theme of
     /// that name, to edit and apply with [`Self::apply_custom_theme`].
     /// Refused as [`Self::apply_theme`] refuses the name
-    /// ([`ThemeError::Kind`], [`ThemeError::Unknown`]).
+    /// ([`ThemeError::WrongKind`], [`ThemeError::UnknownName`]).
     pub fn theme(&self, name: &str, series: &[SeriesConfig]) -> Result<Theme, ThemeError> {
         Theme::for_chart(name, self.config(), series, crate::LayerRef::Base)
     }
 
-    /// Apply `theme`, a theme the host built or edited (a family's member
-    /// from [`crate::theme::ThemeFamily::theme`], a kind's from
-    /// [`Theme::named`]), to the chart and its series ([`Theme::apply`]):
-    /// the chrome of the chart, its overlays and the subplots `subplots`
-    /// names, and the series drawn there. The layout is then fitted to the
-    /// new text sizes ([`Self::fit_layout`]).
+    /// Apply `theme`, a theme the host built or edited (the theme
+    /// [`Self::theme`] hands out, a family's member from
+    /// [`crate::theme::ThemeFamily::theme`], a kind's from
+    /// [`Theme::named`]), to the charts of its kind
+    /// ([`Theme::apply_to_its_kind`]): the base chart and every subplot of
+    /// [`Theme::kind`], or that draws no series yet, with their overlays
+    /// and the series drawn there. Charts of another kind are left as they
+    /// are. The layout is then fitted to the new text sizes
+    /// ([`Self::fit_layout`]).
     ///
-    /// Refused, changing nothing, when a chart in scope is of another kind
-    /// than the theme ([`ThemeError::Kind`]), or when the theme's draw style
-    /// cannot draw a series in scope ([`ThemeError::DrawStyle`],
+    /// Refused, changing nothing, when no chart is of the theme's kind
+    /// ([`ThemeError::WrongKind`]), or when the theme's draw style cannot
+    /// draw a series on a chart it themes
+    /// ([`ThemeError::UnsupportedDrawStyle`],
     /// [`crate::draw_style_supports`]).
     pub fn apply_custom_theme(
+        &mut self,
+        theme: &Theme,
+        series: &mut [SeriesConfig],
+    ) -> Result<(), ThemeError> {
+        theme.apply_to_its_kind(self.config_mut(), series, crate::draw_style_supports)?;
+        self.fit_layout();
+        Ok(())
+    }
+
+    /// [`Self::apply_custom_theme`] to the chart, its overlays and the
+    /// subplots `subplots` names ([`Theme::apply`]). Refused, changing
+    /// nothing, when a chart in scope is of another kind than the theme
+    /// ([`ThemeError::WrongKind`]), when the scope names a subplot the
+    /// chart does not have ([`ThemeError::SubplotIndex`]), or when the
+    /// theme's draw style cannot draw a series in scope
+    /// ([`ThemeError::UnsupportedDrawStyle`]).
+    pub fn apply_custom_theme_to(
         &mut self,
         theme: &Theme,
         series: &mut [SeriesConfig],
@@ -313,6 +334,43 @@ impl Chart {
         theme.apply(self.config_mut(), series, subplots)?;
         self.fit_layout();
         Ok(())
+    }
+
+    /// How subplot `index`'s text follows its cell (#292): `Auto` draws it
+    /// at the stored sizes times [`Self::subplot_text_factor`], `Fixed` at
+    /// the stored sizes. `None` for an index past the subplots.
+    pub fn subplot_text_scale(&self, index: usize) -> Option<crate::SubplotTextScale> {
+        self.config()
+            .subplots
+            .get(index)
+            .map(|subplot| subplot.text_scale)
+    }
+
+    /// Set how subplot `index`'s text follows its cell
+    /// ([`Self::subplot_text_scale`]); the stored text sizes stay. Refused,
+    /// changing nothing, for an index past the subplots
+    /// ([`ThemeError::SubplotIndex`]).
+    pub fn set_subplot_text_scale(
+        &mut self,
+        index: usize,
+        mode: crate::SubplotTextScale,
+    ) -> Result<(), ThemeError> {
+        let count = self.config().subplots.len();
+        if index >= count {
+            return Err(ThemeError::SubplotIndex { index, count });
+        }
+        if let Some(subplot) = self.config_mut().subplots.get_mut(index) {
+            subplot.text_scale = mode;
+        }
+        Ok(())
+    }
+
+    /// The factor subplot `index` draws its text with now
+    /// ([`crate::Config::subplot_text_factor`]): 1 for a `Fixed` subplot or
+    /// a cell as large as the chart, down to 0.5 for a small cell. `None`
+    /// for an index past the subplots.
+    pub fn subplot_text_factor(&self, index: usize) -> Option<f32> {
+        (index < self.config().subplots.len()).then(|| self.config().subplot_text_factor(index))
     }
 
     /// Fit the axis bands and margins to their labels and titles
@@ -343,7 +401,7 @@ pub fn check_theme_draw_style(
         .filter(in_scope)
         .find(|item| !crate::draw_style_supports(&theme.chrome.draw_style, &item.render_type))
     {
-        Some(item) => Err(ThemeError::DrawStyle {
+        Some(item) => Err(ThemeError::UnsupportedDrawStyle {
             series_id: item.series_id.clone(),
         }),
         None => Ok(()),

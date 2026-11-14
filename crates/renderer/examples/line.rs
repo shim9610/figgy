@@ -1,6 +1,6 @@
 //! Minimal native line chart: upload two columns and write a PNG.
 //! cargo run --locked -p figgy-renderer --example line
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::{ChartKind, Theme};
 use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut theme = Theme::named(ChartKind::Line, "default").ok_or("no default theme")?;
     theme.series.palette = vec![Color::from_rgb8(34, 104, 198)];
     theme.series.lines.line_width = 2.5;
-    chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(&theme, &mut series)?;
 
     let output = std::env::args_os()
         .nth(1)

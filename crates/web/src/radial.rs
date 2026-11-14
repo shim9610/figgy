@@ -399,7 +399,8 @@ impl FiggyRadialChart {
     /// errors.
     pub fn apply_theme(&mut self, name: &str) -> Result<(), JsValue> {
         let mut next = self.chart.clone();
-        next.apply_theme(name).map_err(js_err)?;
+        next.apply_theme(name)
+            .map_err(crate::web::convert::theme_error)?;
         self.adopt(next)
     }
     /// The names of the radial themes (#291, #295), as a JSON array: the

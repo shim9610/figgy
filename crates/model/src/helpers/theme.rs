@@ -4,7 +4,7 @@
 //! A [`Theme`] is a value, not a name stored in the document: applying one
 //! writes exactly the fields it owns and keeps everything the user set as
 //! content or layout. It is made for one [`ChartKind`]: applying it to a
-//! chart of another kind is refused ([`ThemeError::Kind`]) and changes
+//! chart of another kind is refused ([`ThemeError::WrongKind`]) and changes
 //! nothing. [`Theme::named`] looks one up in a kind's catalogue
 //! ([`Theme::names`]). A [`ThemeFamily`] (#295) is one look with a member
 //! for every kind, so one name themes any chart: [`Theme::apply_named`]
@@ -58,6 +58,7 @@ pub use kind::ChartKind;
 /// series family. Every built-in theme defines every part; a host edits any
 /// field before applying.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Theme {
     /// The kind of chart the theme is made for; [`Theme::apply`] refuses
     /// a chart of another kind.
@@ -68,6 +69,7 @@ pub struct Theme {
 
 /// The look of everything around the data.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChromeTheme {
     /// [`Config::background`]: the chart area's fill, or none.
     pub background: Option<Color>,
@@ -112,6 +114,7 @@ pub struct ChromeTheme {
 /// The colourbar's look; its map is the field part's
 /// ([`FieldTheme::colormap`]). Its side, alignment, range and offsets stay.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ColorbarTheme {
     pub border: Color,
     pub border_width: f32,
@@ -130,6 +133,7 @@ pub struct ColorbarTheme {
 
 /// One kind of grid line: whether it is drawn and how.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GridLine {
     pub show: bool,
     pub color: Color,
@@ -139,6 +143,7 @@ pub struct GridLine {
 
 /// The four kinds of grid line.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GridTheme {
     pub major_x: GridLine,
     pub major_y: GridLine,
@@ -149,6 +154,7 @@ pub struct GridTheme {
 /// The selection highlight's look ([`DataSelectionsConfig`]); the selected
 /// refs and their visibility stay.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HighlightTheme {
     pub color: Color,
     pub outline_width_px: f32,
@@ -158,6 +164,7 @@ pub struct HighlightTheme {
 
 /// One part per series family.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeriesTheme {
     /// Series `i` takes `palette[i % palette.len()]`, on every part a
     /// palette colours ([`ColorCycle::apply_to_series`] names them). Empty
@@ -180,6 +187,7 @@ pub struct SeriesTheme {
 /// Lines, markers, stems and error bars of x-y and ternary series, and the
 /// polylines of streamline and parallel series.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineTheme {
     pub line_width: f32,
     /// The opacity of a filled line's fill, in the line's colour; `None`
@@ -202,6 +210,7 @@ pub struct LineTheme {
 
 /// Histogram bars, category bars and the bars of range series.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarTheme {
     /// A histogram bar's border.
     pub border_color: Color,
@@ -227,6 +236,7 @@ pub struct BarTheme {
 
 /// Box plots, violins and the raw points beside them.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoxTheme {
     pub material: Material,
     pub gloss: f32,
@@ -260,6 +270,7 @@ pub struct BoxTheme {
 
 /// A text's colour and size.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextLook {
     pub color: Color,
     pub size: f32,
@@ -270,6 +281,7 @@ pub struct TextLook {
 /// labels. Which levels are drawn, whether they are labelled and how far
 /// apart the labels sit stay.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FieldTheme {
     pub colormap: ColorMap,
     pub nan_color: Color,
@@ -294,6 +306,7 @@ pub struct FieldTheme {
 
 /// Vector arrows.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VectorTheme {
     pub width_px: f32,
     pub head_length_px: f32,
@@ -302,6 +315,7 @@ pub struct VectorTheme {
 
 /// Radar outlines; `None` keeps each series' own value.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadarTheme {
     pub line_width_px: Option<f32>,
     pub marker_size_px: Option<f32>,
@@ -314,6 +328,7 @@ pub struct RadarTheme {
 /// how a series is coloured ([`crate::data_config::RangeColor`]): it
 /// recolours the colouring the series has.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RangeBarTheme {
     /// The rising bars of a series coloured by direction; `None` keeps the
     /// series' own.
@@ -337,6 +352,7 @@ pub struct RangeBarTheme {
 
 /// Ternary region fills and their outlines.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TernaryTheme {
     /// The fill colours of the series that fill a region: series `i` takes
     /// `regions[i % regions.len()]`. Empty keeps every region colour.
@@ -351,6 +367,7 @@ pub struct TernaryTheme {
 /// Parallel coordinates: the axes take the chrome's frame and tick labels,
 /// the rows the line part.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParallelTheme {
     /// The size of the axis names, the labels of the category axis.
     pub name_size: f32,
@@ -358,6 +375,7 @@ pub struct ParallelTheme {
 
 /// 3D surfaces and their lighting response.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SurfaceTheme {
     pub material: Material,
     pub gloss: f32,
@@ -373,6 +391,7 @@ pub struct SurfaceTheme {
 
 /// Energy-level (Grotrian) diagrams. The levels take the cycle colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnergyLevelTheme {
     /// The frame a chart of these series takes.
     pub axis_preset: AxisPreset,
@@ -408,6 +427,7 @@ pub struct EnergyLevelTheme {
 /// Feynman diagrams. The lines take the cycle colour unless their particle
 /// has a colour of its own here.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeynmanTheme {
     /// The frame a chart of these series takes.
     pub axis_preset: AxisPreset,
@@ -443,6 +463,7 @@ pub struct FeynmanTheme {
 /// donut, and the hole), the light, the hover response and the font family
 /// stay, and so does a slice's own style.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadialTheme {
     /// Slice `i` of the top level takes `palette[i % palette.len()]`;
     /// empty keeps every slice colour.
@@ -478,11 +499,22 @@ pub struct RadialTheme {
     pub outline: RadialOutline,
 }
 
+/// What a theme name was looked up for ([`ThemeError::UnknownName`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeTarget {
+    /// A chart of this kind ([`ChartKind::of`]).
+    Chart(ChartKind),
+    /// A chart that draws no series yet, so has no kind.
+    EmptyChart,
+    /// The radial chart ([`RadialTheme`]).
+    Radial,
+}
+
 /// Why a theme was not applied. Nothing is changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemeError {
     /// A chart in scope is of another kind than the theme is made for.
-    Kind {
+    WrongKind {
         /// The name that was applied ([`Theme::apply_named`]); `None` for a
         /// theme applied as a value ([`Theme::apply`]).
         name: Option<String>,
@@ -495,52 +527,86 @@ pub enum ThemeError {
     },
     /// The theme's draw style cannot draw a series in scope: the renderer
     /// would drop it (`renderer::draw_style_supports`). The model cannot
-    /// tell; the renderer's `Chart::apply_theme` and the web wrappers
-    /// check it before applying.
-    DrawStyle { series_id: String },
-    /// No theme of this name applies to a chart in scope: neither a family
+    /// tell; [`Theme::apply_named`] takes the answer as an argument, and
+    /// the renderer's `Chart` methods and the web wrappers check it before
+    /// applying.
+    UnsupportedDrawStyle { series_id: String },
+    /// No theme of this name applies to `target`: neither a family
     /// ([`ThemeFamily`]) nor a name of the chart's kind ([`Theme::names`]),
-    /// nor a name of any other kind (that is [`Self::Kind`]).
-    Unknown {
+    /// nor a name of any other kind (that is [`Self::WrongKind`]).
+    UnknownName {
         name: String,
-        /// The chart's kind; `None` for a chart that draws no series yet
-        /// and for the radial chart.
-        kind: Option<ChartKind>,
-        /// The names the chart takes: the families first, then the kind's
-        /// own ([`Theme::names`]); the families alone for a chart without a
-        /// kind; the radial names for the radial chart
-        /// ([`RadialTheme::names`]).
+        target: ThemeTarget,
+        /// The names `target` takes: the families first, then the kind's
+        /// own ([`Theme::names`]); the families alone for an empty chart;
+        /// the radial names for the radial chart ([`RadialTheme::names`]).
         names: &'static [&'static str],
+    },
+    /// A subplot index past the chart's subplots: in a
+    /// [`SubplotScope::Only`], or given to a subplot setter
+    /// (`RuleKind::SubplotIndex`).
+    SubplotIndex {
+        index: usize,
+        /// How many subplots the chart has.
+        count: usize,
     },
 }
 
 impl std::fmt::Display for ThemeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Kind {
-                name,
+            Self::WrongKind {
+                name: Some(name),
                 theme,
                 chart,
                 layer,
-            } => match name {
-                Some(name) => write!(
-                    f,
-                    "the {theme} theme {name:?} does not apply to a {chart} chart ({layer:?})"
-                ),
-                None => write!(
-                    f,
-                    "a {theme} theme does not apply to a {chart} chart ({layer:?})"
-                ),
-            },
-            Self::DrawStyle { series_id } => {
-                write!(f, "the theme's draw style cannot draw series {series_id:?}")
-            }
-            Self::Unknown { name, kind, names } => {
-                match kind {
-                    Some(kind) => write!(f, "no theme {name:?} for a {kind} chart")?,
-                    None => write!(f, "no theme {name:?}")?,
+            } => write!(
+                f,
+                "the {theme} theme {name:?} does not apply to the {chart} chart at {layer:?}: \
+                 use a family ({}), or leave that chart out of the subplot scope",
+                ThemeFamily::NAMES.join(", ")
+            ),
+            Self::WrongKind {
+                name: None,
+                theme,
+                chart,
+                layer,
+            } => write!(
+                f,
+                "a {theme} theme does not apply to the {chart} chart at {layer:?}: apply it \
+                 to the charts of its kind (apply_custom_theme skips the others), or leave \
+                 that chart out of the subplot scope"
+            ),
+            Self::UnsupportedDrawStyle { series_id } => write!(
+                f,
+                "the theme's draw style cannot draw series {series_id:?}: use a theme in the \
+                 Precise draw style, such as a family, or remove that series"
+            ),
+            Self::UnknownName {
+                name,
+                target,
+                names,
+            } => {
+                match target {
+                    ThemeTarget::Chart(kind) => write!(f, "no theme {name:?} for a {kind} chart")?,
+                    ThemeTarget::EmptyChart => {
+                        write!(f, "no theme {name:?} for a chart without series")?
+                    }
+                    ThemeTarget::Radial => write!(f, "no radial theme {name:?}")?,
                 }
-                write!(f, ": use {}", names.join(", "))
+                write!(f, ": use one of {}", names.join(", "))
+            }
+            Self::SubplotIndex { index, count } => {
+                write!(f, "{}: no subplot {index}, ", crate::RuleKind::SubplotIndex)?;
+                match count {
+                    0 => write!(f, "the chart has no subplots"),
+                    1 => write!(f, "the chart has one subplot (index 0)"),
+                    _ => write!(
+                        f,
+                        "the chart has {count} subplots (indices 0 to {})",
+                        count - 1
+                    ),
+                }
             }
         }
     }
@@ -625,6 +691,19 @@ impl<'a> Charts<'a> {
             LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => self.subplots.includes(i),
             LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => self.base,
         }
+    }
+}
+
+/// Every index `subplots` names is a subplot of `config`
+/// ([`ThemeError::SubplotIndex`] for the first that is not).
+fn check_scope(config: &Config, subplots: SubplotScope) -> Result<(), ThemeError> {
+    let count = config.subplots.len();
+    match subplots {
+        SubplotScope::Only(indices) => match indices.iter().find(|&&index| index >= count) {
+            Some(&index) => Err(ThemeError::SubplotIndex { index, count }),
+            None => Ok(()),
+        },
+        SubplotScope::None | SubplotScope::All => Ok(()),
     }
 }
 
@@ -1099,11 +1178,12 @@ impl Theme {
         series: &[SeriesConfig],
         charts: Charts,
     ) -> Result<(), ThemeError> {
+        check_scope(config, charts.subplots)?;
         for layer in charts_in_scope(config, charts) {
             if let Some(chart) = ChartKind::of(config, series, layer)
                 && chart != self.kind
             {
-                return Err(ThemeError::Kind {
+                return Err(ThemeError::WrongKind {
                     name: None,
                     theme: self.kind,
                     chart,

@@ -2,7 +2,7 @@
 //! cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png
 //! Do not replace Line with ScatterLine/LineScatterErrorbar: those add planets/jets.
 use renderer::config::LegendCorner;
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::{ChartKind, Theme};
 use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
 
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Milkyway line pipeline; no scatter planets or errorbar jets exist.
         series.push(SeriesConfig::line(id, "time", id).label(label));
     }
-    chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(&theme, &mut series)?;
     let mut chart = chart.with_legend_from(&series);
     chart.config_mut().legend.corner = LegendCorner::TopLeft;
     // Fit the margins to the labels, titles and legend before export.

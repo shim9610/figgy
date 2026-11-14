@@ -8,7 +8,7 @@ use renderer::line::LineStylePreset;
 use renderer::select::{
     ColorBarAxisElement, ColorBarLabelElement, ColorBarTitleElement, SelectionGeometry,
 };
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -728,5 +728,87 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     assert_eq!(
         xy.scatter.as_ref().map(|marker| marker.point_size),
         Some(scatter.series.lines.marker_size)
+    );
+
+    // Typed errors (#295): each refusal throws an `Error` with a `code`,
+    // the names on an unknown name, the index and count on a subplot index.
+    let field = |error: &JsValue, key: &str| {
+        js_sys::Reflect::get(error, &JsValue::from_str(key)).expect("an error object")
+    };
+    let code = |error: &JsValue| field(error, "code").as_string().unwrap_or_default();
+    let unknown = chart.apply_theme("neon", "all").unwrap_err();
+    assert_eq!(code(&unknown), "theme_unknown_name");
+    let names: Vec<String> = js_sys::Array::from(&field(&unknown, "names"))
+        .iter()
+        .filter_map(|name| name.as_string())
+        .collect();
+    assert_eq!(names, Theme::names(ChartKind::Line));
+    assert_eq!(
+        code(&chart.apply_theme("editorial", "all").unwrap_err()),
+        "theme_wrong_kind"
+    );
+    assert_eq!(
+        code(&chart.apply_theme("constellation", "none").unwrap_err()),
+        "theme_draw_style"
+    );
+    let index = chart.apply_theme("gallery", "[4]").unwrap_err();
+    assert_eq!(code(&index), "subplot_index");
+    assert_eq!(field(&index, "index").as_f64(), Some(4.0));
+    assert_eq!(field(&index, "count").as_f64(), Some(1.0));
+    for error in [
+        chart.subplot_text_scale(4).unwrap_err(),
+        chart.subplot_text_factor(4).unwrap_err(),
+        chart.set_subplot_text_scale(4, "Auto").unwrap_err(),
+        chart.subplot_area(4).unwrap_err(),
+        chart.set_subplot_background(4, "null").unwrap_err(),
+    ] {
+        assert_eq!(code(&error), "subplot_index");
+    }
+    assert_eq!(
+        code(&chart.theme("neon").unwrap_err()),
+        "theme_unknown_name"
+    );
+
+    // Edit and apply (#295): the theme a name resolves to comes out as an
+    // object, reads back equal, and applies to the charts of its kind.
+    let object = chart.theme("midnight").expect("the line member");
+    let json = js_sys::JSON::stringify(&object)
+        .unwrap()
+        .as_string()
+        .unwrap();
+    let back: renderer::theme::Theme = serde_json::from_str(&json).expect("a theme");
+    let line = ThemeFamily::Midnight.theme(ChartKind::Line);
+    assert_eq!(back, line);
+    js_sys::Reflect::set(
+        &object,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("scatter"),
+    )
+    .unwrap();
+    let before = chart_config(&chart);
+    chart
+        .apply_custom_theme(object.clone())
+        .expect("the scatter inset takes it");
+    let themed = chart_config(&chart);
+    assert_eq!(themed.background, before.background, "the line base stays");
+    assert_eq!(themed.subplots[0].config.background, line.chrome.background);
+    assert_eq!(
+        code(
+            &chart
+                .apply_custom_theme_to(object.clone(), "all")
+                .unwrap_err()
+        ),
+        "theme_wrong_kind"
+    );
+    chart
+        .apply_custom_theme_to(object, "[0]")
+        .expect("the inset alone");
+    assert_eq!(
+        code(
+            &chart
+                .apply_custom_theme(JsValue::from_str("plain"))
+                .unwrap_err()
+        ),
+        "theme_invalid"
     );
 }

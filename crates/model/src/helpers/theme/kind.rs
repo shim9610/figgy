@@ -10,6 +10,8 @@ use crate::layer::LayerRef;
 /// card for Feynman diagrams. The radial chart is a model of its own and
 /// has its own themes ([`super::RadialTheme`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum ChartKind {
     /// Lines, areas and steps: x-y series that draw a line.
     Line,
@@ -31,6 +33,7 @@ pub enum ChartKind {
     /// Vector arrows and streamlines.
     VectorField,
     /// Any chart on a 3D view: surfaces, 3D meshes, 3D arrows and lines.
+    #[cfg_attr(feature = "serde", serde(rename = "surface-3d"))]
     Surface3d,
     /// A field over a triangle mesh.
     TriMesh,

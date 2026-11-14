@@ -2,7 +2,7 @@
 //! cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png
 //! Constellation uses ScatterLine; Milkyway uses Line in its separate preview.
 use renderer::config::{LegendCorner, LegendEntryKind};
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::{ChartKind, Theme};
 use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
 
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         series.push(SeriesConfig::scatter_line(id, "time", id));
         labels.push(label);
     }
-    chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(&theme, &mut series)?;
     // The legend draws each series as a line in its theme colour.
     for (label, color) in labels.into_iter().zip(&theme.series.palette) {
         let width = theme.series.lines.line_width;

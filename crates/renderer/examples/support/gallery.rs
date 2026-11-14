@@ -54,7 +54,7 @@ pub fn theme_named(kind: ChartKind, name: &str) -> Result<Theme> {
 /// Apply `theme`, as given or edited, to the chart and its series
 /// (`Chart::apply_custom_theme`).
 pub fn themed(chart: &mut Chart, theme: &Theme, series: &mut [SeriesConfig]) -> Result {
-    chart.apply_custom_theme(theme, series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, series)?;
     Ok(())
 }
 

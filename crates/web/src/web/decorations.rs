@@ -759,11 +759,10 @@ impl FiggyChart {
     /// Subplot `index`'s frame as JSON `{"x":..,"y":..,"width":..,"height":..}`
     /// in document pixels.
     pub fn subplot_area(&self, index: usize) -> Result<String, JsValue> {
-        let subplot = self
-            .chart_config()?
-            .subplots
+        let subplots = &self.chart_config()?.subplots;
+        let subplot = subplots
             .get(index)
-            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+            .ok_or_else(|| subplot_index_error(index, subplots.len()))?;
         serde_json::to_string(&subplot.config.chart_area.0).map_err(js_err)
     }
 
@@ -792,9 +791,83 @@ impl FiggyChart {
     /// monotonic series keeps its layout (#271): `fit_layout`, which takes
     /// the groups' sources, fits it.
     pub fn apply_theme(&mut self, name: &str, subplots: &str) -> Result<(), JsValue> {
+        self.write_theme(subplots, |config, series, scope| {
+            renderer::theme::Theme::apply_named(
+                name,
+                config,
+                series,
+                scope,
+                renderer::draw_style_supports,
+            )
+        })
+    }
+
+    /// The theme `name` resolves to on the chart (#295), as a plain object
+    /// (`Theme`'s fields, colours as `{r, g, b, a}`): a family's member for
+    /// the chart's kind or the kind's own theme. Edit it and pass it to
+    /// [`Self::apply_custom_theme`]. An unknown name throws an `Error` with
+    /// `code` `"theme_unknown_name"` and the `names` the chart takes, a
+    /// name of another kind `"theme_wrong_kind"`.
+    pub fn theme(&self, name: &str) -> Result<JsValue, JsValue> {
+        let theme = renderer::theme::Theme::for_chart(
+            name,
+            self.chart_config()?,
+            self.chart_series()?,
+            renderer::LayerRef::Base,
+        )
+        .map_err(theme_error)?;
+        let json = serde_json::to_string(&theme).map_err(js_err)?;
+        js_sys::JSON::parse(&json)
+    }
+
+    /// Apply `theme`, an object [`Self::theme`] handed out and the host
+    /// edited, to the charts of its kind (#295): the chart and every
+    /// subplot of the theme's kind, or that draws no series yet; charts of
+    /// another kind are left as they are. Then fit the layout as
+    /// [`Self::apply_theme`] does. An object that is not a theme throws
+    /// `code` `"theme_invalid"`; no chart of its kind `"theme_wrong_kind"`;
+    /// a draw style that cannot draw a series it themes
+    /// `"theme_draw_style"`. A refusal changes nothing.
+    pub fn apply_custom_theme(&mut self, theme: JsValue) -> Result<(), JsValue> {
+        let theme = theme_from_js(&theme)?;
+        self.write_theme("all", |config, series, _| {
+            theme.apply_to_its_kind(config, series, renderer::draw_style_supports)
+        })
+    }
+
+    /// [`Self::apply_custom_theme`] to the chart and the subplots
+    /// `subplots` names (`"all"`, `"none"` or a JSON array of indices, as
+    /// [`Self::apply_theme`] takes them). A chart in scope of another kind
+    /// throws `"theme_wrong_kind"`, an index past the subplots
+    /// `"subplot_index"`.
+    pub fn apply_custom_theme_to(&mut self, theme: JsValue, subplots: &str) -> Result<(), JsValue> {
+        let theme = theme_from_js(&theme)?;
+        self.write_theme(subplots, |config, series, scope| {
+            renderer::helpers::check_theme_draw_style(&theme, config, series, scope)?;
+            theme.apply(config, series, scope)
+        })
+    }
+
+    /// Run `write` on a copy of the chart and its series with the scope
+    /// `subplots` names, then fit the layout and adopt the copy: the one
+    /// path of every theme call. A refusal throws a theme error
+    /// ([`theme_error`]) and changes nothing.
+    fn write_theme(
+        &mut self,
+        subplots: &str,
+        write: impl FnOnce(
+            &mut renderer::Config,
+            &mut [renderer::SeriesConfig],
+            SubplotScope,
+        ) -> Result<(), renderer::theme::ThemeError>,
+    ) -> Result<(), JsValue> {
         let indices: Vec<usize> = match subplots.trim() {
             "all" | "none" => Vec::new(),
-            list => serde_json::from_str(list).map_err(js_err)?,
+            list => serde_json::from_str(list).map_err(|error| {
+                js_err(format!(
+                    "subplots {list:?} is not \"all\", \"none\" or a JSON array of indices: {error}"
+                ))
+            })?,
         };
         let scope = match subplots.trim() {
             "all" => SubplotScope::All,
@@ -803,14 +876,7 @@ impl FiggyChart {
         };
         let mut config = self.chart_config()?.clone();
         let mut series = self.chart_series()?.to_vec();
-        renderer::theme::Theme::apply_named(
-            name,
-            &mut config,
-            &mut series,
-            scope,
-            renderer::draw_style_supports,
-        )
-        .map_err(js_err)?;
+        write(&mut config, &mut series, scope).map_err(theme_error)?;
         // A chart with monotonic series keeps its layout: the layout fit can
         // move the plot's edges, so it is `fit_layout`, which takes the
         // groups' sources (#271).
@@ -846,10 +912,11 @@ impl FiggyChart {
     pub fn set_subplot_background(&mut self, index: usize, json: &str) -> Result<(), JsValue> {
         let color: Option<Color> = serde_json::from_str(json).map_err(js_err)?;
         let mut config = self.chart_config()?.clone();
+        let count = config.subplots.len();
         let subplot = config
             .subplots
             .get_mut(index)
-            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+            .ok_or_else(|| subplot_index_error(index, count))?;
         subplot.config.plot_background = color;
         self.replace_chart_config(config)
     }
@@ -871,10 +938,11 @@ impl FiggyChart {
             }
         };
         let mut config = self.chart_config()?.clone();
+        let count = config.subplots.len();
         let subplot = config
             .subplots
             .get_mut(index)
-            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+            .ok_or_else(|| subplot_index_error(index, count))?;
         subplot.text_scale = text_scale;
         self.replace_chart_config(config)
     }
@@ -882,11 +950,10 @@ impl FiggyChart {
     /// Subplot `index`'s text mode (#292, #295), as its setter
     /// [`Self::set_subplot_text_scale`] takes it: `"Auto"` or `"Fixed"`.
     pub fn subplot_text_scale(&self, index: usize) -> Result<String, JsValue> {
-        let subplot = self
-            .chart_config()?
-            .subplots
+        let subplots = &self.chart_config()?.subplots;
+        let subplot = subplots
             .get(index)
-            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+            .ok_or_else(|| subplot_index_error(index, subplots.len()))?;
         Ok(match subplot.text_scale {
             renderer::SubplotTextScale::Auto => "Auto",
             renderer::SubplotTextScale::Fixed => "Fixed",
@@ -902,7 +969,7 @@ impl FiggyChart {
     pub fn subplot_text_factor(&self, index: usize) -> Result<f32, JsValue> {
         let config = self.chart_config()?;
         if index >= config.subplots.len() {
-            return Err(js_err(format!("no subplot {index}")));
+            return Err(subplot_index_error(index, config.subplots.len()));
         }
         Ok(config.subplot_text_factor(index))
     }

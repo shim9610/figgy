@@ -1495,7 +1495,10 @@ mod web {
     use columns::{VectorColumns, referenced_columns, vector_columns};
     pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};
-    use convert::{column_registration_error, js_err, js_safe_u64};
+    use convert::{
+        column_registration_error, js_err, js_safe_u64, subplot_index_error, theme_error,
+        theme_from_js,
+    };
     mod decorations;
     pub use decorations::AxisPreset;
     pub(crate) use decorations::vertex_handle_index;

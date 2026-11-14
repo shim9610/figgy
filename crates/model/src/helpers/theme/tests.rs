@@ -281,7 +281,7 @@ fn a_theme_refuses_a_chart_of_another_kind() {
     let (mut config, mut series) = (before.clone(), series_before.clone());
     assert_eq!(
         theme.apply(&mut config, &mut series, SubplotScope::None),
-        Err(ThemeError::Kind {
+        Err(ThemeError::WrongKind {
             name: None,
             theme: ChartKind::Scatter,
             chart: ChartKind::Line,
@@ -307,7 +307,7 @@ fn a_theme_refuses_a_chart_of_another_kind() {
     );
     assert_eq!(
         line.apply(&mut config, &mut series, SubplotScope::All),
-        Err(ThemeError::Kind {
+        Err(ThemeError::WrongKind {
             name: None,
             theme: ChartKind::Line,
             chart: ChartKind::Stem,
@@ -2098,7 +2098,7 @@ fn a_kind_s_own_name_refuses_other_kinds() {
             SubplotScope::All,
             |_, _| true
         ),
-        Err(ThemeError::Kind {
+        Err(ThemeError::WrongKind {
             name: Some("editorial".into()),
             theme: ChartKind::Line,
             chart: ChartKind::Scatter,
@@ -2169,9 +2169,9 @@ fn an_unknown_name_lists_the_names_the_chart_takes() {
     .unwrap_err();
     assert_eq!(
         error,
-        ThemeError::Unknown {
+        ThemeError::UnknownName {
             name: "neon".into(),
-            kind: Some(ChartKind::Line),
+            target: ThemeTarget::Chart(ChartKind::Line),
             names: Theme::names(ChartKind::Line),
         }
     );
@@ -2188,9 +2188,9 @@ fn an_unknown_name_lists_the_names_the_chart_takes() {
         .unwrap_err();
     assert_eq!(
         error,
-        ThemeError::Unknown {
+        ThemeError::UnknownName {
             name: "neon".into(),
-            kind: None,
+            target: ThemeTarget::EmptyChart,
             names: ThemeFamily::NAMES,
         }
     );
@@ -2247,7 +2247,7 @@ fn a_draw_style_refusal_changes_nothing() {
             SubplotScope::None,
             precise_only
         ),
-        Err(ThemeError::DrawStyle {
+        Err(ThemeError::UnsupportedDrawStyle {
             series_id: "a".into()
         })
     );
@@ -2264,7 +2264,7 @@ fn a_draw_style_refusal_changes_nothing() {
             SubplotScope::All,
             refuse_histograms
         ),
-        Err(ThemeError::DrawStyle {
+        Err(ThemeError::UnsupportedDrawStyle {
             series_id: "s2".into()
         })
     );
@@ -2348,7 +2348,7 @@ fn a_name_resolves_to_its_chart_s_theme() {
     let refused = Theme::for_chart("editorial", &config, &series, LayerRef::Subplot(0));
     assert_eq!(
         refused,
-        Err(ThemeError::Kind {
+        Err(ThemeError::WrongKind {
             name: Some("editorial".into()),
             theme: ChartKind::Line,
             chart: ChartKind::Scatter,
@@ -2359,15 +2359,20 @@ fn a_name_resolves_to_its_chart_s_theme() {
     assert!(message.contains("\"editorial\""), "{message}");
     assert!(matches!(
         Theme::for_chart("neon", &config, &series, LayerRef::Base),
-        Err(ThemeError::Unknown { .. })
+        Err(ThemeError::UnknownName { .. })
     ));
     // A theme applied as a value names no theme.
     let error = named(ChartKind::Scatter, "default")
         .apply(&mut config.clone(), &mut series.clone(), SubplotScope::None)
         .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "a scatter theme does not apply to a line chart (Base)"
+    let message = error.to_string();
+    assert!(
+        message.starts_with("a scatter theme does not apply to the line chart at Base"),
+        "{message}"
+    );
+    assert!(
+        message.contains("apply_custom_theme skips the others"),
+        "{message}"
     );
 }
 
@@ -2385,9 +2390,9 @@ fn a_radial_chart_takes_a_theme_by_name() {
     let error = chart.apply_theme("neon").unwrap_err();
     assert_eq!(
         error,
-        ThemeError::Unknown {
+        ThemeError::UnknownName {
             name: "neon".into(),
-            kind: None,
+            target: ThemeTarget::Radial,
             names: RadialTheme::names(),
         }
     );
@@ -2399,5 +2404,173 @@ fn a_radial_chart_takes_a_theme_by_name() {
         let mut expected = before.clone();
         RadialTheme::named(name).unwrap().apply(&mut expected);
         assert_eq!(themed, expected, "{name}");
+    }
+}
+
+// Every error says what to do next: a wrong kind names the families and
+// the scope, a draw style the Precise style, an unknown name the names the
+// target takes, and a subplot index the indices there are.
+#[test]
+fn theme_errors_say_what_to_do_next() {
+    let wrong = ThemeError::WrongKind {
+        name: Some("editorial".into()),
+        theme: ChartKind::Line,
+        chart: ChartKind::Scatter,
+        layer: LayerRef::Subplot(0),
+    }
+    .to_string();
+    assert!(wrong.contains("\"editorial\""), "{wrong}");
+    assert!(
+        wrong.contains("gallery, cool-slate, midnight, warm-paper"),
+        "{wrong}"
+    );
+    assert!(wrong.contains("subplot scope"), "{wrong}");
+    let style = ThemeError::UnsupportedDrawStyle {
+        series_id: "a".into(),
+    }
+    .to_string();
+    assert!(style.contains("Precise"), "{style}");
+    for (target, start) in [
+        (
+            ThemeTarget::Chart(ChartKind::Line),
+            "no theme \"neon\" for a line chart",
+        ),
+        (
+            ThemeTarget::EmptyChart,
+            "no theme \"neon\" for a chart without series",
+        ),
+        (ThemeTarget::Radial, "no radial theme \"neon\""),
+    ] {
+        let message = ThemeError::UnknownName {
+            name: "neon".into(),
+            target,
+            names: ThemeFamily::NAMES,
+        }
+        .to_string();
+        assert!(message.starts_with(start), "{message}");
+        assert!(message.ends_with(": use one of gallery, cool-slate, midnight, warm-paper"));
+    }
+    let index = |count| ThemeError::SubplotIndex { index: 3, count }.to_string();
+    assert_eq!(
+        index(2),
+        "subplot index out of range: no subplot 3, the chart has 2 subplots (indices 0 to 1)"
+    );
+    assert!(index(0).ends_with("the chart has no subplots"));
+    assert!(index(1).ends_with("the chart has one subplot (index 0)"));
+}
+
+// A scope that names a subplot the chart does not have is refused with the
+// index, by a name and by a theme, and changes nothing.
+#[test]
+fn a_scope_past_the_subplots_is_refused() {
+    let (declared, declared_series) = dashboard();
+    let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    let refused = Err(ThemeError::SubplotIndex { index: 9, count: 4 });
+    assert_eq!(
+        Theme::apply_named(
+            "gallery",
+            &mut config,
+            &mut series,
+            SubplotScope::Only(&[1, 9]),
+            precise_only
+        ),
+        refused
+    );
+    let line = ThemeFamily::Gallery.theme(ChartKind::Line);
+    assert_eq!(
+        line.apply(&mut config, &mut series, SubplotScope::Only(&[9])),
+        refused
+    );
+    assert_eq!(
+        line.apply_chrome(&mut config, &series, SubplotScope::Only(&[9])),
+        refused
+    );
+    assert_eq!((&config, &series), (&declared, &declared_series));
+}
+
+// A theme applied to the charts of its kind themes the base chart and the
+// subplots of that kind or without series, leaves the others alone, and is
+// refused only when no chart takes it.
+#[test]
+fn a_theme_applies_to_the_charts_of_its_kind() {
+    let (declared, declared_series) = dashboard();
+    // The scatter member: only subplot 0 is a scatter chart.
+    let scatter = ThemeFamily::Midnight.theme(ChartKind::Scatter);
+    let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    scatter
+        .apply_to_its_kind(&mut config, &mut series, precise_only)
+        .unwrap();
+    assert_eq!(config.chart_title, declared.chart_title, "the line base");
+    assert_eq!(config.background, declared.background);
+    assert_eq!(
+        config.subplots[0].config.background,
+        scatter.chrome.background
+    );
+    // The empty subplot takes any theme.
+    assert_eq!(
+        config.subplots[3].config.background,
+        scatter.chrome.background
+    );
+    assert_eq!(config.subplots[1], declared.subplots[1]);
+    assert_eq!(config.subplots[2], declared.subplots[2]);
+    assert_ne!(series[1], declared_series[1]);
+    assert_eq!(series[0], declared_series[0]);
+    assert_eq!(series[2], declared_series[2]);
+    assert_eq!(series[3], declared_series[3]);
+
+    // No chart of its kind: refused, naming the base chart.
+    let polar = ThemeFamily::Midnight.theme(ChartKind::Polar);
+    let mut config = declared.clone();
+    config.subplots.pop();
+    let mut series = declared_series.clone();
+    let before = (config.clone(), series.clone());
+    assert_eq!(
+        polar.apply_to_its_kind(&mut config, &mut series, precise_only),
+        Err(ThemeError::WrongKind {
+            name: None,
+            theme: ChartKind::Polar,
+            chart: ChartKind::Line,
+            layer: LayerRef::Base,
+        })
+    );
+    assert_eq!((config, series), before);
+
+    // The draw style is checked on the charts it themes only.
+    let mut milkyway = named(ChartKind::Line, "milkyway");
+    milkyway.kind = ChartKind::Histogram;
+    let (mut config, mut series) = (declared.clone(), declared_series.clone());
+    assert_eq!(
+        milkyway.apply_to_its_kind(&mut config, &mut series, precise_only),
+        Err(ThemeError::UnsupportedDrawStyle {
+            series_id: "s2".into()
+        })
+    );
+    assert_eq!((&config, &series), (&declared, &declared_series));
+}
+
+// A theme and its parts serialize behind the `serde` feature, for a host
+// that edits a theme as JSON (the browser's `theme(name)`): every member
+// and every catalogue theme reads back equal. A kind serializes as its
+// name.
+#[cfg(feature = "serde")]
+#[test]
+fn a_theme_round_trips_through_json() {
+    for kind in ChartKind::ALL {
+        assert_eq!(
+            serde_json::to_string(&kind).unwrap(),
+            format!("\"{}\"", kind.name())
+        );
+        for name in Theme::names(kind) {
+            let theme = named(kind, name);
+            let json = serde_json::to_string(&theme).unwrap();
+            let back: Theme = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, theme, "{kind} {name}");
+        }
+    }
+    for name in RadialTheme::names() {
+        let theme = RadialTheme::named(name).unwrap();
+        let json = serde_json::to_string(&theme).unwrap();
+        let back: RadialTheme = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, theme, "radial {name}");
     }
 }

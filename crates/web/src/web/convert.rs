@@ -62,6 +62,91 @@ impl JsErrorSource for wgpu::CreateSurfaceError {}
 
 impl JsErrorSource for renderer::theme::ThemeError {}
 
+/// A theme or subplot refusal (#295) as a JS `Error`, built as
+/// [`column_registration_error`] builds a registration error: `message` is
+/// the sentence, `code` names the refusal, and the fields a host acts on
+/// ride along: `names`, the names the target takes, on
+/// `"theme_unknown_name"`; `index` and `count` on `"subplot_index"`.
+///
+/// | `code` | Refusal |
+/// |---|---|
+/// | `theme_unknown_name` | `ThemeError::UnknownName` |
+/// | `theme_wrong_kind` | `ThemeError::WrongKind` |
+/// | `theme_draw_style` | `ThemeError::UnsupportedDrawStyle` |
+/// | `subplot_index` | `ThemeError::SubplotIndex` |
+/// | `theme_invalid` | an object that is not a theme ([`theme_from_js`]) |
+pub(crate) fn theme_error(error: renderer::theme::ThemeError) -> JsValue {
+    use renderer::theme::ThemeError;
+    let code = match &error {
+        ThemeError::UnknownName { .. } => "theme_unknown_name",
+        ThemeError::WrongKind { .. } => "theme_wrong_kind",
+        ThemeError::UnsupportedDrawStyle { .. } => "theme_draw_style",
+        ThemeError::SubplotIndex { .. } => "subplot_index",
+    };
+    let js_error = js_sys::Error::new(&error.to_string());
+    let object: &JsValue = js_error.as_ref();
+    // A field that cannot be attached still reports the refusal, as a
+    // message that names the missing field.
+    let set = |key: &str, value: JsValue| match js_sys::Reflect::set(
+        object,
+        &JsValue::from_str(key),
+        &value,
+    ) {
+        Ok(true) => Ok(()),
+        Ok(false) | Err(_) => Err(js_err(format!(
+            "{error} (the `{key}` field could not be attached to the error object)"
+        ))),
+    };
+    if let Err(plain) = set("code", JsValue::from_str(code)) {
+        return plain;
+    }
+    let fields = match &error {
+        ThemeError::UnknownName { names, .. } => set(
+            "names",
+            names
+                .iter()
+                .map(|name| JsValue::from_str(name))
+                .collect::<js_sys::Array>()
+                .into(),
+        ),
+        ThemeError::SubplotIndex { index, count } => set("index", JsValue::from(*index as f64))
+            .and_then(|()| set("count", JsValue::from(*count as f64))),
+        ThemeError::WrongKind { .. } | ThemeError::UnsupportedDrawStyle { .. } => Ok(()),
+    };
+    match fields {
+        Ok(()) => js_error.into(),
+        Err(plain) => plain,
+    }
+}
+
+/// An index past the chart's subplots, thrown as [`theme_error`] throws
+/// `ThemeError::SubplotIndex` (`code` `"subplot_index"`).
+pub(crate) fn subplot_index_error(index: usize, count: usize) -> JsValue {
+    theme_error(renderer::theme::ThemeError::SubplotIndex { index, count })
+}
+
+/// A theme object a host edited (`FiggyChart::theme`), read back; an object
+/// that is not a theme throws an `Error` with `code` `"theme_invalid"`.
+pub(crate) fn theme_from_js(value: &JsValue) -> Result<renderer::theme::Theme, JsValue> {
+    let invalid = |reason: String| {
+        let js_error = js_sys::Error::new(&format!("not a theme object: {reason}"));
+        match js_sys::Reflect::set(
+            js_error.as_ref(),
+            &JsValue::from_str("code"),
+            &JsValue::from_str("theme_invalid"),
+        ) {
+            Ok(true) => js_error.into(),
+            Ok(false) | Err(_) => JsValue::from_str(&format!("not a theme object: {reason}")),
+        }
+    };
+    let json = js_sys::JSON::stringify(value)
+        .map_err(|_| invalid("it does not serialize to JSON".into()))?;
+    let json = json
+        .as_string()
+        .ok_or_else(|| invalid("it does not serialize to a JSON string".into()))?;
+    serde_json::from_str(&json).map_err(|error| invalid(error.to_string()))
+}
+
 pub(crate) fn js_err(e: impl JsErrorSource) -> JsValue {
     let message = e.to_string();
     let Some(kind) = e.rule() else {

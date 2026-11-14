@@ -8,8 +8,8 @@
 //! only.
 
 use super::{
-    ChartKind, Charts, RadialTheme, SubplotScope, Theme, ThemeError, catalog, chart_layers,
-    charts_in_scope, drawn_on,
+    ChartKind, Charts, RadialTheme, SubplotScope, Theme, ThemeError, ThemeTarget, catalog,
+    chart_layers, charts_in_scope, check_scope, drawn_on,
 };
 use crate::config::{Config, DrawStyle};
 use crate::data_config::{DataRenderType, SeriesConfig};
@@ -87,8 +87,8 @@ impl Theme {
     ///   themed in one call.
     /// - A name of a kind's own catalogue ([`Theme::names`]) applies to the
     ///   charts of a kind that has it; a chart of another kind refuses it
-    ///   ([`ThemeError::Kind`]).
-    /// - Any other name is refused ([`ThemeError::Unknown`], with the names
+    ///   ([`ThemeError::WrongKind`]).
+    /// - Any other name is refused ([`ThemeError::UnknownName`], with the names
     ///   the chart takes).
     /// - A chart that draws no series yet takes the theme of the first kind
     ///   ([`ChartKind::ALL`]) that has the name: a family's line member.
@@ -96,7 +96,7 @@ impl Theme {
     /// `draws` tells whether a draw style draws a series
     /// (`renderer::draw_style_supports`, which the model cannot answer); a
     /// series in scope that its chart's theme cannot draw is refused
-    /// ([`ThemeError::DrawStyle`]). Every chart is checked before any is
+    /// ([`ThemeError::UnsupportedDrawStyle`]). Every chart is checked before any is
     /// written, so a refusal changes nothing.
     pub fn apply_named(
         name: &str,
@@ -105,6 +105,7 @@ impl Theme {
         subplots: SubplotScope,
         draws: impl Fn(&DrawStyle, &DataRenderType) -> bool,
     ) -> Result<(), ThemeError> {
+        check_scope(config, subplots)?;
         let scope = Charts::scope(subplots);
         for layer in charts_in_scope(config, scope) {
             let theme = Self::for_chart(name, config, series, layer)?;
@@ -112,7 +113,7 @@ impl Theme {
             if let Some(item) = series.iter().find(|item| {
                 drawn_on(config, layer, &item.series_id) && !draws(style, &item.render_type)
             }) {
-                return Err(ThemeError::DrawStyle {
+                return Err(ThemeError::UnsupportedDrawStyle {
                     series_id: item.series_id.clone(),
                 });
             }
@@ -132,12 +133,72 @@ impl Theme {
         Ok(())
     }
 
+    /// Apply the theme to the charts of its kind: the base chart and every
+    /// subplot that is of [`Self::kind`], or that draws no series yet, with
+    /// their overlays and the series drawn there, as [`Self::apply`] writes
+    /// them. Charts of another kind are left as they are. Refused, changing
+    /// nothing, when no chart takes the theme ([`ThemeError::WrongKind`],
+    /// naming the base chart or the first subplot of another kind), or
+    /// when the theme's draw style cannot draw a series on a chart it
+    /// themes ([`ThemeError::UnsupportedDrawStyle`]; `draws` as in
+    /// [`Self::apply_named`]).
+    pub fn apply_to_its_kind(
+        &self,
+        config: &mut Config,
+        series: &mut [SeriesConfig],
+        draws: impl Fn(&DrawStyle, &DataRenderType) -> bool,
+    ) -> Result<(), ThemeError> {
+        let all = Charts::scope(SubplotScope::All);
+        let takes = |config: &Config, series: &[SeriesConfig], layer: LayerRef| {
+            ChartKind::of(config, series, layer).is_none_or(|kind| kind == self.kind)
+        };
+        let mut themed = false;
+        let mut refused = None;
+        for layer in charts_in_scope(config, all) {
+            if !takes(config, series, layer) {
+                if let (None, Some(chart)) = (&refused, ChartKind::of(config, series, layer)) {
+                    refused = Some((chart, layer));
+                }
+                continue;
+            }
+            themed = true;
+            let style = &self.chrome.draw_style;
+            if let Some(item) = series.iter().find(|item| {
+                drawn_on(config, layer, &item.series_id) && !draws(style, &item.render_type)
+            }) {
+                return Err(ThemeError::UnsupportedDrawStyle {
+                    series_id: item.series_id.clone(),
+                });
+            }
+        }
+        if let (false, Some((chart, layer))) = (themed, refused) {
+            return Err(ThemeError::WrongKind {
+                name: None,
+                theme: self.kind,
+                chart,
+                layer,
+            });
+        }
+        // As in `apply_named`: every series first, then the chrome.
+        for layer in chart_layers(config.subplots.len(), all) {
+            if takes(config, series, layer) {
+                self.style_charts(config, series, Charts::one(&layer));
+            }
+        }
+        for layer in chart_layers(config.subplots.len(), all) {
+            if takes(config, series, layer) {
+                self.finish_charts(config, series, Charts::one(&layer));
+            }
+        }
+        Ok(())
+    }
+
     /// The theme `name` resolves to on the chart `layer` names, the base
     /// chart or a subplot, as [`Self::apply_named`] resolves it: a family's
     /// member for the chart's kind or the kind's own theme of that name, a
     /// value to edit and apply with [`Self::apply`]. Refused with
-    /// [`ThemeError::Kind`] for a kind without the name and with
-    /// [`ThemeError::Unknown`] for a name no kind has.
+    /// [`ThemeError::WrongKind`] for a kind without the name and with
+    /// [`ThemeError::UnknownName`] for a name no kind has.
     pub fn for_chart(
         name: &str,
         config: &Config,
@@ -155,20 +216,20 @@ impl Theme {
         match kind.or_else(first).and_then(|kind| Self::named(kind, name)) {
             Some(theme) => Ok(theme),
             None => Err(match (kind, first()) {
-                (Some(chart), Some(theme)) => ThemeError::Kind {
+                (Some(chart), Some(theme)) => ThemeError::WrongKind {
                     name: Some(name.to_owned()),
                     theme,
                     chart,
                     layer,
                 },
-                (Some(chart), None) => ThemeError::Unknown {
+                (Some(chart), None) => ThemeError::UnknownName {
                     name: name.to_owned(),
-                    kind,
+                    target: ThemeTarget::Chart(chart),
                     names: catalog::names(chart),
                 },
-                (None, _) => ThemeError::Unknown {
+                (None, _) => ThemeError::UnknownName {
                     name: name.to_owned(),
-                    kind,
+                    target: ThemeTarget::EmptyChart,
                     names: ThemeFamily::NAMES,
                 },
             }),
@@ -180,12 +241,12 @@ impl crate::radial::RadialChart {
     /// Apply the radial theme `name` ([`RadialTheme::names`]): a family's
     /// radial member ([`ThemeFamily::radial`]) or a theme of the radial
     /// catalogue, as [`RadialTheme::apply`] writes it. An unknown name is
-    /// refused with [`ThemeError::Unknown`], which lists the radial names,
+    /// refused with [`ThemeError::UnknownName`], which lists the radial names,
     /// and changes nothing.
     pub fn apply_theme(&mut self, name: &str) -> Result<(), ThemeError> {
-        let theme = RadialTheme::named(name).ok_or_else(|| ThemeError::Unknown {
+        let theme = RadialTheme::named(name).ok_or_else(|| ThemeError::UnknownName {
             name: name.to_owned(),
-            kind: None,
+            target: ThemeTarget::Radial,
             names: RadialTheme::names(),
         })?;
         theme.apply(self);

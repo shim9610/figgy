@@ -39,7 +39,7 @@ use renderer::{
         BarGroups, BoxPoints, BoxPointsStyle, CategoryBarDirection, Violin, ViolinBody, ViolinHalf,
         ViolinStyle,
     },
-    theme::{ChartKind, SubplotScope, Theme},
+    theme::{ChartKind, Theme},
 };
 use std::path::Path;
 use styled::{background, theme_named, themed};
@@ -98,7 +98,7 @@ fn save(
     // The fixed `value_range` of the documents is the value axis; a
     // document without one fits the records' and outliers' statistics.
     let mut chart = Chart::new(config).with_area(0, 0, 960, 640);
-    chart.apply_custom_theme(theme, &mut series, SubplotScope::All)?;
+    chart.apply_custom_theme(theme, &mut series)?;
     // The grid marks the value axis, which runs along x for horizontal
     // boxes.
     if document.direction == BoxPlotDirection::Horizontal {

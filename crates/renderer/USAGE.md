@@ -910,8 +910,6 @@ for line charts, a parchment card for Feynman diagrams. A theme family
 themes any chart, and a dashboard whose subplots mix kinds, in one call:
 
 ```rust
-use renderer::theme::SubplotScope;
-
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
 chart.apply_theme("midnight", &mut series)?;  // refits the layout too
@@ -919,7 +917,7 @@ chart.apply_theme("midnight", &mut series)?;  // refits the layout too
 // One colour of the member, edited and applied.
 let mut theme = chart.theme("midnight", &series)?;
 theme.series.palette[0] = Color::from_rgb8(255, 120, 0);
-chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
+chart.apply_custom_theme(&theme, &mut series)?;
 ```
 
 - **Families.** Four families, each with a member for all 19 kinds and for
@@ -954,22 +952,33 @@ chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
     `deep-space`, `topographic`, `ocean`, `warm-terrain`, `warm-diverging`,
     `grotrian`, `parchment`, `document`, `warm-neutral`) applies to charts
     of a kind that has it; a chart of another kind in scope refuses it
-    (`ThemeError::Kind`). `document` is a category-bar, a distribution and a
+    (`ThemeError::WrongKind`). `document` is a category-bar, a distribution and a
     radar theme, so each of those charts takes its own kind's `document`;
   - a chart that draws no series yet takes the name as the first kind that
     has it (`ChartKind::ALL`): a family's line member;
-  - any other name is refused (`ThemeError::Unknown`).
+  - any other name is refused (`ThemeError::UnknownName`).
 - **The chart's own questions.** `chart.chart_kind(&series)` is the base
   chart's kind (`None` while it draws no series), `chart.theme_names(&series)`
   the names it takes (the families first, then `default` and the kind's own;
   the families alone without a kind) and `chart.theme(name, &series)` the
   theme `name` resolves to on the base chart, a `Result` refused as
   `apply_theme` refuses the name (`Theme::for_chart` for any chart).
-- **Custom themes.** `Chart::apply_custom_theme(&theme, &mut series, scope)`
-  applies a theme the host built or edited, made for one kind: the theme
+- **Custom themes.** `Chart::apply_custom_theme(&theme, &mut series)`
+  applies a theme the host built or edited, made for one kind (the theme
   `chart.theme(name, &series)` hands out, a family member
-  (`ThemeFamily::Midnight.theme(ChartKind::Line)`) or a kind's theme
-  (`Theme::named(kind, name)`), with any field changed.
+  `ThemeFamily::Midnight.theme(ChartKind::Line)` or a kind's theme
+  `Theme::named(kind, name)`, with any field changed), to the charts of its
+  kind: the base chart and every subplot of `theme.kind`, or that draws no
+  series yet. Charts of another kind are left as they are; it is refused
+  only when no chart is of its kind. `Chart::apply_custom_theme_to(&theme,
+  &mut series, scope)` applies it to the charts `scope` names, every one of
+  which must be of its kind.
+- **Subplot text.** `chart.subplot_text_scale(i)` reads how subplot `i`'s
+  text follows its cell (`Some(SubplotTextScale::Auto | Fixed)`, `None` past
+  the subplots), `chart.set_subplot_text_scale(i, mode)` sets it
+  (`ThemeError::SubplotIndex` past the subplots) and
+  `chart.subplot_text_factor(i)` is the factor it draws with now. The names
+  are the browser's.
 
 - **Kinds.** `ChartKind::of(&config, &series, layer)` reads the kind of the
   base chart or of a subplot from its coordinates, its axes and the series
@@ -1039,25 +1048,30 @@ chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
   Every field of a theme is public, so a host edits a copy before applying
   it: `theme.chrome.title_size = 30.0`, another `theme.series.palette`, a
   different `theme.chrome.draw_style`.
-- **Refusals.** `Chart::apply_theme`, `apply_theme_to` and
-  `apply_custom_theme` return `Result<(), ThemeError>`. Every chart in scope is checked before any is
+- **Refusals.** `Chart::apply_theme`, `apply_theme_to`, `apply_custom_theme`
+  and `apply_custom_theme_to` return `Result<(), ThemeError>`. Every chart in scope is checked before any is
   written, so a refusal changes nothing, neither the chart nor its series:
-  - `ThemeError::Kind { name, theme, chart, layer }`: the base chart or a
+  - `ThemeError::WrongKind { name, theme, chart, layer }`: the base chart or a
     subplot in scope (`layer`) is of a kind without the name `name` (`theme`
     is the first kind that has it), or of another kind than a custom theme
     (`name` is `None`). Apply the theme
     with a `SubplotScope` that leaves that subplot out, and give the subplot
-    a theme of its own kind, or use a family.
-  - `ThemeError::Unknown { name, kind, names }`: no kind has the name.
-    `names` lists what the chart (`kind`, the first chart in scope) takes:
-    the families, then `default` and the kind's own themes; the families
-    alone for a chart without series.
-  - `ThemeError::DrawStyle { series_id }`: the theme's draw style cannot draw
+    a theme of its own kind, or use a family; a custom theme without a
+    scope skips charts of another kind.
+  - `ThemeError::UnknownName { name, target, names }`: no kind has the name.
+    `target` is what it was looked up for (`ThemeTarget::Chart(kind)`,
+    `EmptyChart` for a chart without series, `Radial`) and `names` what that
+    takes: the families, then `default` and the kind's own themes; the
+    families alone for an empty chart; the radial names for the radial
+    chart.
+  - `ThemeError::SubplotIndex { index, count }`: a `SubplotScope::Only` or a
+    subplot setter names a subplot past the chart's `count`.
+  - `ThemeError::UnsupportedDrawStyle { series_id }`: the theme's draw style cannot draw
     a series in scope (`renderer::draw_style_supports`), which the renderer
     would drop: `constellation` draws a line only with its markers. A theme
     in `DrawStyle::Precise`, every family member among them, draws
     everything. The model cannot tell, so `Theme::apply_named` takes the
-    renderer's answer as an argument, and `Chart::apply_custom_theme` and
+    renderer's answer as an argument, and `Chart::apply_custom_theme_to` and
     the browser wrappers check it
     (`renderer::helpers::check_theme_draw_style`) before `Theme::apply`.
 - **What a theme writes.** The chrome (`ChromeTheme`): the chart and plot
@@ -1112,7 +1126,7 @@ chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
   radial themes) and `RadialTheme::named(name)`, which takes a family name
   too, applied with `theme.apply(&mut radial_chart)`.
   `radial_chart.apply_theme(name)` does both in one call and refuses an
-  unknown name with `ThemeError::Unknown`, which lists the radial names.
+  unknown name with `ThemeError::UnknownName`, which lists the radial names.
 
   | Theme | Look | Gallery image |
   |---|---|---|
@@ -1971,8 +1985,6 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
 이름 하나로 어떤 차트든, 서브플롯마다 종류가 다른 대시보드도 한 번의 호출로 꾸민다.
 
 ```rust
-use renderer::theme::SubplotScope;
-
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
 chart.apply_theme("midnight", &mut series)?;  // 레이아웃도 다시 맞춘다
@@ -1980,7 +1992,7 @@ chart.apply_theme("midnight", &mut series)?;  // 레이아웃도 다시 맞춘�
 // 구성원의 색 하나를 고쳐서 적용한다.
 let mut theme = chart.theme("midnight", &series)?;
 theme.series.palette[0] = Color::from_rgb8(255, 120, 0);
-chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
+chart.apply_custom_theme(&theme, &mut series)?;
 ```
 
 - **계열.** 계열은 네 가지이고, 각 계열은 19개 종류 모두와 원형 차트에 구성원을 하나씩 둔다.
@@ -2010,20 +2022,28 @@ chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
   - 종류 고유의 이름(`editorial`, `milkyway`, `constellation`, `revenue`, `deep-space`,
     `topographic`, `ocean`, `warm-terrain`, `warm-diverging`, `grotrian`, `parchment`,
     `document`, `warm-neutral`)은 그 이름을 가진 종류의 차트에만 적용된다. 범위 안에 다른
-    종류의 차트가 있으면 거부한다(`ThemeError::Kind`). `document`는 범주 막대, 분포, 레이더
+    종류의 차트가 있으면 거부한다(`ThemeError::WrongKind`). `document`는 범주 막대, 분포, 레이더
     테마이므로 그런 차트는 각자 자기 종류의 `document`를 받는다.
   - 아직 시리즈를 그리지 않는 차트는 그 이름을 가진 첫 종류(`ChartKind::ALL` 순서)의 테마를
     받는다. 계열이면 선 차트 구성원이다.
-  - 그 밖의 이름은 거부한다(`ThemeError::Unknown`).
+  - 그 밖의 이름은 거부한다(`ThemeError::UnknownName`).
 - **차트에 묻기.** `chart.chart_kind(&series)`는 기본 차트의 종류(시리즈가 없으면 `None`)를,
   `chart.theme_names(&series)`는 그 차트가 받는 이름(계열이 먼저 오고 `default`와 종류 고유의
   테마가 이어지며, 종류가 없으면 계열만)을, `chart.theme(name, &series)`는 기본 차트에서 `name`이
   가리키는 테마를 돌려준다. `apply_theme`이 그 이름을 거부할 때와 같은 오류를 `Result`로
   돌려준다(아무 차트에나 쓰려면 `Theme::for_chart`).
-- **직접 만든 테마.** `Chart::apply_custom_theme(&theme, &mut series, scope)`는 호스트가 만들거나
-  고친 테마, 즉 한 종류에 속한 테마를 적용한다. `chart.theme(name, &series)`가 돌려준 테마나 계열의
-  구성원(`ThemeFamily::Midnight.theme(ChartKind::Line)`), 종류의 테마(`Theme::named(kind, name)`)의
-  필드를 바꿔서 쓴다.
+- **직접 만든 테마.** `Chart::apply_custom_theme(&theme, &mut series)`는 호스트가 만들거나 고친
+  테마, 즉 한 종류에 속한 테마(`chart.theme(name, &series)`가 돌려준 테마나 계열의 구성원
+  `ThemeFamily::Midnight.theme(ChartKind::Line)`, 종류의 테마 `Theme::named(kind, name)`의 필드를
+  바꾼 것)를 그 종류의 차트에 적용한다. 기본 차트와 서브플롯 가운데 `theme.kind`인 것과 아직
+  시리즈가 없는 것에 적용하고, 다른 종류의 차트는 그대로 둔다. 그 종류의 차트가 하나도 없을 때만
+  거부한다. `Chart::apply_custom_theme_to(&theme, &mut series, scope)`는 `scope`가 고른 차트에
+  적용하며, 그 차트가 모두 테마의 종류여야 한다.
+- **서브플롯 글자.** `chart.subplot_text_scale(i)`는 서브플롯 `i`의 글자가 셀을 따르는 방식을
+  읽고(`Some(SubplotTextScale::Auto | Fixed)`, 서브플롯 범위를 넘으면 `None`),
+  `chart.set_subplot_text_scale(i, mode)`는 그 방식을 정하며(범위를 넘으면
+  `ThemeError::SubplotIndex`), `chart.subplot_text_factor(i)`는 지금 그리는 배율을 돌려준다. 이름은
+  브라우저 메서드와 같다.
 
 - **종류.** `ChartKind::of(&config, &series, layer)`는 기본 차트나 서브플롯의 종류를 좌표계와 축,
   그 차트와 오버레이에 그려지는 시리즈에서 읽는다. 아직 시리즈를 그리지 않는 차트는 종류가
@@ -2087,22 +2107,25 @@ chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
   테마의 모든 필드가 공개되어 있어서 복사본을 고친 뒤 적용해도 된다.
   `theme.chrome.title_size = 30.0`처럼 값을 바꾸거나, `theme.series.palette`나
   `theme.chrome.draw_style`을 다른 것으로 바꾼다.
-- **거부.** `Chart::apply_theme`, `apply_theme_to`, `apply_custom_theme`은
-  `Result<(), ThemeError>`를 돌려준다. 범위 안의 차트를 모두 검사한 뒤에야 쓰기 시작하므로, 거부되면 차트도 시리즈도 바뀌지
+- **거부.** `Chart::apply_theme`, `apply_theme_to`, `apply_custom_theme`,
+  `apply_custom_theme_to`는 `Result<(), ThemeError>`를 돌려준다. 범위 안의 차트를 모두 검사한 뒤에야 쓰기 시작하므로, 거부되면 차트도 시리즈도 바뀌지
   않는다.
-  - `ThemeError::Kind { name, theme, chart, layer }`: 기본 차트나 범위 안의 서브플롯(`layer`)이 이름
+  - `ThemeError::WrongKind { name, theme, chart, layer }`: 기본 차트나 범위 안의 서브플롯(`layer`)이 이름
     `name`이 없는 종류이거나(`theme`은 그 이름을 가진 첫 종류다), 직접 만든 테마와 다른 종류다(이때
     `name`은 `None`). 그
     서브플롯을 뺀 `SubplotScope`로 테마를 적용하고 그 서브플롯에는 자기 종류의 테마를 주거나,
-    계열을 쓴다.
-  - `ThemeError::Unknown { name, kind, names }`: 그 이름을 가진 종류가 없다. `names`는 그
-    차트(`kind`, 범위 안의 첫 차트)가 받는 이름이다. 계열이 먼저 오고 `default`와 그 종류 고유의
-    테마가 이어진다. 시리즈가 없는 차트에는 계열만 나열한다.
-  - `ThemeError::DrawStyle { series_id }`: 테마의 그리기 스타일이 범위 안의 시리즈를 그리지
+    계열을 쓴다. 범위 없이 적용한 직접 만든 테마는 다른 종류의 차트를 건너뛴다.
+  - `ThemeError::UnknownName { name, target, names }`: 그 이름을 가진 종류가 없다. `target`은 이름을
+    찾은 대상(`ThemeTarget::Chart(kind)`, 시리즈가 없는 차트는 `EmptyChart`, 원형 차트는
+    `Radial`)이고 `names`는 그 대상이 받는 이름이다. 계열이 먼저 오고 `default`와 그 종류 고유의
+    테마가 이어진다. 빈 차트에는 계열만, 원형 차트에는 원형 테마 이름을 나열한다.
+  - `ThemeError::SubplotIndex { index, count }`: `SubplotScope::Only`나 서브플롯 설정 메서드가
+    차트의 서브플롯 수(`count`)를 넘는 서브플롯을 가리킨다.
+  - `ThemeError::UnsupportedDrawStyle { series_id }`: 테마의 그리기 스타일이 범위 안의 시리즈를 그리지
     못한다(`renderer::draw_style_supports`). 그대로 두면 렌더러가 그 시리즈를 빼고 그린다.
     `constellation`은 선을 마커와 함께일 때만 그린다. `DrawStyle::Precise`인 테마는 모든 시리즈를
     그리며, 계열 구성원은 모두 이 스타일이다. 모델은 이를 알 수 없으므로 `Theme::apply_named`는
-    렌더러의 답을 인자로 받고, `Chart::apply_custom_theme`과 브라우저 래퍼는 `Theme::apply` 전에
+    렌더러의 답을 인자로 받고, `Chart::apply_custom_theme_to`와 브라우저 래퍼는 `Theme::apply` 전에
     검사한다(`renderer::helpers::check_theme_draw_style`).
 - **테마가 쓰는 것.** 크롬(`ChromeTheme`)을 쓴다. 차트와 플롯 배경, 그리기 스타일, 축
   틀(`AxisPreset`, 눈금 없는 틀은 `ticks: false`), 축·눈금 라벨·제목·범례의 색과 글꼴과 크기,
@@ -2141,7 +2164,7 @@ chart.apply_custom_theme(&theme, &mut series, SubplotScope::All)?;
 - **원형 차트.** 원형 차트는 모델이 따로 있고 테마도 따로 있다. `RadialTheme::names()`(계열이
   먼저 오고 `default`와 원형 테마가 이어진다)와 계열 이름도 받는 `RadialTheme::named(name)`으로
   찾고 `theme.apply(&mut radial_chart)`로 적용한다. `radial_chart.apply_theme(name)`은 이 둘을 한
-  번에 하며, 모르는 이름은 원형 테마 이름을 적은 `ThemeError::Unknown`으로 거부한다.
+  번에 하며, 모르는 이름은 원형 테마 이름을 적은 `ThemeError::UnknownName`으로 거부한다.
 
   | 테마 | 모양 | 갤러리 이미지 |
   |---|---|---|

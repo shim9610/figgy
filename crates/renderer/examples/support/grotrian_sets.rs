@@ -34,7 +34,7 @@ use renderer::energy_levels::{
 };
 use renderer::format::PlainNumberFormat;
 use renderer::text::RichText;
-use renderer::theme::{ChartKind, SubplotScope, Theme};
+use renderer::theme::{ChartKind, Theme};
 use renderer::{Chart, Color, DataRenderType, SeriesConfig};
 
 /// The diagrams' look: the `grotrian` energy-level theme.
@@ -203,7 +203,7 @@ fn themed(
     mut series: Vec<SeriesConfig>,
     theme: &Theme,
 ) -> Result<(Chart, Vec<SeriesConfig>)> {
-    c.apply_custom_theme(theme, &mut series, SubplotScope::All)?;
+    c.apply_custom_theme(theme, &mut series)?;
     Ok((c, series))
 }
 

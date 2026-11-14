@@ -22,11 +22,11 @@
 //!
 //! Two refusals are part of the contract and are checked to change nothing:
 //! - a subplot of a kind without the name refuses a kind's own theme over
-//!   `SubplotScope::All` (`ThemeError::Kind` naming the subplot); a family
+//!   `SubplotScope::All` (`ThemeError::WrongKind` naming the subplot); a family
 //!   never does. The theme is then applied with `SubplotScope::None`, which
 //!   styles the base chart alone and must work;
 //! - a theme whose draw style is not Precise refuses a series that style
-//!   cannot draw (`ThemeError::DrawStyle`). A Precise theme never does.
+//!   cannot draw (`ThemeError::UnsupportedDrawStyle`). A Precise theme never does.
 //!
 //! The scenes keep the playground's document size. Every kind has a scene
 //! (`every_kind_has_a_scene`), so every family member and every theme of
@@ -273,7 +273,7 @@ fn sweep_chart(
 
         let mut scope = SubplotScope::All;
         let mut result = chart.apply_theme_to(name, &mut series, scope);
-        if let Err(ThemeError::Kind { layer, .. }) = &result {
+        if let Err(ThemeError::WrongKind { layer, .. }) = &result {
             // A subplot of a kind without the name: the theme styles the
             // base chart alone. A family has a member for every kind.
             assert!(family.is_none(), "{at}: a family refused {layer:?}");
@@ -283,13 +283,13 @@ fn sweep_chart(
             scope = SubplotScope::None;
             result = chart.apply_theme_to(name, &mut series, scope);
             assert!(
-                !matches!(result, Err(ThemeError::Kind { .. })),
+                !matches!(result, Err(ThemeError::WrongKind { .. })),
                 "{at}: the base chart refuses its own kind: {result:?}"
             );
         }
         match result {
             Ok(()) => {}
-            Err(ThemeError::DrawStyle { series_id }) => {
+            Err(ThemeError::UnsupportedDrawStyle { series_id }) => {
                 assert_ne!(
                     theme.chrome.draw_style,
                     DrawStyle::Precise,

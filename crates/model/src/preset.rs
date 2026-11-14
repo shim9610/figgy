@@ -35,6 +35,7 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// grid off, and `Grotrian` gives a continuous `left_y` break a thin lowest
 /// piece (#205).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AxisPreset {
     /// Closed box frame with ticks pointing **inward** on all four sides —
     /// the classic lab-instrument / scientific-plotting default.
