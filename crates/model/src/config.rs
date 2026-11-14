@@ -1749,6 +1749,9 @@ impl Config {
                 link_y: _,
                 // The marker's line width is pixels.
                 marker,
+                // A mode; the factor is a ratio of two chart areas, both
+                // scaled here.
+                text_scale: _,
             } = subplot;
             config.scale_in_place(s);
             if let Some(marker) = marker.as_mut() {
@@ -2024,6 +2027,90 @@ fn scale_legend_inset(legend: &mut crate::legend::Legend, s: f32) {
     };
     legend.offset_x += sx * extra;
     legend.offset_y += sy * extra;
+}
+
+impl Config {
+    /// Multiply every text size of this chart by `s` (#292), reading each
+    /// size from `stored` where it is given and from the chart itself where
+    /// it is not: the chart title, each axis' tick labels, title, rich
+    /// category labels and group headers (the four chart axes, every
+    /// overlay's and the colourbar's) and each legend's content, whose
+    /// symbols are sized in ems of it. Value labels take their axis' tick
+    /// label size. Nothing else changes: bands, offsets, line widths and
+    /// tick lengths stay.
+    ///
+    /// A subplot's resolved chart ([`Config::subplot_config`]) is scaled in
+    /// place by its text scale. `stored` with `1.0` puts the stored sizes
+    /// back into a chart resolved or edited from it before it is stored, so
+    /// the factor is never written into the document.
+    pub(crate) fn scale_text_sizes(&mut self, stored: Option<&Config>, s: f32) {
+        rich_text_sizes(
+            &mut self.chart_title.text,
+            stored.map(|c| &c.chart_title.text),
+            s,
+        );
+        axis_text_sizes(&mut self.top_x, stored.map(|c| &c.top_x), s);
+        axis_text_sizes(&mut self.bottom_x, stored.map(|c| &c.bottom_x), s);
+        axis_text_sizes(&mut self.left_y, stored.map(|c| &c.left_y), s);
+        axis_text_sizes(&mut self.right_y, stored.map(|c| &c.right_y), s);
+        rich_text_sizes(
+            &mut self.legend.content,
+            stored.map(|c| &c.legend.content),
+            s,
+        );
+        for (index, overlay) in self.overlays.iter_mut().enumerate() {
+            let from = stored.and_then(|c| c.overlays.get(index));
+            axis_text_sizes(&mut overlay.y_axis, from.map(|o| &o.y_axis), s);
+            axis_text_sizes(&mut overlay.x_axis, from.map(|o| &o.x_axis), s);
+            if let Some(legend) = overlay.legend.as_mut() {
+                let from = from.and_then(|o| o.legend.as_ref());
+                rich_text_sizes(&mut legend.content, from.map(|l| &l.content), s);
+            }
+        }
+        if let Some(bar) = self.colorbar.as_mut() {
+            let from = stored.and_then(|c| c.colorbar.as_ref());
+            axis_text_sizes(&mut bar.axis, from.map(|b| &b.axis), s);
+        }
+    }
+}
+
+/// [`Config::scale_text_sizes`] for one axis.
+fn axis_text_sizes(to: &mut AxisOptions, from: Option<&AxisOptions>, s: f32) {
+    let stored = from.map_or(to.label_style.font_size, |a| a.label_style.font_size);
+    to.label_style.font_size = stored * s;
+    rich_text_sizes(
+        &mut to.title_option.text,
+        from.map(|a| &a.title_option.text),
+        s,
+    );
+    for (index, category) in to.categories.iter_mut().flatten().enumerate() {
+        if let Some(rich) = category.rich_label.as_mut() {
+            let from = from
+                .and_then(|a| a.categories.as_ref()?.get(index))
+                .and_then(|c| c.rich_label.as_ref());
+            rich_text_sizes(rich, from, s);
+        }
+    }
+    if let Some(groups) = to.category_groups.as_mut() {
+        for (index, group) in groups.groups.iter_mut().enumerate() {
+            let from = from.and_then(|a| a.category_groups.as_ref()?.groups.get(index));
+            rich_text_sizes(&mut group.label, from.map(|g| &g.label), s);
+        }
+    }
+}
+
+/// [`Config::scale_text_sizes`] for one text: its size and every segment's
+/// own size.
+fn rich_text_sizes(to: &mut RichText, from: Option<&RichText>, s: f32) {
+    to.font_size = from.map_or(to.font_size, |t| t.font_size) * s;
+    for (index, segment) in to.segments.iter_mut().enumerate() {
+        if let Some(size) = segment.font_size.as_mut() {
+            let stored = from
+                .and_then(|t| t.segments.get(index)?.font_size)
+                .unwrap_or(*size);
+            *size = stored * s;
+        }
+    }
 }
 
 /// Scale a `RichText`'s pixel-based dims: the document-level `font_size` and
