@@ -5325,9 +5325,15 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     inset.grid.show_major_y = false;
     // Opaque, so the parent's annotations stop at the inset (#203).
     inset.plot_background = Some(Color::WHITE);
+    // The inset's text is written at full-chart sizes and drawn at its
+    // cell's text scale (#292, 0.55 here): its tick labels at 10 px, its
+    // term label as large as them.
     inset.bottom_x.categories = Some(vec![{
         let mut c = Category::new("3P*", "3P*");
-        c.rich_label = tex("3", "P", true);
+        c.rich_label = tex("3", "P", true).map(|mut label| {
+            label.font_size = inset.left_y.label_style.font_size;
+            label
+        });
         c
     }]);
     inset.top_x.out_margin = 8.0;
@@ -5336,7 +5342,6 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     inset.left_y.out_margin = 64.0;
     inset.left_y.min = 20.964_04;
     inset.left_y.max = 20.964_26;
-    inset.left_y.label_style.font_size = 10.0;
     inset.left_y.label_style.significant_digits = 6;
     for axis in [&mut inset.bottom_x, &mut inset.left_y] {
         axis.minor_count = 0;
