@@ -586,15 +586,17 @@ pub enum ThemeError {
     WrongKind {
         /// The theme's [`Theme::kind`].
         theme: ChartKind,
+        /// The kind of the chart that refused it.
         chart: ChartKind,
         /// The chart: [`LayerRef::Base`] or a [`LayerRef::Subplot`].
         layer: LayerRef,
     },
     /// The theme's draw style cannot draw a series in scope: the renderer
-    /// would drop it (`renderer::draw_style_supports`). The model cannot
-    /// tell; [`Theme::apply_named`] takes the answer as an argument, and
-    /// the renderer's `Chart` methods and the web wrappers check it before
-    /// applying.
+    /// would drop it (`renderer::draw_style_supports`). Only a custom
+    /// theme can be refused so: every family member draws in the Precise
+    /// style. The model cannot tell; [`Theme::apply_to_its_kind`] takes the
+    /// answer as an argument, and the renderer's `Chart` methods and the
+    /// web wrappers check it before applying.
     UnsupportedDrawStyle { series_id: String },
     /// The name is not a family's.
     UnknownName {
