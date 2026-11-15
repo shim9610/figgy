@@ -275,10 +275,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                 box_style: None,
                 align: Default::default(),
             }));
-        specs.push(SeriesConfig::feynman_diagram(
-            format!("diagram-{k}"),
-            diagram,
-        ));
+        specs.push(SeriesConfig::feynman(format!("diagram-{k}"), diagram));
     }
     themed(&mut chart, &theme, &mut specs)?;
     let image = export(r, &mut chart, &specs, bg)?;

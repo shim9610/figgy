@@ -90,7 +90,7 @@ A chart's per-element data enters in one of three ways.
   chart's categorical axis and value axis, with any number of levels and
   transitions. The Feynman series (`DataRenderType::Feynman`) holds its
   vertices, propagators and particles; vertex positions are optional, and
-  `auto_layout` writes positions for the vertices that have none. Neither
+  `place_vertices` writes positions for the vertices that have none. Neither
   takes columns or streamed sources.
 - **Columns.** Every other series kind of `Config` reads its per-point data
   through the renderer's `ColumnSource`. Category bars (`CategoryBars`, one

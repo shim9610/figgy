@@ -281,6 +281,7 @@ impl PrepareContext<'_> {
             return Ok(());
         };
         if cfg
+            .render_type
             .tri_mesh()
             .and_then(|mesh| mesh.contour.as_ref())
             .is_none_or(|contour| level_index as usize >= contour.levels.len())

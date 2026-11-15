@@ -115,7 +115,7 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
     });
     // Bars by direction, totals flagged by a column, joined step to step;
     // the theme colours them and draws the connectors.
-    let mut bars = SeriesConfig::range_bars("bridge", "wf-pos", "wf-start", "wf-end", Color::BLACK);
+    let mut bars = SeriesConfig::range_bars("bridge", "wf-pos", "wf-start", "wf-end");
     if let DataRenderType::RangeBars {
         color_by,
         connector,
@@ -199,8 +199,7 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("cd-high", &high)?;
     r.add_column("cd-sma", &sma)?;
     // Bodies by direction over low-to-high wicks; the theme colours them.
-    let mut candles =
-        SeriesConfig::range_bars("price", "cd-t", "cd-open", "cd-close", Color::BLACK);
+    let mut candles = SeriesConfig::range_bars("price", "cd-t", "cd-open", "cd-close");
     if let DataRenderType::RangeBars {
         whiskers,
         color_by,
@@ -288,7 +287,7 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
     r.add_hilo_column("gt-end", &pick(&|t| T0 + (t.1 + t.2) * DAY))?;
     r.add_column("gt-state", &pick(&|t| t.3 as f64))?;
     r.add_column("gt-progress", &pick(&|t| t.4))?;
-    let mut bars = SeriesConfig::range_bars("tasks", "gt-row", "gt-start", "gt-end", Color::BLACK);
+    let mut bars = SeriesConfig::range_bars("tasks", "gt-row", "gt-start", "gt-end");
     if let DataRenderType::RangeBars {
         color_by,
         progress,

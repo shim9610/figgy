@@ -591,6 +591,31 @@ pub fn box_plot_value_extent(
     Ok((extent, groups.direction))
 }
 
+/// The x and y extents a Feynman series fits: the bounding box of its
+/// vertices' positions, committed or laid out (#234). A display parameter
+/// read from the SSOT. `None` for any other series and for a diagram
+/// without vertices.
+pub(crate) fn feynman_fit_extents(item: &SeriesConfig) -> Result<Option<(FitExtent, FitExtent)>> {
+    let Some(diagram) = item.render_type.feynman() else {
+        return Ok(None);
+    };
+    let Some(box_) = diagram
+        .extent()
+        .map_err(|error| crate::renderer::feynman_error(&item.series_id, error))?
+    else {
+        return Ok(None);
+    };
+    let part = |lo: f64, hi: f64| FitExtent {
+        min: lo,
+        max: hi,
+        min_positive: [lo, hi].into_iter().filter(|v| *v > 0.0).reduce(f64::min),
+    };
+    Ok(Some((
+        part(box_[0][0], box_[1][0]),
+        part(box_[0][1], box_[1][1]),
+    )))
+}
+
 /// A single figgy chart panel: a `Config`, the decoration selection its
 /// raster highlights, and dirty-flag tracking.
 pub struct Chart {
@@ -1338,6 +1363,20 @@ impl Chart {
         let mut y = FitExtent::EMPTY;
         for cfg in series {
             let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
+            // A DataLess series reads no column (#203, #234). A Feynman
+            // diagram fits its vertices' positions; an energy-level series
+            // moves no axis.
+            if cfg.is_dataless() {
+                if let Some((own_x, own_y)) = feynman_fit_extents(cfg)? {
+                    if fit_x {
+                        x.union(&own_x);
+                    }
+                    if fit_y {
+                        y.union(&own_y);
+                    }
+                }
+                continue;
+            }
             // A category bar series fits its value axis to its group's bars;
             // its category positions sit on a categorical axis no fit moves.
             if cfg.render_type.category_bars().is_some() {
@@ -1435,6 +1474,40 @@ impl Chart {
         }
         self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
         self.auto_fit_view_3d_z(pool, layer, series, padding_ratio)?;
+        Ok(())
+    }
+
+    /// Fit the axes of every layer of the chart, the base chart, its
+    /// overlays, each subplot and each subplot's overlays, with
+    /// [`Self::auto_fit_layer_union`]: what `Renderer::fit_ranges` runs
+    /// (#297). The fit is made on a copy of the configuration (SSOT
+    /// configuration only, rule 2), so a refused fit leaves the chart as it
+    /// was, and a fit that moves nothing leaves its dirty flags alone.
+    pub(crate) fn auto_fit_every_layer(
+        &mut self,
+        pool: &ColumnPool,
+        series: &[SeriesConfig],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let mut fitted = Chart::new(self.config.clone());
+        fitted.auto_fit_layer_union(pool, LayerRef::Base, series, padding_ratio)?;
+        for overlay in 0..self.config.overlays.len() {
+            fitted.auto_fit_layer_union(pool, LayerRef::Overlay(overlay), series, padding_ratio)?;
+        }
+        for (index, subplot) in self.config.subplots.iter().enumerate() {
+            fitted.auto_fit_layer_union(pool, LayerRef::Subplot(index), series, padding_ratio)?;
+            for overlay in 0..subplot.config.overlays.len() {
+                fitted.auto_fit_layer_union(
+                    pool,
+                    LayerRef::SubplotOverlay(index, overlay),
+                    series,
+                    padding_ratio,
+                )?;
+            }
+        }
+        if fitted.config != self.config {
+            self.with_axis_range_change(|config| *config = fitted.config);
+        }
         Ok(())
     }
 

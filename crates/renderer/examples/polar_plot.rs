@@ -27,7 +27,7 @@ mod styled;
 
 use renderer::theme::ThemeFamily;
 use renderer::{
-    Chart, Color, Renderer, SeriesConfig,
+    Chart, Renderer, SeriesConfig,
     config::Category,
     data_config::{BarGroups, CategoryBarMode, ContourLabelConfig, GridLayout, MatrixRef, Shading},
     format::{LabelFormat, PlainNumberFormat},
@@ -432,7 +432,7 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
     for (band, (id, label)) in bands.into_iter().enumerate() {
         let shares: Vec<f64> = (0..16).map(|k| share(k, band)).collect();
         r.add_column(id, &shares)?;
-        series.push(SeriesConfig::category_bars(id, "rose_dir", id, Color::BLACK).label(label));
+        series.push(SeriesConfig::category_bars(id, "rose_dir", id).label(label));
     }
     chart = chart.with_legend_from(&series);
     chart.set_x_range(0.0, 16.0);

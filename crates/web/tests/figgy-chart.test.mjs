@@ -3082,3 +3082,46 @@ test("monotonic calls forward typed arrays and parse their JSON (#271)", async (
   assert.deepEqual(plain(calls[7][4]), { x: 60, y: 20, width: 300, height: 140 });
   assert.equal(calls[8][2], sources);
 });
+
+test("fit_ranges, the theme pair, fit_layout and place_feynman_vertices forward (#297)", async () => {
+  const kernel = makeKernel("api-297");
+  for (const name of [
+    "fit_ranges", "apply_theme", "apply_theme_to", "fit_layout", "place_feynman_vertices",
+  ]) {
+    kernel[name] = (...args) => {
+      kernel.calls.push([name, ...args]);
+      return name === "place_feynman_vertices" ? true : undefined;
+    };
+  }
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  element.fit_ranges();
+  element.apply_theme("midnight");
+  element.apply_theme_to("midnight");
+  element.apply_theme_to("gallery", [0, 2]);
+  element.apply_theme_to("gallery", "base");
+  element.apply_theme_to("gallery", ["base", 1]);
+  // An ordinary chart fits its layout with no argument.
+  element.fit_layout();
+  assert.equal(element.place_feynman_vertices("s-channel"), true);
+  const names = new Set([
+    "fit_ranges", "apply_theme", "apply_theme_to", "fit_layout", "place_feynman_vertices",
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(kernel.calls.filter(([name]) => names.has(name)))),
+    [
+      ["fit_ranges"],
+      ["apply_theme", "midnight"],
+      ["apply_theme_to", "midnight", "all"],
+      ["apply_theme_to", "gallery", "[0,2]"],
+      ["apply_theme_to", "gallery", "base"],
+      ["apply_theme_to", "gallery", "[\"base\",1]"],
+      ["fit_layout", null],
+      ["place_feynman_vertices", "s-channel"],
+    ],
+  );
+});

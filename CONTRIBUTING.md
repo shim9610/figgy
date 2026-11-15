@@ -76,6 +76,13 @@ cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast -
 (cd tools/playground && cargo run --locked -- --selftest)
 ```
 
+A change to `crates/web/figgy-chart.js` also runs the element's own test, which
+needs Node but no build, browser or GPU:
+
+```sh
+node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs
+```
+
 CI also sets `RUSTFLAGS=-D warnings` and `RUSTDOCFLAGS=-D warnings`, so compiler
 and rustdoc warnings fail the package checks. Set both variables to reproduce
 that locally.

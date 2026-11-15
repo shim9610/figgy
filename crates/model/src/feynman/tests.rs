@@ -97,7 +97,7 @@ fn the_layout_is_deterministic_and_a_commit_writes_only_the_unplaced() {
     let first = diagram.positions().unwrap();
     assert_eq!(first, diagram.positions().unwrap(), "bit-identical");
     assert_eq!(first[2], [0.3, 0.9], "a pinned vertex stays");
-    assert!(diagram.auto_layout().unwrap());
+    assert!(diagram.place_vertices().unwrap());
     for (vertex, p) in diagram.vertices.iter().zip(&first) {
         assert_eq!(vertex.at, Some(*p));
     }
@@ -106,7 +106,7 @@ fn the_layout_is_deterministic_and_a_commit_writes_only_the_unplaced() {
         first,
         "the committed layout draws the same"
     );
-    assert!(!diagram.auto_layout().unwrap(), "nothing left to place");
+    assert!(!diagram.place_vertices().unwrap(), "nothing left to place");
 }
 
 #[test]
@@ -475,7 +475,7 @@ fn the_first_vertex_drag_commits_the_layout_then_moves_the_vertex() {
 #[test]
 fn a_bend_drag_sets_the_arc_through_the_moved_middle() {
     let mut diagram = s_channel();
-    diagram.auto_layout().unwrap();
+    diagram.place_vertices().unwrap();
     let space = space();
     // v1 (50, 50) to v2 (150, 50): drag the middle up 50 px, a half circle.
     assert_eq!(
@@ -606,7 +606,7 @@ fn a_document_round_trips_with_its_defaults_omitted() {
     assert!(!json.contains("\"Internal\""), "{json}");
     assert!(json.contains("\"at\":[0.25,0.5]"), "{json}");
     let back: SeriesConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.feynman(), Some(&diagram));
+    assert_eq!(back.render_type.feynman(), Some(&diagram));
     assert_eq!(serde_json::to_string(&back).unwrap(), json);
     let selection = PickedDataRef::FeynmanLabel {
         source_id: None,
@@ -927,7 +927,7 @@ fn a_feynman_label_moves_by_part_and_row_not_by_a_value_label_index() {
     let mut s = series("d", s_channel());
     let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
     assert_eq!(s.drag_value_label(0, 6, 1.0, 1.0), reject);
-    let diagram = s.feynman_mut().unwrap();
+    let diagram = s.render_type.feynman_mut().unwrap();
     assert_eq!(
         diagram.drag_label(FeynmanLabelPart::Propagator, 2, 3.0, 4.0),
         NudgeResult::Moved

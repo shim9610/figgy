@@ -3273,7 +3273,7 @@ fn feynman_edits_refresh_first_frame_without_reupload() {
     let generation = r.pool.generation();
     let used_bytes = r.pool.used_bytes();
     fn diagram(s: &mut SeriesConfig) -> &mut FeynmanSeries {
-        s.feynman_mut().unwrap()
+        s.render_type.feynman_mut().unwrap()
     }
     let series_edits: [(&str, fn(&mut FeynmanSeries)); 7] = [
         ("a gluon joins", |d| {

@@ -85,7 +85,7 @@ fn find_records<'s>(
     };
     series
         .find(|cfg| cfg.series_id == *source)
-        .and_then(SeriesConfig::energy_levels)
+        .and_then(|s| s.render_type.energy_levels())
         .filter(|found| found.source.is_none())
 }
 
@@ -192,11 +192,11 @@ pub(crate) fn emit_dataless<'s>(
     scale: f32,
     sink: &mut dyn crate::sink::Sink,
 ) -> Result<bool> {
-    if let Some(diagram) = cfg.feynman() {
+    if let Some(diagram) = cfg.render_type.feynman() {
         emit_feynman(config, cfg, diagram, scale, sink)?;
         return Ok(true);
     }
-    let Some(levels) = cfg.energy_levels() else {
+    let Some(levels) = cfg.render_type.energy_levels() else {
         return Ok(false);
     };
     let Some(records) = records(levels) else {
@@ -268,7 +268,7 @@ impl PrepareContext<'_> {
             return Ok(None);
         }
         // An energy-level view keys on its source's records too.
-        let source_copy = match cfg.energy_levels() {
+        let source_copy = match cfg.render_type.energy_levels() {
             Some(levels) => {
                 let Some(records) = source_records(levels, items) else {
                     return Ok(None);

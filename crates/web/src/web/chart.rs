@@ -363,8 +363,8 @@ impl FiggyChart {
         // wrapper commits the layout of every unplaced vertex as the series
         // is registered, so `get_series` returns placed coordinates.
         for item in &mut series {
-            if let Some(diagram) = item.feynman_mut() {
-                diagram.auto_layout().map_err(js_err)?;
+            if let Some(diagram) = item.render_type.feynman_mut() {
+                diagram.place_vertices().map_err(js_err)?;
             }
         }
         match self.monotonic {

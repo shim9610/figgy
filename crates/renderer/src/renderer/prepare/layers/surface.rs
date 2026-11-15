@@ -175,7 +175,7 @@ impl PrepareContext<'_> {
         } else {
             0
         };
-        let style = cfg.tri_mesh().and_then(|m| m.surface.as_ref());
+        let style = cfg.render_type.tri_mesh().and_then(|m| m.surface.as_ref());
         let scale = series.style.display_scale;
         let pick_id = u32::try_from(index)
             .unwrap_or(u32::MAX - 1)

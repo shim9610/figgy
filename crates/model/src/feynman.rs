@@ -5,7 +5,7 @@
 //! `ColumnSource`. The host states the topology, which is the data: the
 //! vertices, the propagators that join them, each propagator's particle and
 //! each external leg's role, and every label string. A vertex's position is
-//! optional. A vertex without one is placed by [`FeynmanSeries::auto_layout`],
+//! optional. A vertex without one is placed by [`FeynmanSeries::place_vertices`],
 //! the way an axis without a range is fitted by `auto_fit_*`: the layout is
 //! a display parameter, written into the SSOT when it is committed, and the
 //! host reads the SSOT back. Until then the series is drawn at the layout's
@@ -1214,7 +1214,7 @@ impl FeynmanSeries {
     /// pattern: a display parameter written into the SSOT on an explicit
     /// call, which the host reads back. Allocates nothing when every
     /// vertex is placed.
-    pub fn auto_layout(&mut self) -> Result<bool, crate::RuleKind> {
+    pub fn place_vertices(&mut self) -> Result<bool, crate::RuleKind> {
         if !self.has_unplaced() {
             return Ok(false);
         }
@@ -2624,27 +2624,29 @@ fn coil_path(
     sampled_path(&f, spans, loops * COIL_SAMPLES as f64, closed, out)
 }
 
-impl SeriesConfig {
-    /// The Feynman fields of this series, or `None` for every other kind.
+impl crate::data_config::DataRenderType {
+    /// The Feynman series' fields, or `None` for every other kind.
     pub fn feynman(&self) -> Option<&FeynmanSeries> {
-        match &self.render_type {
+        match self {
             crate::data_config::DataRenderType::Feynman(diagram) => Some(diagram),
             _ => None,
         }
     }
 
-    /// The Feynman fields of this series, mutably.
+    /// The Feynman series' fields, mutably.
     pub fn feynman_mut(&mut self) -> Option<&mut FeynmanSeries> {
-        match &mut self.render_type {
+        match self {
             crate::data_config::DataRenderType::Feynman(diagram) => Some(diagram),
             _ => None,
         }
     }
+}
 
+impl SeriesConfig {
     /// Whether the series is DataLess: drawn from its SSOT on the CPU, with
     /// no column (an energy-level or Feynman series).
     pub fn is_dataless(&self) -> bool {
-        self.energy_levels().is_some() || self.feynman().is_some()
+        self.render_type.energy_levels().is_some() || self.render_type.feynman().is_some()
     }
 }
 
@@ -2655,7 +2657,7 @@ impl crate::config::Config {
     /// x and y axes, not on polar, ternary, parallel or 3D axes.
     pub fn validate_feynman(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
-            let Some(diagram) = item.feynman() else {
+            let Some(diagram) = item.render_type.feynman() else {
                 continue;
             };
             diagram.validate()?;
@@ -2698,14 +2700,14 @@ pub(crate) fn stepped_selection(
         } => (false, *propagator_index),
         _ => return None,
     };
-    let members = || series.iter().filter(|s| s.feynman().is_some());
+    let members = || series.iter().filter(|s| s.render_type.feynman().is_some());
     let own = &series.get(position)?.series_id;
     let at = members().position(|s| s.series_id == *own)?;
     let target = at
         .saturating_add_signed(dy as isize)
         .min(members().count().saturating_sub(1));
     let next = members().nth(target)?;
-    let diagram = next.feynman()?;
+    let diagram = next.render_type.feynman()?;
     let len = if vertices {
         diagram.vertices.len()
     } else {

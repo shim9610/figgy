@@ -2320,6 +2320,10 @@ export class FiggyChartElement extends HTMLElement {
   set_active_layer(json) { return JSON.parse(this.#mutateChart("set_active_layer", json)); }
   active_layer() { return JSON.parse(this.#kernelForCall().active_layer()); }
   auto_fit_colorbar(padding) { return this.#mutateChart("auto_fit_colorbar", padding); }
+  // Every axis the series use, from their registered columns, in one call
+  // (#297): the fit for a first plot. Synchronous; `auto_fit_all` measures
+  // the active layer's drawn extents instead.
+  fit_ranges() { return this.#mutateChart("fit_ranges"); }
   async auto_fit_all(padding) {
     const kernel = this.#kernelForCall();
     if (kernel.request_stream_auto_fit(padding)) {
@@ -2407,7 +2411,8 @@ export class FiggyChartElement extends HTMLElement {
     this.#pendingResize = null;
     this.#notifyStreamingMutation();
   }
-  fit_layout(sources = []) { return this.#mutateChart("fit_layout", sources); }
+  // A chart without monotonic series takes no argument.
+  fit_layout(sources) { return this.#mutateChart("fit_layout", sources); }
   set_title(text) { return this.#mutateChart("set_title", text); }
   set_x_title(text) { return this.#mutateChart("set_x_title", text); }
   set_y_title(text) { return this.#mutateChart("set_y_title", text); }
@@ -2425,16 +2430,20 @@ export class FiggyChartElement extends HTMLElement {
   }
   subplot_text_scale(index) { return this.#kernelForCall().subplot_text_scale(index); }
   subplot_text_factor(index) { return this.#kernelForCall().subplot_text_factor(index); }
-  apply_theme(name, subplots = "all") {
-    const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
-    return this.#mutateChart("apply_theme", name, list);
+  // The whole document: the chart and every subplot.
+  apply_theme(name) { return this.#mutateChart("apply_theme", name); }
+  // `scope`: "all", "base", an array of subplot indices (those subplots
+  // alone) or an array holding "base" (the base chart and those subplots).
+  apply_theme_to(name, scope = "all") {
+    const list = typeof scope === "string" ? scope : JSON.stringify(scope);
+    return this.#mutateChart("apply_theme_to", name, list);
   }
   theme_names() { return this.#kernelForCall().theme_names(); }
   theme(name) { return this.#kernelForCall().theme(name); }
   subplot_theme(index, name) { return this.#kernelForCall().subplot_theme(index, name); }
   apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
-  apply_custom_theme_to(theme, subplots = "all") {
-    const list = typeof subplots === "string" ? subplots : JSON.stringify(subplots);
+  apply_custom_theme_to(theme, scope = "all") {
+    const list = typeof scope === "string" ? scope : JSON.stringify(scope);
     return this.#mutateChart("apply_custom_theme_to", theme, list);
   }
   set_background(color) {
@@ -2482,6 +2491,11 @@ export class FiggyChartElement extends HTMLElement {
   on_move(dx, dy) { return this.#mutateChart("on_move", dx, dy); }
   on_release() { return this.#mutateChart("on_release"); }
   has_selection() { return this.#kernelForCall().has_selection(); }
+  // Feynman diagrams (#234): commit the place of every unplaced vertex of
+  // the series. Returns whether anything was written.
+  place_feynman_vertices(seriesId) {
+    return this.#mutateChart("place_feynman_vertices", seriesId);
+  }
 }
 
 if (!customElements.get("figgy-chart")) {

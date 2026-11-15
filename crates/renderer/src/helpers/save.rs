@@ -46,7 +46,8 @@ pub enum SaveError {
     /// The radial renderer could not export the chart.
     Radial(RadialError),
     /// The file name's extension names no [`ExportFormat`]; save with an
-    /// explicit format instead.
+    /// explicit format instead (`Renderer::save_as_blocking`,
+    /// `RadialRenderer::save_as_blocking`).
     UnknownFormat(std::path::PathBuf),
     /// Writing the file failed.
     Write {
@@ -62,7 +63,8 @@ impl std::fmt::Display for SaveError {
             Self::Radial(error) => error.fmt(f),
             Self::UnknownFormat(path) => write!(
                 f,
-                "no export format for the file name {path:?}: use png, svg or pdf, or name the format"
+                "no export format for the file name {path:?}: use a .png, .svg or .pdf name, or \
+                 name the format with save_as_blocking"
             ),
             Self::Write { path, source } => write!(f, "writing {path:?} failed: {source}"),
         }
@@ -230,8 +232,22 @@ impl RadialRenderer {
     ) -> Result<(), SaveError> {
         let path = path.as_ref();
         let format = format_of(path)?;
+        self.save_as_blocking(chart, size, options, path, format)
+    }
+
+    /// Export `chart` as `format` and write it to `path`, whatever its
+    /// extension: the radial counterpart of [`Renderer::save_as_blocking`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_as_blocking(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: ExportOptions,
+        path: impl AsRef<std::path::Path>,
+        format: ExportFormat,
+    ) -> Result<(), SaveError> {
         let bytes = self.export_bytes_blocking(chart, size, options, format)?;
-        write(path, &bytes)
+        write(path.as_ref(), &bytes)
     }
 }
 

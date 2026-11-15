@@ -50,7 +50,7 @@ pub(in crate::renderer) fn validate_renderer_series(
         if item.is_dataless() || item.monotonic().is_some() {
             continue;
         }
-        if let Some(mesh) = item.tri_mesh() {
+        if let Some(mesh) = item.render_type.tri_mesh() {
             validate_tri_mesh_series(pool, config, item, mesh)?;
             continue;
         }

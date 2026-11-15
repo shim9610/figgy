@@ -88,7 +88,7 @@ fn config() -> renderer::Config {
 
 fn series(chart: &FiggyChart) -> FeynmanSeries {
     let list: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
-    list[0].feynman().unwrap().clone()
+    list[0].render_type.feynman().unwrap().clone()
 }
 
 async fn pick(chart: &mut FiggyChart, at: [f32; 2]) -> serde_json::Value {
@@ -115,7 +115,10 @@ async fn a_diagram_is_laid_out_on_registration_picked_dragged_and_reported() {
     // Registration commits the layout: every vertex is placed.
     let diagram = series(&chart);
     assert!(diagram.vertices.iter().all(|v| v.at.is_some()));
-    assert!(!chart.auto_layout("d").unwrap(), "nothing left to place");
+    assert!(
+        !chart.place_feynman_vertices("d").unwrap(),
+        "nothing left to place"
+    );
     chart.frame().unwrap();
 
     let space = renderer::annotation::pixel_space_for_config(&config);

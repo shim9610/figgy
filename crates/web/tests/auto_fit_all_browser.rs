@@ -66,6 +66,54 @@ async fn auto_fit_all_commits_ranges_without_a_pending_frame() {
     chart.frame().expect("frame after auto_fit_all");
 }
 
+// `fit_ranges()` (#297): the one-call fit of every axis the series use,
+// from the registered columns' statistics. Synchronous, needs no extent
+// engine, and the next frame draws the new ranges.
+#[wasm_bindgen_test(async)]
+async fn fit_ranges_fits_the_axes_from_the_registered_columns() {
+    let mut chart = FiggyChart::create(canvas())
+        .await
+        .expect("FiggyChart.create");
+    let ranges = |chart: &FiggyChart| -> [f64; 4] {
+        let cfg: serde_json::Value =
+            serde_json::from_str(&chart.get_config().expect("get_config")).expect("config json");
+        [
+            cfg["bottom_x"]["min"].as_f64().unwrap(),
+            cfg["bottom_x"]["max"].as_f64().unwrap(),
+            cfg["left_y"]["min"].as_f64().unwrap(),
+            cfg["left_y"]["max"].as_f64().unwrap(),
+        ]
+    };
+    let placeholder = ranges(&chart);
+    // A new chart has no series: nothing to fit, nothing changes.
+    chart.fit_ranges().expect("fit_ranges without series");
+    assert_eq!(ranges(&chart), placeholder);
+
+    chart
+        .register_column_f32("x", &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+        .expect("register x");
+    chart
+        .register_column_f32("y", &[0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
+        .expect("register y");
+    chart
+        .add_line_series("s", "x", "y", 2.0, "")
+        .expect("add line series");
+    chart.fit_ranges().expect("fit_ranges");
+    let fitted = ranges(&chart);
+    for (actual, expected, field) in [
+        (fitted[0], -0.25, "bottom_x.min"),
+        (fitted[1], 5.25, "bottom_x.max"),
+        (fitted[2], -1.25, "left_y.min"),
+        (fitted[3], 26.25, "left_y.max"),
+    ] {
+        assert_close(actual, expected, field);
+    }
+    chart.frame().expect("frame after fit_ranges");
+    // A second fit moves nothing.
+    chart.fit_ranges().expect("fit_ranges again");
+    assert_eq!(ranges(&chart), fitted);
+}
+
 #[wasm_bindgen_test(async)]
 async fn contour_auto_fit_uses_the_exact_rendered_sample_lattice() {
     let mut chart = FiggyChart::create(canvas())

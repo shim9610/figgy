@@ -1716,7 +1716,7 @@ fn each_level_panel(
         let space = renderer::annotation::pixel_space_for_config(panel);
         let measure = renderer::CpuTextMeasure::for_style(&panel.draw_style);
         for cfg in series {
-            let Some(levels) = cfg.energy_levels() else {
+            let Some(levels) = cfg.render_type.energy_levels() else {
                 continue;
             };
             let records = match &levels.source {
@@ -1724,7 +1724,7 @@ fn each_level_panel(
                 Some(source) => match series
                     .iter()
                     .find(|s| s.series_id == *source)
-                    .and_then(SeriesConfig::energy_levels)
+                    .and_then(|s| s.render_type.energy_levels())
                 {
                     Some(found) => found,
                     None => continue,

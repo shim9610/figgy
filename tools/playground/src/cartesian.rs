@@ -709,7 +709,7 @@ impl CartesianHost {
                 let Some(diagram) = series
                     .iter_mut()
                     .find(|s| s.series_id == series_id)
-                    .and_then(|s| s.feynman_mut())
+                    .and_then(|s| s.render_type.feynman_mut())
                 else {
                     return false;
                 };

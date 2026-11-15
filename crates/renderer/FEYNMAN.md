@@ -53,8 +53,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     chart.set_y_range(0.0, 1.0);
     let id = renderer.register_chart(chart.config().clone(), vec![series])?;
     // Fix the diagram where it is drawn, and read the positions back.
-    renderer.auto_layout(id, "s-channel")?;
-    let placed = renderer.chart_series(id)?[0].feynman().unwrap().clone();
+    renderer.place_feynman_vertices(id, "s-channel")?;
+    let placed = renderer.chart_series(id)?[0].render_type.feynman().unwrap().clone();
     assert!(placed.vertices.iter().all(|v| v.at.is_some()));
     Ok(())
 }
@@ -75,7 +75,7 @@ are placed.
 ## The layout
 
 `FeynmanSeries::positions` places every vertex without `at`, and
-`auto_layout` writes those places into `at`. The layout is deterministic:
+`place_vertices` writes those places into `at`. The layout is deterministic:
 the same diagram always gives the same positions.
 
 - Placed vertices are pinned.
@@ -104,8 +104,9 @@ layout, so the diagram's data units stay where they were.
 Committing the layout works like an auto-fit: the renderer writes the
 positions into the registered series, and the host reads them back
 (`Renderer::chart_series`).
-`Renderer::auto_layout(chart, series_id)` commits a registered series; a
-host that owns its `SeriesConfig` calls `FeynmanSeries::auto_layout`. The
+`Renderer::place_feynman_vertices(chart, series_id)` commits a registered
+series; a host that owns its `SeriesConfig` calls
+`FeynmanSeries::place_vertices`. The
 first vertex drag commits the whole layout before it moves the vertex, so
 no other vertex jumps. The WASM wrapper commits the layout when a series is
 registered, so `get_series` returns placed vertices.
@@ -158,7 +159,7 @@ There is no count limit on vertices, propagators or labels. A 5,000-rung
 ladder (10,004 vertices, 15,002 propagators) lays out in about 0.5 s and
 draws at 1x in about 0.8 s in the debug test profile. A pick of that ladder
 takes about 7 ms in a release build. An uncommitted layout is recomputed on
-every pick, so commit it (`auto_layout`) before hovering a large diagram.
+every pick, so commit it (`place_feynman_vertices`) before hovering a large diagram.
 
 ## Drawn within the plot
 

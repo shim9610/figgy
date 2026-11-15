@@ -1318,32 +1318,21 @@ impl Renderer {
                 // or laid out: a display parameter read from the SSOT
                 // (#234).
                 for item in &state.series {
-                    let Some(diagram) = item.feynman() else {
-                        continue;
-                    };
-                    let Some(box_) = diagram
-                        .extent()
-                        .map_err(|error| crate::renderer::feynman_error(&item.series_id, error))?
-                    else {
+                    let Some((own_x, own_y)) = crate::chart::feynman_fit_extents(item)? else {
                         continue;
                     };
                     let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
-                    let part = |lo: f64, hi: f64| crate::chart::FitExtent {
-                        min: lo,
-                        max: hi,
-                        min_positive: [lo, hi].into_iter().filter(|v| *v > 0.0).reduce(f64::min),
-                    };
                     if x {
-                        x_extent.union(&part(box_[0][0], box_[1][0]));
+                        x_extent.union(&own_x);
                     }
                     if y {
-                        y_extent.union(&part(box_[0][1], box_[1][1]));
+                        y_extent.union(&own_y);
                     }
                 }
                 // A triangle mesh fits from its vertex columns' statistics
                 // (#210): every registered vertex, referenced or not.
                 for item in &state.series {
-                    if item.tri_mesh().is_none() {
+                    if item.render_type.tri_mesh().is_none() {
                         continue;
                     }
                     let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
@@ -1386,5 +1375,62 @@ impl Renderer {
             .ok_or(FiggyError::UnknownChart { id })?;
         state.fit_extents = fit_extents;
         Ok(())
+    }
+}
+
+/// The padding [`Renderer::fit_ranges`] leaves on each side of the fitted
+/// data: 5% of the span, the padding the guides' `auto_fit_*` calls use.
+pub const FIT_RANGES_PADDING: f64 = 0.05;
+
+impl Renderer {
+    /// Fit every axis `series` use to their registered columns, in one
+    /// call (#297): the x and y axes of the base chart, of each overlay
+    /// layer and of each subplot and its overlays, and the z axis of a 3D
+    /// chart. A chart starts at a `0..1` placeholder range; this is the
+    /// call that replaces it for a first plot.
+    ///
+    /// Each layer is fitted with
+    /// [`Chart::auto_fit_layer_union`](crate::chart::Chart::auto_fit_layer_union)
+    /// at [`FIT_RANGES_PADDING`], so its rules are the ones documented
+    /// there: the fit reads the columns' cached statistics (nothing is read
+    /// back or rescanned), a linked axis fits its whole link group, a
+    /// parallel chart fits each of its axes, a ternary chart and a
+    /// categorical axis are left as they are, a Feynman diagram fits its
+    /// vertices and an energy-level series moves no axis. Error bar ends,
+    /// heatmap cell half-widths and arrow tips are not in the column
+    /// statistics; [`Self::begin_auto_fit_all`] measures a registered
+    /// chart's drawn extents instead. For another padding, or one layer,
+    /// call `auto_fit_layer_union` with [`Self::pool`].
+    ///
+    /// A layer without series, and an axis whose columns have no finite
+    /// span, keep their ranges; a chart nothing moves is not marked
+    /// changed. On an error the chart is left as it was: a column that is
+    /// not registered is `UnknownColumn`, a streamed source is refused with
+    /// `ColumnNotResident` (rule 8), and a monotonic series with
+    /// `MonotonicMappingEdit`, since its x range is set by `set_monotonic`.
+    pub fn fit_ranges(
+        &self,
+        chart: &mut crate::chart::Chart,
+        series: &[SeriesConfig],
+    ) -> Result<()> {
+        let result = self.fit_ranges_unreported(chart, series);
+        self.reported(result)
+    }
+
+    fn fit_ranges_unreported(
+        &self,
+        chart: &mut crate::chart::Chart,
+        series: &[SeriesConfig],
+    ) -> Result<()> {
+        for item in series {
+            self.require_resident_series(item)?;
+            if item.monotonic().is_some() {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    kind: crate::RuleKind::MonotonicMappingEdit,
+                });
+            }
+        }
+        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)
     }
 }

@@ -26,8 +26,8 @@
 //!
 //! Two refusals are part of the contract and are checked to change nothing:
 //! - a subplot of another kind refuses a custom theme over
-//!   `SubplotScope::All` (`ThemeError::WrongKind` naming the subplot); a family
-//!   never does. The theme is then applied with `SubplotScope::None`, which
+//!   `ThemeScope::All` (`ThemeError::WrongKind` naming the subplot); a family
+//!   never does. The theme is then applied with `ThemeScope::Base`, which
 //!   styles the base chart alone and must work;
 //! - a custom theme whose draw style is not Precise refuses a series that
 //!   style cannot draw (`ThemeError::UnsupportedDrawStyle`). A Precise theme,
@@ -47,7 +47,7 @@ mod scenes;
 mod looks;
 
 use renderer::config::DrawStyle;
-use renderer::theme::{ChartKind, RadialTheme, SubplotScope, Theme, ThemeError, ThemeFamily};
+use renderer::theme::{ChartKind, RadialTheme, Theme, ThemeError, ThemeFamily, ThemeScope};
 use renderer::{
     Chart, Color, Config, ExportOptions, LayerRef, RadialRenderer, RasterImage, Renderer,
     SeriesConfig,
@@ -156,7 +156,7 @@ struct Tally {
     /// kind than its base chart.
     mixed: usize,
     /// Of those, the ones a subplot of another kind sent to
-    /// `SubplotScope::None`.
+    /// `ThemeScope::Base`.
     base_only: usize,
     /// Themes refused for their draw style.
     refused: usize,
@@ -324,7 +324,7 @@ fn sweep_chart(
         let mut chart = Chart::new(config.clone());
         let mut series = declared.to_vec();
 
-        let mut scope = SubplotScope::All;
+        let mut scope = ThemeScope::All;
         let mut result = apply(&mut chart, &mut series, scope);
         if let Err(ThemeError::WrongKind { layer, .. }) = &result {
             // A subplot of another kind than a custom theme: the theme
@@ -334,7 +334,7 @@ fn sweep_chart(
             assert!(matches!(layer, LayerRef::Subplot(_)), "{at}: {result:?}");
             assert_eq!(chart.config(), config, "{at}: a refusal changed the chart");
             assert_eq!(series, declared, "{at}: a refusal changed the series");
-            scope = SubplotScope::None;
+            scope = ThemeScope::Base;
             result = apply(&mut chart, &mut series, scope);
             assert!(
                 !matches!(result, Err(ThemeError::WrongKind { .. })),
@@ -426,7 +426,7 @@ fn sweep_chart(
                 tally.mixed += 1;
             }
         }
-        if scope == SubplotScope::None {
+        if scope == ThemeScope::Base {
             tally.base_only += 1;
         }
     }
@@ -488,7 +488,7 @@ fn the_groups_cover_every_scene() {
 
 // The Subplots scene has cells of other kinds than its base chart: the
 // families theme it whole, each cell in its kind's member, and the line
-// kind's own themes take the `SubplotScope::None` path. The Scatter and
+// kind's own themes take the `ThemeScope::Base` path. The Scatter and
 // Lines scenes draw series the night-sky styles refuse.
 #[test]
 fn xy_scenes_take_their_themes() {

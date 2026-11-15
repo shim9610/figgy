@@ -494,7 +494,11 @@ impl std::fmt::Display for AllocError {
             AllocError::AllocationFailed { resource, reason } => {
                 write!(f, "{resource} allocation failed: {reason}")
             }
-            AllocError::DuplicateId(id) => write!(f, "ColumnPool duplicate id: {id}"),
+            AllocError::DuplicateId(id) => write!(
+                f,
+                "ColumnPool duplicate id: {id}; replace the column with upsert_column, or \
+                 remove_column it first"
+            ),
             AllocError::EmptySource => write!(f, "ColumnPool: empty source not allowed"),
             AllocError::CounterExhausted { counter } => {
                 write!(f, "ColumnPool {counter} exhausted")

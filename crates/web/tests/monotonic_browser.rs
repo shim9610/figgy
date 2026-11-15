@@ -196,7 +196,7 @@ async fn typed_arrays_feed_set_append_pick_and_export() {
     let zoomed: renderer::Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
     assert_eq!(zoomed.bottom_x.max, 500.0);
     // A style edit needs no source.
-    chart.apply_theme("midnight", "all").unwrap();
+    chart.apply_theme("midnight").unwrap();
     assert_eq!(needs(&chart), serde_json::json!([]));
     // A resize moves the mapping: the plain call is refused, the
     // monotonic one reduces the group again from its source.
@@ -214,7 +214,7 @@ async fn typed_arrays_feed_set_append_pick_and_export() {
         .resize_monotonic(WIDTH, HEIGHT, sources(&a, &b), JsValue::UNDEFINED)
         .unwrap();
     // The layout fit takes the source too.
-    chart.fit_layout(sources(&a, &b)).unwrap();
+    chart.fit_layout(Some(sources(&a, &b))).unwrap();
     assert_eq!(needs(&chart), serde_json::json!([]));
     chart.frame().unwrap();
 

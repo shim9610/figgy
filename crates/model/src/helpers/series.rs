@@ -59,6 +59,11 @@ impl MatrixRef {
     }
 }
 
+/// The colour a constructor gives a series that takes one colour, the
+/// ink a line or a marker starts in: black until [`SeriesConfig::color`]
+/// or a theme's palette sets it.
+const SERIES_INK: Color = Color::BLACK;
+
 impl SeriesConfig {
     /// A series of `render_type` over the `x` and `y` columns, unlabelled
     /// and flat.
@@ -307,19 +312,19 @@ impl SeriesConfig {
     }
 
     /// Vertical category bars: `positions` holds `0, 1, ..., n - 1` and
-    /// `values` one value per category.
+    /// `values` one value per category. Black until [`Self::color`] or a
+    /// theme's palette colours it, like every constructor here.
     pub fn category_bars(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
         values: impl Into<ColumnId>,
-        color: Color,
     ) -> Self {
         Self::of_kind(
             id,
             positions,
             values,
             DataRenderType::CategoryBars {
-                color,
+                color: SERIES_INK,
                 style: crate::defaults::category_bar_style(),
                 labels: crate::defaults::category_bar_series_labels(),
                 label_format: crate::defaults::category_bar_label_format(),
@@ -330,18 +335,18 @@ impl SeriesConfig {
 
     /// Box plots: `positions` holds `0, 1, ..., n - 1` and `records` names
     /// the column of the host's five-number records, one per category.
+    /// Black until [`Self::color`] or a theme's palette colours it.
     pub fn box_plot(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
         records: impl Into<ColumnId>,
-        color: Color,
     ) -> Self {
         Self::of_kind(
             id,
             positions,
             records,
             DataRenderType::BoxPlot {
-                color,
+                color: SERIES_INK,
                 style: crate::defaults::box_plot_style(),
                 labels: crate::defaults::box_plot_series_labels(),
                 outliers: None,
@@ -355,20 +360,20 @@ impl SeriesConfig {
     /// Range bars (a Gantt or floating-bar chart): one bar per row at
     /// `positions`, from `start` to `end`, on a category axis. On a numeric
     /// axis the series also needs its `slot_width`, set through
-    /// [`Self::style_range_bars`].
+    /// [`Self::style_range_bars`]. Black until [`Self::color`] or a theme's
+    /// palette colours it.
     pub fn range_bars(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
         start: impl Into<ColumnId>,
         end: impl Into<ColumnId>,
-        color: Color,
     ) -> Self {
         Self::of_kind(
             id,
             positions,
             end,
             DataRenderType::RangeBars {
-                color,
+                color: SERIES_INK,
                 style: crate::defaults::category_bar_style(),
                 start: start.into(),
                 whiskers: None,
@@ -382,19 +387,19 @@ impl SeriesConfig {
     }
 
     /// A radar polygon: `categories` holds `0, 1, ..., n - 1` and `values`
-    /// one value per category on the radius axis.
+    /// one value per category on the radius axis. Black until
+    /// [`Self::color`] or a theme's palette colours it.
     pub fn radar(
         id: impl Into<String>,
         categories: impl Into<ColumnId>,
         values: impl Into<ColumnId>,
-        color: Color,
     ) -> Self {
         Self::of_kind(
             id,
             categories,
             values,
             DataRenderType::Radar {
-                color,
+                color: SERIES_INK,
                 style: crate::defaults::radar_series_style(),
                 labels: crate::defaults::radar_series_labels(),
             },
@@ -446,7 +451,7 @@ impl SeriesConfig {
     }
 
     /// An energy-level (Grotrian) diagram held in the document.
-    pub fn energy_diagram(
+    pub fn energy_levels(
         id: impl Into<String>,
         levels: crate::energy_levels::EnergyLevelSeries,
     ) -> Self {
@@ -455,7 +460,7 @@ impl SeriesConfig {
 
     /// A triangle mesh over the vertices `(x, y)`, its triangles in the
     /// index column `triangles`, filled by `values`.
-    pub fn mesh(
+    pub fn tri_mesh(
         id: impl Into<String>,
         x: impl Into<ColumnId>,
         y: impl Into<ColumnId>,
@@ -497,7 +502,7 @@ impl SeriesConfig {
     }
 
     /// A Feynman diagram held in the document.
-    pub fn feynman_diagram(id: impl Into<String>, diagram: crate::feynman::FeynmanSeries) -> Self {
+    pub fn feynman(id: impl Into<String>, diagram: crate::feynman::FeynmanSeries) -> Self {
         Self::of_kind(id, "", "", DataRenderType::Feynman(diagram))
     }
 
@@ -771,14 +776,14 @@ mod tests {
         valid_on(
             &categorical(),
             &[
-                SeriesConfig::category_bars("a", "i", "v", ink),
-                SeriesConfig::box_plot("a", "i", "records", ink),
-                SeriesConfig::range_bars("a", "i", "start", "end", ink),
+                SeriesConfig::category_bars("a", "i", "v").color(ink),
+                SeriesConfig::box_plot("a", "i", "records").color(ink),
+                SeriesConfig::range_bars("a", "i", "start", "end").color(ink),
             ],
         );
         let mut polar = categorical();
         polar.set_polar(Some(crate::defaults::polar_options()));
-        valid_on(&polar, &[SeriesConfig::radar("a", "i", "v", ink)]);
+        valid_on(&polar, &[SeriesConfig::radar("a", "i", "v").color(ink)]);
         let mut ternary = Config::default();
         ternary.set_ternary(Some(crate::defaults::ternary_options()));
         valid_on(&ternary, &[SeriesConfig::ternary("a", "p", "q", "r")]);

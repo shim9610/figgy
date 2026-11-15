@@ -416,7 +416,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
             *y -= 10.0 / plot.height.max(1) as f32;
         }
     }
-    let spec = SeriesConfig::energy_diagram("he", series);
+    let spec = SeriesConfig::energy_levels("he", series);
     save(r, &mut c, &[spec], &out.join("nist-grotrian-he-i.png"))
 }
 
