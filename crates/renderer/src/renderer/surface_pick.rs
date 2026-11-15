@@ -567,7 +567,7 @@ impl Renderer {
                 };
                 let pick_id = u32::try_from(identities.len() + 1).unwrap_or(u32::MAX);
                 let look = mesh::surface_params_gpu(
-                    cfg.tri_mesh().and_then(|m| m.surface.as_ref()),
+                    cfg.render_type.tri_mesh().and_then(|m| m.surface.as_ref()),
                     0,
                     request.display_scale,
                     None,

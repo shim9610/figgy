@@ -180,7 +180,7 @@ fn ladder(rungs: usize) -> FeynmanSeries {
 /// The ladder with its layout committed, as the WASM wrapper registers it.
 fn committed(rungs: usize) -> FeynmanSeries {
     let mut d = ladder(rungs);
-    d.auto_layout().unwrap();
+    d.place_vertices().unwrap();
     d
 }
 
@@ -236,7 +236,7 @@ fn each_operation_allocates_a_fixed_number_of_times_at_every_size() {
             "{rungs}: vertex drag"
         );
         assert_eq!(
-            allocations(|| moved.auto_layout().unwrap()).0,
+            allocations(|| moved.place_vertices().unwrap()).0,
             0,
             "{rungs}: nothing to lay out"
         );

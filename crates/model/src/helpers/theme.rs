@@ -24,7 +24,7 @@
 //! annotation layer, the overlay and subplot structure, series ids, columns
 //! and labels, and the selection itself (only its highlight look changes).
 //! Overlays take the theme with their chart; subplots take it as
-//! [`SubplotScope`] chooses.
+//! [`ThemeScope`] chooses.
 //!
 //! Font sizes change what the margins must hold. The renderer's
 //! `Chart::apply_theme` and `Chart::apply_custom_theme` refit the layout
@@ -605,7 +605,8 @@ pub enum ThemeError {
         names: &'static [&'static str],
     },
     /// A subplot index past the chart's subplots, in a
-    /// [`SubplotScope::Only`] or given for a subplot's theme.
+    /// [`ThemeScope::Subplots`] or [`ThemeScope::BaseAnd`] or given for a
+    /// subplot's theme.
     SubplotIndex(SubplotIndexError),
 }
 
@@ -662,13 +663,31 @@ impl std::fmt::Display for ThemeError {
                 theme,
                 chart,
                 layer,
-            } => write!(
-                f,
-                "a {theme} theme does not apply to the {chart} chart at {layer:?}: apply it \
-                 to the charts of its kind (apply_custom_theme skips the others), leave that \
-                 chart out of the subplot scope, or use a family ({})",
-                ThemeFamily::NAMES.join(", ")
-            ),
+            } => {
+                write!(
+                    f,
+                    "a {theme} theme does not apply to the {chart} chart at {layer:?}: "
+                )?;
+                // Name a scope that leaves the refusing chart out.
+                match layer {
+                    LayerRef::Subplot(index) => write!(
+                        f,
+                        "leave subplot {index} out of the scope (ThemeScope::Base, or \
+                         Subplots / BaseAnd without {index}), "
+                    )?,
+                    _ => write!(
+                        f,
+                        "leave the base chart out of the scope (ThemeScope::Subplots with the \
+                         {theme} subplots), "
+                    )?,
+                }
+                write!(
+                    f,
+                    "apply it to the charts of its kind (apply_custom_theme skips the \
+                     others), or use a family ({})",
+                    ThemeFamily::NAMES.join(", ")
+                )
+            }
             Self::UnsupportedDrawStyle { series_id } => write!(
                 f,
                 "the theme's draw style cannot draw series {series_id:?}: use a theme in the \
@@ -695,23 +714,47 @@ impl std::error::Error for ThemeError {
     }
 }
 
-/// Which subplots take a theme. The chart's own layers and its overlays
-/// always do.
+/// Which charts of a document take a theme: the base chart, its subplots,
+/// or both. A chart is themed with its overlays and the series drawn on
+/// it; a series drawn on a chart out of scope keeps its look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SubplotScope<'a> {
-    None,
+pub enum ThemeScope<'a> {
+    /// The base chart and every subplot.
     All,
-    /// The subplots at these indices into [`Config::subplots`].
-    Only(&'a [usize]),
+    /// The base chart alone.
+    Base,
+    /// The subplots at these indices into [`Config::subplots`] alone,
+    /// without the base chart.
+    Subplots(&'a [usize]),
+    /// The base chart and the subplots at these indices.
+    BaseAnd(&'a [usize]),
 }
 
-impl SubplotScope<'_> {
-    /// Whether the subplot at `index` is in scope.
-    pub fn includes(self, index: usize) -> bool {
+impl ThemeScope<'_> {
+    /// Whether the base chart is in scope.
+    pub fn includes_base(self) -> bool {
         match self {
-            Self::None => false,
+            Self::All | Self::Base | Self::BaseAnd(_) => true,
+            Self::Subplots(_) => false,
+        }
+    }
+
+    /// Whether the subplot at `index` is in scope.
+    pub fn includes_subplot(self, index: usize) -> bool {
+        match self {
+            Self::Base => false,
             Self::All => true,
-            Self::Only(indices) => indices.contains(&index),
+            Self::Subplots(indices) | Self::BaseAnd(indices) => indices.contains(&index),
+        }
+    }
+
+    /// Whether the chart a series in `layer` is drawn on is in scope: the
+    /// base chart for the base layer, an overlay and the annotations, a
+    /// subplot for its own layer and its overlays.
+    pub fn includes_layer(self, layer: LayerRef) -> bool {
+        match layer {
+            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => self.includes_subplot(i),
+            LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => self.includes_base(),
         }
     }
 }
@@ -734,57 +777,55 @@ fn style_markers(scatter: &mut crate::data_config::DataScatterStyleConfig, lines
     }
 }
 
-/// The charts one application of a theme writes: the base chart or not,
-/// and the subplots in scope. [`Theme::apply`] writes the base chart and
-/// the subplots its [`SubplotScope`] names; a theme family writes one chart
-/// at a time, each with its own member ([`Theme::apply_named`]).
+/// The charts one application of a theme writes: a [`ThemeScope`].
+/// [`Theme::apply`] writes the charts its scope names; a theme family
+/// writes one chart at a time, each with its own member
+/// ([`Theme::apply_named`]).
 #[derive(Clone, Copy, Debug)]
 struct Charts<'a> {
     base: bool,
-    subplots: SubplotScope<'a>,
+    subplots: ThemeScope<'a>,
 }
 
 impl<'a> Charts<'a> {
-    /// The base chart and the subplots `subplots` names.
-    fn scope(subplots: SubplotScope<'a>) -> Self {
+    /// The charts `scope` names.
+    fn scope(scope: ThemeScope<'a>) -> Self {
         Self {
-            base: true,
-            subplots,
+            base: scope.includes_base(),
+            subplots: scope,
         }
     }
 
     /// The one chart `layer` names: the base chart or a subplot.
     fn one(layer: &'a LayerRef) -> Self {
         match layer {
-            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => Self {
-                base: false,
-                subplots: SubplotScope::Only(std::slice::from_ref(index)),
-            },
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                Self::scope(ThemeScope::Subplots(std::slice::from_ref(index)))
+            }
             LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => {
-                Self::scope(SubplotScope::None)
+                Self::scope(ThemeScope::Base)
             }
         }
     }
 
     /// Whether the chart a series in `layer` is drawn on is written.
     fn holds(self, layer: LayerRef) -> bool {
-        match layer {
-            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => self.subplots.includes(i),
-            LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => self.base,
-        }
+        self.subplots.includes_layer(layer)
     }
 }
 
 /// Every index `subplots` names is a subplot of `config`
 /// ([`ThemeError::SubplotIndex`] for the first that is not).
-fn check_scope(config: &Config, subplots: SubplotScope) -> Result<(), ThemeError> {
+fn check_scope(config: &Config, scope: ThemeScope) -> Result<(), ThemeError> {
     let count = config.subplots.len();
-    match subplots {
-        SubplotScope::Only(indices) => match indices.iter().find(|&&index| index >= count) {
-            Some(&index) => Err(SubplotIndexError { index, count }.into()),
-            None => Ok(()),
-        },
-        SubplotScope::None | SubplotScope::All => Ok(()),
+    match scope {
+        ThemeScope::Subplots(indices) | ThemeScope::BaseAnd(indices) => {
+            match indices.iter().find(|&&index| index >= count) {
+                Some(&index) => Err(SubplotIndexError { index, count }.into()),
+                None => Ok(()),
+            }
+        }
+        ThemeScope::Base | ThemeScope::All => Ok(()),
     }
 }
 
@@ -798,7 +839,7 @@ fn charts_in_scope<'a>(config: &Config, charts: Charts<'a>) -> impl Iterator<Ite
 fn chart_layers(subplots: usize, charts: Charts) -> impl Iterator<Item = LayerRef> {
     (charts.base.then_some(LayerRef::Base)).into_iter().chain(
         (0..subplots)
-            .filter(move |&index| charts.subplots.includes(index))
+            .filter(move |&index| charts.subplots.includes_subplot(index))
             .map(LayerRef::Subplot),
     )
 }
@@ -1046,24 +1087,24 @@ impl Theme {
         }
     }
 
-    /// Apply the theme to a chart and its series: the chrome of the chart,
-    /// its overlays and the subplots `subplots` names, and every series
-    /// drawn on one of those. The legend symbols follow the new series
+    /// Apply the theme to the charts `scope` names ([`ThemeScope`]: the
+    /// base chart, subplots, or both) and their series: the chrome of each
+    /// chart and its overlays, and every series drawn on one of those. The legend symbols follow the new series
     /// look. The frame is the chrome's [`AxisPreset`] unless a chart draws
     /// a family with a frame of its own. A theme with a
     /// [`FieldTheme::contour_shade`] then colours every contour level from
     /// its chart's colourbar.
     ///
-    /// Refused, changing nothing, when the base chart or a subplot in
-    /// scope is of another kind than [`Self::kind`] ([`ChartKind::of`]); a
+    /// Refused, changing nothing, when a chart in scope (the base chart or
+    /// a subplot) is of another kind than [`Self::kind`] ([`ChartKind::of`]); a
     /// chart with no series yet takes any theme.
     pub fn apply(
         &self,
         config: &mut Config,
         series: &mut [SeriesConfig],
-        subplots: SubplotScope,
+        scope: ThemeScope,
     ) -> Result<(), ThemeError> {
-        let charts = Charts::scope(subplots);
+        let charts = Charts::scope(scope);
         self.check_kind(config, series, charts)?;
         self.style_charts(config, series, charts);
         self.finish_charts(config, series, charts);
@@ -1227,9 +1268,9 @@ impl Theme {
         &self,
         config: &mut Config,
         series: &[SeriesConfig],
-        subplots: SubplotScope,
+        scope: ThemeScope,
     ) -> Result<(), ThemeError> {
-        let charts = Charts::scope(subplots);
+        let charts = Charts::scope(scope);
         self.check_kind(config, series, charts)?;
         self.write_chrome(config, series, charts);
         Ok(())
@@ -1264,7 +1305,7 @@ impl Theme {
             self.apply_chart_chrome(config, preset, series);
         }
         for index in 0..config.subplots.len() {
-            if !charts.subplots.includes(index) {
+            if !charts.subplots.includes_subplot(index) {
                 continue;
             }
             let preset = self.frame_for(config, series, LayerRef::Subplot(index));

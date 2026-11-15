@@ -286,6 +286,14 @@ same way, for example `radial_interaction_browser` or `radial_area_browser`. The
 wrapper's `startup_progress_browser` (`-p figgy`) checks initialization event
 compatibility. See [optimization measurements and limitations](shader-compilation.md).
 
+The `<figgy-chart>` element test needs no browser: it loads
+`crates/web/figgy-chart.js` against a mock kernel in Node. The module is
+loaded through `node:vm`, which needs a flag:
+
+```sh
+node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs
+```
+
 ## Run locally
 
 Requires Rust 1.99.0 with the `rustfmt` and `clippy` components and the

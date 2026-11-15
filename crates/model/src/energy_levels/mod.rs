@@ -991,19 +991,18 @@ impl EnergyLevelStyle {
     }
 }
 
-impl SeriesConfig {
-    /// The energy-level fields of this series, or `None` for every other
-    /// kind.
+impl crate::data_config::DataRenderType {
+    /// The energy-level series' fields, or `None` for every other kind.
     pub fn energy_levels(&self) -> Option<&EnergyLevelSeries> {
-        match &self.render_type {
+        match self {
             crate::data_config::DataRenderType::EnergyLevels(levels) => Some(levels),
             _ => None,
         }
     }
 
-    /// The energy-level fields of this series, mutably.
+    /// The energy-level series' fields, mutably.
     pub fn energy_levels_mut(&mut self) -> Option<&mut EnergyLevelSeries> {
-        match &mut self.render_type {
+        match self {
             crate::data_config::DataRenderType::EnergyLevels(levels) => Some(levels),
             _ => None,
         }
@@ -1020,7 +1019,7 @@ impl crate::config::Config {
     /// is a series of another panel.
     pub fn validate_energy_levels(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
-            let Some(levels) = item.energy_levels() else {
+            let Some(levels) = item.render_type.energy_levels() else {
                 continue;
             };
             levels.validate()?;
@@ -1424,7 +1423,7 @@ pub fn drawn_records<'a>(
         Some(id) => series
             .iter()
             .find(|s| s.series_id == *id)
-            .and_then(SeriesConfig::energy_levels)
+            .and_then(|s| s.render_type.energy_levels())
             .filter(|source| source.source.is_none()),
     }
 }
@@ -1503,13 +1502,17 @@ pub(crate) fn stepped_selection(
         PickedDataRef::Point { point_index, .. } => *point_index,
         _ => return None,
     };
-    let members = || series.iter().filter(|s| s.energy_levels().is_some());
+    let members = || {
+        series
+            .iter()
+            .filter(|s| s.render_type.energy_levels().is_some())
+    };
     let at = members().position(|s| s.series_id == series[position].series_id)?;
     let target = at
         .saturating_add_signed(dy as isize)
         .min(members().count().saturating_sub(1));
     let next = members().nth(target)?;
-    let own = next.energy_levels()?;
+    let own = next.render_type.energy_levels()?;
     let records = drawn_records(own, series)?;
     let view = own.show;
     let len = if transitions {

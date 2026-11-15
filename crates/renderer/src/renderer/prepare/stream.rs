@@ -58,14 +58,14 @@ impl PrepareContext<'_> {
         }
         // Nor to triangle meshes (rule 8, #210): a triangle reads three
         // vertices anywhere in the resident columns.
-        if series.tri_mesh().is_some() {
+        if series.render_type.tri_mesh().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: streaming_runtime::STREAMED_TRI_MESH_REASON.into(),
             });
         }
         // Nor to energy-level series (rule 8, #203): they are DataLess.
-        if series.energy_levels().is_some() {
+        if series.render_type.energy_levels().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
@@ -79,7 +79,7 @@ impl PrepareContext<'_> {
             });
         }
         // Nor to Feynman series (rule 8, #234): they are DataLess.
-        if series.feynman().is_some() {
+        if series.render_type.feynman().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: streaming_runtime::STREAMED_FEYNMAN_REASON.into(),

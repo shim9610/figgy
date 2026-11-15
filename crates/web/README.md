@@ -64,6 +64,16 @@ The browser tests (`tests/*_browser.rs`) compile in CI but do not run there yet.
 Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cjs)
 (Playwright Chromium), as the [CI guide](../../ci/README.md) describes.
 
+The `<figgy-chart>` element has its own test,
+[tests/figgy-chart.test.mjs](tests/figgy-chart.test.mjs). It loads
+`figgy-chart.js` against a mock kernel, so it needs Node but no build, no
+browser and no GPU. The element is an ES module loaded through `node:vm`, which
+needs a flag:
+
+```bash
+node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs
+```
+
 | Source / guide | Purpose |
 |---|---|
 | [index.html](index.html) | Interactive histogram, bin/stroke controls and PNG, SVG and PDF output |
@@ -113,7 +123,7 @@ reports a vertex, a propagator or a label as `{kind: "feynman_vertex" |
 `press_feynman(series_id, kind, index, part)` selects it and starts its drag:
 `on_move` moves a vertex (the first drag commits the layout), bends a
 propagator or moves a label, and `on_release` ends it. The wrapper commits a
-diagram's layout as its series is registered; `auto_layout(series_id)`
+diagram's layout as its series is registered; `place_feynman_vertices(series_id)`
 commits it again after an edit in place.
 
 Serialize asynchronous operations and keep rendering, pointer edits, resize
@@ -146,6 +156,8 @@ Cargo 패키지 `figgy` 0.15.1은 렌더러와 별도로 버전을 매기며 이
 crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없다.
 브라우저 테스트(`tests/*_browser.rs`)는 CI에서 컴파일만 하고 아직 실행하지 않는다.
 로컬에서는 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
+`<figgy-chart>` 요소 테스트(`tests/figgy-chart.test.mjs`)는 빌드나 브라우저 없이 Node만으로
+실행한다: `node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs`.
 
 위 명령으로 빌드하고 로컬 서버를 열면 히스토그램과 시간축 데모를 조작할 수 있다.
 GitHub README 안에서는 JavaScript와 WASM을 실행할 수 없으므로, 직접 조작하는 데모는

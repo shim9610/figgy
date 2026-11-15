@@ -237,8 +237,8 @@ fn closures_reach_sub_styles() {
             .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
             .collect(),
     );
-    let bars = SeriesConfig::category_bars("b", "i", "v", Color::BLACK)
-        .style_bars(|style| style.corner_radius = 3.0);
+    let bars =
+        SeriesConfig::category_bars("b", "i", "v").style_bars(|style| style.corner_radius = 3.0);
     let DataRenderType::CategoryBars { style, .. } = &bars.render_type else {
         panic!("category bars");
     };

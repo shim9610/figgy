@@ -45,7 +45,8 @@ fn mesh_series(id: &str, levels: Vec<f64>) -> SeriesConfig {
         at: MeshValueLocation::Vertices,
     };
     let (x, y, triangles) = (format!("{id}-x"), format!("{id}-y"), format!("{id}-tri"));
-    let mut mesh = SeriesConfig::mesh(id, x, y, triangles, values).shading(Shading::Interpolated);
+    let mut mesh =
+        SeriesConfig::tri_mesh(id, x, y, triangles, values).shading(Shading::Interpolated);
     if let DataRenderType::TriMesh(series) = &mut mesh.render_type {
         series.contour = Some(ContourConfig {
             levels,

@@ -8,7 +8,7 @@
 //! custom [`Theme`] value.
 
 use super::{
-    ChartKind, Charts, RadialTheme, SubplotScope, Theme, ThemeError, catalog, chart_layers,
+    ChartKind, Charts, RadialTheme, Theme, ThemeError, ThemeScope, catalog, chart_layers,
     charts_in_scope, check_scope, drawn_on,
 };
 use crate::config::{Config, DrawStyle};
@@ -108,11 +108,11 @@ impl Theme {
         name: &str,
         config: &mut Config,
         series: &mut [SeriesConfig],
-        subplots: SubplotScope,
+        scope: ThemeScope,
     ) -> Result<(), ThemeError> {
         let family = ThemeFamily::parse(name)?;
-        check_scope(config, subplots)?;
-        let scope = Charts::scope(subplots);
+        check_scope(config, scope)?;
+        let scope = Charts::scope(scope);
         // Styling keeps every chart's kind, so each chart takes the same
         // member in both passes. All series are styled before any chrome
         // is written: a legend shows the marks of the series it names.
@@ -142,7 +142,7 @@ impl Theme {
         series: &mut [SeriesConfig],
         draws: impl Fn(&DrawStyle, &DataRenderType) -> bool,
     ) -> Result<(), ThemeError> {
-        let all = Charts::scope(SubplotScope::All);
+        let all = Charts::scope(ThemeScope::All);
         let takes = |config: &Config, series: &[SeriesConfig], layer: LayerRef| {
             ChartKind::of(config, series, layer).is_none_or(|kind| kind == self.kind)
         };

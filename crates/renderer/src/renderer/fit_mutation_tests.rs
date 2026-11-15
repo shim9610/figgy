@@ -54,7 +54,7 @@ fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
     // out (#234). The twin takes the box itself, over `at` where a vertex
     // has one; only the places of unplaced vertices come from the
     // product's layout (`positions`, which the model's layout tests cover).
-    if let Some(diagram) = series.feynman() {
+    if let Some(diagram) = series.render_type.feynman() {
         let layout = diagram
             .has_unplaced()
             .then(|| diagram.positions().ok())
@@ -79,7 +79,7 @@ fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
         return Some((part(lo[0], hi[0]), part(lo[1], hi[1])));
     }
     // A triangle mesh fits from its vertex columns' statistics (#210).
-    if series.tri_mesh().is_some() {
+    if series.render_type.tri_mesh().is_some() {
         return Some((
             Chart::slot_extent(r.pool(), &series.x_column).ok()?,
             Chart::slot_extent(r.pool(), &series.y_column).ok()?,

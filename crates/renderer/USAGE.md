@@ -159,8 +159,6 @@ let mut chart = Chart::new(config)
     .with_title("Sine")
     .with_x_title("x")
     .with_y_title("sin(x)");
-chart.auto_fit_x(renderer.pool(), "x", 0.05).unwrap();
-chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 
 // Series = SeriesConfig (declaration) + ChartStyle (GPU style auto-built from that declaration).
 let cfg = SeriesConfig {
@@ -176,6 +174,10 @@ let cfg = SeriesConfig {
             interpolation: renderer::data_config::LineInterpolation::Linear,
         }), errors: None, stem: None }),
 };
+// A chart starts at a 0..1 placeholder range: fit every axis the series use
+// to the registered columns (5% padding). For one axis or another padding,
+// use `chart.auto_fit_x(renderer.pool(), "x", 0.02)` and its family.
+renderer.fit_ranges(&mut chart, std::slice::from_ref(&cfg)).unwrap();
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
@@ -466,8 +468,10 @@ let series = [
 The families: `line`, `scatter`, `scatter_line`, `stem`, `histogram`,
 `heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `vectors_grid`,
 `vectors_3d`, `streamlines`, `category_bars`, `box_plot`, `range_bars`,
-`radar`, `ternary`, `parallel`, `mesh`, `energy_diagram` and
-`feynman_diagram` (and `of_kind` for any `DataRenderType`). Matrices are
+`radar`, `ternary`, `parallel`, `tri_mesh`, `energy_levels`, `feynman` and
+`monotonic_line` (and `of_kind` for any `DataRenderType`). Each is named
+after its kind, and none takes a colour: a series is black until `.color(c)`
+or a theme's palette colours it. Matrices are
 named with `MatrixRef::columns_are_x` or `columns_are_y` (and
 `with_layout`). A family that needs its chart set up (a category axis,
 polar, ternary or parallel axes) still validates against that chart.
@@ -504,13 +508,15 @@ use renderer::SeriesConfig;
 use renderer::color::Color;
 use renderer::data_config::{BoxPoints, BoxPointsStyle, CategoryBarLabels, RangeProgress};
 
-let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end", Color::from_rgb8(70, 110, 170))
+let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end")
+    .color(Color::from_rgb8(70, 110, 170))
     .bar_labels(CategoryBarLabels::Outside, owners)     // one string per bar
     .style_range_bars(|parts| {
         *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
         *parts.slot_width = Some(1.0);                   // a numeric (day) position axis
     });
-let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb8(60, 120, 110))
+let commute = SeriesConfig::box_plot("commute", "pos", "record")
+    .color(Color::from_rgb8(60, 120, 110))
     .outliers("commute.outliers")
     .style_box_plot(|parts| {
         parts.style.notched = true;
@@ -852,7 +858,7 @@ Try the [native editor](examples/radial_editor.rs) with
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`.
 The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
 [option defaults and ranges](RADIAL.md#스타일-옵션-기본값과-범위),
-[per-slice editing](RADIAL.md#ssot-편집과-선택), and
+[per-slice editing](RADIAL.md#모델-편집과-선택), and
 [host update order](RADIAL.md#호스트의-갱신-순서), including frame ownership and export.
 
 ### Headless renderer and saving by format
@@ -909,7 +915,7 @@ The way to theme a chart is a **theme family**: one name that themes any
 chart, and a dashboard whose subplots mix kinds, in one call.
 
 ```rust
-use renderer::theme::SubplotScope;
+use renderer::{Chart, Color, SeriesConfig};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
@@ -937,8 +943,8 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `ThemeFamily::parse(name)` a family or `ThemeError::UnknownName`, and
   `ThemeFamily::theme(kind)` and `ThemeFamily::radial()` hand out a member.
 - **By name.** `Chart::apply_theme(name, &mut series)` themes the whole
-  document and `Chart::apply_theme_to(name, &mut series, scope)` the chart
-  and the subplots `scope` names. Each chart they theme, the base chart and
+  document and `Chart::apply_theme_to(name, &mut series, scope)` the charts
+  `scope` names (a `ThemeScope`: the base chart, subplots, or both). Each chart they theme, the base chart and
   every subplot, takes the family's member for its own kind
   (`ChartKind::of`); a chart that draws no series yet takes the line member.
   On a bare `Config`, `Theme::apply_named(name, &mut config, &mut series,
@@ -978,15 +984,17 @@ chart.apply_custom_theme(&theme, &mut series)?;
     `names` is `ThemeFamily::NAMES`.
   - `ThemeError::WrongKind { theme, chart, layer }`: a custom theme made for
     `theme` and a chart in scope (`layer`) of kind `chart`. Leave that
-    subplot out of the scope, use `apply_custom_theme`, which skips charts of
-    another kind, or use a family.
+    chart out of the scope (`ThemeScope::Subplots` leaves the base chart
+    out; `Base`, or indices without that subplot, leave a subplot out), use
+    `apply_custom_theme`, which skips charts of another kind, or use a
+    family. The message names the scope.
   - `ThemeError::UnsupportedDrawStyle { series_id }`: a custom theme's draw
     style cannot draw a series in scope (`renderer::draw_style_supports`),
     which the renderer would drop: Constellation draws a line only with its
     markers. A theme in `DrawStyle::Precise`, every family member among
     them, draws everything.
   - `ThemeError::SubplotIndex(SubplotIndexError { index, count })`: a
-    `SubplotScope::Only` or `subplot_theme` names a subplot past the chart's
+    `ThemeScope::Subplots`, a `ThemeScope::BaseAnd` or `subplot_theme` names a subplot past the chart's
     `count`.
 
   Every message says what to do next. `theme.apply(&mut config, &mut series,
@@ -1024,9 +1032,14 @@ chart.apply_custom_theme(&theme, &mut series)?;
   contour's per-level colours as they are.
 - **Overlays and subplots.** Overlays take the theme with their chart; an
   overlay's own axes take the frame of the chart's bottom and left axes,
-  since they are data axes too. `SubplotScope` chooses the subplots: `None`,
-  `All` or `Only(&[indices])`; a series drawn in a subplot outside the scope
-  keeps its look.
+  since they are data axes too. `ThemeScope` chooses the charts: `All` (the
+  base chart and every subplot), `Base` (the base chart alone),
+  `Subplots(&[indices])` (those subplots alone, without the base chart) or
+  `BaseAnd(&[indices])` (the base chart and those subplots). A subplot in
+  scope takes the theme with its own overlays; a series drawn on a chart
+  outside the scope keeps its look. `chart.apply_custom_theme_to(&theme,
+  &mut series, ThemeScope::Subplots(&[0]))` themes an inset alone, whatever
+  the base chart's kind.
 - **The parts on their own.** The `Chart` calls refit the layout to the new
   text sizes (`fit_layout`). `theme.apply_chrome(&mut config, &series,
   scope)` writes the chrome alone (the legend symbols follow `series`; pass
@@ -1289,8 +1302,6 @@ let mut chart = Chart::new(config)
     .with_title("Sine")
     .with_x_title("x")
     .with_y_title("sin(x)");
-chart.auto_fit_x(renderer.pool(), "x", 0.05).unwrap();
-chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 
 // 시리즈 = SeriesConfig (선언) + ChartStyle (그 선언에서 자동 빌드된 GPU 스타일).
 let cfg = SeriesConfig {
@@ -1306,6 +1317,9 @@ let cfg = SeriesConfig {
             interpolation: renderer::data_config::LineInterpolation::Linear,
         }), errors: None, stem: None }),
 };
+// 새 차트의 범위는 0..1 자리표시자다. 시리즈가 쓰는 모든 축을 등록된 컬럼에 맞춘다(여백 5%).
+// 축 하나만 맞추거나 여백을 바꾸려면 `chart.auto_fit_x(renderer.pool(), "x", 0.02)` 계열을 쓴다.
+renderer.fit_ranges(&mut chart, std::slice::from_ref(&cfg)).unwrap();
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
@@ -1526,8 +1540,9 @@ let series = [
 
 생성 함수: `line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`,
 `rgb_image`, `vectors`, `vectors_grid`, `vectors_3d`, `streamlines`, `category_bars`, `box_plot`,
-`range_bars`, `radar`, `ternary`, `parallel`, `mesh`, `energy_diagram`, `feynman_diagram`. 그 밖의
-`DataRenderType`은 `of_kind`로 만든다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
+`range_bars`, `radar`, `ternary`, `parallel`, `tri_mesh`, `energy_levels`, `feynman`,
+`monotonic_line`. 그 밖의 `DataRenderType`은 `of_kind`로 만든다. 생성 함수 이름은 종류 이름과 같고
+색을 인자로 받지 않는다. 시리즈는 `.color(c)`나 테마 팔레트가 색을 정하기 전까지 검은색이다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
 지정한다(`with_layout`도 있다). 차트 설정이 필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그
 차트 설정에 맞춰 검증된다.
 
@@ -1558,13 +1573,15 @@ use renderer::SeriesConfig;
 use renderer::color::Color;
 use renderer::data_config::{BoxPoints, BoxPointsStyle, CategoryBarLabels, RangeProgress};
 
-let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end", Color::from_rgb8(70, 110, 170))
+let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end")
+    .color(Color::from_rgb8(70, 110, 170))
     .bar_labels(CategoryBarLabels::Outside, owners)     // 막대마다 문자열 하나
     .style_range_bars(|parts| {
         *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
         *parts.slot_width = Some(1.0);                   // 숫자(날짜) 위치 축
     });
-let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb8(60, 120, 110))
+let commute = SeriesConfig::box_plot("commute", "pos", "record")
+    .color(Color::from_rgb8(60, 120, 110))
     .outliers("commute.outliers")
     .style_box_plot(|parts| {
         parts.style.notched = true;
@@ -1846,7 +1863,7 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 [네이티브 편집기](examples/radial_editor.rs)는
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`로 실행한다.
 [사용법과 예제](RADIAL.md)에서 [옵션 기본값과 범위](RADIAL.md#스타일-옵션-기본값과-범위),
-[조각별 편집과 상속](RADIAL.md#ssot-편집과-선택), 프레임 수명과 내보내기를 포함한
+[조각별 편집과 상속](RADIAL.md#모델-편집과-선택), 프레임 수명과 내보내기를 포함한
 [호스트 갱신 순서](RADIAL.md#호스트의-갱신-순서)를 확인할 수 있다.
 
 <a id="png-export-메모리-only--저장은-caller"></a>
@@ -1900,7 +1917,7 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
 대시보드도 한 번의 호출로 꾸민다.
 
 ```rust
-use renderer::theme::SubplotScope;
+use renderer::{Chart, Color, SeriesConfig};
 
 let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
@@ -1926,7 +1943,8 @@ chart.apply_custom_theme(&theme, &mut series)?;
   계열이나 `None`을, `ThemeFamily::parse(name)`은 계열이나 `ThemeError::UnknownName`을 돌려준다.
   `ThemeFamily::theme(kind)`와 `ThemeFamily::radial()`은 구성원을 돌려준다.
 - **이름으로 적용하기.** `Chart::apply_theme(name, &mut series)`는 문서 전체를,
-  `Chart::apply_theme_to(name, &mut series, scope)`는 차트와 `scope`가 고른 서브플롯을 꾸민다.
+  `Chart::apply_theme_to(name, &mut series, scope)`는 `scope`(`ThemeScope`: 기본 차트, 서브플롯,
+  또는 둘 다)가 고른 차트를 꾸민다.
   꾸미는 차트, 즉 기본 차트와 각 서브플롯은 `ChartKind::of`로 읽은 자기 종류의 구성원을 받는다.
   아직 시리즈를 그리지 않는 차트는 선 차트 구성원을 받는다. `Config`에 바로 적용할 때는
   `Theme::apply_named(name, &mut config, &mut series, scope)`를 쓰며, 레이아웃은 호스트에게 맡긴다.
@@ -1956,13 +1974,14 @@ chart.apply_custom_theme(&theme, &mut series)?;
   쓰기 시작하므로, 거부되면 차트도 시리즈도 바뀌지 않는다.
   - `ThemeError::UnknownName { name, names }`: 계열 이름이 아니다. `names`는 `ThemeFamily::NAMES`다.
   - `ThemeError::WrongKind { theme, chart, layer }`: `theme` 종류용으로 만든 테마를 범위 안의
-    `chart` 종류 차트(`layer`)에 적용했다. 그 서브플롯을 범위에서 빼거나, 다른 종류를 건너뛰는
-    `apply_custom_theme`을 쓰거나, 계열을 쓴다.
+    `chart` 종류 차트(`layer`)에 적용했다. 그 차트를 범위에서 빼거나(`ThemeScope::Subplots`는
+    기본 차트를 빼고, `Base`나 그 서브플롯이 없는 인덱스 목록은 서브플롯을 뺀다), 다른 종류를
+    건너뛰는 `apply_custom_theme`을 쓰거나, 계열을 쓴다. 오류 문장이 쓸 범위를 알려 준다.
   - `ThemeError::UnsupportedDrawStyle { series_id }`: 직접 만든 테마의 그리기 스타일이 범위 안의
     시리즈를 그리지 못한다(`renderer::draw_style_supports`). 그대로 두면 렌더러가 그 시리즈를 빼고
     그린다. Constellation은 선을 마커와 함께일 때만 그린다. `DrawStyle::Precise`인 테마는 모든
     시리즈를 그리며, 계열 구성원은 모두 이 스타일이다.
-  - `ThemeError::SubplotIndex(SubplotIndexError { index, count })`: `SubplotScope::Only`나
+  - `ThemeError::SubplotIndex(SubplotIndexError { index, count })`: `ThemeScope::Subplots`, `ThemeScope::BaseAnd`나
     `subplot_theme`이 차트의 서브플롯 수(`count`)를 넘는 서브플롯을 가리킨다.
 
   모든 메시지는 다음에 할 일을 알려 준다. `Config`에 바로 쓰는
@@ -1990,8 +2009,11 @@ chart.apply_custom_theme(&theme, &mut series)?;
   막대가 정하므로 색상 막대가 있는 차트에만 쓴다. 테마를 적용하기 전에 색상 막대를 먼저 넣는다.
   `style_series`만으로는 등고선의 준위별 색이 바뀌지 않는다.
 - **오버레이와 서브플롯.** 오버레이는 차트와 함께 테마를 받는다. 오버레이 자기 축도 데이터 축이라
-  차트의 아래·왼쪽 축과 같은 틀을 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
-  `Only(&[인덱스])` 중 하나이고, 범위 밖 서브플롯에 그려지는 시리즈는 모양을 유지한다.
+  차트의 아래·왼쪽 축과 같은 틀을 받는다. 꾸밀 차트는 `ThemeScope`로 고른다. `All`(기본 차트와
+  모든 서브플롯), `Base`(기본 차트만), `Subplots(&[인덱스])`(기본 차트 없이 그 서브플롯만),
+  `BaseAnd(&[인덱스])`(기본 차트와 그 서브플롯) 중 하나다. 범위 안의 서브플롯은 자기 오버레이와 함께
+  테마를 받고, 범위 밖 차트에 그려지는 시리즈는 모양을 유지한다. `chart.apply_custom_theme_to(&theme,
+  &mut series, ThemeScope::Subplots(&[0]))`은 기본 차트의 종류와 관계없이 삽입 차트만 꾸민다.
 - **부분만 적용하기.** `Chart`의 호출은 바뀐 글자 크기에 맞춰 레이아웃을 다시 맞춘다(`fit_layout`).
   `theme.apply_chrome(&mut config, &series, scope)`는 크롬만 쓴다(범례 기호는 `series`를 따르며,
   아직 시리즈가 없는 차트에는 `&[]`를 넘긴다). `theme.style_series(&mut series, index)`는 시리즈

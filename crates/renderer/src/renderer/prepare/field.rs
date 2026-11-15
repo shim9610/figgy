@@ -218,6 +218,7 @@ impl PrepareContext<'_> {
         scale: f32,
     ) -> Result<Arc<GridSources>> {
         let mesh = cfg
+            .render_type
             .tri_mesh()
             .ok_or(FiggyError::internal("a mesh series has a mesh"))?;
         let bar =

@@ -218,7 +218,12 @@ impl std::fmt::Display for FiggyError {
                 write!(f, "invalid chart config field {field}: {kind}")
             }
             Self::RasterWrapFailed { reason } => write!(f, "raster wrap failed: {reason}"),
-            Self::AdapterUnavailable => write!(f, "no compatible wgpu adapter"),
+            Self::AdapterUnavailable => write!(
+                f,
+                "no compatible wgpu adapter: install or update a GPU driver, or choose a \
+                 backend with the WGPU_BACKEND environment variable (a software adapter \
+                 such as lavapipe or WARP is enough)"
+            ),
             Self::DeviceCreationFailed { reason } => {
                 write!(f, "wgpu device creation failed: {reason}")
             }
@@ -245,7 +250,11 @@ impl std::fmt::Display for FiggyError {
             Self::GpuResourceAllocationFailed { resource, reason } => {
                 write!(f, "{resource} GPU allocation failed: {reason}")
             }
-            Self::UnknownColumn { id } => write!(f, "unknown column id: {id}"),
+            Self::UnknownColumn { id } => write!(
+                f,
+                "unknown column id: {id}; register it with add_column before a series, \
+                 a fit or a query names it"
+            ),
             Self::ColumnNotResident { id } => {
                 write!(f, "column is registered but not GPU resident: {id}")
             }

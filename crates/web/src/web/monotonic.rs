@@ -626,8 +626,10 @@ impl FiggyChart {
     /// Fits the chart's layout to its labels and titles and applies it
     /// (`Renderer::fit_layout`, #271). It can move the plot's edges, so it
     /// takes the sources of the chart's monotonic groups as
-    /// `resize_monotonic` does (`[]` for a chart without them).
-    pub fn fit_layout(&mut self, sources: js_sys::Array) -> Result<(), JsValue> {
+    /// `resize_monotonic` does. A chart without monotonic series takes no
+    /// argument: `chart.fit_layout()`.
+    pub fn fit_layout(&mut self, sources: Option<js_sys::Array>) -> Result<(), JsValue> {
+        let sources = sources.unwrap_or_default();
         let groups = lent_groups(&sources)?;
         let refs: Vec<MonotonicGroupRef<'_>> = groups.iter().map(group_ref).collect();
         match self.monotonic {

@@ -830,7 +830,7 @@ There is no count limit on any list. The chart needs a categorical `bottom_x` on
 
 ### Feynman diagrams (`DataRenderType::Feynman`)
 
-A Feynman diagram ([#234](https://github.com/shim9610/figgy/issues/234)) is a DataLess series whose data is the topology: which particles meet at which vertex. Every value lives in the chart's configuration and is serialized with the document; `x_column` and `y_column` stay empty and nothing is registered. A vertex position is optional: an unplaced vertex is drawn where the automatic layout puts it, and `auto_layout` writes that place into `at`. See [Feynman diagrams](FEYNMAN.md).
+A Feynman diagram ([#234](https://github.com/shim9610/figgy/issues/234)) is a DataLess series whose data is the topology: which particles meet at which vertex. Every value lives in the chart's configuration and is serialized with the document; `x_column` and `y_column` stay empty and nothing is registered. A vertex position is optional: an unplaced vertex is drawn where the automatic layout puts it, and `place_feynman_vertices` writes that place into `at`. See [Feynman diagrams](FEYNMAN.md).
 
 | Field | Type | Description |
 |---|---|---|
@@ -1960,7 +1960,7 @@ pub struct Config {
 
 ### 파인만 도표(`DataRenderType::Feynman`)
 
-파인만 도표([#234](https://github.com/shim9610/figgy/issues/234))는 위상, 즉 어떤 입자가 어느 꼭짓점에서 만나는지가 데이터인 DataLess 시리즈다. 모든 값이 차트 설정에 있어 문서와 함께 직렬화되고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 꼭짓점 위치는 선택 사항이다. 위치가 없는 꼭짓점은 자동 배치가 정한 자리에 그리고, `auto_layout`이 그 자리를 `at`에 기록한다. 자세한 내용은 [파인만 도표](FEYNMAN.md)를 참고한다.
+파인만 도표([#234](https://github.com/shim9610/figgy/issues/234))는 위상, 즉 어떤 입자가 어느 꼭짓점에서 만나는지가 데이터인 DataLess 시리즈다. 모든 값이 차트 설정에 있어 문서와 함께 직렬화되고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 꼭짓점 위치는 선택 사항이다. 위치가 없는 꼭짓점은 자동 배치가 정한 자리에 그리고, `place_feynman_vertices`가 그 자리를 `at`에 기록한다. 자세한 내용은 [파인만 도표](FEYNMAN.md)를 참고한다.
 
 | 필드 | 타입 | 설명 |
 |---|---|---|

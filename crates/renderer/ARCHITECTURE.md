@@ -69,7 +69,7 @@ data (unlike the GPU series, whose appearance the shader computes); it is
 picked on the CPU over the same placement. The Feynman series (#234) is
 another: its topology is SSOT, its unplaced vertices are placed by a
 deterministic layout at raster time and committed into the SSOT only by an
-explicit `auto_layout` or a first drag (the auto-fit pattern), and its arcs,
+explicit `place_feynman_vertices` or a first drag (the auto-fit pattern), and its arcs,
 waves and coils reach every sink as cubic paths (`Sink::path`). The vector
 export writes both DataLess kinds as vector parts between the GPU steps
 around them. A subplot nested in its parent's data area (an inset) is
@@ -702,7 +702,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ### 렌더링 계약
 
-전체 구조도는 컬럼 기반 `Renderer` 경로와 원형 차트 전용 렌더러 경로를 구분한다. 원형 렌더러의 불변 프레임은 `PreparedFrame`이나 컬럼 풀·스트리밍 계약을 공유하지 않는다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·풀·스트리밍이 없다. 장식 요소는 차트에서 부품을 배치해 공통 싱크로 보내고, 조각은 프레임의 조각 버퍼를 읽는 그리기 자체의 조각 광선 추적으로 GPU에서 고른다. 직교 좌표 `Renderer` 안에서는 에너지 준위 시리즈(#203)가 DataLess 시리즈 종류다. 모델이 SSOT 레코드를 배치하고, prepare 단계에서 캔버스 싱크로 CPU 래스터를 만들어 스크래치 캐시에 두며, 데이터 슬롯에서 GPU 데이터 위에 합성한다(셰이더가 겉모양을 계산하는 GPU 시리즈와 다르다). 픽도 같은 배치로 CPU에서 한다. 파인만 시리즈(#234)도 DataLess 시리즈다. 위상은 SSOT에 있고, 위치가 없는 꼭짓점은 래스터할 때 결정적인 자동 배치로 놓는다. 그 위치는 명시적인 `auto_layout` 호출이나 첫 드래그 때만 SSOT에 기록한다(자동 맞춤과 같은 방식). 호·물결선·코일은 3차 곡선 경로(`Sink::path`)로 모든 싱크에 전달된다. 벡터 출력은 두 DataLess 종류를 앞뒤 GPU 단계 사이에 벡터로 기록한다. 부모 데이터 영역 안에 놓인 서브플롯(인셋)은 다른 모든 패널 다음에 합성한다. 화면 표시와 이미지 출력은 별도 경로이며, 이미지는 요청한 크기로 다시 렌더링한다. 아래 표는 그림의 번호 대신 주제별 계약을 요약한다.
+전체 구조도는 컬럼 기반 `Renderer` 경로와 원형 차트 전용 렌더러 경로를 구분한다. 원형 렌더러의 불변 프레임은 `PreparedFrame`이나 컬럼 풀·스트리밍 계약을 공유하지 않는다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·풀·스트리밍이 없다. 장식 요소는 차트에서 부품을 배치해 공통 싱크로 보내고, 조각은 프레임의 조각 버퍼를 읽는 그리기 자체의 조각 광선 추적으로 GPU에서 고른다. 직교 좌표 `Renderer` 안에서는 에너지 준위 시리즈(#203)가 DataLess 시리즈 종류다. 모델이 SSOT 레코드를 배치하고, prepare 단계에서 캔버스 싱크로 CPU 래스터를 만들어 스크래치 캐시에 두며, 데이터 슬롯에서 GPU 데이터 위에 합성한다(셰이더가 겉모양을 계산하는 GPU 시리즈와 다르다). 픽도 같은 배치로 CPU에서 한다. 파인만 시리즈(#234)도 DataLess 시리즈다. 위상은 SSOT에 있고, 위치가 없는 꼭짓점은 래스터할 때 결정적인 자동 배치로 놓는다. 그 위치는 명시적인 `place_feynman_vertices` 호출이나 첫 드래그 때만 SSOT에 기록한다(자동 맞춤과 같은 방식). 호·물결선·코일은 3차 곡선 경로(`Sink::path`)로 모든 싱크에 전달된다. 벡터 출력은 두 DataLess 종류를 앞뒤 GPU 단계 사이에 벡터로 기록한다. 부모 데이터 영역 안에 놓인 서브플롯(인셋)은 다른 모든 패널 다음에 합성한다. 화면 표시와 이미지 출력은 별도 경로이며, 이미지는 요청한 크기로 다시 렌더링한다. 아래 표는 그림의 번호 대신 주제별 계약을 요약한다.
 
 | 주제 | 데이터 흐름과 소유권 |
 |---|---|

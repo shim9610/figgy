@@ -2,7 +2,7 @@
 //! auto-fit.
 
 use super::*;
-use renderer::theme::SubplotScope;
+use renderer::theme::ThemeScope;
 
 // ------------------------------------------------------------------
 // Preset mirrors — fieldless enums cross the boundary as integers.
@@ -67,6 +67,48 @@ pub(crate) fn annotation_warnings_json(
         })
         .collect::<Vec<_>>();
     serde_json::to_string(&values).map_err(js_err)
+}
+
+/// The scope forms the theme calls take, as a `subplot_scope` error's
+/// `accepted` field lists them.
+const THEME_SCOPE_FORMS: [&str; 4] = ["all", "base", "[indices]", "[\"base\", indices]"];
+
+/// The subplot indices a theme scope string names and whether it names
+/// the base chart: `"all"` and `"base"` name no index, a JSON array of
+/// indices names those subplots alone (`"[0,2]"`), and a JSON array that
+/// holds `"base"` names the base chart and those subplots
+/// (`"[\"base\",0]"`). Anything else is a `subplot_scope` error whose
+/// `accepted` field lists the forms.
+fn parse_theme_scope(scope: &str) -> Result<(bool, Vec<usize>), JsValue> {
+    let refuse = |why: String| {
+        coded_error(
+            &format!(
+                "subplots {scope:?} is not \"all\", \"base\", a JSON array of subplot indices \
+                 (those subplots alone) or a JSON array holding \"base\" and indices (the base \
+                 chart and those subplots): {why}"
+            ),
+            "subplot_scope",
+            [("accepted", js_names(&THEME_SCOPE_FORMS).into())],
+        )
+    };
+    let list = match scope.trim() {
+        "all" | "base" => return Ok((true, Vec::new())),
+        list => list,
+    };
+    let items: Vec<serde_json::Value> =
+        serde_json::from_str(list).map_err(|error| refuse(error.to_string()))?;
+    let mut base = false;
+    let mut indices = Vec::new();
+    for item in &items {
+        match item {
+            serde_json::Value::String(name) if name == "base" => base = true,
+            item => match item.as_u64().and_then(|index| usize::try_from(index).ok()) {
+                Some(index) => indices.push(index),
+                None => return Err(refuse(format!("{item} is not \"base\" or an index"))),
+            },
+        }
+    }
+    Ok((base, indices))
 }
 
 #[wasm_bindgen]
@@ -158,6 +200,26 @@ impl FiggyChart {
             _ => return Err(js_err("axis must be \"x\" or \"y\"")),
         }
         .map_err(js_err)?;
+        self.replace_chart_config(chart.config().clone())?;
+        Ok(())
+    }
+
+    /// Fit every axis the chart's series use to their registered columns,
+    /// in one call (`Renderer::fit_ranges`, #297): the x and y axes of the
+    /// base chart, of each overlay and of each subplot and its overlays,
+    /// and the z axis of a 3D chart, from the columns' cached statistics
+    /// with 5% padding. A chart starts at a `0..1` placeholder range; this
+    /// is the call for a first plot. Synchronous, and independent of the
+    /// active layer. A layer without series keeps its ranges. A streamed
+    /// source and a monotonic chart are refused, and a refusal changes
+    /// nothing. `auto_fit_all(padding)` instead measures the active
+    /// layer's drawn extents (error bar ends included) on the GPU.
+    /// JS: `chart.fit_ranges()`
+    pub fn fit_ranges(&mut self) -> Result<(), JsValue> {
+        let mut chart = Chart::new(self.chart_config()?.clone());
+        self.renderer
+            .fit_ranges(&mut chart, self.chart_series()?)
+            .map_err(js_err)?;
         self.replace_chart_config(chart.config().clone())?;
         Ok(())
     }
@@ -796,18 +858,30 @@ impl FiggyChart {
 
     /// Apply the theme family `name` (#291, #295: `gallery`, `cool-slate`,
     /// `midnight` or `warm-paper`, as [`Self::theme_names`] lists them) to
-    /// the chart, its overlays and the series drawn there, then fit the
-    /// layout to the theme's text sizes. `subplots` names the subplots that
-    /// take it too: `"all"`, `"none"` or a JSON array of indices. The chart
-    /// and every subplot in scope take the family's member for their own
-    /// kind, so subplots of other kinds take it too (`Theme::apply_named`).
-    /// Ranges, text, annotations, the layer structure and the selection
-    /// stay. A name that is not a family (`code` `"theme_unknown_name"`,
-    /// with the family `names`) or a bad list changes nothing and errors.
-    /// A chart with monotonic series keeps its layout (#271): `fit_layout`,
-    /// which takes the groups' sources, fits it.
-    pub fn apply_theme(&mut self, name: &str, subplots: &str) -> Result<(), JsValue> {
-        self.write_theme(subplots, |config, series, scope| {
+    /// the whole document: the chart, its overlays, every subplot and the
+    /// series drawn there, then fit the layout to the theme's text sizes,
+    /// as Rust's `Chart::apply_theme` does. The chart and every subplot
+    /// take the family's member for their own kind, so subplots of other
+    /// kinds take it too (`Theme::apply_named`). Ranges, text, annotations,
+    /// the layer structure and the selection stay. A name that is not a
+    /// family (`code` `"theme_unknown_name"`, with the family `names`)
+    /// changes nothing and errors. A chart with monotonic series keeps its
+    /// layout (#271): `fit_layout`, which takes the groups' sources, fits
+    /// it. [`Self::apply_theme_to`] chooses the subplots.
+    pub fn apply_theme(&mut self, name: &str) -> Result<(), JsValue> {
+        self.apply_theme_to(name, "all")
+    }
+
+    /// [`Self::apply_theme`] to the charts `scope` names, as Rust's
+    /// `Chart::apply_theme_to` takes a `ThemeScope`: `"all"` (the base chart
+    /// and every subplot), `"base"` (the base chart alone), a JSON array of
+    /// indices (those subplots alone, `"[0,2]"`) or a JSON array holding
+    /// `"base"` (the base chart and those subplots, `"[\"base\",0]"`). A
+    /// scope of another form (`code` `"subplot_scope"`, with the `accepted`
+    /// forms) or an index past the subplots (`code` `"subplot_index"`)
+    /// changes nothing and errors.
+    pub fn apply_theme_to(&mut self, name: &str, scope: &str) -> Result<(), JsValue> {
+        self.write_theme(scope, |config, series, scope| {
             renderer::theme::Theme::apply_named(name, config, series, scope)
         })
     }
@@ -861,14 +935,14 @@ impl FiggyChart {
         })
     }
 
-    /// [`Self::apply_custom_theme`] to the chart and the subplots
-    /// `subplots` names (`"all"`, `"none"` or a JSON array of indices, as
-    /// [`Self::apply_theme`] takes them). A chart in scope of another kind
-    /// throws `"theme_wrong_kind"`, an index past the subplots
-    /// `"subplot_index"`.
-    pub fn apply_custom_theme_to(&mut self, theme: JsValue, subplots: &str) -> Result<(), JsValue> {
+    /// [`Self::apply_custom_theme`] to the charts `scope` names (the forms
+    /// [`Self::apply_theme_to`] takes): `"[0]"` themes subplot 0 alone,
+    /// whatever the base chart's kind. A chart in scope of another kind
+    /// than the theme throws `"theme_wrong_kind"`, an index past the
+    /// subplots `"subplot_index"`.
+    pub fn apply_custom_theme_to(&mut self, theme: JsValue, scope: &str) -> Result<(), JsValue> {
         let theme = theme_from_js(&theme)?;
-        self.write_theme(subplots, |config, series, scope| {
+        self.write_theme(scope, |config, series, scope| {
             renderer::helpers::check_theme_draw_style(&theme, config, series, scope)?;
             theme.apply(config, series, scope)
         })
@@ -884,26 +958,15 @@ impl FiggyChart {
         write: impl FnOnce(
             &mut renderer::Config,
             &mut [renderer::SeriesConfig],
-            SubplotScope,
+            ThemeScope,
         ) -> Result<(), renderer::theme::ThemeError>,
     ) -> Result<(), JsValue> {
-        let indices: Vec<usize> = match subplots.trim() {
-            "all" | "none" => Vec::new(),
-            list => serde_json::from_str(list).map_err(|error| {
-                coded_error(
-                    &format!(
-                        "subplots {list:?} is not \"all\", \"none\" or a JSON array of \
-                         indices: {error}"
-                    ),
-                    "subplot_scope",
-                    [("accepted", js_names(&["all", "none", "[indices]"]).into())],
-                )
-            })?,
-        };
-        let scope = match subplots.trim() {
-            "all" => SubplotScope::All,
-            "none" => SubplotScope::None,
-            _ => SubplotScope::Only(&indices),
+        let (base, indices) = parse_theme_scope(subplots)?;
+        let scope = match (subplots.trim(), base) {
+            ("all", _) => ThemeScope::All,
+            ("base", _) => ThemeScope::Base,
+            (_, true) => ThemeScope::BaseAnd(&indices),
+            (_, false) => ThemeScope::Subplots(&indices),
         };
         let mut config = self.chart_config()?.clone();
         let mut series = self.chart_series()?.to_vec();

@@ -790,6 +790,7 @@ impl FiggyChart {
             // the layout's place while it has none (`placed: false`).
             PickedDataRef::FeynmanVertex { vertex_index, .. } => {
                 let diagram = series
+                    .render_type
                     .feynman()
                     .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
                 let vertex = diagram
@@ -813,6 +814,7 @@ impl FiggyChart {
                 propagator_index, ..
             } => {
                 let diagram = series
+                    .render_type
                     .feynman()
                     .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
                 let propagator = diagram
@@ -828,6 +830,7 @@ impl FiggyChart {
             }
             PickedDataRef::FeynmanLabel { part, index, .. } => {
                 let diagram = series
+                    .render_type
                     .feynman()
                     .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
                 let offset = diagram
@@ -843,6 +846,7 @@ impl FiggyChart {
             // the GPU columns the draw used (#210).
             PickedDataRef::MeshTriangle { triangle_index, .. } => {
                 let mesh = series
+                    .render_type
                     .tri_mesh()
                     .ok_or_else(|| js_err("selected series is not a triangle mesh"))?;
                 let member = self
@@ -1200,7 +1204,7 @@ impl FiggyChart {
         else {
             return Ok(false);
         };
-        let Some(diagram) = series.feynman() else {
+        let Some(diagram) = series.render_type.feynman() else {
             return Ok(false);
         };
         let (source_id, series_id) = (series.source_id.clone(), series.series_id.clone());
@@ -1272,10 +1276,10 @@ impl FiggyChart {
     /// Returns whether anything was written. The wrapper commits it on
     /// registration already; a host that edits the series in place calls
     /// this to fix the new vertices.
-    pub fn auto_layout(&mut self, series_id: &str) -> Result<bool, JsValue> {
+    pub fn place_feynman_vertices(&mut self, series_id: &str) -> Result<bool, JsValue> {
         let laid_out = self
             .renderer
-            .auto_layout(self.chart_id, series_id)
+            .place_feynman_vertices(self.chart_id, series_id)
             .map_err(js_err)?;
         if laid_out {
             self.request_host_redraw();
@@ -1311,7 +1315,7 @@ impl FiggyChart {
         else {
             return Ok(false);
         };
-        let Some(levels) = series.energy_levels() else {
+        let Some(levels) = series.render_type.energy_levels() else {
             return Ok(false);
         };
         if levels.label_offset(part, index).is_none() {
@@ -1360,7 +1364,7 @@ impl FiggyChart {
             let Some(diagram) = series
                 .iter_mut()
                 .find(|s| s.series_id == series_id)
-                .and_then(SeriesConfig::feynman_mut)
+                .and_then(|s| s.render_type.feynman_mut())
             else {
                 return Ok(());
             };
@@ -1390,7 +1394,7 @@ impl FiggyChart {
             return Ok(());
         };
         // An energy-level label moves its row's own offset (#203).
-        if let (Some(part), Some(levels)) = (part, item.energy_levels_mut()) {
+        if let (Some(part), Some(levels)) = (part, item.render_type.energy_levels_mut()) {
             if levels.drag_label(part, category_index, dx, dy) == NudgeResult::Moved {
                 let config = self.chart_config()?.clone();
                 self.replace_chart_state(config, series)?;

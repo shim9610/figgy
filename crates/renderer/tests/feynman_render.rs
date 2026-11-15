@@ -220,10 +220,17 @@ fn a_provisional_layout_draws_as_its_commit() {
         assert!(near(&provisional, at(&chart, 0.25, 0.5, scale), 1));
         assert!(near(&provisional, at(&chart, 0.75, 0.5, scale), 1));
         let committed = if scale == 1.0 {
-            assert!(r.auto_layout(id, "d").unwrap());
-            let diagram = r.chart_series(id).unwrap()[0].feynman().unwrap().clone();
+            assert!(r.place_feynman_vertices(id, "d").unwrap());
+            let diagram = r.chart_series(id).unwrap()[0]
+                .render_type
+                .feynman()
+                .unwrap()
+                .clone();
             assert!(diagram.vertices.iter().all(|v| v.at.is_some()), "committed");
-            assert!(!r.auto_layout(id, "d").unwrap(), "nothing left to place");
+            assert!(
+                !r.place_feynman_vertices(id, "d").unwrap(),
+                "nothing left to place"
+            );
             r.export_rgba(
                 renderer::ExportSource::Registered(id),
                 renderer::ExportOptions::panel(scale),
@@ -243,7 +250,7 @@ fn a_provisional_layout_draws_as_its_commit() {
             "{scale}x: the commit draws what was drawn"
         );
     }
-    assert!(r.auto_layout(id, "missing").is_err());
+    assert!(r.place_feynman_vertices(id, "missing").is_err());
 }
 
 #[test]
@@ -251,7 +258,7 @@ fn an_ssot_edit_of_the_diagram_redraws_it() {
     let mut r = renderer();
     let chart = chart();
     let mut diagram = s_channel();
-    diagram.auto_layout().unwrap();
+    diagram.place_vertices().unwrap();
     let id = r
         .register_chart(chart.config().clone(), vec![series("d", diagram.clone())])
         .unwrap();
@@ -310,6 +317,30 @@ fn auto_fit_all_fits_the_vertices() {
         "{:?}",
         (y.min, y.max)
     );
+}
+
+// The one-call range fit (#297) fits a diagram to its vertices too, read
+// from the SSOT: the fit of the existing layer path, with no column.
+#[test]
+fn fit_ranges_fits_the_vertices() {
+    let r = renderer();
+    let mut chart = chart();
+    chart.set_x_range(-10.0, 10.0);
+    chart.set_y_range(-10.0, 10.0);
+    let specs = [series("d", s_channel())];
+    r.fit_ranges(&mut chart, &specs).unwrap();
+    let (x, y) = (&chart.config().bottom_x, &chart.config().left_y);
+    assert!(
+        x.min <= 0.0 && x.min > -1.0 && x.max >= 1.0 && x.max < 2.0,
+        "{:?}",
+        (x.min, x.max)
+    );
+    assert!(
+        y.min <= 1.0 / 3.0 + 1e-9 && y.min > -1.0 && y.max >= 2.0 / 3.0 - 1e-9 && y.max < 2.0,
+        "{:?}",
+        (y.min, y.max)
+    );
+    assert!(specs[0].render_type.feynman().unwrap().has_unplaced());
 }
 
 #[test]
@@ -526,7 +557,7 @@ fn pick(
 /// The s channel committed, with a label on the photon.
 fn labelled() -> FeynmanSeries {
     let mut diagram = s_channel();
-    diagram.auto_layout().unwrap();
+    diagram.place_vertices().unwrap();
     diagram.propagators[2].label = Some(renderer::text::RichText::plain(
         "γ*",
         Color::BLACK,
@@ -824,7 +855,11 @@ fn a_vertex_drag_moves_its_lines_and_the_first_drag_commits() {
         .drag_feynman(id, "d", renderer::FeynmanHit::Vertex(2), 0.0, dy)
         .unwrap();
     assert_eq!(moved, renderer::layout::NudgeResult::Moved);
-    let diagram = r.chart_series(id).unwrap()[0].feynman().unwrap().clone();
+    let diagram = r.chart_series(id).unwrap()[0]
+        .render_type
+        .feynman()
+        .unwrap()
+        .clone();
     assert!(diagram.vertices.iter().all(|v| v.at.is_some()), "committed");
     let v1 = diagram.vertices[2].at.unwrap();
     assert!(
@@ -861,6 +896,7 @@ fn a_vertex_drag_moves_its_lines_and_the_first_drag_commits() {
     );
     assert!(
         r.chart_series(id).unwrap()[0]
+            .render_type
             .feynman()
             .unwrap()
             .propagators[2]
@@ -882,15 +918,22 @@ fn a_vertex_drag_moves_its_lines_and_the_first_drag_commits() {
     );
     let mut list = r.chart_series(id).unwrap().to_vec();
     assert_eq!(
-        list[0]
-            .feynman_mut()
-            .unwrap()
-            .drag_label(renderer::FeynmanLabelPart::Vertex, 0, 3.0, 4.0),
+        list[0].render_type.feynman_mut().unwrap().drag_label(
+            renderer::FeynmanLabelPart::Vertex,
+            0,
+            3.0,
+            4.0
+        ),
         renderer::layout::NudgeResult::Moved
     );
     r.set_chart_series(id, list).unwrap();
     assert_eq!(
-        r.chart_series(id).unwrap()[0].feynman().unwrap().vertices[0].label_offset,
+        r.chart_series(id).unwrap()[0]
+            .render_type
+            .feynman()
+            .unwrap()
+            .vertices[0]
+            .label_offset,
         [3.0, 4.0]
     );
     assert!(
@@ -1141,7 +1184,7 @@ fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
         .unwrap()
         .iter()
         .find(|s| s.series_id == "below")
-        .and_then(|s| s.feynman())
+        .and_then(|s| s.render_type.feynman())
         .unwrap()
         .vertices[0]
         .at
@@ -1157,7 +1200,7 @@ fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
         .unwrap()
         .iter()
         .find(|s| s.series_id == "over")
-        .and_then(|s| s.feynman())
+        .and_then(|s| s.render_type.feynman())
         .unwrap()
         .vertices[0]
         .at
@@ -1370,7 +1413,11 @@ fn a_leg_end_picks_through_the_renderer_and_drags() {
             .unwrap(),
         renderer::layout::NudgeResult::Moved
     );
-    let moved = r.chart_series(id).unwrap()[0].feynman().unwrap().vertices[4]
+    let moved = r.chart_series(id).unwrap()[0]
+        .render_type
+        .feynman()
+        .unwrap()
+        .vertices[4]
         .at
         .unwrap();
     assert!(

@@ -1,7 +1,7 @@
 //! Chart conveniences: a sized chart, a theme, a legend from the series,
 //! and margins fitted to the text (#265).
 
-use crate::theme::{ChartKind, SubplotIndexError, SubplotScope, Theme, ThemeError, ThemeFamily};
+use crate::theme::{ChartKind, SubplotIndexError, Theme, ThemeError, ThemeFamily, ThemeScope};
 use crate::{Chart, SeriesConfig};
 
 impl Chart {
@@ -180,14 +180,18 @@ impl Chart {
 
     /// The chart with its colour bar's axis title shown as `text` in the
     /// title's current style, a label with `$…$` spans as TeX
-    /// ([`crate::text::rich_segments_from_label`]); without a colour bar
-    /// nothing changes.
+    /// ([`crate::text::rich_segments_from_label`]). A chart without a
+    /// colour bar gets the default one
+    /// ([`crate::default::default_colorbar_options`]), so the title is
+    /// drawn either way; set its range and colormap on `Config.colorbar`.
     pub fn with_colorbar_title(mut self, text: &str) -> Self {
-        if let Some(bar) = self.config_mut().colorbar.as_mut() {
-            let title = &mut bar.axis.title_option;
-            title.text.segments = crate::text::rich_segments_from_label(text);
-            title.visible = true;
-        }
+        let bar = self
+            .config_mut()
+            .colorbar
+            .get_or_insert_with(crate::default::default_colorbar_options);
+        let title = &mut bar.axis.title_option;
+        title.text.segments = crate::text::rich_segments_from_label(text);
+        title.visible = true;
         self
     }
 
@@ -229,7 +233,7 @@ impl Chart {
     /// Apply the theme family `name` (`gallery`, `cool-slate`, `midnight`
     /// or `warm-paper`, [`Self::theme_names`]) to the whole document: the
     /// chart, its overlays, every subplot and every series
-    /// ([`Self::apply_theme_to`] with [`SubplotScope::All`]). The base chart
+    /// ([`Self::apply_theme_to`] with [`ThemeScope::All`]). The base chart
     /// and every subplot take the family's member for their own kind, so a
     /// dashboard whose subplots mix kinds takes one name. The layout is
     /// then fitted to the new text sizes ([`Self::fit_layout`]). For any
@@ -243,21 +247,23 @@ impl Chart {
         name: &str,
         series: &mut [SeriesConfig],
     ) -> Result<(), ThemeError> {
-        self.apply_theme_to(name, series, SubplotScope::All)
+        self.apply_theme_to(name, series, ThemeScope::All)
     }
 
-    /// [`Self::apply_theme`] to the chart, its overlays and the subplots
-    /// `subplots` names, and the series drawn there ([`Theme::apply_named`]);
-    /// a series drawn in a subplot out of scope keeps its look. Refused
+    /// [`Self::apply_theme`] to the charts `scope` names ([`ThemeScope`]:
+    /// the base chart alone, subplots alone, the base chart and subplots, or
+    /// all), their overlays and the series drawn there
+    /// ([`Theme::apply_named`]); a series drawn on a chart out of scope
+    /// keeps its look. Refused
     /// also for a scope that names a subplot the chart does not have
     /// ([`ThemeError::SubplotIndex`]).
     pub fn apply_theme_to(
         &mut self,
         name: &str,
         series: &mut [SeriesConfig],
-        subplots: SubplotScope,
+        scope: ThemeScope,
     ) -> Result<(), ThemeError> {
-        Theme::apply_named(name, self.config_mut(), series, subplots)?;
+        Theme::apply_named(name, self.config_mut(), series, scope)?;
         self.fit_layout();
         Ok(())
     }
@@ -324,8 +330,9 @@ impl Chart {
         Ok(())
     }
 
-    /// [`Self::apply_custom_theme`] to the chart, its overlays and the
-    /// subplots `subplots` names ([`Theme::apply`]). Refused, changing
+    /// [`Self::apply_custom_theme`] to the charts `scope` names and their
+    /// overlays ([`Theme::apply`], [`ThemeScope`]): `ThemeScope::Subplots(&[0])`
+    /// themes an inset alone, whatever the base chart's kind. Refused, changing
     /// nothing, when a chart in scope is of another kind than the theme
     /// ([`ThemeError::WrongKind`]), when the scope names a subplot the
     /// chart does not have ([`ThemeError::SubplotIndex`]), or when the
@@ -335,10 +342,10 @@ impl Chart {
         &mut self,
         theme: &Theme,
         series: &mut [SeriesConfig],
-        subplots: SubplotScope,
+        scope: ThemeScope,
     ) -> Result<(), ThemeError> {
-        check_theme_draw_style(theme, self.config(), series, subplots)?;
-        theme.apply(self.config_mut(), series, subplots)?;
+        check_theme_draw_style(theme, self.config(), series, scope)?;
+        theme.apply(self.config_mut(), series, scope)?;
         self.fit_layout();
         Ok(())
     }
@@ -394,12 +401,10 @@ pub fn check_theme_draw_style(
     theme: &Theme,
     config: &crate::Config,
     series: &[SeriesConfig],
-    subplots: SubplotScope,
+    scope: ThemeScope,
 ) -> Result<(), ThemeError> {
-    let in_scope = |item: &&SeriesConfig| match config.layer_of_series(&item.series_id) {
-        crate::LayerRef::Subplot(i) | crate::LayerRef::SubplotOverlay(i, _) => subplots.includes(i),
-        _ => true,
-    };
+    let in_scope =
+        |item: &&SeriesConfig| scope.includes_layer(config.layer_of_series(&item.series_id));
     match series
         .iter()
         .filter(in_scope)

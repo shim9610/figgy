@@ -35,7 +35,10 @@ replace `version` with `path = "../figgy/crates/renderer"`. Code written for
 Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
 into `src/main.rs` and run `cargo run`. It creates a headless renderer, uploads two
 columns, draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening
-a window.
+a window. The example sets its ranges by hand; `Renderer::fit_ranges(&mut chart,
+&series)` fits every axis the series use to the registered columns in one call,
+as the [quick start](https://github.com/shim9610/figgy#quick-start) does. A chart
+starts at a `0..1` placeholder range, so a first plot needs one or the other.
 The crate root page of the API documentation shows the example after this
 README. From a source checkout, run
 `cargo run --locked -p figgy-renderer --example line -- line.png`.
@@ -65,7 +68,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
 | Polar plots: lines, scatter, areas, heatmaps and contours in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; heatmaps and contours draw their cells as annular sectors ([polar heatmaps](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#heatmaps-and-contours)); histograms, images, error bars, stems, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
 | Ternary plots: markers, lines and region fills of three-component samples | `Renderer` with `Config.ternary` | Three columns per `Ternary` series (`x_column`, `y_column`, `c_column`), unnormalized; a `region` fills the polygons the samples outline (even-odd); line fills, step lines, overlay layers and streamed sources are rejected; [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md) |
-| Feynman diagrams: vertices, propagators and particles, laid out automatically and dragged into place | `Renderer` with a `Feynman` series | No columns: the diagram is part of the series configuration; vertex positions are optional and `auto_layout` fills in the missing ones; SVG and PDF export write the strokes as vector curves; [Feynman guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/FEYNMAN.md) |
+| Feynman diagrams: vertices, propagators and particles, laid out automatically and dragged into place | `Renderer` with a `Feynman` series | No columns: the diagram is part of the series configuration; vertex positions are optional and `place_feynman_vertices` fills in the missing ones; SVG and PDF export write the strokes as vector curves; [Feynman guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/FEYNMAN.md) |
 | Triangle meshes: a colour field, contour lines and, in a 3D box, a surface over triangles the host gives | `Renderer` with a `TriMesh` series | Vertex coordinate and value columns (`x_column`, `y_column`, `values`) and a triangle index column (`Renderer::upsert_triangles`), coloured through `Config.colorbar`; on a 3D chart `z_column` is the height; streamed sources are rejected; [triangle mesh guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TRIMESH.md) |
 | 3D surfaces: a heatmap's grid as a lit surface, contours on the floor, points and trajectories (a scatter or line series with a `z_column`), vector fields (a point vector with a `z_column` and `w`) | `Renderer` with `Config.view_3d` | The heatmap's own columns; overlays, line offsets and streamed sources are rejected; [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md) |
 

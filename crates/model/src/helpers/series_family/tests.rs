@@ -106,7 +106,8 @@ fn range_bar_modifiers() {
         total: None,
     };
     let text: Vec<String> = ["+1", "-2", "+3"].map(String::from).to_vec();
-    let bars = SeriesConfig::range_bars("r", "i", "start", "end", up)
+    let bars = SeriesConfig::range_bars("r", "i", "start", "end")
+        .color(up)
         .range_colors(colors.clone())
         .whiskers("low", "high", 1.5)
         .connector(grey, 1.5)
@@ -160,7 +161,8 @@ fn range_bar_modifiers() {
     valid(&categorical(), &bars);
 
     // A numeric position axis takes a slot width.
-    let candles = SeriesConfig::range_bars("c", "t", "open", "close", up)
+    let candles = SeriesConfig::range_bars("c", "t", "open", "close")
+        .color(up)
         .style_range_bars(|parts| *parts.slot_width = Some(86_400.0));
     let DataRenderType::RangeBars { slot_width, .. } = &candles.render_type else {
         panic!("range bars");
@@ -168,7 +170,8 @@ fn range_bar_modifiers() {
     assert_eq!(*slot_width, Some(86_400.0));
     valid(&Config::default(), &candles);
 
-    let category = SeriesConfig::category_bars("b", "i", "v", up)
+    let category = SeriesConfig::category_bars("b", "i", "v")
+        .color(up)
         .bar_labels(CategoryBarLabels::Inside, text.clone());
     let DataRenderType::CategoryBars { labels, .. } = &category.render_type else {
         panic!("category bars");
@@ -179,7 +182,7 @@ fn range_bar_modifiers() {
     );
     valid(&categorical(), &category);
 
-    let boxes = SeriesConfig::box_plot("x", "i", "records", up);
+    let boxes = SeriesConfig::box_plot("x", "i", "records").color(up);
     let same = boxes
         .clone()
         .range_colors(colors)
@@ -212,7 +215,8 @@ fn box_plot_modifiers() {
     first.color = Some(Color::from_rgb8(200, 60, 50));
     let overrides = vec![first];
     let buffer = overrides.as_ptr();
-    let boxes = SeriesConfig::box_plot("b", "i", "records", ink)
+    let boxes = SeriesConfig::box_plot("b", "i", "records")
+        .color(ink)
         .violin(violin.clone())
         .outliers("out")
         .style_box_plot(|parts| {
@@ -240,7 +244,7 @@ fn box_plot_modifiers() {
     assert!(style.notched);
     valid(&categorical(), &boxes);
 
-    let bars = SeriesConfig::range_bars("r", "i", "start", "end", ink);
+    let bars = SeriesConfig::range_bars("r", "i", "start", "end").color(ink);
     let same = bars
         .clone()
         .violin(violin)
@@ -288,7 +292,8 @@ fn field_and_mesh_modifiers() {
         column: "value".into(),
         at: MeshValueLocation::Vertices,
     };
-    let mut mesh = SeriesConfig::mesh("m", "x", "y", "tri", values).shading(Shading::Interpolated);
+    let mut mesh =
+        SeriesConfig::tri_mesh("m", "x", "y", "tri", values).shading(Shading::Interpolated);
     if let DataRenderType::TriMesh(series) = &mut mesh.render_type {
         series.contour = Some(ContourConfig {
             levels: vec![0.5],

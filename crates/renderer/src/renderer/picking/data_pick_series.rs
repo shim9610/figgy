@@ -355,6 +355,7 @@ impl Renderer {
         let [r, g, b, a] = scratch.signature.nan_color.map(f32::from_bits);
         let nan_color_premul = PrimitiveStyle::from_color(Color { r, g, b, a }).color_premul;
         let contour_width_px = cfg
+            .render_type
             .tri_mesh()
             .and_then(|mesh| mesh.contour.as_ref())
             .map_or(0.0, |contour| contour.line.line_width.max(0.0))

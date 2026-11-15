@@ -119,13 +119,13 @@ impl crate::config::Config {
             return Ok(None);
         };
         // An energy-level series steps over the rows of its SSOT (#203).
-        if series[position].energy_levels().is_some() {
+        if series[position].render_type.energy_levels().is_some() {
             return Ok(crate::energy_levels::stepped_selection(
                 series, position, reference, dx, dy,
             ));
         }
         // A Feynman series steps over the rows of its SSOT (#234).
-        if series[position].feynman().is_some() {
+        if series[position].render_type.feynman().is_some() {
             return Ok(crate::feynman::stepped_selection(
                 series, position, reference, dx, dy,
             ));
@@ -330,14 +330,14 @@ impl crate::config::Config {
                 triangle_index,
                 ..
             } => {
-                let meshes = || series.iter().filter(|s| s.tri_mesh().is_some());
+                let meshes = || series.iter().filter(|s| s.render_type.tri_mesh().is_some());
                 let Some(index) = meshes().position(|s| s.series_id == *series_id) else {
                     return Ok(None);
                 };
                 let Some(next) = meshes().nth(shift(index, dy, meshes().count())) else {
                     return Ok(None);
                 };
-                let Some(mesh) = next.tri_mesh() else {
+                let Some(mesh) = next.render_type.tri_mesh() else {
                     return Ok(None);
                 };
                 let count = crate::tri_mesh::TriMeshSeries::triangle_count(len(&mesh.triangles));

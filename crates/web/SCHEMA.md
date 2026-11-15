@@ -1442,7 +1442,7 @@ of a polygon edge the cursor's rightward ray crosses.
 ```
 
 - 라벨은 `RichText` JSON이다. `rich_text_from_tex("$e^-$", ...)`로 TeX에서 만든다.
-- `role`을 생략하면 `"Internal"`이다. `at`을 생략한 꼭짓점은 자동 배치가 놓는다. 래퍼는 시리즈를 등록할 때 배치를 확정하므로 `get_series`는 모든 꼭짓점의 `at`을 돌려준다. 시리즈를 직접 고친 뒤에는 `auto_layout(series_id)`로 다시 확정한다.
+- `role`을 생략하면 `"Internal"`이다. `at`을 생략한 꼭짓점은 자동 배치가 놓는다. 래퍼는 시리즈를 등록할 때 배치를 확정하므로 `get_series`는 모든 꼭짓점의 `at`을 돌려준다. 시리즈를 직접 고친 뒤에는 `place_feynman_vertices(series_id)`로 다시 확정한다.
 - `particle`은 `"Plain"`, `"Fermion"`, `"AntiFermion"`, `"Photon"`, `"ChargedBoson"`, `"Gluon"`, `"Scalar"`, `"ChargedScalar"`, `"Ghost"`, `"Majorana"`, `"Graviton"`, `"DoubleLine"` 중 하나다. `from`과 `to`가 같으면 고리를 그린다.
 - 생략한 `style`과 `layout`은 기본값을 쓰고, 기본값과 같으면 `get_series`가 쓰지 않는다.
 - 어떤 목록에도 개수 상한이 없다. 스트리밍 디스플레이는 이 시리즈를 거부한다.

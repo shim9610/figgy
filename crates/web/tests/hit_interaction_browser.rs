@@ -572,9 +572,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     let large = chart.subplot_text_factor(0).unwrap();
     assert!((large - (600.0f32 / 960.0).cbrt()).abs() < 1e-6, "{large}");
     assert_eq!(drawn_size(&chart), stored_size * large);
-    chart
-        .fit_layout(js_sys::Array::new())
-        .expect("fit the resized cell");
+    chart.fit_layout(None).expect("fit the resized cell");
     assert_eq!(drawn_size(&chart), stored_size * large);
     chart
         .set_subplot_text_scale(0, "Fixed")
@@ -677,14 +675,14 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     assert_eq!(names, ThemeFamily::NAMES);
     let before = chart_config(&chart);
     let series_before = chart.get_series().expect("get_series");
-    assert!(chart.apply_theme("neon", "all").is_err());
-    assert!(chart.apply_theme("midnight", "[nope").is_err());
+    assert!(chart.apply_theme("neon").is_err());
+    assert!(chart.apply_theme_to("midnight", "[nope").is_err());
     // A look that is not a family is no name.
-    assert!(chart.apply_theme("parchment", "all").is_err());
+    assert!(chart.apply_theme("parchment").is_err());
     assert_eq!(chart_config(&chart), before);
     assert_eq!(chart.get_series().expect("get_series"), series_before);
     chart
-        .apply_theme("midnight", "none")
+        .apply_theme_to("midnight", "base")
         .expect("apply the midnight theme");
     let themed = chart_config(&chart);
     let dark = ThemeFamily::Midnight.theme(ChartKind::Line);
@@ -696,12 +694,19 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         (before.bottom_x.min, before.bottom_x.max)
     );
     chart
-        .apply_theme("midnight", "[0]")
-        .expect("theme the subplot too");
+        .apply_theme_to("midnight", "[0]")
+        .expect("theme the subplot alone");
     assert_eq!(
         chart_config(&chart).subplots[0].config.background,
         dark.chrome.background
     );
+    // The base chart and the subplot in one scope, as a JSON array that
+    // holds "base": the same document as the two calls above.
+    let both = chart_config(&chart);
+    chart
+        .apply_theme_to("midnight", "[\"base\", 0]")
+        .expect("the base chart and the subplot");
+    assert_eq!(chart_config(&chart), both);
     // A family (#295) themes a chart whose subplot is of another kind in
     // one call: the line chart takes the family's line member, the scatter
     // inset its scatter member.
@@ -724,7 +729,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         (Some(ChartKind::Line), Some(ChartKind::Scatter))
     );
     chart
-        .apply_theme("warm-paper", "all")
+        .apply_theme("warm-paper")
         .expect("a family over both kinds");
     let themed = chart_config(&chart);
     let line = ThemeFamily::WarmPaper.theme(ChartKind::Line);
@@ -756,7 +761,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         js_sys::Reflect::get(error, &JsValue::from_str(key)).expect("an error object")
     };
     let code = |error: &JsValue| field(error, "code").as_string().unwrap_or_default();
-    let unknown = chart.apply_theme("neon", "all").unwrap_err();
+    let unknown = chart.apply_theme("neon").unwrap_err();
     assert_eq!(code(&unknown), "theme_unknown_name");
     let names: Vec<String> = js_sys::Array::from(&field(&unknown, "names"))
         .iter()
@@ -764,10 +769,10 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         .collect();
     assert_eq!(names, ThemeFamily::NAMES);
     assert_eq!(
-        code(&chart.apply_theme("editorial", "all").unwrap_err()),
+        code(&chart.apply_theme("editorial").unwrap_err()),
         "theme_unknown_name"
     );
-    let index = chart.apply_theme("gallery", "[4]").unwrap_err();
+    let index = chart.apply_theme_to("gallery", "[4]").unwrap_err();
     assert_eq!(code(&index), "subplot_index");
     assert_eq!(field(&index, "index").as_f64(), Some(4.0));
     assert_eq!(field(&index, "count").as_f64(), Some(1.0));
@@ -788,10 +793,21 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         code(&chart.subplot_theme(4, "midnight").unwrap_err()),
         "subplot_index"
     );
-    assert_eq!(
-        code(&chart.apply_theme("gallery", "[nope").unwrap_err()),
-        "subplot_scope"
-    );
+    // A scope of another form, the removed "none" among them, is refused
+    // with the forms that work.
+    for scope in ["[nope", "none", "[\"inset\"]", "[-1]", "{}"] {
+        let refused = chart.apply_theme_to("gallery", scope).unwrap_err();
+        assert_eq!(code(&refused), "subplot_scope", "{scope}");
+        let accepted: Vec<String> = js_sys::Array::from(&field(&refused, "accepted"))
+            .iter()
+            .filter_map(|form| form.as_string())
+            .collect();
+        assert_eq!(
+            accepted,
+            ["all", "base", "[indices]", "[\"base\", indices]"],
+            "{scope}"
+        );
+    }
     assert_eq!(
         code(&chart.set_subplot_background(0, "{\"red\":1}").unwrap_err()),
         "subplot_background"
@@ -842,9 +858,53 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
         ),
         "theme_wrong_kind"
     );
+    // A scope names any chart (#297): "[0]" is the inset alone, so the
+    // scatter theme applies there whatever the base chart's kind, and the
+    // line base is untouched.
+    let mut recoloured = line.clone();
+    recoloured.kind = ChartKind::Scatter;
+    recoloured.chrome.background = Some(renderer::Color::from_rgb8(1, 2, 3));
+    let object =
+        js_sys::JSON::parse(&serde_json::to_string(&recoloured).unwrap()).expect("a theme object");
+    let before = chart_config(&chart);
+    let series_before: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&chart.get_series().expect("get_series")).expect("series json");
     chart
-        .apply_custom_theme_to(object, "[0]")
+        .apply_custom_theme_to(object.clone(), "[0]")
         .expect("the inset alone");
+    let themed = chart_config(&chart);
+    assert_eq!(
+        themed.subplots[0].config.background,
+        recoloured.chrome.background
+    );
+    assert_eq!(themed.background, before.background, "the base stays");
+    assert_eq!(themed.bottom_x, before.bottom_x, "the base axes stay");
+    assert_eq!(themed.left_y, before.left_y, "the base axes stay");
+    assert_eq!(
+        themed.chart_title, before.chart_title,
+        "the base title stays"
+    );
+    let series_after: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&chart.get_series().expect("get_series")).expect("series json");
+    let of = |list: &[renderer::SeriesConfig], id: &str| {
+        list.iter().find(|item| item.series_id == id).cloned()
+    };
+    assert_eq!(
+        of(&series_after, "line"),
+        of(&series_before, "line"),
+        "the base series stays"
+    );
+    // With the base chart in the scope the scatter theme is refused, and
+    // the text names a scope that works.
+    let before = chart_config(&chart);
+    let refused = chart
+        .apply_custom_theme_to(object, "[\"base\", 0]")
+        .unwrap_err();
+    assert_eq!(code(&refused), "theme_wrong_kind");
+    let text = field(&refused, "message").as_string().unwrap_or_default();
+    assert!(text.contains("chart at Base"), "{text}");
+    assert!(text.contains("ThemeScope::Subplots"), "{text}");
+    assert_eq!(chart_config(&chart), before);
     assert_eq!(
         code(
             &chart
@@ -869,7 +929,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     .expect("a partial theme parses");
     assert_eq!(partial.series, renderer::theme::Theme::default().series);
     let before = chart_config(&chart);
-    let error = chart.apply_custom_theme_to(night, "none").unwrap_err();
+    let error = chart.apply_custom_theme_to(night, "base").unwrap_err();
     assert_eq!(code(&error), "theme_draw_style");
     assert_eq!(
         field(&error, "series_id").as_string().as_deref(),

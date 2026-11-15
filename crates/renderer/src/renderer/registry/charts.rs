@@ -453,17 +453,21 @@ impl Renderer {
 
     /// Commit the automatic layout of the Feynman series `series_id` of
     /// chart `id` (#234): every vertex without a position gets the one it
-    /// is drawn at ([`crate::feynman::FeynmanSeries::auto_layout`]), so the
+    /// is drawn at ([`crate::feynman::FeynmanSeries::place_vertices`]), so the
     /// diagram stays where it is once drawn. The auto-fit pattern: the
     /// renderer writes the display parameter into the registered SSOT and
     /// the host reads it back through [`Self::chart_series`]. Returns
     /// whether anything was written. Synchronous: the layout is CPU work.
-    pub fn auto_layout(&mut self, id: ChartId, series_id: &str) -> Result<bool> {
-        let result = self.auto_layout_unreported(id, series_id);
+    pub fn place_feynman_vertices(&mut self, id: ChartId, series_id: &str) -> Result<bool> {
+        let result = self.place_feynman_vertices_unreported(id, series_id);
         self.reported(result)
     }
 
-    pub(super) fn auto_layout_unreported(&mut self, id: ChartId, series_id: &str) -> Result<bool> {
+    pub(super) fn place_feynman_vertices_unreported(
+        &mut self,
+        id: ChartId,
+        series_id: &str,
+    ) -> Result<bool> {
         let state = self
             .chart_states
             .get(&id)
@@ -471,14 +475,15 @@ impl Renderer {
         let Some(position) = state
             .series
             .iter()
-            .position(|s| s.series_id == series_id && s.feynman().is_some())
+            .position(|s| s.series_id == series_id && s.render_type.feynman().is_some())
         else {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series_id.into(),
-                kind: crate::RuleKind::AutoLayoutNotFeynman,
+                kind: crate::RuleKind::PlaceFeynmanVerticesNotFeynman,
             });
         };
         if !state.series[position]
+            .render_type
             .feynman()
             .is_some_and(|d| d.has_unplaced())
         {
@@ -486,9 +491,9 @@ impl Renderer {
         }
         // Configuration only is copied (rule 2).
         let mut series = state.series.clone();
-        let laid_out = match series[position].feynman_mut() {
+        let laid_out = match series[position].render_type.feynman_mut() {
             Some(diagram) => diagram
-                .auto_layout()
+                .place_vertices()
                 .map_err(|error| crate::renderer::feynman_error(series_id, error))?,
             None => false,
         };
@@ -559,7 +564,7 @@ impl Renderer {
         let Some(position) = state
             .series
             .iter()
-            .position(|s| s.series_id == series_id && s.feynman().is_some())
+            .position(|s| s.series_id == series_id && s.render_type.feynman().is_some())
         else {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series_id.into(),
@@ -568,7 +573,7 @@ impl Renderer {
         };
         // Configuration only is copied (rule 2).
         let mut series = state.series.clone();
-        let Some(diagram) = series[position].feynman_mut() else {
+        let Some(diagram) = series[position].render_type.feynman_mut() else {
             return Err(FiggyError::internal("the found series is a Feynman series"));
         };
         let moved = match drag {

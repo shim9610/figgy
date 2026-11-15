@@ -151,10 +151,10 @@ impl TriMeshSeries {
     }
 }
 
-impl SeriesConfig {
-    /// The mesh fields of this series, or `None` for every other kind.
+impl DataRenderType {
+    /// The triangle mesh series' fields, or `None` for every other kind.
     pub fn tri_mesh(&self) -> Option<&TriMeshSeries> {
-        match &self.render_type {
+        match self {
             DataRenderType::TriMesh(mesh) => Some(mesh),
             _ => None,
         }
@@ -169,7 +169,7 @@ impl Config {
     /// (`z_column`) and its fill is continuous, not banded.
     pub fn validate_tri_mesh_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
-            let Some(mesh) = item.tri_mesh() else {
+            let Some(mesh) = item.render_type.tri_mesh() else {
                 continue;
             };
             mesh.validate()?;

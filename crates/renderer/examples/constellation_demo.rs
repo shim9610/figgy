@@ -7,7 +7,7 @@
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data_config::{ScatterShape, SeriesConfig};
-use renderer::theme::SubplotScope;
+use renderer::theme::ThemeScope;
 #[path = "support/looks.rs"]
 mod looks;
 use renderer::{Chart, ExportOptions, ExportSource, Renderer};
@@ -46,7 +46,7 @@ fn build_chart(style: DrawStyle) -> Chart {
     theme.chrome.draw_style = style;
     let mut chart = Chart::sized(960, 620);
     theme
-        .apply_chrome(chart.config_mut(), &[], SubplotScope::All)
+        .apply_chrome(chart.config_mut(), &[], ThemeScope::All)
         .expect("a chart without series takes any theme");
     chart.config_mut().legend.visible = false;
 

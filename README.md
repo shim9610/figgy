@@ -175,7 +175,7 @@ give the reproduction commands.
 | Ternary plots | Three component columns per `Ternary` series and `Config.ternary`; region fills of the polygons a series outlines | [Ternary](crates/renderer/TERNARY.md) |
 | Triangle meshes (tripcolor, tricontour, trisurf) | Vertex coordinate and value columns and a triangle index column (`TriMesh`, `Renderer::upsert_triangles`): the host's triangulation, a colour field and contour lines over it; with `Config.view_3d` and a `z_column` a surface in the box | [Triangle meshes](crates/renderer/TRIMESH.md) |
 | 3D surfaces | A heatmap's grid or a triangle mesh drawn as a surface in a box with `Config.view_3d`, with points and trajectories from a `z_column`, and vector fields as arrows along `(u, v, w)` | [Surface](crates/renderer/SURFACE.md) |
-| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical`; on a polar chart the bars are a rose | [Bars](crates/renderer/CATEGORICAL.md) · [Roses](crates/renderer/POLAR.md#roses-polar-bars) |
+| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical`; on a polar chart the bars are a rose | [Bars (in Korean)](crates/renderer/CATEGORICAL.md) · [Roses](crates/renderer/POLAR.md#roses-polar-bars) |
 | Box plots, violins, rainclouds | A categorical axis, category positions, one record of supplied box statistics and one ragged outlier column per box series (`BoxPlot`), with the host's density curves as ragged columns for violins and two point columns for raw points; legacy `BoxPlotChart` documents open through `Config::from_boxplot` | [Boxes](crates/renderer/BOXPLOT.md) |
 | Waterfalls, candlesticks, Gantt charts | A position column and start and end columns per range bar series (`RangeBars`), with optional low/high, total-flag or state and progress columns | [Range bars](crates/renderer/RANGEBARS.md) |
 | Radar charts | A categorical angle axis on a polar chart, category positions and one value column per radar series (`Radar`); legacy `RadarChart` documents open through `Config::from_radar` | [Radar](crates/renderer/RADAR.md) |
@@ -238,8 +238,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_x_title("Time (s)")
         // A `$…$` span in a title is TeX.
         .with_y_title(r"$\sin(2\pi f t)$");
-    chart.set_x_range(0.0, 10.0);
-    chart.set_y_range(-1.2, 1.2);
+    // A chart starts at a 0..1 placeholder range: fit the axes to the data.
+    renderer.fit_ranges(&mut chart, &series)?;
     chart.fit_layout();
 
     let output = std::env::args_os()
@@ -252,6 +252,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+`Renderer::fit_ranges` fits every axis the series use (the base chart, overlays
+and subplots) to the registered columns, with 5% padding; for a range of your
+own, call `chart.set_x_range(0.0, 10.0)` and `chart.set_y_range(-1.2, 1.2)`
+instead, as the [line example](crates/renderer/examples/line.rs) does. That
+example is the same chart with hand-set ranges and a theme.
 `Renderer::headless_blocking` makes the GPU device itself, and `save_blocking`
 writes the format the file name's extension names (`.png`, `.svg` or `.pdf`).
 A host that also wants the bytes or pixels calls `export_png_blocking` or
@@ -386,7 +391,7 @@ part of the `figgy-renderer` crate or the browser product.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
+| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars (in Korean)](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
 | Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams · monotonic-x lines | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) · [Monotonic-x lines](crates/model/MONOTONIC.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |

@@ -39,7 +39,7 @@ pub(in crate::renderer) fn pick_energy_levels(
     for (order, cfg) in series.iter().enumerate() {
         // A Feynman diagram picks its vertices, propagators and labels
         // through the placement its raster draws with (#234).
-        if let Some(diagram) = cfg.feynman() {
+        if let Some(diagram) = cfg.render_type.feynman() {
             use crate::feynman::FeynmanHit;
             // A layout that fails or memory that cannot be allocated is the
             // pick's error, as it is the raster's.
@@ -85,7 +85,7 @@ pub(in crate::renderer) fn pick_energy_levels(
             }
             continue;
         }
-        let Some(levels) = cfg.energy_levels() else {
+        let Some(levels) = cfg.render_type.energy_levels() else {
             continue;
         };
         let Some(records) = drawn_records(levels, document) else {

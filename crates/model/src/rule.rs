@@ -232,7 +232,7 @@ pub enum RuleKind {
     PolarLineOffsets,
     /// data area must fit the measured plot region and be at least 80 by 60 logical pixels
     DataAreaTooSmall,
-    /// too many decoration offsets
+    /// too many decoration offsets: a chart holds at most 1024
     DecorationOffsetCount,
     /// decoration offsets must be finite and unique
     DecorationOffsets,
@@ -720,7 +720,7 @@ pub enum RuleKind {
     AnnotationLineWidth,
     /// invalid annotation text: size 6..160, at most 512 characters / 8 lines, finite styles
     AnnotationText,
-    /// too many annotations
+    /// too many annotations: a chart holds at most 1024 (`MAX_ANNOTATIONS`)
     AnnotationCount,
     /// invalid Feynman line style
     FeynmanLineStyle,
@@ -824,8 +824,8 @@ pub enum RuleKind {
     SeriesNotInChart,
     /// a line offset member must be resident: streamed sources are not drawn with line offsets
     LineOffsetMemberStreamed,
-    /// auto\_layout names a Feynman series of the chart
-    AutoLayoutNotFeynman,
+    /// place\_feynman\_vertices names a Feynman series of the chart
+    PlaceFeynmanVerticesNotFeynman,
     /// a Feynman label moves through FeynmanSeries::drag\_label, the value-label drag
     FeynmanLabelDrag,
     /// drag\_feynman names a Feynman series of the chart
@@ -1592,7 +1592,7 @@ impl RuleKind {
             Self::ParallelColorMapNeedsColorbar => "ParallelColorMapNeedsColorbar",
             Self::SeriesNotInChart => "SeriesNotInChart",
             Self::LineOffsetMemberStreamed => "LineOffsetMemberStreamed",
-            Self::AutoLayoutNotFeynman => "AutoLayoutNotFeynman",
+            Self::PlaceFeynmanVerticesNotFeynman => "PlaceFeynmanVerticesNotFeynman",
             Self::FeynmanLabelDrag => "FeynmanLabelDrag",
             Self::DragFeynmanNotFeynman => "DragFeynmanNotFeynman",
             Self::ViewStateOverlayRanges => "ViewStateOverlayRanges",
@@ -1907,7 +1907,9 @@ impl std::fmt::Display for RuleKind {
             Self::DataAreaTooSmall => {
                 "data area must fit the measured plot region and be at least 80 by 60 logical pixels"
             }
-            Self::DecorationOffsetCount => "too many decoration offsets",
+            Self::DecorationOffsetCount => {
+                "too many decoration offsets: a chart holds at most 1024; drop the offsets of elements the chart no longer has"
+            }
             Self::DecorationOffsets => "decoration offsets must be finite and unique",
             Self::DecorationAxisMove => "axes only move perpendicular to their direction",
             Self::RadarChartLimits => "radar limits: at least 3 categories and 1 series",
@@ -2333,7 +2335,9 @@ impl std::fmt::Display for RuleKind {
             Self::AnnotationText => {
                 "invalid annotation text: size 6..160, at most 512 characters / 8 lines, finite styles"
             }
-            Self::AnnotationCount => "too many annotations",
+            Self::AnnotationCount => {
+                "too many annotations: a chart holds at most 1024 (MAX_ANNOTATIONS); remove some or merge them"
+            }
             Self::FeynmanLineStyle => "invalid Feynman line style",
             Self::FeynmanWave => "invalid Feynman wave or coil",
             Self::FeynmanSizes => "invalid Feynman marker, arrow, loop or fan size",
@@ -2425,7 +2429,9 @@ impl std::fmt::Display for RuleKind {
             Self::LineOffsetMemberStreamed => {
                 "a line offset member must be resident: streamed sources are not drawn with line offsets"
             }
-            Self::AutoLayoutNotFeynman => "auto_layout names a Feynman series of the chart",
+            Self::PlaceFeynmanVerticesNotFeynman => {
+                "place_feynman_vertices names a Feynman series of the chart"
+            }
             Self::FeynmanLabelDrag => {
                 "a Feynman label moves through FeynmanSeries::drag_label, the value-label drag"
             }
@@ -3289,7 +3295,7 @@ mod tests {
             ),
             (
                 RuleKind::DecorationOffsetCount,
-                "too many decoration offsets",
+                "too many decoration offsets: a chart holds at most 1024; drop the offsets of elements the chart no longer has",
             ),
             (
                 RuleKind::DecorationOffsets,
@@ -4212,7 +4218,10 @@ mod tests {
                 RuleKind::AnnotationText,
                 "invalid annotation text: size 6..160, at most 512 characters / 8 lines, finite styles",
             ),
-            (RuleKind::AnnotationCount, "too many annotations"),
+            (
+                RuleKind::AnnotationCount,
+                "too many annotations: a chart holds at most 1024 (MAX_ANNOTATIONS); remove some or merge them",
+            ),
             (RuleKind::FeynmanLineStyle, "invalid Feynman line style"),
             (RuleKind::FeynmanWave, "invalid Feynman wave or coil"),
             (
@@ -4400,8 +4409,8 @@ mod tests {
                 "a line offset member must be resident: streamed sources are not drawn with line offsets",
             ),
             (
-                RuleKind::AutoLayoutNotFeynman,
-                "auto_layout names a Feynman series of the chart",
+                RuleKind::PlaceFeynmanVerticesNotFeynman,
+                "place_feynman_vertices names a Feynman series of the chart",
             ),
             (
                 RuleKind::FeynmanLabelDrag,

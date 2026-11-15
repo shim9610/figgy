@@ -471,6 +471,17 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
         renderer.begin_series_fit_extent(&series),
         Err(crate::GpuExtentError::ColumnNotResident { .. })
     ));
+    // The one-call range fit refuses a streamed source too (rule 8, #297)
+    // and leaves the chart as it was.
+    let mut fitted = crate::chart::Chart::new(crate::default::default_config());
+    fitted.consume_data_dirty();
+    fitted.consume_raster_dirty();
+    assert!(matches!(
+        renderer.fit_ranges(&mut fitted, std::slice::from_ref(&series)),
+        Err(FiggyError::ColumnNotResident { .. })
+    ));
+    assert_eq!(fitted.config(), &crate::default::default_config());
+    assert!(!fitted.data_dirty() && !fitted.raster_dirty());
     let old = renderer.chart_states[&chart].revisions.desired;
     {
         let guard = renderer

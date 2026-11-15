@@ -242,7 +242,9 @@ fn designed(title: &str, x: &str, y: &str) -> Chart {
 /// A box plot series at the positions `{id}.pos` over the host's record
 /// `{id}.record` with `violin` behind its boxes.
 fn violin_series(id: &str, color: Color, violin: Violin) -> SeriesConfig {
-    SeriesConfig::box_plot(id, format!("{id}.pos"), format!("{id}.record"), color).violin(violin)
+    SeriesConfig::box_plot(id, format!("{id}.pos"), format!("{id}.record"))
+        .color(color)
+        .violin(violin)
 }
 
 /// A density half over `{id}.curve` and `{id}.density`, its widest point

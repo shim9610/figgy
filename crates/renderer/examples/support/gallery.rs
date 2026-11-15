@@ -2,7 +2,7 @@
 //! Chart data and series definitions live in each example, not in this module.
 use renderer::{
     Chart, Color, Renderer, SeriesConfig, encode_png,
-    theme::{ChartKind, SubplotScope, Theme},
+    theme::{ChartKind, Theme, ThemeScope},
 };
 use std::{error::Error, path::Path};
 
@@ -33,7 +33,7 @@ pub fn theme() -> Theme {
 pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
     let mut chart = Chart::sized(size.0, size.1);
     theme()
-        .apply_chrome(chart.config_mut(), &[], SubplotScope::All)
+        .apply_chrome(chart.config_mut(), &[], ThemeScope::All)
         .expect("a chart without series takes any theme");
     chart
         .with_title(title)

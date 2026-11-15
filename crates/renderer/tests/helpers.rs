@@ -105,6 +105,282 @@ fn the_radial_renderer_saves_by_format() {
         .export_bytes_blocking(&chart, (240, 240), options, ExportFormat::Svg)
         .unwrap();
     assert!(String::from_utf8(svg).unwrap().contains("<svg"));
+
+    // A name without a known extension saves with the format named (#297),
+    // and the refusal of the extension says so.
+    let named = scratch("pie.image");
+    let refused = renderer
+        .save_blocking(&chart, (240, 240), options, &named)
+        .unwrap_err();
+    assert!(matches!(refused, SaveError::UnknownFormat(_)));
+    assert!(
+        refused.to_string().contains("save_as_blocking"),
+        "{refused}"
+    );
+    renderer
+        .save_as_blocking(&chart, (240, 240), options, &named, ExportFormat::Png)
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&named).unwrap(),
+        std::fs::read(&path).unwrap()
+    );
+}
+
+// `Renderer::fit_ranges` (#297): every axis the series use, fitted from the
+// registered columns' statistics in one call.
+
+/// A headless renderer with five columns of eleven values: `t` 0..10, `a`
+/// -1..1, `b` 100..200, `u` 20..30 and `z` 5..10.
+fn fit_renderer() -> Renderer {
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    let column = |from: f64, step: f64| -> Vec<f64> {
+        (0..=10).map(|i| from + step * f64::from(i)).collect()
+    };
+    for (id, from, step) in [
+        ("t", 0.0, 1.0),
+        ("a", -1.0, 0.2),
+        ("b", 100.0, 10.0),
+        ("u", 20.0, 1.0),
+        ("z", 5.0, 0.5),
+    ] {
+        renderer.add_column(id, &column(from, step)).unwrap();
+    }
+    renderer
+}
+
+/// `axis` runs from `min` to `max`, to rounding.
+#[track_caller]
+fn assert_range(axis: &renderer::config::AxisOptions, min: f64, max: f64) {
+    assert!(
+        (axis.min - min).abs() < 1e-9 && (axis.max - max).abs() < 1e-9,
+        "{:?} is not {:?}",
+        (axis.min, axis.max),
+        (min, max)
+    );
+}
+
+// The base chart: both axes take the columns' extents with 5% padding, as
+// the existing layer fit gives them; the fit marks the chart changed, a
+// second one changes nothing, and a refused one leaves the chart alone.
+#[test]
+fn fit_ranges_fits_the_base_chart_and_marks_it_changed() {
+    let renderer = fit_renderer();
+    let series = [SeriesConfig::line("a", "t", "a")];
+    let mut chart = Chart::sized(480, 320);
+    assert_range(&chart.config().bottom_x, 0.0, 1.0);
+    chart.consume_data_dirty();
+    chart.consume_raster_dirty();
+    renderer.fit_ranges(&mut chart, &series).unwrap();
+    assert_range(&chart.config().bottom_x, -0.5, 10.5);
+    assert_range(&chart.config().top_x, -0.5, 10.5);
+    assert_range(&chart.config().left_y, -1.1, 1.1);
+    assert!(chart.data_dirty() && chart.raster_dirty());
+    assert!(chart.config().validate().is_ok());
+
+    let mut by_layer = Chart::sized(480, 320);
+    by_layer
+        .auto_fit_layer_union(
+            renderer.pool(),
+            renderer::LayerRef::Base,
+            &series,
+            renderer::FIT_RANGES_PADDING,
+        )
+        .unwrap();
+    assert_eq!(chart.config(), by_layer.config(), "the existing fit path");
+
+    chart.consume_data_dirty();
+    chart.consume_raster_dirty();
+    let fitted = chart.config().clone();
+    renderer.fit_ranges(&mut chart, &series).unwrap();
+    assert_eq!(chart.config(), &fitted, "idempotent");
+    assert!(!chart.data_dirty() && !chart.raster_dirty());
+
+    // A column that was never registered, and a monotonic series.
+    let missing = [
+        SeriesConfig::line("a", "t", "b"),
+        SeriesConfig::line("m", "t", "nowhere"),
+    ];
+    let error = renderer.fit_ranges(&mut chart, &missing).unwrap_err();
+    assert!(
+        matches!(&error, renderer::FiggyError::UnknownColumn { id } if id == "nowhere"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("add_column"), "{error}");
+    let monotonic = [SeriesConfig::monotonic_line("m", "daq", 0)];
+    assert!(matches!(
+        renderer.fit_ranges(&mut chart, &monotonic),
+        Err(renderer::FiggyError::InvalidSeriesConfig {
+            kind: renderer::RuleKind::MonotonicMappingEdit,
+            ..
+        })
+    ));
+    assert_eq!(chart.config(), &fitted, "a refused fit changes nothing");
+    assert!(!chart.data_dirty() && !chart.raster_dirty());
+}
+
+// A chart without series, and one whose series are all DataLess with
+// nothing to fit, keep the placeholder range and are not marked changed.
+#[test]
+fn fit_ranges_without_series_changes_nothing() {
+    let renderer = fit_renderer();
+    let mut chart = Chart::sized(480, 320)
+        .with_overlay(renderer::config::Config::default().left_y, &[])
+        .with_subplot(renderer::Subplot::new(
+            Chart::placed(240, 0, 240, 160).config().clone(),
+            &[],
+        ));
+    let before = chart.config().clone();
+    chart.consume_data_dirty();
+    chart.consume_raster_dirty();
+    renderer.fit_ranges(&mut chart, &[]).unwrap();
+    assert_eq!(chart.config(), &before);
+    assert!(!chart.data_dirty() && !chart.raster_dirty());
+}
+
+// An overlay layer's own y axis fits its series; the base y axis fits the
+// base series only, and the x axis both share fits both.
+#[test]
+fn fit_ranges_fits_an_overlay_layer() {
+    let renderer = fit_renderer();
+    let series = [
+        SeriesConfig::line("a", "t", "a"),
+        SeriesConfig::line("b", "u", "b"),
+    ];
+    let axis = renderer::config::AxisOptions::overlay_y("B", Color::BLACK);
+    let mut chart = Chart::sized(480, 320).with_overlay(axis, &["b"]);
+    renderer.fit_ranges(&mut chart, &series).unwrap();
+    let config = chart.config();
+    // The shared x axis holds `t` (0..10) and `u` (20..30).
+    assert_range(&config.bottom_x, -1.5, 31.5);
+    assert_range(&config.left_y, -1.1, 1.1);
+    assert_range(&config.overlays[0].y_axis, 95.0, 205.0);
+    assert!(config.validate().is_ok());
+}
+
+// Each subplot's axes fit its own series, and the parent's fit its own.
+#[test]
+fn fit_ranges_fits_every_subplot() {
+    let renderer = fit_renderer();
+    let series = [
+        SeriesConfig::line("a", "t", "a"),
+        SeriesConfig::scatter("b", "u", "b"),
+        SeriesConfig::line("z", "t", "z"),
+    ];
+    let cell = |x: u32| Chart::placed(x, 0, 320, 240).config().clone();
+    let inner = Chart::new(cell(640))
+        .with_overlay(
+            renderer::config::AxisOptions::overlay_y("Z", Color::BLACK),
+            &["z"],
+        )
+        .config()
+        .clone();
+    let mut chart = Chart::sized(320, 240)
+        .with_subplot(renderer::Subplot::new(cell(320), &["b"]))
+        .with_subplot(renderer::Subplot::new(inner, &["z"]));
+    renderer.fit_ranges(&mut chart, &series).unwrap();
+    let config = chart.config();
+    assert_range(&config.bottom_x, -0.5, 10.5);
+    assert_range(&config.left_y, -1.1, 1.1);
+    let first = &config.subplots[0].config;
+    assert_range(&first.bottom_x, 19.5, 30.5);
+    assert_range(&first.left_y, 95.0, 205.0);
+    // The second subplot draws its series on an overlay: the overlay's y
+    // axis is fitted, and the subplot's x axis, which the overlay follows.
+    let second = &config.subplots[1].config;
+    assert_range(&second.bottom_x, -0.5, 10.5);
+    assert_range(&second.left_y, 0.0, 1.0);
+    assert_range(&second.overlays[0].y_axis, 4.75, 10.25);
+    assert!(config.validate().is_ok());
+}
+
+// A 3D chart's z axis (`right_y`) fits the height columns.
+#[test]
+fn fit_ranges_fits_the_z_axis_of_a_3d_chart() {
+    let renderer = fit_renderer();
+    let series = [SeriesConfig::scatter("p", "t", "a").z("z")];
+    let mut chart = Chart::sized(480, 320);
+    chart
+        .config_mut()
+        .set_view_3d(Some(renderer::View3d::default()));
+    renderer.fit_ranges(&mut chart, &series).unwrap();
+    let config = chart.config();
+    assert_range(&config.bottom_x, -0.5, 10.5);
+    assert_range(&config.left_y, -1.1, 1.1);
+    assert_range(&config.right_y, 4.75, 10.25);
+}
+
+// The fit is an SSOT edit: an export after it draws the new ranges, the
+// same image as a chart given those ranges by hand, and a registered chart
+// that adopts the fitted config needs its raster and its draw again.
+#[test]
+fn a_chart_redraws_with_the_fitted_ranges() {
+    let mut renderer = fit_renderer();
+    let series = [SeriesConfig::line("a", "t", "a").width(2.0)];
+    let mut chart = Chart::sized(320, 200);
+    let options = ExportOptions::document(1.0);
+    let id = renderer
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let stamp = renderer.chart_render_stamp(id).unwrap();
+    let placeholder = renderer
+        .export_png_blocking(ExportSource::chart(&chart, &series), options)
+        .unwrap();
+
+    renderer.fit_ranges(&mut chart, &series).unwrap();
+    for scale in [1.0, 2.0] {
+        let options = ExportOptions::document(scale);
+        let fitted = renderer
+            .export_png_blocking(ExportSource::chart(&chart, &series), options)
+            .unwrap();
+        let mut by_hand = Chart::sized(320, 200);
+        by_hand.set_x_range(-0.5, 10.5);
+        by_hand.set_y_range(-1.1, 1.1);
+        assert_eq!(by_hand.config(), chart.config());
+        let expected = renderer
+            .export_png_blocking(ExportSource::chart(&by_hand, &series), options)
+            .unwrap();
+        assert!(fitted == expected, "{scale}x: the fitted ranges are drawn");
+        if scale == 1.0 {
+            assert!(fitted != placeholder, "the placeholder range is replaced");
+        }
+    }
+
+    renderer
+        .set_chart_config(id, chart.config().clone())
+        .unwrap();
+    let after = renderer.chart_render_stamp(id).unwrap();
+    assert!(after.needs_draw_since(Some(&stamp)));
+    assert!(after.needs_raster_since(Some(&stamp)));
+    assert_eq!(renderer.chart_config(id).unwrap(), chart.config());
+}
+
+// The fit writes ranges only: the fitted document and its series
+// serialize and read back unchanged.
+#[cfg(feature = "serde")]
+#[test]
+fn a_fitted_chart_round_trips() {
+    let renderer = fit_renderer();
+    let series = [
+        SeriesConfig::line("a", "t", "a"),
+        SeriesConfig::line("b", "u", "b"),
+    ];
+    let axis = renderer::config::AxisOptions::overlay_y("B", Color::BLACK);
+    let mut chart = Chart::sized(480, 320)
+        .with_overlay(axis, &["b"])
+        .with_subplot(renderer::Subplot::new(
+            Chart::placed(480, 0, 240, 160).config().clone(),
+            &[],
+        ));
+    let untouched = series.clone();
+    renderer.fit_ranges(&mut chart, &series).unwrap();
+    assert_eq!(series, untouched);
+    let json = serde_json::to_string(chart.config()).unwrap();
+    let back: renderer::config::Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(&back, chart.config());
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    let series_json = serde_json::to_string(&series).unwrap();
+    let series_back: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+    assert_eq!(series_back, series);
 }
 
 // A sized chart takes its area, the legend takes one entry per labelled
@@ -278,7 +554,7 @@ fn a_themed_chart_exports_with_its_look() {
 #[test]
 fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
     use renderer::config::DrawStyle;
-    use renderer::theme::{ChartKind, SubplotScope, Theme, ThemeError, ThemeFamily};
+    use renderer::theme::{ChartKind, Theme, ThemeError, ThemeFamily, ThemeScope};
     let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
     let mut chart = Chart::sized(480, 320)
         .with_title("A sine wave")
@@ -324,7 +600,7 @@ fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
     // The same chart takes a theme of its kind that its series can draw in.
     let gallery = ThemeFamily::Gallery.theme(ChartKind::Line);
     assert_eq!(
-        chart.apply_custom_theme_to(&gallery, &mut series, SubplotScope::All),
+        chart.apply_custom_theme_to(&gallery, &mut series, ThemeScope::All),
         Ok(())
     );
     assert_eq!(chart.config().chart_title.text.color, gallery.chrome.ink);
@@ -335,7 +611,7 @@ fn a_theme_is_refused_for_its_draw_style_and_for_another_kind() {
 // applied to some subplots only.
 #[test]
 fn a_chart_names_its_kind_and_themes() {
-    use renderer::theme::{ChartKind, SubplotScope, ThemeError, ThemeFamily};
+    use renderer::theme::{ChartKind, ThemeError, ThemeFamily, ThemeScope};
     let mut series = vec![SeriesConfig::line("sine", "x", "y").label("sin x")];
     let mut chart = Chart::sized(480, 320).with_legend_from(&series);
     assert_eq!(chart.chart_kind(&[]), None);
@@ -377,7 +653,7 @@ fn a_chart_names_its_kind_and_themes() {
     let mut chart = Chart::new(config);
     let before = chart.config().subplots[0].clone();
     chart
-        .apply_theme_to("cool-slate", &mut series, SubplotScope::None)
+        .apply_theme_to("cool-slate", &mut series, ThemeScope::Base)
         .expect("the base chart alone");
     // The layout is fitted again; the subplot's look stays.
     let cell = &chart.config().subplots[0].config;
@@ -404,7 +680,7 @@ fn a_chart_names_its_kind_and_themes() {
 // past the subplots is refused with the index (#295).
 #[test]
 fn a_custom_theme_themes_the_charts_of_its_kind() {
-    use renderer::theme::{ChartKind, SubplotIndexError, SubplotScope, ThemeError, ThemeFamily};
+    use renderer::theme::{ChartKind, SubplotIndexError, ThemeError, ThemeFamily, ThemeScope};
     let mut series = vec![
         SeriesConfig::line("sine", "x", "y"),
         SeriesConfig::scatter("dots", "x", "y"),
@@ -452,7 +728,7 @@ fn a_custom_theme_themes_the_charts_of_its_kind() {
     );
     // With a scope, the line base refuses it.
     assert!(matches!(
-        chart.apply_custom_theme_to(&scatter, &mut series, SubplotScope::All),
+        chart.apply_custom_theme_to(&scatter, &mut series, ThemeScope::All),
         Err(ThemeError::WrongKind {
             theme: ChartKind::Scatter,
             chart: ChartKind::Line,
@@ -462,14 +738,14 @@ fn a_custom_theme_themes_the_charts_of_its_kind() {
     // A scope past the subplots.
     let line = ThemeFamily::Midnight.theme(ChartKind::Line);
     assert_eq!(
-        chart.apply_custom_theme_to(&line, &mut series, SubplotScope::Only(&[3])),
+        chart.apply_custom_theme_to(&line, &mut series, ThemeScope::BaseAnd(&[3])),
         Err(ThemeError::SubplotIndex(SubplotIndexError {
             index: 3,
             count: 1
         }))
     );
     assert_eq!(
-        chart.apply_theme_to("gallery", &mut series, SubplotScope::Only(&[3])),
+        chart.apply_theme_to("gallery", &mut series, ThemeScope::BaseAnd(&[3])),
         Err(ThemeError::SubplotIndex(SubplotIndexError {
             index: 3,
             count: 1
@@ -484,6 +760,192 @@ fn a_custom_theme_themes_the_charts_of_its_kind() {
             ..
         })
     ));
+}
+
+// A scope names any chart (#297): the base chart alone, a subplot alone,
+// the base chart and subplots, or all, on a line chart with a scatter
+// inset and an empty cell. A refusal changes nothing.
+#[test]
+fn a_theme_scope_names_the_base_chart_a_subplot_or_both() {
+    use renderer::config::DrawStyle;
+    use renderer::theme::{ChartKind, SubplotIndexError, ThemeError, ThemeFamily, ThemeScope};
+    let declared_series = vec![
+        SeriesConfig::line("sine", "x", "y"),
+        SeriesConfig::scatter("dots", "x", "y"),
+    ];
+    let mut config = Chart::sized(480, 320).config().clone();
+    for (x, ids) in [(480, &["dots"][..]), (720, &[][..])] {
+        config.subplots.push(renderer::Subplot::new(
+            Chart::placed(x, 0, 240, 160).config().clone(),
+            ids,
+        ));
+    }
+    let mut fitted = Chart::new(config);
+    fitted.fit_layout();
+    let declared = fitted.config().clone();
+    let fresh = || (Chart::new(declared.clone()), declared_series.clone());
+    let line = ThemeFamily::Midnight.theme(ChartKind::Line);
+    let scatter = ThemeFamily::Midnight.theme(ChartKind::Scatter);
+    // The look a theme writes on a chart: its background, frame and inks.
+    let look = |chart: &renderer::Config| {
+        (
+            chart.background,
+            chart.bottom_x.line_color,
+            chart.bottom_x.label_style.color,
+            chart.chart_title.text.color,
+            chart.grid.clone(),
+        )
+    };
+    let themed = |chart: &renderer::Config, theme: &renderer::theme::Theme| {
+        chart.background == theme.chrome.background
+            && chart.bottom_x.line_color == theme.chrome.frame_ink
+    };
+
+    // The base chart alone.
+    let (mut chart, mut series) = fresh();
+    chart
+        .apply_custom_theme_to(&line, &mut series, ThemeScope::Base)
+        .expect("the base chart alone");
+    assert!(themed(chart.config(), &line));
+    for index in 0..2 {
+        assert_eq!(
+            look(&chart.config().subplots[index].config),
+            look(&declared.subplots[index].config)
+        );
+    }
+    assert_ne!(series[0], declared_series[0]);
+    assert_eq!(series[1], declared_series[1]);
+
+    // A subplot alone: the scatter inset takes a scatter theme although the
+    // base chart is a line chart, and the base chart keeps its look.
+    let (mut chart, mut series) = fresh();
+    chart
+        .apply_custom_theme_to(&scatter, &mut series, ThemeScope::Subplots(&[0]))
+        .expect("the inset alone");
+    assert_eq!(look(chart.config()), look(&declared), "the base stays");
+    assert!(themed(&chart.config().subplots[0].config, &scatter));
+    assert_eq!(
+        look(&chart.config().subplots[1].config),
+        look(&declared.subplots[1].config)
+    );
+    assert_eq!(series[0], declared_series[0], "the base series stays");
+    assert_ne!(series[1], declared_series[1]);
+    // By name, the same scope gives the inset its own kind's member.
+    let (mut named, mut named_series) = fresh();
+    named
+        .apply_theme_to("midnight", &mut named_series, ThemeScope::Subplots(&[0]))
+        .expect("the inset alone, by name");
+    assert_eq!(named.config(), chart.config());
+    assert_eq!(named_series, series);
+
+    // The base chart and a subplot.
+    let (mut chart, mut series) = fresh();
+    chart
+        .apply_custom_theme_to(&line, &mut series, ThemeScope::BaseAnd(&[1]))
+        .expect("the base chart and the empty cell");
+    assert!(themed(chart.config(), &line));
+    assert!(themed(&chart.config().subplots[1].config, &line));
+    assert_eq!(
+        look(&chart.config().subplots[0].config),
+        look(&declared.subplots[0].config)
+    );
+    assert_eq!(series[1], declared_series[1]);
+
+    // All: a family themes every chart; a custom theme is refused by the
+    // first chart of another kind.
+    let (mut chart, mut series) = fresh();
+    chart
+        .apply_theme_to("midnight", &mut series, ThemeScope::All)
+        .expect("a family over every chart");
+    assert!(themed(chart.config(), &line));
+    assert!(themed(&chart.config().subplots[0].config, &scatter));
+    let mut whole = fresh();
+    whole.0.apply_theme("midnight", &mut whole.1).unwrap();
+    assert_eq!(chart.config(), whole.0.config(), "the unscoped call");
+
+    // Refusals: another kind in scope, an index past the subplots, a draw
+    // style that cannot draw a series in scope. Nothing changes.
+    let mut constellation = line.clone();
+    constellation.chrome.draw_style = DrawStyle::Constellation(Default::default());
+    let wrong = |theme: ChartKind, chart: ChartKind, layer| {
+        Err(ThemeError::WrongKind {
+            theme,
+            chart,
+            layer,
+        })
+    };
+    let (line_kind, scatter_kind) = (ChartKind::Line, ChartKind::Scatter);
+    let (base, inset) = (renderer::LayerRef::Base, renderer::LayerRef::Subplot(0));
+    let past = Err(ThemeError::SubplotIndex(SubplotIndexError {
+        index: 5,
+        count: 2,
+    }));
+    for (theme, scope, expected) in [
+        (
+            &scatter,
+            ThemeScope::Base,
+            wrong(scatter_kind, line_kind, base),
+        ),
+        (
+            &scatter,
+            ThemeScope::BaseAnd(&[0]),
+            wrong(scatter_kind, line_kind, base),
+        ),
+        (
+            &scatter,
+            ThemeScope::All,
+            wrong(scatter_kind, line_kind, base),
+        ),
+        (
+            &line,
+            ThemeScope::Subplots(&[0]),
+            wrong(line_kind, scatter_kind, inset),
+        ),
+        (
+            &line,
+            ThemeScope::BaseAnd(&[1, 0]),
+            wrong(line_kind, scatter_kind, inset),
+        ),
+        (
+            &line,
+            ThemeScope::All,
+            wrong(line_kind, scatter_kind, inset),
+        ),
+        (&line, ThemeScope::Subplots(&[5]), past.clone()),
+        (&line, ThemeScope::BaseAnd(&[1, 5]), past.clone()),
+        (
+            &constellation,
+            ThemeScope::BaseAnd(&[1]),
+            Err(ThemeError::UnsupportedDrawStyle {
+                series_id: "sine".into(),
+            }),
+        ),
+    ] {
+        let (mut chart, mut series) = fresh();
+        assert_eq!(
+            chart.apply_custom_theme_to(theme, &mut series, scope),
+            expected,
+            "{scope:?}"
+        );
+        assert_eq!(chart.config(), &declared, "{scope:?}");
+        assert_eq!(series, declared_series, "{scope:?}");
+    }
+    let (mut chart, mut series) = fresh();
+    for scope in [ThemeScope::Subplots(&[5]), ThemeScope::BaseAnd(&[5])] {
+        assert_eq!(chart.apply_theme_to("gallery", &mut series, scope), past);
+        assert_eq!(chart.config(), &declared);
+    }
+    // The draw style is checked for the series in scope only: the empty
+    // cell alone takes the style the base chart's line cannot be drawn in.
+    chart
+        .apply_custom_theme_to(&constellation, &mut series, ThemeScope::Subplots(&[1]))
+        .expect("no series in scope");
+    assert_eq!(
+        chart.config().subplots[1].config.draw_style,
+        constellation.chrome.draw_style
+    );
+    assert_eq!(chart.config().draw_style, declared.draw_style);
+    assert_eq!(series, declared_series);
 }
 
 // The subplot text mode on the chart: read, set and the factor it draws
@@ -722,20 +1184,27 @@ fn chart_part_builders_write_the_document() {
         assert!(png.starts_with(b"\x89PNG"));
     }
 
-    // Without a colour bar the title builder changes nothing; with one it
-    // shows the title in the axis title's style.
-    let plain = Chart::sized(200, 120);
-    assert_eq!(
-        plain.config(),
-        Chart::sized(200, 120).with_colorbar_title("z").config()
-    );
+    // The title builder shows the title in the axis title's style, on the
+    // chart's colour bar or, without one, on the default bar it adds (#297).
     let mut barred = Chart::sized(200, 120);
     barred.config_mut().colorbar = Some(renderer::default::default_colorbar_options());
-    let barred = barred.with_colorbar_title("Speed");
-    let title = &barred.config().colorbar.as_ref().unwrap().axis.title_option;
-    assert!(title.visible);
-    let text: String = title.text.segments.iter().map(|s| s.text).collect();
-    assert_eq!(text, "Speed");
+    for chart in [barred, Chart::sized(200, 120)] {
+        let titled = chart.with_colorbar_title("Speed");
+        let mut expected = renderer::default::default_colorbar_options();
+        expected.axis.title_option = titled
+            .config()
+            .colorbar
+            .as_ref()
+            .unwrap()
+            .axis
+            .title_option
+            .clone();
+        assert_eq!(titled.config().colorbar.as_ref(), Some(&expected));
+        let title = &expected.axis.title_option;
+        assert!(title.visible);
+        let text: String = title.text.segments.iter().map(|s| s.text).collect();
+        assert_eq!(text, "Speed");
+    }
 
     let polar = Chart::sized(300, 300).with_polar(PolarOptions::default());
     assert_eq!(polar.config().polar(), Some(&PolarOptions::default()));
