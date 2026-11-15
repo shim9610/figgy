@@ -96,22 +96,33 @@ async fn raw_create_reports_exact_startup_stage_pairs() {
     assert_eq!(*events.borrow(), expected);
 }
 
-/// Count the browser's asynchronous render-pipeline compiles: how many were
-/// issued and how many have settled, on every device of this page.
+/// Count the browser's asynchronous render-pipeline compiles, on every
+/// device of this page, and hold their results back: a compile the page
+/// issues settles for the page only once the test calls `release()`. What
+/// `create` does while they are held is then the code's doing, whatever the
+/// speed of the GPU.
 const COUNT_COMPILES: &str = r#"
 (() => {
   if (globalThis.__figgyCompiles) return;
   const counts = globalThis.__figgyCompiles = { issued: 0, settled: 0 };
+  counts.hold = () => { counts.gate = new Promise((open) => { counts.release = open; }); };
+  counts.hold();
   const create = GPUDevice.prototype.createRenderPipelineAsync;
   GPUDevice.prototype.createRenderPipelineAsync = function (descriptor) {
     counts.issued += 1;
+    const gate = counts.gate;
     const compiled = create.call(this, descriptor);
+    const held = Promise.allSettled([compiled, gate]).then(() => compiled);
     const settle = () => { counts.settled += 1; };
-    compiled.then(settle, settle);
-    return compiled;
+    held.then(settle, settle);
+    return held;
   };
 })()
 "#;
+
+fn compile_gate(call: &str) {
+    js_sys::eval(&format!("globalThis.__figgyCompiles.{call}()")).unwrap();
+}
 
 fn compiles() -> (u32, u32) {
     let counts = js_sys::Reflect::get(&js_sys::global(), &"__figgyCompiles".into()).unwrap();
@@ -239,48 +250,42 @@ fn show(chart: &mut figgy::FiggyChart, kind: &str) {
     }
 }
 
-/// #299: `create` reports the first frame while the other pipelines are
-/// still compiling, and a chart shown at once, before its pipelines'
+/// #299: `create` resolves, its first frame presented, without a single
+/// pipeline compile having settled, and a chart shown at once, before its pipelines'
 /// compiles have resolved, is the chart shown after all of them have.
 #[wasm_bindgen_test(async)]
 async fn first_frame_precedes_the_background_compiles_and_charts_draw_the_same_before_and_after() {
     js_sys::eval(COUNT_COMPILES).unwrap();
     for kind in ["lines", "bars", "field"] {
-        let at_first_frame = Rc::new(RefCell::new(None));
-        let captured = Rc::clone(&at_first_frame);
-        let callback = Closure::wrap(Box::new(move |value: JsValue| {
-            if string_property(&value, "stage") == "first frame"
-                && string_property(&value, "phase") == "finished"
-            {
-                *captured.borrow_mut() = Some(compiles());
-            }
-        }) as Box<dyn FnMut(JsValue)>);
-        let on_event = callback
-            .as_ref()
-            .unchecked_ref::<js_sys::Function>()
-            .clone();
         let before = compiles();
         assert_eq!(before.0, before.1, "{kind}: the page starts idle");
+        // No compile settles for the page until the gate is released, so a
+        // `create` that awaited one would never resolve.
+        compile_gate("hold");
         let canvas = canvas();
-        let mut chart = figgy::FiggyChart::create_with_progress(canvas.clone(), on_event)
+        let mut chart = figgy::FiggyChart::create(canvas.clone())
             .await
             .expect("raw chart creation failed");
-        let (issued, settled) = at_first_frame.borrow().expect("first frame was reported");
-        // Everything was issued before the first frame, and on the software
-        // GPU these tests run on it is far from compiled by then.
+        let (issued, settled) = compiles();
         assert!(
             issued - before.0 > 20,
             "{kind}: every pipeline's compile is issued at once ({issued} after {before:?})"
         );
-        assert!(
-            settled < issued,
-            "{kind}: the first frame must not wait for the compiles ({settled} of {issued})"
+        assert_eq!(
+            settled, before.1,
+            "{kind}: the first frame was presented with every compile still held"
         );
         let empty = picture(&mut chart).await;
 
         show(&mut chart, kind);
         let early = picture(&mut chart).await;
         assert!(early != empty, "{kind}: the series must be drawn at once");
+        assert_eq!(
+            compiles().1,
+            before.1,
+            "{kind}: drawn with every compile held"
+        );
+        compile_gate("release");
 
         let mut waited = 0;
         while {

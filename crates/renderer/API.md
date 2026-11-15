@@ -557,7 +557,7 @@ Construction and full Cartesian prewarming are separate operations:
 | `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. The optional resident data and style, path-length (dash) scan, fit reduction, contour-label and picking pipelines are created on first use. |
 | Native `for_window_async` / `for_window_async_observed` | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
 | Browser `for_window_async` / `for_window_async_observed` | In addition to window setup, await temporary JavaScript warmup pipelines for the Cartesian render entries. Those temporary pipelines are discarded; they do not populate the renderer's retained optional caches. |
-| `for_window_minimal_async_observed` | Limit that browser render warmup to `PreparationFeature::Basic` entries. On native targets it has the same base initialization as the ordinary async constructor. It does not install a completed Basic preparation group. |
+| `for_window_minimal_async_observed` | In a browser, await no pipeline compile: create the fullscreen textured pipeline directly, issue the asynchronous compile of every resident render pipeline at once and return while the browser compiles them. On native targets it has the same base initialization as the ordinary async constructor. It installs no preparation group. |
 | `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, path-length scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
 
 Normal preparation creates missing pipelines lazily. To move that work before
@@ -688,8 +688,8 @@ does not know and rejects enum variants it does not know.
 
 ## Detached Cartesian pipeline preparation
 
-`Renderer::for_window_minimal_async_observed` limits temporary browser render
-warmup as described above. A host using detached preparation to gate first use
+`Renderer::for_window_minimal_async_observed` starts the temporary browser render
+warmup without waiting for it, as described above. A host using detached preparation to gate first use
 must compile and install `PreparationFeature::Basic` (which also includes path-length
 scans and fit reduction), plus the groups needed by its charts. Construction
 alone does not mark Basic ready.
