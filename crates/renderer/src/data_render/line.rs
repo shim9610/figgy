@@ -3,9 +3,10 @@
 use super::*;
 
 /// The assembled line module.
-pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const LINE_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -21,6 +22,9 @@ pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/line_columnar.wgsl",
     "data_render/parallel_columnar.wgsl",
 );
+/// [`LINE_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = LINE_SHADER_BY_CUTS.remap;
 
 /// Columnar line pipeline. slots: 0=x_a, 1=y_a, 2=x_b, 3=y_b (per-instance).
 pub fn create_line_columnar_pipeline(
@@ -29,7 +33,7 @@ pub fn create_line_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::line(device);
+    let shader = ShaderModules::line(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_line_columnar_pipeline_with_sample_count(
         device,
         &shader,

@@ -41,9 +41,10 @@ pub(crate) fn marker_visual_scale(base: u32) -> f32 {
     }
 }
 /// The assembled scatter module.
-pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const SCATTER_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -53,6 +54,9 @@ pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = crate::shad
     "data_render/common/marker.wgsl",
     "data_render/scatter_columnar.wgsl",
 );
+/// [`SCATTER_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = SCATTER_SHADER_BY_CUTS.remap;
 
 /// Columnar SDF scatter pipeline.
 /// slot 0 (per-vertex): unit quad, slot 1 (per-instance): X, slot 2: Y.
@@ -62,7 +66,7 @@ pub fn create_scatter_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::scatter(device);
+    let shader = ShaderModules::scatter(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_scatter_columnar_pipeline_with_sample_count(
         device,
         &shader,
@@ -109,7 +113,7 @@ pub fn create_scatter_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::scatter(device);
+    let shader = ShaderModules::scatter(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_scatter_columnar_mapped_pipeline_with_entries(
         device,
         &shader,

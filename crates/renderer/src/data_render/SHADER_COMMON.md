@@ -35,6 +35,7 @@ To change shared shader code:
 | `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, triangle mesh, line_arc, contour anchor and label, vector |
 | `style.wgsl` (§2) | scatter, line, errorbar, bar, field, triangle mesh, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
+| `axis_cuts.wgsl`, `axis_cuts_identity.wgsl` (§4, broken axes) | every module that splices `projection.wgsl`, before it: one of the two, by the module's assembly (`assembled_by_cuts!`) |
 | `probability.wgsl` (§5.24) | every module that splices `projection.wgsl`, next to it |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, triangle mesh, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
 | `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, triangle surface, triangle mesh (the floor contour entries, §5.25), scatter, line, line_arc, the 3D point vector module (§5.3) |
@@ -437,6 +438,43 @@ is masked in a shader: the gaps are left out by drawing the data slot once
 per piece, scissored to it, and a pick whose cursor is in a gap is refused
 on the CPU. CPU twin: `layout::BreakMap::remap` / `unmap`, which the axis
 chrome and the annotation layer place with.
+
+The cut code is its own fragment,
+[`data_render/common/axis_cuts.wgsl`](common/axis_cuts.wgsl): `AxisCuts`,
+`no_cuts`, `cuts_of`, `cut_remap`, `cut_unmap`, `cut_scale_at` and the two
+slope helpers only it calls (`piece_slope`, `cut_piece_slope`).
+
+**Two assemblies of every module**
+([#299](https://github.com/shim9610/figgy/issues/299)). The remap is most
+of what a data pipeline costs to compile, and a chart without a break never
+runs it. Every module that splices `projection.wgsl` is therefore declared
+with `assembled_by_cuts!` (`shader_assembly.rs`), one fragment list with the
+word `cuts` where the cut fragment goes, which assembles it twice with
+`assembled!`: with `axis_cuts.wgsl` (`AxisCutShaders::Remap`), and with its
+twin [`axis_cuts_identity.wgsl`](common/axis_cuts_identity.wgsl)
+(`AxisCutShaders::Identity`), which declares the same type and the same
+five functions with no cut: `cuts_of` reads nothing, `cut_remap` and
+`cut_unmap` return their argument and `cut_scale_at` returns 1. The two
+modules differ in nothing else, so every binding, layout and entry point is
+the same and one pipeline descriptor fits both
+(`shader_pipeline_contract.json` stores it once, under the identity source).
+
+- A fragment other than the two calls only those five functions and names
+  the type `AxisCuts`. It never reads a member of `AxisCuts`, builds one
+  with its constructor or calls a slope helper: the identity fragment has
+  none of them (`the_identity_cut_fragment_has_the_cut_fragments_signatures`
+  holds both rules, and the signatures to each other).
+- A renderer compiles the identity modules until it is first handed a chart
+  with an axis break on any layer, and the remap modules from then on
+  (`Renderer::admit_axis_cuts`, ARCHITECTURE.md "Axis-cut shader
+  variants"). A chart with a break is never drawn or picked through an
+  identity module: the draw and the picks refuse it.
+- With `count` 0 the remap fragment is the identity too, so a chart without
+  a break has the same pixels through either
+  (`removing_a_break_keeps_the_cut_remap_and_the_same_pixels`).
+- The `*_SHADER` constants and `shader_assembly::MODULES` name the remap
+  assembly, the full contract this document describes; `*_SHADER_BY_CUTS`
+  and `MODULES_BY_CUTS` hold both.
 
 ---
 

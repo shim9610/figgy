@@ -255,13 +255,15 @@ impl TargetPipelines {
 
     /// The region module's shader, compiled once.
     pub(super) fn ternary_region_module(&mut self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+        let cuts = self.shaders.cuts;
         self.ternary_region_shader.get_or_insert_with(|| {
             crate::gpu_compile::shader_module(
                 device,
                 wgpu::ShaderModuleDescriptor {
                     label: Some("figgy ternary region shader"),
                     source: wgpu::ShaderSource::Wgsl(
-                        data_render::ternary_region::TERNARY_REGION_SHADER
+                        data_render::ternary_region::TERNARY_REGION_SHADER_BY_CUTS
+                            .of(cuts)
                             .source
                             .into(),
                     ),
@@ -364,13 +366,17 @@ impl TargetPipelines {
             ));
             return;
         }
+        let cuts = self.shaders.cuts;
         let shader = self.surface_shader.get_or_insert_with(|| {
             crate::gpu_compile::shader_module(
                 device,
                 wgpu::ShaderModuleDescriptor {
                     label: Some("figgy surface shader"),
                     source: wgpu::ShaderSource::Wgsl(
-                        data_render::surface_mesh::SURFACE_SHADER.source.into(),
+                        data_render::surface_mesh::SURFACE_SHADER_BY_CUTS
+                            .of(cuts)
+                            .source
+                            .into(),
                     ),
                 },
             )
@@ -406,9 +412,10 @@ impl TargetPipelines {
         if self.tri_surface[pass as usize].is_some() {
             return;
         }
+        let cuts = self.shaders.cuts;
         let shader: &wgpu::ShaderModule = if pass.on_floor() {
             self.tri_mesh_shader
-                .get_or_insert_with(|| data_render::tri_mesh::shader_module(device))
+                .get_or_insert_with(|| data_render::tri_mesh::shader_module(device, cuts))
         } else {
             self.tri_surface_shader.get_or_insert_with(|| {
                 crate::gpu_compile::shader_module(
@@ -416,7 +423,10 @@ impl TargetPipelines {
                     wgpu::ShaderModuleDescriptor {
                         label: Some("figgy triangle surface shader"),
                         source: wgpu::ShaderSource::Wgsl(
-                            data_render::surface_mesh::TRI_SURFACE_SHADER.source.into(),
+                            data_render::surface_mesh::TRI_SURFACE_SHADER_BY_CUTS
+                                .of(cuts)
+                                .source
+                                .into(),
                         ),
                     },
                 )
@@ -448,9 +458,10 @@ impl TargetPipelines {
         if self.tri_mesh[pass as usize].is_some() {
             return;
         }
+        let cuts = self.shaders.cuts;
         let shader = self
             .tri_mesh_shader
-            .get_or_insert_with(|| data_render::tri_mesh::shader_module(device));
+            .get_or_insert_with(|| data_render::tri_mesh::shader_module(device, cuts));
         self.tri_mesh[pass as usize] = Some(data_render::tri_mesh::create_tri_mesh_pipeline(
             device,
             shader,

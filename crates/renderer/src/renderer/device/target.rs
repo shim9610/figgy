@@ -207,6 +207,8 @@ impl Renderer {
         let had_errorbar_stem = self.pipelines.errorbar_stem.is_some();
         let had_bar = self.pipelines.bar.is_some();
         let had_bar_mapped = self.pipelines.bar_mapped.is_some();
+        // The new set keeps the old one's shader variant (#299).
+        let cuts = self.pipelines.shaders.cuts;
         self.pipelines = create_target_pipelines(
             &self.device,
             &self.texture_bgl,
@@ -215,6 +217,7 @@ impl Renderer {
             &self.per_point_style_map_bgl,
             surface_format,
             target_sample_count,
+            cuts,
         );
         if had_line {
             self.pipelines.line = Some(
@@ -433,6 +436,77 @@ impl Renderer {
         Ok(true)
     }
 
+    /// Which axis-cut fragment this renderer's data shaders are assembled
+    /// with (#299): [`AxisCutShaders::Identity`] until it is first handed a
+    /// chart with an axis break, [`AxisCutShaders::Remap`] from then on.
+    pub fn axis_cut_shaders(&self) -> AxisCutShaders {
+        self.pipelines.shaders.cuts
+    }
+
+    /// Compile every data shader with the cut remap from now on, when
+    /// `broken` says a chart with an axis break has arrived (#299).
+    ///
+    /// A new renderer assembles its data modules with the identity twin of
+    /// the cut fragment, so a chart without a break does not compile the
+    /// remap. The first chart with a break replaces every pipeline cache
+    /// that holds a module assembled that way: the target's pipeline set
+    /// (emptied, so each pipeline is compiled again by the draw that needs
+    /// it), the contour label and arc scan pipelines, and the picker's
+    /// bundles and active registry. The renderer never goes back: with
+    /// `count 0` in a transform the remap is the identity, so a chart
+    /// without a break draws the same through either.
+    ///
+    /// Nothing a caller holds is invalidated. A [`PreparedFrame`] prepared
+    /// before the switch owns its pipelines and was prepared for charts
+    /// without a break; the target generation is unchanged. A detached
+    /// preparation begun before it is refused at installation.
+    ///
+    /// Called by every entry that is handed a chart: registration and
+    /// configuration changes, frame preparation, export and picking.
+    /// Drawing and picking also refuse a broken chart on identity shaders,
+    /// so a missed entry fails instead of drawing an unbroken axis.
+    pub(in crate::renderer) fn admit_axis_cuts(&mut self, broken: bool) {
+        if !broken || self.pipelines.shaders.cuts == AxisCutShaders::Remap {
+            return;
+        }
+        self.pipelines = create_target_pipelines(
+            &self.device,
+            &self.texture_bgl,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            self.surface_format,
+            self.target_sample_count,
+            AxisCutShaders::Remap,
+        );
+        self.contour_label_pipelines = None;
+        self.arc_pipelines = None;
+        // The picker's bundles are built from the set's modules and its own
+        // of the same variant. A picker that was ready is ready again; its
+        // registry is rebuilt by the next pick's preparation.
+        let was_ready = matches!(
+            self.picker.pipeline_state,
+            PickerPipelineState::Ready { .. }
+        );
+        if was_ready {
+            self.picker = RendererPicker::disabled();
+            if self.enable_gpu_picking_unreported().is_err() {
+                // The failure is recorded in the picker's state, and every
+                // later pick reports it.
+            }
+        }
+    }
+
+    /// [`Self::admit_axis_cuts`] for the registered chart `id`; an unknown
+    /// id admits nothing, and the caller reports it.
+    pub(in crate::renderer) fn admit_chart_cuts(&mut self, id: ChartId) {
+        let broken = self
+            .chart_states
+            .get(&id)
+            .is_some_and(|state| config_cuts_axes(&state.config));
+        self.admit_axis_cuts(broken);
+    }
+
     /// Block until submitted work on this device has completed.
     ///
     /// This is useful during shutdown in embedder examples, where dropping
@@ -551,4 +625,39 @@ impl Renderer {
     pub fn quad_vertex_buffer(&self) -> &wgpu::Buffer {
         &self.quad_vb
     }
+}
+
+/// Whether an axis' breaks cut it: the axes whose transform holds a break
+/// table (`data_render::break_constants`), and the ones streaming refuses
+/// (`validate_stream_series`).
+fn axis_is_cut(axis: &AxisOptions) -> bool {
+    axis.breaks
+        .as_ref()
+        .is_some_and(|breaks| !breaks.ranges.is_empty())
+}
+
+/// Whether any layer of `config` has an axis break (#299): the chart's own
+/// axes, an overlay's, a subplot's or a subplot's overlay's. Such a chart is
+/// drawn and picked with the cut remap shaders only
+/// ([`Renderer::admit_axis_cuts`]). True for an expanded panel of a broken
+/// layer too, whose own two data axes carry the layer's breaks.
+pub(in crate::renderer) fn config_cuts_axes(config: &Config) -> bool {
+    [
+        &config.bottom_x,
+        &config.left_y,
+        &config.top_x,
+        &config.right_y,
+    ]
+    .into_iter()
+    .chain(
+        config
+            .overlays
+            .iter()
+            .flat_map(|overlay| [&overlay.x_axis, &overlay.y_axis]),
+    )
+    .any(axis_is_cut)
+        || config
+            .subplots
+            .iter()
+            .any(|subplot| config_cuts_axes(&subplot.config))
 }

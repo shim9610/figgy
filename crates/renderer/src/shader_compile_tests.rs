@@ -61,7 +61,16 @@ fn all_shader_compilation_times_and_entry_coverage() {
     let (device, queue) = crate::data_render::shared_device().expect("required GPU adapter");
     let gpu = RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread");
     let session = capture::Session::begin();
-    for samples in [1, 4] {
+    // Both shader variants (#299): a new renderer's identity modules, and
+    // the cut remap modules of one that has been handed a broken chart. The
+    // same constructors run for each, so every entry of every module is
+    // measured in both.
+    for (cuts, samples) in [
+        (AxisCutShaders::Identity, 1),
+        (AxisCutShaders::Identity, 4),
+        (AxisCutShaders::Remap, 1),
+        (AxisCutShaders::Remap, 4),
+    ] {
         let mut renderer = Renderer::try_new_with_sample_count(
             gpu.clone(),
             wgpu::TextureFormat::Rgba8Unorm,
@@ -69,6 +78,9 @@ fn all_shader_compilation_times_and_entry_coverage() {
             samples,
         )
         .unwrap();
+        assert_eq!(renderer.axis_cut_shaders(), AxisCutShaders::Identity);
+        renderer.admit_axis_cuts(cuts == AxisCutShaders::Remap);
+        assert_eq!(renderer.axis_cut_shaders(), cuts);
         crate::test_gpu::block_on(renderer.prewarm_all()).unwrap();
         // No shader or pipeline creation at all, even a compiler-cache hit.
         let before = capture::counts();
@@ -194,17 +206,58 @@ fn all_shader_compilation_times_and_entry_coverage() {
     let mut missing = Vec::new();
     for (index, source) in capture.sources.iter().enumerate() {
         let module = wgpu::naga::front::wgsl::parse_str(source["code"].as_str().unwrap()).unwrap();
+        // The public single-pipeline bar builders
+        // (`create_bar_columnar_pipeline`, `..._mapped_pipeline`) are the
+        // only users of these two entries, and they compile the module with
+        // the cut remap for any host transform (#299): the identity
+        // module's copies are never compiled.
+        let host_only =
+            source["code"].as_str() == Some(data_render::BAR_SHADER_BY_CUTS.identity.source);
         for entry in module.entry_points {
+            if host_only && matches!(entry.name.as_str(), "vs_main" | "vs_mapped") {
+                assert!(!used.contains(&(index, entry.name.clone())));
+                continue;
+            }
             if !used.contains(&(index, entry.name.clone())) {
                 missing.push(format!("{} in {}", entry.name, source["label"]));
             }
         }
     }
     assert!(missing.is_empty(), "Unmeasured entries: {missing:?}");
+    // Both assemblies of every module by cuts were compiled.
+    for (name, by_cuts) in crate::shader_assembly::MODULES_BY_CUTS {
+        for (which, assembled) in [("identity", by_cuts.identity), ("remap", by_cuts.remap)] {
+            assert!(
+                capture
+                    .sources
+                    .iter()
+                    .any(|s| s["code"].as_str().unwrap() == assembled.source),
+                "{name} ({which}) was not compiled"
+            );
+        }
+    }
     // This generated metadata is also the browser prewarm descriptor source.
     // No shader code is duplicated there. A changed shader/layout cannot ship
     // with an obsolete prewarm definition unnoticed.
     let contract = capture.browser_contract();
+    // A module assembled with the cut remap compiles to the same pipeline
+    // descriptors as its identity twin, so the contract stores each once,
+    // under the identity source (#299): no entry is keyed by a remap source,
+    // and every identity source that has pipelines is there.
+    for (name, by_cuts) in crate::shader_assembly::MODULES_BY_CUTS {
+        let remap_key = crate::gpu_compile::source_key(by_cuts.remap.source);
+        let identity_key = crate::gpu_compile::source_key(by_cuts.identity.source);
+        let keyed = |key: &str| {
+            contract["pipelines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|p| p["source"].as_str() == Some(key))
+                .count()
+        };
+        assert_eq!(keyed(&remap_key), 0, "{name}");
+        assert!(keyed(&identity_key) > 0, "{name}");
+    }
     let contract_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shader_pipeline_contract.json");
     if std::env::var_os("FIGGY_UPDATE_SHADER_CONTRACT").as_deref()

@@ -118,8 +118,12 @@ impl Renderer {
             return Err(StreamError::TooLarge.into());
         }
         if self.arc_pipelines.is_none() {
-            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
+            // The renderer's one scan, shared with its resident charts: of
+            // its shader set's variant (#299).
+            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_cuts(
                 &self.device,
+                self.pipelines.shaders.cuts,
+                &mut |_| {},
             ));
         }
         let tally = ChargeTally::new();

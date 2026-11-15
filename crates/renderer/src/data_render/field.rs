@@ -4,9 +4,10 @@
 use super::*;
 
 /// The assembled field (heatmap and contour) module.
-pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const FIELD_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/contour_label_box.wgsl",
@@ -21,6 +22,9 @@ pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader
     "data_render/common/radial_sector.wgsl",
     "data_render/field_columnar.wgsl",
 );
+/// [`FIELD_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = FIELD_SHADER_BY_CUTS.remap;
 
 /// Vertices per field draw. The field is **one** quad for the whole grid, not
 /// one per cell — `field_columnar.wgsl`'s header has the two reasons (25M
@@ -581,7 +585,7 @@ pub fn create_field_columnar_pipeline(
     field_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::field(device);
+    let shader = ShaderModules::field(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_field_columnar_pipeline_with_sample_count(
         device,
         &shader,

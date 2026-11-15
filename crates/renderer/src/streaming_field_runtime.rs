@@ -220,7 +220,15 @@ impl Renderer {
             &self.device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("stream field runtime"),
-                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.source.into()),
+                // The renderer's shader variant (#299). A streamed chart has
+                // no axis break (`validate_stream_series`), so either
+                // variant places it the same.
+                source: wgpu::ShaderSource::Wgsl(
+                    crate::data_render::FIELD_SHADER_BY_CUTS
+                        .of(self.pipelines.shaders.cuts)
+                        .source
+                        .into(),
+                ),
             },
         );
         let pipelines = Arc::new(field::Pipelines::new(

@@ -197,6 +197,22 @@ impl PrepareContext<'_> {
         Ok(Some((x_base, y_base, n)))
     }
 
+    /// A transform that holds axis cuts is read by the cut remap modules
+    /// only (#299). Every entry admits its charts before it reaches a scan
+    /// (`Renderer::admit_axis_cuts`); one that did not fails here instead of
+    /// measuring the axis unbroken.
+    pub(in crate::renderer) fn require_cut_shaders(
+        &self,
+        transform: &data_render::ScatterTransform,
+    ) -> Result<()> {
+        if transform.has_axis_cuts() && self.pipelines.shaders.cuts == AxisCutShaders::Identity {
+            return Err(FiggyError::internal(
+                "a transform with axis cuts is read with the cut remap shaders",
+            ));
+        }
+        Ok(())
+    }
+
     /// Ensure the GPU arc-length prefix for one dashed line series and return
     /// the token-side snapshot: the prefix buffer slice, the owned star-pass
     /// handles (when the scratch has one), and the source-column layout the
@@ -226,6 +242,7 @@ impl PrepareContext<'_> {
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
     ) -> Result<Option<PreparedArc>> {
+        self.require_cut_shaders(t)?;
         // The mode word: the step mode and, on a polar chart, the arc pieces
         // the transform carries.
         let step_mode = crate::line_step::mode_word_for(interpolation, t);
@@ -322,9 +339,15 @@ impl PrepareContext<'_> {
         let chunk_override = self.arc_chunk_override;
         #[cfg(not(test))]
         let chunk_override = None;
-        let arc_pipelines: &data_render::line_arc::ArcScanPipelines = self
-            .arc_pipelines
-            .get_or_insert_with(|| data_render::line_arc::create_arc_scan_pipelines(&self.device));
+        let cuts = self.pipelines.shaders.cuts;
+        let arc_pipelines: &data_render::line_arc::ArcScanPipelines =
+            self.arc_pipelines.get_or_insert_with(|| {
+                data_render::line_arc::create_arc_scan_pipelines_by_cuts(
+                    &self.device,
+                    cuts,
+                    &mut |_| {},
+                )
+            });
         let scratch = data_render::line_arc::ArcScratch::build(
             &self.device,
             &self.gpu_ledger,
@@ -405,6 +428,8 @@ impl Renderer {
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
     ) -> Option<Result<PreparedArc>> {
+        // As the frame, export and pick entries do for their charts (#299).
+        self.admit_axis_cuts(t.has_axis_cuts());
         self.preparation_parts()
             .1
             .ensure_arc_prefix(series_id, x_id, y_id, None, t, star_pitch, interpolation)

@@ -350,7 +350,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
         let transform_bgl = create_scatter_transform_bind_group_layout(&device);
         let style_bgl = create_style_bind_group_layout(&device);
         let star_bgl = create_star_data_bind_group_layout(&device);
-        let shaders = ShaderModules::new(&device);
+        let shaders = ShaderModules::new(&device, crate::shader_assembly::AxisCutShaders::Remap);
         let mut style = PrimitiveStyle::from_color_with_width(
             Color {
                 r: 0.3,

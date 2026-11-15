@@ -3,9 +3,10 @@
 use super::*;
 
 /// The assembled error-bar module.
-pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const ERRORBAR_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -16,6 +17,9 @@ pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/common/errorbar_segment.wgsl",
     "data_render/errorbar_columnar.wgsl",
 );
+/// [`ERRORBAR_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = ERRORBAR_SHADER_BY_CUTS.remap;
 
 /// Columnar errorbar pipeline.
 /// slots 0..5 are per-instance f32: x, y, err_y_lo, err_y_hi, err_x_lo,
@@ -31,7 +35,7 @@ pub fn create_errorbar_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::errorbar(device);
+    let shader = ShaderModules::errorbar(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_errorbar_columnar_pipeline_with_sample_count(
         device,
         &shader,
@@ -70,7 +74,7 @@ pub fn create_errorbar_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::errorbar(device);
+    let shader = ShaderModules::errorbar(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_errorbar_columnar_mapped_pipeline_from_shader(
         device,
         &shader,

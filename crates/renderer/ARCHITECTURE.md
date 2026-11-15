@@ -504,6 +504,17 @@ When `AxisOptions.scale = Probability(_)` ([#209](https://github.com/shim9610/fi
 - Auto-fit keeps both ends inside `(0, 1)`: an end at 0 or 1 takes the mirror of the other, and the padding is in `F⁻¹` units.
 - Streamed series are refused with an explicit error.
 
+### Axis-cut shader variants
+
+Every module that places data is assembled twice from one fragment list (`assembled_by_cuts!` in `shader_assembly.rs`, [#299](https://github.com/shim9610/figgy/issues/299)): with `common/axis_cuts.wgsl`, the cut remap of a broken axis ([#200](https://github.com/shim9610/figgy/issues/200)), and with its twin `common/axis_cuts_identity.wgsl`, which declares the same type and functions with no cut (SHADER_COMMON §4). The remap is most of what such a pipeline costs to compile, and a chart without a break never runs it.
+- A renderer holds one variant at a time, `Renderer::axis_cut_shaders()`: `Identity` when it is built, `Remap` from the first chart with an axis break on any layer (the base chart, an overlay, a subplot or a subplot's overlay). It does not go back when the break is removed. With no cuts in a transform the remap is the identity, so a chart without a break draws the same pixels through either variant, and a renderer never compiles a pipeline twice for charts that take turns.
+- `Renderer::admit_axis_cuts` makes the move. Registration, frame preparation (`prepare`, `prepare_registered`), export and the picks call it with their charts before they compile or use a pipeline. The move replaces the target's pipeline set with an empty one of the remap variant, drops the contour label and arc scan pipelines, and rebuilds the picker's bundles if picking was enabled. Each pipeline is then compiled by the draw or pick that first needs it, as on a new renderer.
+- Nothing a host holds is invalidated. The target pipeline generation is unchanged: a `PreparedFrame` owns its pipelines and was prepared for charts without a break. A detached preparation begun before the move holds identity pipelines and is refused at installation with `StaleStateToken`.
+- The rule is enforced where a pipeline is used, not only where a chart arrives: resolving a frame's items (frame and export) and the two pick entries refuse a broken chart on identity shaders with an internal error, so an entry that did not admit its chart fails instead of drawing the axis unbroken.
+- Streaming is not extended to broken axes (rule 8), so a streamed chart is placed the same by either variant. A break added to a streaming chart is a view change that ends the stream, and its restart is refused with `StreamedBreak`.
+- In a browser the startup warm-up compiles the identity modules. The prewarm contract stores each pipeline once, under the identity source, and a remap module finds its descriptors through its twin (`shader_assembly::contract_source`).
+- The public single-pipeline builders (`create_line_columnar_pipeline`, `create_vector_pipeline`, `create_arc_scan_pipelines`, `ContourLabelPipelines::new` and the others) and the `*_SHADER` constants keep the remap module: a host may draw any transform through them.
+
 ### Triangle meshes on the GPU
 
 A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide](TRIMESH.md)) reads four pool columns: x, y, the values and a triangle index column (three `u32` vertex indices per triangle, SHADER_COMMON §5.14).
@@ -942,6 +953,17 @@ redraw_pending = false;
 - GPU에서는 `common/probability.wgsl`이 각 표본을 `(hi, lo)` 쌍에서 f32로 `F⁻¹(p)`에 놓는다(SHADER_COMMON §5.24). 0이나 1, 또는 그 바깥의 값은 위치가 없다. 그런 점과 그 점에 닿는 선분은 로그축의 0 이하 표본처럼 생략하고, 면적이나 줄기의 기준선은 그쪽 축 끝에 고정한다.
 - 자동 범위 맞춤은 두 끝을 `(0, 1)` 안에 둔다. 0이나 1인 끝은 다른 끝의 대칭을 쓰고, 여백은 `F⁻¹` 단위로 둔다.
 - 스트리밍 계열은 명시적인 오류로 거부한다.
+
+### 축 끊김 셰이더의 두 가지 조립
+
+데이터를 배치하는 모듈은 모두 조각 목록 하나로 두 번 조립한다(`shader_assembly.rs`의 `assembled_by_cuts!`, [#299](https://github.com/shim9610/figgy/issues/299)). 하나는 끊긴 축([#200](https://github.com/shim9610/figgy/issues/200))의 재배치 코드인 `common/axis_cuts.wgsl`을 넣고, 다른 하나는 같은 타입과 함수를 선언하되 아무것도 자르지 않는 `common/axis_cuts_identity.wgsl`을 넣는다(SHADER_COMMON §4). 재배치 코드는 이런 파이프라인의 컴파일 시간 대부분을 차지하는데, 끊긴 축이 없는 차트는 이 코드를 실행하지 않는다.
+- 렌더러는 한 번에 한 가지 조립만 쓴다(`Renderer::axis_cut_shaders()`). 만들 때는 `Identity`이고, 어느 층에든(기본 차트, 오버레이, 서브플롯, 서브플롯의 오버레이) 끊긴 축이 있는 차트를 처음 받으면 `Remap`으로 바꾼다. 끊김을 없애도 되돌아가지 않는다. 변환에 잘린 구간이 없으면 재배치는 항등 변환이므로 끊긴 축이 없는 차트는 어느 조립으로 그려도 픽셀이 같고, 두 종류의 차트를 번갈아 그려도 파이프라인을 다시 컴파일하지 않는다.
+- 전환은 `Renderer::admit_axis_cuts`가 한다. 차트 등록, 프레임 준비(`prepare`, `prepare_registered`), 이미지 출력, 피킹이 파이프라인을 컴파일하거나 쓰기 전에 자기 차트로 이 함수를 부른다. 전환하면 대상의 파이프라인 집합을 `Remap` 조립의 빈 집합으로 바꾸고, 등고선 라벨과 경로 길이 계산 파이프라인을 버리며, 피킹이 켜져 있었다면 픽커의 파이프라인 묶음을 다시 만든다. 그 뒤 각 파이프라인은 새 렌더러에서처럼 처음 필요한 그리기나 피킹이 컴파일한다.
+- 호스트가 들고 있는 것은 무효가 되지 않는다. 대상 파이프라인 세대는 그대로다. `PreparedFrame`은 자기 파이프라인을 소유하며 끊긴 축이 없는 차트로 준비한 것이기 때문이다. 전환 전에 시작한 분리 준비 작업은 `Identity` 파이프라인을 담고 있으므로 설치할 때 `StaleStateToken`으로 거부한다.
+- 이 규칙은 차트가 들어오는 곳뿐 아니라 파이프라인을 쓰는 곳에서도 확인한다. 프레임 항목을 확정하는 단계(프레임과 이미지 출력)와 두 피킹 진입점은 `Identity` 셰이더에서 끊긴 축 차트를 내부 오류로 거부한다. 그래서 차트를 알리지 않은 진입점은 축을 끊지 않고 그리는 대신 실패한다.
+- 스트리밍은 끊긴 축을 지원하지 않으므로(규칙 8) 스트리밍 차트는 어느 조립으로도 같은 자리에 그린다. 스트리밍 중인 차트에 끊김을 넣으면 보기 변경이어서 스트림이 끝나고, 다시 시작하려 하면 `StreamedBreak`로 거부한다.
+- 브라우저의 시작 시 사전 컴파일은 `Identity` 모듈을 컴파일한다. 사전 컴파일 계약은 파이프라인마다 `Identity` 소스 아래에 한 번만 저장하고, `Remap` 모듈은 짝이 되는 모듈을 통해 디스크립터를 찾는다(`shader_assembly::contract_source`).
+- 공개된 단일 파이프라인 생성 함수(`create_line_columnar_pipeline`, `create_vector_pipeline`, `create_arc_scan_pipelines`, `ContourLabelPipelines::new` 등)와 `*_SHADER` 상수는 `Remap` 모듈을 그대로 쓴다. 호스트가 이 함수들로 어떤 변환이든 그릴 수 있기 때문이다.
 
 ### GPU의 삼각 메시 처리
 

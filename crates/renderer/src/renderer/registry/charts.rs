@@ -167,6 +167,9 @@ impl Renderer {
         if self.chart_states.contains_key(&id) {
             return Err(FiggyError::internal("a new chart id is never registered"));
         }
+        // A chart with an axis break compiles the cut remap shaders, before
+        // a host asks which preparation groups are ready (#299).
+        self.admit_axis_cuts(config_cuts_axes(&config));
         self.chart_states.insert(
             id,
             ChartRenderState {

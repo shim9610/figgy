@@ -19,7 +19,7 @@ impl Renderer {
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
-    pub(super) fn enable_gpu_picking_unreported(
+    pub(in crate::renderer) fn enable_gpu_picking_unreported(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let mut noop = |_| {};
@@ -50,6 +50,7 @@ impl Renderer {
                 field: &self.pipelines.shaders.field,
                 vector_grid: &self.pipelines.shaders.vector_grid,
                 line: &self.pipelines.shaders.line,
+                cuts: self.pipelines.shaders.cuts,
             },
             &self.transform_bgl,
             &self.field_bgl,
@@ -101,6 +102,7 @@ impl Renderer {
                     field: &self.pipelines.shaders.field,
                     vector_grid: &self.pipelines.shaders.vector_grid,
                     line: &self.pipelines.shaders.line,
+                    cuts: self.pipelines.shaders.cuts,
                 },
                 &self.transform_bgl,
                 &self.field_bgl,
@@ -127,6 +129,7 @@ impl Renderer {
         id: ChartId,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
+        self.admit_chart_cuts(id);
         let state = self
             .chart_states
             .get(&id)
@@ -158,6 +161,9 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
+        // A chart with an axis break is picked with the cut remap only
+        // (#299): the picker's bundles follow the renderer's shader set.
+        self.admit_chart_cuts(id);
         let state = self
             .chart_states
             .get(&id)
@@ -199,6 +205,12 @@ impl Renderer {
         let (display_config, layer_series) = (&inputs.panel, &inputs.series);
         let (request, moved) = pick_request_outside_gaps(display_config, request);
         let transform = data_render::scatter_transform_from_config(display_config);
+        if transform.has_axis_cuts() && self.picker.ready_bundle()?.cuts == AxisCutShaders::Identity
+        {
+            return Err(crate::gpu_pick::GpuPickError::Internal(
+                "a chart with an axis break is picked with the cut remap shaders",
+            ));
+        }
         // The line offset members are the last registered series, each
         // drawn (and its arc prefix scanned) at its own panel's transform.
         let first_member = layer_series.len() - inputs.member_count();

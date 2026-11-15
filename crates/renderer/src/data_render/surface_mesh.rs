@@ -21,9 +21,10 @@ use crate::config::{AxisScale, Config};
 
 /// The assembled surface module of a heatmap grid. The projection fragment
 /// is the layer a later 3D vector glyph reuses.
-pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const SURFACE_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -37,15 +38,19 @@ pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_asse
     "data_render/surface_mesh/surface_input_grid.wgsl",
     "data_render/surface_mesh/surface_entry.wgsl",
 );
+/// [`SURFACE_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub const SURFACE_SHADER: crate::shader_assembly::Assembled = SURFACE_SHADER_BY_CUTS.remap;
 
 /// The assembled surface module of a triangle mesh (#210): the grid's list
 /// with the mesh input (`tri_mesh/mesh_input.wgsl`, the triangle reads the
 /// flat draw shares, and `surface_input_mesh.wgsl`, their placement through
 /// the camera) in place of the grid input. The input and the entry are
 /// separate layers, so other modules can reuse them.
-pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const TRI_SURFACE_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -60,6 +65,9 @@ pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/surface_mesh/surface_input_mesh.wgsl",
     "data_render/surface_mesh/surface_entry.wgsl",
 );
+/// [`TRI_SURFACE_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = TRI_SURFACE_SHADER_BY_CUTS.remap;
 
 /// What a surface pass draws: the heatmap grid's quads
 /// (`surface_input_grid.wgsl`, [`SURFACE_SHADER`]) or a triangle mesh's

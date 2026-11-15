@@ -196,6 +196,7 @@ macro_rules! picker_shaders {
             field: &$job.pipelines.shaders.field,
             vector_grid: &$job.pipelines.shaders.vector_grid,
             line: &$job.pipelines.shaders.line,
+            cuts: $job.pipelines.shaders.cuts,
         }
     };
 }
@@ -263,6 +264,7 @@ impl PipelinePreparation {
                 self.format,
                 self.pipelines.sample_count,
                 Some(self.feature),
+                self.pipelines.shaders.cuts,
                 observer,
             )
             .await
@@ -272,7 +274,9 @@ impl PipelinePreparation {
                 crate::init::prewarm_compute_entries_js(
                     &self.device,
                     "contour.label.async",
-                    crate::gpu_contour::CONTOUR_ANCHOR_SHADER.source,
+                    crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_CUTS
+                        .of(self.pipelines.shaders.cuts)
+                        .source,
                     &[
                         ("anchor_project", "anchor_seed"),
                         ("anchor_project", "anchor_step"),
@@ -291,8 +295,9 @@ impl PipelinePreparation {
                 .await;
             if self.feature == PreparationFeature::Basic {
                 parts.arc = Some(
-                    data_render::line_arc::create_arc_scan_pipelines_observed_async(
+                    data_render::line_arc::create_arc_scan_pipelines_by_cuts_async(
                         &self.device,
+                        self.pipelines.shaders.cuts,
                         observer,
                     )
                     .await
@@ -341,8 +346,9 @@ impl PipelinePreparation {
             self.pipelines
                 .prewarm_all_observed_blocking(&layouts, observer);
             if self.feature == PreparationFeature::Basic {
-                parts.arc = Some(data_render::line_arc::create_arc_scan_pipelines_observed(
+                parts.arc = Some(data_render::line_arc::create_arc_scan_pipelines_by_cuts(
                     &self.device,
+                    self.pipelines.shaders.cuts,
                     observer,
                 ));
                 parts.extent = Some(self.extent_engine());
@@ -352,7 +358,11 @@ impl PipelinePreparation {
     }
 
     fn contour_pipelines(&self) -> crate::gpu_contour::ContourLabelPipelines {
-        crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field)
+        crate::gpu_contour::ContourLabelPipelines::new_by_cuts(
+            &self.device,
+            &self.field,
+            self.pipelines.shaders.cuts,
+        )
     }
 
     fn extent_engine(&self) -> crate::gpu_extent::GpuErrorbarExtentEngine {
@@ -493,6 +503,9 @@ impl Renderer {
             || self.device != job.device
             || self.surface_format != job.format
             || self.target_sample_count != job.pipelines.sample_count
+            // Begun before the renderer moved to the cut remap shaders
+            // (#299): its pipelines are the identity ones.
+            || self.pipelines.shaders.cuts != job.pipelines.shaders.cuts
         {
             return Err(FiggyError::StaleStateToken {
                 reason: "preparation belongs to a different renderer or target generation".into(),

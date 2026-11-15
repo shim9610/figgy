@@ -3,6 +3,7 @@
 //! the unit quad and the AxisLayer handle a composited layer is drawn from.
 
 use super::*;
+use crate::shader_assembly::AxisCutShaders;
 
 /// Upload an RGBA8 pixel array to a 2D texture, usable as `TEXTURE_BINDING`
 /// and `COPY_DST`. No mipmaps, no MSAA.
@@ -165,6 +166,9 @@ pub(crate) fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
 /// pipelines reuse these instead of re-running naga on the same source.
 #[derive(Clone)]
 pub(crate) struct ShaderModules {
+    /// Which axis-cut fragment every data module here was assembled with
+    /// (#299): the variant of the whole pipeline set built from them.
+    pub cuts: AxisCutShaders,
     pub fullscreen: wgpu::ShaderModule,
     pub line: wgpu::ShaderModule,
     pub scatter: wgpu::ShaderModule,
@@ -181,18 +185,19 @@ pub(crate) struct ShaderModules {
 }
 
 impl ShaderModules {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, cuts: AxisCutShaders) -> Self {
         Self {
+            cuts,
             fullscreen: Self::fullscreen(device),
-            line: Self::line(device),
-            scatter: Self::scatter(device),
-            errorbar: Self::errorbar(device),
-            bar: Self::bar(device),
-            field: Self::field(device),
-            vector_points: vector::shader_module(device, vector::VectorInput::Points),
-            vector_grid: vector::shader_module(device, vector::VectorInput::Grid),
-            vector_path: vector::shader_module(device, vector::VectorInput::Path),
-            vector_points_3d: vector::shader_module(device, vector::VectorInput::Points3d),
+            line: Self::line(device, cuts),
+            scatter: Self::scatter(device, cuts),
+            errorbar: Self::errorbar(device, cuts),
+            bar: Self::bar(device, cuts),
+            field: Self::field(device, cuts),
+            vector_points: vector::shader_module(device, vector::VectorInput::Points, cuts),
+            vector_grid: vector::shader_module(device, vector::VectorInput::Grid, cuts),
+            vector_path: vector::shader_module(device, vector::VectorInput::Path, cuts),
+            vector_points_3d: vector::shader_module(device, vector::VectorInput::Points3d, cuts),
         }
     }
 
@@ -214,48 +219,54 @@ impl ShaderModules {
             },
         )
     }
-    pub(super) fn line(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn line(device: &wgpu::Device, cuts: AxisCutShaders) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy line columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::LINE_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(super::LINE_SHADER_BY_CUTS.of(cuts).source.into()),
             },
         )
     }
-    pub(super) fn scatter(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn scatter(device: &wgpu::Device, cuts: AxisCutShaders) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy scatter columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::SCATTER_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    super::SCATTER_SHADER_BY_CUTS.of(cuts).source.into(),
+                ),
             },
         )
     }
-    pub(super) fn errorbar(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn errorbar(device: &wgpu::Device, cuts: AxisCutShaders) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy errorbar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::ERRORBAR_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    super::ERRORBAR_SHADER_BY_CUTS.of(cuts).source.into(),
+                ),
             },
         )
     }
-    pub(super) fn bar(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn bar(device: &wgpu::Device, cuts: AxisCutShaders) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy bar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER_BY_CUTS.of(cuts).source.into()),
             },
         )
     }
-    pub(super) fn field(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn field(device: &wgpu::Device, cuts: AxisCutShaders) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy field columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::FIELD_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    super::FIELD_SHADER_BY_CUTS.of(cuts).source.into(),
+                ),
             },
         )
     }
@@ -267,6 +278,7 @@ pub(crate) async fn prewarm_browser_render_feature(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
     feature: Option<crate::PreparationFeature>,
+    cuts: AxisCutShaders,
     observer: &mut dyn FnMut(crate::InitEvent),
 ) -> Result<(), String> {
     let groups: &[crate::browser_compile::RenderSource<'_>] = &[
@@ -275,7 +287,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             &[("fullscreen textured", "figgy fullscreen textured pipeline")],
         ),
         (
-            super::LINE_SHADER.source,
+            super::LINE_SHADER_BY_CUTS.of(cuts).source,
             &[
                 ("precise line", "figgy line columnar pipeline"),
                 ("colour-mapped line", "figgy line mapped pipeline"),
@@ -295,7 +307,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::SCATTER_SHADER.source,
+            super::SCATTER_SHADER_BY_CUTS.of(cuts).source,
             &[
                 ("precise scatter", "figgy scatter columnar pipeline"),
                 ("mapped scatter", "figgy scatter mapped pipeline"),
@@ -313,7 +325,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::ERRORBAR_SHADER.source,
+            super::ERRORBAR_SHADER_BY_CUTS.of(cuts).source,
             &[
                 ("precise errorbar", "figgy errorbar columnar pipeline"),
                 ("mapped errorbar", "figgy errorbar mapped pipeline"),
@@ -322,7 +334,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::BAR_SHADER.source,
+            super::BAR_SHADER_BY_CUTS.of(cuts).source,
             &[
                 ("histogram bars", "figgy bar columnar pipeline"),
                 (
@@ -337,7 +349,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::FIELD_SHADER.source,
+            super::FIELD_SHADER_BY_CUTS.of(cuts).source,
             &[
                 ("heatmap field", "figgy field columnar pipeline"),
                 ("contour field", "figgy field contour pipeline"),
@@ -349,7 +361,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::tri_mesh::TRI_MESH_SHADER.source,
+            super::tri_mesh::TRI_MESH_SHADER_BY_CUTS.of(cuts).source,
             &[
                 ("triangle mesh", "figgy triangle mesh field pipeline"),
                 (
@@ -359,7 +371,9 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            crate::gpu_contour::CONTOUR_LABEL_SHADER.source,
+            crate::gpu_contour::CONTOUR_LABEL_SHADER_BY_CUTS
+                .of(cuts)
+                .source,
             &[("contour labels", "figgy contour label pipeline")],
         ),
     ];

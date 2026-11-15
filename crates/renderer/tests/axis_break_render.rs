@@ -1364,3 +1364,348 @@ fn category_bars_cross_a_value_axis_cut() {
         }
     }
 }
+
+use renderer::shader_assembly::AxisCutShaders;
+
+/// A renderer holding the columns `ax` and `ay` of [`layered_document`].
+fn layered_renderer() -> Renderer {
+    let mut r = renderer();
+    upload(&mut r, "ax", vec![2.0, 8.0]);
+    upload(&mut r, "ay", vec![5.0, 95.0]);
+    r
+}
+
+/// A document with a base chart, one overlay, one subplot and that
+/// subplot's own overlay, and the series each draws. `broken` names the one
+/// layer whose y axis is cut: `"base"`, `"overlay"`, `"subplot"`,
+/// `"subplot overlay"`, or `"none"`.
+fn layered_document(broken: &str) -> (renderer::Config, Vec<SeriesConfig>) {
+    let cut = |on: bool| on.then(|| config(0.0, 100.0, &[(10.0, 90.0)]).left_y.breaks.unwrap());
+    let overlay = |series: &str, on: bool| {
+        let mut overlay = renderer::OverlayLayer::default();
+        overlay.y_axis.min = 0.0;
+        overlay.y_axis.max = 100.0;
+        overlay.y_axis.breaks = cut(on);
+        overlay.series = vec![series.into()];
+        overlay
+    };
+    let mut document = config(0.0, 100.0, &[]);
+    document.left_y.breaks = cut(broken == "base");
+    document
+        .overlays
+        .push(overlay("overlay", broken == "overlay"));
+    let mut sub = config(0.0, 100.0, &[]);
+    sub.left_y.breaks = cut(broken == "subplot");
+    sub.chart_area.0.y = HEIGHT;
+    sub.overlays
+        .push(overlay("subplot overlay", broken == "subplot overlay"));
+    document.subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["subplot".into(), "subplot overlay".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    });
+    let series = vec![
+        markers("base", "ax", "ay", RED),
+        markers("overlay", "ax", "ay", BLUE),
+        markers("subplot", "ax", "ay", GREEN),
+        markers("subplot overlay", "ax", "ay", MAGENTA),
+    ];
+    (document, series)
+}
+
+fn export_document(
+    r: &mut Renderer,
+    config: &renderer::Config,
+    series: &[SeriesConfig],
+) -> RasterImage {
+    let chart = Chart::new(config.clone());
+    r.export_rgba(
+        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportOptions::document(1.0),
+    )
+    .block_on()
+    .unwrap()
+}
+
+/// A new renderer compiles the identity shaders, and keeps them while no
+/// chart it is handed has an axis break (#299). A break on any one layer
+/// (the base chart, an overlay, a subplot or a subplot's overlay) moves it
+/// to the cut remap, through every entry that is handed a chart: an export,
+/// a registration, a prepared frame and a pick.
+#[test]
+fn a_break_on_any_layer_selects_the_cut_remap_shaders() {
+    // No break on any layer: identity through every entry.
+    let mut r = layered_renderer();
+    r.enable_gpu_picking().unwrap();
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+    let (plain, series) = layered_document("none");
+    export_document(&mut r, &plain, &series);
+    let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [40.0, 40.0],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT * 2,
+        },
+        display_scale: 1.0,
+        max_distance_px: 6.0,
+    };
+    test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let base_only = config(0.0, 100.0, &[]);
+    screen(&mut r, &base_only, &series[..1]);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+
+    for layer in ["base", "overlay", "subplot", "subplot overlay"] {
+        // An export of the host's own chart.
+        let mut r = layered_renderer();
+        let (broken, _) = layered_document(layer);
+        export_document(&mut r, &plain, &series);
+        assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity, "{layer}");
+        export_document(&mut r, &broken, &series);
+        assert_eq!(
+            r.axis_cut_shaders(),
+            AxisCutShaders::Remap,
+            "{layer}: export"
+        );
+
+        // A registration, before anything is drawn.
+        let mut r = layered_renderer();
+        let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+        assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity, "{layer}");
+        r.register_chart(broken.clone(), series.clone()).unwrap();
+        assert_eq!(
+            r.axis_cut_shaders(),
+            AxisCutShaders::Remap,
+            "{layer}: registration"
+        );
+        r.remove_chart(id).unwrap();
+
+        // A break added to a registered chart: the next pick of it.
+        let mut r = layered_renderer();
+        r.enable_gpu_picking().unwrap();
+        let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity, "{layer}");
+        r.set_chart_config(id, broken.clone()).unwrap();
+        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap, "{layer}: pick");
+    }
+
+    // A prepared frame of the host's own chart, broken on its base axis
+    // (a view draws one chart's layers; the layered cases are above).
+    let mut r = layered_renderer();
+    let series = [markers("base", "ax", "ay", RED)];
+    screen(&mut r, &config(0.0, 100.0, &[]), &series);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+    screen(&mut r, &config(0.0, 100.0, &[(10.0, 90.0)]), &series);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+}
+
+/// Adding a break moves the renderer to the cut remap; removing it leaves
+/// the renderer there (#299), where a chart without a break draws exactly
+/// what the identity shaders drew: every pixel of the export and of the
+/// screen, at 1x and 2x, for markers, a line and a fill.
+#[test]
+fn removing_a_break_keeps_the_cut_remap_and_the_same_pixels() {
+    let mut r = renderer();
+    upload(&mut r, "x", vec![1.0, 3.0, 5.0, 7.0, 9.0]);
+    upload(&mut r, "y", vec![10.0, 60.0, 30.0, 85.0, 45.0]);
+    let series = [
+        line("l", "x", "y", BLUE, Some(LineFill::ToBaseline(0.0))),
+        markers("m", "x", "y", RED),
+    ];
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let broken = config(0.0, 100.0, &[(40.0, 50.0)]);
+
+    let identity: Vec<RasterImage> = [1.0f32, 2.0]
+        .into_iter()
+        .map(|scale| export(&mut r, &plain, &series, scale))
+        .collect();
+    let identity_screen = screen(&mut r, &plain, &series);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+
+    // The break is added: the broken chart differs, and is the same as on a
+    // renderer that never compiled an identity pipeline.
+    let cut = export(&mut r, &broken, &series, 1.0);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+    assert!(cut.rgba != identity[0].rgba);
+    let mut fresh = renderer();
+    upload(&mut fresh, "x", vec![1.0, 3.0, 5.0, 7.0, 9.0]);
+    upload(&mut fresh, "y", vec![10.0, 60.0, 30.0, 85.0, 45.0]);
+    assert!(cut.rgba == export(&mut fresh, &broken, &series, 1.0).rgba);
+    assert!(screen(&mut r, &broken, &series).rgba == screen(&mut fresh, &broken, &series).rgba);
+
+    // The break is removed: still the cut remap, and the first pixels.
+    for (scale, before) in [1.0f32, 2.0].into_iter().zip(&identity) {
+        let after = export(&mut r, &plain, &series, scale);
+        assert!(
+            after.rgba == before.rgba,
+            "{scale}x: the unbroken chart drew differently through the cut remap"
+        );
+    }
+    assert!(screen(&mut r, &plain, &series).rgba == identity_screen.rgba);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+}
+
+/// Picks follow the shader variant (#299): with the identity shaders an
+/// unbroken chart's marks answer where they are drawn; a break added to the
+/// chart moves the picker to the cut remap, where a mark past the cut
+/// answers at its drawn place and the gap answers nothing; and the unbroken
+/// chart answers the same again afterwards.
+#[test]
+fn picks_answer_the_same_through_either_shader_variant() {
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    upload(&mut r, "mx", vec![2.0, 8.0]);
+    upload(&mut r, "my", vec![5.0, 95.0]);
+    upload(&mut r, "lx", vec![1.0, 9.0]);
+    upload(&mut r, "ly", vec![5.0, 95.0]);
+    let series = [
+        markers("m", "mx", "my", RED),
+        line("l", "lx", "ly", BLUE, None),
+    ];
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let broken = config(0.0, 100.0, &[(10.0, 90.0)]);
+    let answers = |r: &mut Renderer, config: &renderer::Config| {
+        let mut found = Vec::new();
+        for scale in [1.0f32, 2.0] {
+            for (x, y) in [(2.0, 5.0), (8.0, 95.0), (5.0, 50.0), (3.0, 80.0)] {
+                let at = (col_of(config, x, scale), row_of(config, y, scale));
+                found.push(pick_at(r, config, &series, at, scale));
+            }
+        }
+        found
+    };
+    let before = answers(&mut r, &plain);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+    // Both markers, the line at its middle, and nothing off the line.
+    assert_eq!(before[0], Some(("m".into(), 0)));
+    assert_eq!(before[1], Some(("m".into(), 1)));
+    assert!(matches!(&before[2], Some((id, _)) if id == "l"));
+    assert_eq!(before[3], None);
+
+    let cut = answers(&mut r, &broken);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+    assert_eq!(cut[0], Some(("m".into(), 0)));
+    assert_eq!(cut[1], Some(("m".into(), 1)));
+    // (5, 50) is inside the cut: its place is in the gap, which draws no
+    // line.
+    assert_eq!(cut[2], None);
+
+    assert_eq!(answers(&mut r, &plain), before);
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+}
+
+/// A fit reads column statistics and the extent reduction, which place
+/// nothing: it answers the same for a broken and an unbroken chart on
+/// either shader variant, and does not move the renderer between them
+/// (#299).
+#[test]
+fn a_fit_is_the_same_through_either_shader_variant() {
+    let columns = || {
+        let mut r = renderer();
+        upload(&mut r, "x", vec![1.0, 3.0, 5.0, 7.0, 9.0]);
+        upload(&mut r, "y", vec![10.0, 60.0, 30.0, 85.0, 45.0]);
+        r
+    };
+    let fit = |r: &mut Renderer, config: &renderer::Config| {
+        let series = vec![markers("m", "x", "y", RED)];
+        let mut chart = Chart::new(config.clone());
+        r.fit_ranges(&mut chart, &series).unwrap();
+        r.ensure_errorbar_extent_engine_blocking().unwrap();
+        let id = r.register_chart(config.clone(), series).unwrap();
+        let ticket = r.begin_auto_fit_all(id, 0.0).unwrap();
+        let resolved = ticket.resolve_blocking().unwrap();
+        r.commit_auto_fit_all(resolved).unwrap();
+        let fitted = r.chart_config(id).unwrap();
+        (
+            (chart.config().bottom_x.min, chart.config().bottom_x.max),
+            (chart.config().left_y.min, chart.config().left_y.max),
+            (fitted.bottom_x.min, fitted.bottom_x.max),
+            (fitted.left_y.min, fitted.left_y.max),
+        )
+    };
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let broken = config(0.0, 100.0, &[(40.0, 50.0)]);
+
+    let mut identity = columns();
+    let plain_identity = fit(&mut identity, &plain);
+    assert_eq!(identity.axis_cut_shaders(), AxisCutShaders::Identity);
+    assert_eq!(plain_identity.2, (1.0, 9.0));
+    assert_eq!(plain_identity.3, (10.0, 85.0));
+
+    let mut remap = columns();
+    let broken_remap = fit(&mut remap, &broken);
+    assert_eq!(remap.axis_cut_shaders(), AxisCutShaders::Remap);
+    let plain_remap = fit(&mut remap, &plain);
+    assert_eq!(plain_remap, plain_identity);
+    // The broken chart fits the same ranges; its cuts stay.
+    assert_eq!(broken_remap, plain_identity);
+}
+
+/// A stream is never drawn on a broken axis by either shader variant
+/// (rule 8, #299): a chart that streams while it has no break is refused
+/// with `StreamedBreak` once a break is added to either of its axes (a
+/// streamed chart has no overlays or subplots), and a
+/// chart that never had one keeps streaming on a renderer that has since
+/// moved to the cut remap.
+#[test]
+fn a_stream_that_gains_a_break_is_refused() {
+    let mut r = renderer();
+    let streamed = |id: &str| renderer::StreamColumn {
+        id: id.into(),
+        len: 4,
+        revision: 1,
+        encoding: renderer::StreamEncoding::ScalarF32,
+        replay: renderer::StreamReplay::RandomAccess,
+        statistics: renderer::StreamStatistics::Unknown,
+    };
+    r.register_streamed_columns(vec![streamed("st_x"), streamed("st_y")])
+        .unwrap();
+    let series = vec![markers("m", "st_x", "st_y", RED)];
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+    r.inspect_streaming_capability(id).unwrap();
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+
+    let mut x_broken = with_x_cuts(config(0.0, 100.0, &[(10.0, 90.0)]), &[(4.0, 6.0)]);
+    x_broken.left_y.breaks = None;
+    for broken in [config(0.0, 100.0, &[(10.0, 90.0)]), x_broken] {
+        r.set_chart_config(id, broken).unwrap();
+        match r.inspect_streaming_capability(id) {
+            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, kind }) => {
+                assert_eq!(series_id, "m");
+                assert_eq!(kind, renderer::RuleKind::StreamedBreak);
+            }
+            other => panic!(
+                "expected the streamed rejection, got {:?}",
+                other.map(|_| ())
+            ),
+        }
+    }
+    // The break is removed: the chart streams again, whatever the renderer
+    // compiles by now.
+    r.set_chart_config(id, plain.clone()).unwrap();
+    r.inspect_streaming_capability(id).unwrap();
+    // A resident broken chart on the same renderer moves it to the cut
+    // remap; the unbroken stream is still admitted.
+    upload(&mut r, "x", vec![1.0, 9.0]);
+    upload(&mut r, "y", vec![5.0, 95.0]);
+    export(
+        &mut r,
+        &config(0.0, 100.0, &[(10.0, 90.0)]),
+        &[markers("r", "x", "y", BLUE)],
+        1.0,
+    );
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+    r.inspect_streaming_capability(id).unwrap();
+}

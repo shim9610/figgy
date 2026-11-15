@@ -14,9 +14,10 @@
 /// The assembled triangle mesh module: the field's shared fragments, then the
 /// mesh input, its flat entries and its floor entries (which project through
 /// the camera, `project_3d.wgsl`, as the field module's floor does).
-pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const TRI_MESH_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -30,6 +31,9 @@ pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/tri_mesh/mesh_entry.wgsl",
     "data_render/tri_mesh/mesh_floor.wgsl",
 );
+/// [`TRI_MESH_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = TRI_MESH_SHADER_BY_CUTS.remap;
 
 /// Vertices per triangle instance.
 pub const TRI_MESH_VERTICES: u32 = 3;
@@ -86,13 +90,16 @@ impl TriMeshPass {
     }
 }
 
-/// The triangle mesh module.
-pub(crate) fn shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
+/// The triangle mesh module, assembled for `cuts` (#299).
+pub(crate) fn shader_module(
+    device: &wgpu::Device,
+    cuts: crate::shader_assembly::AxisCutShaders,
+) -> wgpu::ShaderModule {
     crate::gpu_compile::shader_module(
         device,
         wgpu::ShaderModuleDescriptor {
             label: Some("figgy triangle mesh shader"),
-            source: wgpu::ShaderSource::Wgsl(TRI_MESH_SHADER.source.into()),
+            source: wgpu::ShaderSource::Wgsl(TRI_MESH_SHADER_BY_CUTS.of(cuts).source.into()),
         },
     )
 }

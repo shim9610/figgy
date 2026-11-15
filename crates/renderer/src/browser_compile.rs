@@ -31,7 +31,9 @@ fn call(device: &JsValue, method: &str, desc: &JsValue) -> Result<JsValue, Strin
 
 /// Owned JS descriptors; never attach GPU handles to the process-wide metadata.
 fn descriptors(source: &str, kind: &str) -> Result<Vec<JsValue>, String> {
-    let key = crate::gpu_compile::source_key(source);
+    // A module assembled with the cut remap compiles to the pipelines of
+    // its identity twin, which the contract stores (#299).
+    let key = crate::gpu_compile::source_key(crate::shader_assembly::contract_source(source));
     CONTRACT.with(|contract| {
         let contract = contract.as_ref().map_err(|e| error(e.clone()))?;
         let mut out = Vec::new();

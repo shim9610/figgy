@@ -226,3 +226,82 @@ fn a_break_edit_rescans_the_arc_prefix() {
         "the cut changes the arc lengths"
     );
 }
+
+/// A transform that holds axis cuts is never read through the identity
+/// shaders (#299). The entries admit their charts first, which this test
+/// leaves out: the scan refuses the transform instead of measuring the axis
+/// unbroken, and the renderer is left as it was. Breaks that cut nothing (no
+/// ranges) leave the transform without cuts, and the chart on the identity
+/// shaders; and whatever puts cuts in a transform is a break the admission
+/// sees.
+#[test]
+fn a_transform_with_cuts_is_refused_on_identity_shaders() {
+    let Some(mut r) = state_test_renderer() else {
+        return;
+    };
+    r.add_column("arc_x", &col_f64(vec![0.1, 0.5, 0.9]))
+        .unwrap();
+    r.add_column("arc_y", &col_f64(vec![0.1, 0.9, 0.2]))
+        .unwrap();
+    let config = baseline(DrawStyle::Precise);
+    let with = |ranges: Vec<crate::config::AxisBreak>, style| {
+        let mut cut = config.clone();
+        cut.left_y.breaks = Some(crate::config::AxisBreaks {
+            ranges,
+            style,
+            ..Default::default()
+        });
+        cut
+    };
+    let continuous = crate::config::AxisBreakStyle::Continuous;
+    let cut = with(vec![crate::config::AxisBreak::new(0.4, 0.6)], continuous);
+    let empty = with(Vec::new(), continuous);
+    let panels = with(
+        vec![crate::config::AxisBreak::new(0.4, 0.6)],
+        crate::config::AxisBreakStyle::Panels,
+    );
+    let outside = with(vec![crate::config::AxisBreak::new(4.0, 6.0)], continuous);
+    for (name, candidate) in [
+        ("plain", &config),
+        ("cut", &cut),
+        ("no ranges", &empty),
+        ("panels", &panels),
+        ("outside the range", &outside),
+    ] {
+        let transform = data_render::scatter_transform_from_config(candidate);
+        assert!(
+            !transform.has_axis_cuts() || super::config_cuts_axes(candidate),
+            "{name}: a transform with cuts comes from a config the admission sees"
+        );
+    }
+    assert!(!data_render::scatter_transform_from_config(&config).has_axis_cuts());
+    assert!(!data_render::scatter_transform_from_config(&empty).has_axis_cuts());
+    assert!(!super::config_cuts_axes(&config));
+    assert!(!super::config_cuts_axes(&empty));
+    assert!(super::config_cuts_axes(&cut));
+
+    let transform = data_render::scatter_transform_from_config(&cut);
+    assert!(transform.has_axis_cuts());
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+    let refused = r.preparation_parts().1.ensure_arc_prefix(
+        "refused",
+        "arc_x",
+        "arc_y",
+        None,
+        &transform,
+        None,
+        LineInterpolation::Linear,
+    );
+    assert!(
+        matches!(&refused, Err(error) if error.to_string().contains("cut remap shaders")),
+        "{:?}",
+        refused.map(|_| ())
+    );
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+    // The unbroken chart still scans on the identity shaders, and the cut
+    // one once it has been admitted.
+    assert!(arc(&mut r, "plain", &config).is_some());
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+    assert!(arc(&mut r, "cut", &cut).is_some());
+    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+}

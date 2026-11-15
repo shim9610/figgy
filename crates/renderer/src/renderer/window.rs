@@ -489,6 +489,8 @@ impl Renderer {
                 format,
                 samples,
                 None,
+                // A new renderer: no chart with an axis break yet.
+                AxisCutShaders::Identity,
                 &mut |_| {},
             )
             .await;

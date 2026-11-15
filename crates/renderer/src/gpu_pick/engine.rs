@@ -398,6 +398,7 @@ impl GpuPickEngine {
             queue,
             Arc::new(GpuLedger::new()),
             crate::renderer::DeviceHealth::polled_for_test(&device),
+            crate::shader_assembly::AxisCutShaders::Remap,
             observer,
         )?;
         let reduce = observe_result(observer, INIT_SCOPE, "initial_reduce_resources", || {

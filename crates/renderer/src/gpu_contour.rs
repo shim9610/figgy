@@ -26,8 +26,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// The assembled contour label anchor module.
-pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const CONTOUR_ANCHOR_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -35,15 +36,24 @@ pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled = crat
     "data_render/common/field_grid.wgsl",
     "contour_anchor.wgsl",
 );
+/// [`CONTOUR_ANCHOR_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled =
+    CONTOUR_ANCHOR_SHADER_BY_CUTS.remap;
 /// The assembled contour label draw module.
-pub(crate) const CONTOUR_LABEL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const CONTOUR_LABEL_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/contour_label_box.wgsl",
     "data_render/common/label_quad.wgsl",
     "contour_label.wgsl",
 );
+/// [`CONTOUR_LABEL_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const CONTOUR_LABEL_SHADER: crate::shader_assembly::Assembled =
+    CONTOUR_LABEL_SHADER_BY_CUTS.remap;
 
 #[cfg(not(target_arch = "wasm32"))]
 type GpuRef<T> = Arc<T>;
@@ -331,13 +341,34 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
-        Self::with_anchor_source(device, field_bgl, CONTOUR_ANCHOR_SHADER.source, true)
+        Self::new_by_cuts(
+            device,
+            field_bgl,
+            crate::shader_assembly::AxisCutShaders::Remap,
+        )
+    }
+
+    /// [`Self::new`] from the modules assembled for `cuts` (#299): the
+    /// renderer's own label pipelines follow its shader set.
+    pub(crate) fn new_by_cuts(
+        device: &wgpu::Device,
+        field_bgl: &wgpu::BindGroupLayout,
+        cuts: crate::shader_assembly::AxisCutShaders,
+    ) -> Self {
+        Self::with_anchor_source(
+            device,
+            field_bgl,
+            CONTOUR_ANCHOR_SHADER_BY_CUTS.of(cuts).source,
+            CONTOUR_LABEL_SHADER_BY_CUTS.of(cuts).source,
+            true,
+        )
     }
 
     fn with_anchor_source(
         device: &wgpu::Device,
         field_bgl: &wgpu::BindGroupLayout,
         anchor_source: &str,
+        label_source: &str,
         split_projection: bool,
     ) -> Self {
         let anchor_module = crate::gpu_compile::shader_module(
@@ -456,7 +487,7 @@ impl ContourLabelPipelines {
                 &device,
                 wgpu::ShaderModuleDescriptor {
                     label: Some("figgy contour label shader"),
-                    source: wgpu::ShaderSource::Wgsl(CONTOUR_LABEL_SHADER.source.into()),
+                    source: wgpu::ShaderSource::Wgsl(label_source.into()),
                 },
             ),
             label_bgl,
@@ -478,6 +509,7 @@ impl ContourLabelPipelines {
         // what the fixture's common block was copied from.
         let common = crate::shader_assembly::wgsl_module!(
             "data_render/common/transform.wgsl",
+            "data_render/common/axis_cuts.wgsl",
             "data_render/common/projection.wgsl",
             "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
@@ -503,7 +535,13 @@ impl ContourLabelPipelines {
             assert_eq!(current.matches(&new).count(), 1);
             source = source.replace(&old, &new);
         }
-        Self::with_anchor_source(device, field_bgl, &source, false)
+        Self::with_anchor_source(
+            device,
+            field_bgl,
+            &source,
+            CONTOUR_LABEL_SHADER.source,
+            false,
+        )
     }
 
     pub(crate) fn label_gap_bgl(&self) -> &wgpu::BindGroupLayout {

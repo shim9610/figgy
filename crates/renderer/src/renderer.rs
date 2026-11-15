@@ -105,6 +105,7 @@ use crate::init::{
 use crate::layout::Rect;
 use crate::line::LineStylePreset;
 use crate::select::HitId;
+use crate::shader_assembly::AxisCutShaders;
 
 /// Stable identity for one renderer-owned chart state.
 ///

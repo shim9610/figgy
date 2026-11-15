@@ -70,9 +70,10 @@ impl VectorInput {
 }
 
 /// The assembled vector module for [`VectorInput::Points`].
-pub const VECTOR_POINTS_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const VECTOR_POINTS_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -84,11 +85,16 @@ pub const VECTOR_POINTS_SHADER: crate::shader_assembly::Assembled = crate::shade
     "data_render/vector/vector_input_points.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
+/// [`VECTOR_POINTS_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub const VECTOR_POINTS_SHADER: crate::shader_assembly::Assembled =
+    VECTOR_POINTS_SHADER_BY_CUTS.remap;
 
 /// The assembled vector module for [`VectorInput::Grid`].
-pub const VECTOR_GRID_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const VECTOR_GRID_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -101,12 +107,16 @@ pub const VECTOR_GRID_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/vector/vector_input_grid.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
+/// [`VECTOR_GRID_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub const VECTOR_GRID_SHADER: crate::shader_assembly::Assembled = VECTOR_GRID_SHADER_BY_CUTS.remap;
 
 /// The assembled vector module for [`VectorInput::Path`]: the streamline
 /// arrowheads. The glyph and projection fragments are the point form's.
-pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const VECTOR_PATH_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -121,15 +131,19 @@ pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/vector/vector_input_path.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
+/// [`VECTOR_PATH_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = VECTOR_PATH_SHADER_BY_CUTS.remap;
 
 /// The assembled vector module for [`VectorInput::Points3d`]: the point
 /// form with the flat projection replaced by the camera
 /// (`common/project_3d.wgsl`, `vector/project_box3d.wgsl`) and the 3D ID
 /// pick entries after the entry. The glyph, the input and the entry are the
 /// point form's.
-pub const VECTOR_POINTS_3D_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const VECTOR_POINTS_3D_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -143,25 +157,42 @@ pub const VECTOR_POINTS_3D_SHADER: crate::shader_assembly::Assembled = crate::sh
     "data_render/vector/vector_entry.wgsl",
     "data_render/vector/vector_entry_3d.wgsl",
 );
+/// [`VECTOR_POINTS_3D_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub const VECTOR_POINTS_3D_SHADER: crate::shader_assembly::Assembled =
+    VECTOR_POINTS_3D_SHADER_BY_CUTS.remap;
 
-/// The assembled WGSL source of one input form, spliced at compile time.
-/// `shader_assembly`'s `every_module_is_its_fragments_concatenated` holds it
-/// to its fragment list.
+/// The assembled WGSL source of one input form with the cut remap, spliced
+/// at compile time. `shader_assembly`'s
+/// `every_module_is_its_fragments_concatenated` holds it to its fragment
+/// list.
 pub const fn assemble(input: VectorInput) -> &'static str {
+    assemble_by_cuts(input, crate::shader_assembly::AxisCutShaders::Remap)
+}
+
+/// [`assemble`] for either axis-cut fragment (#299).
+pub const fn assemble_by_cuts(
+    input: VectorInput,
+    cuts: crate::shader_assembly::AxisCutShaders,
+) -> &'static str {
     match input {
-        VectorInput::Points => VECTOR_POINTS_SHADER.source,
-        VectorInput::Grid => VECTOR_GRID_SHADER.source,
-        VectorInput::Path => VECTOR_PATH_SHADER.source,
-        VectorInput::Points3d => VECTOR_POINTS_3D_SHADER.source,
+        VectorInput::Points => VECTOR_POINTS_SHADER_BY_CUTS.of(cuts).source,
+        VectorInput::Grid => VECTOR_GRID_SHADER_BY_CUTS.of(cuts).source,
+        VectorInput::Path => VECTOR_PATH_SHADER_BY_CUTS.of(cuts).source,
+        VectorInput::Points3d => VECTOR_POINTS_3D_SHADER_BY_CUTS.of(cuts).source,
     }
 }
 
-pub(crate) fn shader_module(device: &wgpu::Device, input: VectorInput) -> wgpu::ShaderModule {
+pub(crate) fn shader_module(
+    device: &wgpu::Device,
+    input: VectorInput,
+    cuts: crate::shader_assembly::AxisCutShaders,
+) -> wgpu::ShaderModule {
     crate::gpu_compile::shader_module(
         device,
         wgpu::ShaderModuleDescriptor {
             label: Some(input.label()),
-            source: wgpu::ShaderSource::Wgsl(assemble(input).into()),
+            source: wgpu::ShaderSource::Wgsl(assemble_by_cuts(input, cuts).into()),
         },
     )
 }
@@ -431,7 +462,7 @@ pub fn create_vector_pipeline(
     target_format: wgpu::TextureFormat,
     input: VectorInput,
 ) -> wgpu::RenderPipeline {
-    let shader = shader_module(device, input);
+    let shader = shader_module(device, input, crate::shader_assembly::AxisCutShaders::Remap);
     let star_data_bgl = super::create_star_data_bind_group_layout(device);
     create_vector_pipeline_with_sample_count(
         device,

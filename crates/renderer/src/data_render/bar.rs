@@ -17,9 +17,10 @@ use super::*;
 /// (`common/violin.wgsl`, §5.19), placed by the shared category slot
 /// fragment (`common/category_jitter.wgsl`, §5.20) the point pick splices
 /// too.
-pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const BAR_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    cuts,
     "data_render/common/projection.wgsl",
     "data_render/common/probability.wgsl",
     "data_render/common/data_pick.wgsl",
@@ -40,6 +41,9 @@ pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_a
     "data_render/common/label_quad.wgsl",
     "data_render/common/value_label.wgsl",
 );
+/// [`BAR_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
+/// break compiles.
+pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = BAR_SHADER_BY_CUTS.remap;
 
 /// Vertices per bar instance: five axis-aligned quads (fill + four border
 /// edges) as a TriangleList. Must match `bar_columnar.wgsl`'s `BAR_SEGMENTS`.
@@ -59,7 +63,7 @@ pub fn create_bar_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::bar(device);
+    let shader = ShaderModules::bar(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_bar_columnar_pipeline_with_entry(
         device,
         &shader,
@@ -101,7 +105,7 @@ pub fn create_bar_columnar_mapped_pipeline(
     style_map_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::bar(device);
+    let shader = ShaderModules::bar(device, crate::shader_assembly::AxisCutShaders::Remap);
     create_bar_columnar_pipeline_with_entry(
         device,
         &shader,

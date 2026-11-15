@@ -161,6 +161,8 @@ impl Renderer {
             &per_point_style_map_bgl,
             surface_format,
             target_sample_count,
+            // A new renderer has seen no chart, so no axis break (#299).
+            AxisCutShaders::Identity,
             observer,
         );
         let renderer_identity = observe_result(observer, "renderer", "identity", || {

@@ -832,6 +832,10 @@ impl Renderer {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
 
+        // An export draws through its own pipeline set, of the renderer's
+        // shader variant, and the renderer's label and scan pipelines
+        // (#299).
+        self.admit_axis_cuts(config_cuts_axes(chart.config()));
         // The rules an export of a held chart has always checked, read from
         // the model (#160). The full series rules run per panel where the
         // chart is registered; a document's subplots and line offsets are
@@ -1002,6 +1006,7 @@ impl Renderer {
             &self.per_point_style_map_bgl,
             export_format,
             export_sample_count,
+            self.pipelines.shaders.cuts,
         );
         self.ensure_contour_label_pipelines(items);
         export_target_pipelines.ensure_precise_variants_for_items(

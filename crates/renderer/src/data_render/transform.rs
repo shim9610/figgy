@@ -92,6 +92,14 @@ pub(crate) fn probability_code(scale: &crate::config::AxisScale) -> f32 {
     }
 }
 
+impl ScatterTransform {
+    /// Whether either axis of this transform holds cuts: a pipeline that
+    /// reads it must be assembled with the cut remap (#299).
+    pub(crate) fn has_axis_cuts(&self) -> bool {
+        self.break_info[0] > 0.0 || self.break_info[1] > 0.0
+    }
+}
+
 /// The break table entries of an unbroken chart.
 pub const NO_BREAKS: [[f32; 4]; 6] = [[0.0; 4]; 6];
 /// The break info of an unbroken chart.

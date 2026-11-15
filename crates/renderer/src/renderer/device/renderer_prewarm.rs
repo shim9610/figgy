@@ -89,7 +89,9 @@ impl Renderer {
             crate::init::prewarm_compute_entries_js(
                 &self.device,
                 "contour.label.async",
-                crate::gpu_contour::CONTOUR_ANCHOR_SHADER.source,
+                crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_CUTS
+                    .of(self.pipelines.shaders.cuts)
+                    .source,
                 &[
                     ("anchor_project", "anchor_seed"),
                     ("anchor_project", "anchor_step"),
@@ -120,6 +122,7 @@ impl Renderer {
                 self.surface_format,
                 self.target_sample_count,
                 Some(feature),
+                self.pipelines.shaders.cuts,
                 observer,
             )
             .await
@@ -138,8 +141,9 @@ impl Renderer {
         }
         if self.arc_pipelines.is_none() {
             self.arc_pipelines = Some(
-                data_render::line_arc::create_arc_scan_pipelines_observed_async(
+                data_render::line_arc::create_arc_scan_pipelines_by_cuts_async(
                     &self.device,
+                    self.pipelines.shaders.cuts,
                     observer,
                 )
                 .await
@@ -201,8 +205,9 @@ impl Renderer {
             self.prewarm_mesh_stage(stage, observer);
         }
         if self.arc_pipelines.is_none() {
-            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_observed(
+            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_cuts(
                 &self.device,
+                self.pipelines.shaders.cuts,
                 observer,
             ));
         }
@@ -224,7 +229,13 @@ impl Renderer {
             observer,
             "renderer.prewarm",
             "contour label engine",
-            || crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field_bgl),
+            || {
+                crate::gpu_contour::ContourLabelPipelines::new_by_cuts(
+                    &self.device,
+                    &self.field_bgl,
+                    self.pipelines.shaders.cuts,
+                )
+            },
         );
         self.contour_label_pipelines = Some(pipelines);
     }

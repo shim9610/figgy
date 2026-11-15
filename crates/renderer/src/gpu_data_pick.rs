@@ -464,6 +464,9 @@ pub(crate) struct DataPickShaders<'a> {
     pub(crate) vector_grid: &'a wgpu::ShaderModule,
     /// The line module, whose `pick_parallel` answers parallel rows (#141).
     pub(crate) line: &'a wgpu::ShaderModule,
+    /// Which axis-cut fragment the four modules were assembled with (#299):
+    /// the bundle's own mesh module follows it.
+    pub(crate) cuts: crate::shader_assembly::AxisCutShaders,
 }
 
 /// Immutable pipelines shared by every chart and pick query on one renderer.
@@ -484,6 +487,9 @@ fn category_axis_pick_query(
 }
 
 pub(crate) struct DataPickPipelineBundle {
+    /// Which axis-cut fragment every module of the bundle was assembled
+    /// with (#299).
+    pub(crate) cuts: crate::shader_assembly::AxisCutShaders,
     device: wgpu::Device,
     queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
@@ -540,6 +546,7 @@ impl DataPickPipelineBundle {
             field: field_shader,
             vector_grid: vector_grid_shader,
             line: line_shader,
+            cuts,
         } = shaders;
         started(observer, INIT_SCOPE, "setup");
         let query_bgl = crate::gpu_compile::bind_group_layout(
@@ -715,7 +722,7 @@ impl DataPickPipelineBundle {
             )
         });
         let tri_mesh = observe_value(observer, INIT_SCOPE, "pick_tri_mesh", || {
-            let shader = crate::data_render::tri_mesh::shader_module(&device);
+            let shader = crate::data_render::tri_mesh::shader_module(&device, cuts);
             crate::gpu_compile::compute_pipeline(
                 &device,
                 &wgpu::ComputePipelineDescriptor {
@@ -843,6 +850,7 @@ impl DataPickPipelineBundle {
                 make_reduce("accumulate_point")
             });
         Ok(Arc::new(Self {
+            cuts,
             device,
             queue,
             ledger,
@@ -889,7 +897,9 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.line.async",
-                crate::data_render::LINE_SHADER.source,
+                crate::data_render::LINE_SHADER_BY_CUTS
+                    .of(shaders.cuts)
+                    .source,
                 &[("pick_parallel", "pick_parallel")],
                 observer,
             )
@@ -898,7 +908,9 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.tri_mesh.async",
-                crate::data_render::tri_mesh::TRI_MESH_SHADER.source,
+                crate::data_render::tri_mesh::TRI_MESH_SHADER_BY_CUTS
+                    .of(shaders.cuts)
+                    .source,
                 &[("pick_tri_mesh", "pick_tri_mesh")],
                 observer,
             )
@@ -907,7 +919,9 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.bar.async",
-                crate::data_render::BAR_SHADER.source,
+                crate::data_render::BAR_SHADER_BY_CUTS
+                    .of(shaders.cuts)
+                    .source,
                 &[
                     ("pick_histogram_bin", "pick_histogram_bin"),
                     ("pick_category_bar", "pick_category_bar"),
@@ -935,7 +949,9 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.field.async",
-                crate::data_render::FIELD_SHADER.source,
+                crate::data_render::FIELD_SHADER_BY_CUTS
+                    .of(shaders.cuts)
+                    .source,
                 &[
                     ("pick_field_contour", "pick_field_contour"),
                     ("pick_field_cell", "pick_field_cell"),
@@ -947,7 +963,10 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.vector.async",
-                crate::data_render::vector::assemble(crate::data_render::vector::VectorInput::Grid),
+                crate::data_render::vector::assemble_by_cuts(
+                    crate::data_render::vector::VectorInput::Grid,
+                    shaders.cuts,
+                ),
                 &[("pick_vector_cell", "pick_vector_cell")],
                 observer,
             )
@@ -1975,8 +1994,11 @@ mod stream_tests {
                 source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.source.into()),
             },
         );
-        let vector_grid =
-            data_render::vector::shader_module(&device, data_render::vector::VectorInput::Grid);
+        let vector_grid = data_render::vector::shader_module(
+            &device,
+            data_render::vector::VectorInput::Grid,
+            crate::shader_assembly::AxisCutShaders::Remap,
+        );
         let transform = data_render::create_scatter_transform_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let style = data_render::create_per_point_style_map_bind_group_layout(&device);
@@ -2000,6 +2022,7 @@ mod stream_tests {
                 field: &field,
                 vector_grid: &vector_grid,
                 line: &line,
+                cuts: crate::shader_assembly::AxisCutShaders::Remap,
             },
             &transform,
             &field_bgl,
