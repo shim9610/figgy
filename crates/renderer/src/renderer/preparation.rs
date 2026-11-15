@@ -82,9 +82,20 @@ impl PreparationFeature {
             Self::Constellation
         } else if label.contains("styled") {
             Self::Sketch
-        } else if label.contains("histogram") || label.contains(" bar columnar") {
+        } else if label.contains("histogram")
+            || label.contains(" bar columnar")
+            || label.contains("box p")
+            || label.contains("violin")
+            || label.contains("value label")
+        {
+            // Every pipeline of the bar module (#299): a label the group
+            // does not claim is compiled on the main thread by the
+            // group's own prewarm instead of by the browser's compiler.
             Self::Bars
-        } else if label.contains("field") || label.contains("contour") {
+        } else if label.contains("field")
+            || label.contains("contour")
+            || label.contains("triangle mesh")
+        {
             Self::Fields
         } else {
             Self::Basic

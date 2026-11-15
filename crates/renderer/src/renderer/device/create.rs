@@ -124,16 +124,25 @@ pub(in crate::renderer) async fn create_target_pipelines_observed_async(
         data_render::ShaderModules::new(device)
     })
     .await;
+    // A minimal renderer awaits no compile (#299): the one pipeline built
+    // below is created directly, and the others are warmed in the
+    // background by the caller. An awaited compile would queue behind every
+    // compile the page already has in flight, another chart's included.
     #[cfg(target_arch = "wasm32")]
-    data_render::prewarm_browser_render_feature(
-        device,
-        surface_format,
-        sample_count,
-        _minimal.then_some(PreparationFeature::Basic),
-        observer,
-    )
-    .await
-    .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+    let warmed = if _minimal {
+        Ok(())
+    } else {
+        data_render::prewarm_browser_render_feature(
+            device,
+            surface_format,
+            sample_count,
+            None,
+            observer,
+        )
+        .await
+    };
+    #[cfg(target_arch = "wasm32")]
+    warmed.map_err(|reason| FiggyError::GpuResourceAllocationFailed {
         resource: "browser render pipeline prewarm",
         reason,
     })?;

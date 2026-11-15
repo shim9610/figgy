@@ -565,8 +565,10 @@ impl RadialRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            RADIAL_SHADER.source,
-            &[("radial surfaces", "radial surfaces")],
+            &[(
+                RADIAL_SHADER.source,
+                &[("radial surfaces", "radial surfaces")],
+            )],
             format,
             1,
             None,

@@ -106,6 +106,28 @@ impl Renderer {
             self.prewarm_contour_labels(observer);
             crate::init::yield_init_frame().await;
         }
+        // The browser's asynchronous compiler first, for every group that
+        // is not installed yet: a renderer built minimally has warmed only
+        // its fullscreen pipeline, and the creations below would otherwise
+        // compile on the main thread (#299).
+        #[cfg(target_arch = "wasm32")]
+        for feature in PreparationFeature::ALL {
+            if feature == PreparationFeature::Picking || self.preparation_ready(feature) {
+                continue;
+            }
+            data_render::prewarm_browser_render_feature(
+                &self.device,
+                self.surface_format,
+                self.target_sample_count,
+                Some(feature),
+                observer,
+            )
+            .await
+            .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+                resource: "browser render pipeline prewarm",
+                reason,
+            })?;
+        }
         let layouts = renderer_prewarm_layouts!(self);
         self.pipelines
             .prewarm_all_observed(&layouts, observer)

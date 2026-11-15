@@ -102,6 +102,10 @@ fn populate(device: &JsValue, desc: &JsValue, module: &JsValue) -> Result<(), St
     Ok(())
 }
 
+/// Compile `entries` of one compute module. Every
+/// `createComputePipelineAsync` call is made before the first is awaited,
+/// so the browser compiles them together (#299); the stages are then
+/// reported in order.
 pub(crate) async fn compute(
     device: &wgpu::Device,
     scope: &'static str,
@@ -110,9 +114,31 @@ pub(crate) async fn compute(
     observer: &mut dyn FnMut(crate::InitEvent),
 ) -> Result<(), String> {
     let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
+    let pending = Array::new();
+    let issued = issue_compute(&device, scope, source, entries, &pending);
+    let settled = match issued {
+        Ok(module) => settle_compute(scope, entries, &pending, &module, observer).await,
+        Err(reason) => Err(reason),
+    };
+    if settled.is_err() {
+        abandon(&pending).await;
+    }
+    crate::init::yield_init_frame().await;
+    settled
+}
+
+/// Start every entry's compile and push its Promise to `pending`, in
+/// `entries` order. Returns the module, for a failure's diagnostics.
+fn issue_compute(
+    device: &JsValue,
+    scope: &'static str,
+    source: &str,
+    entries: &[(&'static str, &'static str)],
+    pending: &Array,
+) -> Result<JsValue, String> {
     let candidates = descriptors(source, "compute")?;
-    let module = shader(&device, source, scope)?;
-    for (index, (stage, entry)) in entries.iter().enumerate() {
+    let module = shader(device, source, scope)?;
+    for (_, entry) in entries {
         let mut matching = Vec::new();
         for desc in &candidates {
             let entry_point = get(&get(desc, "compute")?, "entryPoint")?;
@@ -127,25 +153,45 @@ pub(crate) async fn compute(
             ));
         }
         let desc = matching[0];
-        populate(&device, desc, &module)?;
+        populate(device, desc, &module)?;
+        pending.push(&call(device, "createComputePipelineAsync", desc)?);
+    }
+    Ok(module)
+}
+
+async fn settle_compute(
+    scope: &'static str,
+    entries: &[(&'static str, &'static str)],
+    pending: &Array,
+    module: &JsValue,
+    observer: &mut dyn FnMut(crate::InitEvent),
+) -> Result<(), String> {
+    for (index, (stage, _)) in entries.iter().enumerate() {
         // Consecutive entries may belong to one existing progress stage.
         // Splitting a kernel must not change the host's progress contract.
         if index == 0 || entries[index - 1].0 != *stage {
             crate::init::started(observer, scope, stage);
         }
-        compile(&device, "createComputePipelineAsync", desc, &module).await?;
+        settle(pending.get(index as u32), module).await?;
         if index + 1 == entries.len() || entries[index + 1].0 != *stage {
             crate::init::finished(observer, scope, stage);
         }
-        crate::init::yield_init_frame().await;
     }
     Ok(())
 }
 
+/// One WGSL source and the `(stage, pipeline label)` pairs its prewarm
+/// reports, in order.
+pub(crate) type RenderSource<'a> = (&'a str, &'a [(&'static str, &'static str)]);
+
+/// Compile the render pipelines of `sources` that `feature` includes (all
+/// of them for `None`). Every `createRenderPipelineAsync` call of every
+/// source is made before the first is awaited, so the browser compiles the
+/// set together instead of one pipeline per await (#299). The stages are
+/// then reported in order, each as a started/finished pair.
 pub(crate) async fn render(
     device: &wgpu::Device,
-    source: &str,
-    stages: &[(&'static str, &'static str)],
+    sources: &[RenderSource<'_>],
     format: wgpu::TextureFormat,
     samples: u32,
     feature: Option<crate::PreparationFeature>,
@@ -159,10 +205,46 @@ pub(crate) async fn render(
         other => return Err(format!("Unsupported prewarm target: {other:?}")),
     };
     let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
+    // One `[Promise, module]` pair per included stage, in stage order.
+    let pending = Array::new();
+    let mut issued = Ok(());
+    for (source, stages) in sources {
+        issued = issue_render(&device, source, stages, format, samples, feature, &pending);
+        if issued.is_err() {
+            break;
+        }
+    }
+    let settled = match issued {
+        Ok(()) => settle_render(sources, feature, &pending, observer).await,
+        Err(reason) => Err(reason),
+    };
+    if settled.is_err() {
+        abandon(&pending).await;
+    }
+    crate::init::yield_init_frame().await;
+    settled
+}
+
+fn included(feature: Option<crate::PreparationFeature>, label: &str) -> bool {
+    feature.is_none_or(|f| f.includes_label(label))
+}
+
+/// Start one source's compiles. For each stage `feature` includes, one
+/// Promise (of all the stage's pipelines) and the module are pushed to
+/// `pending`.
+fn issue_render(
+    device: &JsValue,
+    source: &str,
+    stages: &[(&'static str, &'static str)],
+    format: &str,
+    samples: u32,
+    feature: Option<crate::PreparationFeature>,
+    pending: &Array,
+) -> Result<(), String> {
     let stages: Vec<_> = stages
         .iter()
         .copied()
-        .filter(|(_, label)| feature.is_none_or(|f| f.includes_label(label)))
+        .filter(|(_, label)| included(feature, label))
         .collect();
     if stages.is_empty() {
         return Ok(());
@@ -177,17 +259,14 @@ pub(crate) async fn render(
         if get(&get(&desc, "multisample")?, "count")?.as_f64() != Some(f64::from(samples)) {
             continue;
         }
-        let included = match feature {
-            None => true,
-            Some(f) => get(&desc, "label")?
-                .as_string()
-                .is_some_and(|label| f.includes_label(&label)),
-        };
-        if included {
+        if get(&desc, "label")?
+            .as_string()
+            .is_some_and(|label| included(feature, &label))
+        {
             candidates.push(desc);
         }
     }
-    let module = shader(&device, source, "figgy render prewarm")?;
+    let module = shader(device, source, "figgy render prewarm")?;
     for (index, (stage, label)) in stages.iter().enumerate() {
         let mut selected = Vec::new();
         let mut rest = Vec::new();
@@ -209,9 +288,9 @@ pub(crate) async fn render(
             selected.append(&mut rest);
         }
         candidates = rest;
-        crate::init::started(observer, "renderer.prewarm.async", stage);
+        let compiles = Array::new();
         for desc in selected {
-            populate(&device, &desc, &module)?;
+            populate(device, &desc, &module)?;
             for target in Array::from(&get(&get(&desc, "fragment")?, "targets")?).iter() {
                 // A colour target takes the canvas format; an ID target
                 // (the 3D pick's `rgba32uint`) keeps its own.
@@ -221,12 +300,46 @@ pub(crate) async fn render(
                     set(&target, "format", &format.into())?;
                 }
             }
-            compile(&device, "createRenderPipelineAsync", &desc, &module).await?;
+            compiles.push(&call(device, "createRenderPipelineAsync", &desc)?);
         }
-        crate::init::finished(observer, "renderer.prewarm.async", stage);
-        crate::init::yield_init_frame().await;
+        // Pushed before the next stage can fail, so `abandon` observes it.
+        pending.push(&Promise::all(&compiles));
+        pending.push(&module);
     }
     Ok(())
+}
+
+/// Await what [`issue_render`] started, reporting each stage in order.
+async fn settle_render(
+    sources: &[RenderSource<'_>],
+    feature: Option<crate::PreparationFeature>,
+    pending: &Array,
+    observer: &mut dyn FnMut(crate::InitEvent),
+) -> Result<(), String> {
+    let mut next = 0;
+    for (_, stages) in sources {
+        for (stage, label) in stages.iter() {
+            if !included(feature, label) {
+                continue;
+            }
+            crate::init::started(observer, "renderer.prewarm.async", stage);
+            settle(pending.get(next), &pending.get(next + 1)).await?;
+            crate::init::finished(observer, "renderer.prewarm.async", stage);
+            next += 2;
+        }
+    }
+    Ok(())
+}
+
+/// Wait for every compile still in flight after a failure, so that none of
+/// them rejects unobserved. The failure itself is already being returned.
+async fn abandon(pending: &Array) {
+    if wasm_bindgen_futures::JsFuture::from(Promise::all_settled(pending))
+        .await
+        .is_err()
+    {
+        // `allSettled` never rejects.
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -278,14 +391,9 @@ async fn shader_compilation_errors(shader: &wasm_bindgen::JsValue) -> Vec<String
         .collect()
 }
 
-async fn compile(
-    device: &JsValue,
-    method: &str,
-    desc: &JsValue,
-    module: &JsValue,
-) -> Result<(), String> {
-    let promise = call(device, method, desc)?;
-    match wasm_bindgen_futures::JsFuture::from(Promise::from(promise)).await {
+/// Await one issued compile; a failure carries the module's diagnostics.
+async fn settle(compiled: JsValue, module: &JsValue) -> Result<(), String> {
+    match wasm_bindgen_futures::JsFuture::from(Promise::from(compiled)).await {
         Ok(_) => Ok(()),
         Err(failure) => {
             let details = shader_compilation_errors(module).await;

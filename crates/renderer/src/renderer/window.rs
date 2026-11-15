@@ -377,8 +377,10 @@ impl Renderer {
     /// figgy crate does not depend on winit types itself. On wasm, drive this
     /// from the host event loop (e.g. `wasm_bindgen_futures::spawn_local`).
     ///
-    /// In a browser this also awaits temporary JS render-pipeline warmup; those
-    /// pipelines are discarded and do not populate the renderer's optional
+    /// In a browser this also awaits temporary JS render-pipeline warmup of
+    /// every resident render pipeline (use
+    /// [`Self::for_window_minimal_async_observed`] to present a first frame
+    /// without that wait); those pipelines are discarded and do not populate the renderer's optional
     /// caches. Native construction has no JS warmup. Both leave resident optional
     /// caches lazy; use [`Self::prewarm_all`] or detached preparation explicitly.
     pub async fn for_window_async<'w>(
@@ -403,13 +405,18 @@ impl Renderer {
         Self::for_window_prepared_async(target, size, pool_capacity_bytes, false, observer).await
     }
 
-    /// Limit temporary browser render warmup to Basic entries during window setup.
+    /// Return as soon as a first frame can be drawn (#299). In a browser this
+    /// awaits no pipeline compile: the fullscreen textured pipeline, which
+    /// every frame's decorations draw through, is created directly, and the
+    /// asynchronous compile of every resident render pipeline is started
+    /// without waiting for it. The calls are issued together and run while
+    /// the host already presents frames.
     ///
     /// Native initialization is the same as [`Self::for_window_async_observed`].
-    /// This does not install the retained Basic preparation group. A host gating
-    /// first use must compile and install Basic and its other required groups via
-    /// [`Self::begin_preparation`], or call [`Self::prewarm_all`]. Normal frame
-    /// preparation can also create missing pipelines lazily.
+    /// No preparation group is installed. Frame preparation creates the
+    /// pipelines a chart needs when it first draws them; a host that wants
+    /// them retained beforehand uses [`Self::begin_preparation`] or
+    /// [`Self::prewarm_all`].
     pub async fn for_window_minimal_async_observed<'w>(
         target: impl Into<wgpu::SurfaceTarget<'w>>,
         size: (u32, u32),
@@ -449,6 +456,10 @@ impl Renderer {
             observer,
         )
         .await?;
+        #[cfg(target_arch = "wasm32")]
+        if minimal {
+            inner.start_browser_warmup();
+        }
         Ok(WindowedRenderer {
             inner,
             surface,
@@ -457,6 +468,35 @@ impl Renderer {
             _instance: instance,
             _adapter: adapter,
         })
+    }
+
+    /// Start the browser's asynchronous compile of every resident render
+    /// pipeline and return without waiting for any of them (#299). All the
+    /// calls are issued at once, in the prewarm's stage order; the browser
+    /// compiles them off the frame's path, so frames keep presenting. The
+    /// temporary pipelines are discarded: a pipeline whose compile has
+    /// resolved is then created by the draw that first needs it from the
+    /// device's compilation cache, and one that has not is compiled by that
+    /// creation, as it always was. The future owns its device handle and
+    /// borrows nothing from the renderer, which may be dropped meanwhile.
+    #[cfg(target_arch = "wasm32")]
+    fn start_browser_warmup(&self) {
+        let device = self.device.clone();
+        let (format, samples) = (self.surface_format, self.target_sample_count);
+        wasm_bindgen_futures::spawn_local(async move {
+            let warmed = data_render::prewarm_browser_render_feature(
+                &device,
+                format,
+                samples,
+                None,
+                &mut |_| {},
+            )
+            .await;
+            if warmed.is_err() {
+                // Nothing is lost: the draw that needs a pipeline creates
+                // it, and a failure is reported by that creation.
+            }
+        });
     }
 
     /// [`Self::for_window_async`] on native, without an executor: wgpu

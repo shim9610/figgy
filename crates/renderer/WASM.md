@@ -84,7 +84,7 @@ GPU 결과를 기다리는 방법은 세 가지이고 결과는 같다. 기다�
 
 | API·상태 | 초기화와 수명 관리 |
 |---|---|
-| 저수준 `FiggyChart` | `create` / `create_with_progress`는 같은 GPUDevice에서 모든 렌더링용 WGSL 진입점을 `createRenderPipelineAsync`로 미리 컴파일하고 임시 JS 파이프라인을 해제한다. 이후 빈 차트의 첫 프레임 완료를 기다린다. 선택적인 렌더링·스타일 자원과 경로 길이·범위 계산·피킹·등고선 컴퓨트 캐시는 처음 필요할 때 만든다. `prewarm_all_with_progress(callback)` / `prewarm_all()`로 이 캐시들을 미리 생성할 수 있다. 사전 준비 메서드와 피킹 준비 순서는 [3.1 캔버스와 장치 초기화](#31-그리기-표면--데스크톱과-같은-두-경로)를 참고한다. |
+| 저수준 `FiggyChart` | `create` / `create_with_progress`는 파이프라인 컴파일을 기다리지 않고 빈 차트의 첫 프레임 완료만 기다린다. 렌더러는 같은 GPUDevice에서 모든 상주 렌더링용 WGSL 진입점의 `createRenderPipelineAsync` 호출을 한꺼번에 보내 두며, 브라우저는 차트가 화면에 나온 뒤에도 이 컴파일을 계속한다. 임시 JS 파이프라인은 해제한다. 선택적인 렌더링·스타일 자원과 경로 길이·범위 계산·피킹·등고선 컴퓨트 캐시는 처음 필요할 때 만든다. `prewarm_all_with_progress(callback)` / `prewarm_all()`로 이 캐시들을 미리 생성할 수 있다. 사전 준비 메서드와 피킹 준비 순서는 [3.1 캔버스와 장치 초기화](#31-그리기-표면--데스크톱과-같은-두-경로)를 참고한다. |
 | 래퍼의 준비 완료 | `web.create / first frame / finished` 진행 알림과 `figgy-ready`를 보낸 뒤 백그라운드에서 피킹을 준비한다. 실패하면 복구 가능한 `figgy-error`로 알린다. 이미 완료된 `ready`와 렌더링 루프는 유지한다. |
 | 래퍼의 작업 중 상태 | 연결 세대와 커널을 함께 확인하는 작업 토큰으로 초기화와 상태를 바꾸는 비동기 WASM 호출을 직렬화한다. 두 전체 사전 준비 메서드도 이 경로를 따른다. 작업 중에는 프레임과 입력이 WASM에 접근하지 않고, `get_config` 같은 `<figgy-chart>`의 동기 메서드는 `"figgy chart is busy"` 오류를 던진다. 마지막 크기 변경과 포인터 해제만 보관했다가 작업 종료 후 적용한다. |
 | 연결 종료·재연결 | 이전 연결 세대의 토큰을 무효화한다. 실행 중인 작업이 사용하는 커널은 작업이 끝난 뒤 해제한다. 이전 작업의 완료 처리는 새 세대의 토큰이나 커널을 변경하지 않는다. |
@@ -137,17 +137,17 @@ impl FiggyChart {
 }
 ```
 
-`for_window_async`는 어댑터·장치 생성 이후 파이프라인 준비 단계마다 브라우저에 실행을 넘긴다. `InitEvent`와 WASM의 `requestAnimationFrame`을 사용하므로 초기화 중에도 로딩 표시가 갱신된다. `<figgy-chart>`는 `create_with_progress`의 진행 상황을 `figgy-init-progress` 이벤트의 `{ scope, stage, phase }`로 전달한다. 이 콜백에서는 커널 메서드를 호출하지 않아야 한다. 객체가 아직 없거나 wasm-bindgen이 변경 가능한 참조를 사용 중일 수 있기 때문이다.
+`for_window_async`는 어댑터·장치 생성 이후 모든 상주 렌더링 파이프라인의 비동기 컴파일이 끝날 때까지 기다리고, 그동안 브라우저에 실행을 넘긴다. `for_window_minimal_async_observed`는 이 컴파일을 시작만 하고 바로 반환한다. `FiggyChart.create`는 후자를 사용한다. `InitEvent`와 WASM의 `requestAnimationFrame`을 사용하므로 초기화 중에도 로딩 표시가 갱신된다. `<figgy-chart>`는 `create_with_progress`의 진행 상황을 `figgy-init-progress` 이벤트의 `{ scope, stage, phase }`로 전달한다. 이 콜백에서는 커널 메서드를 호출하지 않아야 한다. 객체가 아직 없거나 wasm-bindgen이 변경 가능한 참조를 사용 중일 수 있기 때문이다.
 
 `FiggyChart.create` / `create_with_progress`는 빈 차트의 첫 프레임을 제출한 뒤 실제 `GPUQueue.onSubmittedWorkDone()` Promise를 기다린다(`first_frame_ready`). 큐 요청 거부나 장치 소멸은 생성·준비 오류로 전달하며 첫 프레임의 `finished` 이벤트를 보내지 않는다. 성공·실패 모두에서 호출될 수 있는 wgpu 완료 콜백만으로 준비 성공을 판단하지 않는다.
 
-첫 프레임 전에 fullscreen·선·점·오차 막대·막대·행렬, 모든 스타일·매핑, 선택 테두리·데이터 선택 표시·등고선 라벨의 렌더링 진입점을 `createRenderPipelineAsync`로 차례로 준비한다. 임시 JS 파이프라인은 즉시 해제하며 같은 GPUDevice의 셰이더·드라이버 캐시만 준비한다. 생성 과정에서 필요한 기본 wgpu 객체 외의 선택적 렌더링·스타일 캐시와 경로 길이·범위 계산·피킹·등고선 컴퓨트 캐시는 이 단계에서 만들지 않는다. 각 진입점의 started/finished 사이에는 JS 이벤트 루프가 실행되므로 파일 파싱·시트 편집·진행 표시를 계속할 수 있다.
+첫 프레임은 어떤 파이프라인 컴파일도 기다리지 않는다. 빈 차트는 fullscreen 파이프라인 하나로 그리며, 렌더러는 이 파이프라인을 직접 만든다. 선·점·오차 막대·막대·행렬, 모든 스타일·매핑, 선택 테두리·데이터 선택 표시·등고선 라벨의 렌더링 진입점은 `createRenderPipelineAsync` 호출을 한꺼번에 보내 두고 완료를 기다리지 않는다. 호출 순서는 fullscreen, 선, 점, 오차 막대, 막대, 행렬, 삼각 메시, 등고선 라벨이다. 브라우저는 이 컴파일을 프레임 제출과 따로 처리하므로 컴파일 중에도 프레임이 화면에 나온다. 임시 JS 파이프라인은 해제하며 같은 GPUDevice의 셰이더·드라이버 캐시만 준비한다. 컴파일이 끝난 파이프라인은 처음 그릴 때 렌더러가 이 캐시에서 바로 만들고, 아직 끝나지 않은 파이프라인은 그 자리에서 컴파일한다. 어느 경우에도 렌더러는 시리즈를 빠뜨리지 않고 차트를 그린다. 호스트가 호출하거나 기다릴 것은 없다. 선택적 렌더링·스타일 캐시와 경로 길이·범위 계산·피킹·등고선 컴퓨트 캐시는 이 단계에서 만들지 않는다.
 
-`prewarm_all_with_progress(callback)`은 상주 렌더링에 필요한 자원을 실제 렌더러 캐시에 미리 생성한다. 정밀 모드의 선·점·오차 막대와 스타일 매핑, 점 선택 테두리, 막대·셀·등고선 선택 표시, 히스토그램·히트맵·등고선, 스케치·은하수·별자리, 등고선 라벨, 경로 길이 스캔, 시리즈 범위 계산과 GPU 피킹이 대상이다. 진행 상황은 `{ scope, stage, phase }`로 전달한다. `prewarm_all()`은 콜백 없이 같은 작업을 한다.
+`prewarm_all_with_progress(callback)`은 상주 렌더링에 필요한 자원을 실제 렌더러 캐시에 미리 생성하고 끝날 때까지 기다린다. 아직 설치하지 않은 그룹은 먼저 `createRenderPipelineAsync`로 컴파일하며, 이때 `renderer.prewarm.async` 범위의 진행 알림이 그룹별로 나온다. 정밀 모드의 선·점·오차 막대와 스타일 매핑, 점 선택 테두리, 막대·셀·등고선 선택 표시, 히스토그램·히트맵·등고선, 스케치·은하수·별자리, 등고선 라벨, 경로 길이 스캔, 시리즈 범위 계산과 GPU 피킹이 대상이다. 진행 상황은 `{ scope, stage, phase }`로 전달한다. `prewarm_all()`은 콜백 없이 같은 작업을 한다.
 
 준비 중에는 wasm-bindgen이 객체의 변경 가능한 참조를 사용한다. 호스트는 해당 차트 호출을 대기시켜야 하지만 다른 앱 작업까지 막을 필요는 없다. 웹 래퍼의 두 메서드는 연결 세대를 확인하는 작업 직렬화 장치를 사용한다. 사전 준비가 끝나면 같은 출력 형식·샘플 수의 상주 경로는 파이프라인을 다시 만들지 않는다. 출력 형식이나 샘플 수가 바뀌면 새 파이프라인이 필요할 수 있다. 비상주 스트리밍의 행렬·타일 전용 파이프라인은 범위에 포함되지 않으며 스트리밍 준비 시 생성한다. `warm_up()`은 `first_frame_ready()`와 같은 작업을 하는 호환 메서드다.
 
-초기화 시간은 호스트에서 `performance.now()` 같은 단조 시계로 측정한다. 별도 WASM 함수나 커널 내부 타임스탬프는 필요하지 않다. `FiggyChart.create_with_progress`의 시작·완료 시각과 진행 콜백 수신 시각을 기록하면 된다. 일반 생성은 창·렌더러 준비, 각 비동기 렌더링 진입점, `web.create / chart resources`, `web.create / first frame` 순서로 started/finished 알림을 보낸다. 파이프라인별 첫 제출을 비교하려면 표준 등록·설정·프레임 API로 선·점·오차 막대 작업을 각각 구성하고 같은 외부 시계로 측정한다.
+초기화 시간은 호스트에서 `performance.now()` 같은 단조 시계로 측정한다. 별도 WASM 함수나 커널 내부 타임스탬프는 필요하지 않다. `FiggyChart.create_with_progress`의 시작·완료 시각과 진행 콜백 수신 시각을 기록하면 된다. 일반 생성은 창·렌더러 준비, `web.create / chart resources`, `web.create / first frame` 순서로 started/finished 알림을 보낸다. 생성 단계에는 `renderer.prewarm.async` 알림이 없다. 파이프라인별 첫 제출을 비교하려면 표준 등록·설정·프레임 API로 선·점·오차 막대 작업을 각각 구성하고 같은 외부 시계로 측정한다.
 
 피킹 사용 여부를 비교할 때는 비활성 조건에서 `prewarm_gpu_picking()`을 호출하지 않는다. 활성 조건에서는 `web.create / first frame / finished` 콜백 이후 이 메서드를 직접 호출하고 소요 시간을 따로 기록한다.
 

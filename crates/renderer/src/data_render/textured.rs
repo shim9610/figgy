@@ -269,7 +269,7 @@ pub(crate) async fn prewarm_browser_render_feature(
     feature: Option<crate::PreparationFeature>,
     observer: &mut dyn FnMut(crate::InitEvent),
 ) -> Result<(), String> {
-    let groups: &[(&str, &[(&str, &str)])] = &[
+    let groups: &[crate::browser_compile::RenderSource<'_>] = &[
         (
             include_str!("fullscreen_textured.wgsl"),
             &[("fullscreen textured", "figgy fullscreen textured pipeline")],
@@ -363,19 +363,15 @@ pub(crate) async fn prewarm_browser_render_feature(
             &[("contour labels", "figgy contour label pipeline")],
         ),
     ];
-    for (source, stages) in groups {
-        crate::browser_compile::render(
-            device,
-            source,
-            stages,
-            target_format,
-            sample_count,
-            feature,
-            observer,
-        )
-        .await?;
-    }
-    Ok(())
+    crate::browser_compile::render(
+        device,
+        groups,
+        target_format,
+        sample_count,
+        feature,
+        observer,
+    )
+    .await
 }
 
 /// Build the fullscreen textured-quad pipeline. The shader emits its own

@@ -86,7 +86,11 @@ node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs
 ## Readiness and selected values
 
 Await `FiggyChart.create(canvas)` before using a raw Cartesian chart. It
-prepares its rendering pipelines and waits for its initial empty frame.
+waits for its initial empty frame and for no pipeline compile: the renderer
+starts compiling every render pipeline at once and the browser goes on
+compiling them after the chart is on screen. A chart drawn meanwhile is drawn
+whole; the host calls and awaits nothing for this. `await chart.prewarm_all()`
+remains for a host that wants every pipeline prepared before it goes on.
 After installing data/configuration, `await chart.first_frame_ready()` submits
 that state and waits for GPU completion. For the radial chart, creation
 prepares the document, and the host must explicitly await

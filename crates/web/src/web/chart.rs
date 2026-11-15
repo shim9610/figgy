@@ -63,7 +63,10 @@ pub(super) async fn create_chart_kernel(
         let mut failed = None;
         let mut observer = |event| observe_init_progress(on_event_ref, event, &mut failed);
         let (w, h) = (canvas.width().max(1), canvas.height().max(1));
-        let renderer = Renderer::for_window_async_observed(
+        // No pipeline compile is awaited (#299): the renderer starts them
+        // all at once and leaves them running in the browser, and the first
+        // frame draws with the one pipeline an empty chart needs.
+        let renderer = Renderer::for_window_minimal_async_observed(
             wgpu::SurfaceTarget::Canvas(canvas),
             (w, h),
             POOL_CAPACITY,

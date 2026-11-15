@@ -507,7 +507,12 @@ async fn external_view_limits_disable_or_refuse_cache_without_stopping_exact_str
                 .expect("exact fallback stream step");
             chart.frame().expect("present exact stream");
             match step.status().as_str() {
-                "submitted" | "backpressure" | "all_submitted" => yield_to_browser().await,
+                "submitted" | "backpressure" | "all_submitted" => {
+                    // Count execution steps, not idle polls while a software
+                    // GPU is still finishing the submitted chunk.
+                    chart.streaming_gpu_ready().await.expect("stream GPU ready");
+                    yield_to_browser().await;
+                }
                 "complete" => {
                     complete = true;
                     break;
@@ -589,6 +594,11 @@ async fn cancelling_after_gpu_page_upload_releases_unpublished_view_candidate() 
             break;
         }
         chart.frame().expect("present partial stream");
+        // The page is looked for after every step, above, so waiting for
+        // the GPU between steps cannot pass over the in-progress state: it
+        // only stops the loop from spending its steps while a software GPU
+        // has not finished the previous one.
+        chart.streaming_gpu_ready().await.expect("stream GPU ready");
         yield_to_browser().await;
     }
     assert!(
