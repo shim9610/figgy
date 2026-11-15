@@ -479,7 +479,7 @@ impl Renderer {
         else {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series_id.into(),
-                kind: crate::RuleKind::AutoLayoutNotFeynman,
+                kind: crate::RuleKind::PlaceFeynmanVerticesNotFeynman,
             });
         };
         if !state.series[position]

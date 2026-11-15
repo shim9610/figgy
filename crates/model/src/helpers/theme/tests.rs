@@ -2479,14 +2479,14 @@ fn a_scope_names_the_base_chart_subplots_or_both() {
 
     // The scope answers for a layer as it answers for its chart.
     let scope = ThemeScope::Subplots(&[1]);
-    assert!(!scope.includes_base() && scope.includes(1) && !scope.includes(0));
+    assert!(!scope.includes_base() && scope.includes_subplot(1) && !scope.includes_subplot(0));
     assert!(scope.includes_layer(LayerRef::SubplotOverlay(1, 0)));
     assert!(!scope.includes_layer(LayerRef::Overlay(0)));
     assert!(!scope.includes_layer(LayerRef::Annotations));
     assert!(ThemeScope::Base.includes_layer(LayerRef::Overlay(0)));
     assert!(!ThemeScope::Base.includes_layer(LayerRef::Subplot(0)));
     assert!(ThemeScope::BaseAnd(&[0]).includes_layer(LayerRef::Subplot(0)));
-    assert!(ThemeScope::All.includes_base() && ThemeScope::All.includes(7));
+    assert!(ThemeScope::All.includes_base() && ThemeScope::All.includes_subplot(7));
 }
 
 // A subplot themed alone takes its overlays with it, as it does under

@@ -825,7 +825,7 @@ pub enum RuleKind {
     /// a line offset member must be resident: streamed sources are not drawn with line offsets
     LineOffsetMemberStreamed,
     /// place\_feynman\_vertices names a Feynman series of the chart
-    AutoLayoutNotFeynman,
+    PlaceFeynmanVerticesNotFeynman,
     /// a Feynman label moves through FeynmanSeries::drag\_label, the value-label drag
     FeynmanLabelDrag,
     /// drag\_feynman names a Feynman series of the chart
@@ -1592,7 +1592,7 @@ impl RuleKind {
             Self::ParallelColorMapNeedsColorbar => "ParallelColorMapNeedsColorbar",
             Self::SeriesNotInChart => "SeriesNotInChart",
             Self::LineOffsetMemberStreamed => "LineOffsetMemberStreamed",
-            Self::AutoLayoutNotFeynman => "AutoLayoutNotFeynman",
+            Self::PlaceFeynmanVerticesNotFeynman => "PlaceFeynmanVerticesNotFeynman",
             Self::FeynmanLabelDrag => "FeynmanLabelDrag",
             Self::DragFeynmanNotFeynman => "DragFeynmanNotFeynman",
             Self::ViewStateOverlayRanges => "ViewStateOverlayRanges",
@@ -2429,7 +2429,7 @@ impl std::fmt::Display for RuleKind {
             Self::LineOffsetMemberStreamed => {
                 "a line offset member must be resident: streamed sources are not drawn with line offsets"
             }
-            Self::AutoLayoutNotFeynman => {
+            Self::PlaceFeynmanVerticesNotFeynman => {
                 "place_feynman_vertices names a Feynman series of the chart"
             }
             Self::FeynmanLabelDrag => {
@@ -4409,7 +4409,7 @@ mod tests {
                 "a line offset member must be resident: streamed sources are not drawn with line offsets",
             ),
             (
-                RuleKind::AutoLayoutNotFeynman,
+                RuleKind::PlaceFeynmanVerticesNotFeynman,
                 "place_feynman_vertices names a Feynman series of the chart",
             ),
             (

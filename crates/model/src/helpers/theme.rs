@@ -740,7 +740,7 @@ impl ThemeScope<'_> {
     }
 
     /// Whether the subplot at `index` is in scope.
-    pub fn includes(self, index: usize) -> bool {
+    pub fn includes_subplot(self, index: usize) -> bool {
         match self {
             Self::Base => false,
             Self::All => true,
@@ -753,7 +753,7 @@ impl ThemeScope<'_> {
     /// subplot for its own layer and its overlays.
     pub fn includes_layer(self, layer: LayerRef) -> bool {
         match layer {
-            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => self.includes(i),
+            LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) => self.includes_subplot(i),
             LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => self.includes_base(),
         }
     }
@@ -839,7 +839,7 @@ fn charts_in_scope<'a>(config: &Config, charts: Charts<'a>) -> impl Iterator<Ite
 fn chart_layers(subplots: usize, charts: Charts) -> impl Iterator<Item = LayerRef> {
     (charts.base.then_some(LayerRef::Base)).into_iter().chain(
         (0..subplots)
-            .filter(move |&index| charts.subplots.includes(index))
+            .filter(move |&index| charts.subplots.includes_subplot(index))
             .map(LayerRef::Subplot),
     )
 }
@@ -1305,7 +1305,7 @@ impl Theme {
             self.apply_chart_chrome(config, preset, series);
         }
         for index in 0..config.subplots.len() {
-            if !charts.subplots.includes(index) {
+            if !charts.subplots.includes_subplot(index) {
                 continue;
             }
             let preset = self.frame_for(config, series, LayerRef::Subplot(index));
