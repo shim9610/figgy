@@ -102,10 +102,6 @@ fn populate(device: &JsValue, desc: &JsValue, module: &JsValue) -> Result<(), St
     Ok(())
 }
 
-/// Compile `entries` of one compute module. Every
-/// `createComputePipelineAsync` call is made before the first is awaited,
-/// so the browser compiles them together (#299); the stages are then
-/// reported in order.
 pub(crate) async fn compute(
     device: &wgpu::Device,
     scope: &'static str,
@@ -114,31 +110,9 @@ pub(crate) async fn compute(
     observer: &mut dyn FnMut(crate::InitEvent),
 ) -> Result<(), String> {
     let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
-    let pending = Array::new();
-    let issued = issue_compute(&device, scope, source, entries, &pending);
-    let settled = match issued {
-        Ok(module) => settle_compute(scope, entries, &pending, &module, observer).await,
-        Err(reason) => Err(reason),
-    };
-    if settled.is_err() {
-        abandon(&pending).await;
-    }
-    crate::init::yield_init_frame().await;
-    settled
-}
-
-/// Start every entry's compile and push its Promise to `pending`, in
-/// `entries` order. Returns the module, for a failure's diagnostics.
-fn issue_compute(
-    device: &JsValue,
-    scope: &'static str,
-    source: &str,
-    entries: &[(&'static str, &'static str)],
-    pending: &Array,
-) -> Result<JsValue, String> {
     let candidates = descriptors(source, "compute")?;
-    let module = shader(device, source, scope)?;
-    for (_, entry) in entries {
+    let module = shader(&device, source, scope)?;
+    for (index, (stage, entry)) in entries.iter().enumerate() {
         let mut matching = Vec::new();
         for desc in &candidates {
             let entry_point = get(&get(desc, "compute")?, "entryPoint")?;
@@ -153,29 +127,17 @@ fn issue_compute(
             ));
         }
         let desc = matching[0];
-        populate(device, desc, &module)?;
-        pending.push(&call(device, "createComputePipelineAsync", desc)?);
-    }
-    Ok(module)
-}
-
-async fn settle_compute(
-    scope: &'static str,
-    entries: &[(&'static str, &'static str)],
-    pending: &Array,
-    module: &JsValue,
-    observer: &mut dyn FnMut(crate::InitEvent),
-) -> Result<(), String> {
-    for (index, (stage, _)) in entries.iter().enumerate() {
+        populate(&device, desc, &module)?;
         // Consecutive entries may belong to one existing progress stage.
         // Splitting a kernel must not change the host's progress contract.
         if index == 0 || entries[index - 1].0 != *stage {
             crate::init::started(observer, scope, stage);
         }
-        settle(pending.get(index as u32), module).await?;
+        settle(call(&device, "createComputePipelineAsync", desc)?, &module).await?;
         if index + 1 == entries.len() || entries[index + 1].0 != *stage {
             crate::init::finished(observer, scope, stage);
         }
+        crate::init::yield_init_frame().await;
     }
     Ok(())
 }
