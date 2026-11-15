@@ -709,10 +709,10 @@ async fn large_single_phase_stream_flushes_bounded_page_before_completion() {
         .set_picked_data(
             &serde_json::json!({
                 "visible": true,
-                "refs": [{"source_id": null, "series_id": "large-line", "point_index": ROWS - 1}],
-                "ring_color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
-                "ring_width_px": 3.0,
-                "radius_extra_px": 4.0,
+                "refs": [{"kind": "point", "source_id": null, "series_id": "large-line", "point_index": ROWS - 1}],
+                "highlight_color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
+                "outline_width_px": 3.0,
+                "point_radius_extra_px": 4.0,
             })
             .to_string(),
         )
