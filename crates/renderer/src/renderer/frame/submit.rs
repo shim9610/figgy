@@ -356,6 +356,11 @@ impl Renderer {
         let mut drawn = Vec::new();
         drawn.try_reserve_exact(items.len()).map_err(allocation)?;
         let mut complete = true;
+        // What this frame needs becomes the screen of the compile queue.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.compile_queue {
+            queue.begin_frame();
+        }
         for item in items {
             let state = self
                 .chart_states
@@ -635,6 +640,7 @@ impl Renderer {
                             }
                         },
                     }
+                    queue.mark_wanted(set, label);
                 },
             );
             ready
@@ -652,8 +658,8 @@ impl Renderer {
 
     /// The renderer's background pipeline compiles (#299): how many of its
     /// shader set's render pipelines are scheduled, compiled, compiling and
-    /// failed, and whether the last screen frame was complete. Cheap: no
-    /// GPU call.
+    /// failed, for the last screen frame (`screen`) and in all (`all`), and
+    /// whether the last screen frame was complete. Cheap: no GPU call.
     pub fn pipeline_status(&self) -> PipelineStatus {
         #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
         let mut status = PipelineStatus {
@@ -662,13 +668,78 @@ impl Renderer {
         };
         #[cfg(target_arch = "wasm32")]
         if let Some(queue) = &self.compile_queue {
-            let (total, ready, compiling, failed) = queue.counts(self.pipelines.shaders.set);
-            status.total = total;
-            status.ready = ready;
-            status.compiling = compiling;
-            status.failed = failed;
+            use crate::compile_schedule::{Counts, Scope};
+            let counts = |scope| {
+                let Counts {
+                    total,
+                    ready,
+                    compiling,
+                    failed,
+                } = queue.counts(self.pipelines.shaders.set, scope);
+                PipelineCounts {
+                    total,
+                    ready,
+                    compiling,
+                    failed,
+                }
+            };
+            status.screen = counts(Scope::Screen);
+            status.all = counts(Scope::All);
         }
         status
+    }
+
+    /// Every background compile of the renderer's shader set that ended
+    /// other than compiled (#299), in schedule order: rejected by the
+    /// browser, cut short by device loss, or cancelled. Empty natively.
+    pub fn pipeline_failures(&self) -> Vec<PipelineFailure> {
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut failures = Vec::new();
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.compile_queue {
+            queue.for_each_failure(self.pipelines.shaders.set, |label, outcome| {
+                failures.push(pipeline_failure(label, outcome));
+            });
+        }
+        failures
+    }
+
+    /// Resolves once every background compile the last screen frame needed
+    /// has ended (#299): a frame drawn then draws every series. It wakes on
+    /// each compile's ending, never by polling, and always ends. `Err` is the
+    /// first of those compiles that ended other than compiled; the frame
+    /// still draws its series, creating the pipeline, which reports the
+    /// error through the usual path. Natively, and with nothing pending, it
+    /// resolves at once.
+    pub async fn series_ready(&self) -> std::result::Result<(), PipelineFailure> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.compile_queue {
+            return queue
+                .wait_scope(
+                    self.pipelines.shaders.set,
+                    crate::compile_schedule::Scope::Screen,
+                )
+                .await
+                .map_err(|(label, outcome)| pipeline_failure(&label, &outcome));
+        }
+        Ok(())
+    }
+
+    /// Resolves once every background compile scheduled so far has ended
+    /// (#299). `Err` is the first that ended other than compiled; see
+    /// [`Self::pipeline_failures`] for all of them. It always ends.
+    pub async fn pipelines_ready(&self) -> std::result::Result<(), PipelineFailure> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.compile_queue {
+            return queue
+                .wait_scope(
+                    self.pipelines.shaders.set,
+                    crate::compile_schedule::Scope::All,
+                )
+                .await
+                .map_err(|(label, outcome)| pipeline_failure(&label, &outcome));
+        }
+        Ok(())
     }
 
     /// Whether a background compile has ended since the last screen frame
@@ -709,5 +780,41 @@ impl Renderer {
         }
         #[cfg(not(target_arch = "wasm32"))]
         false
+    }
+}
+
+/// A compile that ended as `outcome`, as the public failure. Only an
+/// ending other than compiled, superseded or retired reaches here.
+#[cfg(target_arch = "wasm32")]
+fn pipeline_failure(
+    label: &str,
+    outcome: &crate::compile_schedule::CompileOutcome,
+) -> PipelineFailure {
+    use crate::compile_schedule::{CompileOutcome, RejectReason};
+    let (kind, message) = match outcome {
+        CompileOutcome::Rejected { reason, message } => (
+            match reason {
+                RejectReason::Validation => PipelineFailureKind::Validation,
+                RejectReason::Internal => PipelineFailureKind::Internal,
+                RejectReason::Other => PipelineFailureKind::Rejected,
+            },
+            message.clone(),
+        ),
+        CompileOutcome::DeviceLost => (
+            PipelineFailureKind::DeviceLost,
+            "the GPU device was lost before the pipeline compiled".to_owned(),
+        ),
+        CompileOutcome::Cancelled
+        | CompileOutcome::Ready
+        | CompileOutcome::Superseded { .. }
+        | CompileOutcome::Retired => (
+            PipelineFailureKind::Cancelled,
+            "the renderer was dropped before the pipeline compiled".to_owned(),
+        ),
+    };
+    PipelineFailure {
+        label: label.to_owned(),
+        kind,
+        message,
     }
 }

@@ -96,10 +96,19 @@ While a chart's pipelines compile in the background
 series whose pipelines are ready, with the axes and legend, and leaves the others
 out; `frame()` draws again as soon as one of them has compiled, so a chart fills in
 without host calls. `chart.frame_complete()` tells whether the last frame drew every
-series, `chart.pipeline_status()` returns `{ total, ready, compiling, failed,
-frame_complete }` as JSON, and `first_frame_ready()` settles with the frame that draws
-every series. `<figgy-chart>` starts its picker prewarm once the render pipelines have
-compiled. Exports and picks always draw the whole chart.
+series, and `chart.pipeline_status()` returns `{ screen: { total, ready, compiling,
+failed }, all: { … }, frame_complete }`: `screen` counts what the chart on screen
+needs, so a progress bar over it never goes back. `await chart.series_ready()` resolves
+once a frame draws every series (`first_frame_ready()` also waits for that frame's GPU
+work) and `await chart.pipelines_ready()` once every compile has ended; both reject
+with an `Error` carrying `label` and `kind` when one failed, and
+`chart.pipeline_failures()` lists them as `[{ label, kind, message }]` (`kind`:
+`"validation"`, `"internal"`, `"rejected"`, `"device_lost"`, `"cancelled"`).
+`<figgy-chart>` has the same methods; its `pipeline_status()` is the last frame's
+snapshot, readable while the chart is busy, and it reports `{ scope:
+"renderer.pipelines", stage: "screen complete" }` and then `"all complete"` on the
+`figgy-init-progress` event. It starts its picker prewarm once the render pipelines
+have compiled. Exports and picks always draw the whole chart.
 A chart starts on the basic shader set, which draws rectangular charts with
 linear and logarithmic axes, and moves itself to the full set when its config
 first has an axis break, a probability axis or polar coordinates
@@ -188,8 +197,15 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 차트의 파이프라인이 백그라운드에서 컴파일되는 동안([#299](https://github.com/shim9610/figgy/issues/299))
 프레임은 파이프라인이 준비된 시리즈와 축·범례를 그리고 나머지는 뺀다. 그 파이프라인의 컴파일이
 끝나면 `frame()`이 다시 그리므로 호스트가 호출하지 않아도 차트가 채워진다.
-`chart.frame_complete()`는 마지막 프레임이 모든 시리즈를 그렸는지, `chart.pipeline_status()`는
-컴파일 현황을 알려 준다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
+`chart.frame_complete()`는 마지막 프레임이 모든 시리즈를 그렸는지 알려 준다.
+`chart.pipeline_status()`는 `{ screen, all, frame_complete }` 객체로 컴파일 현황을 돌려준다.
+`screen`은 지금 화면에 필요한 것만 세므로 이것으로 만든 진행률은 뒤로 가지 않는다.
+`await chart.series_ready()`는 모든 시리즈가 그려지면, `await chart.pipelines_ready()`는 모든
+컴파일이 끝나면 풀린다. 둘 다 컴파일이 실패하면 `label`과 `kind`가 담긴 `Error`로 거부되고,
+`chart.pipeline_failures()`가 실패 목록(`[{ label, kind, message }]`)을 돌려준다.
+`<figgy-chart>`도 같은 메서드를 갖는다. 요소의 `pipeline_status()`는 마지막 프레임의 스냅샷이라
+차트가 바쁠 때도 읽을 수 있고, `figgy-init-progress` 이벤트로 `"screen complete"`와
+`"all complete"`를 알린다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
 스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가

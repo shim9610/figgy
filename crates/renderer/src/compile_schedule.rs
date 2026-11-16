@@ -128,6 +128,28 @@ pub(crate) struct ScheduledCompile {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) stage: &'static str,
     pub(crate) state: CompileState,
+    /// The last frame that needed this pipeline ([`CompileSchedule::begin_frame`]).
+    wanted: u64,
+}
+
+/// Counts of compiles, by how they stand.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Counts {
+    pub(crate) total: usize,
+    pub(crate) ready: usize,
+    /// Waiting or in flight.
+    pub(crate) compiling: usize,
+    /// Ended other than ready (rejected, device lost, cancelled).
+    pub(crate) failed: usize,
+}
+
+/// Which compiles a count or a wait covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// The ones the last frame needed.
+    Screen,
+    /// Every one of the set.
+    All,
 }
 
 /// What a waiter learns about one compile it waits for, following a
@@ -157,6 +179,8 @@ pub(crate) struct CompileSchedule {
     settled: u64,
     /// Whether the device was lost: nothing is issued after it.
     lost: bool,
+    /// The current frame, for [`ScheduledCompile::wanted`]; 0 before any.
+    frame: u64,
 }
 
 impl CompileSchedule {
@@ -169,6 +193,81 @@ impl CompileSchedule {
             waiting: VecDeque::new(),
             settled: 0,
             lost: false,
+            frame: 0,
+        }
+    }
+
+    /// A screen frame starts: the pipelines it needs are marked with
+    /// [`Self::mark_wanted`], and only those count as the screen's.
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame += 1;
+    }
+
+    /// The current frame needs the pipelines of `set` labelled `label`.
+    pub(crate) fn mark_wanted(&mut self, set: ShaderSet, label: &str) {
+        let frame = self.frame;
+        for compile in &mut self.compiles {
+            if compile.set == set && compile.label == label {
+                compile.wanted = frame;
+            }
+        }
+    }
+
+    /// Whether compile `index` is in `scope` for `set`: of the set, and for
+    /// [`Scope::Screen`] needed by the last frame.
+    fn in_scope(&self, compile: &ScheduledCompile, set: ShaderSet, scope: Scope) -> bool {
+        compile.set == set
+            && match scope {
+                Scope::All => true,
+                Scope::Screen => self.frame > 0 && compile.wanted == self.frame,
+            }
+    }
+
+    /// Where the compiles of `set` in `scope` stand: `Ok(true)` while one is
+    /// waiting or compiling, `Ok(false)` once all have ended ready, or the
+    /// first that ended otherwise (with its index), superseded and retired
+    /// compiles aside.
+    pub(crate) fn scope_state(
+        &self,
+        set: ShaderSet,
+        scope: Scope,
+    ) -> Result<bool, (usize, CompileOutcome)> {
+        let mut pending = false;
+        for (index, compile) in self.compiles.iter().enumerate() {
+            if !self.in_scope(compile, set, scope) {
+                continue;
+            }
+            match &compile.state {
+                CompileState::Waiting | CompileState::Compiling => pending = true,
+                CompileState::Settled(
+                    CompileOutcome::Ready
+                    | CompileOutcome::Superseded { .. }
+                    | CompileOutcome::Retired,
+                ) => {}
+                CompileState::Settled(outcome) => return Err((index, outcome.clone())),
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Each compile of `set` that ended other than ready, superseded or
+    /// retired, in schedule order.
+    pub(crate) fn for_each_failure(
+        &self,
+        set: ShaderSet,
+        mut each: impl FnMut(&ScheduledCompile, &CompileOutcome),
+    ) {
+        for compile in self.compiles.iter().filter(|compile| compile.set == set) {
+            if let CompileState::Settled(outcome) = &compile.state
+                && !matches!(
+                    outcome,
+                    CompileOutcome::Ready
+                        | CompileOutcome::Superseded { .. }
+                        | CompileOutcome::Retired
+                )
+            {
+                each(compile, outcome);
+            }
         }
     }
 
@@ -223,6 +322,7 @@ impl CompileSchedule {
             label,
             stage,
             state,
+            wanted: 0,
         });
         index
     }
@@ -346,23 +446,26 @@ impl CompileSchedule {
         }
     }
 
-    /// The compiles of `set` as `(total, ready, compiling, failed)`, a
-    /// waiting compile counted as compiling and every other ending but a
-    /// supersession or retirement counted as failed.
-    pub(crate) fn counts(&self, set: ShaderSet) -> (usize, usize, usize, usize) {
-        let (mut total, mut ready, mut compiling, mut failed) = (0, 0, 0, 0);
-        for compile in self.compiles.iter().filter(|compile| compile.set == set) {
+    /// The compiles of `set` in `scope`, a waiting compile counted as
+    /// compiling and every other ending but a supersession or retirement
+    /// counted as failed.
+    pub(crate) fn counts(&self, set: ShaderSet, scope: Scope) -> Counts {
+        let mut counts = Counts::default();
+        for compile in &self.compiles {
+            if !self.in_scope(compile, set, scope) {
+                continue;
+            }
             match &compile.state {
-                CompileState::Settled(CompileOutcome::Ready) => ready += 1,
+                CompileState::Settled(CompileOutcome::Ready) => counts.ready += 1,
                 CompileState::Settled(
                     CompileOutcome::Superseded { .. } | CompileOutcome::Retired,
                 ) => continue,
-                CompileState::Settled(_) => failed += 1,
-                CompileState::Waiting | CompileState::Compiling => compiling += 1,
+                CompileState::Settled(_) => counts.failed += 1,
+                CompileState::Waiting | CompileState::Compiling => counts.compiling += 1,
             }
-            total += 1;
+            counts.total += 1;
         }
-        (total, ready, compiling, failed)
+        counts
     }
 
     /// What a frame may do with the pipelines of `set` labelled `label`.
@@ -486,7 +589,12 @@ mod tests {
             assert!(!s.busy());
             assert_eq!(s.peak_in_flight(), limit.min(labels.len()));
             assert_eq!(s.settled(), labels.len() as u64);
-            let (total, ready, compiling, failed) = s.counts(ShaderSet::Basic);
+            let Counts {
+                total,
+                ready,
+                compiling,
+                failed,
+            } = s.counts(ShaderSet::Basic, Scope::All);
             assert_eq!((total, compiling), (labels.len(), 0));
             assert_eq!(ready + failed, total);
             assert!(failed > 0);
@@ -574,8 +682,24 @@ mod tests {
         assert_eq!(s.wait_step(1), WaitStep::Ended(CompileOutcome::Ready));
         assert_eq!(s.wait_step(2), WaitStep::Ended(CompileOutcome::Retired));
         assert_eq!(s.readiness(ShaderSet::Basic, "a"), LabelReadiness::Ready);
-        assert_eq!(s.counts(ShaderSet::Basic), (1, 1, 0, 0));
-        assert_eq!(s.counts(ShaderSet::Full), (2, 2, 0, 0));
+        assert_eq!(
+            s.counts(ShaderSet::Basic, Scope::All),
+            Counts {
+                total: 1,
+                ready: 1,
+                compiling: 0,
+                failed: 0
+            }
+        );
+        assert_eq!(
+            s.counts(ShaderSet::Full, Scope::All),
+            Counts {
+                total: 2,
+                ready: 2,
+                compiling: 0,
+                failed: 0
+            }
+        );
         assert!(!s.busy());
     }
 
@@ -622,5 +746,44 @@ mod tests {
             );
         }
         assert_eq!(s.settled(), 3);
+    }
+
+    /// The screen's compiles are the ones the last frame marked: they are
+    /// counted and waited on apart from the rest, and a new frame starts a
+    /// new screen.
+    #[test]
+    fn the_screen_is_what_the_last_frame_needed() {
+        let mut s = schedule(4, &[LINE, FIELD, "other"]);
+        assert_eq!(s.scope_state(ShaderSet::Basic, Scope::Screen), Ok(false));
+        s.begin_frame();
+        s.mark_wanted(ShaderSet::Basic, FIELD);
+        let screen = s.counts(ShaderSet::Basic, Scope::Screen);
+        assert_eq!((screen.total, screen.compiling), (1, 1));
+        assert_eq!(s.counts(ShaderSet::Basic, Scope::All).total, 3);
+        assert_eq!(s.scope_state(ShaderSet::Basic, Scope::Screen), Ok(true));
+        let (line, field) = (s.issue_next().unwrap(), s.issue_next().unwrap());
+        s.settle(field, CompileOutcome::Ready);
+        assert_eq!(s.scope_state(ShaderSet::Basic, Scope::Screen), Ok(false));
+        assert_eq!(s.scope_state(ShaderSet::Basic, Scope::All), Ok(true));
+        s.settle(line, rejected(RejectReason::Validation));
+        assert_eq!(
+            s.scope_state(ShaderSet::Basic, Scope::All),
+            Err((line, rejected(RejectReason::Validation)))
+        );
+        // The next frame needs the line, whose compile failed.
+        s.begin_frame();
+        s.mark_wanted(ShaderSet::Basic, LINE);
+        assert_eq!(
+            s.scope_state(ShaderSet::Basic, Scope::Screen),
+            Err((line, rejected(RejectReason::Validation)))
+        );
+        let mut failures = Vec::new();
+        s.for_each_failure(ShaderSet::Basic, |compile, outcome| {
+            failures.push((compile.label.clone(), outcome.clone()));
+        });
+        assert_eq!(
+            failures,
+            vec![(LINE.to_owned(), rejected(RejectReason::Validation))]
+        );
     }
 }

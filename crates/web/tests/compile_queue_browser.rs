@@ -87,7 +87,7 @@ async fn within(chart: &FiggyChart, seconds: f64, what: &str, mut done: impl FnM
         assert!(
             js_sys::Date::now() - start < seconds * 1000.0,
             "{what} not within {seconds} s: status {}, {} issued, {} open",
-            chart.pipeline_status(),
+            status_text(chart),
             number("globalThis.__queue.labels.length"),
             number("globalThis.__queue.open"),
         );
@@ -95,9 +95,17 @@ async fn within(chart: &FiggyChart, seconds: f64, what: &str, mut done: impl FnM
     }
 }
 
+/// The chart's compile status as JSON text, for messages.
+fn status_text(chart: &FiggyChart) -> String {
+    js_sys::JSON::stringify(&chart.pipeline_status().unwrap())
+        .unwrap()
+        .as_string()
+        .unwrap()
+}
+
 /// The chart's compile status.
 fn status(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.pipeline_status()).unwrap()
+    serde_json::from_str(&status_text(chart)).unwrap()
 }
 
 /// Draw frames until one draws every series, at most `seconds`: no frame
@@ -112,7 +120,7 @@ async fn complete_within(chart: &mut FiggyChart, seconds: f64, what: &str) {
         assert!(
             js_sys::Date::now() - start < seconds * 1000.0,
             "{what}: no complete frame within {seconds} s: status {}",
-            chart.pipeline_status()
+            status_text(chart)
         );
         turn().await;
     }
@@ -238,7 +246,7 @@ async fn an_upgrade_while_basic_compiles_are_in_flight_completes() {
     hook(Some(2));
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
     let basic = status(&chart);
-    assert!(basic["compiling"].as_u64().unwrap() > 0, "{basic}");
+    assert!(basic["all"]["compiling"].as_u64().unwrap() > 0, "{basic}");
     assert_eq!(
         number("globalThis.__queue.open"),
         2,
@@ -247,16 +255,16 @@ async fn an_upgrade_while_basic_compiles_are_in_flight_completes() {
     chart.require_shader_set("full".into()).unwrap();
     let full = status(&chart);
     assert_eq!(chart.shader_set(), "full");
-    assert!(full["total"].as_u64().unwrap() > 20, "{full}");
+    assert!(full["all"]["total"].as_u64().unwrap() > 20, "{full}");
     chart.require_shader_set("full".into()).unwrap();
     assert_eq!(
-        status(&chart)["total"],
-        full["total"],
+        status(&chart)["all"]["total"],
+        full["all"]["total"],
         "a second request schedules nothing"
     );
     show_heatmap(&mut chart);
     complete_within(&mut chart, 180.0, "the heatmap after a mid-compile upgrade").await;
-    assert_eq!(status(&chart)["failed"], 0);
+    assert_eq!(status(&chart)["all"]["failed"], 0);
 }
 
 /// An upgrade once every basic compile has settled schedules the full set,
@@ -266,13 +274,13 @@ async fn an_upgrade_after_the_basic_compiles_settled_completes() {
     hook(Some(4));
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
     within(&chart, 180.0, "the basic set compiled", || {
-        status(&chart)["compiling"] == 0
+        status(&chart)["all"]["compiling"] == 0
     })
     .await;
     chart.require_shader_set("full".into()).unwrap();
     let full = status(&chart);
-    assert!(full["total"].as_u64().unwrap() > 20, "{full}");
-    assert!(full["compiling"].as_u64().unwrap() > 0, "{full}");
+    assert!(full["all"]["total"].as_u64().unwrap() > 20, "{full}");
+    assert!(full["all"]["compiling"].as_u64().unwrap() > 0, "{full}");
     show_heatmap(&mut chart);
     complete_within(&mut chart, 180.0, "the heatmap after the upgrade").await;
 }
@@ -288,14 +296,14 @@ async fn a_rejected_compile_blocks_nothing() {
     show_heatmap(&mut chart);
     complete_within(&mut chart, 120.0, "the heatmap with a rejected compile").await;
     within(&chart, 180.0, "the rest of the set compiled", || {
-        status(&chart)["compiling"] == 0
+        status(&chart)["all"]["compiling"] == 0
     })
     .await;
     let after = status(&chart);
-    assert!(after["failed"].as_u64().unwrap() >= 1, "{after}");
+    assert!(after["all"]["failed"].as_u64().unwrap() >= 1, "{after}");
     assert_eq!(
-        after["ready"].as_u64().unwrap() + after["failed"].as_u64().unwrap(),
-        after["total"].as_u64().unwrap()
+        after["all"]["ready"].as_u64().unwrap() + after["all"]["failed"].as_u64().unwrap(),
+        after["all"]["total"].as_u64().unwrap()
     );
 }
 
@@ -324,7 +332,7 @@ async fn device_loss_ends_a_wait_on_an_open_compile() {
     // (the runner's time limit fails a hang).
     let _ = chart.first_frame_ready().await;
     let after = status(&chart);
-    assert_eq!(after["compiling"], 0, "{after}");
+    assert_eq!(after["all"]["compiling"], 0, "{after}");
 }
 
 /// A chart dropped while its compiles are in flight issues no further
@@ -337,7 +345,7 @@ async fn a_dropped_chart_issues_no_more_compiles() {
     let issued = number("globalThis.__queue.labels.length");
     assert!(issued >= 2, "{issued}");
     assert!(
-        status(&chart)["total"].as_u64().unwrap() > issued as u64 + 20,
+        status(&chart)["all"]["total"].as_u64().unwrap() > issued as u64 + 20,
         "most of the set still waits"
     );
     drop(chart);
@@ -390,7 +398,7 @@ async fn waits_for_its_on_demand_module(chart: &mut FiggyChart, label: &str, wha
     assert!(
         issued,
         "{what}: {label} issued on demand; status {}, cold {:?}",
-        chart.pipeline_status(),
+        status_text(chart),
         js_sys::eval("globalThis.__queue.cold.join(' | ')")
             .unwrap()
             .as_string()
@@ -499,4 +507,50 @@ async fn a_ternary_region_waits_for_its_module() {
         "ternary region",
     )
     .await;
+}
+
+/// The status object splits what the screen needs from everything;
+/// `series_ready` resolves when the chart is drawn whole and rejects with
+/// the failed compile's label and kind; `pipeline_failures` lists it.
+#[wasm_bindgen_test(async)]
+async fn the_status_api_reports_the_screen_and_failures() {
+    hook(Some(2));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    show_heatmap(&mut chart);
+    chart.frame().unwrap();
+    let before = status(&chart);
+    assert_eq!(before["screen"]["total"], 1, "{before}");
+    assert!(before["all"]["total"].as_u64().unwrap() > 20, "{before}");
+    assert_eq!(before["frame_complete"], false);
+    chart.series_ready().await.unwrap();
+    let after = status(&chart);
+    assert_eq!(after["frame_complete"], true, "{after}");
+    assert_eq!(after["screen"]["ready"], 1, "{after}");
+    assert_eq!(after["screen"]["compiling"], 0, "{after}");
+    assert_eq!(chart.pipeline_failures().unwrap().length(), 0);
+
+    // A second chart whose heatmap compile the browser rejects.
+    hook(Some(2));
+    js_sys::eval("globalThis.__queue.reject = 'figgy field columnar pipeline'").unwrap();
+    let mut rejected = FiggyChart::create(canvas()).await.unwrap();
+    show_heatmap(&mut rejected);
+    let error = rejected.series_ready().await.unwrap_err();
+    let get = |key: &str| {
+        js_sys::Reflect::get(&error, &key.into())
+            .unwrap()
+            .as_string()
+            .unwrap()
+    };
+    assert_eq!(get("label"), "figgy field columnar pipeline");
+    assert_eq!(get("kind"), "rejected");
+    // The series is drawn all the same: the draw creates the pipeline.
+    assert!(rejected.frame_complete());
+    let failures = rejected.pipeline_failures().unwrap();
+    assert_eq!(failures.length(), 1);
+    let failure = failures.get(0);
+    assert_eq!(
+        js_sys::Reflect::get(&failure, &"kind".into()).unwrap(),
+        "rejected"
+    );
+    assert!(rejected.pipelines_ready().await.is_err());
 }

@@ -3227,3 +3227,57 @@ test("an invalid shaders attribute fails ready with the kernel's error and creat
   await assert.rejects(element.ready, /shaders must be "basic" or "full", got "turbo"/);
   assert.equal(state.createCalls.length, 0);
 });
+
+test("the element snapshots compile status each frame, reports completion and forwards the waits", async () => {
+  const kernel = makeKernel("pipeline-status");
+  kernel.shaderSet = "basic";
+  kernel.shader_set = () => kernel.shaderSet;
+  const counts = (total, ready, compiling) => ({ total, ready, compiling, failed: 0 });
+  const statuses = [
+    { screen: counts(1, 0, 1), all: counts(61, 4, 57), frame_complete: false },
+    { screen: counts(1, 1, 0), all: counts(61, 30, 31), frame_complete: true },
+    { screen: counts(1, 1, 0), all: counts(61, 61, 0), frame_complete: true },
+  ];
+  let next = 0;
+  kernel.pipeline_status = () => statuses[Math.min(next, statuses.length - 1)];
+  kernel.pipeline_failures = () => [{ label: "x", kind: "validation", message: "bad" }];
+  kernel.series_ready = async () => { kernel.calls.push(["series_ready"]); };
+  kernel.pipelines_ready = async () => { kernel.calls.push(["pipelines_ready"]); };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  assert.equal(element.pipeline_status(), null, "no snapshot before the chart is ready");
+  const stages = [];
+  element.addEventListener("figgy-init-progress", ({ detail }) => {
+    if (detail.scope === "renderer.pipelines") stages.push(detail.stage);
+  });
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  runFacadeFrame(state);
+  assert.equal(element.pipeline_status().screen.compiling, 1);
+  assert.deepEqual(stages, []);
+  next = 1;
+  runFacadeFrame(state);
+  assert.deepEqual(stages, ["screen complete"]);
+  next = 2;
+  runFacadeFrame(state);
+  runFacadeFrame(state);
+  assert.deepEqual(stages, ["screen complete", "all complete"], "each reported once");
+  assert.equal(element.pipeline_status().all.ready, 61);
+
+  // The chart moved to the full set by itself: the property follows. (The
+  // picker prewarm the finished compiles started holds the chart first.)
+  await waitForIdle(element);
+  kernel.shaderSet = "full";
+  runFacadeFrame(state);
+  assert.equal(element.shaders, "full");
+
+  assert.deepEqual(element.pipeline_failures(), [{ label: "x", kind: "validation", message: "bad" }]);
+  await element.series_ready();
+  await element.pipelines_ready();
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name === "series_ready" || name === "pipelines_ready"),
+    [["series_ready"], ["pipelines_ready"]],
+  );
+});

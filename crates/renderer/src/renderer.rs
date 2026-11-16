@@ -151,25 +151,72 @@ impl RenderRevision {
 /// registered through the process-global font registry.
 
 /// A snapshot of a renderer's background pipeline compiles (#299), read
-/// with [`Renderer::pipeline_status`]. The counts are of the render
-/// pipelines of the renderer's shader set that the browser compiles in the
-/// background; a waiting compile counts as compiling. A renderer with no
-/// background compiles (native, or a browser renderer that compiled
-/// everything at creation) reports zero of each.
+/// with [`Renderer::pipeline_status`]. A renderer with no background
+/// compiles (native, or a browser renderer that compiled everything at
+/// creation) reports zero of each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PipelineStatus {
+    /// The compiles the last screen frame needed. Its `total` only changes
+    /// with the chart, so a progress bar over it never goes back.
+    pub screen: PipelineCounts,
+    /// Every compile scheduled so far. Its `total` grows when a chart first
+    /// needs a module compiled on demand (vector, 3D surface, ternary
+    /// region).
+    pub all: PipelineCounts,
+    /// Whether the last screen frame drew every series it was handed.
+    pub frame_complete: bool,
+}
+
+/// Counts of background compiles, by how they stand (#299).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineCounts {
     /// Pipelines scheduled.
     pub total: usize,
     /// Pipelines compiled.
     pub ready: usize,
     /// Pipelines waiting for or in their compile.
     pub compiling: usize,
-    /// Pipelines whose compile the browser rejected. The draw that needs one
-    /// creates it, which reports the error.
+    /// Pipelines whose compile ended otherwise ([`PipelineFailure`]). The
+    /// draw that needs one creates it, which reports the error.
     pub failed: usize,
-    /// Whether the last screen frame drew every series it was handed.
-    pub frame_complete: bool,
 }
+
+/// How a background compile failed (#299).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineFailureKind {
+    /// The browser rejected it with a `GPUPipelineError` of reason
+    /// `"validation"`.
+    Validation,
+    /// The browser rejected it with a `GPUPipelineError` of reason
+    /// `"internal"`, for example out of memory.
+    Internal,
+    /// The browser rejected it with something else (a call that threw).
+    Rejected,
+    /// The GPU device was lost first.
+    DeviceLost,
+    /// The renderer was dropped first.
+    Cancelled,
+}
+
+/// One background compile that ended other than compiled (#299), read with
+/// [`Renderer::pipeline_failures`] or carried by the error of
+/// [`Renderer::series_ready`] and [`Renderer::pipelines_ready`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipelineFailure {
+    /// The pipeline's label (`figgy line columnar pipeline`).
+    pub label: String,
+    pub kind: PipelineFailureKind,
+    /// The browser's message, or why it did not compile.
+    pub message: String,
+}
+
+impl std::fmt::Display for PipelineFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({:?}): {}", self.label, self.kind, self.message)
+    }
+}
+
+impl std::error::Error for PipelineFailure {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RendererVisualStamp {

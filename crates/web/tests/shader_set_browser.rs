@@ -97,7 +97,7 @@ async fn drain(chart: &FiggyChart, seconds: f64) {
             .unwrap();
             panic!(
                 "the queue did not drain in {seconds} s: status {} {report}",
-                chart.pipeline_status()
+                js_sys::JSON::stringify(&chart.pipeline_status().unwrap()).unwrap()
             );
         }
     }

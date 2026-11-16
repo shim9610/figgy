@@ -717,10 +717,19 @@ the module then, ahead of the rest. Frame preparation of registered charts
 pipelines have not compiled and draws everything else; `Renderer::frame_complete()`
 tells whether the last screen frame drew every series, `Renderer::compile_redraw_due()`
 whether a compile has resolved since a frame left one out (draw again), and
-`Renderer::pipeline_status()` returns a `PipelineStatus` snapshot (`total`, `ready`,
-`compiling`, `failed`, `frame_complete`). Exports, host-owned `prepare` and the picks
-create what they need and are always complete. Natively every frame is complete and
-the counts are zero.
+`Renderer::pipeline_status()` returns a `PipelineStatus` snapshot: `screen` and `all`
+`PipelineCounts` (`total`, `ready`, `compiling`, `failed`) and `frame_complete`.
+`screen` counts what the last screen frame needed, so a progress bar over it never goes
+back; `all` grows when a chart first needs a module compiled on demand.
+`Renderer::pipeline_failures()` lists each compile that failed as a `PipelineFailure`
+(`label`, `kind`: `Validation`, `Internal`, `Rejected`, `DeviceLost` or `Cancelled`,
+`message`). `Renderer::series_ready()` resolves once every compile the last screen frame
+needed has ended (a frame drawn then is complete) and `Renderer::pipelines_ready()` once
+every scheduled compile has; each returns the first `PipelineFailure` among them as its
+error. Exports, host-owned `prepare` and the picks create what they need and are always
+complete; they draw into their own formats (exports into `Rgba16Float`), so the
+background compiles do not cover them. Natively every frame is complete, the counts are
+zero and both waits resolve at once.
 
 Every background compile ends, and a wait on one ends with it: the browser settles
 each `createRenderPipelineAsync` promise (it resolves on success and on device loss,

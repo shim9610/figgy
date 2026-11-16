@@ -686,12 +686,63 @@ impl CompileQueue {
         self.0.borrow().schedule.readiness(set, label)
     }
 
-    /// The compiles of `set` as `(total, ready, compiling, failed)`.
+    /// The compiles of `set` in `scope`.
     pub(crate) fn counts(
         &self,
         set: crate::shader_assembly::ShaderSet,
-    ) -> (usize, usize, usize, usize) {
-        self.0.borrow().schedule.counts(set)
+        scope: crate::compile_schedule::Scope,
+    ) -> crate::compile_schedule::Counts {
+        self.0.borrow().schedule.counts(set, scope)
+    }
+
+    /// A screen frame starts; it marks what it needs with
+    /// [`Self::mark_wanted`].
+    pub(crate) fn begin_frame(&self) {
+        self.0.borrow_mut().schedule.begin_frame();
+    }
+
+    /// The current frame needs the pipelines of `set` labelled `label`.
+    pub(crate) fn mark_wanted(&self, set: crate::shader_assembly::ShaderSet, label: &str) {
+        self.0.borrow_mut().schedule.mark_wanted(set, label);
+    }
+
+    /// Each compile of `set` that failed, as `(label, outcome)`.
+    pub(crate) fn for_each_failure(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        mut each: impl FnMut(&str, &CompileOutcome),
+    ) {
+        self.0
+            .borrow()
+            .schedule
+            .for_each_failure(set, |compile, outcome| each(&compile.label, outcome));
+    }
+
+    /// Wait until every compile of `set` in `scope` has ended, waking on
+    /// each change, never by polling. `Err` carries the label and outcome of
+    /// the first that ended other than ready. It always ends: every compile
+    /// does.
+    pub(crate) async fn wait_scope(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        scope: crate::compile_schedule::Scope,
+    ) -> Result<(), (String, CompileOutcome)> {
+        loop {
+            let state = {
+                let state = self.0.borrow();
+                match state.schedule.scope_state(set, scope) {
+                    Ok(pending) => Ok(pending),
+                    Err((index, outcome)) => {
+                        Err((state.schedule.compile(index).label.clone(), outcome))
+                    }
+                }
+            };
+            if state? {
+                self.changed().await;
+            } else {
+                return Ok(());
+            }
+        }
     }
 
     /// Compiles ended so far; it only grows.
