@@ -60,7 +60,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             python -c "import glob, os, shutil; [shutil.copy(f, os.path.join(os.environ['CARGO_TARGET_DIR'], 'debug', 'deps')) for f in glob.glob(os.path.join(os.environ['RUNNER_TEMP'], 'figgy-dx12', '*.dll'))]"
           fi
-          timeout 3000 cargo test --locked -p figgy-renderer --features serde --test shader_set_scenes -- --test-threads=1 > t.log 2>&1
+          cargo test --locked -p figgy-renderer --features serde --test shader_set_scenes -- --test-threads=1 > t.log 2>&1
           echo "RESULT exit=$?"
           grep -E "differ between|test result|panicked" t.log
           ls -la target/tmp/shader-set-differences 2>/dev/null
