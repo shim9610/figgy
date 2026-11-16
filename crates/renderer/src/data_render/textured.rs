@@ -372,6 +372,87 @@ pub(crate) fn browser_render_sources(
     ]
 }
 
+/// The module, with its `(stage, pipeline label)` pairs, whose render
+/// pipelines a browser renderer of `set` schedules only when a frame first
+/// needs the pipeline `label` (#299): the vector, 3D surface and ternary
+/// region modules, which a chart without such a series never compiles.
+/// `None` for a label of the modules [`browser_render_sources`] schedules
+/// at creation, or of none.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn browser_on_demand_source(
+    set: ShaderSet,
+    label: &str,
+) -> Option<crate::browser_compile::RenderSource<'static>> {
+    const SURFACE: [(&str, &str); 5] = [
+        ("3D surface", "figgy surface pipeline"),
+        ("selected 3D surface", "figgy surface selection pipeline"),
+        ("3D surface pick", "figgy surface pick pipeline"),
+        ("3D floor contour", "figgy floor contour pipeline"),
+        ("3D floor contour pick", "figgy floor contour pick pipeline"),
+    ];
+    const TRI_SURFACE: [(&str, &str); 3] = [
+        ("3D triangle surface", "figgy triangle surface pipeline"),
+        (
+            "selected 3D triangle surface",
+            "figgy triangle surface selection pipeline",
+        ),
+        (
+            "3D triangle surface pick",
+            "figgy triangle surface pick pipeline",
+        ),
+    ];
+    let sources: [crate::browser_compile::RenderSource<'static>; 6] = [
+        (
+            super::vector::VECTOR_POINTS_SHADER_BY_SET.of(set).source,
+            &[("vector points", "figgy vector points pipeline")],
+        ),
+        (
+            super::vector::VECTOR_GRID_SHADER_BY_SET.of(set).source,
+            &[("vector grid", "figgy vector grid pipeline")],
+        ),
+        (
+            super::vector::VECTOR_PATH_SHADER_BY_SET.of(set).source,
+            &[("vector path", "figgy vector path pipeline")],
+        ),
+        (
+            super::vector::VECTOR_POINTS_3D_SHADER_BY_SET.of(set).source,
+            &[
+                ("3D vector", "figgy vector 3D pipeline"),
+                ("3D vector pick", "figgy vector 3D pick pipeline"),
+            ],
+        ),
+        (
+            super::surface_mesh::SURFACE_SHADER_BY_SET.of(set).source,
+            &SURFACE,
+        ),
+        (
+            super::surface_mesh::TRI_SURFACE_SHADER_BY_SET
+                .of(set)
+                .source,
+            &TRI_SURFACE,
+        ),
+    ];
+    let region: crate::browser_compile::RenderSource<'static> = (
+        super::ternary_region::TERNARY_REGION_SHADER_BY_SET
+            .of(set)
+            .source,
+        &[
+            (
+                "ternary region stencil",
+                "figgy ternary region stencil pipeline",
+            ),
+            (
+                "ternary region cover",
+                "figgy ternary region cover pipeline",
+            ),
+        ],
+    );
+    sources
+        .into_iter()
+        .chain([region])
+        .find(|(_, stages)| stages.iter().any(|(_, listed)| *listed == label))
+}
+
 /// Compile the render pipelines `feature` includes (all for `None`) through
 /// the browser's asynchronous compiler. A renderer with a background queue
 /// for this target (`queue`) waits for its compiles, issuing them ahead of

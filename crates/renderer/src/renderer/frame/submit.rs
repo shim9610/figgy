@@ -621,8 +621,19 @@ impl Renderer {
                         // cancelled): draw, so the creation reports the
                         // error through the usual path; never wait on it.
                         LabelReadiness::Ended => {}
-                        // Not in the queue: the draw creates it as before.
-                        LabelReadiness::Untracked => {}
+                        // Not in the queue yet: a vector, 3D surface or
+                        // ternary region module is scheduled now, ahead of
+                        // the rest, and the series waits for it like any
+                        // other; anything else the draw creates as before.
+                        LabelReadiness::Untracked => match queue.schedule_on_demand(set, label) {
+                            Ok(true) => ready = false,
+                            Ok(false) => {}
+                            Err(_) => {
+                                // Not schedulable: the draw creates the
+                                // pipeline, which reports any error through
+                                // the usual path.
+                            }
+                        },
                     }
                 },
             );

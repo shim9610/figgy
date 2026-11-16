@@ -433,11 +433,29 @@ fn style_pipeline_labels(key: StyleKey) -> &'static [&'static str] {
 
 impl PreciseNeeds {
     /// The labels of the render pipelines these needs create, as the
-    /// pipeline constructors name them. A need with no label here (the
-    /// vector, ternary and 3D entries) is created when it is drawn, as it
-    /// always was.
+    /// pipeline constructors name them, the vector, ternary and 3D entries
+    /// included.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     fn labels(&self, mut each: impl FnMut(&'static str)) {
+        for (needed, label) in [
+            (self.vector_points, "figgy vector points pipeline"),
+            (self.vector_grid, "figgy vector grid pipeline"),
+            (self.vector_path, "figgy vector path pipeline"),
+        ] {
+            if needed {
+                each(label);
+            }
+        }
+        for kind in TernaryPipeline::ALL {
+            if self.ternary[kind as usize] {
+                each(kind.label());
+            }
+        }
+        for kind in View3dPipeline::ALL {
+            if self.view3d[kind as usize] {
+                each(kind.label());
+            }
+        }
         let table: [(bool, &'static str); 36] = [
             (self.parallel, "figgy line parallel pipeline"),
             (
@@ -540,6 +558,29 @@ pub(in crate::renderer) fn series_pipeline_labels(
             each(label);
         }
     }
+    // The surfaces of a 3D chart and the region fill of a ternary chart are
+    // created by their own ensure paths, every pass at once
+    // (`ensure_surface_pipelines`, `ensure_ternary_region_pipelines`): the
+    // series waits for every pass those paths create.
+    let render_type = &series.config.render_type;
+    if config.view_3d().is_some() {
+        use data_render::surface_mesh::{SurfaceInput, SurfacePass};
+        if draws_surface(render_type) || draws_floor(render_type) {
+            for pass in SurfacePass::ALL {
+                each(pass.label(SurfaceInput::Grid));
+            }
+        }
+        if draws_mesh_surface(render_type) || draws_mesh_floor(render_type) {
+            for pass in SurfacePass::ALL {
+                each(pass.label(SurfaceInput::Mesh));
+            }
+        }
+    }
+    if config.ternary().is_some() && render_type.ternary_region().is_some() {
+        for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+            each(pass.label());
+        }
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -602,7 +643,20 @@ mod label_tests {
         let mut waited = Vec::new();
         needs.labels(|label| waited.push(label));
         needs.contour_label = true;
+        needs.vector_points = true;
+        needs.vector_grid = true;
+        needs.vector_path = true;
+        needs.ternary = [true; super::TERNARY_PIPELINES];
+        needs.view3d = [true; super::VIEW3D_PIPELINES];
         needs.labels(|label| waited.push(label));
+        use crate::data_render::surface_mesh::{SurfaceInput, SurfacePass};
+        for pass in SurfacePass::ALL {
+            waited.push(pass.label(SurfaceInput::Grid));
+            waited.push(pass.label(SurfaceInput::Mesh));
+        }
+        for pass in crate::data_render::ternary_region::TernaryRegionPass::ALL {
+            waited.push(pass.label());
+        }
         for key in [
             super::StyleKey::Sketch,
             super::StyleKey::Milkyway,

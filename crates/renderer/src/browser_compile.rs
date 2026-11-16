@@ -647,6 +647,36 @@ impl CompileQueue {
         }
     }
 
+    /// Schedule the module whose render pipelines include `label` when it
+    /// is one compiled only on demand (`browser_on_demand_source`: vector,
+    /// 3D surface, ternary region) and none of its pipelines is scheduled
+    /// for `set` yet, and issue `label` ahead of every waiting compile.
+    /// Returns whether `label` is now waiting or compiling, so the frame
+    /// leaves its series out; `false` leaves the draw to create it, as for a
+    /// pipeline no queue tracks.
+    pub(crate) fn schedule_on_demand(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        label: &str,
+    ) -> Result<bool, String> {
+        use crate::compile_schedule::LabelReadiness;
+        let Some(source) = crate::data_render::browser_on_demand_source(set, label) else {
+            return Ok(false);
+        };
+        // Scheduled once, by its first listed pipeline: a label alone does
+        // not tell, since another module can compile a pipeline with the same
+        // label (the field module's floor contour, for one).
+        let scheduled = source
+            .1
+            .first()
+            .is_some_and(|(_, first)| self.readiness(set, first) != LabelReadiness::Untracked);
+        if !scheduled {
+            self.schedule(set, &[source])?;
+        }
+        self.prioritize(set, label);
+        Ok(self.readiness(set, label) == LabelReadiness::Pending)
+    }
+
     /// What a frame may do with the pipelines of `set` labelled `label`.
     pub(crate) fn readiness(
         &self,

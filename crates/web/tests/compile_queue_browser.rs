@@ -33,10 +33,17 @@ fn hook(cores: Option<u32>) {
     js_sys::eval(&format!(
         r#"(() => {{
   Object.defineProperty(navigator, 'hardwareConcurrency', {{ configurable: true, get: () => {cores} }});
-  const Q = globalThis.__queue = {{ labels: [], open: 0, peak: 0, reject: null, hold: null, device: null }};
+  const Q = globalThis.__queue = {{ labels: [], open: 0, peak: 0, reject: null, hold: null, device: null, resolved: new Set(), cold: [] }};
   const P = GPUDevice.prototype;
   if (!P.__figgyOriginalAsync) P.__figgyOriginalAsync = P.createRenderPipelineAsync;
+  if (!P.__figgyOriginalSync) P.__figgyOriginalSync = P.createRenderPipeline;
   const original = P.__figgyOriginalAsync;
+  // A synchronous creation of a label no async compile has resolved yet is
+  // a cold compile on the draw path.
+  P.createRenderPipeline = function (d) {{
+    if (!Q.resolved.has(d.label || '')) Q.cold.push(d.label || '');
+    return P.__figgyOriginalSync.call(this, d);
+  }};
   P.createRenderPipelineAsync = function (d) {{
     Q.device = this;
     Q.labels.push(d.label || '');
@@ -48,7 +55,7 @@ fn hook(cores: Option<u32>) {
       : d.label === Q.hold ? this.lost.then(() => undefined)
       : original.call(this, d);
     const done = () => {{ Q.open -= 1; }};
-    p.then(done, done);
+    p.then(() => {{ Q.resolved.add(d.label || ''); done(); }}, done);
     return p;
   }};
 }})()"#
@@ -350,4 +357,146 @@ async fn a_dropped_chart_issues_no_more_compiles() {
         issued,
         "a dropped chart issues nothing more"
     );
+}
+
+/// Whether `label` was issued through the async compiler, and whether a
+/// draw created it synchronously before its compile resolved.
+fn issued_and_cold(label: &str) -> (bool, bool) {
+    let issued = js_sys::eval(&format!("globalThis.__queue.labels.includes({label:?})"))
+        .unwrap()
+        .as_bool()
+        .unwrap();
+    let cold = js_sys::eval(&format!("globalThis.__queue.cold.includes({label:?})"))
+        .unwrap()
+        .as_bool()
+        .unwrap();
+    (issued, cold)
+}
+
+/// A series of a module compiled only on demand: the first frame leaves it
+/// out and issues the module's compile, the chart completes once it
+/// resolves, and no draw creates `label` cold.
+async fn waits_for_its_on_demand_module(chart: &mut FiggyChart, label: &str, what: &str) {
+    assert!(
+        !issued_and_cold(label).0,
+        "{what}: {label} is not compiled before a chart needs it"
+    );
+    chart.frame().unwrap();
+    assert!(!chart.frame_complete(), "{what}: the series waits at first");
+    // Scheduled ahead of every waiting compile; issued when a slot frees.
+    complete_within(chart, 120.0, what).await;
+    chart.first_frame_ready().await.unwrap();
+    let (issued, cold) = issued_and_cold(label);
+    assert!(
+        issued,
+        "{what}: {label} issued on demand; status {}, cold {:?}",
+        chart.pipeline_status(),
+        js_sys::eval("globalThis.__queue.cold.join(' | ')")
+            .unwrap()
+            .as_string()
+    );
+    assert!(!cold, "{what}: {label} was created cold");
+}
+
+/// A 2D vector series waits for the vector module, compiled on demand.
+#[wasm_bindgen_test(async)]
+async fn a_vector_series_waits_for_its_module() {
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    for (id, values) in [
+        ("vx", [0.0, 1.0, 2.0]),
+        ("vy", [0.0, 1.0, 2.0]),
+        ("vu", [1.0, 0.5, 0.0]),
+        ("vv", [0.0, 0.5, 1.0]),
+    ] {
+        chart.register_column_f32(id, &values).unwrap();
+    }
+    use renderer::Color;
+    use renderer::data_config::{VectorComponents, VectorPivot, VectorScale, VectorStyle};
+    let arrows = series(
+        "arrows",
+        "vx",
+        "vy",
+        DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "vu".into(),
+                v: "vv".into(),
+                w: None,
+            },
+            style: VectorStyle {
+                color: Color::BLACK,
+                width_px: 2.0,
+                scale: VectorScale::Data { factor: 1.0 },
+                pivot: VectorPivot::Tail,
+                head_length_px: 8.0,
+                head_width_px: 8.0,
+                min_length_px: 0.0,
+                color_map: None,
+            },
+        },
+    );
+    chart
+        .set_series(&serde_json::to_string(&vec![arrows]).unwrap())
+        .unwrap();
+    waits_for_its_on_demand_module(&mut chart, "figgy vector points pipeline", "vector").await;
+}
+
+/// A heatmap drawn as a 3D surface waits for the surface module, compiled
+/// on demand.
+#[wasm_bindgen_test(async)]
+async fn a_3d_surface_waits_for_its_module() {
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    show_heatmap(&mut chart);
+    let mut series: serde_json::Value = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
+    series[0]["render_type"]["Heatmap"]["surface"] = serde_json::json!({});
+    chart.set_series(&series.to_string()).unwrap();
+    let mut config: renderer::Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    config.set_view_3d(Some(renderer::view3d::View3d::default()));
+    chart
+        .set_config(&serde_json::to_string(&config).unwrap())
+        .unwrap();
+    waits_for_its_on_demand_module(&mut chart, "figgy surface pipeline", "3D surface").await;
+}
+
+/// A ternary region fill waits for the region module, compiled on demand.
+#[wasm_bindgen_test(async)]
+async fn a_ternary_region_waits_for_its_module() {
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    for (id, values) in [
+        ("ta", [60.0, 20.0, 20.0]),
+        ("tb", [20.0, 60.0, 20.0]),
+        ("tc", [20.0, 20.0, 60.0]),
+    ] {
+        chart.register_column_f32(id, &values).unwrap();
+    }
+    let mut config: renderer::Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    config.set_ternary(Some(renderer::TernaryOptions {}));
+    chart
+        .set_config(&serde_json::to_string(&config).unwrap())
+        .unwrap();
+    let region = series(
+        "region",
+        "ta",
+        "tb",
+        DataRenderType::Ternary {
+            c_column: "tc".into(),
+            scatter: None,
+            line: None,
+            region: Some(renderer::TernaryRegionStyle {
+                color: renderer::Color::BLACK,
+                opacity: 0.5,
+            }),
+        },
+    );
+    chart
+        .set_series(&serde_json::to_string(&vec![region]).unwrap())
+        .unwrap();
+    waits_for_its_on_demand_module(
+        &mut chart,
+        "figgy ternary region cover pipeline",
+        "ternary region",
+    )
+    .await;
 }

@@ -710,7 +710,9 @@ A renderer built by `for_window_minimal_async_observed` (or
 `for_window_with_shader_set_async_observed`) compiles the render pipelines of its
 shader set in the background, at most as many at once as the browser reports cores
 (`navigator.hardwareConcurrency`, four when it reports none), and issues what a screen
-frame needs before the rest. Frame preparation of registered charts
+frame needs before the rest. The vector, 3D surface and ternary region modules are
+not compiled at creation: a frame that first needs one of their pipelines schedules
+the module then, ahead of the rest. Frame preparation of registered charts
 (`prepare_registered`, `WindowedRenderer::draw_registered`) leaves out a series whose
 pipelines have not compiled and draws everything else; `Renderer::frame_complete()`
 tells whether the last screen frame drew every series, `Renderer::compile_redraw_due()`
