@@ -226,6 +226,34 @@ impl PickExactKey {
     /// `PICK_SHAPE_ANY`: the shape is read per point.
     pub(crate) const ANY_SHAPE: u32 = u32::MAX;
 
+    /// The override constants its pipeline is created with, the first
+    /// `count` of the array: the variant bits, the marker shape when the
+    /// module declares it and the shape is fixed, and the device's
+    /// workgroup option.
+    pub(crate) fn constants(self, device: &wgpu::Device) -> ([(&'static str, f64); 3], usize) {
+        let base = crate::gpu_compile::workgroup_options(device);
+        let mut constants = [(exact_variant::CONSTANT, f64::from(self.bits)); 3];
+        let mut count = 1;
+        // Only the marker modules declare the shape override.
+        if self.shape != Self::ANY_SHAPE
+            && matches!(self.shader, PickShader::Marker | PickShader::MarkerLine)
+        {
+            constants[count] = ("PICK_SHAPE", f64::from(self.shape));
+            count += 1;
+        }
+        if let Some(&zero) = base.constants.first() {
+            constants[count] = zero;
+            count += 1;
+        }
+        (constants, count)
+    }
+
+    /// The WGSL source its pipeline compiles, for the shader set `set`.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn source(self, set: ShaderSet) -> &'static str {
+        self.shader.assembled_for(set).source
+    }
+
     /// The marker-and-line module with every path and any shape.
     #[cfg(test)]
     pub(crate) const ALL_PATHS: Self = Self {
@@ -275,19 +303,7 @@ impl PickExactPipelines {
                     )
                 });
                 let base = crate::gpu_compile::workgroup_options(device);
-                let mut constants = [(exact_variant::CONSTANT, f64::from(key.bits)); 3];
-                let mut count = 1;
-                // Only the marker modules declare the shape override.
-                if key.shape != PickExactKey::ANY_SHAPE
-                    && matches!(shader, PickShader::Marker | PickShader::MarkerLine)
-                {
-                    constants[count] = ("PICK_SHAPE", f64::from(key.shape));
-                    count += 1;
-                }
-                if let Some(&zero) = base.constants.first() {
-                    constants[count] = zero;
-                    count += 1;
-                }
+                let (constants, count) = key.constants(device);
                 let pipeline = crate::gpu_compile::compute_pipeline(
                     device,
                     &wgpu::ComputePipelineDescriptor {
@@ -309,7 +325,7 @@ impl PickExactPipelines {
         Ok(&self.pipelines[index].1)
     }
 
-    pub(super) fn get(&self, key: PickExactKey) -> Option<&wgpu::ComputePipeline> {
+    pub(crate) fn get(&self, key: PickExactKey) -> Option<&wgpu::ComputePipeline> {
         self.pipelines
             .iter()
             .find(|(k, _)| *k == key)

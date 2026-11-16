@@ -108,7 +108,10 @@ with an `Error` carrying `label` and `kind` when one failed, and
 snapshot, readable while the chart is busy, and it reports `{ scope:
 "renderer.pipelines", stage: "screen complete" }` and then `"all complete"` on the
 `figgy-init-progress` event. It starts its picker prewarm once the render pipelines
-have compiled. Exports and picks always draw the whole chart.
+have compiled. Exports and picks always draw the whole chart; they compile what they
+need through the browser's asynchronous compiler first (an export its pipelines,
+`pick_point` and `pick_data` their exact pick variants), so neither compiles on the
+page's thread.
 A chart starts on the basic shader set, which draws rectangular charts with
 linear and logarithmic axes, and moves itself to the full set when its config
 first has an axis break, a probability axis or polar coordinates

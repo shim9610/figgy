@@ -145,6 +145,41 @@ pub(crate) async fn compute(
     Ok(())
 }
 
+/// Compile one compute pipeline of `source` through
+/// `createComputePipelineAsync` with the override `constants` its wgpu twin
+/// is created with, so that synchronous creation hits the device's
+/// compilation cache instead of compiling on the page's thread (#299). The
+/// browser's pipeline is discarded.
+pub(crate) async fn compute_with_constants(
+    device: &wgpu::Device,
+    label: &'static str,
+    source: &str,
+    entry: &str,
+    constants: &[(&'static str, f64)],
+) -> Result<(), String> {
+    let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
+    let candidates = descriptors(source, "compute")?;
+    let mut found = None;
+    for desc in &candidates {
+        let entry_point = get(&get(desc, "compute")?, "entryPoint")?;
+        if entry_point.as_string().as_deref() == Some(entry) {
+            if found.is_some() {
+                return Err(format!("Expected one checked layout for {label}/{entry}"));
+            }
+            found = Some(desc);
+        }
+    }
+    let desc = found.ok_or_else(|| format!("No checked layout for {label}/{entry}"))?;
+    let module = shader(&device, source, label)?;
+    populate(&device, desc, &module)?;
+    let values = js_sys::Object::new();
+    for (name, value) in constants {
+        set(&values, name, &JsValue::from_f64(*value))?;
+    }
+    set(&get(desc, "compute")?, "constants", &values)?;
+    settle(call(&device, "createComputePipelineAsync", desc)?, &module).await
+}
+
 /// One WGSL source and the `(stage, pipeline label)` pairs its prewarm
 /// reports, in order.
 pub(crate) type RenderSource<'a> = (&'a str, &'a [(&'static str, &'static str)]);

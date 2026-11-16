@@ -595,3 +595,73 @@ async fn an_export_compiles_its_pipelines_in_the_background() {
     let empty = chart.export_png(1.0).await.unwrap();
     assert_ne!(png.to_vec(), empty.to_vec());
 }
+
+/// Record every exact pick pipeline (`figgy GPU pick exact candidate
+/// pipeline`), told apart by its override constants: those compiled through
+/// `createComputePipelineAsync`, and those created synchronously before an
+/// async compile of the same constants resolved (created cold).
+fn hook_exact_picks() {
+    js_sys::eval(
+        r#"(() => {
+  const E = globalThis.__exact = { compiled: [], resolved: new Set(), created: [], cold: [] };
+  const P = GPUDevice.prototype;
+  if (!P.__figgyOriginalComputeAsync) P.__figgyOriginalComputeAsync = P.createComputePipelineAsync;
+  if (!P.__figgyOriginalCompute) P.__figgyOriginalCompute = P.createComputePipeline;
+  const label = 'figgy GPU pick exact candidate pipeline';
+  const key = (d) => JSON.stringify(Object.entries(d.compute?.constants ?? {}).sort());
+  P.createComputePipelineAsync = function (d) {
+    const p = P.__figgyOriginalComputeAsync.call(this, d);
+    if (d.label === label) {
+      E.compiled.push(key(d));
+      p.then(() => E.resolved.add(key(d)), () => {});
+    }
+    return p;
+  };
+  P.createComputePipeline = function (d) {
+    if (d.label === label) {
+      E.created.push(key(d));
+      if (!E.resolved.has(key(d))) E.cold.push(key(d));
+    }
+    return P.__figgyOriginalCompute.call(this, d);
+  };
+})()"#,
+    )
+    .unwrap();
+}
+
+/// The first pick compiles the exact pick pipelines it needs through the
+/// browser's async API before it submits, so none is created cold on the
+/// page's thread; the pick still answers.
+#[wasm_bindgen_test(async)]
+async fn a_first_pick_compiles_its_exact_pipelines_in_the_background() {
+    hook(Some(4));
+    hook_exact_picks();
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart.register_column_f32("px", &[0.0, 1.0, 2.0]).unwrap();
+    chart.register_column_f32("py", &[0.0, 1.0, 2.0]).unwrap();
+    chart
+        .add_line_series("line", "px", "py", 2.0, "line")
+        .unwrap();
+    let mut config: serde_json::Value = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    for axis in ["bottom_x", "left_y"] {
+        config[axis]["min"] = 0.0.into();
+        config[axis]["max"] = 2.0.into();
+    }
+    chart.set_config(&config.to_string()).unwrap();
+    complete_within(&mut chart, 120.0, "the line chart").await;
+    let picked = chart.pick_point(160.0, 120.0, 400.0).await.unwrap();
+    let count = |list: &str| number(&format!("globalThis.__exact.{list}.length"));
+    assert!(
+        count("compiled") > 0,
+        "the pick compiled its exact pipelines in the background"
+    );
+    assert!(count("created") > 0, "the pick created its exact pipelines");
+    assert_eq!(
+        count("cold"),
+        0,
+        "no exact pick pipeline was created cold: {:?}",
+        js_sys::JSON::stringify(&js_sys::eval("globalThis.__exact").unwrap()).unwrap()
+    );
+    let picked: serde_json::Value = serde_json::from_str(&picked.as_string().unwrap()).unwrap();
+    assert_eq!(picked["series_id"], "line");
+}

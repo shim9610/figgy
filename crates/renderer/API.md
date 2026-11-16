@@ -731,7 +731,15 @@ complete. A browser export first compiles, in the background, the pipelines the 
 screen frame needed for its own target (`Rgba16Float`, its sample count) through a
 second queue, and waits for them before it prepares; its creations then find the
 browser's cache. A pipeline the screen did not draw is created by the export as before.
-The picks' compute pipelines are not in these queues. Natively every frame is complete,
+The picks' compute pipelines are not in these queues: the bundles compile through
+`enable_gpu_picking_async`, and `WindowedRenderer::compile_pick_pipelines_at` (or
+`Renderer::compile_pick_pipelines_async`) compiles, through
+`createComputePipelineAsync`, each exact pick variant a pick at that position needs
+and has not created yet, then creates it from the browser's cache. The web
+`pick_point` and `pick_data` call it before they submit, so a first pick no longer
+compiles its exact variants on the page's thread. Fit needs nothing of this: `fit_ranges`
+reads column statistics only, and the GPU auto-fit awaits its compute pipelines through
+`createComputePipelineAsync` already. Natively every frame is complete,
 the counts are zero and both waits resolve at once.
 
 Every background compile ends, and a wait on one ends with it: the browser settles
