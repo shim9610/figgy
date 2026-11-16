@@ -225,7 +225,10 @@ impl Renderer {
             contour_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(target_arch = "wasm32")]
-            browser_warmup: false,
+            compile_queue: None,
+            frame_complete: true,
+            #[cfg(target_arch = "wasm32")]
+            frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
             space_bg: None,
@@ -393,7 +396,10 @@ impl Renderer {
             contour_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(target_arch = "wasm32")]
-            browser_warmup: false,
+            compile_queue: None,
+            frame_complete: true,
+            #[cfg(target_arch = "wasm32")]
+            frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
             space_bg: None,

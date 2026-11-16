@@ -406,3 +406,213 @@ impl TargetPipelines {
         );
     }
 }
+
+/// The render pipelines a style draws every series of a chart through, by
+/// label (#299): a style's set is compiled whole (`create_style_set`).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn style_pipeline_labels(key: StyleKey) -> &'static [&'static str] {
+    match key {
+        StyleKey::Sketch => &[
+            "figgy line styled pipeline",
+            "figgy scatter styled pipeline",
+            "figgy errorbar styled pipeline",
+            "figgy stem pipeline",
+        ],
+        StyleKey::Milkyway => &[
+            "figgy milkyway ribbon pipeline",
+            "figgy milkyway stars pipeline",
+            "figgy milkyway planets pipeline",
+            "figgy milkyway jets pipeline",
+        ],
+        StyleKey::Constellation => &[
+            "figgy point constellation line pipeline",
+            "figgy point constellation stars pipeline",
+        ],
+    }
+}
+
+impl PreciseNeeds {
+    /// The labels of the render pipelines these needs create, as the
+    /// pipeline constructors name them. A need with no label here (the
+    /// vector, ternary and 3D entries) is created when it is drawn, as it
+    /// always was.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn labels(&self, mut each: impl FnMut(&'static str)) {
+        let table: [(bool, &'static str); 36] = [
+            (self.parallel, "figgy line parallel pipeline"),
+            (
+                self.parallel_selection,
+                "figgy selected parallel row pipeline",
+            ),
+            (self.field, "figgy field columnar pipeline"),
+            (
+                self.contour && !self.contour_label,
+                "figgy field contour pipeline",
+            ),
+            (
+                self.contour && self.contour_label,
+                "figgy labelled field contour pipeline",
+            ),
+            (self.mesh, "figgy triangle mesh field pipeline"),
+            (self.mesh_contour, "figgy triangle mesh contour pipeline"),
+            (self.mesh_selection, "figgy selected triangle mesh pipeline"),
+            (self.contour_label, "figgy contour label pipeline"),
+            (self.line, "figgy line columnar pipeline"),
+            (self.line_mapped, "figgy line mapped pipeline"),
+            (self.area, "figgy line area pipeline"),
+            (self.scatter, "figgy scatter columnar pipeline"),
+            (self.errorbar, "figgy errorbar columnar pipeline"),
+            (self.stem, "figgy stem pipeline"),
+            (self.bar, "figgy bar columnar pipeline"),
+            (self.bar_mapped, "figgy mapped bar columnar pipeline"),
+            (self.bar || self.bar_mapped, "histogram envelope fill"),
+            (self.bar_selection, "figgy selected histogram bin pipeline"),
+            (
+                self.bar_selection_mapped,
+                "figgy selected mapped histogram bin pipeline",
+            ),
+            (self.category_bars, "figgy category bar columnar pipeline"),
+            (
+                self.category_bar_selection,
+                "figgy selected category bar columnar pipeline",
+            ),
+            (self.box_plot, "figgy box plot columnar pipeline"),
+            (
+                self.box_plot_selection,
+                "figgy selected box plot columnar pipeline",
+            ),
+            (self.range_bars, "figgy range bar columnar pipeline"),
+            (
+                self.range_bar_selection,
+                "figgy selected range bar columnar pipeline",
+            ),
+            (self.violin, "figgy violin columnar pipeline"),
+            (
+                self.violin_selection,
+                "figgy selected violin columnar pipeline",
+            ),
+            (self.box_points, "figgy box points columnar pipeline"),
+            (
+                self.box_point_selection,
+                "figgy selected box point columnar pipeline",
+            ),
+            (self.value_labels, "figgy value label pipeline"),
+            (
+                self.value_label_selection,
+                "figgy value label selection pipeline",
+            ),
+            (self.field_selection, "figgy selected field data pipeline"),
+            (self.scatter_mapped, "figgy scatter mapped pipeline"),
+            (self.errorbar_mapped, "figgy errorbar mapped pipeline"),
+            (self.pick_ring, "figgy picked point ring pipeline"),
+        ];
+        for (needed, label) in table {
+            if needed {
+                each(label);
+            }
+        }
+        if self.pick_ring_mapped {
+            each("figgy picked point mapped ring pipeline");
+        }
+    }
+}
+
+/// The labels of the render pipelines the frame needs to draw `series` on
+/// a chart of `config` (#299): what [`PreciseNeeds::scan`] finds for that
+/// series alone, or the whole set of a drawing style. A browser frame leaves
+/// the series out until every one of them has compiled.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(in crate::renderer) fn series_pipeline_labels(
+    view: &ChartView,
+    config: &Config,
+    series: &Series<'_>,
+    mut each: impl FnMut(&'static str),
+) {
+    let item = PanelDraw {
+        view,
+        chart_config: config,
+        series: std::slice::from_ref(series),
+    };
+    let needs = PreciseNeeds::scan(std::slice::from_ref(&item));
+    needs.labels(&mut each);
+    if let Some(variant) = style_variant(&config.draw_style) {
+        for label in style_pipeline_labels(variant.key) {
+            each(label);
+        }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod label_tests {
+    /// Every label a frame waits for names render pipelines the browser
+    /// contract compiles in the background, so no series waits for a
+    /// compile that is never issued.
+    #[test]
+    fn every_waited_label_is_a_contract_render_pipeline() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../../shader_pipeline_contract.json")).unwrap();
+        let labels: Vec<String> = contract["pipelines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["kind"] == "render")
+            .filter_map(|p| p["descriptor"]["label"].as_str().map(str::to_owned))
+            .collect();
+        let mut needs = super::PreciseNeeds::scan(&[]);
+        // Every need at once.
+        macro_rules! all {
+            ($($field:ident),*) => { $(needs.$field = true;)* };
+        }
+        all!(
+            parallel,
+            parallel_selection,
+            field,
+            contour,
+            mesh,
+            mesh_contour,
+            mesh_selection,
+            line,
+            line_mapped,
+            area,
+            scatter,
+            errorbar,
+            stem,
+            bar,
+            bar_mapped,
+            bar_selection,
+            bar_selection_mapped,
+            category_bars,
+            category_bar_selection,
+            box_plot,
+            box_plot_selection,
+            range_bars,
+            range_bar_selection,
+            violin,
+            violin_selection,
+            box_points,
+            box_point_selection,
+            value_labels,
+            value_label_selection,
+            field_selection,
+            scatter_mapped,
+            errorbar_mapped,
+            pick_ring,
+            pick_ring_mapped
+        );
+        let mut waited = Vec::new();
+        needs.labels(|label| waited.push(label));
+        needs.contour_label = true;
+        needs.labels(|label| waited.push(label));
+        for key in [
+            super::StyleKey::Sketch,
+            super::StyleKey::Milkyway,
+            super::StyleKey::Constellation,
+        ] {
+            waited.extend(super::style_pipeline_labels(key));
+        }
+        assert!(waited.len() > 40);
+        for label in waited {
+            assert!(labels.iter().any(|l| l == label), "{label}");
+        }
+    }
+}

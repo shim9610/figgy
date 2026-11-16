@@ -27,7 +27,7 @@ fn canvas() -> web_sys::HtmlCanvasElement {
 /// axis-cut fragments, each of which opens with a comment only it has.
 const HOOK: &str = r#"
 (() => {
-  const S = globalThis.__sets = { basic: 0, full: 0, asyncBasic: 0, asyncFull: 0, kind: new WeakMap() };
+  const S = globalThis.__sets = { basic: 0, full: 0, asyncBasic: 0, asyncFull: 0, open: 0, kind: new WeakMap() };
   const P = GPUDevice.prototype;
   const create = P.createShaderModule;
   P.createShaderModule = function (d) {
@@ -42,7 +42,13 @@ const HOOK: &str = r#"
     const kind = S.kind.get(d.vertex.module);
     if (kind === 'basic') S.asyncBasic += 1;
     if (kind === 'full') S.asyncFull += 1;
-    return pipeline.call(this, d);
+    S.open += 1;
+    const entry = { label: (kind || '?') + ' ' + (d.label || ''), at: performance.now() };
+    (S.flying = S.flying || new Set()).add(entry);
+    const p = pipeline.call(this, d);
+    const done = () => { S.open -= 1; S.flying.delete(entry); (S.took = S.took || []).push([entry.label, Math.round(performance.now() - entry.at)]); };
+    p.then(done, done);
+    return p;
   };
 })()
 "#;
@@ -72,6 +78,31 @@ async fn turn() {
     wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
 }
 
+/// Wait until no compile is in flight: the chart's background queue has
+/// issued everything it holds and all of it has settled (#299). Fails after
+/// `seconds`, naming the compiles still in flight and the slowest settled.
+async fn drain(chart: &FiggyChart, seconds: f64) {
+    let start = js_sys::Date::now();
+    loop {
+        turn().await;
+        if count("open") == 0 {
+            return;
+        }
+        if js_sys::Date::now() - start > seconds * 1000.0 {
+            let report = js_sys::eval(
+                "JSON.stringify({ flying: [...globalThis.__sets.flying].map(e => [e.label, Math.round(performance.now() - e.at)]), slowest: (globalThis.__sets.took || []).sort((a, b) => b[1] - a[1]).slice(0, 8) })",
+            )
+            .unwrap()
+            .as_string()
+            .unwrap();
+            panic!(
+                "the queue did not drain in {seconds} s: status {} {report}",
+                chart.pipeline_status()
+            );
+        }
+    }
+}
+
 fn message(error: JsValue) -> String {
     error
         .dyn_into::<js_sys::Error>()
@@ -83,12 +114,13 @@ fn message(error: JsValue) -> String {
 /// it creates and every compile it issues is a basic one, and none is of
 /// the full set. Asking for the full set then issues the full set's render
 /// pipelines through the asynchronous compiler, as `create` issued the
-/// basic ones, and a second request issues nothing.
+/// basic ones, and a second request issues nothing. The compiles go through
+/// the chart's throttled queue, so the counts are read once it has drained.
 #[wasm_bindgen_test(async)]
 async fn the_default_is_the_basic_set_and_an_upgrade_issues_the_full_one() {
     js_sys::eval(HOOK).unwrap();
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    turn().await;
+    drain(&chart, 120.0).await;
     assert_eq!(chart.shader_set(), "basic");
     assert!(count("basic") > 0);
     assert_eq!(count("full"), 0, "a new chart creates no full module");
@@ -103,7 +135,7 @@ async fn the_default_is_the_basic_set_and_an_upgrade_issues_the_full_one() {
 
     chart.require_shader_set("full".into()).unwrap();
     assert_eq!(chart.shader_set(), "full");
-    turn().await;
+    drain(&chart, 480.0).await;
     assert!(count("full") > 0);
     assert_eq!(
         count("asyncFull"),
@@ -136,7 +168,7 @@ async fn the_full_option_creates_no_basic_module() {
     let chart = FiggyChart::create_with_options(canvas(), options(&[("shaders", "full".into())]))
         .await
         .unwrap();
-    turn().await;
+    drain(&chart, 480.0).await;
     assert_eq!(chart.shader_set(), "full");
     assert_eq!(count("basic"), 0, "no basic module is created");
     assert_eq!(count("asyncBasic"), 0, "no basic compile is issued");
@@ -147,7 +179,7 @@ async fn the_full_option_creates_no_basic_module() {
     let basic = FiggyChart::create_with_options(canvas(), options(&[("shaders", "basic".into())]))
         .await
         .unwrap();
-    turn().await;
+    drain(&basic, 120.0).await;
     assert_eq!(basic.shader_set(), "basic");
     assert_eq!((count("full"), count("asyncFull")), (0, 0));
     assert!(count("asyncBasic") > 20);

@@ -173,6 +173,10 @@ pub struct PipelinePreparation {
     vector: wgpu::BindGroupLayout,
     category_bar: wgpu::BindGroupLayout,
     parallel: wgpu::BindGroupLayout,
+    /// The renderer's background compiles, which a browser preparation
+    /// waits on instead of issuing its own (#299).
+    #[cfg(target_arch = "wasm32")]
+    compile_queue: Option<crate::browser_compile::CompileQueue>,
 }
 /// Opaque actual GPU objects. Installation neither replays data nor changes Config.
 pub struct PreparedPipelines {
@@ -265,6 +269,7 @@ impl PipelinePreparation {
                 self.pipelines.sample_count,
                 Some(self.feature),
                 self.pipelines.shaders.set,
+                self.compile_queue.as_ref(),
                 observer,
             )
             .await
@@ -483,6 +488,8 @@ impl Renderer {
             vector: self.vector_bgl.clone(),
             category_bar: self.category_bar_data_bgl.clone(),
             parallel: self.parallel_bgl.clone(),
+            #[cfg(target_arch = "wasm32")]
+            compile_queue: self.compile_queue.clone(),
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {

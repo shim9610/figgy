@@ -142,6 +142,7 @@ pub(in crate::renderer) async fn create_target_pipelines_observed_async(
             sample_count,
             None,
             set,
+            None,
             observer,
         )
         .await

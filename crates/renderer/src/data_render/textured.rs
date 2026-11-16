@@ -270,20 +270,15 @@ impl ShaderModules {
     }
 }
 
+/// The data modules' render pipelines a browser renderer of `set` compiles
+/// in the background, by source, each with its `(stage, pipeline label)`
+/// pairs in order (#299). The fullscreen pipeline every frame draws through
+/// is not among them: a renderer creates it directly.
 #[cfg(target_arch = "wasm32")]
-pub(crate) async fn prewarm_browser_render_feature(
-    device: &wgpu::Device,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    feature: Option<crate::PreparationFeature>,
+pub(crate) fn browser_render_sources(
     set: ShaderSet,
-    observer: &mut dyn FnMut(crate::InitEvent),
-) -> Result<(), String> {
-    let groups: &[crate::browser_compile::RenderSource<'_>] = &[
-        (
-            include_str!("fullscreen_textured.wgsl"),
-            &[("fullscreen textured", "figgy fullscreen textured pipeline")],
-        ),
+) -> [crate::browser_compile::RenderSource<'static>; 7] {
+    [
         (
             super::LINE_SHADER_BY_SET.of(set).source,
             &[
@@ -374,10 +369,44 @@ pub(crate) async fn prewarm_browser_render_feature(
                 .source,
             &[("contour labels", "figgy contour label pipeline")],
         ),
+    ]
+}
+
+/// Compile the render pipelines `feature` includes (all for `None`) through
+/// the browser's asynchronous compiler. A renderer with a background queue
+/// for this target (`queue`) waits for its compiles, issuing them ahead of
+/// the rest, so nothing is compiled twice and no more than the queue's limit
+/// is in flight (#299); any other issues them itself.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn prewarm_browser_render_feature(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    feature: Option<crate::PreparationFeature>,
+    set: ShaderSet,
+    queue: Option<&crate::browser_compile::CompileQueue>,
+    observer: &mut dyn FnMut(crate::InitEvent),
+) -> Result<(), String> {
+    if let Some(queue) = queue.filter(|queue| queue.serves(target_format, sample_count)) {
+        return queue
+            .wait_for(
+                set,
+                |label| feature.is_none_or(|feature| feature.includes_label(label)),
+                observer,
+            )
+            .await;
+    }
+    let data = browser_render_sources(set);
+    let fullscreen: crate::browser_compile::RenderSource<'static> = (
+        include_str!("fullscreen_textured.wgsl"),
+        &[("fullscreen textured", "figgy fullscreen textured pipeline")],
+    );
+    let groups: [crate::browser_compile::RenderSource<'_>; 8] = [
+        fullscreen, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
     ];
     crate::browser_compile::render(
         device,
-        groups,
+        &groups,
         target_format,
         sample_count,
         feature,

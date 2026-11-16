@@ -123,6 +123,7 @@ impl Renderer {
                 self.target_sample_count,
                 Some(feature),
                 self.pipelines.shaders.set,
+                self.compile_queue.as_ref(),
                 observer,
             )
             .await

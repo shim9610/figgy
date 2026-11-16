@@ -705,6 +705,32 @@ or an uninstalled result releases its handles. Hosts deduplicate concurrent requ
 per renderer and feature, serialize installation with other renderer calls, and
 ignore results after their renderer has been disposed.
 
+**Background compiles in a browser** ([#299](https://github.com/shim9610/figgy/issues/299)).
+A renderer built by `for_window_minimal_async_observed` (or
+`for_window_with_shader_set_async_observed`) compiles the render pipelines of its
+shader set in the background, at most as many at once as the browser reports cores
+(`navigator.hardwareConcurrency`, four when it reports none), and issues what a screen
+frame needs before the rest. Frame preparation of registered charts
+(`prepare_registered`, `WindowedRenderer::draw_registered`) leaves out a series whose
+pipelines have not compiled and draws everything else; `Renderer::frame_complete()`
+tells whether the last screen frame drew every series, `Renderer::compile_redraw_due()`
+whether a compile has resolved since a frame left one out (draw again), and
+`Renderer::pipeline_status()` returns a `PipelineStatus` snapshot (`total`, `ready`,
+`compiling`, `failed`, `frame_complete`). Exports, host-owned `prepare` and the picks
+create what they need and are always complete. Natively every frame is complete and
+the counts are zero.
+
+Every background compile ends, and a wait on one ends with it: the browser settles
+each `createRenderPipelineAsync` promise (it resolves on success and on device loss,
+and rejects with a `GPUPipelineError` otherwise); the device's `lost` promise ends
+every open compile as device lost; moving to the full set ends the basic compiles not
+issued yet as superseded by their full twins; dropping the renderer cancels the rest.
+A compile that ended other than ready counts as `failed`, and the draw that needs its
+pipeline creates it, which reports the error through the usual path.
+`Renderer::compile_progress()` (browser only) resolves at the next change, and
+`Renderer::compiles_pending()` tells whether a compile is waiting or in flight;
+`first_frame_ready()` waits on these changes, never on animation frames.
+
 **Shader sets** ([#299](https://github.com/shim9610/figgy/issues/299);
 ARCHITECTURE.md, "Shader sets"). A renderer starts on the basic shader set
 (`ShaderSet::Basic`), which draws rectangular charts with linear and

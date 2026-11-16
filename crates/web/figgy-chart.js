@@ -301,6 +301,8 @@ export class FiggyChartElement extends HTMLElement {
       }
       if (!this.busy) this.#pumpStreamSelection();
       if (!this.busy) this.#kernel?.frame();
+      // A picker prewarm waits for the render compiles (#299).
+      if (this.#pendingPrewarm && !this.busy) this.#drainBackgroundPrewarm();
     } catch (error) {
       if (this.#streamExecution && !this.#streamExecution.settled) {
         this.#failStreamingExecution(this.#streamExecution, error);
@@ -1324,6 +1326,16 @@ export class FiggyChartElement extends HTMLElement {
       return;
     }
     if (this.busy) {
+      return;
+    }
+    // The picker's compute pipelines compile one at a time after the
+    // chart's render pipelines (#299): the prewarm holds the kernel, and
+    // the frames that fill the chart in must not wait behind it. The frame
+    // loop drains this again once they have compiled.
+    const status = typeof pending.kernel.pipeline_status === "function"
+      ? JSON.parse(pending.kernel.pipeline_status())
+      : null;
+    if (status && (status.compiling > 0 || !status.frame_complete)) {
       return;
     }
     this.#pendingPrewarm = null;

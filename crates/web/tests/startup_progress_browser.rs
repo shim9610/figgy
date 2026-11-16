@@ -251,11 +251,20 @@ fn show(chart: &mut figgy::FiggyChart, kind: &str) {
 }
 
 /// #299: `create` resolves, its first frame presented, without a single
-/// pipeline compile having settled, and a chart shown at once, before its pipelines'
-/// compiles have resolved, is the chart shown after all of them have.
+/// pipeline compile having settled, and with no more compiles issued than
+/// the browser reports cores. A chart shown while its pipelines compile is
+/// presented without the series that wait for them (`frame_complete` is
+/// false) while its export, which creates what it needs, is the whole
+/// chart; once the compiles resolve the frames fill in, and the chart is
+/// the one the export drew.
 #[wasm_bindgen_test(async)]
 async fn first_frame_precedes_the_background_compiles_and_charts_draw_the_same_before_and_after() {
     js_sys::eval(COUNT_COMPILES).unwrap();
+    let cores = js_sys::eval("navigator.hardwareConcurrency")
+        .unwrap()
+        .as_f64()
+        .filter(|cores| cores.is_finite() && *cores >= 1.0)
+        .map_or(4, |cores| cores as u32);
     for kind in ["lines", "bars", "field"] {
         let before = compiles();
         assert_eq!(before.0, before.1, "{kind}: the page starts idle");
@@ -268,8 +277,8 @@ async fn first_frame_precedes_the_background_compiles_and_charts_draw_the_same_b
             .expect("raw chart creation failed");
         let (issued, settled) = compiles();
         assert!(
-            issued - before.0 > 20,
-            "{kind}: every pipeline's compile is issued at once ({issued} after {before:?})"
+            issued > before.0 && issued - before.0 <= cores,
+            "{kind}: at most {cores} compiles are in flight ({issued} after {before:?})"
         );
         assert_eq!(
             settled, before.1,
@@ -278,15 +287,30 @@ async fn first_frame_precedes_the_background_compiles_and_charts_draw_the_same_b
         let empty = picture(&mut chart).await;
 
         show(&mut chart, kind);
-        let early = picture(&mut chart).await;
-        assert!(early != empty, "{kind}: the series must be drawn at once");
+        chart.frame().expect("a frame while the compiles are held");
+        assert!(
+            !chart.frame_complete(),
+            "{kind}: the frame leaves out the series whose pipelines compile"
+        );
+        let early = chart.export_png(1.0).await.expect("export").to_vec();
+        assert!(
+            early != empty,
+            "{kind}: the export draws the series at once"
+        );
         assert_eq!(
             compiles().1,
             before.1,
-            "{kind}: drawn with every compile held"
+            "{kind}: exported with every compile held"
+        );
+        assert!(
+            compiles().0 - before.0 <= cores,
+            "{kind}: the screen's request stays within the limit"
         );
         compile_gate("release");
 
+        let late = picture(&mut chart).await;
+        assert!(chart.frame_complete(), "{kind}: the chart filled in");
+        assert!(early == late, "{kind}: the chart changed once compiled");
         let mut waited = 0;
         while {
             let (issued, settled) = compiles();
@@ -296,9 +320,5 @@ async fn first_frame_precedes_the_background_compiles_and_charts_draw_the_same_b
             waited += 100;
             assert!(waited < 600_000, "{kind}: the compiles never settled");
         }
-        let (width, height) = (canvas.width(), canvas.height());
-        chart.resize(width, height).expect("redraw request");
-        let late = picture(&mut chart).await;
-        assert!(early == late, "{kind}: the chart changed once compiled");
     }
 }

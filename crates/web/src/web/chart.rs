@@ -1548,15 +1548,60 @@ impl FiggyChart {
     /// Submit the current chart if it is dirty, then wait until that GPU
     /// work has finished. Hosts should keep a loading overlay up until
     /// this resolves. The wait does not remove a main-thread Dawn/driver
-    /// freeze; it only reports first-submit completion.
+    /// freeze; it only reports first-submit completion. While a series'
+    /// pipelines still compile in the background its frame leaves it out
+    /// (#299); this draws again as they resolve and settles with the frame
+    /// that holds every series.
     ///
     /// JS: `await chart.first_frame_ready();`
     pub async fn first_frame_ready(&mut self) -> Result<(), JsValue> {
         self.frame()?;
+        // A frame that left a series out while its pipelines compile is not
+        // the chart yet (#299): wait for a compile to change state, then
+        // draw again. A frame leaves a series out only while one of its
+        // compiles is waiting or compiling, and every compile ends (ready,
+        // rejected, device lost, superseded or cancelled), so this ends.
+        while !self.renderer.frame_complete() {
+            if self.renderer.compiles_pending() {
+                self.renderer.compile_progress().await;
+            }
+            self.redraw_pending = true;
+            self.frame()?;
+            if !self.renderer.frame_complete() && !self.renderer.compiles_pending() {
+                // Nothing is compiling, yet a series was left out: no
+                // compile will ever wake this wait.
+                return Err(JsValue::from_str(
+                    "a series waits for a pipeline that no compile is pending for",
+                ));
+            }
+        }
         renderer::init::wait_browser_submitted_work(self.renderer.queue())
             .await
             .map_err(js_err)?;
         Ok(())
+    }
+
+    /// Whether the last frame drew every series of the chart (#299): false
+    /// while a series waits for its pipelines' background compile, which
+    /// the frames that follow draw as they resolve.
+    pub fn frame_complete(&self) -> bool {
+        self.renderer.frame_complete()
+    }
+
+    /// The chart's background pipeline compiles (#299), as JSON:
+    /// `{ total, ready, compiling, failed, frame_complete }`. `compiling`
+    /// counts the compiles still waiting too; `frame_complete` is whether
+    /// the last frame drew every series.
+    pub fn pipeline_status(&self) -> String {
+        let status = self.renderer.pipeline_status();
+        serde_json::json!({
+            "total": status.total,
+            "ready": status.ready,
+            "compiling": status.compiling,
+            "failed": status.failed,
+            "frame_complete": status.frame_complete,
+        })
+        .to_string()
     }
 
     /// Alias for [`Self::first_frame_ready`].
@@ -1616,11 +1661,13 @@ impl FiggyChart {
         let annotation_dirty = current_stamp
             .needs_annotation_raster_since(self.last_presented_stamp.as_ref())
             || self.annotation_selection_dirty;
+        // A pipeline a left-out series waited for has compiled: draw again,
+        // so the chart fills in without a host call (#299).
         let decision = frame_decision(
             renderer_dirty,
             raster_dirty,
             self.view_dirty,
-            self.redraw_pending,
+            self.redraw_pending || self.renderer.compile_redraw_due(),
             self.renderer.has_pending_maintenance(),
         );
         let refresh_raster = match decision {

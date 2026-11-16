@@ -22,6 +22,8 @@ pub(crate) use browser::*;
 pub(super) use create::*;
 pub(crate) use health::*;
 pub(super) use pipeline_kinds::*;
+#[cfg(target_arch = "wasm32")]
+pub(super) use precise_variants::series_pipeline_labels;
 pub(super) use prewarm::*;
 pub(super) use target::*;
 pub(super) use target_pipelines::*;

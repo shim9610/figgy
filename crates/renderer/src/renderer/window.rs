@@ -494,8 +494,7 @@ impl Renderer {
         .await?;
         #[cfg(target_arch = "wasm32")]
         if minimal {
-            inner.browser_warmup = true;
-            inner.start_browser_warmup(set);
+            inner.start_browser_compiles(set);
         }
         Ok(WindowedRenderer {
             inner,
@@ -507,37 +506,26 @@ impl Renderer {
         })
     }
 
-    /// Start the browser's asynchronous compile of every resident render
-    /// pipeline of `set` and return without waiting for any of them
-    /// (#299). All the calls are issued at once, in the prewarm's stage
-    /// order; the browser compiles them off the frame's path, so frames keep
-    /// presenting. The temporary pipelines are discarded: a pipeline whose
-    /// compile has resolved is then created by the draw that first needs it
-    /// from the device's compilation cache, and one that has not is compiled
-    /// by that creation, as it always was. The future owns its device handle
-    /// and borrows nothing from the renderer, which may be dropped meanwhile.
-    ///
-    /// A new renderer starts it for the basic modules, and the move to the
-    /// full ones ([`Self::admit_full_shaders`]) starts it again for those.
+    /// Start the browser's asynchronous compile of every render pipeline of
+    /// `set` and return without waiting for any of them (#299). The compiles
+    /// go through the renderer's queue, at most as many at once as the
+    /// browser reports cores, what a frame asks for first; a frame leaves out
+    /// a series whose pipelines have not resolved, and the draw that first
+    /// needs a resolved one creates it from the device's compilation cache.
+    /// Without a queue (a target the contract has no descriptors for) the
+    /// renderer creates each pipeline when it first draws it, as before.
     #[cfg(target_arch = "wasm32")]
-    pub(in crate::renderer) fn start_browser_warmup(&self, set: ShaderSet) {
-        let device = self.device.clone();
-        let (format, samples) = (self.surface_format, self.target_sample_count);
-        wasm_bindgen_futures::spawn_local(async move {
-            let warmed = data_render::prewarm_browser_render_feature(
-                &device,
-                format,
-                samples,
-                None,
-                set,
-                &mut |_| {},
-            )
-            .await;
-            if warmed.is_err() {
-                // Nothing is lost: the draw that needs a pipeline creates
-                // it, and a failure is reported by that creation.
-            }
-        });
+    pub(in crate::renderer) fn start_browser_compiles(&mut self, set: ShaderSet) {
+        let sources = data_render::browser_render_sources(set);
+        let queue = crate::browser_compile::CompileQueue::new(
+            &self.device,
+            self.surface_format,
+            self.target_sample_count,
+        )
+        .and_then(|queue| queue.schedule(set, &sources).map(|()| queue));
+        // A queue that cannot be built leaves the renderer creating its
+        // pipelines when it draws them, which reports any failure.
+        self.compile_queue = queue.ok();
     }
 
     /// [`Self::for_window_async`] on native, without an executor: wgpu

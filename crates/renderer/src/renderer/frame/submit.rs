@@ -351,9 +351,11 @@ impl Renderer {
                 self.ensure_registered_styles(item.chart_id)?;
             }
         }
-        // Whether each series of each item is drawn: resident sources only.
+        // Whether each series of each item is drawn: resident sources only,
+        // and in a browser only once its pipelines have compiled (#299).
         let mut drawn = Vec::new();
         drawn.try_reserve_exact(items.len()).map_err(allocation)?;
+        let mut complete = true;
         for item in items {
             let state = self
                 .chart_states
@@ -363,13 +365,17 @@ impl Renderer {
             resident
                 .try_reserve_exact(state.series.len())
                 .map_err(allocation)?;
-            resident.extend(
-                state
-                    .series
-                    .iter()
-                    .map(|series| self.require_resident_series(series).is_ok()),
-            );
+            for (index, series) in state.series.iter().enumerate() {
+                let ready = self.registered_series_compiled(item, state, index);
+                complete &= ready;
+                resident.push(self.require_resident_series(series).is_ok() && ready);
+            }
             drawn.push(resident);
+        }
+        self.frame_complete = complete;
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.compile_queue {
+            self.frame_settled = queue.settled();
         }
         let (states, mut preparation) = self.preparation_parts();
         let mut series_inputs = Vec::new();
@@ -551,5 +557,146 @@ impl Renderer {
             }
         }
         Ok(frame)
+    }
+}
+
+impl Renderer {
+    /// Whether the series at `index` of the registered chart `state` can be
+    /// drawn in this frame without creating a pipeline the browser has not
+    /// compiled yet (#299). A series whose pipelines are still waiting or
+    /// compiling in the renderer's background queue is left out, and those
+    /// compiles are moved ahead of the others, so the frame draws everything
+    /// else at once and the chart fills in as they resolve. Natively, and
+    /// for a renderer without a queue, every series is ready: its pipelines
+    /// are created when it is drawn.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
+    pub(in crate::renderer) fn registered_series_compiled(
+        &self,
+        item: &RegisteredPanel<'_>,
+        state: &ChartRenderState,
+        index: usize,
+    ) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(queue) = self
+                .compile_queue
+                .as_ref()
+                .filter(|queue| queue.serves(self.surface_format, self.target_sample_count))
+            else {
+                return true;
+            };
+            let styles = match &state.display {
+                Some(display) => display.styles.as_ref().map(|(_, styles)| styles),
+                None => state.prepared_styles.as_ref(),
+            };
+            let (Some(styles), Some(config)) = (styles, state.series.get(index)) else {
+                return true;
+            };
+            let Some(style) = styles.styles.get(index) else {
+                return true;
+            };
+            let chart_config = match state.display.as_ref().and_then(|d| d.placed.as_ref()) {
+                Some(placed) => &placed.config,
+                None => &state.config,
+            };
+            let set = self.pipelines.shaders.set;
+            let mut ready = true;
+            series_pipeline_labels(
+                item.view,
+                chart_config,
+                &Series { config, style },
+                |label| {
+                    use crate::compile_schedule::LabelReadiness;
+                    match queue.readiness(set, label) {
+                        // Waiting or compiling: leave the series out and
+                        // issue its compiles first. They end in some
+                        // outcome, which wakes the chart to draw again.
+                        LabelReadiness::Pending => {
+                            ready = false;
+                            queue.prioritize(set, label);
+                        }
+                        // Compiled: the creation is a cache hit.
+                        LabelReadiness::Ready => {}
+                        // Ended otherwise (rejected, device lost, retired,
+                        // cancelled): draw, so the creation reports the
+                        // error through the usual path; never wait on it.
+                        LabelReadiness::Ended => {}
+                        // Not in the queue: the draw creates it as before.
+                        LabelReadiness::Untracked => {}
+                    }
+                },
+            );
+            ready
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        true
+    }
+
+    /// Whether the last screen frame drew every series it was handed
+    /// (#299). False while a series waits for its pipelines' background
+    /// compile in a browser; always true natively.
+    pub fn frame_complete(&self) -> bool {
+        self.frame_complete
+    }
+
+    /// The renderer's background pipeline compiles (#299): how many of its
+    /// shader set's render pipelines are scheduled, compiled, compiling and
+    /// failed, and whether the last screen frame was complete. Cheap: no
+    /// GPU call.
+    pub fn pipeline_status(&self) -> PipelineStatus {
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut status = PipelineStatus {
+            frame_complete: self.frame_complete,
+            ..PipelineStatus::default()
+        };
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.compile_queue {
+            let (total, ready, compiling, failed) = queue.counts(self.pipelines.shaders.set);
+            status.total = total;
+            status.ready = ready;
+            status.compiling = compiling;
+            status.failed = failed;
+        }
+        status
+    }
+
+    /// Whether a background compile has ended since the last screen frame
+    /// left a series out (#299): a host loop that draws only when something
+    /// changed draws again, so the chart fills in without a host call.
+    pub fn compile_redraw_due(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            !self.frame_complete
+                && self
+                    .compile_queue
+                    .as_ref()
+                    .is_some_and(|queue| queue.settled() != self.frame_settled)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        false
+    }
+
+    /// Resolves when a background compile next changes state (#299), or at
+    /// once when none is waiting or compiling. A chart that left a series
+    /// out awaits this, then draws again. Every compile ends (ready,
+    /// rejected, device lost, superseded or cancelled), so this never waits
+    /// for good while a series is left out.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn compile_progress(&self) {
+        if let Some(queue) = &self.compile_queue {
+            queue.changed().await;
+        }
+    }
+
+    /// Whether any background compile is waiting or in flight (#299).
+    pub fn compiles_pending(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.compile_queue
+                .as_ref()
+                .is_some_and(crate::browser_compile::CompileQueue::busy)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        false
     }
 }

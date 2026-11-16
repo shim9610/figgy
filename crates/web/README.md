@@ -91,6 +91,15 @@ starts compiling every render pipeline at once and the browser goes on
 compiling them after the chart is on screen. A chart drawn meanwhile is drawn
 whole; the host calls and awaits nothing for this. `await chart.prewarm_all()`
 remains for a host that wants every pipeline prepared before it goes on.
+While a chart's pipelines compile in the background
+([#299](https://github.com/shim9610/figgy/issues/299)), a frame draws every
+series whose pipelines are ready, with the axes and legend, and leaves the others
+out; `frame()` draws again as soon as one of them has compiled, so a chart fills in
+without host calls. `chart.frame_complete()` tells whether the last frame drew every
+series, `chart.pipeline_status()` returns `{ total, ready, compiling, failed,
+frame_complete }` as JSON, and `first_frame_ready()` settles with the frame that draws
+every series. `<figgy-chart>` starts its picker prewarm once the render pipelines have
+compiled. Exports and picks always draw the whole chart.
 A chart starts on the basic shader set, which draws rectangular charts with
 linear and logarithmic axes, and moves itself to the full set when its config
 first has an axis break, a probability axis or polar coordinates
@@ -175,6 +184,12 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 로컬에서는 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
 `<figgy-chart>` 요소 테스트(`tests/figgy-chart.test.mjs`)는 빌드나 브라우저 없이 Node만으로
 실행한다: `node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs`.
+
+차트의 파이프라인이 백그라운드에서 컴파일되는 동안([#299](https://github.com/shim9610/figgy/issues/299))
+프레임은 파이프라인이 준비된 시리즈와 축·범례를 그리고 나머지는 뺀다. 그 파이프라인의 컴파일이
+끝나면 `frame()`이 다시 그리므로 호스트가 호출하지 않아도 차트가 채워진다.
+`chart.frame_complete()`는 마지막 프레임이 모든 시리즈를 그렸는지, `chart.pipeline_status()`는
+컴파일 현황을 알려 준다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
 스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가

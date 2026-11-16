@@ -149,6 +149,28 @@ impl RenderRevision {
 
 /// Opaque O(1) identity for all renderer-visible output, including fonts
 /// registered through the process-global font registry.
+
+/// A snapshot of a renderer's background pipeline compiles (#299), read
+/// with [`Renderer::pipeline_status`]. The counts are of the render
+/// pipelines of the renderer's shader set that the browser compiles in the
+/// background; a waiting compile counts as compiling. A renderer with no
+/// background compiles (native, or a browser renderer that compiled
+/// everything at creation) reports zero of each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineStatus {
+    /// Pipelines scheduled.
+    pub total: usize,
+    /// Pipelines compiled.
+    pub ready: usize,
+    /// Pipelines waiting for or in their compile.
+    pub compiling: usize,
+    /// Pipelines whose compile the browser rejected. The draw that needs one
+    /// creates it, which reports the error.
+    pub failed: usize,
+    /// Whether the last screen frame drew every series it was handed.
+    pub frame_complete: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RendererVisualStamp {
     revision: RenderRevision,
@@ -340,12 +362,20 @@ pub struct Renderer {
     /// channel count, never by the sample count (M3).
     monotonic: monotonic::MonotonicState,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
-    /// Whether this renderer started the browser's asynchronous compile of
-    /// its resident render pipelines when it was built
-    /// (`for_window_minimal_async_observed`, #299): the move to the full
-    /// shaders then starts it again for those.
+    /// The background compiles of this renderer's render pipelines in the
+    /// browser (#299): a renderer built by `for_window_minimal_async_observed`
+    /// (or with a shader set) has one; any other renderer creates each
+    /// pipeline when it first draws it, as before.
     #[cfg(target_arch = "wasm32")]
-    browser_warmup: bool,
+    compile_queue: Option<crate::browser_compile::CompileQueue>,
+    /// Whether the last screen frame this renderer prepared drew every
+    /// series it was handed (#299): false while a series waited for its
+    /// pipelines' background compile. Always true natively.
+    frame_complete: bool,
+    /// The queue's settled count when the last screen frame was prepared:
+    /// a compile settled since then may let a left-out series draw.
+    #[cfg(target_arch = "wasm32")]
+    frame_settled: u64,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
     #[cfg(test)]

@@ -500,12 +500,20 @@ impl Renderer {
         );
         self.contour_label_pipelines = None;
         self.arc_pipelines = None;
-        // A renderer that warmed the browser's compiler with its basic
-        // pipelines when it was built does the same for the full ones, so
-        // a pipeline first drawn later is not compiled cold.
+        // A renderer that compiles its basic pipelines in the background
+        // does the same for the full ones, dropping the basic compiles not
+        // issued yet, so a pipeline first drawn later is not compiled cold.
         #[cfg(target_arch = "wasm32")]
-        if self.browser_warmup {
-            self.start_browser_warmup(ShaderSet::Full);
+        if let Some(queue) = &self.compile_queue {
+            let sources = data_render::browser_render_sources(ShaderSet::Full);
+            if queue
+                .switch_to(ShaderSet::Basic, ShaderSet::Full, &sources)
+                .is_err()
+            {
+                // The draw creates each pipeline when it needs it, which
+                // reports any failure.
+                self.compile_queue = None;
+            }
         }
         // The picker's bundles are built from the set's modules and its own
         // of the same set. A picker that was ready is ready again; its
