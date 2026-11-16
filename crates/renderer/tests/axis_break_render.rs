@@ -1434,7 +1434,8 @@ fn export_document(
 /// chart it is handed has an axis break (#299). A break on any one layer
 /// (the base chart, an overlay, a subplot or a subplot's overlay) moves it
 /// to the cut remap, through every entry that is handed a chart: an export,
-/// a registration, a prepared frame and a pick.
+/// a registration, a configuration or state change, a prepared frame and a
+/// pick.
 #[test]
 fn a_break_on_any_layer_selects_the_cut_remap_shaders() {
     // No break on any layer: identity through every entry.
@@ -1485,15 +1486,30 @@ fn a_break_on_any_layer_selects_the_cut_remap_shaders() {
         );
         r.remove_chart(id).unwrap();
 
-        // A break added to a registered chart: the next pick of it.
+        // A break added to a registered chart, and a pick of it afterwards.
         let mut r = layered_renderer();
         r.enable_gpu_picking().unwrap();
         let id = r.register_chart(plain.clone(), series.clone()).unwrap();
         test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
         assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity, "{layer}");
         r.set_chart_config(id, broken.clone()).unwrap();
+        assert_eq!(
+            r.axis_cut_shaders(),
+            AxisCutShaders::Remap,
+            "{layer}: set_chart_config"
+        );
         test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
-        assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap, "{layer}: pick");
+
+        // The same through `set_chart_state`.
+        let mut r = layered_renderer();
+        let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+        r.set_chart_state(id, broken.clone(), series.clone())
+            .unwrap();
+        assert_eq!(
+            r.axis_cut_shaders(),
+            AxisCutShaders::Remap,
+            "{layer}: set_chart_state"
+        );
     }
 
     // A prepared frame of the host's own chart, broken on its base axis

@@ -705,6 +705,16 @@ or an uninstalled result releases its handles. Hosts deduplicate concurrent requ
 per renderer and feature, serialize installation with other renderer calls, and
 ignore results after their renderer has been disposed.
 
+A renderer compiles its data shaders without the cut remap of a broken axis
+until it is first handed a chart with an axis break on any layer
+(`Renderer::axis_cut_shaders()`, [#299](https://github.com/shim9610/figgy/issues/299);
+ARCHITECTURE.md, "Axis-cut shader variants"). That chart empties the retained
+pipeline caches once: the render groups report not ready again (picking, if it was
+enabled, is rebuilt at once), `prewarm_all` and new preparations compile the
+pipelines with the remap, and a preparation begun before it
+is rejected by `install_preparation` like one for another target generation. A
+`PreparedFrame` prepared before it stays valid.
+
 `PreparationFeature::ALL`, `for_chart(config, series)` and `preparation_ready`
 provide the host's feature inventory and gating contract. Background compilation
 can start for all groups after Basic is installed. Before calling a render path,

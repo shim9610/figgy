@@ -287,6 +287,10 @@ impl Renderer {
         id: ChartId,
         config: Config,
     ) -> Result<()> {
+        // A break added to a registered chart moves the renderer to the cut
+        // remap shaders now (#299), before the host asks which preparation
+        // groups are ready or enables picking for it.
+        self.admit_axis_cuts(config_cuts_axes(&config));
         let state = self
             .chart_states
             .get(&id)

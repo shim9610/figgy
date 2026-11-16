@@ -461,8 +461,9 @@ impl Renderer {
     /// without a break; the target generation is unchanged. A detached
     /// preparation begun before it is refused at installation.
     ///
-    /// Called by every entry that is handed a chart: registration and
-    /// configuration changes, frame preparation, export and picking.
+    /// Called by every entry that is handed a chart: registration,
+    /// `set_chart_config` and `set_chart_state`, frame preparation, export
+    /// and picking.
     /// Drawing and picking also refuse a broken chart on identity shaders,
     /// so a missed entry fails instead of drawing an unbroken axis.
     pub(in crate::renderer) fn admit_axis_cuts(&mut self, broken: bool) {

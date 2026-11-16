@@ -877,6 +877,24 @@ fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
 /// Part of the layered design (rule 9); these stay. Also the per-module
 /// bodies of one contract, where each module needs its own.
 const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
+    // The axis-cut layer's interface (#299): the cut remap of a broken axis
+    // and its identity twin, of which `assembled_by_cuts!` splices one into
+    // each assembly of a module. `shader_assembly`'s
+    // `the_identity_cut_fragment_has_the_cut_fragments_signatures` holds the
+    // two to the same signatures.
+    (
+        &[
+            "data_render/common/axis_cuts.wgsl",
+            "data_render/common/axis_cuts_identity.wgsl",
+        ],
+        &[
+            "cut_remap",
+            "cut_scale_at",
+            "cut_unmap",
+            "cuts_of",
+            "no_cuts",
+        ],
+    ),
     (
         &[
             "gpu_pick/marker.wgsl",
