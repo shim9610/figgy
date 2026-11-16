@@ -213,6 +213,16 @@ impl CompileSchedule {
         }
     }
 
+    /// The label of each compile of `set` the last frame needed, once per
+    /// compile.
+    pub(crate) fn for_each_wanted(&self, set: ShaderSet, mut each: impl FnMut(&str)) {
+        for compile in &self.compiles {
+            if self.in_scope(compile, set, Scope::Screen) {
+                each(&compile.label);
+            }
+        }
+    }
+
     /// Whether compile `index` is in `scope` for `set`: of the set, and for
     /// [`Scope::Screen`] needed by the last frame.
     fn in_scope(&self, compile: &ScheduledCompile, set: ShaderSet, scope: Scope) -> bool {

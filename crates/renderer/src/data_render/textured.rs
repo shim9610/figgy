@@ -383,6 +383,28 @@ pub(crate) fn browser_on_demand_source(
     set: ShaderSet,
     label: &str,
 ) -> Option<crate::browser_compile::RenderSource<'static>> {
+    browser_on_demand_sources(set)
+        .into_iter()
+        .find(|(_, stages)| stages.iter().any(|(_, listed)| *listed == label))
+}
+
+/// Every module whose render pipelines a browser renderer compiles in the
+/// background (#299): the ones [`browser_render_sources`] schedules at
+/// creation, then the ones compiled on demand. An export schedules from
+/// these the pipelines it draws with, for its own target.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn browser_every_render_source(
+    set: ShaderSet,
+) -> [crate::browser_compile::RenderSource<'static>; 14] {
+    let [a, b, c, d, e, f, g] = browser_render_sources(set);
+    let [h, i, j, k, l, m, n] = browser_on_demand_sources(set);
+    [a, b, c, d, e, f, g, h, i, j, k, l, m, n]
+}
+
+/// The modules compiled on demand (#299): vector, 3D surface and ternary
+/// region.
+#[cfg(target_arch = "wasm32")]
+fn browser_on_demand_sources(set: ShaderSet) -> [crate::browser_compile::RenderSource<'static>; 7] {
     const SURFACE: [(&str, &str); 5] = [
         ("3D surface", "figgy surface pipeline"),
         ("selected 3D surface", "figgy surface selection pipeline"),
@@ -447,10 +469,8 @@ pub(crate) fn browser_on_demand_source(
             ),
         ],
     );
-    sources
-        .into_iter()
-        .chain([region])
-        .find(|(_, stages)| stages.iter().any(|(_, listed)| *listed == label))
+    let [a, b, c, d, e, f] = sources;
+    [a, b, c, d, e, f, region]
 }
 
 /// Compile the render pipelines `feature` includes (all for `None`) through

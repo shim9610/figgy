@@ -727,9 +727,12 @@ back; `all` grows when a chart first needs a module compiled on demand.
 needed has ended (a frame drawn then is complete) and `Renderer::pipelines_ready()` once
 every scheduled compile has; each returns the first `PipelineFailure` among them as its
 error. Exports, host-owned `prepare` and the picks create what they need and are always
-complete; they draw into their own formats (exports into `Rgba16Float`), so the
-background compiles do not cover them. Natively every frame is complete, the counts are
-zero and both waits resolve at once.
+complete. A browser export first compiles, in the background, the pipelines the last
+screen frame needed for its own target (`Rgba16Float`, its sample count) through a
+second queue, and waits for them before it prepares; its creations then find the
+browser's cache. A pipeline the screen did not draw is created by the export as before.
+The picks' compute pipelines are not in these queues. Natively every frame is complete,
+the counts are zero and both waits resolve at once.
 
 Every background compile ends, and a wait on one ends with it: the browser settles
 each `createRenderPipelineAsync` promise (it resolves on success and on device loss,

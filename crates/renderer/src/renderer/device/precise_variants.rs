@@ -544,41 +544,53 @@ pub(in crate::renderer) fn series_pipeline_labels(
     view: &ChartView,
     config: &Config,
     series: &Series<'_>,
-    mut each: impl FnMut(&'static str),
+    each: impl FnMut(&'static str),
 ) {
     let item = PanelDraw {
         view,
         chart_config: config,
         series: std::slice::from_ref(series),
     };
-    let needs = PreciseNeeds::scan(std::slice::from_ref(&item));
-    needs.labels(&mut each);
-    if let Some(variant) = style_variant(&config.draw_style) {
-        for label in style_pipeline_labels(variant.key) {
-            each(label);
-        }
-    }
-    // The surfaces of a 3D chart and the region fill of a ternary chart are
-    // created by their own ensure paths, every pass at once
-    // (`ensure_surface_pipelines`, `ensure_ternary_region_pipelines`): the
-    // series waits for every pass those paths create.
-    let render_type = &series.config.render_type;
-    if config.view_3d().is_some() {
-        use data_render::surface_mesh::{SurfaceInput, SurfacePass};
-        if draws_surface(render_type) || draws_floor(render_type) {
-            for pass in SurfacePass::ALL {
-                each(pass.label(SurfaceInput::Grid));
+    items_pipeline_labels(std::slice::from_ref(&item), each);
+}
+
+/// The labels of the render pipelines a draw of `items` needs (#299): what
+/// [`PreciseNeeds::scan`] finds, the whole set of each drawing style, and
+/// every pass of the 3D surfaces and ternary region fills, which their own
+/// ensure paths create at once. A label can come more than once.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(in crate::renderer) fn items_pipeline_labels(
+    items: &[PanelDraw<'_>],
+    mut each: impl FnMut(&'static str),
+) {
+    PreciseNeeds::scan(items).labels(&mut each);
+    for item in items {
+        let config = item.chart_config;
+        if let Some(variant) = style_variant(&config.draw_style) {
+            for label in style_pipeline_labels(variant.key) {
+                each(label);
             }
         }
-        if draws_mesh_surface(render_type) || draws_mesh_floor(render_type) {
-            for pass in SurfacePass::ALL {
-                each(pass.label(SurfaceInput::Mesh));
+        for series in item.series {
+            let render_type = &series.config.render_type;
+            if config.view_3d().is_some() {
+                use data_render::surface_mesh::{SurfaceInput, SurfacePass};
+                if draws_surface(render_type) || draws_floor(render_type) {
+                    for pass in SurfacePass::ALL {
+                        each(pass.label(SurfaceInput::Grid));
+                    }
+                }
+                if draws_mesh_surface(render_type) || draws_mesh_floor(render_type) {
+                    for pass in SurfacePass::ALL {
+                        each(pass.label(SurfaceInput::Mesh));
+                    }
+                }
             }
-        }
-    }
-    if config.ternary().is_some() && render_type.ternary_region().is_some() {
-        for pass in data_render::ternary_region::TernaryRegionPass::ALL {
-            each(pass.label());
+            if config.ternary().is_some() && render_type.ternary_region().is_some() {
+                for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+                    each(pass.label());
+                }
+            }
         }
     }
 }

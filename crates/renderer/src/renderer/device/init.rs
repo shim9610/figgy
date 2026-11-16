@@ -226,6 +226,8 @@ impl Renderer {
             arc_pipelines: None,
             #[cfg(target_arch = "wasm32")]
             compile_queue: None,
+            #[cfg(target_arch = "wasm32")]
+            export_compile_queue: None,
             frame_complete: true,
             #[cfg(target_arch = "wasm32")]
             frame_settled: 0,
@@ -397,6 +399,8 @@ impl Renderer {
             arc_pipelines: None,
             #[cfg(target_arch = "wasm32")]
             compile_queue: None,
+            #[cfg(target_arch = "wasm32")]
+            export_compile_queue: None,
             frame_complete: true,
             #[cfg(target_arch = "wasm32")]
             frame_settled: 0,

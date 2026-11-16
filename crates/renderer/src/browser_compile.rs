@@ -533,6 +533,17 @@ impl CompileQueue {
         shader_set: crate::shader_assembly::ShaderSet,
         sources: &[RenderSource<'_>],
     ) -> Result<(), String> {
+        self.schedule_filtered(shader_set, sources, |_| true)
+    }
+
+    /// [`Self::schedule`] for only the pipelines whose label `include`
+    /// accepts.
+    pub(crate) fn schedule_filtered(
+        &self,
+        shader_set: crate::shader_assembly::ShaderSet,
+        sources: &[RenderSource<'_>],
+        include: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
         {
             let mut state = self.0.borrow_mut();
             let format = target_format(state.format)?;
@@ -549,6 +560,9 @@ impl CompileQueue {
                     if get(&get(&desc, "multisample")?, "count")?.as_f64()
                         != Some(f64::from(samples))
                     {
+                        continue;
+                    }
+                    if !include(&get(&desc, "label")?.as_string().unwrap_or_default()) {
                         continue;
                     }
                     candidates.push(desc);
@@ -706,6 +720,16 @@ impl CompileQueue {
         self.0.borrow_mut().schedule.mark_wanted(set, label);
     }
 
+    /// The label of each compile of `set` the last frame needed. `each`
+    /// must not use this queue (it is borrowed meanwhile); another is fine.
+    pub(crate) fn for_each_wanted(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        each: impl FnMut(&str),
+    ) {
+        self.0.borrow().schedule.for_each_wanted(set, each);
+    }
+
     /// Each compile of `set` that failed, as `(label, outcome)`.
     pub(crate) fn for_each_failure(
         &self,
@@ -845,6 +869,8 @@ fn target_format(format: wgpu::TextureFormat) -> Result<&'static str, String> {
         wgpu::TextureFormat::Bgra8Unorm => "bgra8unorm",
         wgpu::TextureFormat::Rgba8UnormSrgb => "rgba8unorm-srgb",
         wgpu::TextureFormat::Bgra8UnormSrgb => "bgra8unorm-srgb",
+        // The export target (#299).
+        wgpu::TextureFormat::Rgba16Float => "rgba16float",
         other => return Err(format!("Unsupported prewarm target: {other:?}")),
     })
 }

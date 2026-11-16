@@ -415,6 +415,12 @@ pub struct Renderer {
     /// pipeline when it first draws it, as before.
     #[cfg(target_arch = "wasm32")]
     compile_queue: Option<crate::browser_compile::CompileQueue>,
+    /// The background compiles of the export target's pipelines (#299),
+    /// made on the first browser export of a renderer with a
+    /// [`Self::compile_queue`]: an export compiles what it draws with here
+    /// and waits for it, so its own creation finds the browser's cache.
+    #[cfg(target_arch = "wasm32")]
+    export_compile_queue: Option<crate::browser_compile::CompileQueue>,
     /// Whether the last screen frame this renderer prepared drew every
     /// series it was handed (#299): false while a series waited for its
     /// pipelines' background compile. Always true natively.

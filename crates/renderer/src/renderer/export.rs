@@ -808,6 +808,12 @@ impl Renderer {
         clear: crate::color::Color,
         scope: ExportScope,
     ) -> Result<RasterImage> {
+        // In a browser, compile what this export draws with in the
+        // background first and wait for it (#299): `prepare_export`, which
+        // must stay synchronous, then finds the browser's cache instead of
+        // compiling on the main thread.
+        #[cfg(target_arch = "wasm32")]
+        self.compile_for_export().await;
         let mut frame = self.prepare_export(chart, series, scale, scope)?;
         let panels = 0..frame.items.len();
         self.paint_export(&mut frame, panels, true, clear, &|_| {
@@ -1605,4 +1611,56 @@ pub(crate) fn straight_rgba8(texel: &[u8; EXPORT_TEXEL_BYTES as usize]) -> [u8; 
         }
     };
     [color(0), color(1), color(2), alpha]
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Renderer {
+    /// Compile, through the browser's asynchronous compiler, the render
+    /// pipelines the last screen frame needed, for the export target, and
+    /// wait until each has ended (#299). An export draws the chart on
+    /// screen with the same series and pipelines, only into its own format
+    /// (`EXPORT_FORMAT`) and sample count. It uses the renderer's export
+    /// queue (made here, and made again when the target changes), issues
+    /// these first and wakes on their endings, so it always ends. A
+    /// renderer without background compiles does nothing here. A pipeline
+    /// the screen did not draw, a compile that fails or a queue that cannot
+    /// be made leaves the export to create the pipeline, as before.
+    pub(super) async fn compile_for_export(&mut self) {
+        use crate::compile_schedule::{LabelReadiness, Scope};
+        let Some(screen) = self.compile_queue.clone() else {
+            return;
+        };
+        let format = EXPORT_FORMAT;
+        let samples = preferred_msaa_sample_count(self.caps, format);
+        let queue = match &self.export_compile_queue {
+            Some(queue) if queue.serves(format, samples) => queue.clone(),
+            _ => match crate::browser_compile::CompileQueue::new(&self.device, format, samples) {
+                Ok(queue) => {
+                    self.export_compile_queue = Some(queue.clone());
+                    queue
+                }
+                // No queue: the export creates its pipelines as before.
+                Err(_) => return,
+            },
+        };
+        let set = self.pipelines.shaders.set;
+        let sources = data_render::browser_every_render_source(set);
+        queue.begin_frame();
+        screen.for_each_wanted(set, |label| {
+            if queue.readiness(set, label) == LabelReadiness::Untracked
+                && queue
+                    .schedule_filtered(set, &sources, |listed| listed == label)
+                    .is_err()
+            {
+                // Not schedulable: the export creates the pipeline, which
+                // reports any error through the usual path.
+            }
+            queue.mark_wanted(set, label);
+            queue.prioritize(set, label);
+        });
+        if queue.wait_scope(set, Scope::Screen).await.is_err() {
+            // A compile that failed is created by the export, which reports
+            // the error through the usual path.
+        }
+    }
 }

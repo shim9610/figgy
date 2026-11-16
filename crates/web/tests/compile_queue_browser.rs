@@ -40,13 +40,18 @@ fn hook(cores: Option<u32>) {
   const original = P.__figgyOriginalAsync;
   // A synchronous creation of a label no async compile has resolved yet is
   // a cold compile on the draw path.
+  // A pipeline is told apart by its label and its first target's format.
+  const key = (d) => (d.label || '') + '|' + (d.fragment?.targets?.[0]?.format ?? '');
+  Q.key = key;
+  Q.keys = [];
   P.createRenderPipeline = function (d) {{
-    if (!Q.resolved.has(d.label || '')) Q.cold.push(d.label || '');
+    if (!Q.resolved.has(key(d))) Q.cold.push(key(d));
     return P.__figgyOriginalSync.call(this, d);
   }};
   P.createRenderPipelineAsync = function (d) {{
     Q.device = this;
     Q.labels.push(d.label || '');
+    Q.keys.push(key(d));
     Q.open += 1;
     Q.peak = Math.max(Q.peak, Q.open);
     // A label the test makes the browser reject, or holds until the device
@@ -55,7 +60,7 @@ fn hook(cores: Option<u32>) {
       : d.label === Q.hold ? this.lost.then(() => undefined)
       : original.call(this, d);
     const done = () => {{ Q.open -= 1; }};
-    p.then(() => {{ Q.resolved.add(d.label || ''); done(); }}, done);
+    p.then(() => {{ Q.resolved.add(key(d)); done(); }}, done);
     return p;
   }};
 }})()"#
@@ -374,10 +379,12 @@ fn issued_and_cold(label: &str) -> (bool, bool) {
         .unwrap()
         .as_bool()
         .unwrap();
-    let cold = js_sys::eval(&format!("globalThis.__queue.cold.includes({label:?})"))
-        .unwrap()
-        .as_bool()
-        .unwrap();
+    let cold = js_sys::eval(&format!(
+        "globalThis.__queue.cold.some(k => k.startsWith({label:?} + '|'))"
+    ))
+    .unwrap()
+    .as_bool()
+    .unwrap();
     (issued, cold)
 }
 
@@ -553,4 +560,38 @@ async fn the_status_api_reports_the_screen_and_failures() {
         "rejected"
     );
     assert!(rejected.pipelines_ready().await.is_err());
+}
+
+/// An export while the chart's pipelines compile compiles its own (the
+/// export target's format) in the background and waits for them, so none
+/// is created cold on the main thread, and the picture is the chart.
+#[wasm_bindgen_test(async)]
+async fn an_export_compiles_its_pipelines_in_the_background() {
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    show_heatmap(&mut chart);
+    chart.frame().unwrap();
+    let png = chart.export_png(1.0).await.unwrap();
+    assert!(png.length() > 0);
+    let export_key = "figgy field columnar pipeline|rgba16float";
+    let has = |list: &str| {
+        js_sys::eval(&format!(
+            "globalThis.__queue.{list}.includes({export_key:?})"
+        ))
+        .unwrap()
+        .as_bool()
+        .unwrap()
+    };
+    assert!(
+        has("keys"),
+        "the export's heatmap pipeline compiled in the background"
+    );
+    assert!(
+        !has("cold"),
+        "the export's heatmap pipeline was not created cold"
+    );
+    // The export drew the heatmap: it differs from an export without it.
+    chart.set_series("[]").unwrap();
+    let empty = chart.export_png(1.0).await.unwrap();
+    assert_ne!(png.to_vec(), empty.to_vec());
 }
