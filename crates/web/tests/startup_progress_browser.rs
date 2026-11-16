@@ -254,9 +254,9 @@ fn show(chart: &mut figgy::FiggyChart, kind: &str) {
 /// pipeline compile having settled, and with no more compiles issued than
 /// the browser reports cores. A chart shown while its pipelines compile is
 /// presented without the series that wait for them (`frame_complete` is
-/// false) while its export, which creates what it needs, is the whole
-/// chart; once the compiles resolve the frames fill in, and the chart is
-/// the one the export drew.
+/// false); its export waits for its own compiles and is the whole chart;
+/// once the compiles resolve the frames fill in, and the chart is the one
+/// the export drew.
 #[wasm_bindgen_test(async)]
 async fn first_frame_precedes_the_background_compiles_and_charts_draw_the_same_before_and_after() {
     js_sys::eval(COUNT_COMPILES).unwrap();
@@ -292,21 +292,17 @@ async fn first_frame_precedes_the_background_compiles_and_charts_draw_the_same_b
             !chart.frame_complete(),
             "{kind}: the frame leaves out the series whose pipelines compile"
         );
-        let early = chart.export_png(1.0).await.expect("export").to_vec();
-        assert!(
-            early != empty,
-            "{kind}: the export draws the series at once"
-        );
-        assert_eq!(
-            compiles().1,
-            before.1,
-            "{kind}: exported with every compile held"
-        );
         assert!(
             compiles().0 - before.0 <= cores,
             "{kind}: the screen's request stays within the limit"
         );
+        // An export compiles what it draws through the browser's async
+        // compiler and waits for those compiles (#299), so it ends once
+        // they settle: the gate is released after the export is started.
+        let export = chart.export_png(1.0);
         compile_gate("release");
+        let early = export.await.expect("export").to_vec();
+        assert!(early != empty, "{kind}: the export draws the whole chart");
 
         let late = picture(&mut chart).await;
         assert!(chart.frame_complete(), "{kind}: the chart filled in");
