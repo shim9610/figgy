@@ -104,17 +104,13 @@ impl<'w> WindowedRenderer<'w> {
             (logical.width, logical.height),
             (self.surface_config.width, self.surface_config.height),
         );
-        self.inner
-            .compile_pick_pipelines_async(
-                id,
-                GpuPickRequest {
-                    canvas_position_px,
-                    display_panel_px,
-                    display_scale,
-                    max_distance_px,
-                },
-            )
-            .await
+        let request = GpuPickRequest {
+            canvas_position_px,
+            display_panel_px,
+            display_scale,
+            max_distance_px,
+        };
+        self.inner.compile_pick_pipelines_async(id, request).await
     }
 
     /// Typed data pick using this window's current physical surface size.

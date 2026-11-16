@@ -158,6 +158,18 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self
+            .compile_pick_pipelines_async_unreported(id, request)
+            .await;
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) async fn compile_pick_pipelines_async_unreported(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         while let Some(key) = self.missing_exact_pick_key(id, request)? {
             let bundle = self.picker.ready_bundle()?;
             let (constants, count) = key.constants(self.device());

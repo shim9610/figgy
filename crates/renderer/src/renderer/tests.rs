@@ -15239,6 +15239,7 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         // `Renderer` calls that run the check themselves (#160).
         "self.inner.pick_chart(",
         "self.inner.pick_chart_data(",
+        "self.inner.compile_pick_pipelines_async(",
     ];
     let mut seen = 0;
     for (index, _) in methods.match_indices("\n    pub ") {
