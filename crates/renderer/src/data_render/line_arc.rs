@@ -241,6 +241,9 @@ pub struct ArcScanPipelines {
 /// dispatch count and the VS slot mapping must agree on the pitch.
 pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
 
+/// The label of every arc scan compute pipeline.
+pub(crate) const ARC_SCAN_LABEL: &str = "figgy arc scan pipeline";
+
 pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
     let mut noop = |_| {};
     create_arc_scan_pipelines_observed(device, &mut noop)
@@ -431,7 +434,7 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         crate::gpu_compile::compute_pipeline(
             &device,
             &wgpu::ComputePipelineDescriptor {
-                label: Some("figgy arc scan pipeline"),
+                label: Some(ARC_SCAN_LABEL),
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),

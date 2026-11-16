@@ -26,8 +26,10 @@ fn canvas() -> web_sys::HtmlCanvasElement {
 }
 
 /// Report `cores` as `navigator.hardwareConcurrency` (`undefined` for
-/// `None`), and record every `createRenderPipelineAsync` from now on: its
-/// label in issue order, how many are open and the most ever open.
+/// `None`), and record every `createRenderPipelineAsync` and
+/// `createComputePipelineAsync` from now on: its label in issue order, how
+/// many are open and the most ever open. A synchronous creation of either
+/// kind before an async compile of it resolved is recorded as cold.
 fn hook(cores: Option<u32>) {
     let cores = cores.map_or("undefined".to_owned(), |cores| cores.to_string());
     js_sys::eval(&format!(
@@ -47,6 +49,22 @@ fn hook(cores: Option<u32>) {
   P.createRenderPipeline = function (d) {{
     if (!Q.resolved.has(key(d))) Q.cold.push(key(d));
     return P.__figgyOriginalSync.call(this, d);
+  }};
+  if (!P.__figgyOriginalComputeAsync) P.__figgyOriginalComputeAsync = P.createComputePipelineAsync;
+  if (!P.__figgyOriginalCompute) P.__figgyOriginalCompute = P.createComputePipeline;
+  P.createComputePipeline = function (d) {{
+    if (!Q.resolved.has(key(d))) Q.cold.push(key(d));
+    return P.__figgyOriginalCompute.call(this, d);
+  }};
+  P.createComputePipelineAsync = function (d) {{
+    Q.labels.push(d.label || '');
+    Q.keys.push(key(d));
+    Q.open += 1;
+    Q.peak = Math.max(Q.peak, Q.open);
+    const p = P.__figgyOriginalComputeAsync.call(this, d);
+    const done = () => {{ Q.open -= 1; }};
+    p.then(() => {{ Q.resolved.add(key(d)); done(); }}, done);
+    return p;
   }};
   P.createRenderPipelineAsync = function (d) {{
     Q.device = this;
@@ -514,6 +532,13 @@ async fn a_ternary_region_waits_for_its_module() {
         "ternary region",
     )
     .await;
+    // The ring-start scan the fill dispatches first was compiled in the
+    // background too, never on the page's thread.
+    assert_eq!(
+        issued_and_cold("figgy ternary ring scan pipeline"),
+        (true, false),
+        "the ring-start scan compiled in the background"
+    );
 }
 
 /// The status object splits what the screen needs from everything;
@@ -664,4 +689,122 @@ async fn a_first_pick_compiles_its_exact_pipelines_in_the_background() {
     );
     let picked: serde_json::Value = serde_json::from_str(&picked.as_string().unwrap()).unwrap();
     assert_eq!(picked["series_id"], "line");
+}
+
+/// A dashed line waits for the arc prefix scan, a compute module compiled
+/// on demand.
+#[wasm_bindgen_test(async)]
+async fn a_dashed_line_waits_for_its_arc_scan() {
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart.register_column_f32("lx", &[0.0, 1.0, 2.0]).unwrap();
+    chart.register_column_f32("ly", &[0.0, 2.0, 1.0]).unwrap();
+    chart
+        .add_line_series("dashed", "lx", "ly", 2.0, "dashed")
+        .unwrap();
+    let mut series: serde_json::Value = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
+    series[0]["render_type"]["Line"]["line"]["line_style"] = "Dash".into();
+    chart.set_series(&series.to_string()).unwrap();
+    waits_for_its_on_demand_module(&mut chart, "figgy arc scan pipeline", "dashed line").await;
+}
+
+/// A histogram waits for its envelope's compute pass, compiled on demand.
+#[wasm_bindgen_test(async)]
+async fn a_histogram_waits_for_its_envelope_scan() {
+    use renderer::data_config::{BarOrientation, DataBarStyleConfig};
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart
+        .register_column_f32("edges", &[0.0, 1.0, 2.0, 3.0, 4.0])
+        .unwrap();
+    chart
+        .register_column_f32("heights", &[1.0, 3.0, 2.0, 4.0])
+        .unwrap();
+    let bars = series(
+        "bars",
+        "edges",
+        "heights",
+        DataRenderType::Histogram {
+            bar: DataBarStyleConfig {
+                fill_color: renderer::Color::BLACK,
+                border_color: renderer::Color::BLACK,
+                border_width: 0.0,
+                baseline: 0.0,
+                gap_px: 0.0,
+                width_ratio: 1.0,
+                orientation: BarOrientation::Vertical,
+                bar_style_overrides: None,
+            },
+        },
+    );
+    chart
+        .set_series(&serde_json::to_string(&vec![bars]).unwrap())
+        .unwrap();
+    chart.fit_ranges().unwrap();
+    waits_for_its_on_demand_module(&mut chart, "histogram pixel maxima", "histogram").await;
+}
+
+/// Contour labels wait for the label anchor compute module, compiled on
+/// demand.
+#[wasm_bindgen_test(async)]
+async fn contour_labels_wait_for_their_anchor_scan() {
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    for (id, values) in [
+        ("gx", [0.0, 1.0, 2.0]),
+        ("gy", [0.0, 1.0, 2.0]),
+        ("p0", [0.0, 1.0, 2.0]),
+        ("p1", [1.0, 2.0, 3.0]),
+        ("p2", [2.0, 3.0, 4.0]),
+    ] {
+        chart.register_column_f32(id, &values).unwrap();
+    }
+    let mut config: serde_json::Value = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    for axis in ["bottom_x", "left_y"] {
+        config[axis]["min"] = 0.0.into();
+        config[axis]["max"] = 2.0.into();
+    }
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = 0.0;
+    bar.axis.max = 4.0;
+    bar.axis.major_spacing = 1.0;
+    config["colorbar"] = serde_json::to_value(&bar).unwrap();
+    chart.set_config(&config.to_string()).unwrap();
+    let contour = serde_json::json!([{
+        "series_id": "contour",
+        "x_column": "gx",
+        "y_column": "gy",
+        "render_type": {
+            "Contour": {
+                "matrix": {
+                    "columns": ["p0", "p1", "p2"],
+                    "orientation": "ColumnsAreX",
+                    "grid_layout": "Centers"
+                },
+                "contour": {
+                    "levels": [2.0],
+                    "line": {
+                        "line_style": "Solid",
+                        "line_color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0},
+                        "line_width": 1.0
+                    },
+                    "labels": {
+                        "visible": true,
+                        "font_size": 10.0,
+                        "format": "Decimal",
+                        "significant_digits": 2,
+                        "spacing_px": 80.0,
+                        "anchors": []
+                    }
+                }
+            }
+        }
+    }]);
+    chart.set_series(&contour.to_string()).unwrap();
+    waits_for_its_on_demand_module(
+        &mut chart,
+        "figgy contour anchor seed pipeline",
+        "contour labels",
+    )
+    .await;
 }

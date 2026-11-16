@@ -388,6 +388,66 @@ pub(crate) fn browser_on_demand_source(
         .find(|(_, stages)| stages.iter().any(|(_, listed)| *listed == label))
 }
 
+/// The module whose compute pipelines include `label` and that a browser
+/// renderer compiles on demand (#299): the arc prefix scan, the ternary
+/// ring-start scan, the contour label anchors and the histogram envelope.
+/// A frame's preparation creates them when a series first needs them.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn browser_on_demand_compute_source(
+    set: ShaderSet,
+    label: &str,
+) -> Option<crate::browser_compile::RenderSource<'static>> {
+    const ANCHORS: [(&str, &str); 4] = [
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[0],
+        ),
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[1],
+        ),
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[2],
+        ),
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[3],
+        ),
+    ];
+    let sources: [crate::browser_compile::RenderSource<'static>; 4] = [
+        (
+            super::line_arc::LINE_ARC_SHADER_BY_SET.of(set).source,
+            &[("arc prefix scan", super::line_arc::ARC_SCAN_LABEL)],
+        ),
+        (
+            super::ternary_region::TERNARY_REGION_SHADER_BY_SET
+                .of(set)
+                .source,
+            &[(
+                "ternary ring-start scan",
+                super::ternary_region::RING_SCAN_LABEL,
+            )],
+        ),
+        (
+            crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_SET
+                .of(set)
+                .source,
+            &ANCHORS,
+        ),
+        (
+            super::BAR_SHADER_BY_SET.of(set).source,
+            &[(
+                "histogram pixel envelope",
+                super::bar_envelope::ENVELOPE_SCAN_LABEL,
+            )],
+        ),
+    ];
+    sources
+        .into_iter()
+        .find(|(_, stages)| stages.iter().any(|(_, listed)| *listed == label))
+}
+
 /// Every module whose render pipelines a browser renderer compiles in the
 /// background (#299): the ones [`browser_render_sources`] schedules at
 /// creation, then the ones compiled on demand. An export schedules from

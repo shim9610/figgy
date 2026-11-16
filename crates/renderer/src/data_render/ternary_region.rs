@@ -112,6 +112,9 @@ pub struct RingScanPipelines {
     apply: wgpu::ComputePipeline,
 }
 
+/// The label of every ring-start scan compute pipeline.
+pub(crate) const RING_SCAN_LABEL: &str = "figgy ternary ring scan pipeline";
+
 /// The ring-start scan's pipelines, from the region module `shader`.
 pub(crate) fn create_ring_scan_pipelines(
     device: &wgpu::Device,
@@ -160,7 +163,7 @@ pub(crate) fn create_ring_scan_pipelines(
         crate::gpu_compile::compute_pipeline(
             &device,
             &wgpu::ComputePipelineDescriptor {
-                label: Some("figgy ternary ring scan pipeline"),
+                label: Some(RING_SCAN_LABEL),
                 layout: Some(&layout),
                 module: shader,
                 entry_point: Some(entry),

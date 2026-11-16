@@ -81,6 +81,30 @@ pub(in crate::renderer) struct ArcResultEntry {
     pub(in crate::renderer) scratch: data_render::line_arc::ArcScratch,
 }
 
+/// Whether a draw of `series` under `style` scans its arc prefix: a dashed
+/// line, a streamline's arrowheads or a style that walks the arc (sketch,
+/// milkyway) on a drawn line. Also returns whether the series draws a line
+/// and the arrowheads' slot pitch: streamline arrowheads sit on arc slots,
+/// so the scan runs with their spacing in render pixels as the slot pitch,
+/// and its indirect kernel counts the slots.
+pub(in crate::renderer) fn series_arc_need(
+    style: &crate::config::DrawStyle,
+    series: &Series<'_>,
+) -> (bool, bool, Option<f32>) {
+    let cfg = series.config;
+    let line = effective_series_primitives(style, &cfg.render_type).line;
+    let dashed = line
+        && extract_line(&cfg.render_type)
+            .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
+    let arrow_pitch = line
+        .then(|| streamline_arrow_pitch(&cfg.render_type, series.style.display_scale))
+        .flatten();
+    let wanted = dashed
+        || arrow_pitch.is_some()
+        || (style_variant(style).is_some_and(|v| v.needs_arc_prefix) && line);
+    (wanted, line, arrow_pitch)
+}
+
 impl PrepareContext<'_> {
     pub(in crate::renderer) fn prepare_arc_items(
         &mut self,
@@ -99,7 +123,6 @@ impl PrepareContext<'_> {
             item.view.advance_stream_revision()?;
             let view_revision = item.view.advance_content_revision()?;
             data_render::update_scatter_transform(&self.queue, &item.view.transform_buffer, &t);
-            let variant = style_variant(&item.chart_config.draw_style);
             // Milkyway lines also get the arc-driven star pass: the
             // candidate-slot pitch the indirect kernel sizes the dispatch
             // with (the star VS derives the same value from the transform).
@@ -120,21 +143,8 @@ impl PrepareContext<'_> {
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
                 let cfg = series.config;
-                let line =
-                    effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
-                        .line;
-                let dashed = line
-                    && extract_line(&cfg.render_type)
-                        .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                // Streamline arrowheads sit on arc slots: the scan runs with
-                // their spacing in render pixels as the slot pitch, and its
-                // indirect kernel counts the slots.
-                let arrow_pitch = line
-                    .then(|| streamline_arrow_pitch(&cfg.render_type, series.style.display_scale))
-                    .flatten();
-                let arc_wanted = dashed
-                    || arrow_pitch.is_some()
-                    || (variant.is_some_and(|v| v.needs_arc_prefix) && line);
+                let (arc_wanted, line, arrow_pitch) =
+                    series_arc_need(&item.chart_config.draw_style, series);
                 let arc = if arc_wanted {
                     self.ensure_arc_prefix(
                         &cfg.series_id,

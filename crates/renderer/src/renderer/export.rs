@@ -1662,5 +1662,12 @@ impl Renderer {
             // A compile that failed is created by the export, which reports
             // the error through the usual path.
         }
+        // Compute pipelines do not depend on the target: the screen's queue
+        // compiles them, and the export waits for those it has scheduled.
+        let compute =
+            |label: &str| data_render::browser_on_demand_compute_source(set, label).is_some();
+        if screen.wait_for(set, compute, &mut |_| {}).await.is_err() {
+            // As above: the export creates it and reports the error.
+        }
     }
 }

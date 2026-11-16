@@ -26,6 +26,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// The assembled contour label anchor module.
+/// The labels of the contour label anchor compute pipelines: seed,
+/// correction, project and select.
+pub(crate) const CONTOUR_ANCHOR_LABELS: [&str; 4] = [
+    "figgy contour anchor seed pipeline",
+    "figgy contour anchor correction pipeline",
+    "figgy contour anchor project pipeline",
+    "figgy contour anchor select pipeline",
+];
+
 pub(crate) const CONTOUR_ANCHOR_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     set,
@@ -470,12 +479,12 @@ impl ContourLabelPipelines {
         Self {
             projection_steps: split_projection.then(|| {
                 (
-                    pipeline("anchor_seed", "figgy contour anchor seed pipeline"),
-                    pipeline("anchor_step", "figgy contour anchor correction pipeline"),
+                    pipeline("anchor_seed", CONTOUR_ANCHOR_LABELS[0]),
+                    pipeline("anchor_step", CONTOUR_ANCHOR_LABELS[1]),
                 )
             }),
-            anchor_project: pipeline("anchor_project", "figgy contour anchor project pipeline"),
-            anchor_select: pipeline("anchor_select", "figgy contour anchor select pipeline"),
+            anchor_project: pipeline("anchor_project", CONTOUR_ANCHOR_LABELS[2]),
+            anchor_select: pipeline("anchor_select", CONTOUR_ANCHOR_LABELS[3]),
             anchor_transform_bgl,
             anchor_io_bgl,
             label_module: crate::gpu_compile::shader_module(

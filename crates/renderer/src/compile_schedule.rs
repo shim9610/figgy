@@ -214,7 +214,8 @@ impl CompileSchedule {
     }
 
     /// The label of each compile of `set` the last frame needed, once per
-    /// compile.
+    /// compile. Only the browser's export reads it.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn for_each_wanted(&self, set: ShaderSet, mut each: impl FnMut(&str)) {
         for compile in &self.compiles {
             if self.in_scope(compile, set, Scope::Screen) {

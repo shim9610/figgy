@@ -456,7 +456,7 @@ impl PreciseNeeds {
                 each(kind.label());
             }
         }
-        let table: [(bool, &'static str); 36] = [
+        let table: [(bool, &'static str); 37] = [
             (self.parallel, "figgy line parallel pipeline"),
             (
                 self.parallel_selection,
@@ -484,6 +484,11 @@ impl PreciseNeeds {
             (self.bar, "figgy bar columnar pipeline"),
             (self.bar_mapped, "figgy mapped bar columnar pipeline"),
             (self.bar || self.bar_mapped, "histogram envelope fill"),
+            // The envelope's compute pass, created with the fill.
+            (
+                self.bar || self.bar_mapped,
+                data_render::bar_envelope::ENVELOPE_SCAN_LABEL,
+            ),
             (self.bar_selection, "figgy selected histogram bin pipeline"),
             (
                 self.bar_selection_mapped,
@@ -590,6 +595,20 @@ pub(in crate::renderer) fn items_pipeline_labels(
                 for pass in data_render::ternary_region::TernaryRegionPass::ALL {
                     each(pass.label());
                 }
+                // The ring-start scan the region's draw dispatches first.
+                each(data_render::ternary_region::RING_SCAN_LABEL);
+            }
+            // The compute passes the frame's preparation dispatches: the
+            // contour label anchors and the arc prefix scan.
+            if effective_series_primitives(&config.draw_style, render_type).contour
+                && crate::renderer::prepare::series_wants_contour_labels(render_type)
+            {
+                for label in crate::gpu_contour::CONTOUR_ANCHOR_LABELS {
+                    each(label);
+                }
+            }
+            if crate::renderer::prepare::series_arc_need(&config.draw_style, series).0 {
+                each(data_render::line_arc::ARC_SCAN_LABEL);
             }
         }
     }
@@ -597,18 +616,18 @@ pub(in crate::renderer) fn items_pipeline_labels(
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod label_tests {
-    /// Every label a frame waits for names render pipelines the browser
-    /// contract compiles in the background, so no series waits for a
-    /// compile that is never issued.
+    /// Every label a frame waits for names render or compute pipelines the
+    /// browser contract compiles in the background, so no series waits for
+    /// a compile that is never issued.
     #[test]
-    fn every_waited_label_is_a_contract_render_pipeline() {
+    fn every_waited_label_is_a_contract_pipeline() {
         let contract: serde_json::Value =
             serde_json::from_str(include_str!("../../shader_pipeline_contract.json")).unwrap();
         let labels: Vec<String> = contract["pipelines"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|p| p["kind"] == "render")
+            .filter(|p| p["kind"] == "render" || p["kind"] == "compute")
             .filter_map(|p| p["descriptor"]["label"].as_str().map(str::to_owned))
             .collect();
         let mut needs = super::PreciseNeeds::scan(&[]);
@@ -669,6 +688,9 @@ mod label_tests {
         for pass in crate::data_render::ternary_region::TernaryRegionPass::ALL {
             waited.push(pass.label());
         }
+        waited.push(crate::data_render::ternary_region::RING_SCAN_LABEL);
+        waited.push(crate::data_render::line_arc::ARC_SCAN_LABEL);
+        waited.extend(crate::gpu_contour::CONTOUR_ANCHOR_LABELS);
         for key in [
             super::StyleKey::Sketch,
             super::StyleKey::Milkyway,

@@ -712,7 +712,13 @@ shader set in the background, at most as many at once as the browser reports cor
 (`navigator.hardwareConcurrency`, four when it reports none), and issues what a screen
 frame needs before the rest. The vector, 3D surface and ternary region modules are
 not compiled at creation: a frame that first needs one of their pipelines schedules
-the module then, ahead of the rest. Frame preparation of registered charts
+the module then, ahead of the rest. The compute passes a frame's preparation
+dispatches go through the same queue (`createComputePipelineAsync`), scheduled when a
+series first needs them: the arc prefix scan (dashed lines, streamline arrowheads,
+sketch and milkyway lines), the ternary ring-start scan, the contour label anchors
+and the histogram envelope. The series waits for them like for its render pipelines,
+and the preparation then creates them from the browser's cache, never on the page's
+thread. Frame preparation of registered charts
 (`prepare_registered`, `WindowedRenderer::draw_registered`) leaves out a series whose
 pipelines have not compiled and draws everything else; `Renderer::frame_complete()`
 tells whether the last screen frame drew every series, `Renderer::compile_redraw_due()`
@@ -730,7 +736,8 @@ error. Exports, host-owned `prepare` and the picks create what they need and are
 complete. A browser export first compiles, in the background, the pipelines the last
 screen frame needed for its own target (`Rgba16Float`, its sample count) through a
 second queue, and waits for them before it prepares; its creations then find the
-browser's cache. A pipeline the screen did not draw is created by the export as before.
+browser's cache. It also waits for the compute passes the screen's queue has
+scheduled, which do not depend on the target. A pipeline the screen did not draw is created by the export as before.
 The picks' compute pipelines are not in these queues: the bundles compile through
 `enable_gpu_picking_async`, and `WindowedRenderer::compile_pick_pipelines_at` (or
 `Renderer::compile_pick_pipelines_async`) compiles, through

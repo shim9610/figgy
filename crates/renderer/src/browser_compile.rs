@@ -424,8 +424,10 @@ struct QueueState {
     format: wgpu::TextureFormat,
     samples: u32,
     schedule: crate::compile_schedule::CompileSchedule,
-    /// The populated descriptor of each scheduled compile, by its index.
-    descriptors: Vec<JsValue>,
+    /// The populated descriptor of each scheduled compile, by its index,
+    /// and the device method that compiles it (`createRenderPipelineAsync`
+    /// or `createComputePipelineAsync`).
+    descriptors: Vec<(JsValue, &'static str)>,
     /// Resolves at the next change of any compile's state; replaced each
     /// time it resolves.
     changed: ChangeSignal,
@@ -631,7 +633,39 @@ impl CompileQueue {
                     }
                     let label = label_of(&desc)?;
                     state.schedule.push(shader_set, label, stage);
-                    state.descriptors.push(desc);
+                    state.descriptors.push((desc, "createRenderPipelineAsync"));
+                }
+            }
+        }
+        self.pump();
+        Ok(())
+    }
+
+    /// Schedule every compute pipeline of `sources` for `set`, in stage
+    /// order, after what is already scheduled, and issue as many as the
+    /// limit allows. Compute pipelines do not depend on the target, so the
+    /// screen's queue compiles them for every target.
+    pub(crate) fn schedule_compute(
+        &self,
+        shader_set: crate::shader_assembly::ShaderSet,
+        sources: &[RenderSource<'_>],
+    ) -> Result<(), String> {
+        {
+            let mut state = self.0.borrow_mut();
+            for (source, stages) in sources {
+                let module = shader(&state.device, source, "figgy compute prewarm")?;
+                for desc in descriptors(source, "compute")? {
+                    if !Array::is_array(&get(&desc, "layout")?) {
+                        continue;
+                    }
+                    let label = get(&desc, "label")?.as_string().unwrap_or_default();
+                    let Some(&(stage, _)) = stages.iter().find(|(_, listed)| *listed == label)
+                    else {
+                        continue;
+                    };
+                    populate(&state.device, &desc, &module)?;
+                    state.schedule.push(shader_set, label, stage);
+                    state.descriptors.push((desc, "createComputePipelineAsync"));
                 }
             }
         }
@@ -647,11 +681,10 @@ impl CompileQueue {
                 let Some(index) = state.schedule.issue_next() else {
                     return;
                 };
-                let compiled = call(
-                    &state.device,
-                    "createRenderPipelineAsync",
-                    &state.descriptors[index],
-                );
+                let compiled = match state.descriptors.get(index) {
+                    Some((desc, method)) => call(&state.device, method, desc),
+                    None => Err("no descriptor for a scheduled compile".to_owned()),
+                };
                 (index, compiled)
             };
             // The future holds the queue weakly: once its renderer is
@@ -696,9 +729,11 @@ impl CompileQueue {
         }
     }
 
-    /// Schedule the module whose render pipelines include `label` when it
-    /// is one compiled only on demand (`browser_on_demand_source`: vector,
-    /// 3D surface, ternary region) and none of its pipelines is scheduled
+    /// Schedule the module whose pipelines include `label` when it is one
+    /// compiled only on demand (`browser_on_demand_source`: vector, 3D
+    /// surface, ternary region; `browser_on_demand_compute_source`: the arc
+    /// scan, the ring-start scan, the contour label anchors, the histogram
+    /// envelope) and none of its pipelines is scheduled
     /// for `set` yet, and issue `label` ahead of every waiting compile.
     /// Returns whether `label` is now waiting or compiling, so the frame
     /// leaves its series out; `false` leaves the draw to create it, as for a
@@ -709,8 +744,12 @@ impl CompileQueue {
         label: &str,
     ) -> Result<bool, String> {
         use crate::compile_schedule::LabelReadiness;
-        let Some(source) = crate::data_render::browser_on_demand_source(set, label) else {
-            return Ok(false);
+        let (source, compute) = match crate::data_render::browser_on_demand_source(set, label) {
+            Some(source) => (source, false),
+            None => match crate::data_render::browser_on_demand_compute_source(set, label) {
+                Some(source) => (source, true),
+                None => return Ok(false),
+            },
         };
         // Scheduled once, by its first listed pipeline: a label alone does
         // not tell, since another module can compile a pipeline with the same
@@ -720,7 +759,11 @@ impl CompileQueue {
             .first()
             .is_some_and(|(_, first)| self.readiness(set, first) != LabelReadiness::Untracked);
         if !scheduled {
-            self.schedule(set, &[source])?;
+            if compute {
+                self.schedule_compute(set, &[source])?;
+            } else {
+                self.schedule(set, &[source])?;
+            }
         }
         self.prioritize(set, label);
         Ok(self.readiness(set, label) == LabelReadiness::Pending)
