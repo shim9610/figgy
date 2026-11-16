@@ -87,10 +87,10 @@ fn line_step_mode() -> u32 {
 
 // Summed pixel length of the pieces before piece `k` — where piece `k`
 // starts along the segment's own arc.
-fn step_prefix_px(in: VsIn, mode: u32, k: u32) -> f32 {
+fn step_prefix_px(t: Transform, in: VsIn, mode: u32, k: u32) -> f32 {
     var total = 0.0;
     for (var j = 0u; j < k; j = j + 1u) {
-        total = total + step_piece_len_px(transform, step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, j));
+        total = total + step_piece_len_px(t, step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, j));
     }
     return total;
 }
@@ -161,7 +161,8 @@ fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 // The precise stroke's vertex: `vs_main`, and `vs_main_mapped` under its
 // colour value.
 fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
-    if (!sample_valid(transform, in.x_a, in.y_a) || !sample_valid(transform, in.x_b, in.y_b)) {
+    let tf = transform;
+    if (!sample_valid(tf, in.x_a, in.y_a) || !sample_valid(tf, in.x_b, in.y_b)) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
@@ -170,9 +171,9 @@ fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
     let mode = line_step_mode();
     let slot = strip_slot(vid, 4u);
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
-    let a_ndc = data_to_ndc(transform, piece.x0, piece.y0);
-    let b_ndc = step_piece_end(transform, piece, a_ndc, data_to_ndc(transform, piece.x1, piece.y1));
-    return line_stroke_vertex(in, arc, mode, slot, piece, a_ndc, b_ndc);
+    let a_ndc = data_to_ndc(tf, piece.x0, piece.y0);
+    let b_ndc = step_piece_end(tf, piece, a_ndc, data_to_ndc(tf, piece.x1, piece.y1));
+    return line_stroke_vertex(tf, in, arc, mode, slot, piece, a_ndc, b_ndc);
 }
 
 // A ternary chart's line (`Config.ternary`): the third component of each
@@ -185,6 +186,7 @@ struct VsTernaryC {
 
 @vertex
 fn vs_ternary(in: VsIn, arc: VsArc, c: VsTernaryC, @builtin(vertex_index) vid: u32) -> VsOut {
+    let tf = transform;
     if (!ternary_sample_valid(in.x_a, in.y_a, c.c_a) || !ternary_sample_valid(in.x_b, in.y_b, c.c_b)) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -195,9 +197,9 @@ fn vs_ternary(in: VsIn, arc: VsArc, c: VsTernaryC, @builtin(vertex_index) vid: u
     // The third component places the ends too: equal x and y are not one
     // point here.
     piece.axis = STEP_AXIS_NONE;
-    let a_ndc = ternary_ndc(transform, in.x_a, in.y_a, c.c_a);
-    let b_ndc = ternary_ndc(transform, in.x_b, in.y_b, c.c_b);
-    return line_stroke_vertex(in, arc, LINE_STEP_LINEAR, slot, piece, a_ndc, b_ndc);
+    let a_ndc = ternary_ndc(tf, in.x_a, in.y_a, c.c_a);
+    let b_ndc = ternary_ndc(tf, in.x_b, in.y_b, c.c_b);
+    return line_stroke_vertex(tf, in, arc, LINE_STEP_LINEAR, slot, piece, a_ndc, b_ndc);
 }
 
 // A 3D chart's line (`Config.view_3d`, #132): the height of each end at
@@ -214,8 +216,9 @@ struct VsZ {
 };
 
 fn line_3d_vertex(in: VsIn, arc: VsArc, z: VsZ, vid: u32) -> VsOut {
-    if (!view3d_point_valid(transform, in.x_a, in.y_a, z.z_a)
-        || !view3d_point_valid(transform, in.x_b, in.y_b, z.z_b)) {
+    let tf = transform;
+    if (!view3d_point_valid(tf, in.x_a, in.y_a, z.z_a)
+        || !view3d_point_valid(tf, in.x_b, in.y_b, z.z_b)) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
@@ -229,7 +232,7 @@ fn line_3d_vertex(in: VsIn, arc: VsArc, z: VsZ, vid: u32) -> VsOut {
     let t_b = view3d_point_t(in.x_b, in.y_b, z.z_b);
     let a = clip_at_depth(project_box(t_a), project_box_front(t_a, half_w));
     let b = clip_at_depth(project_box(t_b), project_box_front(t_b, half_w));
-    var out = line_stroke_vertex(in, arc, LINE_STEP_LINEAR, slot, piece, a.xy / a.w, b.xy / b.w);
+    var out = line_stroke_vertex(tf, in, arc, LINE_STEP_LINEAR, slot, piece, a.xy / a.w, b.xy / b.w);
     out.pos.z = select(a.z / a.w, b.z / b.w, slot.local >= 2u);
     return out;
 }
@@ -293,7 +296,7 @@ fn fs_3d_pick(in: VsLinePickOut) -> @location(0) vec4<u32> {
 
 // The stroke quad of piece `piece` of the segment, its ends projected by
 // the entry to `a_ndc_in` and `b_ndc_in`.
-fn line_stroke_vertex(in: VsIn, arc: VsArc, mode: u32, slot: StripSlot, piece: StepPiece, a_ndc_in: vec2<f32>, b_ndc_in: vec2<f32>) -> VsOut {
+fn line_stroke_vertex(t: Transform, in: VsIn, arc: VsArc, mode: u32, slot: StripSlot, piece: StepPiece, a_ndc_in: vec2<f32>, b_ndc_in: vec2<f32>) -> VsOut {
     let last_piece = slot.piece + 1u == step_piece_count(mode);
     var a_ndc = a_ndc_in;
     var b_ndc = b_ndc_in;
@@ -308,12 +311,12 @@ fn line_stroke_vertex(in: VsIn, arc: VsArc, mode: u32, slot: StripSlot, piece: S
     let a_px = a_ndc / transform.pixel_to_ndc;
     // Copied again after the division: Metal's vertex stage may divide the
     // two equal coordinates differently (#63).
-    let b_px = step_piece_end(transform, piece, a_px, b_ndc / transform.pixel_to_ndc);
+    let b_px = step_piece_end(t, piece, a_px, b_ndc / transform.pixel_to_ndc);
 
     let delta = b_px - a_px;
     let len = length(delta);
     // Zero-length guard — normal=0 makes corner=center, collapsing the quad.
-    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
+    let dir = step_piece_dir(t, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
@@ -343,14 +346,14 @@ fn line_stroke_vertex(in: VsIn, arc: VsArc, mode: u32, slot: StripSlot, piece: S
     // on the last piece, so the phase is continuous through every corner and
     // across the joint.
     let phase = arc_dash_phase(arc.arc_a, dash_period(style.dash, style.dash_len));
-    let arc_start = phase + step_prefix_px(in, mode, slot.piece);
+    let arc_start = phase + step_prefix_px(t, in, mode, slot.piece);
     let arc_end = select(arc_start + len, phase + arc_delta(arc.arc_b, arc.arc_a), last_piece);
 
     var out: VsOut;
     out.pos = vec4<f32>(corner_ndc, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(t, out.pos.xy);
+    out.polar_limits = polar_clip_limits(t);
+    out.polar_sector = polar_clip_sector(t);
     out.dist_px = select(arc_start - half_w, arc_end + half_w, at_b);
     out.along_px = select(-geom_half_w, len + geom_half_w, at_b);
     out.side_px = geom_half_w * side;
@@ -469,6 +472,7 @@ fn line_value_color(zv: vec2<f32>) -> vec4<f32> {
 
 @vertex
 fn vs_main_mapped(in: VsIn, arc: VsArc, value: VsValue, @builtin(vertex_index) vid: u32) -> MappedVsOut {
+    let tf = transform;
     let base = line_vertex(in, arc, vid);
     var out: MappedVsOut;
     out.pos = base.pos;
@@ -482,8 +486,8 @@ fn vs_main_mapped(in: VsIn, arc: VsArc, value: VsValue, @builtin(vertex_index) v
     // The corner's position along the unclipped segment, square cap and
     // viewport clip included, so the interpolated value is A's to B's
     // linearly along the drawn segment, as an arrowhead on it reads it.
-    let a_px = data_to_px(transform, in.x_a, in.y_a);
-    let b_px = data_to_px(transform, in.x_b, in.y_b);
+    let a_px = data_to_px(tf, in.x_a, in.y_a);
+    let b_px = data_to_px(tf, in.x_b, in.y_b);
     let d = b_px - a_px;
     let d2 = dot(d, d);
     let f = select(0.0, dot(base.pos.xy / transform.pixel_to_ndc - a_px, d) / d2, d2 > 1e-12);
@@ -549,11 +553,12 @@ fn area_baseline() -> vec2<f32> {
 
 @vertex
 fn vs_area(in: VsIn, base: VsAreaBase, @builtin(vertex_index) vid: u32) -> AreaOut {
+    let tf = transform;
     var masked: AreaOut;
     masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
     let to_series = (style.primitive_flags & AREA_FILL_TO_SERIES) != 0u;
     let baseline = area_baseline();
-    if (!area_segment_drawn(transform, in.x_a, in.y_a, in.x_b, in.y_b, base.base_a, base.base_b, to_series, baseline)) {
+    if (!area_segment_drawn(tf, in.x_a, in.y_a, in.x_b, in.y_b, base.base_a, base.base_b, to_series, baseline)) {
         return masked;
     }
 
@@ -563,10 +568,10 @@ fn vs_area(in: VsIn, base: VsAreaBase, @builtin(vertex_index) vid: u32) -> AreaO
     let at_b = slot.local >= 2u;
     let on_base = (slot.local & 1u) == 1u;
     var out: AreaOut;
-    out.pos = vec4<f32>(area_corner_ndc(transform, piece, at_b, on_base, to_series), 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.pos = vec4<f32>(area_corner_ndc(tf, piece, at_b, on_base, to_series), 0.0, 1.0);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     return out;
 }
 
@@ -594,7 +599,8 @@ fn fs_area(in: AreaOut) -> @location(0) vec4<f32> {
 // before extrusion, as in the precise path.
 @vertex
 fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
-    if (!sample_valid(transform, in.x_a, in.y_a) || !sample_valid(transform, in.x_b, in.y_b)) {
+    let tf = transform;
+    if (!sample_valid(tf, in.x_a, in.y_a) || !sample_valid(tf, in.x_b, in.y_b)) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
@@ -604,17 +610,17 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let slot = strip_slot(vid, 2u * (SKETCH_SUBDIV + 1u));
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
     let last_piece = slot.piece + 1u == step_piece_count(mode);
-    let a_ndc = data_to_ndc(transform, piece.x0, piece.y0);
-    let b_ndc = step_piece_end(transform, piece, a_ndc, data_to_ndc(transform, piece.x1, piece.y1));
+    let a_ndc = data_to_ndc(tf, piece.x0, piece.y0);
+    let b_ndc = step_piece_end(tf, piece, a_ndc, data_to_ndc(tf, piece.x1, piece.y1));
 
     let a_px = a_ndc / transform.pixel_to_ndc;
     // Copied again after the division: Metal's vertex stage may divide the
     // two equal coordinates differently (#63).
-    let b_px = step_piece_end(transform, piece, a_px, b_ndc / transform.pixel_to_ndc);
+    let b_px = step_piece_end(tf, piece, a_px, b_ndc / transform.pixel_to_ndc);
 
     let delta = b_px - a_px;
     let len = length(delta);
-    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
+    let dir = step_piece_dir(tf, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
@@ -635,7 +641,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 
     // The arc offset from A at this knot: the noise walks it from A's arc
     // pair, the dash from A's phase.
-    let arc_start = step_prefix_px(in, mode, slot.piece);
+    let arc_start = step_prefix_px(tf, in, mode, slot.piece);
     let arc_end = select(arc_start + len, arc_delta(arc.arc_b, arc.arc_a), last_piece);
     let offset_at = mix(arc_start, arc_end, t);
     let seed = u32(transform.style_params[0].z) ^ style.series_salt;
@@ -647,9 +653,9 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 
     var out: VsOut;
     out.pos = vec4<f32>(corner_ndc, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.dist_px = arc_at + select(0.0, cap, style.dash_len == 0u);
     if (style.dash_len > 0u) {
         out.dist_px = arc_at + select(0.0, -half_w, k == 0u) + select(0.0, half_w, k == SKETCH_SUBDIV);
@@ -729,7 +735,8 @@ struct RibbonOut {
 
 @vertex
 fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut {
-    if (!sample_valid(transform, in.x_a, in.y_a) || !sample_valid(transform, in.x_b, in.y_b)) {
+    let tf = transform;
+    if (!sample_valid(tf, in.x_a, in.y_a) || !sample_valid(tf, in.x_b, in.y_b)) {
         var masked: RibbonOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
@@ -739,11 +746,11 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     let slot = strip_slot(vid, 2u * (CONS_RIBBON_SUBDIV + 1u));
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
     let last_piece = slot.piece + 1u == step_piece_count(mode);
-    let a_px = data_to_px(transform, piece.x0, piece.y0);
-    let b_px = step_piece_end(transform, piece, a_px, data_to_px(transform, piece.x1, piece.y1));
+    let a_px = data_to_px(tf, piece.x0, piece.y0);
+    let b_px = step_piece_end(tf, piece, a_px, data_to_px(tf, piece.x1, piece.y1));
     let delta = b_px - a_px;
     let len = length(delta);
-    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
+    let dir = step_piece_dir(tf, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     // Geometric half-extent = one FULL ribbon width: the gaussian profile in
@@ -769,15 +776,15 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     let seed = u32(transform.style_params[0].w) ^ style.series_salt;
     let intensity_cfg = max(transform.style_params[0].z, 0.0);
     // The arc offset from A at this knot.
-    let arc_start = step_prefix_px(in, mode, slot.piece);
+    let arc_start = step_prefix_px(tf, in, mode, slot.piece);
     let arc_end = select(arc_start + len, arc_delta(arc.arc_b, arc.arc_a), last_piece);
     let offset_px = mix(arc_start, arc_end, t);
 
     var out: RibbonOut;
     out.pos = vec4<f32>(corner_px * transform.pixel_to_ndc, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.cross_d = side;
     out.center_i = intensity_cfg * cons_clump(arc.arc_a, offset_px, seed);
     out.cap_d = abs(cap) / max(half_geom, 1e-6);
@@ -834,6 +841,7 @@ fn vs_stars(
     @builtin(vertex_index) vid: u32,
     @builtin(instance_index) slot: u32,
 ) -> StarOut {
+    let tf = transform;
     let corner = vid % 6u;
 
     let density = max(transform.style_params[0].x, 0.0); // stars / 100 px arc
@@ -886,8 +894,8 @@ fn vs_stars(
     if (seg_len <= 0.0) { alive = false; }
     let t = clamp(arc_from_a / max(seg_len, 1e-6), 0.0, 1.0);
 
-    if (!sample_valid(transform, star_pool_pair(star_vsp.x_base, lo), star_pool_pair(star_vsp.y_base, lo))
-        || !sample_valid(transform, star_pool_pair(star_vsp.x_base, lo + 1u), star_pool_pair(star_vsp.y_base, lo + 1u))) {
+    if (!sample_valid(tf, star_pool_pair(star_vsp.x_base, lo), star_pool_pair(star_vsp.y_base, lo))
+        || !sample_valid(tf, star_pool_pair(star_vsp.x_base, lo + 1u), star_pool_pair(star_vsp.y_base, lo + 1u))) {
         var masked: StarOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
@@ -907,7 +915,7 @@ fn vs_stars(
         var k = 0u;
         loop {
             piece = step_piece(x_lo, y_lo, x_hi, y_hi, star_vsp.mode, k);
-            let piece_len = step_piece_len_px(transform, piece);
+            let piece_len = step_piece_len_px(tf, piece);
             if (k + 1u >= pieces || arc_in <= piece_len) {
                 t_piece = clamp(arc_in / max(piece_len, 1e-6), 0.0, 1.0);
                 break;
@@ -916,11 +924,11 @@ fn vs_stars(
             k = k + 1u;
         }
     }
-    let a_px = data_to_px(transform, piece.x0, piece.y0);
-    let b_px = step_piece_end(transform, piece, a_px, data_to_px(transform, piece.x1, piece.y1));
+    let a_px = data_to_px(tf, piece.x0, piece.y0);
+    let b_px = step_piece_end(tf, piece, a_px, data_to_px(tf, piece.x1, piece.y1));
     let delta = b_px - a_px;
     let len = length(delta);
-    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
+    let dir = step_piece_dir(tf, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
     // Also kills non-finite endpoints (NaN comparisons are false).
     if (!(len > 1e-6)) { alive = false; }
@@ -979,9 +987,9 @@ fn vs_stars(
 
     var out: StarOut;
     out.pos = vec4<f32>(corner_px * transform.pixel_to_ndc, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.uv = c * 0.5 + vec2<f32>(0.5, 0.5);
     out.tint = tint;
     out.brightness = b * star_brightness;

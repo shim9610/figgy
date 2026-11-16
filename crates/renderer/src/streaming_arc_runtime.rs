@@ -120,9 +120,9 @@ impl Renderer {
         if self.arc_pipelines.is_none() {
             // The renderer's one scan, shared with its resident charts: of
             // its shader set's variant (#299).
-            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_cuts(
+            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_set(
                 &self.device,
-                self.pipelines.shaders.cuts,
+                self.pipelines.shaders.set,
                 &mut |_| {},
             ));
         }

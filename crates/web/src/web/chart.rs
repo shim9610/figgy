@@ -52,9 +52,75 @@ fn observe_init_progress(
     }
 }
 
+/// The shader set named `name` in the web API (#299): `"basic"` or
+/// `"full"`. Any other value is refused, naming it.
+pub(super) fn shader_set_from_name(name: &JsValue) -> Result<renderer::ShaderSet, JsValue> {
+    match name.as_string().as_deref() {
+        Some("basic") => Ok(renderer::ShaderSet::Basic),
+        Some("full") => Ok(renderer::ShaderSet::Full),
+        Some(other) => Err(JsValue::from(js_sys::Error::new(&format!(
+            "shaders must be \"basic\" or \"full\", got \"{other}\""
+        )))),
+        None => Err(JsValue::from(js_sys::Error::new(
+            "shaders must be the string \"basic\" or \"full\"",
+        ))),
+    }
+}
+
+/// The web API's name of `set`.
+pub(super) fn shader_set_name(set: renderer::ShaderSet) -> &'static str {
+    match set {
+        renderer::ShaderSet::Basic => "basic",
+        renderer::ShaderSet::Full => "full",
+    }
+}
+
+/// `FiggyChart.create_with_options`' options, read and checked before
+/// anything is created: `shaders` and `on_progress`, both optional. An
+/// unknown key or a value of the wrong kind is refused.
+pub(super) fn create_options(
+    options: &JsValue,
+) -> Result<(renderer::ShaderSet, Option<js_sys::Function>), JsValue> {
+    if options.is_undefined() || options.is_null() {
+        return Ok((renderer::ShaderSet::Basic, None));
+    }
+    if !options.is_object() || js_sys::Array::is_array(options) {
+        return Err(JsValue::from(js_sys::Error::new(
+            "create_with_options takes an options object",
+        )));
+    }
+    let mut set = renderer::ShaderSet::Basic;
+    let mut on_progress = None;
+    for key in js_sys::Object::keys(options.unchecked_ref::<js_sys::Object>()).iter() {
+        let value = js_sys::Reflect::get(options, &key)?;
+        match key.as_string().as_deref() {
+            Some("shaders") => {
+                if !value.is_undefined() {
+                    set = shader_set_from_name(&value)?;
+                }
+            }
+            Some("on_progress") => {
+                if !value.is_undefined() {
+                    on_progress = Some(value.dyn_into::<js_sys::Function>().map_err(|_| {
+                        JsValue::from(js_sys::Error::new("on_progress must be a function"))
+                    })?);
+                }
+            }
+            other => {
+                return Err(JsValue::from(js_sys::Error::new(&format!(
+                    "unknown create option \"{}\": the options are shaders and on_progress",
+                    other.unwrap_or("")
+                ))));
+            }
+        }
+    }
+    Ok((set, on_progress))
+}
+
 pub(super) async fn create_chart_kernel(
     canvas: HtmlCanvasElement,
     on_event: Option<js_sys::Function>,
+    shader_set: renderer::ShaderSet,
 ) -> Result<FiggyChart, JsValue> {
     console_error_panic_hook::set_once();
 
@@ -66,10 +132,11 @@ pub(super) async fn create_chart_kernel(
         // No pipeline compile is awaited (#299): the renderer starts them
         // all at once and leaves them running in the browser, and the first
         // frame draws with the one pipeline an empty chart needs.
-        let renderer = Renderer::for_window_minimal_async_observed(
+        let renderer = Renderer::for_window_with_shader_set_async_observed(
             wgpu::SurfaceTarget::Canvas(canvas),
             (w, h),
             POOL_CAPACITY,
+            shader_set,
             &mut observer,
         )
         .await
@@ -578,7 +645,7 @@ impl FiggyChart {
     /// `figgy-chart.js` and its `<figgy-chart>` Custom Element.
     /// JS: `const chart = await FiggyChart.create(canvas);`
     pub async fn create(canvas: HtmlCanvasElement) -> Result<FiggyChart, JsValue> {
-        create_chart_kernel(canvas, None).await
+        create_chart_kernel(canvas, None, renderer::ShaderSet::Basic).await
     }
 
     /// Same as [`Self::create`], reporting each init stage to `on_event`
@@ -589,7 +656,45 @@ impl FiggyChart {
         canvas: HtmlCanvasElement,
         on_event: js_sys::Function,
     ) -> Result<FiggyChart, JsValue> {
-        create_chart_kernel(canvas, Some(on_event)).await
+        create_chart_kernel(canvas, Some(on_event), renderer::ShaderSet::Basic).await
+    }
+
+    /// [`Self::create`] with options (#299), all optional:
+    ///
+    /// - `shaders`: `"basic"` (the default) or `"full"`. A chart starts on
+    ///   the basic shader set, which draws linear and logarithmic
+    ///   rectangular charts, and moves to the full set by itself when its
+    ///   config first has an axis break, a probability axis or polar
+    ///   coordinates. A host that knows it will show such a chart passes
+    ///   `"full"`, so the basic set is never compiled and discarded.
+    /// - `on_progress`: the callback of [`Self::create_with_progress`].
+    ///
+    /// An unknown option, or a `shaders` value other than those two,
+    /// rejects the promise with an `Error` that names it; nothing is
+    /// created.
+    /// JS: `const chart = await FiggyChart.create_with_options(canvas, { shaders: "full" });`
+    pub async fn create_with_options(
+        canvas: HtmlCanvasElement,
+        options: JsValue,
+    ) -> Result<FiggyChart, JsValue> {
+        let (set, on_progress) = create_options(&options)?;
+        create_chart_kernel(canvas, on_progress, set).await
+    }
+
+    /// The shader set this chart compiles (#299): `"basic"` or `"full"`.
+    pub fn shader_set(&self) -> String {
+        shader_set_name(self.renderer.shader_set()).into()
+    }
+
+    /// Move this chart to at least the shader set `shaders` (`"basic"` or
+    /// `"full"`, #299), as its first chart with an axis break, a
+    /// probability axis or polar coordinates would. A chart never goes
+    /// back, so `"basic"` and a repeated `"full"` do nothing. Any other
+    /// value throws an `Error` that names it.
+    pub fn require_shader_set(&mut self, shaders: JsValue) -> Result<(), JsValue> {
+        let set = shader_set_from_name(&shaders)?;
+        self.renderer.require_shader_set(set);
+        Ok(())
     }
 
     /// Register a font (TTF/OTF/TTC bytes) for SSoT `font` family names.

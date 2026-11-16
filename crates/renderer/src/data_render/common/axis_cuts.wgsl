@@ -1,8 +1,8 @@
 // The cut remap of a broken axis (#200): the `AxisCuts` of one axis and the
 // functions that place data across its cuts. Spliced before
-// `projection.wgsl` into the cut variant of every module that places data;
-// `axis_cuts_identity.wgsl` is its twin for a renderer that has drawn no
-// broken chart (#299), with the same signatures.
+// `projection.wgsl` into the full set of every module that places data;
+// `axis_cuts_basic.wgsl` is its twin for a renderer that has drawn no broken
+// chart (#299), with the same signatures.
 
 // One axis of a broken chart (#200): its cuts `(from, to, start, end)` in
 // the axis' data t and `(count, piece scale)`. Count 0 is the identity.

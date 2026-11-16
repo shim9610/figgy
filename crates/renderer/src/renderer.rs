@@ -105,7 +105,7 @@ use crate::init::{
 use crate::layout::Rect;
 use crate::line::LineStylePreset;
 use crate::select::HitId;
-use crate::shader_assembly::AxisCutShaders;
+use crate::shader_assembly::ShaderSet;
 
 /// Stable identity for one renderer-owned chart state.
 ///
@@ -340,6 +340,12 @@ pub struct Renderer {
     /// channel count, never by the sample count (M3).
     monotonic: monotonic::MonotonicState,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
+    /// Whether this renderer started the browser's asynchronous compile of
+    /// its resident render pipelines when it was built
+    /// (`for_window_minimal_async_observed`, #299): the move to the full
+    /// shaders then starts it again for those.
+    #[cfg(target_arch = "wasm32")]
+    browser_warmup: bool,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
     #[cfg(test)]

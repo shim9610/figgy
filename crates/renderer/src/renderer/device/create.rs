@@ -10,7 +10,7 @@ pub(in crate::renderer) fn create_target_pipelines(
     _per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
-    cuts: AxisCutShaders,
+    set: ShaderSet,
 ) -> TargetPipelines {
     let mut observer = |_| {};
     create_target_pipelines_observed(
@@ -21,7 +21,7 @@ pub(in crate::renderer) fn create_target_pipelines(
         _per_point_style_map_bgl,
         surface_format,
         sample_count,
-        cuts,
+        set,
         &mut observer,
     )
 }
@@ -35,11 +35,11 @@ pub(in crate::renderer) fn create_target_pipelines_observed(
     _per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
-    cuts: AxisCutShaders,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> TargetPipelines {
     let shaders = observe_value(observer, "renderer", "shader modules", || {
-        data_render::ShaderModules::new(device, cuts)
+        data_render::ShaderModules::new(device, set)
     });
     TargetPipelines {
         vector_points: None,
@@ -121,12 +121,11 @@ pub(in crate::renderer) async fn create_target_pipelines_observed_async(
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
     _minimal: bool,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<TargetPipelines> {
-    // A new renderer has seen no chart, so no axis break (#299).
-    let cuts = AxisCutShaders::Identity;
     let shaders = observe_value_async(observer, "renderer", "shader modules", || {
-        data_render::ShaderModules::new(device, cuts)
+        data_render::ShaderModules::new(device, set)
     })
     .await;
     // A minimal renderer awaits no compile (#299): the one pipeline built
@@ -142,7 +141,7 @@ pub(in crate::renderer) async fn create_target_pipelines_observed_async(
             surface_format,
             sample_count,
             None,
-            cuts,
+            set,
             observer,
         )
         .await

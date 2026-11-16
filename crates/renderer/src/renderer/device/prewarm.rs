@@ -518,10 +518,10 @@ impl TargetPipelines {
             if self.tri_mesh[pass as usize].is_none()
                 && feature.is_none_or(|f| f.includes_field("field_tri_mesh"))
             {
-                let cuts = self.shaders.cuts;
+                let variant = self.shaders.set;
                 let shader = self
                     .tri_mesh_shader
-                    .get_or_insert_with(|| data_render::tri_mesh::shader_module(device, cuts));
+                    .get_or_insert_with(|| data_render::tri_mesh::shader_module(device, variant));
                 self.tri_mesh[pass as usize] = Some(prewarm_step!(
                     observer,
                     "renderer.prewarm",

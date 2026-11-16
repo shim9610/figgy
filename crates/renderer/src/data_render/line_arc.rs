@@ -34,7 +34,7 @@
 //! held as two `u32` words, `ARC_PAIR_BYTES` each (SHADER_COMMON.md §5.6 arc
 //! pairs, #107).
 
-use crate::shader_assembly::AxisCutShaders;
+use crate::shader_assembly::ShaderSet;
 use std::sync::Arc;
 
 use crate::gpu_memory::{
@@ -46,20 +46,19 @@ use crate::init::{InitEvent, finished, observe_value, started};
 use super::ScatterTransform;
 
 /// The assembled arc-length scan module.
-pub(crate) const LINE_ARC_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub(crate) const LINE_ARC_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/project_3d.wgsl",
     "data_render/common/line_step.wgsl",
     "data_render/common/arc_pair.wgsl",
     "data_render/line_arc.wgsl",
 );
-/// [`LINE_ARC_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
-pub(crate) const LINE_ARC_SHADER: crate::shader_assembly::Assembled = LINE_ARC_SHADER_BY_CUTS.remap;
+/// The full assembly of [`LINE_ARC_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub(crate) const LINE_ARC_SHADER: crate::shader_assembly::Assembled = LINE_ARC_SHADER_BY_SET.full;
 
 const INIT_SCOPE: &str = "renderer.arc_scan";
 
@@ -251,14 +250,14 @@ pub fn create_arc_scan_pipelines_observed(
     device: &wgpu::Device,
     observer: &mut dyn FnMut(InitEvent),
 ) -> ArcScanPipelines {
-    create_arc_scan_pipelines_by_cuts(device, AxisCutShaders::Remap, observer)
+    create_arc_scan_pipelines_by_set(device, ShaderSet::Full, observer)
 }
 
 /// [`create_arc_scan_pipelines_observed`] from the module assembled for
 /// `cuts` (#299): the renderer's own scan follows its shader set.
-pub(crate) fn create_arc_scan_pipelines_by_cuts(
+pub(crate) fn create_arc_scan_pipelines_by_set(
     device: &wgpu::Device,
-    cuts: AxisCutShaders,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> ArcScanPipelines {
     started(observer, INIT_SCOPE, "setup");
@@ -266,7 +265,7 @@ pub(crate) fn create_arc_scan_pipelines_by_cuts(
         &device,
         wgpu::ShaderModuleDescriptor {
             label: Some("figgy line arc scan shader"),
-            source: wgpu::ShaderSource::Wgsl(LINE_ARC_SHADER_BY_CUTS.of(cuts).source.into()),
+            source: wgpu::ShaderSource::Wgsl(LINE_ARC_SHADER_BY_SET.of(set).source.into()),
         },
     );
 
@@ -486,21 +485,21 @@ pub async fn create_arc_scan_pipelines_observed_async(
     device: &wgpu::Device,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<ArcScanPipelines, String> {
-    create_arc_scan_pipelines_by_cuts_async(device, AxisCutShaders::Remap, observer).await
+    create_arc_scan_pipelines_by_set_async(device, ShaderSet::Full, observer).await
 }
 
 /// [`create_arc_scan_pipelines_observed_async`] from the module assembled
 /// for `cuts` (#299).
-pub(crate) async fn create_arc_scan_pipelines_by_cuts_async(
+pub(crate) async fn create_arc_scan_pipelines_by_set_async(
     device: &wgpu::Device,
-    cuts: AxisCutShaders,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<ArcScanPipelines, String> {
     #[cfg(target_arch = "wasm32")]
     crate::init::prewarm_compute_entries_js(
         device,
         "line.arc.async",
-        LINE_ARC_SHADER_BY_CUTS.of(cuts).source,
+        LINE_ARC_SHADER_BY_SET.of(set).source,
         &[
             ("seg_init", "seg_init"),
             ("seg_init_3d", "seg_init_3d"),
@@ -515,7 +514,7 @@ pub(crate) async fn create_arc_scan_pipelines_by_cuts_async(
         observer,
     )
     .await?;
-    Ok(create_arc_scan_pipelines_by_cuts(device, cuts, observer))
+    Ok(create_arc_scan_pipelines_by_set(device, set, observer))
 }
 
 impl ArcScanPipelines {

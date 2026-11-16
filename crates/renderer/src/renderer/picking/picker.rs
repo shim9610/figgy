@@ -111,7 +111,7 @@ impl RendererPicker {
             queue.clone(),
             Arc::clone(&gpu_ledger),
             health.clone(),
-            shaders.cuts,
+            shaders.set,
             observer,
         ) {
             Ok(point) => match crate::gpu_data_pick::DataPickPipelineBundle::new_observed(
@@ -177,7 +177,7 @@ impl RendererPicker {
             queue.clone(),
             Arc::clone(&gpu_ledger),
             health.clone(),
-            shaders.cuts,
+            shaders.set,
             observer,
         )
         .await

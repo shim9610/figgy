@@ -222,9 +222,14 @@ impl Renderer {
     pub(super) fn prepare_unreported(&mut self, items: &[PanelDraw<'_>]) -> Result<PreparedFrame> {
         self.health.check()?;
         // The one point where a frame's charts are known before any of its
-        // pipelines is compiled (#299): a break on any layer of any chart
-        // moves the renderer to the cut remap shaders.
-        self.admit_axis_cuts(items.iter().any(|item| config_cuts_axes(item.chart_config)));
+        // pipelines is compiled (#299): a break, a probability axis or
+        // polar coordinates on any layer of any chart move the renderer to
+        // the full shaders.
+        self.admit_full_shaders(
+            items
+                .iter()
+                .any(|item| config_needs_full_shaders(item.chart_config)),
+        );
         for item in items {
             for series in item.series {
                 self.require_resident_series(series.config)?;
@@ -285,7 +290,7 @@ impl Renderer {
     ) -> Result<PreparedFrame> {
         self.health.check()?;
         for item in items {
-            self.admit_chart_cuts(item.chart_id);
+            self.admit_chart_shaders(item.chart_id);
         }
         self.prepare_registered_mixed(items)
             .map_err(streaming_runtime::StreamRequestError::into_figgy)
@@ -301,7 +306,7 @@ impl Renderer {
                 reason: error.to_string(),
             };
         for item in items {
-            self.admit_chart_cuts(item.chart_id);
+            self.admit_chart_shaders(item.chart_id);
         }
         // Resolve every id and fallible contour invariant before creating any
         // GPU styles or advancing the content revision of a supplied view.
@@ -436,7 +441,7 @@ impl Renderer {
                 reason: error.to_string(),
             };
         for item in items {
-            self.admit_chart_cuts(item.chart_id);
+            self.admit_chart_shaders(item.chart_id);
         }
         let mut resident = Vec::new();
         let mut displays = Vec::new();

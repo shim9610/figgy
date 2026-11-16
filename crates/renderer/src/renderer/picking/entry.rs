@@ -50,7 +50,7 @@ impl Renderer {
                 field: &self.pipelines.shaders.field,
                 vector_grid: &self.pipelines.shaders.vector_grid,
                 line: &self.pipelines.shaders.line,
-                cuts: self.pipelines.shaders.cuts,
+                set: self.pipelines.shaders.set,
             },
             &self.transform_bgl,
             &self.field_bgl,
@@ -102,7 +102,7 @@ impl Renderer {
                     field: &self.pipelines.shaders.field,
                     vector_grid: &self.pipelines.shaders.vector_grid,
                     line: &self.pipelines.shaders.line,
-                    cuts: self.pipelines.shaders.cuts,
+                    set: self.pipelines.shaders.set,
                 },
                 &self.transform_bgl,
                 &self.field_bgl,
@@ -129,7 +129,7 @@ impl Renderer {
         id: ChartId,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
-        self.admit_chart_cuts(id);
+        self.admit_chart_shaders(id);
         let state = self
             .chart_states
             .get(&id)
@@ -161,9 +161,9 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
-        // A chart with an axis break is picked with the cut remap only
-        // (#299): the picker's bundles follow the renderer's shader set.
-        self.admit_chart_cuts(id);
+        // A chart with an axis break, a probability axis or polar
+        // coordinates is picked with the full shaders only (#299): the picker's bundles follow the renderer's shader set.
+        self.admit_chart_shaders(id);
         let state = self
             .chart_states
             .get(&id)
@@ -205,10 +205,9 @@ impl Renderer {
         let (display_config, layer_series) = (&inputs.panel, &inputs.series);
         let (request, moved) = pick_request_outside_gaps(display_config, request);
         let transform = data_render::scatter_transform_from_config(display_config);
-        if transform.has_axis_cuts() && self.picker.ready_bundle()?.cuts == AxisCutShaders::Identity
-        {
+        if transform.needs_full_shaders() && self.picker.ready_bundle()?.set == ShaderSet::Basic {
             return Err(crate::gpu_pick::GpuPickError::Internal(
-                "a chart with an axis break is picked with the cut remap shaders",
+                "a chart with an axis break, a probability axis or polar coordinates is picked with the full shaders",
             ));
         }
         // The line offset members are the last registered series, each

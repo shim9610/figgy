@@ -309,6 +309,7 @@ fn category_geometry_style() -> ResolvedBarStyle {
 /// resolved corner radius. A missing or zero value, a percent stack without
 /// a positive total, or a slot too narrow for the group draws no bar.
 fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
+    let tf = transform;
     if (row >= category_params.count) {
         return category_invalid();
     }
@@ -399,15 +400,15 @@ fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
     let low = category_slot_edge(position, -1.0);
     let high = category_slot_edge(position, 1.0);
     if (horizontal) {
-        a = category_px(data_to_ndc(transform, start, position)).x;
-        b = category_px(data_to_ndc(transform, end, position)).x;
-        slot_a = category_px(data_to_ndc(transform, start, low)).y;
-        slot_b = category_px(data_to_ndc(transform, start, high)).y;
+        a = category_px(data_to_ndc(tf, start, position)).x;
+        b = category_px(data_to_ndc(tf, end, position)).x;
+        slot_a = category_px(data_to_ndc(tf, start, low)).y;
+        slot_b = category_px(data_to_ndc(tf, start, high)).y;
     } else {
-        a = category_px(data_to_ndc(transform, position, start)).y;
-        b = category_px(data_to_ndc(transform, position, end)).y;
-        slot_a = category_px(data_to_ndc(transform, low, start)).x;
-        slot_b = category_px(data_to_ndc(transform, high, start)).x;
+        a = category_px(data_to_ndc(tf, position, start)).y;
+        b = category_px(data_to_ndc(tf, position, end)).y;
+        slot_a = category_px(data_to_ndc(tf, low, start)).x;
+        slot_b = category_px(data_to_ndc(tf, high, start)).x;
     }
     // The category slot along the other axis: the group covers its centred
     // `group_width`, grouped bars side by side `gap_px` apart in series

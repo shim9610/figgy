@@ -153,9 +153,9 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> Result<crate::GpuDataPickTicket> {
         self.health.check()?;
-        // A chart with an axis break is picked with the cut remap only
-        // (#299).
-        self.admit_chart_cuts(id);
+        // A chart with an axis break, a probability axis or polar
+        // coordinates is picked with the full shaders only (#299).
+        self.admit_chart_shaders(id);
         // A 3D chart's point pick binds the series' registered styles (#132),
         // built here when the chart has not been drawn yet.
         if self
@@ -248,9 +248,9 @@ impl Renderer {
         // answers are the ones drawn on top there.
         let point_ticket = self.pick_chart(id, given)?;
         let data_bundle = self.picker.ready_data_bundle()?;
-        if data_bundle.cuts == AxisCutShaders::Identity && config_cuts_axes(&display_config) {
+        if data_bundle.set == ShaderSet::Basic && config_needs_full_shaders(&display_config) {
             return Err(FiggyError::internal(
-                "a chart with an axis break is picked with the cut remap shaders",
+                "a chart with an axis break, a probability axis or polar coordinates is picked with the full shaders",
             ));
         }
 

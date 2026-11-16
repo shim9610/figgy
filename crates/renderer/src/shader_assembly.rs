@@ -14,9 +14,9 @@
 //! fragments two modules splice, and the integration tests can read the
 //! source a pipeline compiles.
 //!
-//! A module that places data is assembled twice, by `assembled_by_cuts!`
-//! (#299): with the cut remap of a broken axis and with its identity twin
-//! (`AxisCutShaders`). `MODULES_BY_CUTS` names those.
+//! A module that places data is assembled twice, by `assembled_by_set!`
+//! (#299): basic, without the code only some charts need, and full
+//! (`ShaderSet`). `MODULES_BY_SET` names those.
 
 /// One WGSL module assembled from fragment files at compile time.
 ///
@@ -55,72 +55,139 @@ macro_rules! assembled {
 }
 pub(crate) use assembled;
 
-/// Which axis-cut fragment a module is assembled with (#299).
+/// Which of its two assemblies a data module is compiled from (#299).
 ///
-/// The cut remap of a broken axis (#200) is the most expensive code a data
-/// pipeline compiles, and a chart without a break never needs it. Every
-/// module that places data is therefore assembled twice, from one fragment
-/// list (`assembled_by_cuts!`): once with `axis_cuts.wgsl` and once with
-/// its twin `axis_cuts_identity.wgsl`, which has the same signatures and no
-/// cut. A renderer compiles the identity modules until it is first handed a
-/// chart with an axis break and the remap modules from then on
-/// (`Renderer::admit_axis_cuts`); a chart with a break is never drawn or
-/// picked through an identity module.
+/// Three features cost every data pipeline most of its compile time in a
+/// browser and are used by few charts: the cut remap of a broken axis
+/// (#200), a probability scale (#209) and polar coordinates. Every module
+/// that places data is therefore assembled twice, from one fragment list
+/// (`assembled_by_set!`): [`Self::Full`] with the fragments that hold
+/// that code and [`Self::Basic`] with their basic twins
+/// ([`SET_FRAGMENTS`]), which have the same signatures and none of it. A
+/// renderer compiles the basic modules until it is first handed a chart with
+/// an axis break, a probability axis or polar coordinates, and the full
+/// modules from then on (`Renderer::admit_full_shaders`); such a chart is
+/// never drawn or picked through a basic module.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum AxisCutShaders {
-    /// `axis_cuts_identity.wgsl`: no chart with an axis break has been seen.
+pub enum ShaderSet {
+    /// The basic twins: no chart with an axis break, a probability axis or
+    /// polar coordinates has been seen.
     #[default]
-    Identity,
-    /// `axis_cuts.wgsl`: the cut remap.
-    Remap,
+    Basic,
+    /// Every feature.
+    Full,
 }
 
-/// The fragment [`AxisCutShaders::Remap`] splices.
-pub const AXIS_CUTS_FRAGMENT: &str = "data_render/common/axis_cuts.wgsl";
-/// The fragment [`AxisCutShaders::Identity`] splices.
-pub const AXIS_CUTS_IDENTITY_FRAGMENT: &str = "data_render/common/axis_cuts_identity.wgsl";
+/// The fragments the two sets differ in, as `(basic, full)` pairs: the
+/// full fragment holds a feature's code and its basic twin the same
+/// signatures without it. The first four go where a module's list says
+/// `variant`, in this order; the last where it says `field_polar`, in the
+/// modules that splice `field_grid.wgsl`.
+pub const SET_FRAGMENTS: &[(&str, &str)] = &[
+    // The cut remap of a broken axis (#200).
+    (
+        "data_render/common/axis_cuts_basic.wgsl",
+        "data_render/common/axis_cuts.wgsl",
+    ),
+    // A probability scale (#209).
+    (
+        "data_render/common/probability_basic.wgsl",
+        "data_render/common/probability.wgsl",
+    ),
+    // Where a value sits on its axis: linear and logarithmic in both, and
+    // the two above in the full one.
+    (
+        "data_render/common/axis_scale_basic.wgsl",
+        "data_render/common/axis_scale.wgsl",
+    ),
+    // Polar coordinates (`Config.polar`).
+    (
+        "data_render/common/polar_basic.wgsl",
+        "data_render/common/polar.wgsl",
+    ),
+    // The polar half of the field grid's cell lookup (#208).
+    (
+        "data_render/common/field_polar_basic.wgsl",
+        "data_render/common/field_polar.wgsl",
+    ),
+];
 
 /// One module assembled twice from the same fragment list, apart from the
-/// axis-cut fragment ([`AxisCutShaders`]).
+/// fragments of [`SET_FRAGMENTS`] ([`ShaderSet`]).
 #[derive(Clone, Copy, Debug)]
-pub struct AssembledByCuts {
-    /// With `axis_cuts_identity.wgsl`.
-    pub identity: Assembled,
-    /// With `axis_cuts.wgsl`.
-    pub remap: Assembled,
+pub struct AssembledBySet {
+    /// With the basic twins.
+    pub basic: Assembled,
+    /// With the full fragments.
+    pub full: Assembled,
 }
 
-impl AssembledByCuts {
-    /// The assembly for `cuts`.
-    pub const fn of(&self, cuts: AxisCutShaders) -> Assembled {
-        match cuts {
-            AxisCutShaders::Identity => self.identity,
-            AxisCutShaders::Remap => self.remap,
+impl AssembledBySet {
+    /// The assembly for `set`.
+    pub const fn of(&self, set: ShaderSet) -> Assembled {
+        match set {
+            ShaderSet::Basic => self.basic,
+            ShaderSet::Full => self.full,
         }
     }
 }
 
-/// An [`AssembledByCuts`] from one literal list of fragment files, with the
-/// word `cuts` where the axis-cut fragment goes: [`assembled!`] over the list
-/// with `axis_cuts_identity.wgsl` there and again with `axis_cuts.wgsl`, so
-/// the two modules cannot differ in anything else.
-macro_rules! assembled_by_cuts {
-    ($($before:literal,)* cuts $(, $after:literal)* $(,)?) => {
-        $crate::shader_assembly::AssembledByCuts {
-            identity: $crate::shader_assembly::assembled!(
-                $($before,)*
-                "data_render/common/axis_cuts_identity.wgsl"
-                $(, $after)*
-            ),
-            remap: $crate::shader_assembly::assembled!(
-                $($before,)*
-                "data_render/common/axis_cuts.wgsl"
-                $(, $after)*
-            ),
-        }
+/// An [`AssembledBySet`] from one literal list of fragment files, with
+/// the word `set` where the axis and polar fragments go and the word
+/// `field_polar` after `field_grid.wgsl`: [`assembled!`] over the list with
+/// the basic fragments of [`SET_FRAGMENTS`] there and again with the full
+/// ones, so the two modules cannot differ in anything else.
+macro_rules! assembled_by_set {
+    ($($list:tt)+) => {
+        $crate::shader_assembly::assembled_by_set_step!([] [] $($list)+)
     };
 }
-pub(crate) use assembled_by_cuts;
+pub(crate) use assembled_by_set;
+
+/// [`assembled_by_set!`], one list entry at a time: the basic and the
+/// full list so far, then the entries left.
+macro_rules! assembled_by_set_step {
+    ([$($basic:literal,)*] [$($full:literal,)*]) => {
+        $crate::shader_assembly::AssembledBySet {
+            basic: $crate::shader_assembly::assembled!($($basic),*),
+            full: $crate::shader_assembly::assembled!($($full),*),
+        }
+    };
+    ([$($basic:literal,)*] [$($full:literal,)*] set $(, $($rest:tt)*)?) => {
+        $crate::shader_assembly::assembled_by_set_step!(
+            [
+                $($basic,)*
+                "data_render/common/axis_cuts_basic.wgsl",
+                "data_render/common/probability_basic.wgsl",
+                "data_render/common/axis_scale_basic.wgsl",
+                "data_render/common/polar_basic.wgsl",
+            ]
+            [
+                $($full,)*
+                "data_render/common/axis_cuts.wgsl",
+                "data_render/common/probability.wgsl",
+                "data_render/common/axis_scale.wgsl",
+                "data_render/common/polar.wgsl",
+            ]
+            $($($rest)*)?
+        )
+    };
+    ([$($basic:literal,)*] [$($full:literal,)*] field_polar $(, $($rest:tt)*)?) => {
+        $crate::shader_assembly::assembled_by_set_step!(
+            [$($basic,)* "data_render/common/field_polar_basic.wgsl",]
+            [$($full,)* "data_render/common/field_polar.wgsl",]
+            $($($rest)*)?
+        )
+    };
+    ([$($basic:literal,)*] [$($full:literal,)*] $fragment:literal $(, $($rest:tt)*)?) => {
+        $crate::shader_assembly::assembled_by_set_step!(
+            [$($basic,)* $fragment,]
+            [$($full,)* $fragment,]
+            $($($rest)*)?
+        )
+    };
+}
+pub(crate) use assembled_by_set_step;
 
 /// Every assembled module, by name: the source each pipeline compiles and
 /// its fragments.
@@ -170,89 +237,89 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ),
 ];
 
-/// Every module assembled by cuts ([`AssembledByCuts`], #299), by name: the
-/// modules that splice `projection.wgsl`. [`MODULES`] lists the remap
-/// assembly of each under the same name where it has one.
-pub const MODULES_BY_CUTS: &[(&str, AssembledByCuts)] = &[
-    ("scatter", crate::data_render::SCATTER_SHADER_BY_CUTS),
-    ("line", crate::data_render::LINE_SHADER_BY_CUTS),
-    ("errorbar", crate::data_render::ERRORBAR_SHADER_BY_CUTS),
-    ("bar", crate::data_render::BAR_SHADER_BY_CUTS),
-    ("field", crate::data_render::FIELD_SHADER_BY_CUTS),
+/// Every module assembled by variant ([`AssembledBySet`], #299), by
+/// name: the modules that splice `projection.wgsl`. [`MODULES`] lists the
+/// full assembly of each under the same name where it has one.
+pub const MODULES_BY_SET: &[(&str, AssembledBySet)] = &[
+    ("scatter", crate::data_render::SCATTER_SHADER_BY_SET),
+    ("line", crate::data_render::LINE_SHADER_BY_SET),
+    ("errorbar", crate::data_render::ERRORBAR_SHADER_BY_SET),
+    ("bar", crate::data_render::BAR_SHADER_BY_SET),
+    ("field", crate::data_render::FIELD_SHADER_BY_SET),
     (
         "tri_mesh",
-        crate::data_render::tri_mesh::TRI_MESH_SHADER_BY_CUTS,
+        crate::data_render::tri_mesh::TRI_MESH_SHADER_BY_SET,
     ),
     (
         "surface",
-        crate::data_render::surface_mesh::SURFACE_SHADER_BY_CUTS,
+        crate::data_render::surface_mesh::SURFACE_SHADER_BY_SET,
     ),
     (
         "tri_surface",
-        crate::data_render::surface_mesh::TRI_SURFACE_SHADER_BY_CUTS,
+        crate::data_render::surface_mesh::TRI_SURFACE_SHADER_BY_SET,
     ),
     (
         "ternary_region",
-        crate::data_render::ternary_region::TERNARY_REGION_SHADER_BY_CUTS,
+        crate::data_render::ternary_region::TERNARY_REGION_SHADER_BY_SET,
     ),
     (
         "line_arc",
-        crate::data_render::line_arc::LINE_ARC_SHADER_BY_CUTS,
+        crate::data_render::line_arc::LINE_ARC_SHADER_BY_SET,
     ),
     (
         "contour_anchor",
-        crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_CUTS,
+        crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_SET,
     ),
     (
         "contour_label",
-        crate::gpu_contour::CONTOUR_LABEL_SHADER_BY_CUTS,
+        crate::gpu_contour::CONTOUR_LABEL_SHADER_BY_SET,
     ),
     (
         "vector_points",
-        crate::data_render::vector::VECTOR_POINTS_SHADER_BY_CUTS,
+        crate::data_render::vector::VECTOR_POINTS_SHADER_BY_SET,
     ),
     (
         "vector_grid",
-        crate::data_render::vector::VECTOR_GRID_SHADER_BY_CUTS,
+        crate::data_render::vector::VECTOR_GRID_SHADER_BY_SET,
     ),
     (
         "vector_path",
-        crate::data_render::vector::VECTOR_PATH_SHADER_BY_CUTS,
+        crate::data_render::vector::VECTOR_PATH_SHADER_BY_SET,
     ),
     (
         "vector_points_3d",
-        crate::data_render::vector::VECTOR_POINTS_3D_SHADER_BY_CUTS,
+        crate::data_render::vector::VECTOR_POINTS_3D_SHADER_BY_SET,
     ),
-    ("pick_gate", crate::gpu_pick::PickShader::Gate.by_cuts()),
-    ("pick_marker", crate::gpu_pick::PickShader::Marker.by_cuts()),
+    ("pick_gate", crate::gpu_pick::PickShader::Gate.by_set()),
+    ("pick_marker", crate::gpu_pick::PickShader::Marker.by_set()),
     (
         "pick_marker_line",
-        crate::gpu_pick::PickShader::MarkerLine.by_cuts(),
+        crate::gpu_pick::PickShader::MarkerLine.by_set(),
     ),
-    ("pick_line", crate::gpu_pick::PickShader::Line.by_cuts()),
-    ("pick_vector", crate::gpu_pick::PickShader::Vector.by_cuts()),
+    ("pick_line", crate::gpu_pick::PickShader::Line.by_set()),
+    ("pick_vector", crate::gpu_pick::PickShader::Vector.by_set()),
 ];
 
-/// The source of the module called `name` in [`MODULES_BY_CUTS`] assembled
-/// for `cuts`, or `None` when no module there has that name.
-pub fn module_by_cuts(name: &str, cuts: AxisCutShaders) -> Option<&'static str> {
-    MODULES_BY_CUTS
+/// The source of the module called `name` in [`MODULES_BY_SET`] assembled
+/// for `set`, or `None` when no module there has that name.
+pub fn module_by_set(name: &str, set: ShaderSet) -> Option<&'static str> {
+    MODULES_BY_SET
         .iter()
         .find(|(n, _)| *n == name)
-        .map(|(_, by_cuts)| by_cuts.of(cuts).source)
+        .map(|(_, by_set)| by_set.of(set).source)
 }
 
-/// The identity assembly's source for a remap assembly's `source`, and
-/// `source` itself for any other: the two compile to pipelines with the same
+/// The basic assembly's source for a full assembly's `source`, and `source`
+/// itself for any other: the two compile to pipelines with the same
 /// descriptors, so the browser prewarm contract
 /// (`shader_pipeline_contract.json`) stores each pipeline once, under the
-/// identity source.
+/// basic source.
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn contract_source(source: &str) -> &str {
-    MODULES_BY_CUTS
+    MODULES_BY_SET
         .iter()
-        .find(|(_, by_cuts)| by_cuts.remap.source == source)
-        .map_or(source, |(_, by_cuts)| by_cuts.identity.source)
+        .find(|(_, by_set)| by_set.full.source == source)
+        .map_or(source, |(_, by_set)| by_set.basic.source)
 }
 
 /// The source of the assembled module called `name` in [`MODULES`], or
@@ -269,112 +336,128 @@ mod tests {
     use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
 
     /// Every assembly a pipeline can compile: [`super::MODULES`] and both
-    /// assemblies of [`super::MODULES_BY_CUTS`] (#299), each under a name
+    /// assemblies of [`super::MODULES_BY_SET`] (#299), each under a name
     /// that says which it is.
     fn every_assembly() -> Vec<(&'static str, super::Assembled)> {
         let mut all: Vec<(&'static str, super::Assembled)> = super::MODULES.to_vec();
-        for (name, by_cuts) in super::MODULES_BY_CUTS {
+        for (name, by_set) in super::MODULES_BY_SET {
             all.push((
-                Box::leak(format!("{name} (identity cuts)").into_boxed_str()),
-                by_cuts.identity,
+                Box::leak(format!("{name} (basic)").into_boxed_str()),
+                by_set.basic,
             ));
             all.push((
-                Box::leak(format!("{name} (cut remap)").into_boxed_str()),
-                by_cuts.remap,
+                Box::leak(format!("{name} (full)").into_boxed_str()),
+                by_set.full,
             ));
         }
         all
     }
 
-    /// The two assemblies of a module differ in the axis-cut fragment alone
-    /// (#299), every module that splices `projection.wgsl` (or calls a cut
-    /// function) is assembled by cuts, and [`super::MODULES`] names the
-    /// remap assembly.
+    const FIELD_GRID: &str = "data_render/common/field_grid.wgsl";
+    const PROJECTION: &str = "data_render/common/projection.wgsl";
+
+    /// The two assemblies of a module differ in the fragments of
+    /// [`super::SET_FRAGMENTS`] alone (#299): the four of `set`, in
+    /// the table's order, and the field grid's where the module splices
+    /// `field_grid.wgsl`. Every module that splices `projection.wgsl` is
+    /// assembled by variant, and [`super::MODULES`] names the full assembly.
     #[test]
-    fn modules_by_cuts_differ_in_the_axis_cut_fragment_alone() {
-        use super::{AXIS_CUTS_FRAGMENT, AXIS_CUTS_IDENTITY_FRAGMENT, AxisCutShaders};
-        for (name, by_cuts) in super::MODULES_BY_CUTS {
-            let (identity, remap) = (by_cuts.identity.fragments, by_cuts.remap.fragments);
-            assert_eq!(identity.len(), remap.len(), "{name}");
-            let mut cut_fragments = 0;
-            for (a, b) in identity.iter().zip(remap) {
+    fn modules_by_set_differ_in_the_variant_fragments_alone() {
+        use super::{SET_FRAGMENTS, ShaderSet};
+        let listed = |fragment: &str| {
+            SET_FRAGMENTS
+                .iter()
+                .any(|(basic, full)| *basic == fragment || *full == fragment)
+        };
+        for (name, by_set) in super::MODULES_BY_SET {
+            let (basic, full) = (by_set.basic.fragments, by_set.full.fragments);
+            assert_eq!(basic.len(), full.len(), "{name}");
+            let mut pairs = Vec::new();
+            for (a, b) in basic.iter().zip(full) {
                 if a == b {
-                    assert!(
-                        *a != AXIS_CUTS_FRAGMENT && *a != AXIS_CUTS_IDENTITY_FRAGMENT,
-                        "{name}"
-                    );
+                    assert!(!listed(a), "{name}: {a}");
                     continue;
                 }
-                assert_eq!(
-                    (*a, *b),
-                    (AXIS_CUTS_IDENTITY_FRAGMENT, AXIS_CUTS_FRAGMENT),
-                    "{name}"
-                );
-                cut_fragments += 1;
+                pairs.push((*a, *b));
             }
-            assert_eq!(cut_fragments, 1, "{name}");
-            assert!(
-                identity.contains(&"data_render/common/projection.wgsl"),
+            let field = basic.contains(&FIELD_GRID);
+            let expected = if field {
+                SET_FRAGMENTS
+            } else {
+                &SET_FRAGMENTS[..SET_FRAGMENTS.len() - 1]
+            };
+            assert_eq!(pairs, expected, "{name}");
+            assert!(basic.contains(&PROJECTION), "{name}");
+            assert_eq!(by_set.of(ShaderSet::Basic).source, by_set.basic.source);
+            assert_eq!(by_set.of(ShaderSet::Full).source, by_set.full.source);
+            assert_ne!(by_set.basic.source, by_set.full.source, "{name}");
+            assert_eq!(
+                super::contract_source(by_set.full.source),
+                by_set.basic.source,
                 "{name}"
             );
             assert_eq!(
-                by_cuts.of(AxisCutShaders::Identity).source,
-                by_cuts.identity.source
-            );
-            assert_eq!(
-                by_cuts.of(AxisCutShaders::Remap).source,
-                by_cuts.remap.source
-            );
-            assert_ne!(by_cuts.identity.source, by_cuts.remap.source, "{name}");
-            assert_eq!(
-                super::contract_source(by_cuts.remap.source),
-                by_cuts.identity.source,
+                super::contract_source(by_set.basic.source),
+                by_set.basic.source,
                 "{name}"
             );
             assert_eq!(
-                super::contract_source(by_cuts.identity.source),
-                by_cuts.identity.source,
-                "{name}"
+                super::module_by_set(name, ShaderSet::Basic),
+                Some(by_set.basic.source)
             );
-            assert_eq!(
-                super::module_by_cuts(name, AxisCutShaders::Identity),
-                Some(by_cuts.identity.source)
-            );
-            // The plain name is the remap assembly: the full contract.
+            // The plain name is the full assembly: the full contract.
             if let Some(plain) = super::module(name) {
-                assert_eq!(plain, by_cuts.remap.source, "{name}");
+                assert_eq!(plain, by_set.full.source, "{name}");
             }
         }
-        // No module outside the table splices either cut fragment or the
-        // projection that calls them.
+        // No module outside the table splices a variant fragment, the
+        // projection that calls them or the field grid.
         for (name, assembled) in super::MODULES {
-            let by_cuts = super::MODULES_BY_CUTS.iter().any(|(n, _)| n == name);
-            for fragment in [
-                AXIS_CUTS_FRAGMENT,
-                AXIS_CUTS_IDENTITY_FRAGMENT,
-                "data_render/common/projection.wgsl",
-            ] {
-                assert_eq!(
-                    assembled.fragments.contains(&fragment),
-                    by_cuts && fragment != AXIS_CUTS_IDENTITY_FRAGMENT,
-                    "{name}: {fragment}"
-                );
+            let by_set = super::MODULES_BY_SET.iter().any(|(n, _)| n == name);
+            for fragment in assembled.fragments {
+                let basic = SET_FRAGMENTS.iter().any(|(basic, _)| basic == fragment);
+                assert!(!basic, "{name}: {fragment}");
+                if listed(fragment) || *fragment == PROJECTION || *fragment == FIELD_GRID {
+                    assert!(by_set, "{name}: {fragment}");
+                }
             }
         }
     }
 
-    /// The identity fragment declares what the cut fragment's callers use,
-    /// with the same signatures (#299): `AxisCuts`, `no_cuts`, `cuts_of`,
-    /// `cut_remap`, `cut_unmap` and `cut_scale_at`. It maps every `t` to
-    /// itself at scale 1, which a module built from it and evaluated by naga
-    /// shows for a table that holds cuts.
+    /// The functions a fragment file declares, in order.
+    fn declared_functions(text: &str) -> Vec<&str> {
+        text.lines()
+            .filter(|line| line.starts_with("fn "))
+            .map(|line| line[3..].split('(').next().unwrap().trim())
+            .collect()
+    }
+
+    /// Every `.wgsl` file under `path`.
+    fn wgsl_files(path: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                wgsl_files(&path, files);
+            } else if path.extension().is_some_and(|e| e == "wgsl") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// A basic fragment declares what its full twin's callers use, with the
+    /// same signatures, and nothing else (#299); a type both declare has the
+    /// same members unless only its own fragment reads them (`AxisCuts`).
+    /// No other fragment calls a function only a full fragment has, so no
+    /// caller can come to depend on one set.
     #[test]
-    fn the_identity_cut_fragment_has_the_cut_fragments_signatures() {
+    fn a_basic_fragment_has_its_full_twins_signatures() {
         use wgpu::naga::{Module, TypeInner};
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let read = |fragment: &str| std::fs::read_to_string(src.join(fragment)).unwrap();
-        let identity = parse("identity", &read(super::AXIS_CUTS_IDENTITY_FRAGMENT));
-        let remap = parse("remap", &read(super::AXIS_CUTS_FRAGMENT));
+        // The field module splices every pair.
+        let field = crate::data_render::FIELD_SHADER_BY_SET;
+        let basic_module = parse("field (basic)", field.basic.source);
+        let full_module = parse("field (full)", field.full.source);
         // A type as text: a struct by its name, anything else by its shape.
         fn type_text(module: &Module, handle: wgpu::naga::Handle<wgpu::naga::Type>) -> String {
             let ty = &module.types[handle];
@@ -403,66 +486,80 @@ mod tests {
                     .map(|result| type_text(module, result.ty)),
             ))
         };
-        let shared = [
-            "no_cuts",
-            "cuts_of",
-            "cut_remap",
-            "cut_unmap",
-            "cut_scale_at",
-        ];
-        for name in shared {
-            let found = signature(&identity, name);
-            assert!(found.is_some(), "identity lacks {name}");
-            assert_eq!(found, signature(&remap, name), "{name}");
-        }
-        // The identity fragment declares nothing else, so no caller can come
-        // to depend on a function only one variant has.
-        let mut names: Vec<&str> = identity
-            .functions
-            .iter()
-            .filter_map(|(_, f)| f.name.as_deref())
-            .collect();
-        names.sort_unstable();
-        let mut expected = shared.to_vec();
-        expected.sort_unstable();
-        assert_eq!(names, expected);
-        for module in [&identity, &remap] {
-            assert!(
-                module
-                    .types
+        let members = |module: &Module, name: &str| -> Option<Vec<(String, String)>> {
+            let (_, ty) = module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some(name))?;
+            let TypeInner::Struct { members, .. } = &ty.inner else {
+                return None;
+            };
+            Some(
+                members
                     .iter()
-                    .any(|(_, ty)| ty.name.as_deref() == Some("AxisCuts")),
-            );
-        }
-        // No other fragment reads a member of `AxisCuts` or calls a helper
-        // only the cut fragment has.
-        fn wgsl_files(path: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(path).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    wgsl_files(&path, files);
-                } else if path.extension().is_some_and(|e| e == "wgsl") {
-                    files.push(path);
+                    .map(|member| (member.name.clone().unwrap(), type_text(module, member.ty)))
+                    .collect(),
+            )
+        };
+        let mut files = Vec::new();
+        wgsl_files(&src, &mut files);
+        let is_full = |file: &std::path::Path| {
+            super::SET_FRAGMENTS
+                .iter()
+                .any(|(_, full)| file.ends_with(full))
+        };
+        let mut shared_total = 0;
+        for (basic, full) in super::SET_FRAGMENTS {
+            let (basic_text, full_text) = (read(basic), read(full));
+            let shared = declared_functions(&basic_text);
+            let full_names = declared_functions(&full_text);
+            assert!(!shared.is_empty(), "{basic}");
+            for name in &shared {
+                assert!(full_names.contains(name), "{full} lacks {name}");
+                let found = signature(&basic_module, name);
+                assert!(found.is_some(), "{basic}: {name}");
+                assert_eq!(found, signature(&full_module, name), "{name}");
+            }
+            shared_total += shared.len();
+            // A function only the full fragment has is called by full
+            // fragments alone.
+            for private in full_names.iter().filter(|name| !shared.contains(name)) {
+                let call = format!("{private}(");
+                for file in files.iter().filter(|file| !is_full(file)) {
+                    let text = std::fs::read_to_string(file).unwrap();
+                    let called = text.match_indices(&call).any(|(at, _)| {
+                        !text[..at]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    });
+                    assert!(!called, "{} calls `{private}` of {full}", file.display());
+                }
+            }
+            // A struct both declare.
+            for line in basic_text
+                .lines()
+                .filter(|line| line.starts_with("struct "))
+            {
+                let name = line["struct ".len()..].split([' ', '{']).next().unwrap();
+                assert!(full_text.contains(&format!("struct {name} ")), "{name}");
+                if name != "AxisCuts" {
+                    let found = members(&basic_module, name);
+                    assert!(found.is_some(), "{name}");
+                    assert_eq!(found, members(&full_module, name), "{name}");
                 }
             }
         }
-        let mut files = Vec::new();
-        wgsl_files(&src, &mut files);
-        for file in files {
-            if file.ends_with(super::AXIS_CUTS_FRAGMENT)
-                || file.ends_with(super::AXIS_CUTS_IDENTITY_FRAGMENT)
-            {
+        // The count the docs give (SHADER_COMMON.md §4).
+        assert_eq!(shared_total, 5 + 4 + 2 + 4 + 1);
+        // No other fragment reads a member of `AxisCuts` or builds one.
+        let cut_fragments = super::SET_FRAGMENTS[0];
+        for file in &files {
+            if file.ends_with(cut_fragments.0) || file.ends_with(cut_fragments.1) {
                 continue;
             }
-            let text = std::fs::read_to_string(&file).unwrap();
-            for private in [
-                "piece_slope",
-                "count_scale",
-                ".k0",
-                ".k1",
-                ".k2",
-                "AxisCuts(",
-            ] {
+            let text = std::fs::read_to_string(file).unwrap();
+            for private in ["count_scale", ".k0", ".k1", ".k2", "AxisCuts("] {
                 assert!(
                     !text.contains(private),
                     "{} uses `{private}` of axis_cuts.wgsl",
@@ -470,6 +567,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A draw function that hands the whole `transform` uniform to a call
+    /// does so once (#299): each read of the whole uniform compiles as its
+    /// own copy of the struct, so a function with several such calls reads
+    /// it into a local first (`transform.wgsl`). Reading a member is not a
+    /// read of the whole.
+    #[test]
+    fn a_draw_function_reads_the_whole_transform_once() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        wgsl_files(&src, &mut files);
+        // The pick modules read `pick_query_params.transform`.
+        files.retain(|file| !file.starts_with(src.join("gpu_pick")));
+        let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let mut checked = 0;
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let code: String = text
+                .lines()
+                .map(|line| line.split("//").next().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n");
+            // Each function: from its `fn` to the next one.
+            for function in code.split("\nfn ").skip(1) {
+                let whole = function
+                    .match_indices("transform")
+                    .filter(|(at, word)| {
+                        let before = function[..*at].chars().next_back();
+                        let after = function[at + word.len()..].trim_start().chars().next();
+                        !before.is_some_and(|c| is_name(c) || c == '.')
+                            && !after.is_some_and(|c| is_name(c) || matches!(c, '.' | '[' | ':'))
+                    })
+                    .count();
+                let name = function.split('(').next().unwrap();
+                assert!(
+                    whole <= 1,
+                    "{}: `{name}` reads the whole transform {whole} times",
+                    file.display()
+                );
+                checked += whole;
+            }
+        }
+        assert!(checked > 40, "{checked}");
     }
 
     /// Every assembled module parses and validates as WGSL, with no GPU: a

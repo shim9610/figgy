@@ -705,15 +705,34 @@ or an uninstalled result releases its handles. Hosts deduplicate concurrent requ
 per renderer and feature, serialize installation with other renderer calls, and
 ignore results after their renderer has been disposed.
 
-A renderer compiles its data shaders without the cut remap of a broken axis
-until it is first handed a chart with an axis break on any layer
-(`Renderer::axis_cut_shaders()`, [#299](https://github.com/shim9610/figgy/issues/299);
-ARCHITECTURE.md, "Axis-cut shader variants"). That chart empties the retained
-pipeline caches once: the render groups report not ready again (picking, if it was
-enabled, is rebuilt at once), `prewarm_all` and new preparations compile the
-pipelines with the remap, and a preparation begun before it
-is rejected by `install_preparation` like one for another target generation. A
-`PreparedFrame` prepared before it stays valid.
+**Shader sets** ([#299](https://github.com/shim9610/figgy/issues/299);
+ARCHITECTURE.md, "Shader sets"). A renderer starts on the basic shader set
+(`ShaderSet::Basic`), which draws rectangular charts with linear and
+logarithmic axes and compiles fastest. The full set (`ShaderSet::Full`) adds
+the cut remap of a broken axis, the probability scale and polar coordinates.
+`Renderer::shader_set()` reports which one a renderer is on.
+
+- **Upgrade on demand.** The first chart with an axis break, a probability
+  axis or polar coordinates on any layer moves the renderer to the full set,
+  one way. That empties the retained pipeline caches once: the render groups
+  report not ready again (picking, if it was enabled, is rebuilt at once),
+  `prewarm_all` and new preparations compile the full pipelines, and a
+  preparation begun before it is rejected by `install_preparation` like one
+  for another target generation. A `PreparedFrame` prepared before it stays
+  valid. In a browser, a renderer that started its pipelines' asynchronous
+  compiles when it was built (`for_window_minimal_async_observed`) starts
+  the full set's the same way at the upgrade.
+- **`Renderer::require_shader_set(ShaderSet)`** asks for the upgrade early,
+  before such a chart arrives. It only moves up and is idempotent: asking
+  for `Basic`, or for the set the renderer is on, does nothing.
+- **At creation.** A host that knows it needs the full set builds the
+  renderer on it, so no basic module is created or compiled:
+  `RendererDevice::with_shader_set(ShaderSet::Full)` for the constructors
+  that take a device bundle (`Renderer::try_new` and its siblings), and
+  `Renderer::for_window_with_shader_set_async_observed(target, size,
+  pool_capacity_bytes, set, observer)` for a window or canvas, which is
+  `for_window_minimal_async_observed` with the set. The other constructors
+  are unchanged and start on the basic set.
 
 `PreparationFeature::ALL`, `for_chart(config, series)` and `preparation_ready`
 provide the host's feature inventory and gating contract. Background compilation

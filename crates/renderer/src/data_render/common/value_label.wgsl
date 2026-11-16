@@ -442,6 +442,7 @@ fn value_label_farther(a: f32, b: f32, horizontal: bool) -> f32 {
 /// is `shape.w` steps of a search over the `shape.w` members (no cap,
 /// rule 10). The drag offset applies after the placement.
 fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
+    let tf = transform;
     if (row >= category_params.count) {
         return value_label_hidden();
     }
@@ -450,8 +451,8 @@ fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
         return value_label_hidden();
     }
     // The spoke from the inner ring to the outer one at the category.
-    let inner = category_px(data_to_ndc(transform, x, vec2<f32>(transform.data_min.y, transform.data_min_lo.y)));
-    let outer = category_px(data_to_ndc(transform, x, vec2<f32>(transform.data_max.y, transform.data_max_lo.y)));
+    let inner = category_px(data_to_ndc(tf, x, vec2<f32>(transform.data_min.y, transform.data_min_lo.y)));
+    let outer = category_px(data_to_ndc(tf, x, vec2<f32>(transform.data_max.y, transform.data_max_lo.y)));
     let along = outer - inner;
     if (!(dot(along, along) > 0.0) || !bar_finite(inner.x) || !bar_finite(inner.y)) {
         return value_label_hidden();

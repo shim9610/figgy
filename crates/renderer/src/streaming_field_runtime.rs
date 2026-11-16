@@ -220,12 +220,12 @@ impl Renderer {
             &self.device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("stream field runtime"),
-                // The renderer's shader variant (#299). A streamed chart has
+                // The renderer's shader set (#299). A streamed chart has
                 // no axis break (`validate_stream_series`), so either
                 // variant places it the same.
                 source: wgpu::ShaderSource::Wgsl(
-                    crate::data_render::FIELD_SHADER_BY_CUTS
-                        .of(self.pipelines.shaders.cuts)
+                    crate::data_render::FIELD_SHADER_BY_SET
+                        .of(self.pipelines.shaders.set)
                         .source
                         .into(),
                 ),

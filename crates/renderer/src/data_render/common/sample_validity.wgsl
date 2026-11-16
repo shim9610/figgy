@@ -5,20 +5,6 @@ fn sample_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
-// Polar: a radius below the axis start has no place on the plot (it would
-// fold onto the inner ring), so the sample is not drawn and a line breaks
-// there. Angles outside the sector and radii past the outer ring keep their
-// projection and are cut by the fragment clip below.
-fn polar_sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
-    if (t.polar_angle.x < 0.5) {
-        return true;
-    }
-    // A polar radius: polar charts have no breaks.
-    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, 0.0, t.data_to_panel_scale.y, t.data_to_panel_offset.y, no_cuts());
-    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
-    return rt >= 0.0;
-}
-
 // Ternary: every component finite and non-negative, their sum positive.
 // Any other sample has no place in the triangle: it is not drawn and a line
 // breaks there, so nothing needs a fragment clip.
@@ -72,21 +58,3 @@ fn polar_clip_sector(t: Transform) -> vec4<f32> {
     return vec4<f32>(p.y, p.z, e.x, e.y);
 }
 
-fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
-    if (limits.x < 0.5) {
-        return true;
-    }
-    let r = length(px);
-    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
-        return false;
-    }
-    if (limits.w < 0.5) {
-        return true;
-    }
-    // The data angle of the fragment, brought into the turn that starts at
-    // the sector start.
-    let turn = 6.283185307179586 / abs(sector.y);
-    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
-    a = a - floor((a - sector.z) / turn) * turn;
-    return a <= sector.w + 1e-6 * turn;
-}

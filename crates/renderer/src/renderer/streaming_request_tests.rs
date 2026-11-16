@@ -2616,11 +2616,11 @@ fn stream_draw_rejects_wrong_target_and_changed_view_before_upload() {
 }
 
 /// A stream that started on a chart without a break is not drawn on a
-/// broken axis by either shader variant (rule 8, #299). The break is a view
+/// broken axis by either shader set (rule 8, #299). The break is a view
 /// change, so the draw job in flight ends with it; a new draw job on the
 /// broken chart is refused with `StreamedBreak` before anything is
-/// uploaded; and the renderer has moved to the cut remap by then, so no
-/// later draw of that chart meets an identity pipeline.
+/// uploaded; and the renderer has moved to the full shaders by then, so no
+/// later draw of that chart meets a basic pipeline.
 #[test]
 fn a_stream_draw_that_gains_an_axis_break_is_refused() {
     let (mut r, a, _) = renderer(2);
@@ -2658,7 +2658,7 @@ fn a_stream_draw_that_gains_an_axis_break_is_refused() {
     ];
     r.submit_chart_stream_draw(ticket, &inputs, &view, &target)
         .unwrap();
-    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Identity);
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
 
     let mut broken = config.clone();
     broken.left_y.breaks = Some(crate::config::AxisBreaks {
@@ -2688,7 +2688,7 @@ fn a_stream_draw_that_gains_an_axis_break_is_refused() {
         view: &broken_view,
     }];
     let _ = r.prepare_registered_mixed(&panels);
-    assert_eq!(r.axis_cut_shaders(), AxisCutShaders::Remap);
+    assert_eq!(r.shader_set(), ShaderSet::Full);
     // Without the break the chart streams again.
     r.set_chart_config(a, config).unwrap();
     r.begin_chart_stream_draw(a, &view, &target, 1).unwrap();

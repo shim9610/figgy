@@ -2,7 +2,7 @@
 //! variants and the compiled pipeline bundle.
 
 use super::*;
-use crate::shader_assembly::{Assembled, AssembledByCuts, AxisCutShaders, assembled_by_cuts};
+use crate::shader_assembly::{Assembled, AssembledBySet, ShaderSet, assembled_by_set};
 
 pub(super) const INIT_SCOPE: &str = "renderer.gpu_pick";
 
@@ -63,25 +63,23 @@ pub(crate) enum PickShader {
 /// the assembly. The exact modules follow the gate in [`PickShader::EXACT`]
 /// order, so an exact module's slot in [`PickExactPipelines`] is its index
 /// here minus one.
-const PICK_MODULES: [(&str, AssembledByCuts); 5] = [
+const PICK_MODULES: [(&str, AssembledBySet); 5] = [
     (
         "figgy GPU pick gate shader",
-        assembled_by_cuts!(
+        assembled_by_set!(
             "gpu_pick/core.wgsl",
-            cuts,
+            set,
             "data_render/common/projection.wgsl",
-            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "gpu_pick/gate_entries.wgsl",
         ),
     ),
     (
         "figgy GPU pick exact marker shader",
-        assembled_by_cuts!(
+        assembled_by_set!(
             "gpu_pick/core.wgsl",
-            cuts,
+            set,
             "data_render/common/projection.wgsl",
-            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
@@ -99,11 +97,10 @@ const PICK_MODULES: [(&str, AssembledByCuts); 5] = [
     ),
     (
         "figgy GPU pick exact marker-line shader",
-        assembled_by_cuts!(
+        assembled_by_set!(
             "gpu_pick/core.wgsl",
-            cuts,
+            set,
             "data_render/common/projection.wgsl",
-            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
@@ -126,11 +123,10 @@ const PICK_MODULES: [(&str, AssembledByCuts); 5] = [
     ),
     (
         "figgy GPU pick exact line shader",
-        assembled_by_cuts!(
+        assembled_by_set!(
             "gpu_pick/core.wgsl",
-            cuts,
+            set,
             "data_render/common/projection.wgsl",
-            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/arc_pair.wgsl",
@@ -149,11 +145,10 @@ const PICK_MODULES: [(&str, AssembledByCuts); 5] = [
     ),
     (
         "figgy GPU pick exact vector shader",
-        assembled_by_cuts!(
+        assembled_by_set!(
             "gpu_pick/core.wgsl",
-            cuts,
+            set,
             "data_render/common/projection.wgsl",
-            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
@@ -178,19 +173,19 @@ impl PickShader {
         PickShader::Vector,
     ];
 
-    /// The assembly with the cut remap: source and fragments
+    /// The full assembly: source and fragments
     /// (`shader_assembly::MODULES`).
     pub(crate) const fn assembled(self) -> Assembled {
-        PICK_MODULES[self as usize].1.remap
+        PICK_MODULES[self as usize].1.full
     }
 
-    /// The assembly for `cuts` (#299).
-    pub(crate) const fn assembled_for(self, cuts: AxisCutShaders) -> Assembled {
-        PICK_MODULES[self as usize].1.of(cuts)
+    /// The assembly for `set` (#299).
+    pub(crate) const fn assembled_for(self, set: ShaderSet) -> Assembled {
+        PICK_MODULES[self as usize].1.of(set)
     }
 
-    /// Both assemblies (`shader_assembly::MODULES_BY_CUTS`).
-    pub(crate) const fn by_cuts(self) -> AssembledByCuts {
+    /// Both assemblies (`shader_assembly::MODULES_BY_SET`).
+    pub(crate) const fn by_set(self) -> AssembledBySet {
         PICK_MODULES[self as usize].1
     }
 
@@ -274,7 +269,7 @@ impl PickExactPipelines {
                         wgpu::ShaderModuleDescriptor {
                             label: Some(shader.label()),
                             source: wgpu::ShaderSource::Wgsl(
-                                shader.assembled_for(bundle.cuts).source.into(),
+                                shader.assembled_for(bundle.set).source.into(),
                             ),
                         },
                     )
@@ -371,9 +366,9 @@ impl PickPipelineBundle {
 
 /// Immutable device resources shared by every picker registry on one renderer.
 pub(crate) struct PickPipelineBundle {
-    /// Which axis-cut fragment the gate module was assembled with, and
-    /// every exact module compiled for this bundle is (#299).
-    pub(crate) cuts: AxisCutShaders,
+    /// Which shader set the gate module was assembled as, and every exact
+    /// module compiled for this bundle is (#299).
+    pub(crate) set: ShaderSet,
     pub(super) device: wgpu::Device,
     pub(super) queue: wgpu::Queue,
     /// Where pick scratch is charged. Carried by the bundle so every
@@ -406,7 +401,7 @@ pub(super) fn create_pipeline_bundle_observed(
     queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: crate::renderer::DeviceHealth,
-    cuts: AxisCutShaders,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<Arc<PickPipelineBundle>, GpuPickError> {
     started(observer, INIT_SCOPE, "setup");
@@ -416,7 +411,7 @@ pub(super) fn create_pipeline_bundle_observed(
         &device,
         wgpu::ShaderModuleDescriptor {
             label: Some(PickShader::Gate.label()),
-            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.assembled_for(cuts).source.into()),
+            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.assembled_for(set).source.into()),
         },
     );
 
@@ -495,7 +490,7 @@ pub(super) fn create_pipeline_bundle_observed(
     };
 
     Ok(Arc::new(PickPipelineBundle {
-        cuts,
+        set,
         ledger,
         health,
         gate_x: observe_value(observer, INIT_SCOPE, "pick_gate_x", || {
@@ -604,7 +599,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: crate::renderer::DeviceHealth,
-    cuts: AxisCutShaders,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<Arc<PickPipelineBundle>, GpuPickError> {
     use crate::init::{observe_value_async, yield_init_frame};
@@ -612,7 +607,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     crate::init::prewarm_compute_entries_js(
         &device,
         "gpu.pick.async",
-        PickShader::Gate.assembled_for(cuts).source,
+        PickShader::Gate.assembled_for(set).source,
         &[
             ("pick_gate_x", "pick_gate_x"),
             ("pick_gate_y", "pick_gate_y"),
@@ -629,7 +624,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
         &device,
         wgpu::ShaderModuleDescriptor {
             label: Some(PickShader::Gate.label()),
-            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.assembled_for(cuts).source.into()),
+            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.assembled_for(set).source.into()),
         },
     );
 
@@ -734,7 +729,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     .await;
 
     Ok(Arc::new(PickPipelineBundle {
-        cuts,
+        set,
         health,
         gate_x,
         gate_y,
@@ -837,11 +832,11 @@ impl PickPipelineBundle {
         queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
-        cuts: AxisCutShaders,
+        set: ShaderSet,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        create_pipeline_bundle_observed(device, queue, ledger, health, cuts, observer)
+        create_pipeline_bundle_observed(device, queue, ledger, health, set, observer)
     }
 
     pub(crate) async fn new_observed_async(
@@ -849,10 +844,10 @@ impl PickPipelineBundle {
         queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
-        cuts: AxisCutShaders,
+        set: ShaderSet,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        create_pipeline_bundle_observed_async(device, queue, ledger, health, cuts, observer).await
+        create_pipeline_bundle_observed_async(device, queue, ledger, health, set, observer).await
     }
 }

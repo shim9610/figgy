@@ -1,7 +1,7 @@
-// The identity twin of `axis_cuts.wgsl` (#299): the same type and function
+// The basic twin of `axis_cuts.wgsl` (#299): the same type and function
 // signatures with no cut, for a renderer that has drawn no broken chart, so
 // its pipelines do not compile the remap. A chart with a break is never
-// drawn or picked through this fragment (`shader_assembly::AxisCutShaders`).
+// drawn or picked through this fragment (`shader_assembly::ShaderSet`).
 
 // One axis' cuts: none. `count_scale` is `(0, 1)`, as on an unbroken axis
 // of `axis_cuts.wgsl`.

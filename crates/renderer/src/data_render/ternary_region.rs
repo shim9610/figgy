@@ -17,18 +17,17 @@
 //! only storage the fill adds.
 
 /// The assembled region module.
-pub const TERNARY_REGION_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub const TERNARY_REGION_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/ternary_region.wgsl",
 );
-/// [`TERNARY_REGION_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
+/// The full assembly of [`TERNARY_REGION_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
 pub const TERNARY_REGION_SHADER: crate::shader_assembly::Assembled =
-    TERNARY_REGION_SHADER_BY_CUTS.remap;
+    TERNARY_REGION_SHADER_BY_SET.full;
 
 /// GPU twin: `ternary_region.wgsl::TernaryRegionParams`.
 #[repr(C)]

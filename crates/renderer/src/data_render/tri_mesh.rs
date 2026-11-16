@@ -14,15 +14,15 @@
 /// The assembled triangle mesh module: the field's shared fragments, then the
 /// mesh input, its flat entries and its floor entries (which project through
 /// the camera, `project_3d.wgsl`, as the field module's floor does).
-pub(crate) const TRI_MESH_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub(crate) const TRI_MESH_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
+    field_polar,
     "data_render/common/ramp.wgsl",
     "data_render/common/field_paint.wgsl",
     "data_render/common/data_pick.wgsl",
@@ -31,9 +31,9 @@ pub(crate) const TRI_MESH_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCut
     "data_render/tri_mesh/mesh_entry.wgsl",
     "data_render/tri_mesh/mesh_floor.wgsl",
 );
-/// [`TRI_MESH_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
-pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = TRI_MESH_SHADER_BY_CUTS.remap;
+/// The full assembly of [`TRI_MESH_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = TRI_MESH_SHADER_BY_SET.full;
 
 /// Vertices per triangle instance.
 pub const TRI_MESH_VERTICES: u32 = 3;
@@ -93,13 +93,13 @@ impl TriMeshPass {
 /// The triangle mesh module, assembled for `cuts` (#299).
 pub(crate) fn shader_module(
     device: &wgpu::Device,
-    cuts: crate::shader_assembly::AxisCutShaders,
+    set: crate::shader_assembly::ShaderSet,
 ) -> wgpu::ShaderModule {
     crate::gpu_compile::shader_module(
         device,
         wgpu::ShaderModuleDescriptor {
             label: Some("figgy triangle mesh shader"),
-            source: wgpu::ShaderSource::Wgsl(TRI_MESH_SHADER_BY_CUTS.of(cuts).source.into()),
+            source: wgpu::ShaderSource::Wgsl(TRI_MESH_SHADER_BY_SET.of(set).source.into()),
         },
     )
 }

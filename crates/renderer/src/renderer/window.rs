@@ -402,7 +402,15 @@ impl Renderer {
         pool_capacity_bytes: u64,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
-        Self::for_window_prepared_async(target, size, pool_capacity_bytes, false, observer).await
+        Self::for_window_prepared_async(
+            target,
+            size,
+            pool_capacity_bytes,
+            false,
+            ShaderSet::Basic,
+            observer,
+        )
+        .await
     }
 
     /// Return as soon as a first frame can be drawn (#299). In a browser this
@@ -423,7 +431,33 @@ impl Renderer {
         pool_capacity_bytes: u64,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
-        Self::for_window_prepared_async(target, size, pool_capacity_bytes, true, observer).await
+        Self::for_window_prepared_async(
+            target,
+            size,
+            pool_capacity_bytes,
+            true,
+            ShaderSet::Basic,
+            observer,
+        )
+        .await
+    }
+
+    /// [`Self::for_window_minimal_async_observed`] for a renderer that starts
+    /// on `set` (#299). With [`ShaderSet::Full`] the renderer creates and
+    /// warms the full modules only: a host whose charts use an axis break,
+    /// a probability axis or polar coordinates does not compile the basic
+    /// set first and discard it. With [`ShaderSet::Basic`] it is that
+    /// constructor. A renderer built from a host device takes the set from
+    /// its bundle instead ([`RendererDevice::with_shader_set`]).
+    pub async fn for_window_with_shader_set_async_observed<'w>(
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        set: ShaderSet,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<WindowedRenderer<'w>> {
+        Self::for_window_prepared_async(target, size, pool_capacity_bytes, true, set, observer)
+            .await
     }
 
     pub(super) async fn for_window_prepared_async<'w>(
@@ -431,6 +465,7 @@ impl Renderer {
         size: (u32, u32),
         pool_capacity_bytes: u64,
         minimal: bool,
+        set: ShaderSet,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
         let (instance, surface) = window_surface(target, observer)?;
@@ -447,8 +482,9 @@ impl Renderer {
             })?;
         finished(observer, "window", "device");
         let target = window_target(&surface, &adapter, device, queue, size, observer)?;
-        let inner = Renderer::try_new_with_sample_count_observed_async(
-            target.gpu,
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut inner = Renderer::try_new_with_sample_count_observed_async(
+            target.gpu.with_shader_set(set),
             target.surface_config.format,
             pool_capacity_bytes,
             target.sample_count,
@@ -458,7 +494,8 @@ impl Renderer {
         .await?;
         #[cfg(target_arch = "wasm32")]
         if minimal {
-            inner.start_browser_warmup();
+            inner.browser_warmup = true;
+            inner.start_browser_warmup(set);
         }
         Ok(WindowedRenderer {
             inner,
@@ -471,16 +508,19 @@ impl Renderer {
     }
 
     /// Start the browser's asynchronous compile of every resident render
-    /// pipeline and return without waiting for any of them (#299). All the
-    /// calls are issued at once, in the prewarm's stage order; the browser
-    /// compiles them off the frame's path, so frames keep presenting. The
-    /// temporary pipelines are discarded: a pipeline whose compile has
-    /// resolved is then created by the draw that first needs it from the
-    /// device's compilation cache, and one that has not is compiled by that
-    /// creation, as it always was. The future owns its device handle and
-    /// borrows nothing from the renderer, which may be dropped meanwhile.
+    /// pipeline of `set` and return without waiting for any of them
+    /// (#299). All the calls are issued at once, in the prewarm's stage
+    /// order; the browser compiles them off the frame's path, so frames keep
+    /// presenting. The temporary pipelines are discarded: a pipeline whose
+    /// compile has resolved is then created by the draw that first needs it
+    /// from the device's compilation cache, and one that has not is compiled
+    /// by that creation, as it always was. The future owns its device handle
+    /// and borrows nothing from the renderer, which may be dropped meanwhile.
+    ///
+    /// A new renderer starts it for the basic modules, and the move to the
+    /// full ones ([`Self::admit_full_shaders`]) starts it again for those.
     #[cfg(target_arch = "wasm32")]
-    fn start_browser_warmup(&self) {
+    pub(in crate::renderer) fn start_browser_warmup(&self, set: ShaderSet) {
         let device = self.device.clone();
         let (format, samples) = (self.surface_format, self.target_sample_count);
         wasm_bindgen_futures::spawn_local(async move {
@@ -489,8 +529,7 @@ impl Renderer {
                 format,
                 samples,
                 None,
-                // A new renderer: no chart with an axis break yet.
-                AxisCutShaders::Identity,
+                set,
                 &mut |_| {},
             )
             .await;

@@ -88,6 +88,7 @@ struct MeshTriangle {
 };
 
 fn mesh_triangle(tri: u32) -> MeshTriangle {
+    let tf = transform;
     var out: MeshTriangle;
     out.valid = false;
     out.ndc0 = vec2<f32>(0.0);
@@ -112,13 +113,13 @@ fn mesh_triangle(tri: u32) -> MeshTriangle {
     let y1 = pool_pair(field.y_base, i1);
     let x2 = pool_pair(field.x_base, i2);
     let y2 = pool_pair(field.y_base, i2);
-    if (!sample_valid(transform, x0, y0) || !sample_valid(transform, x1, y1)
-        || !sample_valid(transform, x2, y2)) {
+    if (!sample_valid(tf, x0, y0) || !sample_valid(tf, x1, y1)
+        || !sample_valid(tf, x2, y2)) {
         return out;
     }
-    out.ndc0 = data_to_ndc(transform, x0, y0);
-    out.ndc1 = data_to_ndc(transform, x1, y1);
-    out.ndc2 = data_to_ndc(transform, x2, y2);
+    out.ndc0 = data_to_ndc(tf, x0, y0);
+    out.ndc1 = data_to_ndc(tf, x1, y1);
+    out.ndc2 = data_to_ndc(tf, x2, y2);
     if (field_flag(FIELD_FACE_VALUES)) {
         out.value0 = grid_value(MESH_VALUES, tri).pair;
     } else {

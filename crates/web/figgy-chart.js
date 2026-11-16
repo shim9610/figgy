@@ -176,11 +176,17 @@ export class FiggyChartElement extends HTMLElement {
           || !this.#isCurrentOperation(token)) {
         return;
       }
-      kernel = await RawFiggyChart.create_with_progress(this.#canvas, (event) => {
-        if (this.#isCurrentConnection(generation, readyToken)
-            && this.#isCurrentOperation(token)) {
-          dispatchFiggyEvent(this, "figgy-init-progress", event);
-        }
+      // The `shaders` attribute as it is when the element connects (#299):
+      // the kernel refuses a value other than "basic" or "full", and that
+      // rejection fails `ready`.
+      kernel = await RawFiggyChart.create_with_options(this.#canvas, {
+        shaders: this.getAttribute("shaders") ?? "basic",
+        on_progress: (event) => {
+          if (this.#isCurrentConnection(generation, readyToken)
+              && this.#isCurrentOperation(token)) {
+            dispatchFiggyEvent(this, "figgy-init-progress", event);
+          }
+        },
       });
       token.kernel = kernel;
       if (!this.#isCurrentConnection(generation, readyToken)
@@ -2222,6 +2228,29 @@ export class FiggyChartElement extends HTMLElement {
     if (typeof enabled !== "boolean") throw new TypeError("enabled must be a boolean");
     return this.#kernelForCall().set_pool_auto_growth(enabled);
   }
+  /// The shader set the chart compiles (#299): "basic" or "full". Before the
+  /// chart is ready it is the `shaders` attribute ("basic" when absent).
+  get shaders() {
+    if (this.#kernel && !this.busy) {
+      return this.#kernel.shader_set();
+    }
+    return this.getAttribute("shaders") ?? "basic";
+  }
+
+  /// Ask for a shader set (#299): "basic" or "full"; any other value throws.
+  /// It sets the `shaders` attribute, which a chart reads when it connects,
+  /// and moves a ready chart to at least that set at once (a chart never
+  /// goes back to "basic").
+  set shaders(value) {
+    if (value !== "basic" && value !== "full") {
+      throw new TypeError(`shaders must be "basic" or "full", got ${JSON.stringify(value)}`);
+    }
+    if (this.#kernel) {
+      this.#kernelForCall().require_shader_set(value);
+    }
+    this.setAttribute("shaders", value);
+  }
+
   gpu_memory_status() {
     return JSON.parse(this.#kernelForCall().gpu_memory_status());
   }

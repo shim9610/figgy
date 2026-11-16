@@ -45,10 +45,11 @@ fn vs_main(
     @location(3) a_level: u32,
     @location(4) a_width_px: f32,
 ) -> LabelOut {
+    let tf = transform;
     // The frame (centre, reading direction, upright turn) is the label box's
     // (`common/contour_label_box.wgsl`), which the contour gap tests too.
-    let frame = contour_label_frame(transform, a_x, a_y, a_dir);
-    return label_quad(transform, lp, vid, frame, a_level, a_width_px, false);
+    let frame = contour_label_frame(tf, a_x, a_y, a_dir);
+    return label_quad(tf, lp, vid, frame, a_level, a_width_px, false);
 }
 
 @fragment

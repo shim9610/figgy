@@ -958,7 +958,7 @@ mod tests {
         let yb = packed(&ys.data);
         let tbgl = create_scatter_transform_bind_group_layout(&device);
         let sbgl = create_style_bind_group_layout(&device);
-        let shaders = ShaderModules::new(&device, crate::shader_assembly::AxisCutShaders::Remap);
+        let shaders = ShaderModules::new(&device, crate::shader_assembly::ShaderSet::Full);
         let quad = create_unit_centered_quad_vertex_buffer(&device);
         let style = PrimitiveStyle {
             color_premul: [0.15, 0.25, 0.4, 0.5],

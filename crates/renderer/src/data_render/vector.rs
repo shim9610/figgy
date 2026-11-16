@@ -70,12 +70,11 @@ impl VectorInput {
 }
 
 /// The assembled vector module for [`VectorInput::Points`].
-pub const VECTOR_POINTS_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub const VECTOR_POINTS_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/grid_pair.wgsl",
@@ -85,18 +84,17 @@ pub const VECTOR_POINTS_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts 
     "data_render/vector/vector_input_points.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
-/// [`VECTOR_POINTS_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
+/// The full assembly of [`VECTOR_POINTS_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
 pub const VECTOR_POINTS_SHADER: crate::shader_assembly::Assembled =
-    VECTOR_POINTS_SHADER_BY_CUTS.remap;
+    VECTOR_POINTS_SHADER_BY_SET.full;
 
 /// The assembled vector module for [`VectorInput::Grid`].
-pub const VECTOR_GRID_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub const VECTOR_GRID_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/ramp.wgsl",
@@ -107,18 +105,17 @@ pub const VECTOR_GRID_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = 
     "data_render/vector/vector_input_grid.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
-/// [`VECTOR_GRID_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
-pub const VECTOR_GRID_SHADER: crate::shader_assembly::Assembled = VECTOR_GRID_SHADER_BY_CUTS.remap;
+/// The full assembly of [`VECTOR_GRID_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub const VECTOR_GRID_SHADER: crate::shader_assembly::Assembled = VECTOR_GRID_SHADER_BY_SET.full;
 
 /// The assembled vector module for [`VectorInput::Path`]: the streamline
 /// arrowheads. The glyph and projection fragments are the point form's.
-pub const VECTOR_PATH_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub const VECTOR_PATH_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/grid_pair.wgsl",
@@ -131,21 +128,20 @@ pub const VECTOR_PATH_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = 
     "data_render/vector/vector_input_path.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
-/// [`VECTOR_PATH_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
-pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = VECTOR_PATH_SHADER_BY_CUTS.remap;
+/// The full assembly of [`VECTOR_PATH_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = VECTOR_PATH_SHADER_BY_SET.full;
 
 /// The assembled vector module for [`VectorInput::Points3d`]: the point
 /// form with the flat projection replaced by the camera
 /// (`common/project_3d.wgsl`, `vector/project_box3d.wgsl`) and the 3D ID
 /// pick entries after the entry. The glyph, the input and the entry are the
 /// point form's.
-pub const VECTOR_POINTS_3D_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub const VECTOR_POINTS_3D_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/grid_pair.wgsl",
@@ -157,42 +153,42 @@ pub const VECTOR_POINTS_3D_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCu
     "data_render/vector/vector_entry.wgsl",
     "data_render/vector/vector_entry_3d.wgsl",
 );
-/// [`VECTOR_POINTS_3D_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
+/// The full assembly of [`VECTOR_POINTS_3D_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
 pub const VECTOR_POINTS_3D_SHADER: crate::shader_assembly::Assembled =
-    VECTOR_POINTS_3D_SHADER_BY_CUTS.remap;
+    VECTOR_POINTS_3D_SHADER_BY_SET.full;
 
-/// The assembled WGSL source of one input form with the cut remap, spliced
-/// at compile time. `shader_assembly`'s
+/// The full assembled WGSL source of one input form, spliced at compile
+/// time. `shader_assembly`'s
 /// `every_module_is_its_fragments_concatenated` holds it to its fragment
 /// list.
 pub const fn assemble(input: VectorInput) -> &'static str {
-    assemble_by_cuts(input, crate::shader_assembly::AxisCutShaders::Remap)
+    assemble_by_set(input, crate::shader_assembly::ShaderSet::Full)
 }
 
-/// [`assemble`] for either axis-cut fragment (#299).
-pub const fn assemble_by_cuts(
+/// [`assemble`] for either shader set (#299).
+pub const fn assemble_by_set(
     input: VectorInput,
-    cuts: crate::shader_assembly::AxisCutShaders,
+    set: crate::shader_assembly::ShaderSet,
 ) -> &'static str {
     match input {
-        VectorInput::Points => VECTOR_POINTS_SHADER_BY_CUTS.of(cuts).source,
-        VectorInput::Grid => VECTOR_GRID_SHADER_BY_CUTS.of(cuts).source,
-        VectorInput::Path => VECTOR_PATH_SHADER_BY_CUTS.of(cuts).source,
-        VectorInput::Points3d => VECTOR_POINTS_3D_SHADER_BY_CUTS.of(cuts).source,
+        VectorInput::Points => VECTOR_POINTS_SHADER_BY_SET.of(set).source,
+        VectorInput::Grid => VECTOR_GRID_SHADER_BY_SET.of(set).source,
+        VectorInput::Path => VECTOR_PATH_SHADER_BY_SET.of(set).source,
+        VectorInput::Points3d => VECTOR_POINTS_3D_SHADER_BY_SET.of(set).source,
     }
 }
 
 pub(crate) fn shader_module(
     device: &wgpu::Device,
     input: VectorInput,
-    cuts: crate::shader_assembly::AxisCutShaders,
+    set: crate::shader_assembly::ShaderSet,
 ) -> wgpu::ShaderModule {
     crate::gpu_compile::shader_module(
         device,
         wgpu::ShaderModuleDescriptor {
             label: Some(input.label()),
-            source: wgpu::ShaderSource::Wgsl(assemble_by_cuts(input, cuts).into()),
+            source: wgpu::ShaderSource::Wgsl(assemble_by_set(input, set).into()),
         },
     )
 }
@@ -462,7 +458,7 @@ pub fn create_vector_pipeline(
     target_format: wgpu::TextureFormat,
     input: VectorInput,
 ) -> wgpu::RenderPipeline {
-    let shader = shader_module(device, input, crate::shader_assembly::AxisCutShaders::Remap);
+    let shader = shader_module(device, input, crate::shader_assembly::ShaderSet::Full);
     let star_data_bgl = super::create_star_data_bind_group_layout(device);
     create_vector_pipeline_with_sample_count(
         device,

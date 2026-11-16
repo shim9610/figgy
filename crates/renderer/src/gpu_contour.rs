@@ -26,34 +26,33 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// The assembled contour label anchor module.
-pub(crate) const CONTOUR_ANCHOR_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub(crate) const CONTOUR_ANCHOR_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
+    field_polar,
     "contour_anchor.wgsl",
 );
-/// [`CONTOUR_ANCHOR_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
+/// The full assembly of [`CONTOUR_ANCHOR_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
 pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled =
-    CONTOUR_ANCHOR_SHADER_BY_CUTS.remap;
+    CONTOUR_ANCHOR_SHADER_BY_SET.full;
 /// The assembled contour label draw module.
-pub(crate) const CONTOUR_LABEL_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub(crate) const CONTOUR_LABEL_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/contour_label_box.wgsl",
     "data_render/common/label_quad.wgsl",
     "contour_label.wgsl",
 );
-/// [`CONTOUR_LABEL_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
+/// The full assembly of [`CONTOUR_LABEL_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
 pub(crate) const CONTOUR_LABEL_SHADER: crate::shader_assembly::Assembled =
-    CONTOUR_LABEL_SHADER_BY_CUTS.remap;
+    CONTOUR_LABEL_SHADER_BY_SET.full;
 
 #[cfg(not(target_arch = "wasm32"))]
 type GpuRef<T> = Arc<T>;
@@ -341,25 +340,21 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
-        Self::new_by_cuts(
-            device,
-            field_bgl,
-            crate::shader_assembly::AxisCutShaders::Remap,
-        )
+        Self::new_by_set(device, field_bgl, crate::shader_assembly::ShaderSet::Full)
     }
 
     /// [`Self::new`] from the modules assembled for `cuts` (#299): the
     /// renderer's own label pipelines follow its shader set.
-    pub(crate) fn new_by_cuts(
+    pub(crate) fn new_by_set(
         device: &wgpu::Device,
         field_bgl: &wgpu::BindGroupLayout,
-        cuts: crate::shader_assembly::AxisCutShaders,
+        set: crate::shader_assembly::ShaderSet,
     ) -> Self {
         Self::with_anchor_source(
             device,
             field_bgl,
-            CONTOUR_ANCHOR_SHADER_BY_CUTS.of(cuts).source,
-            CONTOUR_LABEL_SHADER_BY_CUTS.of(cuts).source,
+            CONTOUR_ANCHOR_SHADER_BY_SET.of(set).source,
+            CONTOUR_LABEL_SHADER_BY_SET.of(set).source,
             true,
         )
     }
@@ -510,11 +505,14 @@ impl ContourLabelPipelines {
         let common = crate::shader_assembly::wgsl_module!(
             "data_render/common/transform.wgsl",
             "data_render/common/axis_cuts.wgsl",
-            "data_render/common/projection.wgsl",
             "data_render/common/probability.wgsl",
+            "data_render/common/axis_scale.wgsl",
+            "data_render/common/polar.wgsl",
+            "data_render/common/projection.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/grid_pair.wgsl",
             "data_render/common/field_grid.wgsl",
+            "data_render/common/field_polar.wgsl",
         );
         let start = legacy.find("// ───── BEGIN common block").unwrap();
         let end = legacy.find("// ───── END common block").unwrap();

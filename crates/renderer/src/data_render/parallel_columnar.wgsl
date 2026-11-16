@@ -122,6 +122,7 @@ fn parallel_segment(inst: u32) -> vec2<u32> {
 // stroke between the row's two ends, or the masked vertex when either end
 // has no value.
 fn parallel_stroke(inst: u32, vid: u32) -> VsOut {
+    let tf = transform;
     let seg = parallel_segment(inst);
     let row = seg.x;
     let i = seg.y;
@@ -145,9 +146,9 @@ fn parallel_stroke(inst: u32, vid: u32) -> VsOut {
     arc.arc_b = vec2<u32>(0u, 0u);
     let slot = strip_slot(vid, 4u);
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, LINE_STEP_LINEAR, slot.piece);
-    let a_ndc = data_to_ndc(transform, in.x_a, in.y_a);
-    let b_ndc = data_to_ndc(transform, in.x_b, in.y_b);
-    return line_stroke_vertex(in, arc, LINE_STEP_LINEAR, slot, piece, a_ndc, b_ndc);
+    let a_ndc = data_to_ndc(tf, in.x_a, in.y_a);
+    let b_ndc = data_to_ndc(tf, in.x_b, in.y_b);
+    return line_stroke_vertex(tf, in, arc, LINE_STEP_LINEAR, slot, piece, a_ndc, b_ndc);
 }
 
 fn parallel_out(stroke: VsOut, color: vec4<f32>) -> ParallelVsOut {
@@ -262,6 +263,7 @@ fn parallel_segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 }
 
 fn parallel_pick_candidate(inst: u32) -> DataPickCandidate {
+    let tf = transform;
     let seg = parallel_segment(inst);
     let row = seg.x;
     let i = seg.y;
@@ -270,8 +272,8 @@ fn parallel_pick_candidate(inst: u32) -> DataPickCandidate {
     if (!parallel_end_valid(fa) || !parallel_end_valid(fb)) {
         return parallel_pick_invalid();
     }
-    let a = data_to_px(transform, vec2<f32>(f32(i), 0.0), vec2<f32>(fa.f, 0.0));
-    let b = data_to_px(transform, vec2<f32>(f32(i + 1u), 0.0), vec2<f32>(fb.f, 0.0));
+    let a = data_to_px(tf, vec2<f32>(f32(i), 0.0), vec2<f32>(fa.f, 0.0));
+    let b = data_to_px(tf, vec2<f32>(f32(i + 1u), 0.0), vec2<f32>(fb.f, 0.0));
     let cursor = data_pick_query.cursor_ndc_t.xy / transform.pixel_to_ndc;
     let distance = parallel_segment_distance(cursor, a, b);
     if (!(distance <= data_pick_query.limits.x)) {

@@ -48,6 +48,10 @@ struct Transform {
     scale_prob: vec4<f32>,
 };  // 304 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128; ternary vec4s at 144 and 160; breaks at 176, stride 16; break_info at 272)
 
+// A function that hands the whole `transform` to more than one call reads it
+// once into a local, `let tf = transform;`, and passes that: a compiler
+// builds each read of the whole uniform as its own copy of the struct, and
+// those copies were a fifth of a line or bar pipeline's compile time (#299).
 @group(0) @binding(0) var<uniform> transform: Transform;
 
 fn styled_point_index(local_index: u32) -> u32 {

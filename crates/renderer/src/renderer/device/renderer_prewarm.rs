@@ -89,8 +89,8 @@ impl Renderer {
             crate::init::prewarm_compute_entries_js(
                 &self.device,
                 "contour.label.async",
-                crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_CUTS
-                    .of(self.pipelines.shaders.cuts)
+                crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_SET
+                    .of(self.pipelines.shaders.set)
                     .source,
                 &[
                     ("anchor_project", "anchor_seed"),
@@ -122,7 +122,7 @@ impl Renderer {
                 self.surface_format,
                 self.target_sample_count,
                 Some(feature),
-                self.pipelines.shaders.cuts,
+                self.pipelines.shaders.set,
                 observer,
             )
             .await
@@ -141,9 +141,9 @@ impl Renderer {
         }
         if self.arc_pipelines.is_none() {
             self.arc_pipelines = Some(
-                data_render::line_arc::create_arc_scan_pipelines_by_cuts_async(
+                data_render::line_arc::create_arc_scan_pipelines_by_set_async(
                     &self.device,
-                    self.pipelines.shaders.cuts,
+                    self.pipelines.shaders.set,
                     observer,
                 )
                 .await
@@ -205,9 +205,9 @@ impl Renderer {
             self.prewarm_mesh_stage(stage, observer);
         }
         if self.arc_pipelines.is_none() {
-            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_cuts(
+            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_set(
                 &self.device,
-                self.pipelines.shaders.cuts,
+                self.pipelines.shaders.set,
                 observer,
             ));
         }
@@ -230,10 +230,10 @@ impl Renderer {
             "renderer.prewarm",
             "contour label engine",
             || {
-                crate::gpu_contour::ContourLabelPipelines::new_by_cuts(
+                crate::gpu_contour::ContourLabelPipelines::new_by_set(
                     &self.device,
                     &self.field_bgl,
-                    self.pipelines.shaders.cuts,
+                    self.pipelines.shaders.set,
                 )
             },
         );

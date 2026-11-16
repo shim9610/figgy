@@ -61,15 +61,15 @@ fn all_shader_compilation_times_and_entry_coverage() {
     let (device, queue) = crate::data_render::shared_device().expect("required GPU adapter");
     let gpu = RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread");
     let session = capture::Session::begin();
-    // Both shader variants (#299): a new renderer's identity modules, and
-    // the cut remap modules of one that has been handed a broken chart. The
+    // Both shader sets (#299): a new renderer's basic modules, and
+    // the full modules of one that has been handed a chart that needs them. The
     // same constructors run for each, so every entry of every module is
     // measured in both.
-    for (cuts, samples) in [
-        (AxisCutShaders::Identity, 1),
-        (AxisCutShaders::Identity, 4),
-        (AxisCutShaders::Remap, 1),
-        (AxisCutShaders::Remap, 4),
+    for (set, samples) in [
+        (ShaderSet::Basic, 1),
+        (ShaderSet::Basic, 4),
+        (ShaderSet::Full, 1),
+        (ShaderSet::Full, 4),
     ] {
         let mut renderer = Renderer::try_new_with_sample_count(
             gpu.clone(),
@@ -78,9 +78,9 @@ fn all_shader_compilation_times_and_entry_coverage() {
             samples,
         )
         .unwrap();
-        assert_eq!(renderer.axis_cut_shaders(), AxisCutShaders::Identity);
-        renderer.admit_axis_cuts(cuts == AxisCutShaders::Remap);
-        assert_eq!(renderer.axis_cut_shaders(), cuts);
+        assert_eq!(renderer.shader_set(), ShaderSet::Basic);
+        renderer.admit_full_shaders(set == ShaderSet::Full);
+        assert_eq!(renderer.shader_set(), set);
         crate::test_gpu::block_on(renderer.prewarm_all()).unwrap();
         // No shader or pipeline creation at all, even a compiler-cache hit.
         let before = capture::counts();
@@ -209,10 +209,10 @@ fn all_shader_compilation_times_and_entry_coverage() {
         // The public single-pipeline bar builders
         // (`create_bar_columnar_pipeline`, `..._mapped_pipeline`) are the
         // only users of these two entries, and they compile the module with
-        // the cut remap for any host transform (#299): the identity
-        // module's copies are never compiled.
+        // every feature for any host transform (#299): the basic module's
+        // copies are never compiled.
         let host_only =
-            source["code"].as_str() == Some(data_render::BAR_SHADER_BY_CUTS.identity.source);
+            source["code"].as_str() == Some(data_render::BAR_SHADER_BY_SET.basic.source);
         for entry in module.entry_points {
             if host_only && matches!(entry.name.as_str(), "vs_main" | "vs_mapped") {
                 assert!(!used.contains(&(index, entry.name.clone())));
@@ -225,8 +225,8 @@ fn all_shader_compilation_times_and_entry_coverage() {
     }
     assert!(missing.is_empty(), "Unmeasured entries: {missing:?}");
     // Both assemblies of every module by cuts were compiled.
-    for (name, by_cuts) in crate::shader_assembly::MODULES_BY_CUTS {
-        for (which, assembled) in [("identity", by_cuts.identity), ("remap", by_cuts.remap)] {
+    for (name, by_set) in crate::shader_assembly::MODULES_BY_SET {
+        for (which, assembled) in [("basic", by_set.basic), ("full", by_set.full)] {
             assert!(
                 capture
                     .sources
@@ -240,13 +240,13 @@ fn all_shader_compilation_times_and_entry_coverage() {
     // No shader code is duplicated there. A changed shader/layout cannot ship
     // with an obsolete prewarm definition unnoticed.
     let contract = capture.browser_contract();
-    // A module assembled with the cut remap compiles to the same pipeline
-    // descriptors as its identity twin, so the contract stores each once,
-    // under the identity source (#299): no entry is keyed by a remap source,
-    // and every identity source that has pipelines is there.
-    for (name, by_cuts) in crate::shader_assembly::MODULES_BY_CUTS {
-        let remap_key = crate::gpu_compile::source_key(by_cuts.remap.source);
-        let identity_key = crate::gpu_compile::source_key(by_cuts.identity.source);
+    // A full module compiles to the same pipeline descriptors as its basic
+    // twin, so the contract stores each once,
+    // under the basic source (#299): no entry is keyed by a full source,
+    // and every basic source that has pipelines is there.
+    for (name, by_set) in crate::shader_assembly::MODULES_BY_SET {
+        let full_key = crate::gpu_compile::source_key(by_set.full.source);
+        let basic_key = crate::gpu_compile::source_key(by_set.basic.source);
         let keyed = |key: &str| {
             contract["pipelines"]
                 .as_array()
@@ -255,8 +255,8 @@ fn all_shader_compilation_times_and_entry_coverage() {
                 .filter(|p| p["source"].as_str() == Some(key))
                 .count()
         };
-        assert_eq!(keyed(&remap_key), 0, "{name}");
-        assert!(keyed(&identity_key) > 0, "{name}");
+        assert_eq!(keyed(&full_key), 0, "{name}");
+        assert!(keyed(&basic_key) > 0, "{name}");
     }
     let contract_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shader_pipeline_contract.json");

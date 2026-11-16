@@ -65,6 +65,7 @@ pub mod renderer;
 /// assembled modules, for the renderer's own tests.
 #[doc(hidden)]
 pub mod shader_assembly;
+pub use shader_assembly::ShaderSet;
 // Hand-drawn geometry helpers + the `DecoStroker` strategy — consumed by the
 // deco layer (`axis_render`) when `Config::draw_style` selects a stylized
 // mode (`DrawStyle::Sketch`, …).

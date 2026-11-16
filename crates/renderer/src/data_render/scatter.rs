@@ -41,12 +41,11 @@ pub(crate) fn marker_visual_scale(base: u32) -> f32 {
     }
 }
 /// The assembled scatter module.
-pub(crate) const SCATTER_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub(crate) const SCATTER_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/project_3d.wgsl",
     "data_render/common/ramp.wgsl",
@@ -54,9 +53,9 @@ pub(crate) const SCATTER_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts
     "data_render/common/marker.wgsl",
     "data_render/scatter_columnar.wgsl",
 );
-/// [`SCATTER_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
-pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = SCATTER_SHADER_BY_CUTS.remap;
+/// The full assembly of [`SCATTER_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = SCATTER_SHADER_BY_SET.full;
 
 /// Columnar SDF scatter pipeline.
 /// slot 0 (per-vertex): unit quad, slot 1 (per-instance): X, slot 2: Y.
@@ -66,7 +65,7 @@ pub fn create_scatter_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::scatter(device, crate::shader_assembly::AxisCutShaders::Remap);
+    let shader = ShaderModules::scatter(device, crate::shader_assembly::ShaderSet::Full);
     create_scatter_columnar_pipeline_with_sample_count(
         device,
         &shader,
@@ -113,7 +112,7 @@ pub fn create_scatter_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::scatter(device, crate::shader_assembly::AxisCutShaders::Remap);
+    let shader = ShaderModules::scatter(device, crate::shader_assembly::ShaderSet::Full);
     create_scatter_columnar_mapped_pipeline_with_entries(
         device,
         &shader,

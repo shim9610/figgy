@@ -4,15 +4,15 @@
 use super::*;
 
 /// The assembled field (heatmap and contour) module.
-pub(crate) const FIELD_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts = crate::shader_assembly::assembled_by_cuts!(
+pub(crate) const FIELD_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
-    cuts,
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/contour_label_box.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
+    field_polar,
     "data_render/common/ramp.wgsl",
     "data_render/common/field_paint.wgsl",
     "data_render/common/data_pick.wgsl",
@@ -22,9 +22,9 @@ pub(crate) const FIELD_SHADER_BY_CUTS: crate::shader_assembly::AssembledByCuts =
     "data_render/common/radial_sector.wgsl",
     "data_render/field_columnar.wgsl",
 );
-/// [`FIELD_SHADER_BY_CUTS`] with the cut remap: the module a chart with an axis
-/// break compiles.
-pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = FIELD_SHADER_BY_CUTS.remap;
+/// The full assembly of [`FIELD_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = FIELD_SHADER_BY_SET.full;
 
 /// Vertices per field draw. The field is **one** quad for the whole grid, not
 /// one per cell — `field_columnar.wgsl`'s header has the two reasons (25M
@@ -585,7 +585,7 @@ pub fn create_field_columnar_pipeline(
     field_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::field(device, crate::shader_assembly::AxisCutShaders::Remap);
+    let shader = ShaderModules::field(device, crate::shader_assembly::ShaderSet::Full);
     create_field_columnar_pipeline_with_sample_count(
         device,
         &shader,

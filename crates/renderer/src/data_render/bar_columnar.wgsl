@@ -87,14 +87,15 @@ fn bar_outer_ndc_values(
     gap_px: f32,
     width_ratio: f32,
 ) -> vec4<f32> {
+    let tf = transform;
     var a: vec2<f32>;
     var b: vec2<f32>;
     if (horizontal) {
-        a = data_to_ndc(transform, base, edge_lo);
-        b = data_to_ndc(transform, value, edge_hi);
+        a = data_to_ndc(tf, base, edge_lo);
+        b = data_to_ndc(tf, value, edge_hi);
     } else {
-        a = data_to_ndc(transform, edge_lo, base);
-        b = data_to_ndc(transform, edge_hi, value);
+        a = data_to_ndc(tf, edge_lo, base);
+        b = data_to_ndc(tf, edge_hi, value);
     }
     var lo = min(a, b);
     var hi = max(a, b);
@@ -177,8 +178,9 @@ fn bar_envelope_columns(
 /// in NDC `(low, high)`: from the series baseline `b` to the value, like the
 /// bar the bin would draw if it were wide enough.
 fn bar_envelope_magnitude(value: vec2<f32>, b: vec2<f32>, horizontal: bool) -> vec2<f32> {
-    let base = select(data_to_ndc(transform, vec2<f32>(0.0), b).y, data_to_ndc(transform, b, vec2<f32>(0.0)).x, horizontal);
-    let top = select(data_to_ndc(transform, vec2<f32>(0.0), value).y, data_to_ndc(transform, value, vec2<f32>(0.0)).x, horizontal);
+    let tf = transform;
+    let base = select(data_to_ndc(tf, vec2<f32>(0.0), b).y, data_to_ndc(tf, b, vec2<f32>(0.0)).x, horizontal);
+    let top = select(data_to_ndc(tf, vec2<f32>(0.0), value).y, data_to_ndc(tf, value, vec2<f32>(0.0)).x, horizontal);
     return vec2<f32>(min(base, top), max(base, top));
 }
 

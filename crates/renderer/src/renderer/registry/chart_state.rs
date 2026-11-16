@@ -56,7 +56,7 @@ impl Renderer {
         series: Vec<SeriesConfig>,
     ) -> Result<()> {
         // As `commit_chart_config` does (#299).
-        self.admit_axis_cuts(config_cuts_axes(&config));
+        self.admit_full_shaders(config_needs_full_shaders(&config));
         let state = self
             .chart_states
             .get(&id)

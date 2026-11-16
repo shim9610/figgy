@@ -531,7 +531,7 @@ fn shared_bundle_creates_pipelines_once_for_multiple_engines() {
         queue.clone(),
         Arc::new(GpuLedger::new()),
         crate::renderer::DeviceHealth::polled_for_test(&device),
-        crate::shader_assembly::AxisCutShaders::Remap,
+        crate::shader_assembly::ShaderSet::Full,
         &mut |event| events.push(event),
     )
     .unwrap();
@@ -742,7 +742,7 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
                         crate::test_gpu::block_on(stream.finish().unwrap().resolve()).unwrap();
                     // Bit parity needs the same compiled code: every
                     // chunk scanned with its resident series' variant.
-                    // Drivers that compile two variants differently
+                    // Drivers that compile two sets differently
                     // (Metal, DX12) otherwise round differently.
                     let resident_keys: Vec<_> = resident.exact_variants(&query).collect();
                     assert!(!exact.pipelines.is_empty());
@@ -808,7 +808,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
         queue.clone(),
         Arc::new(GpuLedger::new()),
         crate::renderer::DeviceHealth::polled_for_test(&device),
-        crate::shader_assembly::AxisCutShaders::Remap,
+        crate::shader_assembly::ShaderSet::Full,
         &mut |_| {},
     )
     .unwrap();
@@ -3734,9 +3734,9 @@ fn pick_shader_compile_timings() {
                 "PICK_TIMING round {round} [{name}] create_shader_module {:.1} ms",
                 started.elapsed().as_secs_f64() * 1e3
             );
-            for (entry, label, variant) in entries {
+            for (entry, label, set) in entries {
                 // 0x1000 | id: the precise variant with `PICK_SHAPE = id`.
-                let constants = variant.map(|bits| {
+                let constants = set.map(|bits| {
                     if bits & 0x1000 != 0 {
                         vec![(v::CONSTANT, 0.0), ("PICK_SHAPE", f64::from(bits & 0xfff))]
                     } else {

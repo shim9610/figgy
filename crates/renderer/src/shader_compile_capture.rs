@@ -208,8 +208,8 @@ impl Capture {
                     .as_object_mut()
                     .unwrap()
                     .remove(super::workgroup_init::EXPLICIT_ZERO);
-                // A module assembled with the cut remap is stored under its
-                // identity twin's key (#299): the two compile to the same
+                // A full module is stored under its
+                // basic twin's key (#299): the two compile to the same
                 // descriptors, so each pipeline is stored once.
                 let key = super::source_key(crate::shader_assembly::contract_source(
                     self.sources[index]["code"].as_str().unwrap(),

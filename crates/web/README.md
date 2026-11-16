@@ -91,6 +91,19 @@ starts compiling every render pipeline at once and the browser goes on
 compiling them after the chart is on screen. A chart drawn meanwhile is drawn
 whole; the host calls and awaits nothing for this. `await chart.prewarm_all()`
 remains for a host that wants every pipeline prepared before it goes on.
+A chart starts on the basic shader set, which draws rectangular charts with
+linear and logarithmic axes, and moves itself to the full set when its config
+first has an axis break, a probability axis or polar coordinates
+([#299](https://github.com/shim9610/figgy/issues/299)). A host that knows it
+will show such a chart creates it on the full set, so the basic set is not
+compiled first and discarded:
+`await FiggyChart.create_with_options(canvas, { shaders: "full" })`, or
+`<figgy-chart shaders="full">`. The options are `shaders` (`"basic"`, the
+default, or `"full"`) and `on_progress` (the callback of
+`create_with_progress`); any other option or value is refused with an `Error`
+that names it. `chart.shader_set()` and `element.shaders` read the current
+set; `chart.require_shader_set("full")` and `element.shaders = "full"` move a
+ready chart up early. A chart never goes back to the basic set.
 After installing data/configuration, `await chart.first_frame_ready()` submits
 that state and waits for GPU completion. For the radial chart, creation
 prepares the document, and the host must explicitly await
@@ -162,6 +175,11 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 로컬에서는 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
 `<figgy-chart>` 요소 테스트(`tests/figgy-chart.test.mjs`)는 빌드나 브라우저 없이 Node만으로
 실행한다: `node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs`.
+
+차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
+스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가
+필요하면 `FiggyChart.create_with_options(canvas, { shaders: "full" })`이나
+`<figgy-chart shaders="full">`로 만든다.
 
 위 명령으로 빌드하고 로컬 서버를 열면 히스토그램과 시간축 데모를 조작할 수 있다.
 GitHub README 안에서는 JavaScript와 WASM을 실행할 수 없으므로, 직접 조작하는 데모는

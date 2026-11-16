@@ -163,10 +163,11 @@ fn box_stats(row: u32) -> BoxStats {
 /// Value `v` on the value axis, in chart-area render pixels (x when the
 /// categories run along y, else y down).
 fn box_along(position: vec2<f32>, v: vec2<f32>) -> f32 {
+    let tf = transform;
     if (category_params.horizontal != 0u) {
-        return category_px(data_to_ndc(transform, v, position)).x;
+        return category_px(data_to_ndc(tf, v, position)).x;
     }
-    return category_px(data_to_ndc(transform, position, v)).y;
+    return category_px(data_to_ndc(tf, position, v)).y;
 }
 
 /// Where the box sits across its category slot, in chart-area render pixels
@@ -205,6 +206,7 @@ fn box_layout(s: BoxStats, resolved: ResolvedBarStyle) -> BoxLayout {
 /// axis at `at` (a value the glyph reaches, so the projection is defined
 /// on a logarithmic value axis): the box layout, which range bars share.
 fn box_slot(position: vec2<f32>, at: vec2<f32>, resolved: ResolvedBarStyle) -> BoxLayout {
+    let tf = transform;
     var out: BoxLayout;
     out.valid = false;
     let horizontal = category_params.horizontal != 0u;
@@ -213,11 +215,11 @@ fn box_slot(position: vec2<f32>, at: vec2<f32>, resolved: ResolvedBarStyle) -> B
     var slot_a: f32;
     var slot_b: f32;
     if (horizontal) {
-        slot_a = category_px(data_to_ndc(transform, at, low)).y;
-        slot_b = category_px(data_to_ndc(transform, at, high)).y;
+        slot_a = category_px(data_to_ndc(tf, at, low)).y;
+        slot_b = category_px(data_to_ndc(tf, at, high)).y;
     } else {
-        slot_a = category_px(data_to_ndc(transform, low, at)).x;
-        slot_b = category_px(data_to_ndc(transform, high, at)).x;
+        slot_a = category_px(data_to_ndc(tf, low, at)).x;
+        slot_b = category_px(data_to_ndc(tf, high, at)).x;
     }
     let m = category_member(slot_a, slot_b, category_params.members, category_params.member, resolved.width_ratio, resolved.gap_px);
     if (m.x < 0.5) {
@@ -459,9 +461,10 @@ fn box_stroke(quad: u32, s: BoxStats, place: BoxLayout, body: BoxBody, strokes: 
 
 /// The stroke's quad in chart-area render pixels.
 fn box_stroke_rect(stroke: BoxStroke) -> vec4<f32> {
+    let tf = transform;
     let g = stroke.segment;
-    let p0 = category_px(errorbar_corner_ndc(transform, g, true, -g.half_stroke));
-    let p1 = category_px(errorbar_corner_ndc(transform, g, false, g.half_stroke));
+    let p0 = category_px(errorbar_corner_ndc(tf, g, true, -g.half_stroke));
+    let p1 = category_px(errorbar_corner_ndc(tf, g, false, g.half_stroke));
     return vec4<f32>(min(p0, p1), max(p0, p1));
 }
 

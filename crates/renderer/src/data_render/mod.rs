@@ -541,7 +541,7 @@ mod tests {
         let style_bgl = create_style_bind_group_layout(&device);
         let style_map_bgl = create_scatter_style_map_bind_group_layout(&device);
         let value_map_bgl = create_point_value_map_bind_group_layout(&device);
-        let shaders = ShaderModules::new(&device, crate::shader_assembly::AxisCutShaders::Remap);
+        let shaders = ShaderModules::new(&device, crate::shader_assembly::ShaderSet::Full);
 
         let mapped = create_scatter_columnar_mapped_pipeline(
             &device,

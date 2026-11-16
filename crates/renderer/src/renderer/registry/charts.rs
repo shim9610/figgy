@@ -167,9 +167,9 @@ impl Renderer {
         if self.chart_states.contains_key(&id) {
             return Err(FiggyError::internal("a new chart id is never registered"));
         }
-        // A chart with an axis break compiles the cut remap shaders, before
-        // a host asks which preparation groups are ready (#299).
-        self.admit_axis_cuts(config_cuts_axes(&config));
+        // A chart with an axis break, a probability axis or polar
+        // coordinates compiles the full shaders, before a host asks which preparation groups are ready (#299).
+        self.admit_full_shaders(config_needs_full_shaders(&config));
         self.chart_states.insert(
             id,
             ChartRenderState {
@@ -287,10 +287,11 @@ impl Renderer {
         id: ChartId,
         config: Config,
     ) -> Result<()> {
-        // A break added to a registered chart moves the renderer to the cut
-        // remap shaders now (#299), before the host asks which preparation
-        // groups are ready or enables picking for it.
-        self.admit_axis_cuts(config_cuts_axes(&config));
+        // A break, a probability axis or polar coordinates given to a
+        // registered chart move the renderer to the full shaders now (#299),
+        // before the host asks which preparation groups are ready or enables
+        // picking for it.
+        self.admit_full_shaders(config_needs_full_shaders(&config));
         let state = self
             .chart_states
             .get(&id)

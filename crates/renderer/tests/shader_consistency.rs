@@ -877,15 +877,15 @@ fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
 /// Part of the layered design (rule 9); these stay. Also the per-module
 /// bodies of one contract, where each module needs its own.
 const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
-    // The axis-cut layer's interface (#299): the cut remap of a broken axis
-    // and its identity twin, of which `assembled_by_cuts!` splices one into
-    // each assembly of a module. `shader_assembly`'s
-    // `the_identity_cut_fragment_has_the_cut_fragments_signatures` holds the
-    // two to the same signatures.
+    // The shader sets' interfaces (#299): each full fragment and its
+    // basic twin, of which `assembled_by_set!` splices one into each
+    // assembly of a module (`shader_assembly::SET_FRAGMENTS`).
+    // `shader_assembly`'s `a_basic_fragment_has_its_full_twins_signatures`
+    // holds each pair to the same signatures.
     (
         &[
             "data_render/common/axis_cuts.wgsl",
-            "data_render/common/axis_cuts_identity.wgsl",
+            "data_render/common/axis_cuts_basic.wgsl",
         ],
         &[
             "cut_remap",
@@ -894,6 +894,44 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
             "cuts_of",
             "no_cuts",
         ],
+    ),
+    (
+        &[
+            "data_render/common/probability.wgsl",
+            "data_render/common/probability_basic.wgsl",
+        ],
+        &[
+            "prob_forward",
+            "prob_in_domain",
+            "prob_inverse",
+            "prob_slope",
+        ],
+    ),
+    (
+        &[
+            "data_render/common/axis_scale.wgsl",
+            "data_render/common/axis_scale_basic.wgsl",
+        ],
+        &["axis_data_t", "axis_pair_to_t"],
+    ),
+    (
+        &[
+            "data_render/common/polar.wgsl",
+            "data_render/common/polar_basic.wgsl",
+        ],
+        &[
+            "polar_fragment_visible",
+            "polar_ndc",
+            "polar_sample_valid",
+            "polar_unproject",
+        ],
+    ),
+    (
+        &[
+            "data_render/common/field_polar.wgsl",
+            "data_render/common/field_polar_basic.wgsl",
+        ],
+        &["field_polar_lookup"],
     ),
     (
         &[
