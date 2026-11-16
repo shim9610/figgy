@@ -243,3 +243,37 @@ fn save_pair(kind: SceneKind, scale: f32, basic: &RasterImage, full: &RasterImag
         }
     }
 }
+
+/// CI probe only: every scene and scale, two fresh basic renderers against
+/// each other and against a full one, reported without stopping.
+#[test]
+#[ignore = "CI probe"]
+fn probe_every_scene_twice() {
+    for kind in SceneKind::ALL {
+        for scale in [1.0f32, 2.0] {
+            let (a, needs_full) = draw(&mut renderer(), kind, scale);
+            if needs_full {
+                continue;
+            }
+            let (b, _) = draw(&mut renderer(), kind, scale);
+            let (f, _) = draw(&mut full_renderer(), kind, scale);
+            let count = |x: &RasterImage, y: &RasterImage| {
+                x.rgba
+                    .chunks_exact(4)
+                    .zip(y.rgba.chunks_exact(4))
+                    .filter(|(p, q)| p != q)
+                    .count()
+            };
+            let (same, full) = (count(&a, &b), count(&a, &f));
+            if same + full > 0 {
+                println!(
+                    "PROBE {} at {scale}x: basic vs basic {same} ({}), basic vs full {full} ({})",
+                    kind.label(),
+                    difference_summary(&a, &b),
+                    difference_summary(&a, &f)
+                );
+            }
+        }
+    }
+    println!("PROBE done");
+}
