@@ -75,6 +75,7 @@ impl Renderer {
             queue,
             health,
             ledger: gpu_ledger,
+            shader_set,
         } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
@@ -161,6 +162,8 @@ impl Renderer {
             &per_point_style_map_bgl,
             surface_format,
             target_sample_count,
+            // The basic set, unless the host asked for the full one (#299).
+            shader_set,
             observer,
         );
         let renderer_identity = observe_result(observer, "renderer", "identity", || {
@@ -221,6 +224,13 @@ impl Renderer {
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
             arc_pipelines: None,
+            #[cfg(target_arch = "wasm32")]
+            compile_queue: None,
+            #[cfg(target_arch = "wasm32")]
+            export_compile_queue: None,
+            frame_complete: true,
+            #[cfg(target_arch = "wasm32")]
+            frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
             space_bg: None,
@@ -243,6 +253,7 @@ impl Renderer {
             queue,
             health,
             ledger: gpu_ledger,
+            shader_set,
         } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
@@ -323,6 +334,7 @@ impl Renderer {
             surface_format,
             target_sample_count,
             minimal,
+            shader_set,
             observer,
         )
         .await?;
@@ -385,6 +397,13 @@ impl Renderer {
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
             arc_pipelines: None,
+            #[cfg(target_arch = "wasm32")]
+            compile_queue: None,
+            #[cfg(target_arch = "wasm32")]
+            export_compile_queue: None,
+            frame_complete: true,
+            #[cfg(target_arch = "wasm32")]
+            frame_settled: 0,
             #[cfg(test)]
             arc_chunk_override: None,
             space_bg: None,

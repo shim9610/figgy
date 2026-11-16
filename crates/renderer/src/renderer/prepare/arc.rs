@@ -81,6 +81,30 @@ pub(in crate::renderer) struct ArcResultEntry {
     pub(in crate::renderer) scratch: data_render::line_arc::ArcScratch,
 }
 
+/// Whether a draw of `series` under `style` scans its arc prefix: a dashed
+/// line, a streamline's arrowheads or a style that walks the arc (sketch,
+/// milkyway) on a drawn line. Also returns whether the series draws a line
+/// and the arrowheads' slot pitch: streamline arrowheads sit on arc slots,
+/// so the scan runs with their spacing in render pixels as the slot pitch,
+/// and its indirect kernel counts the slots.
+pub(in crate::renderer) fn series_arc_need(
+    style: &crate::config::DrawStyle,
+    series: &Series<'_>,
+) -> (bool, bool, Option<f32>) {
+    let cfg = series.config;
+    let line = effective_series_primitives(style, &cfg.render_type).line;
+    let dashed = line
+        && extract_line(&cfg.render_type)
+            .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
+    let arrow_pitch = line
+        .then(|| streamline_arrow_pitch(&cfg.render_type, series.style.display_scale))
+        .flatten();
+    let wanted = dashed
+        || arrow_pitch.is_some()
+        || (style_variant(style).is_some_and(|v| v.needs_arc_prefix) && line);
+    (wanted, line, arrow_pitch)
+}
+
 impl PrepareContext<'_> {
     pub(in crate::renderer) fn prepare_arc_items(
         &mut self,
@@ -99,7 +123,6 @@ impl PrepareContext<'_> {
             item.view.advance_stream_revision()?;
             let view_revision = item.view.advance_content_revision()?;
             data_render::update_scatter_transform(&self.queue, &item.view.transform_buffer, &t);
-            let variant = style_variant(&item.chart_config.draw_style);
             // Milkyway lines also get the arc-driven star pass: the
             // candidate-slot pitch the indirect kernel sizes the dispatch
             // with (the star VS derives the same value from the transform).
@@ -120,21 +143,8 @@ impl PrepareContext<'_> {
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
                 let cfg = series.config;
-                let line =
-                    effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
-                        .line;
-                let dashed = line
-                    && extract_line(&cfg.render_type)
-                        .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                // Streamline arrowheads sit on arc slots: the scan runs with
-                // their spacing in render pixels as the slot pitch, and its
-                // indirect kernel counts the slots.
-                let arrow_pitch = line
-                    .then(|| streamline_arrow_pitch(&cfg.render_type, series.style.display_scale))
-                    .flatten();
-                let arc_wanted = dashed
-                    || arrow_pitch.is_some()
-                    || (variant.is_some_and(|v| v.needs_arc_prefix) && line);
+                let (arc_wanted, line, arrow_pitch) =
+                    series_arc_need(&item.chart_config.draw_style, series);
                 let arc = if arc_wanted {
                     self.ensure_arc_prefix(
                         &cfg.series_id,
@@ -197,6 +207,22 @@ impl PrepareContext<'_> {
         Ok(Some((x_base, y_base, n)))
     }
 
+    /// A transform that holds axis cuts, a probability scale or polar
+    /// coordinates is read by the full modules only (#299). Every entry admits its charts before it reaches a scan
+    /// (`Renderer::admit_full_shaders`); one that did not fails here instead of
+    /// measuring the path without them.
+    pub(in crate::renderer) fn require_full_shaders(
+        &self,
+        transform: &data_render::ScatterTransform,
+    ) -> Result<()> {
+        if transform.needs_full_shaders() && self.pipelines.shaders.set == ShaderSet::Basic {
+            return Err(FiggyError::internal(
+                "a transform with axis cuts, a probability scale or polar coordinates is read with the full shaders",
+            ));
+        }
+        Ok(())
+    }
+
     /// Ensure the GPU arc-length prefix for one dashed line series and return
     /// the token-side snapshot: the prefix buffer slice, the owned star-pass
     /// handles (when the scratch has one), and the source-column layout the
@@ -226,6 +252,7 @@ impl PrepareContext<'_> {
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
     ) -> Result<Option<PreparedArc>> {
+        self.require_full_shaders(t)?;
         // The mode word: the step mode and, on a polar chart, the arc pieces
         // the transform carries.
         let step_mode = crate::line_step::mode_word_for(interpolation, t);
@@ -322,9 +349,15 @@ impl PrepareContext<'_> {
         let chunk_override = self.arc_chunk_override;
         #[cfg(not(test))]
         let chunk_override = None;
-        let arc_pipelines: &data_render::line_arc::ArcScanPipelines = self
-            .arc_pipelines
-            .get_or_insert_with(|| data_render::line_arc::create_arc_scan_pipelines(&self.device));
+        let set = self.pipelines.shaders.set;
+        let arc_pipelines: &data_render::line_arc::ArcScanPipelines =
+            self.arc_pipelines.get_or_insert_with(|| {
+                data_render::line_arc::create_arc_scan_pipelines_by_set(
+                    &self.device,
+                    set,
+                    &mut |_| {},
+                )
+            });
         let scratch = data_render::line_arc::ArcScratch::build(
             &self.device,
             &self.gpu_ledger,
@@ -405,6 +438,8 @@ impl Renderer {
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
     ) -> Option<Result<PreparedArc>> {
+        // As the frame, export and pick entries do for their charts (#299).
+        self.admit_full_shaders(t.needs_full_shaders());
         self.preparation_parts()
             .1
             .ensure_arc_prefix(series_id, x_id, y_id, None, t, star_pitch, interpolation)

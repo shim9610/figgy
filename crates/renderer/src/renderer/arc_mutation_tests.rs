@@ -226,3 +226,105 @@ fn a_break_edit_rescans_the_arc_prefix() {
         "the cut changes the arc lengths"
     );
 }
+
+/// A transform that holds axis cuts, a probability scale or polar
+/// coordinates is never read through the basic shaders (#299). The entries
+/// admit their charts first, which this test leaves out: the scan refuses
+/// the transform instead of measuring the path without the feature, and
+/// the renderer is left as it was. Breaks that cut nothing (no ranges)
+/// leave the transform without cuts, and the chart on the basic shaders; and
+/// whatever puts cuts, a probability code or the polar flag in a transform
+/// is a config the admission sees.
+#[test]
+fn a_transform_that_needs_the_full_shaders_is_refused_on_basic_shaders() {
+    let Some(mut r) = state_test_renderer() else {
+        return;
+    };
+    r.add_column("arc_x", &col_f64(vec![0.1, 0.5, 0.9]))
+        .unwrap();
+    r.add_column("arc_y", &col_f64(vec![0.1, 0.9, 0.2]))
+        .unwrap();
+    let config = baseline(DrawStyle::Precise);
+    let with = |ranges: Vec<crate::config::AxisBreak>, style| {
+        let mut cut = config.clone();
+        cut.left_y.breaks = Some(crate::config::AxisBreaks {
+            ranges,
+            style,
+            ..Default::default()
+        });
+        cut
+    };
+    let continuous = crate::config::AxisBreakStyle::Continuous;
+    let cut = with(vec![crate::config::AxisBreak::new(0.4, 0.6)], continuous);
+    let empty = with(Vec::new(), continuous);
+    let panels = with(
+        vec![crate::config::AxisBreak::new(0.4, 0.6)],
+        crate::config::AxisBreakStyle::Panels,
+    );
+    let outside = with(vec![crate::config::AxisBreak::new(4.0, 6.0)], continuous);
+    for (name, candidate) in [
+        ("plain", &config),
+        ("cut", &cut),
+        ("no ranges", &empty),
+        ("panels", &panels),
+        ("outside the range", &outside),
+    ] {
+        let transform = data_render::scatter_transform_from_config(candidate);
+        assert!(
+            !transform.needs_full_shaders() || super::config_needs_full_shaders(candidate),
+            "{name}: a transform with cuts comes from a config the admission sees"
+        );
+    }
+    assert!(!data_render::scatter_transform_from_config(&config).needs_full_shaders());
+    assert!(!data_render::scatter_transform_from_config(&empty).needs_full_shaders());
+    assert!(!super::config_needs_full_shaders(&config));
+    assert!(!super::config_needs_full_shaders(&empty));
+    assert!(super::config_needs_full_shaders(&cut));
+
+    // A probability axis and polar coordinates, each on its own.
+    let mut probability = config.clone();
+    probability.left_y.scale =
+        crate::config::AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+    probability.left_y.min = 0.05;
+    probability.left_y.max = 0.95;
+    let mut polar = config.clone();
+    polar.set_polar(Some(crate::polar::PolarOptions::default()));
+    for (name, candidate) in [("probability", &probability), ("polar", &polar)] {
+        assert!(super::config_needs_full_shaders(candidate), "{name}");
+        assert!(
+            data_render::scatter_transform_from_config(candidate).needs_full_shaders(),
+            "{name}"
+        );
+    }
+
+    for (name, candidate) in [
+        ("cut", &cut),
+        ("probability", &probability),
+        ("polar", &polar),
+    ] {
+        let transform = data_render::scatter_transform_from_config(candidate);
+        assert!(transform.needs_full_shaders(), "{name}");
+        assert_eq!(r.shader_set(), ShaderSet::Basic);
+        let refused = r.preparation_parts().1.ensure_arc_prefix(
+            "refused",
+            "arc_x",
+            "arc_y",
+            None,
+            &transform,
+            None,
+            LineInterpolation::Linear,
+        );
+        assert!(
+            matches!(&refused, Err(error) if error.to_string().contains("full shaders")),
+            "{name}: {:?}",
+            refused.map(|_| ())
+        );
+        assert_eq!(r.shader_set(), ShaderSet::Basic, "{name}");
+    }
+    // The unbroken chart still scans on the basic shaders, and the cut
+    // one once it has been admitted.
+    assert!(arc(&mut r, "plain", &config).is_some());
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+    assert!(arc(&mut r, "cut", &cut).is_some());
+    assert_eq!(r.shader_set(), ShaderSet::Full);
+}

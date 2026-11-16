@@ -2615,6 +2615,85 @@ fn stream_draw_rejects_wrong_target_and_changed_view_before_upload() {
     );
 }
 
+/// A stream that started on a chart without a break is not drawn on a
+/// broken axis by either shader set (rule 8, #299). The break is a view
+/// change, so the draw job in flight ends with it; a new draw job on the
+/// broken chart is refused with `StreamedBreak` before anything is
+/// uploaded; and the renderer has moved to the full shaders by then, so no
+/// later draw of that chart meets a basic pipeline.
+#[test]
+fn a_stream_draw_that_gains_an_axis_break_is_refused() {
+    let (mut r, a, _) = renderer(2);
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 240,
+    });
+    config.left_y.min = 0.0;
+    config.left_y.max = 100.0;
+    let chart = Chart::new(config.clone());
+    r.set_chart_config(a, config.clone()).unwrap();
+    let view = r
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    let target = draw_target(&r, 1);
+    clear_draw_target(&r, &target);
+    let job = r.begin_chart_stream_draw(a, &view, &target, 1).unwrap();
+    let ticket = match r.request_chart_stream_draw(job).unwrap() {
+        StreamDrawRequestStatus::Ready(t) => t,
+        _ => panic!("expected draw request"),
+    };
+    let bytes = [0u8; 8];
+    let inputs = [
+        StreamInput {
+            column: "x",
+            bytes: &bytes,
+        },
+        StreamInput {
+            column: "a",
+            bytes: &bytes,
+        },
+    ];
+    r.submit_chart_stream_draw(ticket, &inputs, &view, &target)
+        .unwrap();
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+
+    let mut broken = config.clone();
+    broken.left_y.breaks = Some(crate::config::AxisBreaks {
+        ranges: vec![crate::config::AxisBreak::new(10.0, 90.0)],
+        ..Default::default()
+    });
+    r.set_chart_config(a, broken.clone()).unwrap();
+    // The draw job that started without the break is over.
+    assert!(r.request_chart_stream_draw(job).is_err());
+    // A new one on the broken chart is refused by rule 8.
+    let broken_chart = Chart::new(broken);
+    let broken_view = r
+        .create_chart_view(&broken_chart, broken_chart.config().chart_area.0)
+        .unwrap();
+    match r.begin_chart_stream_draw(a, &broken_view, &target, 1) {
+        Err(StreamRequestError::State(FiggyError::InvalidSeriesConfig { kind, .. })) => {
+            assert_eq!(kind, crate::RuleKind::StreamedBreak);
+        }
+        other => panic!(
+            "expected the streamed rejection, got {:?}",
+            other.map(|_| ())
+        ),
+    }
+    // The mixed prepare of the chart admits its break first.
+    let panels = [RegisteredPanel {
+        chart_id: a,
+        view: &broken_view,
+    }];
+    let _ = r.prepare_registered_mixed(&panels);
+    assert_eq!(r.shader_set(), ShaderSet::Full);
+    // Without the break the chart streams again.
+    r.set_chart_config(a, config).unwrap();
+    r.begin_chart_stream_draw(a, &view, &target, 1).unwrap();
+}
+
 #[test]
 fn post_recording_reservation_failure_reissues_same_cursor_range() {
     let _font_registration = crate::text_render::FONT_REGISTRATION_TEST_LOCK

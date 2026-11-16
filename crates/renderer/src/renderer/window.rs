@@ -83,6 +83,36 @@ impl<'w> WindowedRenderer<'w> {
         )
     }
 
+    /// Compile, through the browser's async API, the exact pick pipelines
+    /// a pick of chart `id` at `canvas_position_px` needs, before
+    /// [`Self::pick_chart_at`] or [`Self::pick_chart_data_at`] submits it
+    /// (#299): see [`Renderer::compile_pick_pipelines_async`].
+    #[cfg(target_arch = "wasm32")]
+    pub async fn compile_pick_pipelines_at(
+        &mut self,
+        id: ChartId,
+        canvas_position_px: [f32; 2],
+        max_distance_px: f32,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let config = self
+            .inner
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        let logical = config.config.document_area();
+        let (display_scale, display_panel_px) = fit_display_panel(
+            (logical.width, logical.height),
+            (self.surface_config.width, self.surface_config.height),
+        );
+        let request = GpuPickRequest {
+            canvas_position_px,
+            display_panel_px,
+            display_scale,
+            max_distance_px,
+        };
+        self.inner.compile_pick_pipelines_async(id, request).await
+    }
+
     /// Typed data pick using this window's current physical surface size.
     pub fn pick_chart_data_at(
         &mut self,
@@ -377,8 +407,10 @@ impl Renderer {
     /// figgy crate does not depend on winit types itself. On wasm, drive this
     /// from the host event loop (e.g. `wasm_bindgen_futures::spawn_local`).
     ///
-    /// In a browser this also awaits temporary JS render-pipeline warmup; those
-    /// pipelines are discarded and do not populate the renderer's optional
+    /// In a browser this also awaits temporary JS render-pipeline warmup of
+    /// every resident render pipeline (use
+    /// [`Self::for_window_minimal_async_observed`] to present a first frame
+    /// without that wait); those pipelines are discarded and do not populate the renderer's optional
     /// caches. Native construction has no JS warmup. Both leave resident optional
     /// caches lazy; use [`Self::prewarm_all`] or detached preparation explicitly.
     pub async fn for_window_async<'w>(
@@ -400,23 +432,62 @@ impl Renderer {
         pool_capacity_bytes: u64,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
-        Self::for_window_prepared_async(target, size, pool_capacity_bytes, false, observer).await
+        Self::for_window_prepared_async(
+            target,
+            size,
+            pool_capacity_bytes,
+            false,
+            ShaderSet::Basic,
+            observer,
+        )
+        .await
     }
 
-    /// Limit temporary browser render warmup to Basic entries during window setup.
+    /// Return as soon as a first frame can be drawn (#299). In a browser this
+    /// awaits no pipeline compile: the fullscreen textured pipeline, which
+    /// every frame's decorations draw through, is created directly, and the
+    /// asynchronous compile of every resident render pipeline is started
+    /// without waiting for it. The calls are issued together and run while
+    /// the host already presents frames.
     ///
     /// Native initialization is the same as [`Self::for_window_async_observed`].
-    /// This does not install the retained Basic preparation group. A host gating
-    /// first use must compile and install Basic and its other required groups via
-    /// [`Self::begin_preparation`], or call [`Self::prewarm_all`]. Normal frame
-    /// preparation can also create missing pipelines lazily.
+    /// No preparation group is installed. Frame preparation creates the
+    /// pipelines a chart needs when it first draws them; a host that wants
+    /// them retained beforehand uses [`Self::begin_preparation`] or
+    /// [`Self::prewarm_all`].
     pub async fn for_window_minimal_async_observed<'w>(
         target: impl Into<wgpu::SurfaceTarget<'w>>,
         size: (u32, u32),
         pool_capacity_bytes: u64,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
-        Self::for_window_prepared_async(target, size, pool_capacity_bytes, true, observer).await
+        Self::for_window_prepared_async(
+            target,
+            size,
+            pool_capacity_bytes,
+            true,
+            ShaderSet::Basic,
+            observer,
+        )
+        .await
+    }
+
+    /// [`Self::for_window_minimal_async_observed`] for a renderer that starts
+    /// on `set` (#299). With [`ShaderSet::Full`] the renderer creates and
+    /// warms the full modules only: a host whose charts use an axis break,
+    /// a probability axis or polar coordinates does not compile the basic
+    /// set first and discard it. With [`ShaderSet::Basic`] it is that
+    /// constructor. A renderer built from a host device takes the set from
+    /// its bundle instead ([`RendererDevice::with_shader_set`]).
+    pub async fn for_window_with_shader_set_async_observed<'w>(
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        set: ShaderSet,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<WindowedRenderer<'w>> {
+        Self::for_window_prepared_async(target, size, pool_capacity_bytes, true, set, observer)
+            .await
     }
 
     pub(super) async fn for_window_prepared_async<'w>(
@@ -424,6 +495,7 @@ impl Renderer {
         size: (u32, u32),
         pool_capacity_bytes: u64,
         minimal: bool,
+        set: ShaderSet,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
         let (instance, surface) = window_surface(target, observer)?;
@@ -440,8 +512,9 @@ impl Renderer {
             })?;
         finished(observer, "window", "device");
         let target = window_target(&surface, &adapter, device, queue, size, observer)?;
-        let inner = Renderer::try_new_with_sample_count_observed_async(
-            target.gpu,
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut inner = Renderer::try_new_with_sample_count_observed_async(
+            target.gpu.with_shader_set(set),
             target.surface_config.format,
             pool_capacity_bytes,
             target.sample_count,
@@ -449,6 +522,10 @@ impl Renderer {
             observer,
         )
         .await?;
+        #[cfg(target_arch = "wasm32")]
+        if minimal {
+            inner.start_browser_compiles(set);
+        }
         Ok(WindowedRenderer {
             inner,
             surface,
@@ -457,6 +534,28 @@ impl Renderer {
             _instance: instance,
             _adapter: adapter,
         })
+    }
+
+    /// Start the browser's asynchronous compile of every render pipeline of
+    /// `set` and return without waiting for any of them (#299). The compiles
+    /// go through the renderer's queue, at most as many at once as the
+    /// browser reports cores, what a frame asks for first; a frame leaves out
+    /// a series whose pipelines have not resolved, and the draw that first
+    /// needs a resolved one creates it from the device's compilation cache.
+    /// Without a queue (a target the contract has no descriptors for) the
+    /// renderer creates each pipeline when it first draws it, as before.
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) fn start_browser_compiles(&mut self, set: ShaderSet) {
+        let sources = data_render::browser_render_sources(set);
+        let queue = crate::browser_compile::CompileQueue::new(
+            &self.device,
+            self.surface_format,
+            self.target_sample_count,
+        )
+        .and_then(|queue| queue.schedule(set, &sources).map(|()| queue));
+        // A queue that cannot be built leaves the renderer creating its
+        // pipelines when it draws them, which reports any failure.
+        self.compile_queue = queue.ok();
     }
 
     /// [`Self::for_window_async`] on native, without an executor: wgpu

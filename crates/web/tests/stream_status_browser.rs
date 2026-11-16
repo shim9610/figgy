@@ -93,6 +93,10 @@ async fn raw_status_budget_completion_and_cancel_are_observable_without_source_c
             complete = true;
             break;
         }
+        // A step advances when the GPU has finished the submitted chunk, so
+        // wait on the GPU: a count of timer turns is no measure of that on
+        // a software GPU that is still compiling the stream's pipelines.
+        chart.streaming_gpu_ready().await.expect("stream GPU ready");
         browser_turn().await;
     }
     assert!(complete, "automatic stream must complete");

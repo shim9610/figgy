@@ -557,7 +557,7 @@ Construction and full Cartesian prewarming are separate operations:
 | `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. The optional resident data and style, path-length (dash) scan, fit reduction, contour-label and picking pipelines are created on first use. |
 | Native `for_window_async` / `for_window_async_observed` | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
 | Browser `for_window_async` / `for_window_async_observed` | In addition to window setup, await temporary JavaScript warmup pipelines for the Cartesian render entries. Those temporary pipelines are discarded; they do not populate the renderer's retained optional caches. |
-| `for_window_minimal_async_observed` | Limit that browser render warmup to `PreparationFeature::Basic` entries. On native targets it has the same base initialization as the ordinary async constructor. It does not install a completed Basic preparation group. |
+| `for_window_minimal_async_observed` | In a browser, await no pipeline compile: create the fullscreen textured pipeline directly, issue the asynchronous compile of every resident render pipeline at once and return while the browser compiles them. On native targets it has the same base initialization as the ordinary async constructor. It installs no preparation group. |
 | `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, path-length scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
 
 Normal preparation creates missing pipelines lazily. To move that work before
@@ -688,8 +688,8 @@ does not know and rejects enum variants it does not know.
 
 ## Detached Cartesian pipeline preparation
 
-`Renderer::for_window_minimal_async_observed` limits temporary browser render
-warmup as described above. A host using detached preparation to gate first use
+`Renderer::for_window_minimal_async_observed` starts the temporary browser render
+warmup without waiting for it, as described above. A host using detached preparation to gate first use
 must compile and install `PreparationFeature::Basic` (which also includes path-length
 scans and fit reduction), plus the groups needed by its charts. Construction
 alone does not mark Basic ready.
@@ -704,6 +704,90 @@ config, selection, view ranges, or a render revision. Dropping an unfinished job
 or an uninstalled result releases its handles. Hosts deduplicate concurrent requests
 per renderer and feature, serialize installation with other renderer calls, and
 ignore results after their renderer has been disposed.
+
+**Background compiles in a browser** ([#299](https://github.com/shim9610/figgy/issues/299)).
+A renderer built by `for_window_minimal_async_observed` (or
+`for_window_with_shader_set_async_observed`) compiles the render pipelines of its
+shader set in the background, at most as many at once as the browser reports cores
+(`navigator.hardwareConcurrency`, four when it reports none), and issues what a screen
+frame needs before the rest. The vector, 3D surface and ternary region modules are
+not compiled at creation: a frame that first needs one of their pipelines schedules
+the module then, ahead of the rest. The compute passes a frame's preparation
+dispatches go through the same queue (`createComputePipelineAsync`), scheduled when a
+series first needs them: the arc prefix scan (dashed lines, streamline arrowheads,
+sketch and milkyway lines), the ternary ring-start scan, the contour label anchors
+and the histogram envelope. The series waits for them like for its render pipelines,
+and the preparation then creates them from the browser's cache, never on the page's
+thread. Frame preparation of registered charts
+(`prepare_registered`, `WindowedRenderer::draw_registered`) leaves out a series whose
+pipelines have not compiled and draws everything else; `Renderer::frame_complete()`
+tells whether the last screen frame drew every series, `Renderer::compile_redraw_due()`
+whether a compile has resolved since a frame left one out (draw again), and
+`Renderer::pipeline_status()` returns a `PipelineStatus` snapshot: `screen` and `all`
+`PipelineCounts` (`total`, `ready`, `compiling`, `failed`) and `frame_complete`.
+`screen` counts what the last screen frame needed, so a progress bar over it never goes
+back; `all` grows when a chart first needs a module compiled on demand.
+`Renderer::pipeline_failures()` lists each compile that failed as a `PipelineFailure`
+(`label`, `kind`: `Validation`, `Internal`, `Rejected`, `DeviceLost` or `Cancelled`,
+`message`). `Renderer::series_ready()` resolves once every compile the last screen frame
+needed has ended (a frame drawn then is complete) and `Renderer::pipelines_ready()` once
+every scheduled compile has; each returns the first `PipelineFailure` among them as its
+error. Exports, host-owned `prepare` and the picks create what they need and are always
+complete. A browser export first compiles, in the background, the pipelines the last
+screen frame needed for its own target (`Rgba16Float`, its sample count) through a
+second queue, and waits for them before it prepares; its creations then find the
+browser's cache. It also waits for the compute passes the screen's queue has
+scheduled, which do not depend on the target. A pipeline the screen did not draw is created by the export as before.
+The picks' compute pipelines are not in these queues: the bundles compile through
+`enable_gpu_picking_async`, and `WindowedRenderer::compile_pick_pipelines_at` (or
+`Renderer::compile_pick_pipelines_async`) compiles, through
+`createComputePipelineAsync`, each exact pick variant a pick at that position needs
+and has not created yet, then creates it from the browser's cache. The web
+`pick_point` and `pick_data` call it before they submit, so a first pick no longer
+compiles its exact variants on the page's thread. Fit needs nothing of this: `fit_ranges`
+reads column statistics only, and the GPU auto-fit awaits its compute pipelines through
+`createComputePipelineAsync` already. Natively every frame is complete,
+the counts are zero and both waits resolve at once.
+
+Every background compile ends, and a wait on one ends with it: the browser settles
+each `createRenderPipelineAsync` promise (it resolves on success and on device loss,
+and rejects with a `GPUPipelineError` otherwise); the device's `lost` promise ends
+every open compile as device lost; moving to the full set ends the basic compiles not
+issued yet as superseded by their full twins; dropping the renderer cancels the rest.
+A compile that ended other than ready counts as `failed`, and the draw that needs its
+pipeline creates it, which reports the error through the usual path.
+`Renderer::compile_progress()` (browser only) resolves at the next change, and
+`Renderer::compiles_pending()` tells whether a compile is waiting or in flight;
+`first_frame_ready()` waits on these changes, never on animation frames.
+
+**Shader sets** ([#299](https://github.com/shim9610/figgy/issues/299);
+ARCHITECTURE.md, "Shader sets"). A renderer starts on the basic shader set
+(`ShaderSet::Basic`), which draws rectangular charts with linear and
+logarithmic axes and compiles fastest. The full set (`ShaderSet::Full`) adds
+the cut remap of a broken axis, the probability scale and polar coordinates.
+`Renderer::shader_set()` reports which one a renderer is on.
+
+- **Upgrade on demand.** The first chart with an axis break, a probability
+  axis or polar coordinates on any layer moves the renderer to the full set,
+  one way. That empties the retained pipeline caches once: the render groups
+  report not ready again (picking, if it was enabled, is rebuilt at once),
+  `prewarm_all` and new preparations compile the full pipelines, and a
+  preparation begun before it is rejected by `install_preparation` like one
+  for another target generation. A `PreparedFrame` prepared before it stays
+  valid. In a browser, a renderer that started its pipelines' asynchronous
+  compiles when it was built (`for_window_minimal_async_observed`) starts
+  the full set's the same way at the upgrade.
+- **`Renderer::require_shader_set(ShaderSet)`** asks for the upgrade early,
+  before such a chart arrives. It only moves up and is idempotent: asking
+  for `Basic`, or for the set the renderer is on, does nothing.
+- **At creation.** A host that knows it needs the full set builds the
+  renderer on it, so no basic module is created or compiled:
+  `RendererDevice::with_shader_set(ShaderSet::Full)` for the constructors
+  that take a device bundle (`Renderer::try_new` and its siblings), and
+  `Renderer::for_window_with_shader_set_async_observed(target, size,
+  pool_capacity_bytes, set, observer)` for a window or canvas, which is
+  `for_window_minimal_async_observed` with the set. The other constructors
+  are unchanged and start on the basic set.
 
 `PreparationFeature::ALL`, `for_chart(config, series)` and `preparation_ready`
 provide the host's feature inventory and gating contract. Background compilation

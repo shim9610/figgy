@@ -240,6 +240,7 @@ impl PrepareContext<'_> {
                 return Err(FiggyError::internal("one contour spacing per series"));
             }
             let transform = data_render::scatter_transform_from_config(item.chart_config);
+            self.require_full_shaders(&transform)?;
             let ca = item.chart_config.chart_area.0;
             let da = item
                 .chart_config
@@ -421,12 +422,15 @@ impl PrepareContext<'_> {
         let spacing =
             preflight_contour_label_spacing(cfg.series_id.as_str(), &cfg.render_type, true, scale)?;
         if self.contour_label_pipelines.is_none() {
-            *self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
-                &self.device,
-                &self.field_bgl,
-            ));
+            *self.contour_label_pipelines =
+                Some(crate::gpu_contour::ContourLabelPipelines::new_by_set(
+                    &self.device,
+                    &self.field_bgl,
+                    self.pipelines.shaders.set,
+                ));
         }
         let transform = data_render::scatter_transform_from_config(chart_config);
+        self.require_full_shaders(&transform)?;
         let ca = chart_config.chart_area.0;
         let da = chart_config.data_area().map(|area| area.0).unwrap_or(ca);
         let mut encoder = None;
@@ -693,10 +697,12 @@ impl PrepareContext<'_> {
             baked.cells.iter().map(|cell| cell.width),
         )?;
         if self.contour_label_pipelines.is_none() {
-            *self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
-                &self.device,
-                &self.field_bgl,
-            ));
+            *self.contour_label_pipelines =
+                Some(crate::gpu_contour::ContourLabelPipelines::new_by_set(
+                    &self.device,
+                    &self.field_bgl,
+                    self.pipelines.shaders.set,
+                ));
         }
         let pipelines = self
             .contour_label_pipelines
@@ -747,10 +753,12 @@ impl PrepareContext<'_> {
             })
         });
         if wanted {
-            *self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
-                &self.device,
-                &self.field_bgl,
-            ));
+            *self.contour_label_pipelines =
+                Some(crate::gpu_contour::ContourLabelPipelines::new_by_set(
+                    &self.device,
+                    &self.field_bgl,
+                    self.pipelines.shaders.set,
+                ));
         }
     }
 }

@@ -87,6 +87,7 @@ fn box_t_per_unit(axis: u32, pair: vec2<f32>) -> f32 {
 /// axis's derivative, and the length in the screen plane at the anchor is
 /// `scale · |(u, v, w)|` pixels; an arrow out of that plane is foreshortened.
 fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
+    let tf = transform;
     var out: ArrowPx;
     out.tail = vec2<f32>(0.0, 0.0);
     out.tip = vec2<f32>(0.0, 0.0);
@@ -95,7 +96,7 @@ fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
     let ox = vec2<f32>(sample.origin_hi.x, sample.origin_lo.x);
     let oy = vec2<f32>(sample.origin_hi.y, sample.origin_lo.y);
     let oz = vec2<f32>(sample.origin_hi.z, sample.origin_lo.z);
-    if (!sample.valid || !view3d_point_valid(transform, ox, oy, oz)) {
+    if (!sample.valid || !view3d_point_valid(tf, ox, oy, oz)) {
         return out;
     }
     let u = sample.vector.x;
@@ -142,7 +143,7 @@ fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
         let tx = pair_add(ox, scale * u);
         let ty = pair_add(oy, scale * v);
         let tz = pair_add(oz, scale * w);
-        if (!view3d_point_valid(transform, tx, ty, tz)) {
+        if (!view3d_point_valid(tf, tx, ty, tz)) {
             return out;
         }
         tip_t = view3d_point_t(tx, ty, tz);

@@ -83,6 +83,19 @@ impl TernaryPipeline {
             Self::RingMapped => "mapped ternary picked point ring",
         }
     }
+
+    /// The label of the pipeline [`create_ternary_pipeline`] builds, which
+    /// the browser's background compile is keyed by (#299).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Line => "figgy line ternary pipeline",
+            Self::Scatter => "figgy scatter ternary pipeline",
+            Self::ScatterMapped => "figgy scatter ternary mapped pipeline",
+            Self::Ring => "figgy picked point ternary ring pipeline",
+            Self::RingMapped => "figgy picked point ternary mapped ring pipeline",
+        }
+    }
 }
 
 /// The ternary pipeline `kind` over the layouts `[transform, style, style
@@ -212,6 +225,24 @@ impl View3dPipeline {
             Self::LinePick => "3D line pick",
             Self::Vector => "3D vector",
             Self::VectorPick => "3D vector pick",
+        }
+    }
+
+    /// The label of the pipeline this kind builds, which the browser's
+    /// background compile is keyed by (#299).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Scatter => "figgy scatter 3D pipeline",
+            Self::ScatterMapped => "figgy scatter 3D mapped pipeline",
+            Self::ScatterPick => "figgy scatter 3D pick pipeline",
+            Self::ScatterMappedPick => "figgy scatter 3D mapped pick pipeline",
+            Self::Ring => "figgy picked point 3D ring pipeline",
+            Self::RingMapped => "figgy picked point 3D mapped ring pipeline",
+            Self::Line => "figgy line 3D pipeline",
+            Self::LinePick => "figgy line 3D pick pipeline",
+            Self::Vector => "figgy vector 3D pipeline",
+            Self::VectorPick => "figgy vector 3D pick pipeline",
         }
     }
 

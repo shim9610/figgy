@@ -26,24 +26,42 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// The assembled contour label anchor module.
-pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+/// The labels of the contour label anchor compute pipelines: seed,
+/// correction, project and select.
+pub(crate) const CONTOUR_ANCHOR_LABELS: [&str; 4] = [
+    "figgy contour anchor seed pipeline",
+    "figgy contour anchor correction pipeline",
+    "figgy contour anchor project pipeline",
+    "figgy contour anchor select pipeline",
+];
+
+pub(crate) const CONTOUR_ANCHOR_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
+    field_polar,
     "contour_anchor.wgsl",
 );
+/// The full assembly of [`CONTOUR_ANCHOR_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled =
+    CONTOUR_ANCHOR_SHADER_BY_SET.full;
 /// The assembled contour label draw module.
-pub(crate) const CONTOUR_LABEL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const CONTOUR_LABEL_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/contour_label_box.wgsl",
     "data_render/common/label_quad.wgsl",
     "contour_label.wgsl",
 );
+/// The full assembly of [`CONTOUR_LABEL_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub(crate) const CONTOUR_LABEL_SHADER: crate::shader_assembly::Assembled =
+    CONTOUR_LABEL_SHADER_BY_SET.full;
 
 #[cfg(not(target_arch = "wasm32"))]
 type GpuRef<T> = Arc<T>;
@@ -331,13 +349,30 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
-        Self::with_anchor_source(device, field_bgl, CONTOUR_ANCHOR_SHADER.source, true)
+        Self::new_by_set(device, field_bgl, crate::shader_assembly::ShaderSet::Full)
+    }
+
+    /// [`Self::new`] from the modules assembled for `cuts` (#299): the
+    /// renderer's own label pipelines follow its shader set.
+    pub(crate) fn new_by_set(
+        device: &wgpu::Device,
+        field_bgl: &wgpu::BindGroupLayout,
+        set: crate::shader_assembly::ShaderSet,
+    ) -> Self {
+        Self::with_anchor_source(
+            device,
+            field_bgl,
+            CONTOUR_ANCHOR_SHADER_BY_SET.of(set).source,
+            CONTOUR_LABEL_SHADER_BY_SET.of(set).source,
+            true,
+        )
     }
 
     fn with_anchor_source(
         device: &wgpu::Device,
         field_bgl: &wgpu::BindGroupLayout,
         anchor_source: &str,
+        label_source: &str,
         split_projection: bool,
     ) -> Self {
         let anchor_module = crate::gpu_compile::shader_module(
@@ -444,19 +479,19 @@ impl ContourLabelPipelines {
         Self {
             projection_steps: split_projection.then(|| {
                 (
-                    pipeline("anchor_seed", "figgy contour anchor seed pipeline"),
-                    pipeline("anchor_step", "figgy contour anchor correction pipeline"),
+                    pipeline("anchor_seed", CONTOUR_ANCHOR_LABELS[0]),
+                    pipeline("anchor_step", CONTOUR_ANCHOR_LABELS[1]),
                 )
             }),
-            anchor_project: pipeline("anchor_project", "figgy contour anchor project pipeline"),
-            anchor_select: pipeline("anchor_select", "figgy contour anchor select pipeline"),
+            anchor_project: pipeline("anchor_project", CONTOUR_ANCHOR_LABELS[2]),
+            anchor_select: pipeline("anchor_select", CONTOUR_ANCHOR_LABELS[3]),
             anchor_transform_bgl,
             anchor_io_bgl,
             label_module: crate::gpu_compile::shader_module(
                 &device,
                 wgpu::ShaderModuleDescriptor {
                     label: Some("figgy contour label shader"),
-                    source: wgpu::ShaderSource::Wgsl(CONTOUR_LABEL_SHADER.source.into()),
+                    source: wgpu::ShaderSource::Wgsl(label_source.into()),
                 },
             ),
             label_bgl,
@@ -478,11 +513,15 @@ impl ContourLabelPipelines {
         // what the fixture's common block was copied from.
         let common = crate::shader_assembly::wgsl_module!(
             "data_render/common/transform.wgsl",
-            "data_render/common/projection.wgsl",
+            "data_render/common/axis_cuts.wgsl",
             "data_render/common/probability.wgsl",
+            "data_render/common/axis_scale.wgsl",
+            "data_render/common/polar.wgsl",
+            "data_render/common/projection.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/grid_pair.wgsl",
             "data_render/common/field_grid.wgsl",
+            "data_render/common/field_polar.wgsl",
         );
         let start = legacy.find("// ───── BEGIN common block").unwrap();
         let end = legacy.find("// ───── END common block").unwrap();
@@ -503,7 +542,13 @@ impl ContourLabelPipelines {
             assert_eq!(current.matches(&new).count(), 1);
             source = source.replace(&old, &new);
         }
-        Self::with_anchor_source(device, field_bgl, &source, false)
+        Self::with_anchor_source(
+            device,
+            field_bgl,
+            &source,
+            CONTOUR_LABEL_SHADER.source,
+            false,
+        )
     }
 
     pub(crate) fn label_gap_bgl(&self) -> &wgpu::BindGroupLayout {

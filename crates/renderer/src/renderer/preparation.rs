@@ -82,9 +82,20 @@ impl PreparationFeature {
             Self::Constellation
         } else if label.contains("styled") {
             Self::Sketch
-        } else if label.contains("histogram") || label.contains(" bar columnar") {
+        } else if label.contains("histogram")
+            || label.contains(" bar columnar")
+            || label.contains("box p")
+            || label.contains("violin")
+            || label.contains("value label")
+        {
+            // Every pipeline of the bar module (#299): a label the group
+            // does not claim is compiled on the main thread by the
+            // group's own prewarm instead of by the browser's compiler.
             Self::Bars
-        } else if label.contains("field") || label.contains("contour") {
+        } else if label.contains("field")
+            || label.contains("contour")
+            || label.contains("triangle mesh")
+        {
             Self::Fields
         } else {
             Self::Basic
@@ -162,6 +173,10 @@ pub struct PipelinePreparation {
     vector: wgpu::BindGroupLayout,
     category_bar: wgpu::BindGroupLayout,
     parallel: wgpu::BindGroupLayout,
+    /// The renderer's background compiles, which a browser preparation
+    /// waits on instead of issuing its own (#299).
+    #[cfg(target_arch = "wasm32")]
+    compile_queue: Option<crate::browser_compile::CompileQueue>,
 }
 /// Opaque actual GPU objects. Installation neither replays data nor changes Config.
 pub struct PreparedPipelines {
@@ -185,6 +200,7 @@ macro_rules! picker_shaders {
             field: &$job.pipelines.shaders.field,
             vector_grid: &$job.pipelines.shaders.vector_grid,
             line: &$job.pipelines.shaders.line,
+            set: $job.pipelines.shaders.set,
         }
     };
 }
@@ -252,6 +268,8 @@ impl PipelinePreparation {
                 self.format,
                 self.pipelines.sample_count,
                 Some(self.feature),
+                self.pipelines.shaders.set,
+                self.compile_queue.as_ref(),
                 observer,
             )
             .await
@@ -261,7 +279,9 @@ impl PipelinePreparation {
                 crate::init::prewarm_compute_entries_js(
                     &self.device,
                     "contour.label.async",
-                    crate::gpu_contour::CONTOUR_ANCHOR_SHADER.source,
+                    crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_SET
+                        .of(self.pipelines.shaders.set)
+                        .source,
                     &[
                         ("anchor_project", "anchor_seed"),
                         ("anchor_project", "anchor_step"),
@@ -280,8 +300,9 @@ impl PipelinePreparation {
                 .await;
             if self.feature == PreparationFeature::Basic {
                 parts.arc = Some(
-                    data_render::line_arc::create_arc_scan_pipelines_observed_async(
+                    data_render::line_arc::create_arc_scan_pipelines_by_set_async(
                         &self.device,
+                        self.pipelines.shaders.set,
                         observer,
                     )
                     .await
@@ -330,8 +351,9 @@ impl PipelinePreparation {
             self.pipelines
                 .prewarm_all_observed_blocking(&layouts, observer);
             if self.feature == PreparationFeature::Basic {
-                parts.arc = Some(data_render::line_arc::create_arc_scan_pipelines_observed(
+                parts.arc = Some(data_render::line_arc::create_arc_scan_pipelines_by_set(
                     &self.device,
+                    self.pipelines.shaders.set,
                     observer,
                 ));
                 parts.extent = Some(self.extent_engine());
@@ -341,7 +363,11 @@ impl PipelinePreparation {
     }
 
     fn contour_pipelines(&self) -> crate::gpu_contour::ContourLabelPipelines {
-        crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field)
+        crate::gpu_contour::ContourLabelPipelines::new_by_set(
+            &self.device,
+            &self.field,
+            self.pipelines.shaders.set,
+        )
     }
 
     fn extent_engine(&self) -> crate::gpu_extent::GpuErrorbarExtentEngine {
@@ -462,6 +488,8 @@ impl Renderer {
             vector: self.vector_bgl.clone(),
             category_bar: self.category_bar_data_bgl.clone(),
             parallel: self.parallel_bgl.clone(),
+            #[cfg(target_arch = "wasm32")]
+            compile_queue: self.compile_queue.clone(),
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
@@ -482,6 +510,9 @@ impl Renderer {
             || self.device != job.device
             || self.surface_format != job.format
             || self.target_sample_count != job.pipelines.sample_count
+            // Begun before the renderer moved to the full shaders
+            // (#299): its pipelines are the basic ones.
+            || self.pipelines.shaders.set != job.pipelines.shaders.set
         {
             return Err(FiggyError::StaleStateToken {
                 reason: "preparation belongs to a different renderer or target generation".into(),

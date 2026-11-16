@@ -207,6 +207,8 @@ impl Renderer {
         let had_errorbar_stem = self.pipelines.errorbar_stem.is_some();
         let had_bar = self.pipelines.bar.is_some();
         let had_bar_mapped = self.pipelines.bar_mapped.is_some();
+        // The new set keeps the old one's shader set (#299).
+        let set = self.pipelines.shaders.set;
         self.pipelines = create_target_pipelines(
             &self.device,
             &self.texture_bgl,
@@ -215,6 +217,7 @@ impl Renderer {
             &self.per_point_style_map_bgl,
             surface_format,
             target_sample_count,
+            set,
         );
         if had_line {
             self.pipelines.line = Some(
@@ -433,6 +436,111 @@ impl Renderer {
         Ok(true)
     }
 
+    /// Which shader set this renderer's data shaders are assembled as (#299):
+    /// [`ShaderSet::Basic`] until it is first handed a chart with an axis
+    /// break, a probability axis or polar coordinates,
+    /// [`ShaderSet::Full`] from then on.
+    pub fn shader_set(&self) -> ShaderSet {
+        self.pipelines.shaders.set
+    }
+
+    /// Move this renderer to at least `set` (#299). Asking for
+    /// [`ShaderSet::Full`] makes it compile the full modules from now on,
+    /// as the first chart with an axis break, a probability axis or polar
+    /// coordinates would; a host that knows such a chart is coming calls it
+    /// early, so the pipelines are warm when the chart arrives. Asking for
+    /// [`ShaderSet::Basic`], or for the set the renderer is already on, does
+    /// nothing: a renderer never goes back. To start on the full set
+    /// without creating the basic modules at all, build the renderer with it
+    /// ([`RendererDevice::with_shader_set`],
+    /// [`Self::for_window_with_shader_set_async_observed`]).
+    pub fn require_shader_set(&mut self, set: ShaderSet) {
+        self.admit_full_shaders(set == ShaderSet::Full);
+    }
+
+    /// Compile every data shader as its full module from now on, when
+    /// `needed` says a chart that needs one has arrived (#299): a chart with
+    /// an axis break, a probability axis or polar coordinates on any layer
+    /// ([`config_needs_full_shaders`]).
+    ///
+    /// A new renderer assembles its data modules with the basic twins of the
+    /// fragments that hold those three (`shader_assembly::SET_FRAGMENTS`),
+    /// so a chart that uses none of them does not compile them. The first
+    /// chart that does replaces every pipeline cache that holds a basic
+    /// module: the target's pipeline set (emptied, so each pipeline is
+    /// compiled again by the draw that needs it), the contour label and arc
+    /// scan pipelines, and the picker's bundles and active registry. The
+    /// renderer never goes back: with no cut, no probability code and no
+    /// polar flag in a transform the full modules compute what the basic
+    /// ones do, so a chart without them draws the same through either.
+    ///
+    /// Nothing a caller holds is invalidated. A [`PreparedFrame`] prepared
+    /// before the switch owns its pipelines and was prepared for charts
+    /// that need none of the three; the target generation is unchanged. A
+    /// detached preparation begun before it is refused at installation.
+    ///
+    /// Called by every entry that is handed a chart: registration,
+    /// `set_chart_config` and `set_chart_state`, frame preparation, export
+    /// and picking.
+    /// Drawing and picking also refuse such a chart on basic shaders, so a
+    /// missed entry fails instead of drawing it without the feature.
+    pub(in crate::renderer) fn admit_full_shaders(&mut self, needed: bool) {
+        if !needed || self.pipelines.shaders.set == ShaderSet::Full {
+            return;
+        }
+        self.pipelines = create_target_pipelines(
+            &self.device,
+            &self.texture_bgl,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.per_point_style_map_bgl,
+            self.surface_format,
+            self.target_sample_count,
+            ShaderSet::Full,
+        );
+        self.contour_label_pipelines = None;
+        self.arc_pipelines = None;
+        // A renderer that compiles its basic pipelines in the background
+        // does the same for the full ones, dropping the basic compiles not
+        // issued yet, so a pipeline first drawn later is not compiled cold.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.compile_queue {
+            let sources = data_render::browser_render_sources(ShaderSet::Full);
+            if queue
+                .switch_to(ShaderSet::Basic, ShaderSet::Full, &sources)
+                .is_err()
+            {
+                // The draw creates each pipeline when it needs it, which
+                // reports any failure.
+                self.compile_queue = None;
+            }
+        }
+        // The picker's bundles are built from the set's modules and its own
+        // of the same set. A picker that was ready is ready again; its
+        // registry is rebuilt by the next pick's preparation.
+        let was_ready = matches!(
+            self.picker.pipeline_state,
+            PickerPipelineState::Ready { .. }
+        );
+        if was_ready {
+            self.picker = RendererPicker::disabled();
+            if self.enable_gpu_picking_unreported().is_err() {
+                // The failure is recorded in the picker's state, and every
+                // later pick reports it.
+            }
+        }
+    }
+
+    /// [`Self::admit_full_shaders`] for the registered chart `id`; an unknown
+    /// id admits nothing, and the caller reports it.
+    pub(in crate::renderer) fn admit_chart_shaders(&mut self, id: ChartId) {
+        let needed = self
+            .chart_states
+            .get(&id)
+            .is_some_and(|state| config_needs_full_shaders(&state.config));
+        self.admit_full_shaders(needed);
+    }
+
     /// Block until submitted work on this device has completed.
     ///
     /// This is useful during shutdown in embedder examples, where dropping
@@ -551,4 +659,44 @@ impl Renderer {
     pub fn quad_vertex_buffer(&self) -> &wgpu::Buffer {
         &self.quad_vb
     }
+}
+
+/// Whether an axis needs the full shaders (#299): its breaks cut it (the
+/// axes whose transform holds a break table, `data_render::break_constants`)
+/// or it has a probability scale (`data_render::probability_code`).
+fn axis_needs_full_shaders(axis: &AxisOptions) -> bool {
+    axis.breaks
+        .as_ref()
+        .is_some_and(|breaks| !breaks.ranges.is_empty())
+        || matches!(axis.scale, crate::config::AxisScale::Probability(_))
+}
+
+/// Whether any layer of `config` uses a feature only the full shaders
+/// compile (#299): an axis break, a probability axis or polar coordinates,
+/// on the chart itself, an overlay, a subplot or a subplot's overlay. Such
+/// a chart is drawn and picked with the full shaders only
+/// ([`Renderer::admit_full_shaders`]). True for an expanded panel of such a
+/// layer too, whose own two data axes and coordinates carry the layer's.
+/// It never answers false for a config whose transform
+/// [`needs_full_shaders`](data_render::ScatterTransform::needs_full_shaders).
+pub(in crate::renderer) fn config_needs_full_shaders(config: &Config) -> bool {
+    config.polar().is_some()
+        || [
+            &config.bottom_x,
+            &config.left_y,
+            &config.top_x,
+            &config.right_y,
+        ]
+        .into_iter()
+        .chain(
+            config
+                .overlays
+                .iter()
+                .flat_map(|overlay| [&overlay.x_axis, &overlay.y_axis]),
+        )
+        .any(axis_needs_full_shaders)
+        || config
+            .subplots
+            .iter()
+            .any(|subplot| config_needs_full_shaders(&subplot.config))
 }

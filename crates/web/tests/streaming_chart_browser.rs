@@ -507,7 +507,12 @@ async fn external_view_limits_disable_or_refuse_cache_without_stopping_exact_str
                 .expect("exact fallback stream step");
             chart.frame().expect("present exact stream");
             match step.status().as_str() {
-                "submitted" | "backpressure" | "all_submitted" => yield_to_browser().await,
+                "submitted" | "backpressure" | "all_submitted" => {
+                    // Count execution steps, not idle polls while a software
+                    // GPU is still finishing the submitted chunk.
+                    chart.streaming_gpu_ready().await.expect("stream GPU ready");
+                    yield_to_browser().await;
+                }
                 "complete" => {
                     complete = true;
                     break;
@@ -589,6 +594,11 @@ async fn cancelling_after_gpu_page_upload_releases_unpublished_view_candidate() 
             break;
         }
         chart.frame().expect("present partial stream");
+        // The page is looked for after every step, above, so waiting for
+        // the GPU between steps cannot pass over the in-progress state: it
+        // only stops the loop from spending its steps while a software GPU
+        // has not finished the previous one.
+        chart.streaming_gpu_ready().await.expect("stream GPU ready");
         yield_to_browser().await;
     }
     assert!(
@@ -709,10 +719,10 @@ async fn large_single_phase_stream_flushes_bounded_page_before_completion() {
         .set_picked_data(
             &serde_json::json!({
                 "visible": true,
-                "refs": [{"source_id": null, "series_id": "large-line", "point_index": ROWS - 1}],
-                "ring_color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
-                "ring_width_px": 3.0,
-                "radius_extra_px": 4.0,
+                "refs": [{"kind": "point", "source_id": null, "series_id": "large-line", "point_index": ROWS - 1}],
+                "highlight_color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
+                "outline_width_px": 3.0,
+                "point_radius_extra_px": 4.0,
             })
             .to_string(),
         )

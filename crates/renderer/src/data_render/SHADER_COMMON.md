@@ -35,7 +35,8 @@ To change shared shader code:
 | `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, triangle mesh, line_arc, contour anchor and label, vector |
 | `style.wgsl` (§2) | scatter, line, errorbar, bar, field, triangle mesh, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
-| `probability.wgsl` (§5.24) | every module that splices `projection.wgsl`, next to it |
+| `axis_cuts.wgsl` (§4, broken axes), `probability.wgsl` (§5.24), `axis_scale.wgsl` (§4, `axis_data_t` and `axis_pair_to_t`), `polar.wgsl` (§4, polar placement and its tests), each with a basic twin `*_basic.wgsl` | every module that splices `projection.wgsl`, before it: the four full fragments or their four twins, by the module's assembly (`assembled_by_set!`, §4 "Two assemblies of every module") |
+| `field_polar.wgsl`, `field_polar_basic.wgsl` (§5, polar lookup) | every module that splices `field_grid.wgsl`, after it: one of the two, by the module's assembly |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, triangle mesh, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
 | `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, triangle surface, triangle mesh (the floor contour entries, §5.25), scatter, line, line_arc, the 3D point vector module (§5.3) |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor, surface mesh, triangle mesh, triangle surface (§5.25); `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
@@ -415,7 +416,7 @@ the arithmetic result. Round-trip bitcasts are not rounding barriers. Log axes u
 recombined display value (`hi + lo`) before comparing against the log-transformed
 axis bounds.
 
-The code is the fragment [`data_render/common/projection.wgsl`](common/projection.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
+The code is the fragments [`data_render/common/axis_scale.wgsl`](common/axis_scale.wgsl) (`axis_data_t`, `axis_pair_to_t`) and [`data_render/common/projection.wgsl`](common/projection.wgsl) (`maybe_log`, `data_to_ndc` and the rest), spliced into each module that needs them by `wgsl_module!` (`shader_assembly.rs`).
 
 **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
 `axis_pair_to_t` takes the axis' `AxisCuts` (`cuts_of(transform.breaks,
@@ -437,6 +438,80 @@ is masked in a shader: the gaps are left out by drawing the data slot once
 per piece, scissored to it, and a pick whose cursor is in a gap is refused
 on the CPU. CPU twin: `layout::BreakMap::remap` / `unmap`, which the axis
 chrome and the annotation layer place with.
+
+The cut code is its own fragment,
+[`data_render/common/axis_cuts.wgsl`](common/axis_cuts.wgsl): `AxisCuts`,
+`no_cuts`, `cuts_of`, `cut_remap`, `cut_unmap`, `cut_scale_at` and the two
+slope helpers only it calls (`piece_slope`, `cut_piece_slope`).
+
+**Two assemblies of every module**
+([#299](https://github.com/shim9610/figgy/issues/299)). Three features are
+most of what a data pipeline costs to compile in a browser, and a chart
+that uses none of them never runs them: the cut remap, a probability scale
+(§5.24) and polar coordinates. Every module that splices `projection.wgsl`
+is therefore declared with `assembled_by_set!` (`shader_assembly.rs`),
+one fragment list with the word `variant` where the fragments below go (and
+the word `field_polar` after `field_grid.wgsl`), which assembles it twice
+with `assembled!`: the full module (`ShaderSet::Full`) with the
+fragments that hold the three, and the basic module (`ShaderSet::Basic`)
+with their twins, which declare the same functions with none of that code
+(`shader_assembly::SET_FRAGMENTS`):
+
+| Full fragment | Basic twin | The twin's functions |
+|---|---|---|
+| `axis_cuts.wgsl` | `axis_cuts_basic.wgsl` | `AxisCuts` with no knots; `no_cuts`; `cuts_of` reads nothing; `cut_remap` and `cut_unmap` return their argument; `cut_scale_at` returns 1 |
+| `probability.wgsl` | `probability_basic.wgsl` | `prob_in_domain` is false, so a probability axis draws no sample; `prob_forward`, `prob_slope` and `prob_inverse` are unreached with code 0 |
+| `axis_scale.wgsl` | `axis_scale_basic.wgsl` | `axis_data_t` and `axis_pair_to_t` with the same linear and logarithmic arithmetic, no probability branch and no cut remap |
+| `polar.wgsl` | `polar_basic.wgsl` | `polar_sample_valid` and `polar_fragment_visible` are true on a rectangular chart and false on a polar one; `polar_ndc` and `polar_unproject` are unreached with the polar flag 0 |
+| `field_polar.wgsl` | `field_polar_basic.wgsl` | `field_polar_lookup` misses; `field_lookup` reaches it only with the polar flag set |
+
+The two modules differ in nothing else, so every binding, layout and entry
+point is the same and one pipeline descriptor fits both
+(`shader_pipeline_contract.json` stores it once, under the basic source).
+
+- A fragment outside the table calls only the 16 functions the twins
+  declare and names the types `AxisCuts` and `PolarUnproject`. It never
+  reads a member of `AxisCuts`, builds one with its constructor or calls a
+  function only a full fragment has (`piece_slope`, `cut_piece_slope`,
+  `prob_pq`, `prob_normal`, `prob_weibull_w`, `prob_erfcc`): the basic
+  fragments have none of them
+  (`a_basic_fragment_has_its_full_twins_signatures` holds both rules, and
+  each pair's signatures to each other).
+- A renderer compiles the basic modules until it is first handed a chart
+  with an axis break, a probability axis or polar coordinates on any layer,
+  and the full modules from then on (`Renderer::admit_full_shaders`,
+  ARCHITECTURE.md "Shader sets"). Such a chart is never drawn or picked
+  through a basic module: the draw and the picks refuse it.
+- With no cut, probability code 0 and polar flag 0 the full fragments
+  compute what the basic ones do, so a chart with none of the three has the
+  same pixels through either
+  (`removing_a_break_keeps_the_full_shaders_and_the_same_pixels` and its
+  probability and polar twins, `tests/axis_break_render.rs`;
+  `tests/shader_set_scenes.rs` holds every Cartesian scene of the
+  playground catalogue to it at 1x and 2x). A basic function that is never
+  reached still shapes what a compiler does with the code around its call:
+  `polar_ndc`'s twin returns a value computed from its argument, since a
+  constant there let one driver fold the rectangular placement that follows
+  the polar test differently, an ulp apart.
+- The `*_SHADER` constants and `shader_assembly::MODULES` name the full
+  assembly, the full contract this document describes; `*_SHADER_BY_SET`
+  and `MODULES_BY_SET` hold both.
+- Ternary and 3D placement have their own entry points, which a
+  rectangular chart's pipelines do not compile, so they are in both
+  variants.
+
+**One read of the whole transform per function**
+([#299](https://github.com/shim9610/figgy/issues/299)). A compiler builds
+each read of the whole `transform` uniform (an argument `transform` to a
+function that takes `t: Transform`) as its own copy of the 304-byte struct;
+with a dozen such calls inlined into one vertex stage those copies were a
+fifth of a line or bar pipeline's compile time. A draw function that hands
+the transform to more than one call therefore reads it once, `let tf =
+transform;`, and passes `tf`; a helper called from such a function takes it
+as its first parameter (`line_stroke_vertex`, `step_prefix_px`). Reading a
+member (`transform.pixel_to_ndc`) is not a read of the whole. The arithmetic
+is unchanged. `a_draw_function_reads_the_whole_transform_once`
+(`shader_assembly.rs`) holds every fragment outside `gpu_pick/` to it.
 
 ---
 
@@ -460,7 +535,7 @@ varyings (from `polar_clip_offset` / `polar_clip_limits` /
 entry starts with `polar_fragment_visible`, since the transform bind group
 is vertex-visible only.
 
-`polar_unproject(t, px)` (`projection.wgsl`, #208) is the inverse of
+`polar_unproject(t, px)` (`polar.wgsl`, #208) is the inverse of
 `polar_ndc`: from a pixel offset from the centre (`polar_clip_offset`, the
 draw's pixel frame, y up) it returns the angle value in the turn `atan2`
 returns (before any wrap), the radius axis `t` as `axis_pair_to_t` gives it,
@@ -468,7 +543,7 @@ and their derivatives per pixel (`d_angle`, `d_ty`). The centre has no
 angle: its derivatives are zero. CPU twin: none; the polar heatmap tests compute
 expected pixels from `polar_geometry` and `polar_angle_map`.
 
-The code is the fragment [`data_render/common/sample_validity.wgsl`](common/sample_validity.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
+The code is the fragments [`data_render/common/sample_validity.wgsl`](common/sample_validity.wgsl) (`sample_valid`, the ternary test and the polar clip's varyings) and [`data_render/common/polar.wgsl`](common/polar.wgsl) (`polar_ndc`, `polar_unproject`, `polar_sample_valid`, `polar_fragment_visible`; basic twin `polar_basic.wgsl`, "Two assemblies of every module" above), spliced into each module that needs them by `wgsl_module!` (`shader_assembly.rs`).
 
 ## 5. 격자 샘플링(group 2)과 공통 블록 밖의 정의
 
@@ -486,7 +561,7 @@ The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rat
 
 The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic and `pair_value`, which the errorbar and fit reduction modules splice too) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
 
-**Polar lookup** (`field_lookup`, `field_grid.wgsl`, #208). Every field
+**Polar lookup** (`field_lookup`, `field_grid.wgsl`, and its polar half `field_polar_lookup`, `field_polar.wgsl`, #208). Every field
 entry that locates a cell first turns the fragment's (or the cursor's)
 chart-area `t` into lookup `t` with `field_lookup(t, lattice)`, which also
 returns the lookup `t`'s derivatives per pixel (`jac_x`, `jac_y`). On a
@@ -2128,6 +2203,10 @@ The bundle's pipeline is `DataPickPipelineBundle.parallel`
 (`GpuDataPickGeometry::Parallel`).
 
 ### 5.24 Probability axes (`common/probability.wgsl`)
+
+The full set of a module splices this fragment; the basic variant splices
+`probability_basic.wgsl`, which has the four signatures below and no `F⁻¹`
+(§4, "Two assemblies of every module").
 
 [#209](https://github.com/shim9610/figgy/issues/209). A probability `p` in
 `(0, 1)` is drawn at `F⁻¹(p)` for the axis' code `kind`

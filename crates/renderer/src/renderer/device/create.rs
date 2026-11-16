@@ -10,6 +10,7 @@ pub(in crate::renderer) fn create_target_pipelines(
     _per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
+    set: ShaderSet,
 ) -> TargetPipelines {
     let mut observer = |_| {};
     create_target_pipelines_observed(
@@ -20,6 +21,7 @@ pub(in crate::renderer) fn create_target_pipelines(
         _per_point_style_map_bgl,
         surface_format,
         sample_count,
+        set,
         &mut observer,
     )
 }
@@ -33,10 +35,11 @@ pub(in crate::renderer) fn create_target_pipelines_observed(
     _per_point_style_map_bgl: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> TargetPipelines {
     let shaders = observe_value(observer, "renderer", "shader modules", || {
-        data_render::ShaderModules::new(device)
+        data_render::ShaderModules::new(device, set)
     });
     TargetPipelines {
         vector_points: None,
@@ -118,22 +121,34 @@ pub(in crate::renderer) async fn create_target_pipelines_observed_async(
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
     _minimal: bool,
+    set: ShaderSet,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<TargetPipelines> {
     let shaders = observe_value_async(observer, "renderer", "shader modules", || {
-        data_render::ShaderModules::new(device)
+        data_render::ShaderModules::new(device, set)
     })
     .await;
+    // A minimal renderer awaits no compile (#299): the one pipeline built
+    // below is created directly, and the others are warmed in the
+    // background by the caller. An awaited compile would queue behind every
+    // compile the page already has in flight, another chart's included.
     #[cfg(target_arch = "wasm32")]
-    data_render::prewarm_browser_render_feature(
-        device,
-        surface_format,
-        sample_count,
-        _minimal.then_some(PreparationFeature::Basic),
-        observer,
-    )
-    .await
-    .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+    let warmed = if _minimal {
+        Ok(())
+    } else {
+        data_render::prewarm_browser_render_feature(
+            device,
+            surface_format,
+            sample_count,
+            None,
+            set,
+            None,
+            observer,
+        )
+        .await
+    };
+    #[cfg(target_arch = "wasm32")]
+    warmed.map_err(|reason| FiggyError::GpuResourceAllocationFailed {
         resource: "browser render pipeline prewarm",
         reason,
     })?;

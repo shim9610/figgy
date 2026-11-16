@@ -97,6 +97,15 @@ class FakeHTMLElement extends FakeEventTarget {
     this.clientHeight = 480;
     this.rect = { left: 0, top: 0, width: 640, height: 480 };
     this.shadow = null;
+    this.attributes = new Map();
+  }
+
+  getAttribute(name) {
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
   }
 
   attachShadow() {
@@ -132,6 +141,7 @@ async function loadFacade({ initImpl, createImpl } = {}) {
   const state = {
     initCalls: 0,
     createCalls: [],
+    createOptions: [],
     observers: [],
     rafs: new Map(),
     nextRaf: 1,
@@ -238,6 +248,26 @@ async function loadFacade({ initImpl, createImpl } = {}) {
       }
       const kernel = await RawFiggyChart.create(canvas);
       onEvent({ scope: "web.create", stage: "first frame", phase: "finished" });
+      return kernel;
+    }
+    // As the kernel: the options are checked before anything is created.
+    static async create_with_options(canvas, options = {}) {
+      state.createOptions.push({ ...options });
+      for (const key of Object.keys(options)) {
+        if (key !== "shaders" && key !== "on_progress") {
+          throw new Error(`unknown create option "${key}": the options are shaders and on_progress`);
+        }
+      }
+      const shaders = options.shaders ?? "basic";
+      if (shaders !== "basic" && shaders !== "full") {
+        throw new Error(`shaders must be "basic" or "full", got "${shaders}"`);
+      }
+      const kernel = options.on_progress
+        ? await RawFiggyChart.create_with_progress(canvas, options.on_progress)
+        : await RawFiggyChart.create(canvas);
+      if (kernel && typeof kernel === "object") {
+        kernel.shaderSet = shaders;
+      }
       return kernel;
     }
   }
@@ -3123,5 +3153,131 @@ test("fit_ranges, the theme pair, fit_layout and place_feynman_vertices forward 
       ["fit_layout", null],
       ["place_feynman_vertices", "s-channel"],
     ],
+  );
+});
+
+test("the shaders attribute reaches the kernel's create options and round-trips", async () => {
+  // Absent: the basic set, which is the kernel's default.
+  const plainKernel = makeKernel("shaders-default");
+  plainKernel.shader_set = () => plainKernel.shaderSet;
+  const plain = await loadFacade({ createImpl: () => Promise.resolve(plainKernel) });
+  const first = new plain.Element();
+  assert.equal(first.shaders, "basic");
+  connect(first);
+  await first.ready;
+  await waitForIdle(first);
+  assert.equal(plain.state.createOptions.length, 1);
+  assert.equal(plain.state.createOptions[0].shaders, "basic");
+  assert.equal(typeof plain.state.createOptions[0].on_progress, "function");
+  assert.equal(first.shaders, "basic");
+
+  // `shaders="full"`: the chart is created on the full set.
+  const fullKernel = makeKernel("shaders-full");
+  fullKernel.shader_set = () => fullKernel.shaderSet;
+  const full = await loadFacade({ createImpl: () => Promise.resolve(fullKernel) });
+  const second = new full.Element();
+  second.setAttribute("shaders", "full");
+  assert.equal(second.shaders, "full");
+  connect(second);
+  await second.ready;
+  await waitForIdle(second);
+  assert.equal(full.state.createOptions[0].shaders, "full");
+  assert.equal(second.shaders, "full");
+});
+
+test("the shaders property upgrades a ready chart and refuses any other value", async () => {
+  const kernel = makeKernel("shaders-upgrade");
+  kernel.shaderSet = "basic";
+  kernel.shader_set = () => kernel.shaderSet;
+  kernel.require_shader_set = (value) => {
+    kernel.calls.push(["require_shader_set", value]);
+    if (value === "full") kernel.shaderSet = "full";
+  };
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  assert.equal(element.shaders, "basic");
+
+  for (const invalid of ["Full", "fast", "", null, undefined, 1]) {
+    assert.throws(() => { element.shaders = invalid; }, /shaders must be "basic" or "full"/);
+  }
+  assert.equal(element.getAttribute("shaders"), null);
+  assert.deepEqual(kernel.calls.filter(([name]) => name === "require_shader_set"), []);
+
+  element.shaders = "full";
+  assert.equal(element.getAttribute("shaders"), "full");
+  assert.equal(element.shaders, "full");
+  // A chart never goes back: asking for "basic" again leaves it on "full".
+  element.shaders = "basic";
+  assert.equal(element.shaders, "full");
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name === "require_shader_set"),
+    [["require_shader_set", "full"], ["require_shader_set", "basic"]],
+  );
+});
+
+test("an invalid shaders attribute fails ready with the kernel's error and creates nothing", async () => {
+  const kernel = makeKernel("shaders-invalid");
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  element.setAttribute("shaders", "turbo");
+  connect(element);
+  await assert.rejects(element.ready, /shaders must be "basic" or "full", got "turbo"/);
+  assert.equal(state.createCalls.length, 0);
+});
+
+test("the element snapshots compile status each frame, reports completion and forwards the waits", async () => {
+  const kernel = makeKernel("pipeline-status");
+  kernel.shaderSet = "basic";
+  kernel.shader_set = () => kernel.shaderSet;
+  const counts = (total, ready, compiling) => ({ total, ready, compiling, failed: 0 });
+  const statuses = [
+    { screen: counts(1, 0, 1), all: counts(61, 4, 57), frame_complete: false },
+    { screen: counts(1, 1, 0), all: counts(61, 30, 31), frame_complete: true },
+    { screen: counts(1, 1, 0), all: counts(61, 61, 0), frame_complete: true },
+  ];
+  let next = 0;
+  kernel.pipeline_status = () => statuses[Math.min(next, statuses.length - 1)];
+  kernel.pipeline_failures = () => [{ label: "x", kind: "validation", message: "bad" }];
+  kernel.series_ready = async () => { kernel.calls.push(["series_ready"]); };
+  kernel.pipelines_ready = async () => { kernel.calls.push(["pipelines_ready"]); };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  assert.equal(element.pipeline_status(), null, "no snapshot before the chart is ready");
+  const stages = [];
+  element.addEventListener("figgy-init-progress", ({ detail }) => {
+    if (detail.scope === "renderer.pipelines") stages.push(detail.stage);
+  });
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  runFacadeFrame(state);
+  assert.equal(element.pipeline_status().screen.compiling, 1);
+  assert.deepEqual(stages, []);
+  next = 1;
+  runFacadeFrame(state);
+  assert.deepEqual(stages, ["screen complete"]);
+  next = 2;
+  runFacadeFrame(state);
+  runFacadeFrame(state);
+  assert.deepEqual(stages, ["screen complete", "all complete"], "each reported once");
+  assert.equal(element.pipeline_status().all.ready, 61);
+
+  // The chart moved to the full set by itself: the property follows. (The
+  // picker prewarm the finished compiles started holds the chart first.)
+  await waitForIdle(element);
+  kernel.shaderSet = "full";
+  runFacadeFrame(state);
+  assert.equal(element.shaders, "full");
+
+  assert.deepEqual(element.pipeline_failures(), [{ label: "x", kind: "validation", message: "bad" }]);
+  await element.series_ready();
+  await element.pipelines_ready();
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name === "series_ready" || name === "pipelines_ready"),
+    [["series_ready"], ["pipelines_ready"]],
   );
 });

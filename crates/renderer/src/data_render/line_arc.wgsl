@@ -105,20 +105,21 @@ fn point_pair(base: u32, i: u32) -> vec2<f32> {
 // straight distance for a linear polyline, the sum of the axis-aligned
 // pieces for a step mode — exactly what the line vertex entries draw.
 fn segment_px(i: u32, j: u32) -> f32 {
+    let tf = transform;
     let xa = point_pair(params.x_base, i);
     let ya = point_pair(params.y_base, i);
     let xb = point_pair(params.x_base, j);
     let yb = point_pair(params.y_base, j);
     if (arc_ternary()) {
         // The chord the ternary entry draws (`vs_ternary`).
-        let a = ternary_ndc(transform, xa, ya, point_pair(params.c_base, i)) / transform.pixel_to_ndc;
-        let b = ternary_ndc(transform, xb, yb, point_pair(params.c_base, j)) / transform.pixel_to_ndc;
+        let a = ternary_ndc(tf, xa, ya, point_pair(params.c_base, i)) / transform.pixel_to_ndc;
+        let b = ternary_ndc(tf, xb, yb, point_pair(params.c_base, j)) / transform.pixel_to_ndc;
         return length(b - a);
     }
     var total = 0.0;
     let pieces = step_piece_count(params.mode);
     for (var k = 0u; k < pieces; k = k + 1u) {
-        total = total + step_piece_len_px(transform, step_piece(xa, ya, xb, yb, params.mode, k));
+        total = total + step_piece_len_px(tf, step_piece(xa, ya, xb, yb, params.mode, k));
     }
     return total;
 }

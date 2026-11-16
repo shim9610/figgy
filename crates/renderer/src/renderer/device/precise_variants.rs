@@ -406,3 +406,301 @@ impl TargetPipelines {
         );
     }
 }
+
+/// The render pipelines a style draws every series of a chart through, by
+/// label (#299): a style's set is compiled whole (`create_style_set`).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn style_pipeline_labels(key: StyleKey) -> &'static [&'static str] {
+    match key {
+        StyleKey::Sketch => &[
+            "figgy line styled pipeline",
+            "figgy scatter styled pipeline",
+            "figgy errorbar styled pipeline",
+            "figgy stem pipeline",
+        ],
+        StyleKey::Milkyway => &[
+            "figgy milkyway ribbon pipeline",
+            "figgy milkyway stars pipeline",
+            "figgy milkyway planets pipeline",
+            "figgy milkyway jets pipeline",
+        ],
+        StyleKey::Constellation => &[
+            "figgy point constellation line pipeline",
+            "figgy point constellation stars pipeline",
+        ],
+    }
+}
+
+impl PreciseNeeds {
+    /// The labels of the render pipelines these needs create, as the
+    /// pipeline constructors name them, the vector, ternary and 3D entries
+    /// included.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn labels(&self, mut each: impl FnMut(&'static str)) {
+        for (needed, label) in [
+            (self.vector_points, "figgy vector points pipeline"),
+            (self.vector_grid, "figgy vector grid pipeline"),
+            (self.vector_path, "figgy vector path pipeline"),
+        ] {
+            if needed {
+                each(label);
+            }
+        }
+        for kind in TernaryPipeline::ALL {
+            if self.ternary[kind as usize] {
+                each(kind.label());
+            }
+        }
+        for kind in View3dPipeline::ALL {
+            if self.view3d[kind as usize] {
+                each(kind.label());
+            }
+        }
+        let table: [(bool, &'static str); 37] = [
+            (self.parallel, "figgy line parallel pipeline"),
+            (
+                self.parallel_selection,
+                "figgy selected parallel row pipeline",
+            ),
+            (self.field, "figgy field columnar pipeline"),
+            (
+                self.contour && !self.contour_label,
+                "figgy field contour pipeline",
+            ),
+            (
+                self.contour && self.contour_label,
+                "figgy labelled field contour pipeline",
+            ),
+            (self.mesh, "figgy triangle mesh field pipeline"),
+            (self.mesh_contour, "figgy triangle mesh contour pipeline"),
+            (self.mesh_selection, "figgy selected triangle mesh pipeline"),
+            (self.contour_label, "figgy contour label pipeline"),
+            (self.line, "figgy line columnar pipeline"),
+            (self.line_mapped, "figgy line mapped pipeline"),
+            (self.area, "figgy line area pipeline"),
+            (self.scatter, "figgy scatter columnar pipeline"),
+            (self.errorbar, "figgy errorbar columnar pipeline"),
+            (self.stem, "figgy stem pipeline"),
+            (self.bar, "figgy bar columnar pipeline"),
+            (self.bar_mapped, "figgy mapped bar columnar pipeline"),
+            (self.bar || self.bar_mapped, "histogram envelope fill"),
+            // The envelope's compute pass, created with the fill.
+            (
+                self.bar || self.bar_mapped,
+                data_render::bar_envelope::ENVELOPE_SCAN_LABEL,
+            ),
+            (self.bar_selection, "figgy selected histogram bin pipeline"),
+            (
+                self.bar_selection_mapped,
+                "figgy selected mapped histogram bin pipeline",
+            ),
+            (self.category_bars, "figgy category bar columnar pipeline"),
+            (
+                self.category_bar_selection,
+                "figgy selected category bar columnar pipeline",
+            ),
+            (self.box_plot, "figgy box plot columnar pipeline"),
+            (
+                self.box_plot_selection,
+                "figgy selected box plot columnar pipeline",
+            ),
+            (self.range_bars, "figgy range bar columnar pipeline"),
+            (
+                self.range_bar_selection,
+                "figgy selected range bar columnar pipeline",
+            ),
+            (self.violin, "figgy violin columnar pipeline"),
+            (
+                self.violin_selection,
+                "figgy selected violin columnar pipeline",
+            ),
+            (self.box_points, "figgy box points columnar pipeline"),
+            (
+                self.box_point_selection,
+                "figgy selected box point columnar pipeline",
+            ),
+            (self.value_labels, "figgy value label pipeline"),
+            (
+                self.value_label_selection,
+                "figgy value label selection pipeline",
+            ),
+            (self.field_selection, "figgy selected field data pipeline"),
+            (self.scatter_mapped, "figgy scatter mapped pipeline"),
+            (self.errorbar_mapped, "figgy errorbar mapped pipeline"),
+            (self.pick_ring, "figgy picked point ring pipeline"),
+        ];
+        for (needed, label) in table {
+            if needed {
+                each(label);
+            }
+        }
+        if self.pick_ring_mapped {
+            each("figgy picked point mapped ring pipeline");
+        }
+    }
+}
+
+/// The labels of the render pipelines the frame needs to draw `series` on
+/// a chart of `config` (#299): what [`PreciseNeeds::scan`] finds for that
+/// series alone, or the whole set of a drawing style. A browser frame leaves
+/// the series out until every one of them has compiled.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(in crate::renderer) fn series_pipeline_labels(
+    view: &ChartView,
+    config: &Config,
+    series: &Series<'_>,
+    each: impl FnMut(&'static str),
+) {
+    let item = PanelDraw {
+        view,
+        chart_config: config,
+        series: std::slice::from_ref(series),
+    };
+    items_pipeline_labels(std::slice::from_ref(&item), each);
+}
+
+/// The labels of the render pipelines a draw of `items` needs (#299): what
+/// [`PreciseNeeds::scan`] finds, the whole set of each drawing style, and
+/// every pass of the 3D surfaces and ternary region fills, which their own
+/// ensure paths create at once. A label can come more than once.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(in crate::renderer) fn items_pipeline_labels(
+    items: &[PanelDraw<'_>],
+    mut each: impl FnMut(&'static str),
+) {
+    PreciseNeeds::scan(items).labels(&mut each);
+    for item in items {
+        let config = item.chart_config;
+        if let Some(variant) = style_variant(&config.draw_style) {
+            for label in style_pipeline_labels(variant.key) {
+                each(label);
+            }
+        }
+        for series in item.series {
+            let render_type = &series.config.render_type;
+            if config.view_3d().is_some() {
+                use data_render::surface_mesh::{SurfaceInput, SurfacePass};
+                if draws_surface(render_type) || draws_floor(render_type) {
+                    for pass in SurfacePass::ALL {
+                        each(pass.label(SurfaceInput::Grid));
+                    }
+                }
+                if draws_mesh_surface(render_type) || draws_mesh_floor(render_type) {
+                    for pass in SurfacePass::ALL {
+                        each(pass.label(SurfaceInput::Mesh));
+                    }
+                }
+            }
+            if config.ternary().is_some() && render_type.ternary_region().is_some() {
+                for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+                    each(pass.label());
+                }
+                // The ring-start scan the region's draw dispatches first.
+                each(data_render::ternary_region::RING_SCAN_LABEL);
+            }
+            // The compute passes the frame's preparation dispatches: the
+            // contour label anchors and the arc prefix scan.
+            if effective_series_primitives(&config.draw_style, render_type).contour
+                && crate::renderer::prepare::series_wants_contour_labels(render_type)
+            {
+                for label in crate::gpu_contour::CONTOUR_ANCHOR_LABELS {
+                    each(label);
+                }
+            }
+            if crate::renderer::prepare::series_arc_need(&config.draw_style, series).0 {
+                each(data_render::line_arc::ARC_SCAN_LABEL);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod label_tests {
+    /// Every label a frame waits for names render or compute pipelines the
+    /// browser contract compiles in the background, so no series waits for
+    /// a compile that is never issued.
+    #[test]
+    fn every_waited_label_is_a_contract_pipeline() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../../shader_pipeline_contract.json")).unwrap();
+        let labels: Vec<String> = contract["pipelines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["kind"] == "render" || p["kind"] == "compute")
+            .filter_map(|p| p["descriptor"]["label"].as_str().map(str::to_owned))
+            .collect();
+        let mut needs = super::PreciseNeeds::scan(&[]);
+        // Every need at once.
+        macro_rules! all {
+            ($($field:ident),*) => { $(needs.$field = true;)* };
+        }
+        all!(
+            parallel,
+            parallel_selection,
+            field,
+            contour,
+            mesh,
+            mesh_contour,
+            mesh_selection,
+            line,
+            line_mapped,
+            area,
+            scatter,
+            errorbar,
+            stem,
+            bar,
+            bar_mapped,
+            bar_selection,
+            bar_selection_mapped,
+            category_bars,
+            category_bar_selection,
+            box_plot,
+            box_plot_selection,
+            range_bars,
+            range_bar_selection,
+            violin,
+            violin_selection,
+            box_points,
+            box_point_selection,
+            value_labels,
+            value_label_selection,
+            field_selection,
+            scatter_mapped,
+            errorbar_mapped,
+            pick_ring,
+            pick_ring_mapped
+        );
+        let mut waited = Vec::new();
+        needs.labels(|label| waited.push(label));
+        needs.contour_label = true;
+        needs.vector_points = true;
+        needs.vector_grid = true;
+        needs.vector_path = true;
+        needs.ternary = [true; super::TERNARY_PIPELINES];
+        needs.view3d = [true; super::VIEW3D_PIPELINES];
+        needs.labels(|label| waited.push(label));
+        use crate::data_render::surface_mesh::{SurfaceInput, SurfacePass};
+        for pass in SurfacePass::ALL {
+            waited.push(pass.label(SurfaceInput::Grid));
+            waited.push(pass.label(SurfaceInput::Mesh));
+        }
+        for pass in crate::data_render::ternary_region::TernaryRegionPass::ALL {
+            waited.push(pass.label());
+        }
+        waited.push(crate::data_render::ternary_region::RING_SCAN_LABEL);
+        waited.push(crate::data_render::line_arc::ARC_SCAN_LABEL);
+        waited.extend(crate::gpu_contour::CONTOUR_ANCHOR_LABELS);
+        for key in [
+            super::StyleKey::Sketch,
+            super::StyleKey::Milkyway,
+            super::StyleKey::Constellation,
+        ] {
+            waited.extend(super::style_pipeline_labels(key));
+        }
+        assert!(waited.len() > 40);
+        for label in waited {
+            assert!(labels.iter().any(|l| l == label), "{label}");
+        }
+    }
+}

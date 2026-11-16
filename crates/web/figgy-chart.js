@@ -64,6 +64,10 @@ class FiggyRenderJob {
 export class FiggyChartElement extends HTMLElement {
   #canvas;
   #kernel = null;
+  /// The last frame's compile snapshot (#299), or null.
+  #pipelineStatus = null;
+  /// The kernel's shader set as last read (#299), or null before ready.
+  #shaderSet = null;
   #resizeObserver = null;
   #raf = 0;
   #started = false;
@@ -176,11 +180,17 @@ export class FiggyChartElement extends HTMLElement {
           || !this.#isCurrentOperation(token)) {
         return;
       }
-      kernel = await RawFiggyChart.create_with_progress(this.#canvas, (event) => {
-        if (this.#isCurrentConnection(generation, readyToken)
-            && this.#isCurrentOperation(token)) {
-          dispatchFiggyEvent(this, "figgy-init-progress", event);
-        }
+      // The `shaders` attribute as it is when the element connects (#299):
+      // the kernel refuses a value other than "basic" or "full", and that
+      // rejection fails `ready`.
+      kernel = await RawFiggyChart.create_with_options(this.#canvas, {
+        shaders: this.getAttribute("shaders") ?? "basic",
+        on_progress: (event) => {
+          if (this.#isCurrentConnection(generation, readyToken)
+              && this.#isCurrentOperation(token)) {
+            dispatchFiggyEvent(this, "figgy-init-progress", event);
+          }
+        },
       });
       token.kernel = kernel;
       if (!this.#isCurrentConnection(generation, readyToken)
@@ -215,6 +225,7 @@ export class FiggyChartElement extends HTMLElement {
     }
     readyToken.state = "fulfilled";
     readyToken.resolve(this);
+    if (typeof kernel.shader_set === "function") this.#shaderSet = kernel.shader_set();
     dispatchFiggyEvent(this, "figgy-ready", { chart: this, kernel });
     if (this.#isCurrentConnection(generation, readyToken) && this.#kernel === kernel) {
       this.#startLoop();
@@ -295,6 +306,9 @@ export class FiggyChartElement extends HTMLElement {
       }
       if (!this.busy) this.#pumpStreamSelection();
       if (!this.busy) this.#kernel?.frame();
+      if (!this.busy) this.#observePipelines();
+      // A picker prewarm waits for the render compiles (#299).
+      if (this.#pendingPrewarm && !this.busy) this.#drainBackgroundPrewarm();
     } catch (error) {
       if (this.#streamExecution && !this.#streamExecution.settled) {
         this.#failStreamingExecution(this.#streamExecution, error);
@@ -1320,6 +1334,16 @@ export class FiggyChartElement extends HTMLElement {
     if (this.busy) {
       return;
     }
+    // The picker's compute pipelines compile one at a time after the
+    // chart's render pipelines (#299): the prewarm holds the kernel, and
+    // the frames that fill the chart in must not wait behind it. The frame
+    // loop drains this again once they have compiled.
+    const status = typeof pending.kernel.pipeline_status === "function"
+      ? pending.kernel.pipeline_status()
+      : null;
+    if (status && (status.all.compiling > 0 || !status.frame_complete)) {
+      return;
+    }
     this.#pendingPrewarm = null;
     this.#runKernelOperation(
       "picker-prewarm",
@@ -1556,6 +1580,60 @@ export class FiggyChartElement extends HTMLElement {
     await this.#runKernelOperation("first-frame", (kernel) => kernel.first_frame_ready());
   }
 
+  /// Resolves once a frame draws every series (#299); rejects with an
+  /// `Error` carrying `label`, `kind` and `message` when a compile the chart
+  /// needs failed (the chart still draws that series).
+  async series_ready() {
+    await this.#runKernelOperation("series-ready", (kernel) => kernel.series_ready());
+  }
+
+  /// Resolves once every background compile scheduled so far has ended
+  /// (#299); rejects like `series_ready` with the first that failed.
+  async pipelines_ready() {
+    await this.#runKernelOperation("pipelines-ready", (kernel) => kernel.pipelines_ready());
+  }
+
+  /// The chart's background compiles (#299) as of the last frame:
+  /// `{ screen: { total, ready, compiling, failed }, all: { … },
+  /// frame_complete }`, or `null` before the chart is ready. It reads a
+  /// snapshot the frame loop takes, so it answers while the chart is busy.
+  pipeline_status() {
+    return this.#pipelineStatus;
+  }
+
+  /// Every background compile that failed (#299), as
+  /// `[{ label, kind, message }]`.
+  pipeline_failures() {
+    return this.#kernelForCall().pipeline_failures();
+  }
+
+  /// Take the frame's compile snapshot and report, on the
+  /// `figgy-init-progress` event, when the screen's and then all compiles
+  /// have ended (#299): `{ scope: "renderer.pipelines", stage: "screen
+  /// complete" | "all complete", phase: "finished" }`.
+  #observePipelines() {
+    const kernel = this.#kernel;
+    if (!kernel || typeof kernel.pipeline_status !== "function") return;
+    const status = kernel.pipeline_status();
+    // A chart moves to the full set by itself on its first break,
+    // probability axis or polar config.
+    if (typeof kernel.shader_set === "function") this.#shaderSet = kernel.shader_set();
+    const before = this.#pipelineStatus;
+    this.#pipelineStatus = status;
+    const screenDone = (s) => s.frame_complete && s.screen.compiling === 0;
+    const allDone = (s) => s.all.compiling === 0;
+    if (screenDone(status) && (!before || !screenDone(before))) {
+      dispatchFiggyEvent(this, "figgy-init-progress", {
+        scope: "renderer.pipelines", stage: "screen complete", phase: "finished",
+      });
+    }
+    if (allDone(status) && before && !allDone(before)) {
+      dispatchFiggyEvent(this, "figgy-init-progress", {
+        scope: "renderer.pipelines", stage: "all complete", phase: "finished",
+      });
+    }
+  }
+
   warm_up() {
     return this.first_frame_ready();
   }
@@ -1673,6 +1751,8 @@ export class FiggyChartElement extends HTMLElement {
     this.#releaseSelectionRequest();
     this.#selectionDirty = false;
     this.#kernel = null;
+    this.#pipelineStatus = null;
+    this.#shaderSet = null;
     ++this.#lifecycleGeneration;
     operationToken?.cancel?.(new DOMException("chart disconnected during stream operation", "AbortError"));
     if (this.#streamExecution) {
@@ -2222,6 +2302,28 @@ export class FiggyChartElement extends HTMLElement {
     if (typeof enabled !== "boolean") throw new TypeError("enabled must be a boolean");
     return this.#kernelForCall().set_pool_auto_growth(enabled);
   }
+  /// The shader set the chart compiles (#299): "basic" or "full". Before the
+  /// chart is ready it is the `shaders` attribute ("basic" when absent).
+  get shaders() {
+    return this.#shaderSet ?? this.getAttribute("shaders") ?? "basic";
+  }
+
+  /// Ask for a shader set (#299): "basic" or "full"; any other value throws.
+  /// It sets the `shaders` attribute, which a chart reads when it connects,
+  /// and moves a ready chart to at least that set at once (a chart never
+  /// goes back to "basic").
+  set shaders(value) {
+    if (value !== "basic" && value !== "full") {
+      throw new TypeError(`shaders must be "basic" or "full", got ${JSON.stringify(value)}`);
+    }
+    if (this.#kernel) {
+      const kernel = this.#kernelForCall();
+      kernel.require_shader_set(value);
+      this.#shaderSet = kernel.shader_set();
+    }
+    this.setAttribute("shaders", value);
+  }
+
   gpu_memory_status() {
     return JSON.parse(this.#kernelForCall().gpu_memory_status());
   }

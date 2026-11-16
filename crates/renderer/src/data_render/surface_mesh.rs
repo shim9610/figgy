@@ -21,14 +21,15 @@ use crate::config::{AxisScale, Config};
 
 /// The assembled surface module of a heatmap grid. The projection fragment
 /// is the layer a later 3D vector glyph reuses.
-pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const SURFACE_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
+    field_polar,
     "data_render/common/ramp.wgsl",
     "data_render/common/field_paint.wgsl",
     "data_render/common/material.wgsl",
@@ -37,20 +38,24 @@ pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_asse
     "data_render/surface_mesh/surface_input_grid.wgsl",
     "data_render/surface_mesh/surface_entry.wgsl",
 );
+/// The full assembly of [`SURFACE_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub const SURFACE_SHADER: crate::shader_assembly::Assembled = SURFACE_SHADER_BY_SET.full;
 
 /// The assembled surface module of a triangle mesh (#210): the grid's list
 /// with the mesh input (`tri_mesh/mesh_input.wgsl`, the triangle reads the
 /// flat draw shares, and `surface_input_mesh.wgsl`, their placement through
 /// the camera) in place of the grid input. The input and the entry are
 /// separate layers, so other modules can reuse them.
-pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const TRI_SURFACE_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
+    field_polar,
     "data_render/common/ramp.wgsl",
     "data_render/common/field_paint.wgsl",
     "data_render/common/material.wgsl",
@@ -60,6 +65,9 @@ pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/surface_mesh/surface_input_mesh.wgsl",
     "data_render/surface_mesh/surface_entry.wgsl",
 );
+/// The full assembly of [`TRI_SURFACE_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = TRI_SURFACE_SHADER_BY_SET.full;
 
 /// What a surface pass draws: the heatmap grid's quads
 /// (`surface_input_grid.wgsl`, [`SURFACE_SHADER`]) or a triangle mesh's

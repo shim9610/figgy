@@ -34,7 +34,8 @@ struct VsOut {
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
-    return scatter_vertex(in, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+    let tf = transform;
+    return scatter_vertex(in, sample_valid(tf, in.x, in.y), data_to_ndc(tf, in.x, in.y));
 }
 
 // A ternary chart's markers (`Config.ternary`): the third component at
@@ -62,6 +63,7 @@ fn scatter_vertex(in: VsIn, valid: bool, center_ndc: vec2<f32>) -> VsOut {
 // flat chart and the perspective divisor on a 3D one, so the quad is
 // `point_radius_px` on screen either way, at the point's depth.
 fn scatter_vertex_clip(in: VsIn, valid: bool, clip: vec4<f32>) -> VsOut {
+    let tf = transform;
     if (!valid) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -73,9 +75,9 @@ fn scatter_vertex_clip(in: VsIn, valid: bool, clip: vec4<f32>) -> VsOut {
 
     var out: VsOut;
     out.pos = vec4<f32>(world, clip.z, clip.w);
-    out.polar_px = polar_clip_offset(transform, world / clip.w);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, world / clip.w);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.local_pos = in.quad_pos;
     return out;
 }
@@ -369,7 +371,8 @@ fn resolve_mapped_style(
 
 @vertex
 fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut {
-    return mapped_vertex(in, inst, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+    let tf = transform;
+    return mapped_vertex(in, inst, sample_valid(tf, in.x, in.y), data_to_ndc(tf, in.x, in.y));
 }
 
 // A ternary chart's mapped markers: the third component at slot 6.
@@ -400,6 +403,7 @@ fn mapped_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f32>) 
 // The mapped marker's quad around the clip position `clip` (`w` 1 on a flat
 // chart, the perspective divisor on a 3D one; see `scatter_vertex_clip`).
 fn mapped_vertex_clip(in: VsMappedIn, inst: u32, valid: bool, clip: vec4<f32>) -> VsMappedOut {
+    let tf = transform;
     if (!valid) {
         var masked: VsMappedOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -417,9 +421,9 @@ fn mapped_vertex_clip(in: VsMappedIn, inst: u32, valid: bool, clip: vec4<f32>) -
 
     var out: VsMappedOut;
     out.pos = vec4<f32>(world, clip.z, clip.w);
-    out.polar_px = polar_clip_offset(transform, world / clip.w);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, world / clip.w);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.local_pos = in.quad_pos;
     out.color_premul = resolved.color_premul;
     out.radius_px = resolved.radius_px;
@@ -597,7 +601,8 @@ struct VsPickRingOut {
 // the render scale).
 @vertex
 fn vs_pick_ring(in: VsIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
-    return ring_vertex(in, inst, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+    let tf = transform;
+    return ring_vertex(in, inst, sample_valid(tf, in.x, in.y), data_to_ndc(tf, in.x, in.y));
 }
 
 @vertex
@@ -608,6 +613,7 @@ fn vs_pick_ring_ternary(in: VsTernaryIn, @builtin(instance_index) inst: u32) -> 
 
 // The ring's vertex around the marker at `center_ndc`.
 fn ring_vertex(in: VsIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsPickRingOut {
+    let tf = transform;
     if (!valid) {
         var masked: VsPickRingOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -619,9 +625,9 @@ fn ring_vertex(in: VsIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsPic
 
     var out: VsPickRingOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.local_pos = in.quad_pos;
     out.radius_px = radius;
     return out;
@@ -639,7 +645,8 @@ fn vs_pick_ring_3d(in: VsZIn, @builtin(instance_index) inst: u32) -> VsPickRingO
 
 @vertex
 fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
-    return mapped_ring_vertex(in, inst, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+    let tf = transform;
+    return mapped_ring_vertex(in, inst, sample_valid(tf, in.x, in.y), data_to_ndc(tf, in.x, in.y));
 }
 
 @vertex
@@ -655,6 +662,7 @@ fn vs_pick_ring_3d_mapped(in: VsZMappedIn, @builtin(instance_index) inst: u32) -
 
 // The mapped ring's vertex around the marker at `center_ndc`.
 fn mapped_ring_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsPickRingOut {
+    let tf = transform;
     if (!valid) {
         var masked: VsPickRingOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -675,9 +683,9 @@ fn mapped_ring_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f
 
     var out: VsPickRingOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.local_pos = in.quad_pos;
     out.radius_px = radius;
     return out;
@@ -721,12 +729,13 @@ struct VsSketchOut {
 // same expanded scale.
 @vertex
 fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
-    if (!sample_valid(transform, in.x, in.y)) {
+    let tf = transform;
+    if (!sample_valid(tf, in.x, in.y)) {
         var masked: VsSketchOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let center_ndc = data_to_ndc(transform, in.x, in.y);
+    let center_ndc = data_to_ndc(tf, in.x, in.y);
 
     let wobble = sketch_marker_wobble_px(transform.style_params[0].x, style.point_radius_px);
     let half_px = visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px)
@@ -736,9 +745,9 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
 
     var out: VsSketchOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.local_pos = in.quad_pos;
     out.seed_inst = (u32(transform.style_params[0].z) ^ style.series_salt) + styled_point_index(inst);
     out.wobble_px = wobble;
@@ -799,12 +808,13 @@ struct VsConstellationStarOut {
 
 @vertex
 fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsConstellationStarOut {
-    if (!sample_valid(transform, in.x, in.y)) {
+    let tf = transform;
+    if (!sample_valid(tf, in.x, in.y)) {
         var masked: VsConstellationStarOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let center_ndc = data_to_ndc(transform, in.x, in.y);
+    let center_ndc = data_to_ndc(tf, in.x, in.y);
 
     let seed = style.series_salt;
 
@@ -825,9 +835,9 @@ fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsCons
 
     var out: VsConstellationStarOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.uv = in.quad_pos * 0.5 + vec2<f32>(0.5, 0.5);
     out.tint = tint;
     out.brightness = brightness;
@@ -865,21 +875,22 @@ struct VsPlanetOut {
 
 @vertex
 fn vs_planet(in: VsIn, @builtin(instance_index) inst: u32) -> VsPlanetOut {
-    if (!sample_valid(transform, in.x, in.y)) {
+    let tf = transform;
+    if (!sample_valid(tf, in.x, in.y)) {
         var masked: VsPlanetOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let center_ndc = data_to_ndc(transform, in.x, in.y);
+    let center_ndc = data_to_ndc(tf, in.x, in.y);
 
     let half_px = style.point_radius_px * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
     var out: VsPlanetOut;
     out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
-    out.polar_limits = polar_clip_limits(transform);
-    out.polar_sector = polar_clip_sector(transform);
+    out.polar_px = polar_clip_offset(tf, out.pos.xy);
+    out.polar_limits = polar_clip_limits(tf);
+    out.polar_sector = polar_clip_sector(tf);
     out.local_pos = in.quad_pos;
     out.seed_inst = (u32(transform.style_params[0].w) ^ style.series_salt) + styled_point_index(inst);
     out.rim_gain = clamp(transform.style_params[1].w, 0.0, 2.0);

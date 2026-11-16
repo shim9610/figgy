@@ -1364,3 +1364,591 @@ fn category_bars_cross_a_value_axis_cut() {
         }
     }
 }
+
+use renderer::shader_assembly::ShaderSet;
+
+/// A renderer holding the columns `ax` and `ay` of [`layered_document`].
+fn layered_renderer() -> Renderer {
+    let mut r = renderer();
+    upload(&mut r, "ax", vec![2.0, 8.0]);
+    upload(&mut r, "ay", vec![5.0, 95.0]);
+    r
+}
+
+/// What a layer of [`layered_document_with`] holds that only the full
+/// shaders compile (#299).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Feature {
+    /// A cut on the layer's y axis.
+    Break,
+    /// A normal probability scale on the layer's y axis.
+    Probability,
+    /// Polar coordinates on the layer's chart (a base chart or a subplot:
+    /// a polar chart has no overlays, so that chart loses its own).
+    Polar,
+}
+
+impl Feature {
+    /// The layers the feature can sit on.
+    fn layers(self) -> &'static [&'static str] {
+        match self {
+            Feature::Polar => &["base", "subplot"],
+            _ => &["base", "overlay", "subplot", "subplot overlay"],
+        }
+    }
+
+    /// Give `axis` the feature, where it is an axis'.
+    fn on_axis(self, axis: &mut renderer::config::AxisOptions) {
+        match self {
+            Feature::Break => {
+                axis.breaks = config(0.0, 100.0, &[(10.0, 90.0)]).left_y.breaks;
+            }
+            Feature::Probability => {
+                axis.scale = AxisScale::Probability(renderer::config::ProbabilityScale::Normal);
+                axis.min = 0.05;
+                axis.max = 0.95;
+            }
+            Feature::Polar => {}
+        }
+    }
+
+    /// Give the chart `config` the feature on its own axes or coordinates.
+    fn on_chart(self, config: &mut renderer::Config) {
+        self.on_axis(&mut config.left_y);
+        if self == Feature::Polar {
+            config.overlays.clear();
+            config.set_polar(Some(renderer::polar::PolarOptions::default()));
+        }
+    }
+}
+
+/// A document with a base chart, one overlay, one subplot and that
+/// subplot's own overlay, and the series each draws. `layer` names the one
+/// layer that has `feature`: `"base"`, `"overlay"`, `"subplot"`,
+/// `"subplot overlay"`, or `"none"`.
+fn layered_document_with(layer: &str, feature: Feature) -> (renderer::Config, Vec<SeriesConfig>) {
+    let overlay = |series: &str, on: bool| {
+        let mut overlay = renderer::OverlayLayer::default();
+        overlay.y_axis.min = 0.0;
+        overlay.y_axis.max = 100.0;
+        if on {
+            feature.on_axis(&mut overlay.y_axis);
+        }
+        overlay.series = vec![series.into()];
+        overlay
+    };
+    let mut document = config(0.0, 100.0, &[]);
+    document.left_y.breaks = None;
+    document
+        .overlays
+        .push(overlay("overlay", layer == "overlay"));
+    if layer == "base" {
+        feature.on_chart(&mut document);
+    }
+    let mut sub = config(0.0, 100.0, &[]);
+    sub.left_y.breaks = None;
+    sub.chart_area.0.y = HEIGHT;
+    sub.overlays
+        .push(overlay("subplot overlay", layer == "subplot overlay"));
+    if layer == "subplot" {
+        feature.on_chart(&mut sub);
+    }
+    document.subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["subplot".into(), "subplot overlay".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    });
+    let series = vec![
+        markers("base", "ax", "ay", RED),
+        markers("overlay", "ax", "ay", BLUE),
+        markers("subplot", "ax", "ay", GREEN),
+        markers("subplot overlay", "ax", "ay", MAGENTA),
+    ];
+    (document, series)
+}
+
+fn export_document(
+    r: &mut Renderer,
+    config: &renderer::Config,
+    series: &[SeriesConfig],
+) -> RasterImage {
+    let chart = Chart::new(config.clone());
+    r.export_rgba(
+        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportOptions::document(1.0),
+    )
+    .block_on()
+    .unwrap()
+}
+
+/// A new renderer compiles the basic shaders, and keeps them while no
+/// chart it is handed has an axis break (#299). A break on any one layer
+/// (the base chart, an overlay, a subplot or a subplot's overlay) moves it
+/// to the full shaders, through every entry that is handed a chart: an
+/// export, a registration, a configuration or state change, a prepared
+/// frame and a pick.
+#[test]
+fn a_break_on_any_layer_selects_the_full_shaders() {
+    a_feature_on_any_layer_selects_the_full_shaders(Feature::Break);
+}
+
+/// The same for a probability axis on any one layer (#299).
+#[test]
+fn a_probability_axis_on_any_layer_selects_the_full_shaders() {
+    a_feature_on_any_layer_selects_the_full_shaders(Feature::Probability);
+}
+
+/// The same for polar coordinates on the base chart or a subplot (#299).
+#[test]
+fn polar_coordinates_on_any_layer_select_the_full_shaders() {
+    a_feature_on_any_layer_selects_the_full_shaders(Feature::Polar);
+}
+
+fn a_feature_on_any_layer_selects_the_full_shaders(feature: Feature) {
+    // The feature on no layer: basic through every entry.
+    let mut r = layered_renderer();
+    r.enable_gpu_picking().unwrap();
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+    let (plain, series) = layered_document_with("none", feature);
+    export_document(&mut r, &plain, &series);
+    let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [40.0, 40.0],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT * 2,
+        },
+        display_scale: 1.0,
+        max_distance_px: 6.0,
+    };
+    test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let mut base_only = config(0.0, 100.0, &[]);
+    base_only.left_y.breaks = None;
+    screen(&mut r, &base_only, &series[..1]);
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+
+    for layer in feature.layers() {
+        let tag = format!("{feature:?} on {layer}");
+        // An export of the host's own chart.
+        let mut r = layered_renderer();
+        let (with, _) = layered_document_with(layer, feature);
+        export_document(&mut r, &plain, &series);
+        assert_eq!(r.shader_set(), ShaderSet::Basic, "{tag}");
+        export_document(&mut r, &with, &series);
+        assert_eq!(r.shader_set(), ShaderSet::Full, "{tag}: export");
+
+        // A registration, before anything is drawn.
+        let mut r = layered_renderer();
+        let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+        assert_eq!(r.shader_set(), ShaderSet::Basic, "{tag}");
+        r.register_chart(with.clone(), series.clone()).unwrap();
+        assert_eq!(r.shader_set(), ShaderSet::Full, "{tag}: registration");
+        r.remove_chart(id).unwrap();
+
+        // The feature given to a registered chart, and a pick of it
+        // afterwards.
+        let mut r = layered_renderer();
+        r.enable_gpu_picking().unwrap();
+        let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        assert_eq!(r.shader_set(), ShaderSet::Basic, "{tag}");
+        r.set_chart_config(id, with.clone()).unwrap();
+        assert_eq!(r.shader_set(), ShaderSet::Full, "{tag}: set_chart_config");
+        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+
+        // The same through `set_chart_state`.
+        let mut r = layered_renderer();
+        let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+        r.set_chart_state(id, with.clone(), series.clone()).unwrap();
+        assert_eq!(r.shader_set(), ShaderSet::Full, "{tag}: set_chart_state");
+    }
+
+    // A prepared frame of the host's own chart, with the feature on its
+    // base layer (a view draws one chart's layers; the layered cases are
+    // above).
+    let mut r = layered_renderer();
+    let series = [markers("base", "ax", "ay", RED)];
+    screen(&mut r, &base_only, &series);
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+    let mut with = base_only.clone();
+    feature.on_chart(&mut with);
+    screen(&mut r, &with, &series);
+    assert_eq!(r.shader_set(), ShaderSet::Full, "{feature:?}");
+}
+
+/// Adding a break moves the renderer to the full shaders; removing it
+/// leaves the renderer there (#299), where a chart without a break draws
+/// exactly what the basic shaders drew: every pixel of the export and of the
+/// screen, at 1x and 2x, for markers, a line and a fill.
+#[test]
+fn removing_a_break_keeps_the_full_shaders_and_the_same_pixels() {
+    the_full_shaders_draw_the_basic_pixels(Feature::Break);
+}
+
+/// The same once a probability axis has come and gone (#299).
+#[test]
+fn removing_a_probability_axis_keeps_the_full_shaders_and_the_same_pixels() {
+    the_full_shaders_draw_the_basic_pixels(Feature::Probability);
+}
+
+/// The same once polar coordinates have come and gone (#299).
+#[test]
+fn removing_polar_coordinates_keeps_the_full_shaders_and_the_same_pixels() {
+    the_full_shaders_draw_the_basic_pixels(Feature::Polar);
+}
+
+fn the_full_shaders_draw_the_basic_pixels(feature: Feature) {
+    let columns = || {
+        let mut r = renderer();
+        upload(&mut r, "x", vec![1.0, 3.0, 5.0, 7.0, 9.0]);
+        upload(&mut r, "y", vec![10.0, 60.0, 30.0, 85.0, 45.0]);
+        // The same shape inside (0, 1), for a probability axis.
+        upload(&mut r, "p", vec![0.1, 0.6, 0.3, 0.85, 0.45]);
+        // Angles around the turn, for a polar chart.
+        upload(&mut r, "a", vec![30.0, 100.0, 170.0, 240.0, 310.0]);
+        r
+    };
+    let mut r = columns();
+    let series = [
+        line("l", "x", "y", BLUE, Some(LineFill::ToBaseline(0.0))),
+        markers("m", "x", "y", RED),
+    ];
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    // The chart with the feature, and the series it draws.
+    let (with, with_series) = match feature {
+        Feature::Break => (config(0.0, 100.0, &[(40.0, 50.0)]), series.to_vec()),
+        Feature::Probability => {
+            let mut with = plain.clone();
+            feature.on_chart(&mut with);
+            (
+                with,
+                vec![
+                    line("l", "x", "p", BLUE, Some(LineFill::ToBaseline(0.5))),
+                    markers("m", "x", "p", RED),
+                ],
+            )
+        }
+        Feature::Polar => {
+            let mut with = plain.clone();
+            feature.on_chart(&mut with);
+            with.bottom_x.max = 360.0;
+            (
+                with,
+                vec![
+                    line("l", "a", "y", BLUE, Some(LineFill::ToBaseline(0.0))),
+                    markers("m", "a", "y", RED),
+                ],
+            )
+        }
+    };
+
+    let basic: Vec<RasterImage> = [1.0f32, 2.0]
+        .into_iter()
+        .map(|scale| export(&mut r, &plain, &series, scale))
+        .collect();
+    let basic_screen = screen(&mut r, &plain, &series);
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+
+    // The feature arrives: its chart differs, and is the same as on a
+    // renderer that never compiled a basic pipeline.
+    let full = export(&mut r, &with, &with_series, 1.0);
+    assert_eq!(r.shader_set(), ShaderSet::Full);
+    assert!(full.rgba != basic[0].rgba, "{feature:?}");
+    let mut fresh = columns();
+    assert!(
+        full.rgba == export(&mut fresh, &with, &with_series, 1.0).rgba,
+        "{feature:?}"
+    );
+    assert!(
+        screen(&mut r, &with, &with_series).rgba == screen(&mut fresh, &with, &with_series).rgba,
+        "{feature:?}"
+    );
+    // It draws its series: red and blue ink.
+    for colour in [RED, BLUE] {
+        let is_colour = is(colour);
+        assert!(
+            (0..full.width * full.height).any(|i| is_colour(pixel(
+                &full,
+                i % full.width,
+                i / full.width
+            ))),
+            "{feature:?}: the chart draws {colour:?}"
+        );
+    }
+
+    // The feature is removed: still the full shaders, and the first pixels.
+    for (scale, before) in [1.0f32, 2.0].into_iter().zip(&basic) {
+        let after = export(&mut r, &plain, &series, scale);
+        assert!(
+            after.rgba == before.rgba,
+            "{feature:?} {scale}x: the plain chart drew differently through the full shaders"
+        );
+    }
+    assert!(screen(&mut r, &plain, &series).rgba == basic_screen.rgba);
+    assert_eq!(r.shader_set(), ShaderSet::Full);
+}
+
+/// Picks follow the shader set (#299): with the basic shaders an
+/// unbroken chart's marks answer where they are drawn; a break added to the
+/// chart moves the picker to the full shaders, where a mark past the cut
+/// answers at its drawn place and the gap answers nothing; and the unbroken
+/// chart answers the same again afterwards.
+#[test]
+fn picks_answer_the_same_through_either_shader_set() {
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    upload(&mut r, "mx", vec![2.0, 8.0]);
+    upload(&mut r, "my", vec![5.0, 95.0]);
+    upload(&mut r, "lx", vec![1.0, 9.0]);
+    upload(&mut r, "ly", vec![5.0, 95.0]);
+    let series = [
+        markers("m", "mx", "my", RED),
+        line("l", "lx", "ly", BLUE, None),
+    ];
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let broken = config(0.0, 100.0, &[(10.0, 90.0)]);
+    let answers = |r: &mut Renderer, config: &renderer::Config| {
+        let mut found = Vec::new();
+        for scale in [1.0f32, 2.0] {
+            for (x, y) in [(2.0, 5.0), (8.0, 95.0), (5.0, 50.0), (3.0, 80.0)] {
+                let at = (col_of(config, x, scale), row_of(config, y, scale));
+                found.push(pick_at(r, config, &series, at, scale));
+            }
+        }
+        found
+    };
+    let before = answers(&mut r, &plain);
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+    // Both markers, the line at its middle, and nothing off the line.
+    assert_eq!(before[0], Some(("m".into(), 0)));
+    assert_eq!(before[1], Some(("m".into(), 1)));
+    assert!(matches!(&before[2], Some((id, _)) if id == "l"));
+    assert_eq!(before[3], None);
+
+    let cut = answers(&mut r, &broken);
+    assert_eq!(r.shader_set(), ShaderSet::Full);
+    assert_eq!(cut[0], Some(("m".into(), 0)));
+    assert_eq!(cut[1], Some(("m".into(), 1)));
+    // (5, 50) is inside the cut: its place is in the gap, which draws no
+    // line.
+    assert_eq!(cut[2], None);
+
+    assert_eq!(answers(&mut r, &plain), before);
+    assert_eq!(r.shader_set(), ShaderSet::Full);
+}
+
+/// A chart with none of the features picks the same once a probability
+/// axis or polar coordinates have moved the picker to the full shaders
+/// (#299); `probability_interactions` and `polar_render` hold those charts'
+/// own picks to their drawn places, on renderers that start basic as this
+/// one does.
+#[test]
+fn picks_answer_the_same_once_a_probability_or_polar_chart_was_picked() {
+    for feature in [Feature::Probability, Feature::Polar] {
+        let mut r = renderer();
+        r.enable_gpu_picking().unwrap();
+        upload(&mut r, "mx", vec![2.0, 8.0]);
+        upload(&mut r, "my", vec![5.0, 95.0]);
+        upload(&mut r, "lx", vec![1.0, 9.0]);
+        upload(&mut r, "ly", vec![5.0, 95.0]);
+        let series = [
+            markers("m", "mx", "my", RED),
+            line("l", "lx", "ly", BLUE, None),
+        ];
+        let mut plain = config(0.0, 100.0, &[]);
+        plain.left_y.breaks = None;
+        let mut with = plain.clone();
+        feature.on_chart(&mut with);
+        let answers = |r: &mut Renderer| {
+            let mut found = Vec::new();
+            for scale in [1.0f32, 2.0] {
+                for (x, y) in [(2.0, 5.0), (8.0, 95.0), (5.0, 50.0), (3.0, 80.0)] {
+                    let at = (col_of(&plain, x, scale), row_of(&plain, y, scale));
+                    found.push(pick_at(r, &plain, &series, at, scale));
+                }
+            }
+            found
+        };
+        let before = answers(&mut r);
+        assert_eq!(r.shader_set(), ShaderSet::Basic, "{feature:?}");
+        assert_eq!(before[0], Some(("m".into(), 0)));
+        assert_eq!(before[1], Some(("m".into(), 1)));
+        assert!(matches!(&before[2], Some((id, _)) if id == "l"));
+        assert_eq!(before[3], None);
+
+        pick_at(&mut r, &with, &series, (40.0, 40.0), 1.0);
+        assert_eq!(r.shader_set(), ShaderSet::Full, "{feature:?}");
+        assert_eq!(answers(&mut r), before, "{feature:?}");
+    }
+}
+
+/// A renderer starts on the basic set unless its device bundle asks for
+/// the full one (`RendererDevice::with_shader_set`, #299), and
+/// `require_shader_set` only ever moves it up: asking for the set it is on,
+/// or for the basic set once it is on the full one, changes nothing. A
+/// renderer created on the full set draws a plain chart and a chart with a
+/// feature as one that was upgraded does.
+#[test]
+fn a_renderer_is_created_on_the_set_asked_for_and_only_moves_up() {
+    use renderer::ShaderSet;
+    let columns = |set: Option<ShaderSet>| {
+        let (device, queue) = shared_device();
+        let mut bundle = RendererDevice::new(device, queue).expect("figgy poll thread");
+        if let Some(set) = set {
+            bundle = bundle.with_shader_set(set);
+        }
+        let mut r = Renderer::try_new(bundle, wgpu::TextureFormat::Rgba8Unorm, 4 * 1024 * 1024)
+            .expect("renderer init");
+        upload(&mut r, "x", vec![1.0, 3.0, 5.0, 7.0, 9.0]);
+        upload(&mut r, "y", vec![10.0, 60.0, 30.0, 85.0, 45.0]);
+        r
+    };
+    let series = [line("l", "x", "y", BLUE, None), markers("m", "x", "y", RED)];
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let broken = config(0.0, 100.0, &[(40.0, 50.0)]);
+
+    let mut default = columns(None);
+    assert_eq!(default.shader_set(), ShaderSet::Basic);
+    let mut basic = columns(Some(ShaderSet::Basic));
+    assert_eq!(basic.shader_set(), ShaderSet::Basic);
+    let mut full = columns(Some(ShaderSet::Full));
+    assert_eq!(full.shader_set(), ShaderSet::Full);
+
+    // The same pixels whichever way a renderer reached its set.
+    let plain_pixels = export(&mut default, &plain, &series, 1.0);
+    assert_eq!(default.shader_set(), ShaderSet::Basic);
+    assert!(plain_pixels.rgba == export(&mut full, &plain, &series, 1.0).rgba);
+    assert_eq!(full.shader_set(), ShaderSet::Full);
+
+    basic.require_shader_set(ShaderSet::Basic);
+    assert_eq!(basic.shader_set(), ShaderSet::Basic);
+    basic.require_shader_set(ShaderSet::Full);
+    assert_eq!(basic.shader_set(), ShaderSet::Full);
+    basic.require_shader_set(ShaderSet::Full);
+    basic.require_shader_set(ShaderSet::Basic);
+    assert_eq!(basic.shader_set(), ShaderSet::Full);
+    assert!(plain_pixels.rgba == export(&mut basic, &plain, &series, 1.0).rgba);
+
+    // A broken chart: created on the full set, asked for it, or upgraded
+    // by the chart itself.
+    let created = export(&mut full, &broken, &series, 1.0);
+    assert!(created.rgba != plain_pixels.rgba);
+    assert!(created.rgba == export(&mut basic, &broken, &series, 1.0).rgba);
+    assert!(created.rgba == export(&mut default, &broken, &series, 1.0).rgba);
+    assert_eq!(default.shader_set(), ShaderSet::Full);
+}
+
+/// A fit reads column statistics and the extent reduction, which place
+/// nothing: it answers the same for a broken and an unbroken chart on
+/// either shader set, and does not move the renderer between them
+/// (#299).
+#[test]
+fn a_fit_is_the_same_through_either_shader_set() {
+    let columns = || {
+        let mut r = renderer();
+        upload(&mut r, "x", vec![1.0, 3.0, 5.0, 7.0, 9.0]);
+        upload(&mut r, "y", vec![10.0, 60.0, 30.0, 85.0, 45.0]);
+        r
+    };
+    let fit = |r: &mut Renderer, config: &renderer::Config| {
+        let series = vec![markers("m", "x", "y", RED)];
+        let mut chart = Chart::new(config.clone());
+        r.fit_ranges(&mut chart, &series).unwrap();
+        r.ensure_errorbar_extent_engine_blocking().unwrap();
+        let id = r.register_chart(config.clone(), series).unwrap();
+        let ticket = r.begin_auto_fit_all(id, 0.0).unwrap();
+        let resolved = ticket.resolve_blocking().unwrap();
+        r.commit_auto_fit_all(resolved).unwrap();
+        let fitted = r.chart_config(id).unwrap();
+        (
+            (chart.config().bottom_x.min, chart.config().bottom_x.max),
+            (chart.config().left_y.min, chart.config().left_y.max),
+            (fitted.bottom_x.min, fitted.bottom_x.max),
+            (fitted.left_y.min, fitted.left_y.max),
+        )
+    };
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let broken = config(0.0, 100.0, &[(40.0, 50.0)]);
+
+    let mut basic = columns();
+    let plain_basic = fit(&mut basic, &plain);
+    assert_eq!(basic.shader_set(), ShaderSet::Basic);
+    assert_eq!(plain_basic.2, (1.0, 9.0));
+    assert_eq!(plain_basic.3, (10.0, 85.0));
+
+    let mut full = columns();
+    let broken_full = fit(&mut full, &broken);
+    assert_eq!(full.shader_set(), ShaderSet::Full);
+    let plain_full = fit(&mut full, &plain);
+    assert_eq!(plain_full, plain_basic);
+    // The broken chart fits the same ranges; its cuts stay.
+    assert_eq!(broken_full, plain_basic);
+}
+
+/// A stream is never drawn on a broken axis by either shader set
+/// (rule 8, #299): a chart that streams while it has no break is refused
+/// with `StreamedBreak` once a break is added to either of its axes (a
+/// streamed chart has no overlays or subplots), and a
+/// chart that never had one keeps streaming on a renderer that has since
+/// moved to the full shaders.
+#[test]
+fn a_stream_that_gains_a_break_is_refused() {
+    let mut r = renderer();
+    let streamed = |id: &str| renderer::StreamColumn {
+        id: id.into(),
+        len: 4,
+        revision: 1,
+        encoding: renderer::StreamEncoding::ScalarF32,
+        replay: renderer::StreamReplay::RandomAccess,
+        statistics: renderer::StreamStatistics::Unknown,
+    };
+    r.register_streamed_columns(vec![streamed("st_x"), streamed("st_y")])
+        .unwrap();
+    let series = vec![markers("m", "st_x", "st_y", RED)];
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let id = r.register_chart(plain.clone(), series.clone()).unwrap();
+    r.inspect_streaming_capability(id).unwrap();
+    assert_eq!(r.shader_set(), ShaderSet::Basic);
+
+    let mut x_broken = with_x_cuts(config(0.0, 100.0, &[(10.0, 90.0)]), &[(4.0, 6.0)]);
+    x_broken.left_y.breaks = None;
+    for broken in [config(0.0, 100.0, &[(10.0, 90.0)]), x_broken] {
+        r.set_chart_config(id, broken).unwrap();
+        match r.inspect_streaming_capability(id) {
+            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, kind }) => {
+                assert_eq!(series_id, "m");
+                assert_eq!(kind, renderer::RuleKind::StreamedBreak);
+            }
+            other => panic!(
+                "expected the streamed rejection, got {:?}",
+                other.map(|_| ())
+            ),
+        }
+    }
+    // The break is removed: the chart streams again, whatever the renderer
+    // compiles by now.
+    r.set_chart_config(id, plain.clone()).unwrap();
+    r.inspect_streaming_capability(id).unwrap();
+    // A resident broken chart on the same renderer moves it to the full
+    // shaders; the unbroken stream is still admitted.
+    upload(&mut r, "x", vec![1.0, 9.0]);
+    upload(&mut r, "y", vec![5.0, 95.0]);
+    export(
+        &mut r,
+        &config(0.0, 100.0, &[(10.0, 90.0)]),
+        &[markers("r", "x", "y", BLUE)],
+        1.0,
+    );
+    assert_eq!(r.shader_set(), ShaderSet::Full);
+    r.inspect_streaming_capability(id).unwrap();
+}

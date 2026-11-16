@@ -3,6 +3,8 @@
 use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue};
 
+use crate::compile_schedule::{CompileOutcome, WaitStep};
+
 thread_local! {
     /// The bundled contract, parsed once per thread. A parse failure (a
     /// corrupted bundle) is returned by every prewarm that reads it.
@@ -31,7 +33,8 @@ fn call(device: &JsValue, method: &str, desc: &JsValue) -> Result<JsValue, Strin
 
 /// Owned JS descriptors; never attach GPU handles to the process-wide metadata.
 fn descriptors(source: &str, kind: &str) -> Result<Vec<JsValue>, String> {
-    let key = crate::gpu_compile::source_key(source);
+    // A full module compiles to the pipelines of its basic twin, which the contract stores (#299).
+    let key = crate::gpu_compile::source_key(crate::shader_assembly::contract_source(source));
     CONTRACT.with(|contract| {
         let contract = contract.as_ref().map_err(|e| error(e.clone()))?;
         let mut out = Vec::new();
@@ -133,7 +136,7 @@ pub(crate) async fn compute(
         if index == 0 || entries[index - 1].0 != *stage {
             crate::init::started(observer, scope, stage);
         }
-        compile(&device, "createComputePipelineAsync", desc, &module).await?;
+        settle(call(&device, "createComputePipelineAsync", desc)?, &module).await?;
         if index + 1 == entries.len() || entries[index + 1].0 != *stage {
             crate::init::finished(observer, scope, stage);
         }
@@ -142,10 +145,53 @@ pub(crate) async fn compute(
     Ok(())
 }
 
+/// Compile one compute pipeline of `source` through
+/// `createComputePipelineAsync` with the override `constants` its wgpu twin
+/// is created with, so that synchronous creation hits the device's
+/// compilation cache instead of compiling on the page's thread (#299). The
+/// browser's pipeline is discarded.
+pub(crate) async fn compute_with_constants(
+    device: &wgpu::Device,
+    label: &'static str,
+    source: &str,
+    entry: &str,
+    constants: &[(&'static str, f64)],
+) -> Result<(), String> {
+    let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
+    let candidates = descriptors(source, "compute")?;
+    let mut found = None;
+    for desc in &candidates {
+        let entry_point = get(&get(desc, "compute")?, "entryPoint")?;
+        if entry_point.as_string().as_deref() == Some(entry) {
+            if found.is_some() {
+                return Err(format!("Expected one checked layout for {label}/{entry}"));
+            }
+            found = Some(desc);
+        }
+    }
+    let desc = found.ok_or_else(|| format!("No checked layout for {label}/{entry}"))?;
+    let module = shader(&device, source, label)?;
+    populate(&device, desc, &module)?;
+    let values = js_sys::Object::new();
+    for (name, value) in constants {
+        set(&values, name, &JsValue::from_f64(*value))?;
+    }
+    set(&get(desc, "compute")?, "constants", &values)?;
+    settle(call(&device, "createComputePipelineAsync", desc)?, &module).await
+}
+
+/// One WGSL source and the `(stage, pipeline label)` pairs its prewarm
+/// reports, in order.
+pub(crate) type RenderSource<'a> = (&'a str, &'a [(&'static str, &'static str)]);
+
+/// Compile the render pipelines of `sources` that `feature` includes (all
+/// of them for `None`). Every `createRenderPipelineAsync` call of every
+/// source is made before the first is awaited, so the browser compiles the
+/// set together instead of one pipeline per await (#299). The stages are
+/// then reported in order, each as a started/finished pair.
 pub(crate) async fn render(
     device: &wgpu::Device,
-    source: &str,
-    stages: &[(&'static str, &'static str)],
+    sources: &[RenderSource<'_>],
     format: wgpu::TextureFormat,
     samples: u32,
     feature: Option<crate::PreparationFeature>,
@@ -159,10 +205,46 @@ pub(crate) async fn render(
         other => return Err(format!("Unsupported prewarm target: {other:?}")),
     };
     let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
+    // One `[Promise, module]` pair per included stage, in stage order.
+    let pending = Array::new();
+    let mut issued = Ok(());
+    for (source, stages) in sources {
+        issued = issue_render(&device, source, stages, format, samples, feature, &pending);
+        if issued.is_err() {
+            break;
+        }
+    }
+    let settled = match issued {
+        Ok(()) => settle_render(sources, feature, &pending, observer).await,
+        Err(reason) => Err(reason),
+    };
+    if settled.is_err() {
+        abandon(&pending).await;
+    }
+    crate::init::yield_init_frame().await;
+    settled
+}
+
+fn included(feature: Option<crate::PreparationFeature>, label: &str) -> bool {
+    feature.is_none_or(|f| f.includes_label(label))
+}
+
+/// Start one source's compiles. For each stage `feature` includes, one
+/// Promise (of all the stage's pipelines) and the module are pushed to
+/// `pending`.
+fn issue_render(
+    device: &JsValue,
+    source: &str,
+    stages: &[(&'static str, &'static str)],
+    format: &str,
+    samples: u32,
+    feature: Option<crate::PreparationFeature>,
+    pending: &Array,
+) -> Result<(), String> {
     let stages: Vec<_> = stages
         .iter()
         .copied()
-        .filter(|(_, label)| feature.is_none_or(|f| f.includes_label(label)))
+        .filter(|(_, label)| included(feature, label))
         .collect();
     if stages.is_empty() {
         return Ok(());
@@ -177,17 +259,14 @@ pub(crate) async fn render(
         if get(&get(&desc, "multisample")?, "count")?.as_f64() != Some(f64::from(samples)) {
             continue;
         }
-        let included = match feature {
-            None => true,
-            Some(f) => get(&desc, "label")?
-                .as_string()
-                .is_some_and(|label| f.includes_label(&label)),
-        };
-        if included {
+        if get(&desc, "label")?
+            .as_string()
+            .is_some_and(|label| included(feature, &label))
+        {
             candidates.push(desc);
         }
     }
-    let module = shader(&device, source, "figgy render prewarm")?;
+    let module = shader(device, source, "figgy render prewarm")?;
     for (index, (stage, label)) in stages.iter().enumerate() {
         let mut selected = Vec::new();
         let mut rest = Vec::new();
@@ -209,9 +288,9 @@ pub(crate) async fn render(
             selected.append(&mut rest);
         }
         candidates = rest;
-        crate::init::started(observer, "renderer.prewarm.async", stage);
+        let compiles = Array::new();
         for desc in selected {
-            populate(&device, &desc, &module)?;
+            populate(device, &desc, &module)?;
             for target in Array::from(&get(&get(&desc, "fragment")?, "targets")?).iter() {
                 // A colour target takes the canvas format; an ID target
                 // (the 3D pick's `rgba32uint`) keeps its own.
@@ -221,12 +300,46 @@ pub(crate) async fn render(
                     set(&target, "format", &format.into())?;
                 }
             }
-            compile(&device, "createRenderPipelineAsync", &desc, &module).await?;
+            compiles.push(&call(device, "createRenderPipelineAsync", &desc)?);
         }
-        crate::init::finished(observer, "renderer.prewarm.async", stage);
-        crate::init::yield_init_frame().await;
+        // Pushed before the next stage can fail, so `abandon` observes it.
+        pending.push(&Promise::all(&compiles));
+        pending.push(&module);
     }
     Ok(())
+}
+
+/// Await what [`issue_render`] started, reporting each stage in order.
+async fn settle_render(
+    sources: &[RenderSource<'_>],
+    feature: Option<crate::PreparationFeature>,
+    pending: &Array,
+    observer: &mut dyn FnMut(crate::InitEvent),
+) -> Result<(), String> {
+    let mut next = 0;
+    for (_, stages) in sources {
+        for (stage, label) in stages.iter() {
+            if !included(feature, label) {
+                continue;
+            }
+            crate::init::started(observer, "renderer.prewarm.async", stage);
+            settle(pending.get(next), &pending.get(next + 1)).await?;
+            crate::init::finished(observer, "renderer.prewarm.async", stage);
+            next += 2;
+        }
+    }
+    Ok(())
+}
+
+/// Wait for every compile still in flight after a failure, so that none of
+/// them rejects unobserved. The failure itself is already being returned.
+async fn abandon(pending: &Array) {
+    if wasm_bindgen_futures::JsFuture::from(Promise::all_settled(pending))
+        .await
+        .is_err()
+    {
+        // `allSettled` never rejects.
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -278,18 +391,564 @@ async fn shader_compilation_errors(shader: &wasm_bindgen::JsValue) -> Vec<String
         .collect()
 }
 
-async fn compile(
-    device: &JsValue,
-    method: &str,
-    desc: &JsValue,
-    module: &JsValue,
-) -> Result<(), String> {
-    let promise = call(device, method, desc)?;
-    match wasm_bindgen_futures::JsFuture::from(Promise::from(promise)).await {
+/// Await one issued compile; a failure carries the module's diagnostics.
+async fn settle(compiled: JsValue, module: &JsValue) -> Result<(), String> {
+    match wasm_bindgen_futures::JsFuture::from(Promise::from(compiled)).await {
         Ok(_) => Ok(()),
         Err(failure) => {
             let details = shader_compilation_errors(module).await;
             Err(format!("{}; {}", error(failure), details.join("; ")))
         }
     }
+}
+
+/// A renderer's background compiles in the browser (#299): the render
+/// pipelines of its shader set, issued through `createRenderPipelineAsync`
+/// at most [`CompileSchedule::limit`] at a time, what the screen asks for
+/// first ([`crate::compile_schedule`]). Shared by the renderer and the
+/// futures that await each compile; the page has one thread, so a
+/// `RefCell` borrow is never contended and never held across an await. It
+/// is single-threaded state, not lock-based synchronization (rule 4).
+///
+/// Every compile ends in one [`CompileOutcome`]: the future awaiting the
+/// browser's promise classifies how it settled, the device's `lost`
+/// promise ends every open compile as device lost, an upgrade supersedes
+/// the compiles it no longer issues, and dropping the queue cancels the
+/// rest. Each ending resolves the queue's change signal, which a waiter
+/// awaits instead of polling frames, so a wait always ends.
+#[derive(Clone)]
+pub(crate) struct CompileQueue(std::rc::Rc<std::cell::RefCell<QueueState>>);
+
+struct QueueState {
+    device: JsValue,
+    format: wgpu::TextureFormat,
+    samples: u32,
+    schedule: crate::compile_schedule::CompileSchedule,
+    /// The populated descriptor of each scheduled compile, by its index,
+    /// and the device method that compiles it (`createRenderPipelineAsync`
+    /// or `createComputePipelineAsync`).
+    descriptors: Vec<(JsValue, &'static str)>,
+    /// Resolves at the next change of any compile's state; replaced each
+    /// time it resolves.
+    changed: ChangeSignal,
+}
+
+/// A promise and the function that resolves it.
+struct ChangeSignal {
+    promise: Promise,
+    resolve: Function,
+}
+
+impl ChangeSignal {
+    fn new() -> Self {
+        let mut resolve = None;
+        // The executor runs before `Promise::new` returns.
+        let promise = Promise::new(&mut |done, _| resolve = Some(done));
+        match resolve {
+            Some(resolve) => Self { promise, resolve },
+            None => Self {
+                promise: Promise::resolve(&JsValue::UNDEFINED),
+                resolve: Function::new_no_args(""),
+            },
+        }
+    }
+}
+
+impl QueueState {
+    /// Wake every waiter: resolve the change signal and arm a new one.
+    fn notify(&mut self) {
+        let signal = std::mem::replace(&mut self.changed, ChangeSignal::new());
+        if signal.resolve.call0(&JsValue::UNDEFINED).is_err() {
+            // A promise's own resolve function does not throw: there is no
+            // failure to report.
+        }
+    }
+}
+
+impl Drop for QueueState {
+    /// The renderer is gone: every compile not ended yet ends as cancelled,
+    /// and a waiter wakes to see it.
+    fn drop(&mut self) {
+        self.schedule.cancel_all();
+        if self.changed.resolve.call0(&JsValue::UNDEFINED).is_err() {
+            // A promise's own resolve function does not throw: there is no
+            // failure to report.
+        }
+    }
+}
+
+/// How the browser settled one issued compile.
+fn outcome_of(settled: Result<JsValue, JsValue>) -> crate::compile_schedule::CompileOutcome {
+    use crate::compile_schedule::{CompileOutcome, RejectReason};
+    match settled {
+        // The browser also resolves on device loss (with an invalid
+        // pipeline); the device's `lost` promise ends the compile as device
+        // lost when it settles, and a draw after it takes the device-loss
+        // path.
+        Ok(_) => CompileOutcome::Ready,
+        Err(failure) => {
+            let reason = Reflect::get(&failure, &"reason".into())
+                .ok()
+                .and_then(|reason| reason.as_string());
+            CompileOutcome::Rejected {
+                reason: RejectReason::from_pipeline_error(reason.as_deref()),
+                message: error(failure),
+            }
+        }
+    }
+}
+
+impl CompileQueue {
+    /// A queue for a renderer that draws to `format` with `samples` per
+    /// pixel, keeping as many compiles in flight as the browser reports
+    /// cores (`navigator.hardwareConcurrency`). It listens to the device's
+    /// `lost` promise, which ends every open compile.
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Result<Self, String> {
+        let device = JsValue::from(device.as_webgpu().ok_or("WebGPU device required")?.clone());
+        let cores = Reflect::get(&js_sys::global(), &"navigator".into())
+            .and_then(|navigator| Reflect::get(&navigator, &"hardwareConcurrency".into()))
+            .ok()
+            .and_then(|cores| cores.as_f64());
+        let limit = crate::compile_schedule::compile_limit(cores);
+        let lost = get(&device, "lost")?;
+        let queue = Self(std::rc::Rc::new(std::cell::RefCell::new(QueueState {
+            device,
+            format,
+            samples,
+            schedule: crate::compile_schedule::CompileSchedule::new(limit),
+            descriptors: Vec::new(),
+            changed: ChangeSignal::new(),
+        })));
+        // The listener holds the queue weakly: a renderer dropped before
+        // its device is lost is not kept alive by it.
+        let weak = std::rc::Rc::downgrade(&queue.0);
+        let on_lost = wasm_bindgen::closure::Closure::once_into_js(move |_: JsValue| {
+            if let Some(state) = weak.upgrade() {
+                let mut state = state.borrow_mut();
+                state.schedule.device_lost();
+                state.notify();
+            }
+        });
+        let then: Function = get(&lost, "then")?
+            .dyn_into()
+            .map_err(|_| "GPUDevice.lost has no then".to_owned())?;
+        then.call1(&lost, &on_lost).map_err(error)?;
+        Ok(queue)
+    }
+
+    /// Resolves at the next change of any compile's state, or at once when
+    /// nothing is waiting or compiling.
+    pub(crate) async fn changed(&self) {
+        let promise = {
+            let state = self.0.borrow();
+            if !state.schedule.busy() {
+                return;
+            }
+            state.changed.promise.clone()
+        };
+        if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+            // The change signal is only ever resolved, never rejected: there
+            // is no failure to report.
+        }
+    }
+
+    /// Whether any compile is waiting or in flight.
+    pub(crate) fn busy(&self) -> bool {
+        self.0.borrow().schedule.busy()
+    }
+
+    /// Schedule every render pipeline of `sources` for `set`, in stage
+    /// order, after what is already scheduled, and issue as many as the
+    /// limit allows. A source's pipelines beyond its listed stages report
+    /// under its last stage, as the prewarm always did.
+    pub(crate) fn schedule(
+        &self,
+        shader_set: crate::shader_assembly::ShaderSet,
+        sources: &[RenderSource<'_>],
+    ) -> Result<(), String> {
+        self.schedule_filtered(shader_set, sources, |_| true)
+    }
+
+    /// [`Self::schedule`] for only the pipelines whose label `include`
+    /// accepts.
+    pub(crate) fn schedule_filtered(
+        &self,
+        shader_set: crate::shader_assembly::ShaderSet,
+        sources: &[RenderSource<'_>],
+        include: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
+        {
+            let mut state = self.0.borrow_mut();
+            let format = target_format(state.format)?;
+            let samples = state.samples;
+            for (source, stages) in sources {
+                let Some(&(last_stage, _)) = stages.last() else {
+                    continue;
+                };
+                let mut candidates = Vec::new();
+                for desc in descriptors(source, "render")? {
+                    if !Array::is_array(&get(&desc, "layout")?) {
+                        continue;
+                    }
+                    if get(&get(&desc, "multisample")?, "count")?.as_f64()
+                        != Some(f64::from(samples))
+                    {
+                        continue;
+                    }
+                    if !include(&get(&desc, "label")?.as_string().unwrap_or_default()) {
+                        continue;
+                    }
+                    candidates.push(desc);
+                }
+                let module = shader(&state.device, source, "figgy render prewarm")?;
+                let label_of =
+                    |desc: &JsValue| get(desc, "label").map(|l| l.as_string().unwrap_or_default());
+                // The listed stages first, in order; the rest after them.
+                let mut ordered = Vec::new();
+                for (stage, label) in stages.iter() {
+                    for desc in &candidates {
+                        if label_of(desc)? == *label {
+                            ordered.push((*stage, desc.clone()));
+                        }
+                    }
+                }
+                for desc in &candidates {
+                    let label = label_of(desc)?;
+                    if !stages.iter().any(|(_, listed)| *listed == label) {
+                        ordered.push((last_stage, desc.clone()));
+                    }
+                }
+                for (stage, desc) in ordered {
+                    populate(&state.device, &desc, &module)?;
+                    for target in Array::from(&get(&get(&desc, "fragment")?, "targets")?).iter() {
+                        if !target.is_null()
+                            && get(&target, "format")?.as_string().as_deref() != Some("rgba32uint")
+                        {
+                            set(&target, "format", &format.into())?;
+                        }
+                    }
+                    let label = label_of(&desc)?;
+                    state.schedule.push(shader_set, label, stage);
+                    state.descriptors.push((desc, "createRenderPipelineAsync"));
+                }
+            }
+        }
+        self.pump();
+        Ok(())
+    }
+
+    /// Schedule every compute pipeline of `sources` for `set`, in stage
+    /// order, after what is already scheduled, and issue as many as the
+    /// limit allows. Compute pipelines do not depend on the target, so the
+    /// screen's queue compiles them for every target.
+    pub(crate) fn schedule_compute(
+        &self,
+        shader_set: crate::shader_assembly::ShaderSet,
+        sources: &[RenderSource<'_>],
+    ) -> Result<(), String> {
+        {
+            let mut state = self.0.borrow_mut();
+            for (source, stages) in sources {
+                let module = shader(&state.device, source, "figgy compute prewarm")?;
+                for desc in descriptors(source, "compute")? {
+                    if !Array::is_array(&get(&desc, "layout")?) {
+                        continue;
+                    }
+                    let label = get(&desc, "label")?.as_string().unwrap_or_default();
+                    let Some(&(stage, _)) = stages.iter().find(|(_, listed)| *listed == label)
+                    else {
+                        continue;
+                    };
+                    populate(&state.device, &desc, &module)?;
+                    state.schedule.push(shader_set, label, stage);
+                    state.descriptors.push((desc, "createComputePipelineAsync"));
+                }
+            }
+        }
+        self.pump();
+        Ok(())
+    }
+
+    /// Issue compiles while fewer than the limit are in flight.
+    fn pump(&self) {
+        loop {
+            let (index, compiled) = {
+                let mut state = self.0.borrow_mut();
+                let Some(index) = state.schedule.issue_next() else {
+                    return;
+                };
+                let compiled = match state.descriptors.get(index) {
+                    Some((desc, method)) => call(&state.device, method, desc),
+                    None => Err("no descriptor for a scheduled compile".to_owned()),
+                };
+                (index, compiled)
+            };
+            // The future holds the queue weakly: once its renderer is
+            // dropped (which cancels every open compile), a settling compile
+            // issues no further one.
+            let queue = std::rc::Rc::downgrade(&self.0);
+            match compiled {
+                Ok(promise) => wasm_bindgen_futures::spawn_local(async move {
+                    let settled =
+                        wasm_bindgen_futures::JsFuture::from(Promise::from(promise)).await;
+                    if let Some(state) = queue.upgrade() {
+                        {
+                            let mut state = state.borrow_mut();
+                            state.schedule.settle(index, outcome_of(settled));
+                            state.notify();
+                        }
+                        CompileQueue(state).pump();
+                    }
+                }),
+                // The call threw: the compile ends here, rejected.
+                Err(reason) => {
+                    let mut state = self.0.borrow_mut();
+                    state.schedule.settle(
+                        index,
+                        crate::compile_schedule::CompileOutcome::Rejected {
+                            reason: crate::compile_schedule::RejectReason::Other,
+                            message: reason,
+                        },
+                    );
+                    state.notify();
+                }
+            }
+        }
+    }
+
+    /// Issue the waiting compiles of `set` labelled `label` before every
+    /// other waiting one.
+    pub(crate) fn prioritize(&self, set: crate::shader_assembly::ShaderSet, label: &str) {
+        let moved = self.0.borrow_mut().schedule.prioritize(set, label);
+        if moved {
+            self.pump();
+        }
+    }
+
+    /// Schedule the module whose pipelines include `label` when it is one
+    /// compiled only on demand (`browser_on_demand_source`: vector, 3D
+    /// surface, ternary region; `browser_on_demand_compute_source`: the arc
+    /// scan, the ring-start scan, the contour label anchors, the histogram
+    /// envelope) and none of its pipelines is scheduled
+    /// for `set` yet, and issue `label` ahead of every waiting compile.
+    /// Returns whether `label` is now waiting or compiling, so the frame
+    /// leaves its series out; `false` leaves the draw to create it, as for a
+    /// pipeline no queue tracks.
+    pub(crate) fn schedule_on_demand(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        label: &str,
+    ) -> Result<bool, String> {
+        use crate::compile_schedule::LabelReadiness;
+        let (source, compute) = match crate::data_render::browser_on_demand_source(set, label) {
+            Some(source) => (source, false),
+            None => match crate::data_render::browser_on_demand_compute_source(set, label) {
+                Some(source) => (source, true),
+                None => return Ok(false),
+            },
+        };
+        // Scheduled once, by its first listed pipeline: a label alone does
+        // not tell, since another module can compile a pipeline with the same
+        // label (the field module's floor contour, for one).
+        let scheduled = source
+            .1
+            .first()
+            .is_some_and(|(_, first)| self.readiness(set, first) != LabelReadiness::Untracked);
+        if !scheduled {
+            if compute {
+                self.schedule_compute(set, &[source])?;
+            } else {
+                self.schedule(set, &[source])?;
+            }
+        }
+        self.prioritize(set, label);
+        Ok(self.readiness(set, label) == LabelReadiness::Pending)
+    }
+
+    /// What a frame may do with the pipelines of `set` labelled `label`.
+    pub(crate) fn readiness(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        label: &str,
+    ) -> crate::compile_schedule::LabelReadiness {
+        self.0.borrow().schedule.readiness(set, label)
+    }
+
+    /// The compiles of `set` in `scope`.
+    pub(crate) fn counts(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        scope: crate::compile_schedule::Scope,
+    ) -> crate::compile_schedule::Counts {
+        self.0.borrow().schedule.counts(set, scope)
+    }
+
+    /// A screen frame starts; it marks what it needs with
+    /// [`Self::mark_wanted`].
+    pub(crate) fn begin_frame(&self) {
+        self.0.borrow_mut().schedule.begin_frame();
+    }
+
+    /// The current frame needs the pipelines of `set` labelled `label`.
+    pub(crate) fn mark_wanted(&self, set: crate::shader_assembly::ShaderSet, label: &str) {
+        self.0.borrow_mut().schedule.mark_wanted(set, label);
+    }
+
+    /// The label of each compile of `set` the last frame needed. `each`
+    /// must not use this queue (it is borrowed meanwhile); another is fine.
+    pub(crate) fn for_each_wanted(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        each: impl FnMut(&str),
+    ) {
+        self.0.borrow().schedule.for_each_wanted(set, each);
+    }
+
+    /// Each compile of `set` that failed, as `(label, outcome)`.
+    pub(crate) fn for_each_failure(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        mut each: impl FnMut(&str, &CompileOutcome),
+    ) {
+        self.0
+            .borrow()
+            .schedule
+            .for_each_failure(set, |compile, outcome| each(&compile.label, outcome));
+    }
+
+    /// Wait until every compile of `set` in `scope` has ended, waking on
+    /// each change, never by polling. `Err` carries the label and outcome of
+    /// the first that ended other than ready. It always ends: every compile
+    /// does.
+    pub(crate) async fn wait_scope(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        scope: crate::compile_schedule::Scope,
+    ) -> Result<(), (String, CompileOutcome)> {
+        loop {
+            let state = {
+                let state = self.0.borrow();
+                match state.schedule.scope_state(set, scope) {
+                    Ok(pending) => Ok(pending),
+                    Err((index, outcome)) => {
+                        Err((state.schedule.compile(index).label.clone(), outcome))
+                    }
+                }
+            };
+            if state? {
+                self.changed().await;
+            } else {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Compiles ended so far; it only grows.
+    pub(crate) fn settled(&self) -> u64 {
+        self.0.borrow().schedule.settled()
+    }
+
+    /// Whether this queue serves a target of `format` and `samples`.
+    pub(crate) fn serves(&self, format: wgpu::TextureFormat, samples: u32) -> bool {
+        let state = self.0.borrow();
+        state.format == format && state.samples == samples
+    }
+
+    /// Move to `set` (a renderer never goes back): `set`'s compiles are
+    /// scheduled, and the other set's compiles not issued yet end as
+    /// superseded by their twins in `set`.
+    pub(crate) fn switch_to(
+        &self,
+        from: crate::shader_assembly::ShaderSet,
+        set: crate::shader_assembly::ShaderSet,
+        sources: &[RenderSource<'_>],
+    ) -> Result<(), String> {
+        self.schedule(set, sources)?;
+        let mut state = self.0.borrow_mut();
+        state.schedule.supersede(from, set);
+        state.notify();
+        Ok(())
+    }
+
+    /// Wait for every scheduled compile of `set` whose label `include`
+    /// accepts, issuing them first, and report each stage started and
+    /// finished in schedule order. It wakes on each change of a compile's
+    /// state, never by polling, and ends: a compile superseded by an
+    /// upgrade is followed to its replacement, and a compile that ended in
+    /// any way but ready fails the wait with how it ended.
+    pub(crate) async fn wait_for(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        include: impl Fn(&str) -> bool,
+        observer: &mut dyn FnMut(crate::InitEvent),
+    ) -> Result<(), String> {
+        // The stages in schedule order, each with its compiles.
+        let indices: Vec<usize> = {
+            let state = self.0.borrow();
+            (0..state.schedule.len())
+                .filter(|&i| {
+                    let compile = state.schedule.compile(i);
+                    compile.set == set && include(&compile.label)
+                })
+                .collect()
+        };
+        for &index in indices.iter().rev() {
+            let label = self.0.borrow().schedule.compile(index).label.clone();
+            self.prioritize(set, &label);
+        }
+        let mut position = 0;
+        while position < indices.len() {
+            let stage = self.0.borrow().schedule.compile(indices[position]).stage;
+            let end = indices[position..]
+                .iter()
+                .position(|&i| self.0.borrow().schedule.compile(i).stage != stage)
+                .map_or(indices.len(), |n| position + n);
+            crate::init::started(observer, "renderer.prewarm.async", stage);
+            for &index in &indices[position..end] {
+                loop {
+                    let step = self.0.borrow().schedule.wait_step(index);
+                    match step {
+                        WaitStep::Pending(_) => self.changed().await,
+                        WaitStep::Ended(CompileOutcome::Ready) => break,
+                        WaitStep::Ended(ended) => return Err(ended_message(&ended)),
+                    }
+                }
+            }
+            crate::init::finished(observer, "renderer.prewarm.async", stage);
+            position = end;
+        }
+        Ok(())
+    }
+}
+
+/// Why a waited-for compile did not end ready.
+fn ended_message(ended: &CompileOutcome) -> String {
+    match ended {
+        CompileOutcome::Ready => "the pipeline compiled".to_owned(),
+        CompileOutcome::Rejected { reason, message } => {
+            format!("the browser rejected the pipeline ({reason:?}): {message}")
+        }
+        CompileOutcome::DeviceLost => "the GPU device was lost".to_owned(),
+        CompileOutcome::Superseded { .. } | CompileOutcome::Retired => {
+            "the renderer moved to the other shader set".to_owned()
+        }
+        CompileOutcome::Cancelled => "the renderer was dropped".to_owned(),
+    }
+}
+
+/// The JS name of a target format the contract's descriptors take.
+fn target_format(format: wgpu::TextureFormat) -> Result<&'static str, String> {
+    Ok(match format {
+        wgpu::TextureFormat::Rgba8Unorm => "rgba8unorm",
+        wgpu::TextureFormat::Bgra8Unorm => "bgra8unorm",
+        wgpu::TextureFormat::Rgba8UnormSrgb => "rgba8unorm-srgb",
+        wgpu::TextureFormat::Bgra8UnormSrgb => "bgra8unorm-srgb",
+        // The export target (#299).
+        wgpu::TextureFormat::Rgba16Float => "rgba16float",
+        other => return Err(format!("Unsupported prewarm target: {other:?}")),
+    })
 }

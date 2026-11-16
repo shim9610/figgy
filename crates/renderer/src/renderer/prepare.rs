@@ -534,6 +534,17 @@ impl PrepareContext<'_> {
         let mut column_sources = HashMap::new();
 
         for (item, panel) in items.iter().zip(panels) {
+            // A chart with an axis break, a probability axis or polar
+            // coordinates is drawn with the full shaders only (#299). Every entry admits its charts first
+            // (`Renderer::admit_full_shaders`), so this fails only for an entry
+            // that did not, instead of drawing the chart without them.
+            if pipelines.shaders.set == ShaderSet::Basic
+                && config_needs_full_shaders(item.chart_config)
+            {
+                return Err(FiggyError::internal(
+                    "a chart with an axis break, a probability axis or polar coordinates is drawn with the full shaders",
+                ));
+            }
             let (prepared_arc, prepared_contour) = (&panel.arc, &panel.contour);
             let styled = pipelines.style_set(&item.chart_config.draw_style);
             let products = PreparedSeriesProducts {

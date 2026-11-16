@@ -75,6 +75,7 @@ fn axis_px_per_unit(axis: u32, pair: vec2<f32>) -> f32 {
 /// mode's factor. An anchor that is not placeable (non-finite, or non-positive
 /// on a logarithmic axis) hides the arrow; in `Data` mode so does such a tip.
 fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
+    let tf = transform;
     var out: ArrowPx;
     out.tail = vec2<f32>(0.0, 0.0);
     out.tip = vec2<f32>(0.0, 0.0);
@@ -82,7 +83,7 @@ fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
     out.valid = false;
     let ox = vec2<f32>(sample.origin_hi.x, sample.origin_lo.x);
     let oy = vec2<f32>(sample.origin_hi.y, sample.origin_lo.y);
-    if (!sample.valid || !sample_valid(transform, ox, oy)) {
+    if (!sample.valid || !sample_valid(tf, ox, oy)) {
         return out;
     }
     let u = sample.vector.x;
@@ -90,7 +91,7 @@ fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
     if (!sample_finite(u) || !sample_finite(v)) {
         return out;
     }
-    let tail = ndc_to_px(data_to_ndc(transform, ox, oy));
+    let tail = ndc_to_px(data_to_ndc(tf, ox, oy));
     var tip: vec2<f32>;
     if (mode == VECTOR_SCALE_PIXELS) {
         let direction = vec2<f32>(axis_px_per_unit(0u, ox) * u, axis_px_per_unit(1u, oy) * v);
@@ -107,10 +108,10 @@ fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
     } else {
         let tx = pair_add(ox, scale * u);
         let ty = pair_add(oy, scale * v);
-        if (!sample_valid(transform, tx, ty)) {
+        if (!sample_valid(tf, tx, ty)) {
             return out;
         }
-        tip = ndc_to_px(data_to_ndc(transform, tx, ty));
+        tip = ndc_to_px(data_to_ndc(tf, tx, ty));
     }
     if (!sample_finite(tail.x) || !sample_finite(tail.y) || !sample_finite(tip.x) || !sample_finite(tip.y)) {
         return out;

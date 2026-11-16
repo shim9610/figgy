@@ -19,7 +19,7 @@ impl Renderer {
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
-    pub(super) fn enable_gpu_picking_unreported(
+    pub(in crate::renderer) fn enable_gpu_picking_unreported(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let mut noop = |_| {};
@@ -50,6 +50,7 @@ impl Renderer {
                 field: &self.pipelines.shaders.field,
                 vector_grid: &self.pipelines.shaders.vector_grid,
                 line: &self.pipelines.shaders.line,
+                set: self.pipelines.shaders.set,
             },
             &self.transform_bgl,
             &self.field_bgl,
@@ -101,6 +102,7 @@ impl Renderer {
                     field: &self.pipelines.shaders.field,
                     vector_grid: &self.pipelines.shaders.vector_grid,
                     line: &self.pipelines.shaders.line,
+                    set: self.pipelines.shaders.set,
                 },
                 &self.transform_bgl,
                 &self.field_bgl,
@@ -127,6 +129,7 @@ impl Renderer {
         id: ChartId,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
+        self.admit_chart_shaders(id);
         let state = self
             .chart_states
             .get(&id)
@@ -140,6 +143,124 @@ impl Renderer {
         let series = pickable_series(&self.pool, &state.series);
         self.picker
             .prepare_chart(&self.pool, id, &state.config, &series)
+    }
+
+    /// Compile, through the browser's async API, the exact pick pipelines
+    /// a pick of chart `id` at `request` needs and has not created yet
+    /// (#299), so the pick itself creates them from the device's
+    /// compilation cache instead of compiling on the page's thread. Each
+    /// is then created and kept, as the pick would. A compile the browser
+    /// rejects is left to the pick, which creates the pipeline
+    /// synchronously and reports its error the way it always does.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn compile_pick_pipelines_async(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self
+            .compile_pick_pipelines_async_unreported(id, request)
+            .await;
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) async fn compile_pick_pipelines_async_unreported(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        while let Some(key) = self.missing_exact_pick_key(id, request)? {
+            let bundle = self.picker.ready_bundle()?;
+            let (constants, count) = key.constants(self.device());
+            let compiled = crate::browser_compile::compute_with_constants(
+                self.device(),
+                "figgy GPU pick exact candidate pipeline",
+                key.source(bundle.set),
+                "pick_exact_candidates",
+                &constants[..count],
+            )
+            .await;
+            if compiled.is_err() {
+                // The pick creates it synchronously below and reports the
+                // same failure through the device's error scope.
+            }
+            let picker = &mut self.picker;
+            let active = picker
+                .active
+                .as_ref()
+                .ok_or(crate::gpu_pick::GpuPickError::Internal(
+                    "successful chart preparation publishes an active picker registry",
+                ))?;
+            picker.exact.ensure(active.engine.bundle(), key)?;
+        }
+        Ok(())
+    }
+
+    /// The first exact pick variant a pick of chart `id` at `request`
+    /// needs that is not created yet: the chart prepared and the layer
+    /// routed as [`Self::pick_chart`] does.
+    #[cfg(target_arch = "wasm32")]
+    fn missing_exact_pick_key(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<Option<crate::gpu_pick::PickExactKey>, crate::gpu_pick::GpuPickError>
+    {
+        self.pick_health()?;
+        self.admit_chart_shaders(id);
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        let mut displayed = place_document(
+            &state.config,
+            request.display_scale,
+            request.display_panel_px,
+        );
+        let routed = subplot_route(&state.config, &displayed, request.canvas_position_px);
+        if let Some(config) = &routed {
+            displayed.active_layer = config.active_layer;
+        }
+        for series in &state.series {
+            if let Err(FiggyError::ColumnNotResident { id }) = self.require_resident_series(series)
+            {
+                return Err(crate::gpu_pick::GpuPickError::ColumnNotResident(id));
+            }
+        }
+        let series = pickable_series(&self.pool, &state.series);
+        self.picker.prepare_chart(
+            &self.pool,
+            id,
+            routed.as_ref().unwrap_or(&state.config),
+            &series,
+        )?;
+        let inputs = active_layer_pick_inputs(&displayed, &series)?;
+        let display_config = &inputs.panel;
+        let transform = data_render::scatter_transform_from_config(display_config);
+        if transform.needs_full_shaders() && self.picker.ready_bundle()?.set == ShaderSet::Basic {
+            // The pick reports this itself.
+            return Ok(None);
+        }
+        let query = crate::gpu_pick::GpuPickQuery {
+            transform,
+            chart_rect_px: [0.0; 4],
+            data_area_px: None,
+            canvas_position_px: request.canvas_position_px,
+            max_distance_px: request.max_distance_px,
+            draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
+        };
+        let picker = &self.picker;
+        let active = picker
+            .active
+            .as_ref()
+            .ok_or(crate::gpu_pick::GpuPickError::Internal(
+                "successful chart preparation publishes an active picker registry",
+            ))?;
+        Ok(active
+            .engine
+            .exact_variants(&query)
+            .find(|key| picker.exact.get(*key).is_none()))
     }
 
     /// Submit one exact pick against renderer-owned chart state.
@@ -158,6 +279,9 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
+        // A chart with an axis break, a probability axis or polar
+        // coordinates is picked with the full shaders only (#299): the picker's bundles follow the renderer's shader set.
+        self.admit_chart_shaders(id);
         let state = self
             .chart_states
             .get(&id)
@@ -199,6 +323,11 @@ impl Renderer {
         let (display_config, layer_series) = (&inputs.panel, &inputs.series);
         let (request, moved) = pick_request_outside_gaps(display_config, request);
         let transform = data_render::scatter_transform_from_config(display_config);
+        if transform.needs_full_shaders() && self.picker.ready_bundle()?.set == ShaderSet::Basic {
+            return Err(crate::gpu_pick::GpuPickError::Internal(
+                "a chart with an axis break, a probability axis or polar coordinates is picked with the full shaders",
+            ));
+        }
         // The line offset members are the last registered series, each
         // drawn (and its arc prefix scanned) at its own panel's transform.
         let first_member = layer_series.len() - inputs.member_count();

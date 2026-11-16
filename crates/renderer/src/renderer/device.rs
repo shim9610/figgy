@@ -22,6 +22,8 @@ pub(crate) use browser::*;
 pub(super) use create::*;
 pub(crate) use health::*;
 pub(super) use pipeline_kinds::*;
+#[cfg(target_arch = "wasm32")]
+pub(super) use precise_variants::series_pipeline_labels;
 pub(super) use prewarm::*;
 pub(super) use target::*;
 pub(super) use target_pipelines::*;
@@ -42,6 +44,9 @@ pub struct RendererDevice {
     /// The GPU byte ledger and memory budget, created once here and shared
     /// by every renderer built from this bundle (#160).
     pub(super) ledger: Arc<GpuLedger>,
+    /// The shader set a renderer built from this bundle starts on
+    /// ([`Self::with_shader_set`], #299).
+    pub(super) shader_set: crate::shader_assembly::ShaderSet,
 }
 
 impl RendererDevice {
@@ -80,6 +85,19 @@ impl RendererDevice {
         Self::without_poller(device, queue)
     }
 
+    /// Have every renderer built from this bundle start on `set` (#299).
+    ///
+    /// A renderer starts on [`ShaderSet::Basic`](crate::shader_assembly::ShaderSet::Basic)
+    /// and moves to the full set when it is first handed a chart that needs
+    /// it, or when the host asks ([`Renderer::require_shader_set`]). A host
+    /// that knows its charts use an axis break, a probability axis or polar
+    /// coordinates passes `ShaderSet::Full` here, so the renderer never
+    /// creates or compiles a module of the basic set.
+    pub fn with_shader_set(mut self, set: crate::shader_assembly::ShaderSet) -> Self {
+        self.shader_set = set;
+        self
+    }
+
     fn without_poller(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let health = DeviceHealth::watch(&device);
         Self {
@@ -88,6 +106,7 @@ impl RendererDevice {
             health,
             // host-alloc: W1-a
             ledger: Arc::new(GpuLedger::new()),
+            shader_set: crate::shader_assembly::ShaderSet::Basic,
         }
     }
 

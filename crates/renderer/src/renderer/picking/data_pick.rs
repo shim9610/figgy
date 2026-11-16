@@ -153,6 +153,9 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> Result<crate::GpuDataPickTicket> {
         self.health.check()?;
+        // A chart with an axis break, a probability axis or polar
+        // coordinates is picked with the full shaders only (#299).
+        self.admit_chart_shaders(id);
         // A 3D chart's point pick binds the series' registered styles (#132),
         // built here when the chart has not been drawn yet.
         if self
@@ -245,6 +248,11 @@ impl Renderer {
         // answers are the ones drawn on top there.
         let point_ticket = self.pick_chart(id, given)?;
         let data_bundle = self.picker.ready_data_bundle()?;
+        if data_bundle.set == ShaderSet::Basic && config_needs_full_shaders(&display_config) {
+            return Err(FiggyError::internal(
+                "a chart with an axis break, a probability axis or polar coordinates is picked with the full shaders",
+            ));
+        }
 
         let mut data_series = Vec::new();
         // One entry per series and one per series' value labels.

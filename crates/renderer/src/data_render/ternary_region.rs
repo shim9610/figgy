@@ -17,13 +17,17 @@
 //! only storage the fill adds.
 
 /// The assembled region module.
-pub const TERNARY_REGION_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub const TERNARY_REGION_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/ternary_region.wgsl",
 );
+/// The full assembly of [`TERNARY_REGION_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub const TERNARY_REGION_SHADER: crate::shader_assembly::Assembled =
+    TERNARY_REGION_SHADER_BY_SET.full;
 
 /// GPU twin: `ternary_region.wgsl::TernaryRegionParams`.
 #[repr(C)]
@@ -108,6 +112,9 @@ pub struct RingScanPipelines {
     apply: wgpu::ComputePipeline,
 }
 
+/// The label of every ring-start scan compute pipeline.
+pub(crate) const RING_SCAN_LABEL: &str = "figgy ternary ring scan pipeline";
+
 /// The ring-start scan's pipelines, from the region module `shader`.
 pub(crate) fn create_ring_scan_pipelines(
     device: &wgpu::Device,
@@ -156,7 +163,7 @@ pub(crate) fn create_ring_scan_pipelines(
         crate::gpu_compile::compute_pipeline(
             &device,
             &wgpu::ComputePipelineDescriptor {
-                label: Some("figgy ternary ring scan pipeline"),
+                label: Some(RING_SCAN_LABEL),
                 layout: Some(&layout),
                 module: shader,
                 entry_point: Some(entry),

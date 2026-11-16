@@ -3,6 +3,7 @@
 //! the unit quad and the AxisLayer handle a composited layer is drawn from.
 
 use super::*;
+use crate::shader_assembly::ShaderSet;
 
 /// Upload an RGBA8 pixel array to a 2D texture, usable as `TEXTURE_BINDING`
 /// and `COPY_DST`. No mipmaps, no MSAA.
@@ -165,6 +166,9 @@ pub(crate) fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
 /// pipelines reuse these instead of re-running naga on the same source.
 #[derive(Clone)]
 pub(crate) struct ShaderModules {
+    /// Which shader set every data module here was assembled as
+    /// (#299): the set of the whole pipeline set built from them.
+    pub set: ShaderSet,
     pub fullscreen: wgpu::ShaderModule,
     pub line: wgpu::ShaderModule,
     pub scatter: wgpu::ShaderModule,
@@ -181,18 +185,19 @@ pub(crate) struct ShaderModules {
 }
 
 impl ShaderModules {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, set: ShaderSet) -> Self {
         Self {
+            set,
             fullscreen: Self::fullscreen(device),
-            line: Self::line(device),
-            scatter: Self::scatter(device),
-            errorbar: Self::errorbar(device),
-            bar: Self::bar(device),
-            field: Self::field(device),
-            vector_points: vector::shader_module(device, vector::VectorInput::Points),
-            vector_grid: vector::shader_module(device, vector::VectorInput::Grid),
-            vector_path: vector::shader_module(device, vector::VectorInput::Path),
-            vector_points_3d: vector::shader_module(device, vector::VectorInput::Points3d),
+            line: Self::line(device, set),
+            scatter: Self::scatter(device, set),
+            errorbar: Self::errorbar(device, set),
+            bar: Self::bar(device, set),
+            field: Self::field(device, set),
+            vector_points: vector::shader_module(device, vector::VectorInput::Points, set),
+            vector_grid: vector::shader_module(device, vector::VectorInput::Grid, set),
+            vector_path: vector::shader_module(device, vector::VectorInput::Path, set),
+            vector_points_3d: vector::shader_module(device, vector::VectorInput::Points3d, set),
         }
     }
 
@@ -214,68 +219,68 @@ impl ShaderModules {
             },
         )
     }
-    pub(super) fn line(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn line(device: &wgpu::Device, set: ShaderSet) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy line columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::LINE_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(super::LINE_SHADER_BY_SET.of(set).source.into()),
             },
         )
     }
-    pub(super) fn scatter(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn scatter(device: &wgpu::Device, set: ShaderSet) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy scatter columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::SCATTER_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    super::SCATTER_SHADER_BY_SET.of(set).source.into(),
+                ),
             },
         )
     }
-    pub(super) fn errorbar(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn errorbar(device: &wgpu::Device, set: ShaderSet) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy errorbar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::ERRORBAR_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    super::ERRORBAR_SHADER_BY_SET.of(set).source.into(),
+                ),
             },
         )
     }
-    pub(super) fn bar(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn bar(device: &wgpu::Device, set: ShaderSet) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy bar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER_BY_SET.of(set).source.into()),
             },
         )
     }
-    pub(super) fn field(device: &wgpu::Device) -> wgpu::ShaderModule {
+    pub(super) fn field(device: &wgpu::Device, set: ShaderSet) -> wgpu::ShaderModule {
         crate::gpu_compile::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy field columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::FIELD_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(super::FIELD_SHADER_BY_SET.of(set).source.into()),
             },
         )
     }
 }
 
+/// The data modules' render pipelines a browser renderer of `set` compiles
+/// in the background, by source, each with its `(stage, pipeline label)`
+/// pairs in order (#299). The fullscreen pipeline every frame draws through
+/// is not among them: a renderer creates it directly.
 #[cfg(target_arch = "wasm32")]
-pub(crate) async fn prewarm_browser_render_feature(
-    device: &wgpu::Device,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    feature: Option<crate::PreparationFeature>,
-    observer: &mut dyn FnMut(crate::InitEvent),
-) -> Result<(), String> {
-    let groups: &[(&str, &[(&str, &str)])] = &[
+pub(crate) fn browser_render_sources(
+    set: ShaderSet,
+) -> [crate::browser_compile::RenderSource<'static>; 7] {
+    [
         (
-            include_str!("fullscreen_textured.wgsl"),
-            &[("fullscreen textured", "figgy fullscreen textured pipeline")],
-        ),
-        (
-            super::LINE_SHADER.source,
+            super::LINE_SHADER_BY_SET.of(set).source,
             &[
                 ("precise line", "figgy line columnar pipeline"),
                 ("colour-mapped line", "figgy line mapped pipeline"),
@@ -295,7 +300,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::SCATTER_SHADER.source,
+            super::SCATTER_SHADER_BY_SET.of(set).source,
             &[
                 ("precise scatter", "figgy scatter columnar pipeline"),
                 ("mapped scatter", "figgy scatter mapped pipeline"),
@@ -313,7 +318,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::ERRORBAR_SHADER.source,
+            super::ERRORBAR_SHADER_BY_SET.of(set).source,
             &[
                 ("precise errorbar", "figgy errorbar columnar pipeline"),
                 ("mapped errorbar", "figgy errorbar mapped pipeline"),
@@ -322,7 +327,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::BAR_SHADER.source,
+            super::BAR_SHADER_BY_SET.of(set).source,
             &[
                 ("histogram bars", "figgy bar columnar pipeline"),
                 (
@@ -337,7 +342,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::FIELD_SHADER.source,
+            super::FIELD_SHADER_BY_SET.of(set).source,
             &[
                 ("heatmap field", "figgy field columnar pipeline"),
                 ("contour field", "figgy field contour pipeline"),
@@ -349,7 +354,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::tri_mesh::TRI_MESH_SHADER.source,
+            super::tri_mesh::TRI_MESH_SHADER_BY_SET.of(set).source,
             &[
                 ("triangle mesh", "figgy triangle mesh field pipeline"),
                 (
@@ -359,23 +364,216 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            crate::gpu_contour::CONTOUR_LABEL_SHADER.source,
+            crate::gpu_contour::CONTOUR_LABEL_SHADER_BY_SET
+                .of(set)
+                .source,
             &[("contour labels", "figgy contour label pipeline")],
         ),
+    ]
+}
+
+/// The module, with its `(stage, pipeline label)` pairs, whose render
+/// pipelines a browser renderer of `set` schedules only when a frame first
+/// needs the pipeline `label` (#299): the vector, 3D surface and ternary
+/// region modules, which a chart without such a series never compiles.
+/// `None` for a label of the modules [`browser_render_sources`] schedules
+/// at creation, or of none.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn browser_on_demand_source(
+    set: ShaderSet,
+    label: &str,
+) -> Option<crate::browser_compile::RenderSource<'static>> {
+    browser_on_demand_sources(set)
+        .into_iter()
+        .find(|(_, stages)| stages.iter().any(|(_, listed)| *listed == label))
+}
+
+/// The module whose compute pipelines include `label` and that a browser
+/// renderer compiles on demand (#299): the arc prefix scan, the ternary
+/// ring-start scan, the contour label anchors and the histogram envelope.
+/// A frame's preparation creates them when a series first needs them.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn browser_on_demand_compute_source(
+    set: ShaderSet,
+    label: &str,
+) -> Option<crate::browser_compile::RenderSource<'static>> {
+    const ANCHORS: [(&str, &str); 4] = [
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[0],
+        ),
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[1],
+        ),
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[2],
+        ),
+        (
+            "contour label anchors",
+            crate::gpu_contour::CONTOUR_ANCHOR_LABELS[3],
+        ),
     ];
-    for (source, stages) in groups {
-        crate::browser_compile::render(
-            device,
-            source,
-            stages,
-            target_format,
-            sample_count,
-            feature,
-            observer,
-        )
-        .await?;
+    let sources: [crate::browser_compile::RenderSource<'static>; 4] = [
+        (
+            super::line_arc::LINE_ARC_SHADER_BY_SET.of(set).source,
+            &[("arc prefix scan", super::line_arc::ARC_SCAN_LABEL)],
+        ),
+        (
+            super::ternary_region::TERNARY_REGION_SHADER_BY_SET
+                .of(set)
+                .source,
+            &[(
+                "ternary ring-start scan",
+                super::ternary_region::RING_SCAN_LABEL,
+            )],
+        ),
+        (
+            crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_SET
+                .of(set)
+                .source,
+            &ANCHORS,
+        ),
+        (
+            super::BAR_SHADER_BY_SET.of(set).source,
+            &[(
+                "histogram pixel envelope",
+                super::bar_envelope::ENVELOPE_SCAN_LABEL,
+            )],
+        ),
+    ];
+    sources
+        .into_iter()
+        .find(|(_, stages)| stages.iter().any(|(_, listed)| *listed == label))
+}
+
+/// Every module whose render pipelines a browser renderer compiles in the
+/// background (#299): the ones [`browser_render_sources`] schedules at
+/// creation, then the ones compiled on demand. An export schedules from
+/// these the pipelines it draws with, for its own target.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn browser_every_render_source(
+    set: ShaderSet,
+) -> [crate::browser_compile::RenderSource<'static>; 14] {
+    let [a, b, c, d, e, f, g] = browser_render_sources(set);
+    let [h, i, j, k, l, m, n] = browser_on_demand_sources(set);
+    [a, b, c, d, e, f, g, h, i, j, k, l, m, n]
+}
+
+/// The modules compiled on demand (#299): vector, 3D surface and ternary
+/// region.
+#[cfg(target_arch = "wasm32")]
+fn browser_on_demand_sources(set: ShaderSet) -> [crate::browser_compile::RenderSource<'static>; 7] {
+    const SURFACE: [(&str, &str); 5] = [
+        ("3D surface", "figgy surface pipeline"),
+        ("selected 3D surface", "figgy surface selection pipeline"),
+        ("3D surface pick", "figgy surface pick pipeline"),
+        ("3D floor contour", "figgy floor contour pipeline"),
+        ("3D floor contour pick", "figgy floor contour pick pipeline"),
+    ];
+    const TRI_SURFACE: [(&str, &str); 3] = [
+        ("3D triangle surface", "figgy triangle surface pipeline"),
+        (
+            "selected 3D triangle surface",
+            "figgy triangle surface selection pipeline",
+        ),
+        (
+            "3D triangle surface pick",
+            "figgy triangle surface pick pipeline",
+        ),
+    ];
+    let sources: [crate::browser_compile::RenderSource<'static>; 6] = [
+        (
+            super::vector::VECTOR_POINTS_SHADER_BY_SET.of(set).source,
+            &[("vector points", "figgy vector points pipeline")],
+        ),
+        (
+            super::vector::VECTOR_GRID_SHADER_BY_SET.of(set).source,
+            &[("vector grid", "figgy vector grid pipeline")],
+        ),
+        (
+            super::vector::VECTOR_PATH_SHADER_BY_SET.of(set).source,
+            &[("vector path", "figgy vector path pipeline")],
+        ),
+        (
+            super::vector::VECTOR_POINTS_3D_SHADER_BY_SET.of(set).source,
+            &[
+                ("3D vector", "figgy vector 3D pipeline"),
+                ("3D vector pick", "figgy vector 3D pick pipeline"),
+            ],
+        ),
+        (
+            super::surface_mesh::SURFACE_SHADER_BY_SET.of(set).source,
+            &SURFACE,
+        ),
+        (
+            super::surface_mesh::TRI_SURFACE_SHADER_BY_SET
+                .of(set)
+                .source,
+            &TRI_SURFACE,
+        ),
+    ];
+    let region: crate::browser_compile::RenderSource<'static> = (
+        super::ternary_region::TERNARY_REGION_SHADER_BY_SET
+            .of(set)
+            .source,
+        &[
+            (
+                "ternary region stencil",
+                "figgy ternary region stencil pipeline",
+            ),
+            (
+                "ternary region cover",
+                "figgy ternary region cover pipeline",
+            ),
+        ],
+    );
+    let [a, b, c, d, e, f] = sources;
+    [a, b, c, d, e, f, region]
+}
+
+/// Compile the render pipelines `feature` includes (all for `None`) through
+/// the browser's asynchronous compiler. A renderer with a background queue
+/// for this target (`queue`) waits for its compiles, issuing them ahead of
+/// the rest, so nothing is compiled twice and no more than the queue's limit
+/// is in flight (#299); any other issues them itself.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn prewarm_browser_render_feature(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    feature: Option<crate::PreparationFeature>,
+    set: ShaderSet,
+    queue: Option<&crate::browser_compile::CompileQueue>,
+    observer: &mut dyn FnMut(crate::InitEvent),
+) -> Result<(), String> {
+    if let Some(queue) = queue.filter(|queue| queue.serves(target_format, sample_count)) {
+        return queue
+            .wait_for(
+                set,
+                |label| feature.is_none_or(|feature| feature.includes_label(label)),
+                observer,
+            )
+            .await;
     }
-    Ok(())
+    let data = browser_render_sources(set);
+    let fullscreen: crate::browser_compile::RenderSource<'static> = (
+        include_str!("fullscreen_textured.wgsl"),
+        &[("fullscreen textured", "figgy fullscreen textured pipeline")],
+    );
+    let groups: [crate::browser_compile::RenderSource<'_>; 8] = [
+        fullscreen, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
+    ];
+    crate::browser_compile::render(
+        device,
+        &groups,
+        target_format,
+        sample_count,
+        feature,
+        observer,
+    )
+    .await
 }
 
 /// Build the fullscreen textured-quad pipeline. The shader emits its own

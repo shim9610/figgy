@@ -1101,6 +1101,7 @@ impl Renderer {
             &self.per_point_style_map_bgl,
             format,
             sample_count,
+            self.pipelines.shaders.set,
         );
         let series: Vec<_> = completed
             .series

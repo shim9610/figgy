@@ -3,11 +3,11 @@
 use super::*;
 
 /// The assembled error-bar module.
-pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+pub(crate) const ERRORBAR_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = crate::shader_assembly::assembled_by_set!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    set,
     "data_render/common/projection.wgsl",
-    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/arc_pair.wgsl",
@@ -16,6 +16,9 @@ pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/common/errorbar_segment.wgsl",
     "data_render/errorbar_columnar.wgsl",
 );
+/// The full assembly of [`ERRORBAR_SHADER_BY_SET`]: the module a chart with an axis
+/// break, a probability axis or polar coordinates compiles.
+pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = ERRORBAR_SHADER_BY_SET.full;
 
 /// Columnar errorbar pipeline.
 /// slots 0..5 are per-instance f32: x, y, err_y_lo, err_y_hi, err_x_lo,
@@ -31,7 +34,7 @@ pub fn create_errorbar_columnar_pipeline(
     style_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::errorbar(device);
+    let shader = ShaderModules::errorbar(device, crate::shader_assembly::ShaderSet::Full);
     create_errorbar_columnar_pipeline_with_sample_count(
         device,
         &shader,
@@ -70,7 +73,7 @@ pub fn create_errorbar_columnar_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::errorbar(device);
+    let shader = ShaderModules::errorbar(device, crate::shader_assembly::ShaderSet::Full);
     create_errorbar_columnar_mapped_pipeline_from_shader(
         device,
         &shader,

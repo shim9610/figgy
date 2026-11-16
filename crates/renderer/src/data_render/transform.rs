@@ -92,6 +92,20 @@ pub(crate) fn probability_code(scale: &crate::config::AxisScale) -> f32 {
     }
 }
 
+impl ScatterTransform {
+    /// Whether a pipeline that reads this transform must be a full module
+    /// (`shader_assembly::ShaderSet::Full`, #299): either axis holds
+    /// cuts or has a probability scale, or the chart is polar. The basic
+    /// modules compile none of the three.
+    pub(crate) fn needs_full_shaders(&self) -> bool {
+        self.break_info[0] > 0.0
+            || self.break_info[1] > 0.0
+            || self.scale_prob[0] > 0.5
+            || self.scale_prob[1] > 0.5
+            || self.polar_angle[0] > 0.5
+    }
+}
+
 /// The break table entries of an unbroken chart.
 pub const NO_BREAKS: [[f32; 4]; 6] = [[0.0; 4]; 6];
 /// The break info of an unbroken chart.

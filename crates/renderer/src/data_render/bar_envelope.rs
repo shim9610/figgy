@@ -5,6 +5,9 @@ use crate::gpu_memory::{
 };
 use std::sync::Arc;
 
+/// The label of the envelope's compute pipeline.
+pub(crate) const ENVELOPE_SCAN_LABEL: &str = "histogram pixel maxima";
+
 pub(crate) struct Pipelines {
     compute: wgpu::ComputePipeline,
     render: wgpu::RenderPipeline,
@@ -80,7 +83,7 @@ impl Pipelines {
         let compute = crate::gpu_compile::compute_pipeline(
             &device,
             &wgpu::ComputePipelineDescriptor {
-                label: Some("histogram pixel maxima"),
+                label: Some(ENVELOPE_SCAN_LABEL),
                 layout: Some(&layout(&compute_layout)),
                 module: shader,
                 entry_point: Some("reduce_bar_envelope"),

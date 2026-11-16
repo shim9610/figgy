@@ -14,6 +14,7 @@
 /// The arrowhead sample for slot `i`, or an invalid sample for a slot past
 /// the drawn arc, on a NaN gap or on a segment with an invalid sample.
 fn vector_sample(i: u32) -> VectorSample {
+    let tf = transform;
     var sample: VectorSample;
     sample.origin_hi = vec3<f32>(0.0, 0.0, 0.0);
     sample.origin_lo = vec3<f32>(0.0, 0.0, 0.0);
@@ -41,7 +42,7 @@ fn vector_sample(i: u32) -> VectorSample {
     let ya = vector_pool_pair(vector_params.y_base, a);
     let xb = vector_pool_pair(vector_params.x_base, b);
     let yb = vector_pool_pair(vector_params.y_base, b);
-    if (!sample_valid(transform, xa, ya) || !sample_valid(transform, xb, yb)) {
+    if (!sample_valid(tf, xa, ya) || !sample_valid(tf, xb, yb)) {
         return sample;
     }
     // The segment's local arc: 0 at A, its length at B, the slot between.

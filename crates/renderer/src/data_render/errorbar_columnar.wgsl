@@ -34,13 +34,14 @@ fn errorbar_sample(in: VsIn) -> ErrorBarSample {
 
 @vertex
 fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
+    let tf = transform;
     // segment: 0 Y-stem, 1 cap@y_lo, 2 cap@y_hi, 3 X-stem, 4 cap@x_lo,
     // 5 cap@x_hi.
     let seg = in.vi / 6u;
 
     // Disabled directions collapse at the anchor, caps included.
     if (!errorbar_segment_enabled(style.primitive_flags, seg)) {
-        let anchor = data_to_ndc(transform, in.x, in.y);
+        let anchor = data_to_ndc(tf, in.x, in.y);
         return vec4<f32>(anchor, 0.0, 1.0);
     }
 
@@ -50,7 +51,7 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
         errorbar_stroke(style.line_width_px, style.cap_half_px, style.cap_width_px),
     );
     let corner = errorbar_corner(in.vi);
-    let ndc = errorbar_corner_ndc(transform, g, corner.at_a, corner.side * g.half_stroke);
+    let ndc = errorbar_corner_ndc(tf, g, corner.at_a, corner.side * g.half_stroke);
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
@@ -125,6 +126,7 @@ fn resolve_errorbar_mapped_style(style_index: f32, inst: u32) -> ResolvedErrorBa
 
 @vertex
 fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
+    let tf = transform;
     let resolved = resolve_errorbar_mapped_style(in.style_index, inst);
     let seg = in.vi / 6u;
 
@@ -132,7 +134,7 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
     out.color_premul = resolved.color_premul;
 
     if (!errorbar_segment_enabled(style.primitive_flags, seg)) {
-        let anchor = data_to_ndc(transform, in.x, in.y);
+        let anchor = data_to_ndc(tf, in.x, in.y);
         out.pos = vec4<f32>(anchor, 0.0, 1.0);
         return out;
     }
@@ -143,7 +145,7 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
         errorbar_stroke(resolved.line_width_px, resolved.cap_half_px, resolved.cap_width_px),
     );
     let corner = errorbar_corner(in.vi);
-    let ndc = errorbar_corner_ndc(transform, g, corner.at_a, corner.side * g.half_stroke);
+    let ndc = errorbar_corner_ndc(tf, g, corner.at_a, corner.side * g.half_stroke);
     out.pos = vec4<f32>(ndc, 0.0, 1.0);
     return out;
 }
@@ -169,12 +171,13 @@ fn fs_mapped(in: MappedOut) -> @location(0) vec4<f32> {
 // rasterize).
 @vertex
 fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position) vec4<f32> {
+    let tf = transform;
     // segment: 0 Y-stem, 1 cap@y_lo, 2 cap@y_hi, 3 X-stem, 4 cap@x_lo,
     // 5 cap@x_hi.
     let seg = in.vi / 6u;
 
     if (!errorbar_segment_enabled(style.primitive_flags, seg)) {
-        let anchor = data_to_ndc(transform, in.x, in.y);
+        let anchor = data_to_ndc(tf, in.x, in.y);
         return vec4<f32>(anchor, 0.0, 1.0);
     }
 
@@ -189,7 +192,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     let seed = (u32(transform.style_params[0].z) ^ style.series_salt) + styled_point_index(inst);
     let disp = errorbar_sketch_offset(amp, seed, seg, corner.at_a);
 
-    let ndc = errorbar_corner_ndc(transform, g, corner.at_a, corner.side * g.half_stroke + disp);
+    let ndc = errorbar_corner_ndc(tf, g, corner.at_a, corner.side * g.half_stroke + disp);
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
@@ -215,17 +218,18 @@ fn stem_baseline() -> vec2<f32> {
 // One corner of the stem quad, its ends displaced along the expansion axis
 // by `disp_a` / `disp_b` pixels (the sketch wobble; 0 for Precise).
 fn stem_vertex(in: VsIn, half_stroke: f32, disp_a: f32, disp_b: f32) -> StemOut {
+    let tf = transform;
     var out: StemOut;
     out.along_px = 0.0;
-    if (!sample_valid(transform, in.x, in.y)) {
+    if (!sample_valid(tf, in.x, in.y)) {
         // Every corner at one point: no area, nothing drawn.
         out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return out;
     }
     let flags = style.primitive_flags;
     let g = stem_segment(in.x, in.y, stem_baseline(), flags, half_stroke);
-    let a = stem_end_ndc(transform, g, true, flags);
-    let b = stem_end_ndc(transform, g, false, flags);
+    let a = stem_end_ndc(tf, g, true, flags);
+    let b = stem_end_ndc(tf, g, false, flags);
     let corner = errorbar_corner(in.vi);
     out.along_px = select(length((b - a) / transform.pixel_to_ndc), 0.0, corner.at_a);
     let end = select(b, a, corner.at_a);
@@ -299,6 +303,7 @@ fn stem_jet(in: VsIn, out_in: JetOut) -> JetOut {
 
 @vertex
 fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
+    let tf = transform;
     let seg = in.vi / 6u;
 
     var out: JetOut;
@@ -311,7 +316,7 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     }
 
     if (!errorbar_segment_enabled(style.primitive_flags, seg)) {
-        let anchor = data_to_ndc(transform, in.x, in.y);
+        let anchor = data_to_ndc(tf, in.x, in.y);
         out.pos = vec4<f32>(anchor, 0.0, 1.0);
         return out;
     }
@@ -330,7 +335,7 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     let corner = errorbar_corner(in.vi);
     let at_a = corner.at_a;
     let side = corner.side;
-    let ndc = errorbar_corner_ndc(transform, g, at_a, side * g.half_stroke);
+    let ndc = errorbar_corner_ndc(tf, g, at_a, side * g.half_stroke);
 
     out.pos = vec4<f32>(ndc, 0.0, 1.0);
     // Beams: (cross side, longitudinal 0/1). Knots: square corner coords —

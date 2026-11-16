@@ -86,7 +86,45 @@ node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs
 ## Readiness and selected values
 
 Await `FiggyChart.create(canvas)` before using a raw Cartesian chart. It
-prepares its rendering pipelines and waits for its initial empty frame.
+waits for its initial empty frame and for no pipeline compile: the renderer
+starts compiling every render pipeline at once and the browser goes on
+compiling them after the chart is on screen. A chart drawn meanwhile is drawn
+whole; the host calls and awaits nothing for this. `await chart.prewarm_all()`
+remains for a host that wants every pipeline prepared before it goes on.
+While a chart's pipelines compile in the background
+([#299](https://github.com/shim9610/figgy/issues/299)), a frame draws every
+series whose pipelines are ready, with the axes and legend, and leaves the others
+out; `frame()` draws again as soon as one of them has compiled, so a chart fills in
+without host calls. `chart.frame_complete()` tells whether the last frame drew every
+series, and `chart.pipeline_status()` returns `{ screen: { total, ready, compiling,
+failed }, all: { … }, frame_complete }`: `screen` counts what the chart on screen
+needs, so a progress bar over it never goes back. `await chart.series_ready()` resolves
+once a frame draws every series (`first_frame_ready()` also waits for that frame's GPU
+work) and `await chart.pipelines_ready()` once every compile has ended; both reject
+with an `Error` carrying `label` and `kind` when one failed, and
+`chart.pipeline_failures()` lists them as `[{ label, kind, message }]` (`kind`:
+`"validation"`, `"internal"`, `"rejected"`, `"device_lost"`, `"cancelled"`).
+`<figgy-chart>` has the same methods; its `pipeline_status()` is the last frame's
+snapshot, readable while the chart is busy, and it reports `{ scope:
+"renderer.pipelines", stage: "screen complete" }` and then `"all complete"` on the
+`figgy-init-progress` event. It starts its picker prewarm once the render pipelines
+have compiled. Exports and picks always draw the whole chart; they compile what they
+need through the browser's asynchronous compiler first (an export its pipelines,
+`pick_point` and `pick_data` their exact pick variants), so neither compiles on the
+page's thread.
+A chart starts on the basic shader set, which draws rectangular charts with
+linear and logarithmic axes, and moves itself to the full set when its config
+first has an axis break, a probability axis or polar coordinates
+([#299](https://github.com/shim9610/figgy/issues/299)). A host that knows it
+will show such a chart creates it on the full set, so the basic set is not
+compiled first and discarded:
+`await FiggyChart.create_with_options(canvas, { shaders: "full" })`, or
+`<figgy-chart shaders="full">`. The options are `shaders` (`"basic"`, the
+default, or `"full"`) and `on_progress` (the callback of
+`create_with_progress`); any other option or value is refused with an `Error`
+that names it. `chart.shader_set()` and `element.shaders` read the current
+set; `chart.require_shader_set("full")` and `element.shaders = "full"` move a
+ready chart up early. A chart never goes back to the basic set.
 After installing data/configuration, `await chart.first_frame_ready()` submits
 that state and waits for GPU completion. For the radial chart, creation
 prepares the document, and the host must explicitly await
@@ -158,6 +196,24 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 로컬에서는 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
 `<figgy-chart>` 요소 테스트(`tests/figgy-chart.test.mjs`)는 빌드나 브라우저 없이 Node만으로
 실행한다: `node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs`.
+
+차트의 파이프라인이 백그라운드에서 컴파일되는 동안([#299](https://github.com/shim9610/figgy/issues/299))
+프레임은 파이프라인이 준비된 시리즈와 축·범례를 그리고 나머지는 뺀다. 그 파이프라인의 컴파일이
+끝나면 `frame()`이 다시 그리므로 호스트가 호출하지 않아도 차트가 채워진다.
+`chart.frame_complete()`는 마지막 프레임이 모든 시리즈를 그렸는지 알려 준다.
+`chart.pipeline_status()`는 `{ screen, all, frame_complete }` 객체로 컴파일 현황을 돌려준다.
+`screen`은 지금 화면에 필요한 것만 세므로 이것으로 만든 진행률은 뒤로 가지 않는다.
+`await chart.series_ready()`는 모든 시리즈가 그려지면, `await chart.pipelines_ready()`는 모든
+컴파일이 끝나면 풀린다. 둘 다 컴파일이 실패하면 `label`과 `kind`가 담긴 `Error`로 거부되고,
+`chart.pipeline_failures()`가 실패 목록(`[{ label, kind, message }]`)을 돌려준다.
+`<figgy-chart>`도 같은 메서드를 갖는다. 요소의 `pipeline_status()`는 마지막 프레임의 스냅샷이라
+차트가 바쁠 때도 읽을 수 있고, `figgy-init-progress` 이벤트로 `"screen complete"`와
+`"all complete"`를 알린다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
+
+차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
+스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가
+필요하면 `FiggyChart.create_with_options(canvas, { shaders: "full" })`이나
+`<figgy-chart shaders="full">`로 만든다.
 
 위 명령으로 빌드하고 로컬 서버를 열면 히스토그램과 시간축 데모를 조작할 수 있다.
 GitHub README 안에서는 JavaScript와 WASM을 실행할 수 없으므로, 직접 조작하는 데모는

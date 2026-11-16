@@ -36,6 +36,47 @@ pub(super) fn emit_init_progress(
     Ok(())
 }
 
+/// The JS name of a pipeline failure's kind (#299).
+fn failure_kind(kind: renderer::PipelineFailureKind) -> &'static str {
+    match kind {
+        renderer::PipelineFailureKind::Validation => "validation",
+        renderer::PipelineFailureKind::Internal => "internal",
+        renderer::PipelineFailureKind::Rejected => "rejected",
+        renderer::PipelineFailureKind::DeviceLost => "device_lost",
+        renderer::PipelineFailureKind::Cancelled => "cancelled",
+    }
+}
+
+/// `{ label, kind, message }` for one failed compile (#299).
+fn failure_object(failure: &renderer::PipelineFailure) -> Result<JsValue, JsValue> {
+    let object = js_sys::Object::new();
+    js_sys::Reflect::set(&object, &"label".into(), &failure.label.as_str().into())?;
+    js_sys::Reflect::set(&object, &"kind".into(), &failure_kind(failure.kind).into())?;
+    js_sys::Reflect::set(&object, &"message".into(), &failure.message.as_str().into())?;
+    Ok(object.into())
+}
+
+/// An `Error` for a failed compile, with its `label`, `kind` and `message`
+/// as properties (#299).
+fn failure_error(failure: &renderer::PipelineFailure) -> JsValue {
+    let error = js_sys::Error::new(&format!(
+        "the pipeline {} did not compile ({}): {}",
+        failure.label,
+        failure_kind(failure.kind),
+        failure.message
+    ));
+    for (key, value) in [
+        ("label", failure.label.as_str()),
+        ("kind", failure_kind(failure.kind)),
+    ] {
+        if js_sys::Reflect::set(&error, &key.into(), &value.into()).is_err() {
+            // Setting a property on a fresh `Error` does not throw; the
+            // message carries both anyway.
+        }
+    }
+    error.into()
+}
+
 /// [`emit_init_progress`] for a renderer observer, which cannot return an
 /// error: the first failure is kept in `failed` and later events are not
 /// reported. The caller rejects with `failed` once the observed call
@@ -52,9 +93,75 @@ fn observe_init_progress(
     }
 }
 
+/// The shader set named `name` in the web API (#299): `"basic"` or
+/// `"full"`. Any other value is refused, naming it.
+pub(super) fn shader_set_from_name(name: &JsValue) -> Result<renderer::ShaderSet, JsValue> {
+    match name.as_string().as_deref() {
+        Some("basic") => Ok(renderer::ShaderSet::Basic),
+        Some("full") => Ok(renderer::ShaderSet::Full),
+        Some(other) => Err(JsValue::from(js_sys::Error::new(&format!(
+            "shaders must be \"basic\" or \"full\", got \"{other}\""
+        )))),
+        None => Err(JsValue::from(js_sys::Error::new(
+            "shaders must be the string \"basic\" or \"full\"",
+        ))),
+    }
+}
+
+/// The web API's name of `set`.
+pub(super) fn shader_set_name(set: renderer::ShaderSet) -> &'static str {
+    match set {
+        renderer::ShaderSet::Basic => "basic",
+        renderer::ShaderSet::Full => "full",
+    }
+}
+
+/// `FiggyChart.create_with_options`' options, read and checked before
+/// anything is created: `shaders` and `on_progress`, both optional. An
+/// unknown key or a value of the wrong kind is refused.
+pub(super) fn create_options(
+    options: &JsValue,
+) -> Result<(renderer::ShaderSet, Option<js_sys::Function>), JsValue> {
+    if options.is_undefined() || options.is_null() {
+        return Ok((renderer::ShaderSet::Basic, None));
+    }
+    if !options.is_object() || js_sys::Array::is_array(options) {
+        return Err(JsValue::from(js_sys::Error::new(
+            "create_with_options takes an options object",
+        )));
+    }
+    let mut set = renderer::ShaderSet::Basic;
+    let mut on_progress = None;
+    for key in js_sys::Object::keys(options.unchecked_ref::<js_sys::Object>()).iter() {
+        let value = js_sys::Reflect::get(options, &key)?;
+        match key.as_string().as_deref() {
+            Some("shaders") => {
+                if !value.is_undefined() {
+                    set = shader_set_from_name(&value)?;
+                }
+            }
+            Some("on_progress") => {
+                if !value.is_undefined() {
+                    on_progress = Some(value.dyn_into::<js_sys::Function>().map_err(|_| {
+                        JsValue::from(js_sys::Error::new("on_progress must be a function"))
+                    })?);
+                }
+            }
+            other => {
+                return Err(JsValue::from(js_sys::Error::new(&format!(
+                    "unknown create option \"{}\": the options are shaders and on_progress",
+                    other.unwrap_or("")
+                ))));
+            }
+        }
+    }
+    Ok((set, on_progress))
+}
+
 pub(super) async fn create_chart_kernel(
     canvas: HtmlCanvasElement,
     on_event: Option<js_sys::Function>,
+    shader_set: renderer::ShaderSet,
 ) -> Result<FiggyChart, JsValue> {
     console_error_panic_hook::set_once();
 
@@ -63,10 +170,14 @@ pub(super) async fn create_chart_kernel(
         let mut failed = None;
         let mut observer = |event| observe_init_progress(on_event_ref, event, &mut failed);
         let (w, h) = (canvas.width().max(1), canvas.height().max(1));
-        let renderer = Renderer::for_window_async_observed(
+        // No pipeline compile is awaited (#299): the renderer starts them
+        // all at once and leaves them running in the browser, and the first
+        // frame draws with the one pipeline an empty chart needs.
+        let renderer = Renderer::for_window_with_shader_set_async_observed(
             wgpu::SurfaceTarget::Canvas(canvas),
             (w, h),
             POOL_CAPACITY,
+            shader_set,
             &mut observer,
         )
         .await
@@ -575,7 +686,7 @@ impl FiggyChart {
     /// `figgy-chart.js` and its `<figgy-chart>` Custom Element.
     /// JS: `const chart = await FiggyChart.create(canvas);`
     pub async fn create(canvas: HtmlCanvasElement) -> Result<FiggyChart, JsValue> {
-        create_chart_kernel(canvas, None).await
+        create_chart_kernel(canvas, None, renderer::ShaderSet::Basic).await
     }
 
     /// Same as [`Self::create`], reporting each init stage to `on_event`
@@ -586,7 +697,45 @@ impl FiggyChart {
         canvas: HtmlCanvasElement,
         on_event: js_sys::Function,
     ) -> Result<FiggyChart, JsValue> {
-        create_chart_kernel(canvas, Some(on_event)).await
+        create_chart_kernel(canvas, Some(on_event), renderer::ShaderSet::Basic).await
+    }
+
+    /// [`Self::create`] with options (#299), all optional:
+    ///
+    /// - `shaders`: `"basic"` (the default) or `"full"`. A chart starts on
+    ///   the basic shader set, which draws linear and logarithmic
+    ///   rectangular charts, and moves to the full set by itself when its
+    ///   config first has an axis break, a probability axis or polar
+    ///   coordinates. A host that knows it will show such a chart passes
+    ///   `"full"`, so the basic set is never compiled and discarded.
+    /// - `on_progress`: the callback of [`Self::create_with_progress`].
+    ///
+    /// An unknown option, or a `shaders` value other than those two,
+    /// rejects the promise with an `Error` that names it; nothing is
+    /// created.
+    /// JS: `const chart = await FiggyChart.create_with_options(canvas, { shaders: "full" });`
+    pub async fn create_with_options(
+        canvas: HtmlCanvasElement,
+        options: JsValue,
+    ) -> Result<FiggyChart, JsValue> {
+        let (set, on_progress) = create_options(&options)?;
+        create_chart_kernel(canvas, on_progress, set).await
+    }
+
+    /// The shader set this chart compiles (#299): `"basic"` or `"full"`.
+    pub fn shader_set(&self) -> String {
+        shader_set_name(self.renderer.shader_set()).into()
+    }
+
+    /// Move this chart to at least the shader set `shaders` (`"basic"` or
+    /// `"full"`, #299), as its first chart with an axis break, a
+    /// probability axis or polar coordinates would. A chart never goes
+    /// back, so `"basic"` and a repeated `"full"` do nothing. Any other
+    /// value throws an `Error` that names it.
+    pub fn require_shader_set(&mut self, shaders: JsValue) -> Result<(), JsValue> {
+        let set = shader_set_from_name(&shaders)?;
+        self.renderer.require_shader_set(set);
+        Ok(())
     }
 
     /// Register a font (TTF/OTF/TTC bytes) for SSoT `font` family names.
@@ -1440,15 +1589,123 @@ impl FiggyChart {
     /// Submit the current chart if it is dirty, then wait until that GPU
     /// work has finished. Hosts should keep a loading overlay up until
     /// this resolves. The wait does not remove a main-thread Dawn/driver
-    /// freeze; it only reports first-submit completion.
+    /// freeze; it only reports first-submit completion. While a series'
+    /// pipelines still compile in the background its frame leaves it out
+    /// (#299); this draws again as they resolve and settles with the frame
+    /// that holds every series.
     ///
     /// JS: `await chart.first_frame_ready();`
     pub async fn first_frame_ready(&mut self) -> Result<(), JsValue> {
-        self.frame()?;
+        self.draw_until_complete().await?;
         renderer::init::wait_browser_submitted_work(self.renderer.queue())
             .await
             .map_err(js_err)?;
         Ok(())
+    }
+
+    /// Draw until a frame draws every series (#299). A frame that left a
+    /// series out while its pipelines compile waits for a compile to change
+    /// state, then draws again. A frame leaves a series out only while one
+    /// of its compiles is waiting or compiling, and every compile ends
+    /// (ready, rejected, device lost, superseded or cancelled), so this ends.
+    async fn draw_until_complete(&mut self) -> Result<(), JsValue> {
+        self.frame()?;
+        while !self.renderer.frame_complete() {
+            if self.renderer.compiles_pending() {
+                self.renderer.compile_progress().await;
+            }
+            self.redraw_pending = true;
+            self.frame()?;
+            if !self.renderer.frame_complete() && !self.renderer.compiles_pending() {
+                // Nothing is compiling, yet a series was left out: no
+                // compile will ever wake this wait.
+                return Err(JsValue::from_str(
+                    "a series waits for a pipeline that no compile is pending for",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves once a frame draws every series of the chart (#299),
+    /// drawing again as the pipelines it waits for compile. It rejects with
+    /// an `Error` carrying `label`, `kind` and `message` when one of those
+    /// compiles failed (see [`Self::pipeline_failures`]); the chart still
+    /// draws that series, and the draw reports the error as usual.
+    ///
+    /// JS: `await chart.series_ready();`
+    pub async fn series_ready(&mut self) -> Result<(), JsValue> {
+        self.draw_until_complete().await?;
+        self.renderer
+            .series_ready()
+            .await
+            .map_err(|failure| failure_error(&failure))
+    }
+
+    /// Resolves once every background compile scheduled so far has ended
+    /// (#299). It rejects like [`Self::series_ready`] with the first that
+    /// failed. It draws nothing.
+    ///
+    /// JS: `await chart.pipelines_ready();`
+    pub async fn pipelines_ready(&mut self) -> Result<(), JsValue> {
+        self.renderer
+            .pipelines_ready()
+            .await
+            .map_err(|failure| failure_error(&failure))
+    }
+
+    /// Whether the last frame drew every series of the chart (#299): false
+    /// while a series waits for its pipelines' background compile, which
+    /// the frames that follow draw as they resolve.
+    pub fn frame_complete(&self) -> bool {
+        self.renderer.frame_complete()
+    }
+
+    /// The chart's background pipeline compiles (#299) as an object:
+    /// `{ screen: { total, ready, compiling, failed }, all: { … },
+    /// frame_complete }`. `screen` counts what the last frame needed, so a
+    /// progress bar over it never goes back; `all` grows when a chart first
+    /// needs a module compiled on demand. `compiling` counts the waiting
+    /// compiles too.
+    ///
+    /// JS: `const { screen, all, frame_complete } = chart.pipeline_status();`
+    pub fn pipeline_status(&self) -> Result<JsValue, JsValue> {
+        let status = self.renderer.pipeline_status();
+        let counts = |counts: renderer::PipelineCounts| -> Result<JsValue, JsValue> {
+            let object = js_sys::Object::new();
+            js_sys::Reflect::set(&object, &"total".into(), &(counts.total as f64).into())?;
+            js_sys::Reflect::set(&object, &"ready".into(), &(counts.ready as f64).into())?;
+            js_sys::Reflect::set(
+                &object,
+                &"compiling".into(),
+                &(counts.compiling as f64).into(),
+            )?;
+            js_sys::Reflect::set(&object, &"failed".into(), &(counts.failed as f64).into())?;
+            Ok(object.into())
+        };
+        let object = js_sys::Object::new();
+        js_sys::Reflect::set(&object, &"screen".into(), &counts(status.screen)?)?;
+        js_sys::Reflect::set(&object, &"all".into(), &counts(status.all)?)?;
+        js_sys::Reflect::set(
+            &object,
+            &"frame_complete".into(),
+            &status.frame_complete.into(),
+        )?;
+        Ok(object.into())
+    }
+
+    /// Every background compile that failed (#299), in order, as
+    /// `[{ label, kind, message }]`. `kind` is `"validation"` or
+    /// `"internal"` (the browser's `GPUPipelineError` reason), `"rejected"`
+    /// (any other rejection), `"device_lost"` or `"cancelled"`.
+    ///
+    /// JS: `for (const { label, kind } of chart.pipeline_failures()) …`
+    pub fn pipeline_failures(&self) -> Result<js_sys::Array, JsValue> {
+        let array = js_sys::Array::new();
+        for failure in self.renderer.pipeline_failures() {
+            array.push(&failure_object(&failure)?);
+        }
+        Ok(array)
     }
 
     /// Alias for [`Self::first_frame_ready`].
@@ -1508,11 +1765,13 @@ impl FiggyChart {
         let annotation_dirty = current_stamp
             .needs_annotation_raster_since(self.last_presented_stamp.as_ref())
             || self.annotation_selection_dirty;
+        // A pipeline a left-out series waited for has compiled: draw again,
+        // so the chart fills in without a host call (#299).
         let decision = frame_decision(
             renderer_dirty,
             raster_dirty,
             self.view_dirty,
-            self.redraw_pending,
+            self.redraw_pending || self.renderer.compile_redraw_due(),
             self.renderer.has_pending_maintenance(),
         );
         let refresh_raster = match decision {

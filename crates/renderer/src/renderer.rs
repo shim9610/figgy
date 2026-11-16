@@ -105,6 +105,7 @@ use crate::init::{
 use crate::layout::Rect;
 use crate::line::LineStylePreset;
 use crate::select::HitId;
+use crate::shader_assembly::ShaderSet;
 
 /// Stable identity for one renderer-owned chart state.
 ///
@@ -148,6 +149,75 @@ impl RenderRevision {
 
 /// Opaque O(1) identity for all renderer-visible output, including fonts
 /// registered through the process-global font registry.
+
+/// A snapshot of a renderer's background pipeline compiles (#299), read
+/// with [`Renderer::pipeline_status`]. A renderer with no background
+/// compiles (native, or a browser renderer that compiled everything at
+/// creation) reports zero of each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineStatus {
+    /// The compiles the last screen frame needed. Its `total` only changes
+    /// with the chart, so a progress bar over it never goes back.
+    pub screen: PipelineCounts,
+    /// Every compile scheduled so far. Its `total` grows when a chart first
+    /// needs a module compiled on demand (vector, 3D surface, ternary
+    /// region).
+    pub all: PipelineCounts,
+    /// Whether the last screen frame drew every series it was handed.
+    pub frame_complete: bool,
+}
+
+/// Counts of background compiles, by how they stand (#299).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineCounts {
+    /// Pipelines scheduled.
+    pub total: usize,
+    /// Pipelines compiled.
+    pub ready: usize,
+    /// Pipelines waiting for or in their compile.
+    pub compiling: usize,
+    /// Pipelines whose compile ended otherwise ([`PipelineFailure`]). The
+    /// draw that needs one creates it, which reports the error.
+    pub failed: usize,
+}
+
+/// How a background compile failed (#299).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineFailureKind {
+    /// The browser rejected it with a `GPUPipelineError` of reason
+    /// `"validation"`.
+    Validation,
+    /// The browser rejected it with a `GPUPipelineError` of reason
+    /// `"internal"`, for example out of memory.
+    Internal,
+    /// The browser rejected it with something else (a call that threw).
+    Rejected,
+    /// The GPU device was lost first.
+    DeviceLost,
+    /// The renderer was dropped first.
+    Cancelled,
+}
+
+/// One background compile that ended other than compiled (#299), read with
+/// [`Renderer::pipeline_failures`] or carried by the error of
+/// [`Renderer::series_ready`] and [`Renderer::pipelines_ready`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipelineFailure {
+    /// The pipeline's label (`figgy line columnar pipeline`).
+    pub label: String,
+    pub kind: PipelineFailureKind,
+    /// The browser's message, or why it did not compile.
+    pub message: String,
+}
+
+impl std::fmt::Display for PipelineFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({:?}): {}", self.label, self.kind, self.message)
+    }
+}
+
+impl std::error::Error for PipelineFailure {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RendererVisualStamp {
     revision: RenderRevision,
@@ -339,6 +409,26 @@ pub struct Renderer {
     /// channel count, never by the sample count (M3).
     monotonic: monotonic::MonotonicState,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
+    /// The background compiles of this renderer's render pipelines in the
+    /// browser (#299): a renderer built by `for_window_minimal_async_observed`
+    /// (or with a shader set) has one; any other renderer creates each
+    /// pipeline when it first draws it, as before.
+    #[cfg(target_arch = "wasm32")]
+    compile_queue: Option<crate::browser_compile::CompileQueue>,
+    /// The background compiles of the export target's pipelines (#299),
+    /// made on the first browser export of a renderer with a
+    /// [`Self::compile_queue`]: an export compiles what it draws with here
+    /// and waits for it, so its own creation finds the browser's cache.
+    #[cfg(target_arch = "wasm32")]
+    export_compile_queue: Option<crate::browser_compile::CompileQueue>,
+    /// Whether the last screen frame this renderer prepared drew every
+    /// series it was handed (#299): false while a series waited for its
+    /// pipelines' background compile. Always true natively.
+    frame_complete: bool,
+    /// The queue's settled count when the last screen frame was prepared:
+    /// a compile settled since then may let a left-out series draw.
+    #[cfg(target_arch = "wasm32")]
+    frame_settled: u64,
     /// Test-only narrowing of the arc-scan chunk size so the multi-chunk
     /// carry path is exercisable with small `n`. Always `None` in release.
     #[cfg(test)]

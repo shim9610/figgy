@@ -89,7 +89,9 @@ impl Renderer {
             crate::init::prewarm_compute_entries_js(
                 &self.device,
                 "contour.label.async",
-                crate::gpu_contour::CONTOUR_ANCHOR_SHADER.source,
+                crate::gpu_contour::CONTOUR_ANCHOR_SHADER_BY_SET
+                    .of(self.pipelines.shaders.set)
+                    .source,
                 &[
                     ("anchor_project", "anchor_seed"),
                     ("anchor_project", "anchor_step"),
@@ -106,6 +108,30 @@ impl Renderer {
             self.prewarm_contour_labels(observer);
             crate::init::yield_init_frame().await;
         }
+        // The browser's asynchronous compiler first, for every group that
+        // is not installed yet: a renderer built minimally has warmed only
+        // its fullscreen pipeline, and the creations below would otherwise
+        // compile on the main thread (#299).
+        #[cfg(target_arch = "wasm32")]
+        for feature in PreparationFeature::ALL {
+            if feature == PreparationFeature::Picking || self.preparation_ready(feature) {
+                continue;
+            }
+            data_render::prewarm_browser_render_feature(
+                &self.device,
+                self.surface_format,
+                self.target_sample_count,
+                Some(feature),
+                self.pipelines.shaders.set,
+                self.compile_queue.as_ref(),
+                observer,
+            )
+            .await
+            .map_err(|reason| FiggyError::GpuResourceAllocationFailed {
+                resource: "browser render pipeline prewarm",
+                reason,
+            })?;
+        }
         let layouts = renderer_prewarm_layouts!(self);
         self.pipelines
             .prewarm_all_observed(&layouts, observer)
@@ -116,8 +142,9 @@ impl Renderer {
         }
         if self.arc_pipelines.is_none() {
             self.arc_pipelines = Some(
-                data_render::line_arc::create_arc_scan_pipelines_observed_async(
+                data_render::line_arc::create_arc_scan_pipelines_by_set_async(
                     &self.device,
+                    self.pipelines.shaders.set,
                     observer,
                 )
                 .await
@@ -179,8 +206,9 @@ impl Renderer {
             self.prewarm_mesh_stage(stage, observer);
         }
         if self.arc_pipelines.is_none() {
-            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_observed(
+            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_by_set(
                 &self.device,
+                self.pipelines.shaders.set,
                 observer,
             ));
         }
@@ -202,7 +230,13 @@ impl Renderer {
             observer,
             "renderer.prewarm",
             "contour label engine",
-            || crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field_bgl),
+            || {
+                crate::gpu_contour::ContourLabelPipelines::new_by_set(
+                    &self.device,
+                    &self.field_bgl,
+                    self.pipelines.shaders.set,
+                )
+            },
         );
         self.contour_label_pipelines = Some(pipelines);
     }

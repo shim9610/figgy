@@ -971,6 +971,24 @@ impl FiggyChart {
 
     /// Whether the shown chart draws from a stream: a monotonic chart
     /// never does (#271).
+    /// Compile the exact pick pipelines a pick at `at` needs through the
+    /// browser's async API before the pick submits (#299), so the first
+    /// pick does not compile them on the page's thread. A monotonic chart
+    /// picks through its own query and needs none.
+    async fn compile_pick_pipelines(
+        &mut self,
+        at: [f32; 2],
+        max_distance_px: f32,
+    ) -> Result<(), JsValue> {
+        if self.monotonic.is_some() {
+            return Ok(());
+        }
+        self.renderer
+            .compile_pick_pipelines_at(self.chart_id, at, max_distance_px)
+            .await
+            .map_err(js_err)
+    }
+
     fn shows_stream(&self) -> bool {
         self.monotonic.is_none() && self.renderer.is_streaming_chart(self.chart_id)
     }
@@ -1060,6 +1078,7 @@ impl FiggyChart {
             return Ok(JsValue::from_str(&json));
         }
         self.prepare_gpu_picking().await?;
+        self.compile_pick_pipelines([x, y], max_distance_px).await?;
         // A drawn value label is a typed pick target; the point pick does
         // not see it.
         // An energy-level series (#203) is picked on the CPU through the
@@ -1464,6 +1483,7 @@ impl FiggyChart {
             return Ok(JsValue::from_str(&json));
         }
         self.prepare_gpu_picking().await?;
+        self.compile_pick_pipelines([x, y], max_distance_px).await?;
         let ticket = self.data_pick_ticket([x, y], max_distance_px)?;
         let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
             return Ok(JsValue::UNDEFINED);
