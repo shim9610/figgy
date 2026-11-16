@@ -133,11 +133,15 @@ fn the_variants_draw_the_same(kinds: &[SceneKind]) {
                 .zip(second.rgba.chunks_exact(4))
                 .filter(|(a, b)| a != b)
                 .count();
+            if differing > 0 {
+                save_pair(kind, scale, &first, &second);
+            }
             assert_eq!(
                 differing,
                 0,
-                "{} at {scale}x: {differing} pixels differ between the basic and the full shaders",
-                kind.label()
+                "{} at {scale}x: {differing} pixels differ between the basic and the full shaders ({})",
+                kind.label(),
+                difference_summary(&first, &second)
             );
         }
     }
@@ -179,4 +183,63 @@ fn the_known_full_scenes_are_catalogue_scenes() {
         assert!(scenes.contains(kind), "{}", kind.label());
     }
     assert!(scenes.len() > KNOWN_FULL_SCENES.len() + 30);
+}
+
+/// How the differing pixels of two same-sized exports differ: the largest
+/// per-channel difference, how many pixels differ by at most 1, 8 and 32
+/// levels in their worst channel, and the bounding box of the differences.
+fn difference_summary(a: &RasterImage, b: &RasterImage) -> String {
+    let mut worst = 0u8;
+    let mut within = [0usize; 3];
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    for (index, (pa, pb)) in a
+        .rgba
+        .chunks_exact(4)
+        .zip(b.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        let delta = pa
+            .iter()
+            .zip(pb)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0);
+        if delta == 0 {
+            continue;
+        }
+        worst = worst.max(delta);
+        for (bucket, limit) in within.iter_mut().zip([1u8, 8, 32]) {
+            if delta <= limit {
+                *bucket += 1;
+            }
+        }
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        let (x, y) = (index % a.width, index / a.width);
+        (min_x, min_y, max_x, max_y) = (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y));
+    }
+    format!(
+        "largest channel difference {worst}; within 1: {}, within 8: {}, within 32: {}; box x {min_x}..={max_x}, y {min_y}..={max_y}",
+        within[0], within[1], within[2]
+    )
+}
+
+/// Save both exports of a scene that differs, next to the test's build
+/// output, so a CI run can upload them.
+fn save_pair(kind: SceneKind, scale: f32, basic: &RasterImage, full: &RasterImage) {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("shader-set-differences");
+    if std::fs::create_dir_all(&dir).is_err() {
+        // Nothing to save into: the assertion still reports the summary.
+        return;
+    }
+    let stem: String = kind
+        .label()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    for (set, image) in [("basic", basic), ("full", full)] {
+        let path = dir.join(format!("{stem}-{scale}x-{set}.png"));
+        if image.save_png(&path).is_err() {
+            // As above: the summary is the report; the image is an aid.
+        }
+    }
 }
