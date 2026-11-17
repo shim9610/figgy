@@ -739,6 +739,50 @@ impl FiggyChart {
             }
             // A value label reports its category, its drawn string and its
             // drag offset: configuration, nothing is read back.
+            // An energy-level label (#318) lives in the series' own rows:
+            // `part` names the list, `category_index` the row. It reports
+            // the row's id, its label and drag offset, all configuration;
+            // the categorical label text is never looked up.
+            PickedDataRef::ValueLabel {
+                category_index,
+                part,
+                ..
+            } if series.render_type.energy_levels().is_some() => {
+                use renderer::energy_levels::LabelPart;
+                let levels = series
+                    .render_type
+                    .energy_levels()
+                    .ok_or_else(|| js_err("selected series is not an energy-level diagram"))?;
+                let part = part.ok_or_else(|| js_err("an energy-level label names its part"))?;
+                let index = *category_index;
+                let (id, label) = match part {
+                    LabelPart::Level => levels.levels.get(index).map(|r| (&r.id, &r.label)),
+                    LabelPart::Transition => {
+                        levels.transitions.get(index).map(|r| (&r.id, &r.label))
+                    }
+                    LabelPart::Limit => levels.limits.get(index).map(|r| (&r.id, &r.label)),
+                    LabelPart::Band => levels.bands.get(index).map(|r| (&r.id, &r.label)),
+                }
+                .ok_or_else(|| js_err("selected label no longer exists"))?;
+                let offset = levels
+                    .label_offset(part, index)
+                    .ok_or_else(|| js_err("selected label no longer exists"))?;
+                result["index"] = serde_json::json!(index);
+                result["part"] = serde_json::to_value(part).map_err(js_err)?;
+                result["id"] = serde_json::json!(id);
+                result["label"] = serde_json::to_value(label).map_err(js_err)?;
+                result["text"] = match label {
+                    Some(label) => serde_json::json!(
+                        label
+                            .segments
+                            .iter()
+                            .map(|segment| segment.text)
+                            .collect::<String>()
+                    ),
+                    None => serde_json::Value::Null,
+                };
+                result["offset"] = serde_json::json!(offset);
+            }
             PickedDataRef::ValueLabel { category_index, .. } => {
                 let config = self.chart_config()?;
                 let layer = config.layer_of_series(&series.series_id);

@@ -3378,6 +3378,16 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   label with `part: "band"`; `press_energy_label(series_id, "band", index)`
   drags it into the band's `label_offset`.
 
+- **`selection_details()` reports a selected energy-level label**
+  ([#318](https://github.com/shim9610/figgy/issues/318)). A selected label
+  of an energy-level series was looked up in the categorical
+  `labels.text`, which that series does not have, and the call rejected
+  with "selected label no longer exists". It now reads the row that
+  `part` and `category_index` name (a level, transition, limit or band)
+  and reports `index`, `part`, the row's `id`, its `label` (rich text or
+  `null`), its plain `text` (or `null`) and its drag `offset`. A label of an
+  energy-level series without `part` is refused with an error that says so.
+
 <a id="unreleased-bounded-migration"></a>
 
 ### Migrating from the bounded group ([#40](https://github.com/shim9610/figgy/issues/40))
