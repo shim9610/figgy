@@ -475,6 +475,16 @@ impl Renderer {
         self.admit_full_shaders(set == ShaderSet::Full);
     }
 
+    /// Move this renderer to the shader set `config` needs (#299, #311),
+    /// as `set_chart_state` does when it stores a config: the full set for
+    /// an axis break, a probability axis or polar coordinates on any layer,
+    /// nothing otherwise. A host that installs a chart through
+    /// [`Self::begin_replace_chart_sources`] calls it with the candidate
+    /// config first, so the pipelines are compiled for it from the start.
+    pub fn require_shaders_for(&mut self, config: &Config) {
+        self.admit_full_shaders(config_needs_full_shaders(config));
+    }
+
     /// Compile every data shader as its full module from now on, when
     /// `needed` says a chart that needs one has arrived (#299): a chart with
     /// an axis break, a probability axis or polar coordinates on any layer

@@ -433,6 +433,106 @@ async fn replaced_documents_keep_the_documented_ids_and_remove_the_stale_columns
     assert!(!chart.export_png(2.0).await.unwrap().to_vec().is_empty());
 }
 
+/// A chart that shows a monotonic document (#271) of one group, `daq`.
+async fn monotonic_chart() -> FiggyChart {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    let mut config = renderer::Chart::sized(480, 320);
+    config.set_x_range(0.0, 99.0);
+    config.set_y_range(-1.0, 1.0);
+    let series = vec![SeriesConfig::monotonic_line("a", "daq", 0)];
+    chart
+        .set_monotonic_document(
+            &serde_json::to_string(config.config()).unwrap(),
+            &serde_json::to_string(&series).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(chart.monotonic_groups().unwrap(), r#"["daq"]"#);
+    chart
+}
+
+#[wasm_bindgen_test(async)]
+async fn a_document_replaces_a_shown_monotonic_document_under_the_documented_ids() {
+    let mut chart = monotonic_chart().await;
+    chart.set_categorical_document(CATEGORICAL).unwrap();
+    // The monotonic chart ended with the commit; the document is shown.
+    assert_eq!(chart.monotonic_groups().unwrap(), "[]");
+    let shown = series(&chart);
+    assert_eq!(shown.len(), 2);
+    assert_eq!(shown[0].x_column, "categorical.positions");
+    assert_eq!(shown[0].y_column, "categorical.values.north");
+    assert_eq!(shown[1].y_column, "categorical.values.south");
+    assert_eq!(
+        column_ids(&chart),
+        [
+            "categorical.positions",
+            "categorical.values.north",
+            "categorical.values.south",
+        ]
+    );
+    chart.frame().unwrap();
+    assert!(!chart.export_png(1.0).await.unwrap().to_vec().is_empty());
+}
+
+#[wasm_bindgen_test(async)]
+async fn a_failed_document_replace_leaves_a_shown_monotonic_document_as_it_was() {
+    let mut chart = monotonic_chart().await;
+    let state = |chart: &FiggyChart| {
+        (
+            chart.get_config().unwrap(),
+            chart.get_series().unwrap(),
+            column_ids(chart),
+            chart.monotonic_groups().unwrap(),
+        )
+    };
+    let before = state(&chart);
+
+    // Validate: a malformed document, and a documented id held by another
+    // kind of source.
+    let error = chart.set_radar_document("{").unwrap_err();
+    assert_eq!(error_field(&error, "stage").as_deref(), Some("validate"));
+    assert_eq!(state(&chart), before, "malformed document");
+    chart
+        .register_column_f64("boxplot.record.a", &[0.0, 1.0])
+        .unwrap();
+    let before = state(&chart);
+    let error = chart.set_boxplot_document(BOXPLOT).unwrap_err();
+    assert_eq!(error_field(&error, "stage").as_deref(), Some("validate"));
+    assert_eq!(state(&chart), before, "held id");
+
+    // Upload: a budget the transaction's peak does not fit (24 MB of
+    // outliers on a 16 MiB pool, see the budget test above).
+    let outliers = (0..3_000_000)
+        .map(|i| format!("{}", 100.0 + i as f64 * 1e-3))
+        .collect::<Vec<_>>()
+        .join(",");
+    let total = total_bytes(&chart);
+    let margin = 2.0 * 1024.0 * 1024.0;
+    chart
+        .configure_auto_residency(total + margin, total + margin)
+        .unwrap();
+    // Series `b`: its record id is free, so the failure is the upload's.
+    let large_boxes = BOXPLOT
+        .replace(
+            "\"outliers\": [9.0]",
+            &format!("\"outliers\": [{outliers}]"),
+        )
+        .replace("\"id\": \"a\"", "\"id\": \"b\"");
+    let error = chart.set_boxplot_document(&large_boxes).unwrap_err();
+    assert_eq!(
+        error_field(&error, "stage").as_deref(),
+        Some("upload"),
+        "{}",
+        error_message(&error)
+    );
+    assert_eq!(state(&chart), before, "upload failure");
+
+    // With room again a document replaces it.
+    chart.configure_auto_residency(1e12, 1e12).unwrap();
+    chart.set_radar_document(RADAR).unwrap();
+    assert_eq!(chart.monotonic_groups().unwrap(), "[]");
+    assert_eq!(series(&chart)[0].x_column, "radar.positions");
+}
+
 // ---- chunked column upload ----
 
 #[wasm_bindgen_test(async)]

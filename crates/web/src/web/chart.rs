@@ -1693,16 +1693,23 @@ impl FiggyChart {
     /// family, that the new document does not upload again; an id it does
     /// upload again is replaced in place. The ids are therefore the
     /// documented ones for every document opened.
+    /// On a chart that shows a monotonic document
+    /// (`set_monotonic_document`), the document replaces the general chart
+    /// behind it and the monotonic chart ends with the commit, as
+    /// `clear_monotonic_document` ends it; a failure leaves the monotonic
+    /// document shown.
     ///
     /// A failure rejects with an `Error` whose `stage` is `"validate"`
-    /// (parse, validation, styles, ids, a chart that shows a monotonic
-    /// document), `"upload"` (a column that the GPU or the memory budget cannot hold, with the `code` and byte fields of
+    /// (parse, validation, styles, ids), `"upload"` (a column that the GPU or the memory budget cannot hold, with the `code` and byte fields of
     /// `register_column_f32`), `"fit"` or `"commit"` (the series checks
     /// against the candidate columns, the chart's revisions, the picker)
     /// and whose message names the stage and the cause. The chart's
     /// config, series, columns, element and data selections, picks and
     /// image are then exactly as they were: nothing reaches the chart
-    /// before the commit, which cannot fail.
+    /// before the commit, which cannot fail. Only a broken internal
+    /// invariant after the commit (the monotonic chart or the chart itself
+    /// gone) rejects then, with an error that names it as internal and no
+    /// `stage`; the new document is shown in that case.
     ///
     /// Memory: the transaction builds a complete candidate column pool, so
     /// at the peak the GPU holds the live pool slab, the new document's
@@ -2185,13 +2192,16 @@ impl FiggyChart {
         ) -> Result<renderer::Config, JsValue>,
     ) -> Result<(), JsValue> {
         use renderer::{BatchSource, ColumnSource, UploadValues};
+        use wasm_bindgen::JsCast;
         let validate = |error: JsValue| document_stage_error(family, "validate", error);
 
         // ---- validate: the chart, the styles, then the ids ----
-        if self.monotonic.is_some() {
-            return Err(validate(js_err(
-                "a document opens on the general chart; this chart shows a monotonic document",
-            )));
+        // A document opens on the general chart; a monotonic document shown
+        // instead ends with the commit (#271), so it must still be there.
+        if let Some(id) = self.monotonic {
+            self.renderer
+                .monotonic_config(id)
+                .map_err(|e| validate(js_err(e)))?;
         }
         self.renderer
             .preflight_chart_styles(&series)
@@ -2202,14 +2212,19 @@ impl FiggyChart {
             }
         }
         // The previous document's columns the new one does not reuse: every
-        // id under a document prefix that the replaced series read.
+        // id under a document prefix that the replaced series of the general
+        // chart read.
         let mut uploaded = std::collections::HashSet::new();
         uploaded
             .try_reserve(uploads.len())
             .map_err(|e| validate(js_err(e)))?;
         uploaded.extend(uploads.iter().map(|upload| upload.column.as_str()));
         let mut stale: Vec<String> = Vec::new();
-        for item in self.chart_series().map_err(validate)? {
+        for item in self
+            .renderer
+            .chart_series(self.chart_id)
+            .map_err(|e| validate(js_err(e)))?
+        {
             let outliers = item.render_type.box_plot().and_then(|b| b.outliers);
             for id in [
                 Some(item.x_column.as_str()),
@@ -2302,6 +2317,12 @@ impl FiggyChart {
             batch.push((upload.column.as_str(), source));
         }
 
+        // As `set_chart_state` does: the shader set the document needs
+        // (polar coordinates for a radar) is admitted before it is installed,
+        // so its pipelines compile from the start (#299). The fit changes
+        // only ranges and ticks, never what decides the set.
+        self.renderer.require_shaders_for(&config);
+
         // ---- upload, fit and the plan, in one transaction ----
         // The fit's own error, and whether it ran: an error after it is the
         // commit stage's (the series checks, the chart plan, the picker).
@@ -2344,7 +2365,32 @@ impl FiggyChart {
         // The document wrote its own legend.
         self.legend_auto_managed = false;
         self.color_seq = count.max(self.color_seq);
+        // Nothing below fails but for a broken invariant: the monotonic
+        // chart was checked before the transaction and only this call
+        // removes it, and the hit map reads the chart the commit just
+        // wrote. Such a failure is reported as an internal error, not as a
+        // stage: the new document is shown by then.
+        let internal = |what: &str, error: JsValue| {
+            js_err(format!(
+                "internal error after the {family} document was committed: {what}: {}",
+                error
+                    .dyn_ref::<js_sys::Error>()
+                    .map(|error| String::from(error.message()))
+                    .or_else(|| error.as_string())
+                    .unwrap_or_default()
+            ))
+        };
+        // A monotonic document shown instead of the general chart ends: the
+        // document replaces what the chart shows (#271).
+        if let Some(id) = self.monotonic.take() {
+            self.renderer
+                .monotonic_chart(id)
+                .and_then(|chart| chart.remove())
+                .map_err(|error| internal("ending the monotonic chart", js_err(error)))?;
+            self.set_selected_annotation(None);
+            self.view_dirty = true;
+        }
         self.sync_hitmap()
-            .map_err(|error| document_stage_error(family, "commit", error))
+            .map_err(|error| internal("rebuilding the hit map", error))
     }
 }

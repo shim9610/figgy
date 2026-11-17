@@ -988,7 +988,7 @@ Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper'
 - 제거·교체로 생긴 빈 공간은 다음 `frame()` 시작에 렌더러가 모아 정리한다. 연속 교체 중 할당 공간이 부족하면 컬럼을 한 번 재배치한 뒤 다시 시도한다.
 - `add_line_series`는 기존 ID이면 색을 유지하며 교체하고, 새 ID이면 색상 순서의 다음 색을 사용한다. 기존 ID에 빈 라벨을 전달해도 기존 범례 텍스트는 지우지 않는다. 비어 있지 않으면 해당 행의 텍스트만 바꾼다.
 - `begin_column_upload(id, length, encoding, source_revision, max_chunk_bytes)`는 컬럼 하나를 여러 조각으로 나눠 올리는 트랜잭션을 연다. 돌려받은 핸들의 `push(offset, typedArray)`로 조각을 순서대로 쓰고 `commit(chart)`로 한 번에 설치하며 `cancel()`로 취소한다. 겹치거나 빈틈이 있거나 형식이 다른 조각은 거부되고, 낡은 리비전과 다른 차트에서의 커밋도 거부된다([edit safety](#edit-safety)).
-- `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 렌더러 트랜잭션 하나로 차트를 바꾼다. 새 문서의 컬럼·레코드·ragged 컬럼을 문서에 적힌 ID 그대로 올리고 축을 맞춘 다음, 이전 문서에서 다시 쓰지 않는 컬럼의 제거와 설정·시리즈 교체를 한 번에 커밋한다. 그래서 컬럼 ID는 어느 문서를 열어도 문서에 적힌 ID다. 실패하면 `stage`(`validate`·`upload`·`fit`·`commit`)가 담긴 오류를 던지고 차트는 그대로다.
+- `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 렌더러 트랜잭션 하나로 차트를 바꾼다. 새 문서의 컬럼·레코드·ragged 컬럼을 문서에 적힌 ID 그대로 올리고 축을 맞춘 다음, 이전 문서에서 다시 쓰지 않는 컬럼의 제거와 설정·시리즈 교체를 한 번에 커밋한다. 그래서 컬럼 ID는 어느 문서를 열어도 문서에 적힌 ID다. 모노토닉 문서를 보여 주는 차트라면 새 문서가 그 뒤의 일반 차트를 바꾸고, 커밋할 때 모노토닉 차트를 끝낸다. 실패하면 모노토닉 문서가 그대로 남는다. 실패하면 `stage`(`validate`·`upload`·`fit`·`commit`)가 담긴 오류를 던지고 차트는 그대로다.
 - 이 트랜잭션은 후보 풀을 통째로 만든다. 가장 많이 쓸 때 GPU에는 지금 풀 슬랩, 새 문서의 스테이징 버퍼, 풀 용량만 한 후보 슬랩(모자라면 두 배나 필요한 만큼 키운 슬랩)이 함께 있다. 이전 문서의 컬럼은 후보 슬랩에 들어가지 않는다. 메모리 예산이 이 양을 감당하지 못하면 `upload` 단계에서 `code` `"budget_exceeded"`로 거부한다.
 - `clear_selection()`은 장식·주석 선택과 진행 중인 끌기·크기 조절을 끝낸다. 데이터 강조(`picked_data`)와 설정·시리즈·컬럼은 그대로 둔다. `inspect_streaming_capabilities(config_json, series_json)`는 후보 문서가 스트리밍될 수 있는지 차트를 바꾸지 않고 검사한다.
 - `free()`로 인스턴스를 해제하면 풀 버퍼·파이프라인·텍스처·surface의 참조를 정리한다. GC의 FinalizationRegistry도 정리를 지원하지만 실행 시점이 정해져 있지 않으므로 SPA에서 컴포넌트를 제거할 때는 `free()`를 직접 호출한다.
@@ -1170,12 +1170,16 @@ the new document does not upload again; an id it uploads again is replaced
 in place. The ids are the documented ones for every document opened. A
 failure rejects with an `Error` whose `stage` is `"validate"` (parse,
 validation, styles, a documented id that holds another kind of source than
-the document uploads under it, or a streamed column, and a chart that shows
-a monotonic document), `"upload"` (with the `code` and byte fields of
+the document uploads under it, or a streamed column), `"upload"` (with the `code` and byte fields of
 `register_column_f32`; `"budget_exceeded"` when the memory budget cannot
 hold the transaction's peak), `"fit"` or `"commit"`, and whose message names
 the stage and the cause; the chart's config, series, selections, picks,
-columns and image are then as they were.
+columns and image are then as they were. On a chart that shows a monotonic
+document, the document replaces the general chart behind it and the
+monotonic chart ends with the commit, as `clear_monotonic_document` ends
+it; a failure leaves the monotonic document shown. The shader set the
+document needs (the full set for a radar's polar coordinates) is admitted
+before the transaction (`Renderer::require_shaders_for`).
 
 Memory: the transaction builds a complete candidate column pool. At the
 peak the GPU holds the live pool slab, the new document's staging (half its
