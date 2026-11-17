@@ -4899,9 +4899,9 @@ fn staged_lanes_halve_single_lane_staging_only() {
     assert_eq!(single.raw_bytes(1000), 4000);
     assert_eq!(single.staged_bytes(region), 4096);
     assert_eq!(single.transient_bytes(region), 4096);
-    // One value: a 256-byte region, 128 staged, one aligned transient slot.
+    // One value: a 256-byte region, 128 staged, 128 in the transient run.
     assert_eq!(single.staged_bytes(ALIGN), 128);
-    assert_eq!(single.transient_bytes(ALIGN), ALIGN);
+    assert_eq!(single.transient_bytes(ALIGN), 128);
 
     let pair = StagedLanes::of(limits, crate::ColumnLanes::Pair, false, 1000);
     assert_eq!(
@@ -4963,17 +4963,21 @@ fn the_staging_plan_places_compact_columns_at_half_their_region() {
         .iter()
         .map(|p| (p.region, p.staging, p.transient, p.lanes.compact))
         .collect();
+    // Pairs first, then the compact columns as one run; each compact
+    // column's staging and transient offset is half its offset in the run.
     assert_eq!(
         at,
         vec![
-            (0, 0, 0, true),
-            (1024, 512, 512, false),
-            (2048, 1536, 512, true)
+            (1024, 1024, 0, true),
+            (0, 0, 0, false),
+            (2048, 1024 + 512, 512, true)
         ]
     );
     assert_eq!(chunk.byte_size, 2304);
-    assert_eq!(chunk.staging_bytes, 512 + 1024 + 128);
-    assert_eq!(chunk.transient_bytes, 512 + 256);
+    assert_eq!(chunk.pair_bytes, 1024);
+    assert_eq!(chunk.compact_bytes(), 1280);
+    assert_eq!(chunk.staging_bytes, 1024 + 640);
+    assert_eq!(chunk.transient_bytes, 640);
 }
 
 /// #317: f32 columns staged compact land in the pool as exactly the bytes a
@@ -5260,6 +5264,58 @@ fn a_compact_column_wider_than_one_grid_row_expands_fully() {
             "{id}"
         );
     }
+}
+
+/// A compact run larger than one window is split into the fewest windows,
+/// not one per column: the test hook narrows the window to 1024 pool bytes,
+/// so a batch of compact columns of mixed sizes expands over windows whose
+/// boundaries fall inside columns, and every byte lands.
+#[test]
+fn a_compact_run_split_into_windows_expands_every_column() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(256 * ALIGN) else {
+        return;
+    };
+    if !compact_device_or_skip(&device) {
+        return;
+    }
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    struct ResetWindow;
+    impl Drop for ResetWindow {
+        fn drop(&mut self) {
+            super::expand::FORCED_WINDOW.with(|forced| forced.set(None));
+        }
+    }
+    let _reset = ResetWindow;
+    super::expand::FORCED_WINDOW.with(|forced| forced.set(Some(1024)));
+    let lens = [1usize, 100, 33, 300, 64, 7];
+    let sources: Vec<Column<f32>> = lens
+        .iter()
+        .enumerate()
+        .map(|(k, &len)| Column {
+            data: awkward_f32(len).iter().map(|v| v + k as f32).collect(),
+        })
+        .collect();
+    let between = col_f64(vec![0.5; 40]);
+    let ids: Vec<String> = (0..lens.len()).map(|k| format!("w{k}")).collect();
+    let mut batch: Vec<(&str, &dyn ColumnSource)> = ids
+        .iter()
+        .zip(&sources)
+        .map(|(id, source)| (id.as_str(), source as &dyn ColumnSource))
+        .collect();
+    batch.insert(2, ("pairs", &between as &dyn ColumnSource));
+    pool.add_columns(&batch, ctx()).unwrap();
+    for (id, source) in ids.iter().zip(&sources) {
+        let region = column_region_bytes(source.data.len()).unwrap();
+        assert_eq!(
+            read_region_bytes(ctx(), &pool, pool.handle_for(id).unwrap()),
+            pair_bytes(&source.data, region),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        read_column_values(ctx(), &pool, pool.handle_for("pairs").unwrap()),
+        between.data
+    );
 }
 
 /// The compact upload's cost at 10M f32 values: staging bytes and upload

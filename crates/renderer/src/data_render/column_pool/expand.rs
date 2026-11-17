@@ -3,10 +3,15 @@
 //!
 //! A single-lane column (a [`ColumnLanes::Single`](crate::ColumnLanes)
 //! source, or index lanes) is staged at 4 bytes per value. The upload copies
-//! those bytes into one transient storage buffer per upload and dispatches
-//! `column_expand.wgsl` once per column, which writes `(value, 0)` into the
-//! column's pool region. Pair columns copy staging → pool as before. The
-//! pool layout and every shader that reads it are unchanged.
+//! those bytes into one transient storage buffer per upload (per staging
+//! chunk in a batch). An upload's compact columns sit contiguously in the
+//! pool, after its pair columns, and the transient buffer holds that run's
+//! compact half, each column at half its offset in the run; one bind group
+//! and one dispatch of `column_expand.wgsl` write `(value, 0)` over the whole
+//! run, whatever its column count, split into windows only where the run
+//! exceeds one storage binding or one 2D grid. Pair columns copy staging →
+//! pool as before. The pool layout and every shader that reads it are
+//! unchanged.
 //!
 //! The expansion pipeline is created on the first compact upload and cached
 //! on the pool, as the renderer creates its arc-scan pipelines on the first
@@ -26,11 +31,20 @@ pub(crate) const COLUMN_EXPAND_LABEL: &str = "figgy column expand pipeline";
 pub(crate) const COLUMN_EXPAND_SHADER: crate::shader_assembly::Assembled =
     crate::shader_assembly::assembled!("data_render/column_expand.wgsl");
 
+/// A window boundary inside a run, in pool bytes: its compact source then
+/// starts at a multiple of 256 bytes, which meets every device's storage
+/// offset alignment ([`ExpandLimits::of`]).
+const WINDOW_STEP: u64 = 2 * ALIGN;
+
 #[cfg(test)]
 thread_local! {
     /// Test hook: the workgroups per grid row, so a test can expand a column
     /// over several rows of a 2D grid without a column of millions.
     pub(super) static FORCED_GRID_X: std::cell::Cell<Option<u32>> =
+        const { std::cell::Cell::new(None) };
+    /// Test hook: the largest window of a run, in pool bytes, so a test can
+    /// split a run without a run past the device's binding limit.
+    pub(super) static FORCED_WINDOW: std::cell::Cell<Option<u64>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -54,7 +68,8 @@ impl ExpandLimits {
             && limits.max_compute_workgroup_size_x >= WG
             && limits.max_storage_buffers_per_shader_stage >= 2
             && alignment > 0
-            && ALIGN % alignment == 0;
+            && ALIGN % alignment == 0
+            && limits.max_storage_buffer_binding_size >= WINDOW_STEP;
         runs.then_some(Self {
             max_dim: limits.max_compute_workgroups_per_dimension,
             max_binding: limits.max_storage_buffer_binding_size,
@@ -129,14 +144,12 @@ impl StagedLanes {
     }
 
     /// Bytes the column takes in the upload's transient storage buffer: its
-    /// compact half region, aligned so the next column's window starts at a
-    /// storage offset. Zero for a pair column.
+    /// compact half region. The compact columns of an upload sit
+    /// contiguously in the pool (a run), and the transient buffer holds the
+    /// run's compact half, so a column's transient offset is half its offset
+    /// in the run. Zero for a pair column.
     pub(super) fn transient_bytes(self, region_bytes: u64) -> u64 {
-        if self.compact {
-            align_up(region_bytes / 2, ALIGN)
-        } else {
-            0
-        }
+        if self.compact { region_bytes / 2 } else { 0 }
     }
 }
 
@@ -213,42 +226,61 @@ impl ColumnExpand {
         })
     }
 
-    /// Expand one compact column: `src[src_offset..]` holds its
-    /// `region_bytes / 2` compact bytes, and `dst[dst_offset..]` is its pool
-    /// region of `region_bytes`. Both windows start at the column, so the
-    /// region starts at lane 0; `dst_offset` is [`ALIGN`]-aligned like every
-    /// pool region and `src_offset` like every transient slot, which meets
-    /// the device's storage offset alignment ([`ExpandLimits::of`]).
+    /// Expand one run of compact columns that sit contiguously in the pool:
+    /// `src[..run_bytes / 2]` (from offset 0 of the upload's transient
+    /// buffer) holds their compact halves, each at half its offset in the
+    /// run with its region's padding as zeros, and `dst[dst_offset..]` is
+    /// the run of `run_bytes` pool bytes. One bind group and one dispatch
+    /// grid expand the whole run, whatever its column count; a run larger
+    /// than one storage binding or one 2D grid is split into the fewest
+    /// windows, at multiples of [`WINDOW_STEP`]. `dst_offset` is
+    /// [`ALIGN`]-aligned like every pool region, so every window meets the
+    /// device's storage offset alignment ([`ExpandLimits::of`]).
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn dispatch(
+    pub(super) fn dispatch_run(
         &self,
         device: &Device,
         pass: &mut wgpu::ComputePass<'_>,
         limits: ExpandLimits,
         src: &Buffer,
-        src_offset: u64,
         dst: &Buffer,
         dst_offset: u64,
-        region_bytes: u64,
+        run_bytes: u64,
     ) {
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("figgy column expand"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: window(src, src_offset, region_bytes / 2),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: window(dst, dst_offset, region_bytes),
-                },
-            ],
-        });
-        let (grid_x, grid_y) = grid(groups(region_bytes), limits.max_dim);
+        let dim = u64::from(limits.max_dim);
+        let grid_bytes = dim
+            .saturating_mul(dim)
+            .saturating_mul(u64::from(WG))
+            .saturating_mul(COLUMN_VALUE_BYTES as u64);
+        let largest = limits.max_binding.min(grid_bytes);
+        #[cfg(test)]
+        let largest = FORCED_WINDOW
+            .with(std::cell::Cell::get)
+            .map_or(largest, |forced| forced.min(largest));
+        let window_bytes = (largest / WINDOW_STEP).max(1) * WINDOW_STEP;
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(grid_x, grid_y, 1);
+        let mut start = 0u64;
+        while start < run_bytes {
+            let bytes = (run_bytes - start).min(window_bytes);
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("figgy column expand"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: window(src, start / 2, bytes / 2),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: window(dst, dst_offset + start, bytes),
+                    },
+                ],
+            });
+            let (grid_x, grid_y) = grid(groups(bytes), limits.max_dim);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(grid_x, grid_y, 1);
+            start += bytes;
+        }
     }
 }
 

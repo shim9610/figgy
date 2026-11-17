@@ -125,12 +125,12 @@ pub(super) fn encode_column_upload(
         label: Some("figgy column expand"),
         timestamp_writes: None,
     });
-    prepared.expand.dispatch(
+    // One column is a run of one.
+    prepared.expand.dispatch_run(
         device,
         &mut pass,
         prepared.limits,
         &prepared.transient,
-        0,
         target,
         offset,
         region_bytes,
@@ -1633,61 +1633,34 @@ impl ColumnPool {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy batch column upload"),
         });
-        // Each run of pair columns is contiguous in the staging and the
-        // region: one copy per run, so an all-pair chunk is one copy as
-        // before. A compact column's half region goes to its transient slot.
+        // Per chunk: its pair columns are one contiguous run in the staging
+        // and the region, so one copy, as before for an all-pair chunk; its
+        // compact columns' halves are one contiguous run in the staging, laid
+        // out as the transient buffer wants them, so one more copy (#317).
         for (chunk, (buffer, transient)) in chunks.iter().zip(&staging) {
             let chunk_base = region_offset + chunk.region_offset;
-            // (staging start, region start, bytes) of the open pair run.
-            let mut run: Option<(u64, u64, u64)> = None;
-            for placement in &chunk.placements {
-                let byte_size = placement.bytes;
-                let (staging_at, region_at) = (placement.staging as u64, placement.region as u64);
-                match transient {
-                    Some(transient) if placement.lanes.compact => {
-                        if let Some((from, to, bytes)) = run.take() {
-                            encoder.copy_buffer_to_buffer(
-                                buffer,
-                                from,
-                                &self.primary,
-                                chunk_base + to,
-                                bytes,
-                            );
-                        }
-                        encoder.copy_buffer_to_buffer(
-                            buffer,
-                            staging_at,
-                            transient,
-                            placement.transient,
-                            placement.lanes.staged_bytes(byte_size),
-                        );
-                    }
-                    _ => {
-                        run = match run {
-                            Some((from, to, bytes))
-                                if from + bytes == staging_at && to + bytes == region_at =>
-                            {
-                                Some((from, to, bytes + byte_size))
-                            }
-                            Some((from, to, bytes)) => {
-                                encoder.copy_buffer_to_buffer(
-                                    buffer,
-                                    from,
-                                    &self.primary,
-                                    chunk_base + to,
-                                    bytes,
-                                );
-                                Some((staging_at, region_at, byte_size))
-                            }
-                            None => Some((staging_at, region_at, byte_size)),
-                        };
-                    }
-                }
+            if chunk.pair_bytes > 0 {
+                encoder.copy_buffer_to_buffer(
+                    buffer,
+                    0,
+                    &self.primary,
+                    chunk_base,
+                    chunk.pair_bytes,
+                );
             }
-            if let Some((from, to, bytes)) = run {
-                encoder.copy_buffer_to_buffer(buffer, from, &self.primary, chunk_base + to, bytes);
+            if let Some(transient) = transient {
+                encoder.copy_buffer_to_buffer(
+                    buffer,
+                    chunk.pair_bytes,
+                    transient,
+                    0,
+                    chunk.transient_bytes,
+                );
             }
         }
+        // One expansion per chunk's compact run, whatever its column count.
+        // The run lies after the chunk's pair columns, so the pair copy and
+        // the expansion write disjoint bytes.
         if let (Some(expand), Some(limits)) = (expand.as_ref(), limits) {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("figgy batch column expand"),
@@ -1697,23 +1670,15 @@ impl ColumnPool {
                 let Some(transient) = transient else {
                     continue;
                 };
-                let chunk_base = region_offset + chunk.region_offset;
-                for placement in &chunk.placements {
-                    if !placement.lanes.compact {
-                        continue;
-                    }
-                    let byte_size = placement.bytes;
-                    expand.dispatch(
-                        device,
-                        &mut pass,
-                        limits,
-                        transient,
-                        placement.transient,
-                        &self.primary,
-                        chunk_base + placement.region as u64,
-                        byte_size,
-                    );
-                }
+                expand.dispatch_run(
+                    device,
+                    &mut pass,
+                    limits,
+                    transient,
+                    &self.primary,
+                    region_offset + chunk.region_offset + chunk.pair_bytes,
+                    chunk.compact_bytes(),
+                );
             }
         }
         queue.submit(std::iter::once(encoder.finish()));
@@ -2242,18 +2207,34 @@ impl ColumnPool {
             planned_slots.insert(id.clone(), slot);
             next_offset += old.byte_size;
         }
+        // The pair members first, then the compact single-lane members as
+        // one contiguous run (#317), so one expansion covers every compact
+        // member. Epochs follow the members' order either way.
+        let pair_bytes = members
+            .iter()
+            .filter(|member| !member.lanes.compact)
+            .fold(0u64, |sum, member| sum + member.byte_size);
+        let compact_run = next_offset + pair_bytes;
+        let mut compact_offset = compact_run;
         let mut epoch = first_epoch;
         for member in &members {
             let staged = member.staged.as_ref().ok_or(AllocError::Internal {
                 invariant: "every batch member was staged",
             })?;
             epoch += 1;
+            let offset = if member.lanes.compact {
+                compact_offset += member.byte_size;
+                compact_offset - member.byte_size
+            } else {
+                next_offset += member.byte_size;
+                next_offset - member.byte_size
+            };
             planned_allocation_epochs.insert(member.id.clone(), epoch);
             planned_slots.insert(
                 member.id.clone(),
                 ColumnSlot {
                     id: member.id.clone(),
-                    offset: next_offset,
+                    offset,
                     byte_size: member.byte_size,
                     len_values: member.len_values,
                     generation: next_generation,
@@ -2263,8 +2244,8 @@ impl ColumnPool {
                     uniform_step: staged.uniform_step,
                 },
             );
-            next_offset += member.byte_size;
         }
+        let next_offset = compact_offset;
         let mut planned_free = Vec::new();
         if next_offset < capacity {
             planned_free
@@ -2411,9 +2392,11 @@ impl ColumnPool {
                 old.byte_size,
             );
         }
-        // Pair columns copy into the candidate; compact ones into their
-        // transient slots, expanded below in the batch's order.
-        let mut transient_offset = 0u64;
+        // Pair members copy into the candidate. A compact member's half
+        // copies into the transient buffer at half its offset in the compact
+        // run, so the transient buffer is the run's compact half and one
+        // expansion writes the whole run, after the pair copies and into
+        // bytes no copy touches.
         for (member, staged) in members
             .iter()
             .filter_map(|member| member.staged.as_ref().map(|staged| (member, staged)))
@@ -2425,10 +2408,9 @@ impl ColumnPool {
                         &staged.staging,
                         0,
                         &prepared.transient,
-                        transient_offset,
+                        (slot.offset - compact_run) / 2,
                         member.lanes.staged_bytes(slot.byte_size),
                     );
-                    transient_offset += member.lanes.transient_bytes(slot.byte_size);
                 }
                 _ => encoder.copy_buffer_to_buffer(
                     &staged.staging,
@@ -2444,21 +2426,15 @@ impl ColumnPool {
                 label: Some("figgy batch column expand"),
                 timestamp_writes: None,
             });
-            let mut transient_offset = 0u64;
-            for member in members.iter().filter(|member| member.lanes.compact) {
-                let slot = &planned_slots[&member.id];
-                prepared.expand.dispatch(
-                    device,
-                    &mut pass,
-                    prepared.limits,
-                    &prepared.transient,
-                    transient_offset,
-                    &primary,
-                    slot.offset,
-                    slot.byte_size,
-                );
-                transient_offset += member.lanes.transient_bytes(slot.byte_size);
-            }
+            prepared.expand.dispatch_run(
+                device,
+                &mut pass,
+                prepared.limits,
+                &prepared.transient,
+                &primary,
+                compact_run,
+                next_offset - compact_run,
+            );
         }
         queue.submit(std::iter::once(encoder.finish()));
 

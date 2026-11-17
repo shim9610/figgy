@@ -25,15 +25,18 @@
 //!   and triangle indices) are staged compact, 4 bytes per value: the
 //!   writer stores the first lane only, at `index * 4`. The upload copies
 //!   those bytes into one transient `STORAGE | COPY_DST` buffer per upload
-//!   (per staging chunk in a batch) and dispatches `column_expand.wgsl` once
-//!   per column, which writes `(value, 0)` over the column's whole region,
-//!   its zero padding included. The pool bytes are exactly those of a pair
+//!   (per staging chunk in a batch). An upload's compact columns are placed
+//!   as one contiguous run after its pair columns and the transient buffer
+//!   holds the run's compact half, so one dispatch of `column_expand.wgsl`
+//!   (split into windows only past one storage binding or one 2D grid, never
+//!   per column) writes `(value, 0)` over the whole run, every column's zero
+//!   padding included. The pool bytes are exactly those of a pair
 //!   upload. A single-lane source that writes a non-zero second lane fails
 //!   its upload ([`AllocError::AllocationFailed`], resource
 //!   `"column source"`).
 //!
 //! A compact column stages half its padded region instead of all of it; the
-//! transient buffer takes the same half again, rounded up to [`ALIGN`], and
+//! transient buffer takes the same half again, and
 //! both are charged to the ledger like any staging. Copies, dispatches and
 //! the submission are one encoder per upload, as before. The expansion
 //! pipeline is created on the first compact upload and cached on the pool.
