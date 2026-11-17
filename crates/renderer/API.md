@@ -734,7 +734,14 @@ chart. `all` grows when a chart first needs a module compiled on demand.
 `message`). `Renderer::series_ready()` resolves once every compile the last screen frame
 needed has ended (a frame drawn then is complete) and `Renderer::pipelines_ready()` once
 every scheduled compile has; each returns the first `PipelineFailure` among them as its
-error. Exports, host-owned `prepare` and the picks create what they need and are always
+error. `Renderer::pipeline_readiness()` returns a `PipelineReadiness` that holds the
+compile queue weakly and does not borrow the renderer
+([#315](https://github.com/shim9610/figgy/issues/315)): its `series_ready()` and
+`pipelines_ready()` wait like the renderer's (without drawing), its `status()` is a
+`ReadinessStatus` (`screen`, `all`, `renderer_dropped`), and once the renderer is
+dropped a wait ends with `ReadinessError::RendererDropped` (a failed compile is
+`ReadinessError::Failed`). A renderer with no background compiles gives a handle whose
+waits resolve at once. Exports, host-owned `prepare` and the picks create what they need and are always
 complete. A browser export first compiles, in the background, the pipelines the last
 screen frame needed for its own target (`Rgba16Float`, its sample count) through a
 second queue, and waits for them before it prepares; its creations then find the

@@ -167,11 +167,12 @@ pub use renderer::{
     ChartView, ChartViewLayerStamps, ChartViewState, ExportOptions, ExportScope, ExportSource,
     FIT_RANGES_PADDING, FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart,
     MonotonicChartDrawItem, MonotonicChartId, PipelineCounts, PipelineFailure, PipelineFailureKind,
-    PipelinePreparation, PipelineStatus, PreparationFeature, PreparedFrame, PreparedPipelines,
-    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
-    RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
-    StreamingSelectionTicket, WindowedRenderer, clamp_export_scale, display_config_for_surface,
-    dpi_to_scale, draw_style_supports, encode_png, fit_display_panel, place_document,
+    PipelinePreparation, PipelineReadiness, PipelineStatus, PreparationFeature, PreparedFrame,
+    PreparedPipelines, RasterImage, ReadinessError, ReadinessStatus, RegisteredChartDrawItem,
+    RenderRevision, Renderer, RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo,
+    StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer,
+    clamp_export_scale, display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
+    fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

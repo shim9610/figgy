@@ -43,6 +43,10 @@ impl FiggyChart {
     /// index past the overlay list is stored as `"Base"`; the stored
     /// layer is returned as JSON. Drawn pixels never depend on it.
     /// JS: `chart.set_active_layer(JSON.stringify({ Overlay: 0 }))`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn set_active_layer(&mut self, json: &str) -> Result<String, JsValue> {
         let layer: renderer::LayerRef = serde_json::from_str(json).map_err(js_err)?;
         let stored = match self.monotonic {
@@ -67,6 +71,10 @@ impl FiggyChart {
     /// The layer that receives pointer interaction, as JSON, with the
     /// out-of-range fallback applied.
     /// JS: `JSON.parse(chart.active_layer())`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn active_layer(&self) -> Result<String, JsValue> {
         let layer = match self.monotonic {
             Some(_) => self.chart_config()?.active_layer(),
@@ -96,6 +104,9 @@ impl FiggyChart {
     /// While the annotation layer is active (and shown) its drawn items
     /// sit on top and answer as `"annotation_<n>"`; on every other layer
     /// they are not registered and clicks pass through them.
+    ///
+    /// `x`, `y` are physical canvas pixels (the canvas's `width`/`height`
+    /// space, not CSS pixels). Returns the plain id string, not JSON.
     pub fn hit_test(&self, x: f32, y: f32) -> Result<Option<String>, JsValue> {
         let (display_config, _, _) = self.display_config()?;
         Ok(
@@ -207,6 +218,10 @@ impl FiggyChart {
     /// expose `bin_start`, `bin_end`, `value`, and `orientation`; the value
     /// is the stored height (also valid for weighted/density histograms).
     /// Point and matrix selections expose their coordinates and cell value.
+    ///
+    /// Resolves to JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub async fn selection_details(&self) -> Result<String, JsValue> {
         use renderer::config::PickedDataRef;
         let Some(reference) = self
@@ -1068,6 +1083,10 @@ impl FiggyChart {
     /// takes to drag it.
     /// The `<figgy-chart>` facade parses the string and normalizes
     /// `undefined` to `null`.
+    ///
+    /// Resolves to JSON text (`FiggyJson`), not an object. `x`, `y` and
+    /// `max_distance_px` are physical canvas pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson | undefined")]
     pub async fn pick_point(
         &mut self,
         x: f32,
@@ -1439,6 +1458,9 @@ impl FiggyChart {
 
     /// Move among source rows represented in the completed packed view.
     /// Returns only the original source index; no source or GPU readback.
+    ///
+    /// Returns a number, or `undefined`.
+    #[wasm_bindgen(unchecked_return_type = "number | undefined")]
     pub fn next_view_point_index(
         &self,
         source_id: Option<String>,
@@ -1467,6 +1489,10 @@ impl FiggyChart {
     /// cells and contour levels. The tagged result contains only stable
     /// source/series indices plus `distance_px`; values and geometry stay
     /// in the renderer's GPU-backed SSoT. Resolves to `undefined` on miss.
+    ///
+    /// Resolves to JSON text (`FiggyJson`), not an object. `x`, `y` and
+    /// `max_distance_px` are physical canvas pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson | undefined")]
     pub async fn pick_data(
         &mut self,
         x: f32,
@@ -1783,6 +1809,9 @@ impl FiggyChart {
     }
 
     /// Compatibility entry point; no streamed pick operation can start.
+    ///
+    /// Always rejects.
+    #[wasm_bindgen(unchecked_return_type = "never")]
     pub async fn finish_stream_pick_point(
         &mut self,
         _handle: &StreamingOperationHandle,
@@ -1791,6 +1820,9 @@ impl FiggyChart {
     }
 
     /// Compatibility entry point; no streamed pick operation can start.
+    ///
+    /// Always rejects.
+    #[wasm_bindgen(unchecked_return_type = "never")]
     pub async fn finish_stream_pick_data(
         &mut self,
         _handle: &StreamingOperationHandle,

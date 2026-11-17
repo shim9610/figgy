@@ -36,6 +36,29 @@ impl From<AxisPreset> for renderer::AxisPreset {
 }
 
 /// The variant name of an annotation kind, as its JSON key.
+/// The index of the one annotation whose `id` is `id` (#315): `None` when
+/// none has it, an error for an empty id or one several items share.
+pub(crate) fn annotation_index_of(
+    items: &[renderer::Annotation],
+    id: &str,
+) -> Result<Option<u32>, JsValue> {
+    if id.is_empty() {
+        return Err(js_err("an annotation id must not be empty"));
+    }
+    let mut found = None;
+    for (index, item) in items.iter().enumerate() {
+        if item.id == id {
+            if found.is_some() {
+                return Err(js_err(format!(
+                    "more than one annotation has the id {id:?}"
+                )));
+            }
+            found = Some(index as u32);
+        }
+    }
+    Ok(found)
+}
+
 pub(crate) fn annotation_kind_name(kind: &renderer::AnnotationKind) -> &'static str {
     match kind {
         renderer::AnnotationKind::ReferenceLine { .. } => "ReferenceLine",
@@ -623,6 +646,10 @@ impl FiggyChart {
     /// `kind`, the selection box `rect` and its `handles` in physical
     /// canvas pixels, and `selected`. Items the raster skipped are
     /// absent here and listed by `annotation_warnings`.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn annotations(&self) -> Result<String, JsValue> {
         let map = self.view.annotation_map();
         let items = &self.chart_config()?.annotations.items;
@@ -648,6 +675,9 @@ impl FiggyChart {
 
     /// The topmost drawn annotation under a point in physical canvas
     /// pixels, as its index.
+    ///
+    /// `x`, `y` are physical canvas pixels (the canvas's `width`/`height`
+    /// space, not CSS pixels).
     pub fn hit_annotation(&self, x: f32, y: f32) -> Option<u32> {
         let map = self.view.annotation_map();
         let id = map.hit_test([x, y])?;
@@ -671,14 +701,56 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// The index of the selected annotation, or `undefined`. An index is
+    /// valid until the annotation list changes (see `annotation_index`).
     pub fn selected_annotation(&self) -> Option<u32> {
         self.selected_annotation.map(|i| i as u32)
+    }
+
+    /// The `id` of every annotation, in index order, as an array of
+    /// strings (not a JSON string): `""` for an item without one (#315).
+    /// An id is the host's free label (`Annotation.id`), kept by every edit
+    /// and by serialization, so it survives reordering and removal of other
+    /// items, which shift indices.
+    ///
+    /// JS: `const ids = chart.annotation_ids(); // ["peak", "", "note-1"]`
+    #[wasm_bindgen(unchecked_return_type = "string[]")]
+    pub fn annotation_ids(&self) -> Result<js_sys::Array, JsValue> {
+        let array = js_sys::Array::new();
+        for item in &self.chart_config()?.annotations.items {
+            array.push(&JsValue::from_str(&item.id));
+        }
+        Ok(array)
+    }
+
+    /// The current index of the annotation whose `id` is `id`, or
+    /// `undefined` when none has it (#315). The renderer does not require
+    /// ids to be unique, so an empty id, or one that several items share,
+    /// is rejected with an error rather than guessed. Look the index up
+    /// again after any edit that adds, removes or reorders annotations.
+    ///
+    /// JS: `const i = chart.annotation_index("peak"); // undefined when absent`
+    pub fn annotation_index(&self, id: &str) -> Result<Option<u32>, JsValue> {
+        annotation_index_of(&self.chart_config()?.annotations.items, id)
+    }
+
+    /// Select the annotation whose `id` is `id`, like `select_annotation`
+    /// with its index (#315). Errors when no annotation, or more than one,
+    /// has that id, or when `id` is empty; the selection is unchanged then.
+    ///
+    /// JS: `chart.select_annotation_by_id("peak");`
+    pub fn select_annotation_by_id(&mut self, id: &str) -> Result<(), JsValue> {
+        let index = annotation_index_of(&self.chart_config()?.annotations.items, id)?
+            .ok_or_else(|| js_err(format!("no annotation has the id {id:?}")))?;
+        self.select_annotation(Some(index))
     }
 
     /// The compass name (`"W"`, `"E"`, ...) of the annotation's handle
     /// under a point, or none. Only the handles `annotations` lists are
     /// live: a span's two edges, a line's two value handles, an arrow's
     /// two endpoints.
+    ///
+    /// `x`, `y` are physical canvas pixels. Returns a plain string, not JSON.
     pub fn annotation_handle(&self, index: u32, x: f32, y: f32) -> Option<String> {
         // An annotation not drawn in the current frame has no handle.
         let id = self.view.annotation_map().find(index as usize)?;
@@ -690,6 +762,8 @@ impl FiggyChart {
 
     /// The vertex handle (`"v<i>"`) of a polygon annotation under a
     /// point, or none: a polygon's handles are its vertices.
+    ///
+    /// `x`, `y` are physical canvas pixels. Returns a plain string, not JSON.
     pub fn annotation_vertex(&self, index: u32, x: f32, y: f32) -> Option<String> {
         // An annotation not drawn in the current frame has no handle.
         let id = self.view.annotation_map().find(index as usize)?;
@@ -811,6 +885,10 @@ impl FiggyChart {
     /// as `"Data"` or `"Ratio"`, for placing a new text box or arrow
     /// where the user clicked. `null` when the point has no data
     /// position (outside a log axis, or the chart has no value axes).
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn pointer_to_anchor(&self, x: f32, y: f32, kind: &str) -> Result<String, JsValue> {
         let kind = match kind {
             "Data" => renderer::AnchorKind::Data,
@@ -829,6 +907,10 @@ impl FiggyChart {
     /// Annotations the current raster skipped, as `[{index, reason}]`
     /// with `reason` one of `NonFinite`, `NoValueAxis`, `OutOfRange`,
     /// `EmptyText`.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn annotation_warnings(&self) -> Result<String, JsValue> {
         annotation_warnings_json(self.view.render_warnings())
     }
@@ -836,6 +918,11 @@ impl FiggyChart {
     /// Renderer-measured decoration bounds in physical canvas pixels.
     /// An `"annotation_<n>"` id that `hit_test` reports resolves to the
     /// drawn item's selection box.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// `{ rect: [x, y, width, height], handles: [[x, y, width, height], …] }`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn decoration_bounds(&self, target: &str) -> Result<String, JsValue> {
         let (config, _, _) = self.display_config()?;
         let annotations = self.view.annotation_map();
@@ -921,6 +1008,10 @@ impl FiggyChart {
 
     /// Subplot `index`'s frame as JSON `{"x":..,"y":..,"width":..,"height":..}`
     /// in document pixels.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn subplot_area(&self, index: usize) -> Result<String, JsValue> {
         let subplots = &self.chart_config()?.subplots;
         check_subplot(index, subplots.len())?;
@@ -984,6 +1075,9 @@ impl FiggyChart {
     /// pass it to [`Self::apply_custom_theme`]. A name that is not a family
     /// throws an `Error` with `code` `"theme_unknown_name"` and the family
     /// `names`.
+    ///
+    /// Returns a plain object, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "FiggyThemeObject")]
     pub fn theme(&self, name: &str) -> Result<JsValue, JsValue> {
         let theme = renderer::theme::Theme::for_chart(
             name,
@@ -1000,6 +1094,9 @@ impl FiggyChart {
     /// pass to [`Self::apply_custom_theme`]. Refused as [`Self::theme`]
     /// refuses the name, and with `code` `"subplot_index"` for an index
     /// past the subplots.
+    ///
+    /// Returns a plain object, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "FiggyThemeObject")]
     pub fn subplot_theme(&self, index: usize, name: &str) -> Result<JsValue, JsValue> {
         let config = self.chart_config()?;
         check_subplot(index, config.subplots.len())?;
@@ -1081,6 +1178,9 @@ impl FiggyChart {
 
     /// The theme names (#291, #295), as an array of strings: the four
     /// families, `gallery`, `cool-slate`, `midnight` and `warm-paper`.
+    ///
+    /// Returns an array of strings, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "string[]")]
     pub fn theme_names(&self) -> js_sys::Array {
         js_names(renderer::theme::ThemeFamily::NAMES)
     }
@@ -1139,6 +1239,9 @@ impl FiggyChart {
 
     /// Subplot `index`'s text mode (#292, #295), as its setter
     /// [`Self::set_subplot_text_scale`] takes it: `"Auto"` or `"Fixed"`.
+    ///
+    /// Returns a plain string, not JSON.
+    #[wasm_bindgen(unchecked_return_type = "\"Auto\" | \"Fixed\"")]
     pub fn subplot_text_scale(&self, index: usize) -> Result<String, JsValue> {
         let subplots = &self.chart_config()?.subplots;
         check_subplot(index, subplots.len())?;
@@ -1165,6 +1268,10 @@ impl FiggyChart {
 
     /// The subplots that are insets now (nested in another panel's plot),
     /// bottom to top, as a JSON array of indices.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn insets(&self) -> Result<String, JsValue> {
         let config = self.chart_config()?;
         let mut json = String::from("[");

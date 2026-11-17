@@ -167,6 +167,65 @@ pub struct PipelineStatus {
     pub frame_complete: bool,
 }
 
+/// A handle on a renderer's background pipeline compiles (#315) that does
+/// not borrow the renderer, made by [`Renderer::pipeline_readiness`]. A
+/// host awaits [`Self::series_ready`] or [`Self::pipelines_ready`] and
+/// reads [`Self::status`] while it keeps using the renderer: drawing,
+/// resizing or dropping it. It holds the renderer's compile queue weakly,
+/// so it keeps nothing alive; once the renderer is dropped a wait ends with
+/// [`ReadinessError::RendererDropped`]. A renderer with no background
+/// compiles (native, or one that compiles each pipeline as it draws it)
+/// gives a handle with nothing to wait for: its waits resolve at once.
+#[derive(Clone)]
+pub struct PipelineReadiness {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) queue: Option<crate::browser_compile::WeakCompileQueue>,
+}
+
+impl std::fmt::Debug for PipelineReadiness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PipelineReadiness")
+            .field("status", &self.status())
+            .finish()
+    }
+}
+
+/// A snapshot read through a [`PipelineReadiness`] (#315): the compiles of
+/// the renderer's current shader set, like [`PipelineStatus`] without
+/// `frame_complete` (only a draw decides that), and whether the renderer
+/// was dropped. A dropped renderer counts zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadinessStatus {
+    /// The compiles the renderer's last screen frame needed.
+    pub screen: PipelineCounts,
+    /// Every compile scheduled so far.
+    pub all: PipelineCounts,
+    /// Whether the renderer is gone, or stopped compiling in the
+    /// background.
+    pub renderer_dropped: bool,
+}
+
+/// Why a [`PipelineReadiness`] wait did not end ready (#315).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadinessError {
+    /// A compile the wait covers ended other than compiled.
+    Failed(PipelineFailure),
+    /// The renderer was dropped, or stopped compiling in the background,
+    /// before the wait ended.
+    RendererDropped,
+}
+
+impl std::fmt::Display for ReadinessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(failure) => failure.fmt(f),
+            Self::RendererDropped => f.write_str("the renderer was dropped"),
+        }
+    }
+}
+
+impl std::error::Error for ReadinessError {}
+
 /// Counts of background compiles, by how they stand (#299).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PipelineCounts {
