@@ -701,10 +701,18 @@ fn angle_label_text<'a>(
 ) -> Option<(AngleLabelText<'a>, TextExtents)> {
     let ls = &axis.label_style;
     match axis.categories.as_deref() {
+        // A category's rich label (#308) is drawn, and measured, in place
+        // of its plain one, as on a straight categorical axis.
         Some(categories) => {
-            let label = categories.get(value as usize)?.label.as_str();
-            let m = measure.measure_plain(label, &ls.label_font, ls.font_size);
-            Some((AngleLabelText::Category(label), m))
+            let category = categories.get(value as usize)?;
+            Some(match &category.rich_label {
+                Some(rich) => (AngleLabelText::Rich(rich), measure.measure_rich(rich)),
+                None => {
+                    let label = category.label.as_str();
+                    let m = measure.measure_plain(label, &ls.label_font, ls.font_size);
+                    (AngleLabelText::Category(label), m)
+                }
+            })
         }
         None => {
             let (text, m) = tick_text(axis, value, measure);
@@ -713,10 +721,11 @@ fn angle_label_text<'a>(
     }
 }
 
-/// An angle label's text: a category's label, borrowed, or a formatted
-/// value.
+/// An angle label's text: a category's label or rich label, borrowed, or
+/// a formatted value.
 enum AngleLabelText<'a> {
     Category(&'a str),
+    Rich(&'a crate::text::RichText),
     Numeric(NumericTickText),
 }
 
@@ -724,6 +733,7 @@ impl AngleLabelText<'_> {
     fn as_tick_text(&self) -> TickText<'_> {
         match self {
             AngleLabelText::Category(label) => TickText::Plain(label),
+            AngleLabelText::Rich(rich) => TickText::Power(rich),
             AngleLabelText::Numeric(text) => text.as_tick_text(),
         }
     }
@@ -785,7 +795,11 @@ fn each_angle_label(
             continue;
         }
         let text = text.as_tick_text();
-        if matches!(text, TickText::Plain("")) {
+        let empty = match &text {
+            TickText::Plain(plain) => plain.is_empty(),
+            TickText::Power(rich) => rich.segments.is_empty(),
+        };
+        if empty {
             continue;
         }
         let angle = map.screen_angle(*value);
