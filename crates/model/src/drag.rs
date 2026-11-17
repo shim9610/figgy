@@ -204,6 +204,23 @@ impl Draggable for crate::select::ParallelAxisLabelElement {
     }
 }
 
+impl Draggable for crate::select::CategoryLabelElement {
+    fn nudge_element(&self) -> Element {
+        Element::CategoryLabel(self.index)
+    }
+
+    fn drag_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        cfg.nudge_at(self.nudge_element(), measure, at, dx, dy)
+    }
+}
+
 impl Draggable for AxisElement {
     fn nudge_element(&self) -> Element {
         Element::Axis(self.side.clone())

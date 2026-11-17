@@ -38,6 +38,7 @@ mod box3d;
 pub(crate) use box3d::box_label_reach as box3d_label_reach;
 mod parallel;
 mod polar;
+pub use polar::polar_angle_label_ring;
 pub(crate) use polar::{label_title_gap, polar_title_shift};
 mod ternary;
 pub(crate) use ternary::ternary_label_reach;
@@ -212,6 +213,11 @@ pub fn emit_part_of(
         Side::Right => right.as_ref(),
     };
     match element {
+        Element::CategoryLabel(index) => {
+            if config.polar().is_some() {
+                polar::emit_polar_category_label(config, &da, *index, measure, sink);
+            }
+        }
         Element::AxisLabel(side) if config.polar().is_some() => match side {
             Side::Bottom => polar::emit_polar_angle_labels(config, &da, measure, sink),
             Side::Left => polar::emit_polar_radius_labels(config, &da, measure, sink),

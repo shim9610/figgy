@@ -126,3 +126,79 @@ async fn a_rejected_radar_document_keeps_the_previous_one() {
     assert_eq!(chart.get_config().unwrap(), config);
     assert_eq!(chart.get_series().unwrap(), series);
 }
+
+/// The centre of a decoration's measured box, from `decoration_bounds`.
+fn bounds(chart: &FiggyChart, id: &str) -> serde_json::Value {
+    serde_json::from_str(&chart.decoration_bounds(id).unwrap()).unwrap()
+}
+
+fn centre(b: &serde_json::Value) -> (f32, f32) {
+    let r = &b["rect"];
+    let f = |i: usize| r[i].as_f64().unwrap() as f32;
+    (f(0) + f(2) * 0.5, f(1) + f(3) * 0.5)
+}
+
+// The category labels of a radar document (#309): a moved spoke label opens
+// as its category's own offset; each label answers the hit test and drags by
+// itself; its bounds carry the dashed ring, and a press on the ring while the
+// label is selected drags every label along its spoke.
+#[wasm_bindgen_test(async)]
+async fn radar_category_labels_move_alone_and_together_through_the_ring() {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    let mut document: serde_json::Value = serde_json::from_str(DOCUMENT).unwrap();
+    document["decorations"] = serde_json::json!({
+        "offsets": [{"element": {"SpokeLabel": {"category_id": "cost"}}, "offset": [6.0, 0.0]}]
+    });
+    chart.set_radar_document(&document.to_string()).unwrap();
+    chart.frame().unwrap();
+    let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    let categories = config.bottom_x.categories.as_deref().unwrap();
+    assert_ne!(categories[2].label_offset, [0.0, 0.0]);
+    assert_eq!(categories[0].label_offset, [0.0, 0.0]);
+
+    // A press on a label selects that label, which a drag moves alone.
+    let label = bounds(&chart, "category_label_0");
+    let (x, y) = centre(&label);
+    assert_eq!(
+        chart.hit_test(x, y).unwrap().as_deref(),
+        Some("category_label_0")
+    );
+    assert!(chart.on_press(x, y).unwrap());
+    chart.on_move(0.0, -8.0).unwrap();
+    chart.on_release().unwrap();
+    let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    let categories = config.bottom_x.categories.as_deref().unwrap();
+    assert_ne!(categories[0].label_offset, [0.0, 0.0]);
+    assert_eq!(categories[1].label_offset, [0.0, 0.0]);
+    assert_eq!(config.bottom_x.label_style.label_offset_y, 0.0);
+
+    // The selected label's bounds carry the ring; a press on it grabs it and
+    // the drag moves every label outward through the shared offset.
+    let label = bounds(&chart, "category_label_0");
+    let ring = &label["ring"];
+    let center = [
+        ring["center"][0].as_f64().unwrap() as f32,
+        ring["center"][1].as_f64().unwrap() as f32,
+    ];
+    let radius = ring["radius"].as_f64().unwrap() as f32;
+    // A point of the ring between two labels, straight down from the
+    // centre-right diagonal, which no label covers on this four-spoke chart.
+    let angle = std::f32::consts::FRAC_PI_4;
+    let (rx, ry) = (
+        center[0] + radius * angle.cos(),
+        center[1] + radius * angle.sin(),
+    );
+    assert!(chart.on_press(rx, ry).unwrap());
+    let (dx, dy) = (angle.cos() * 5.0, angle.sin() * 5.0);
+    chart.on_move(dx, dy).unwrap();
+    chart.on_release().unwrap();
+    let moved: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    assert!((moved.bottom_x.label_style.label_offset_y - 5.0).abs() < 0.01);
+    assert_eq!(
+        moved.bottom_x.categories.as_deref().unwrap()[0].label_offset,
+        config.bottom_x.categories.as_deref().unwrap()[0].label_offset
+    );
+    chart.frame().unwrap();
+    let png = chart.export_png(1.0).await.unwrap();
+    assert!(png.length() > 0);
+}

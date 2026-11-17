@@ -172,8 +172,11 @@ vertex than its gap past the marker. A label is picked as
 
 ## Decorations and annotations
 
-The title, the legend, the category labels (the angle axis' tick labels,
-`Element::AxisLabel(Side::Bottom)`, moved along their spokes), the ring
+The title, the legend, the category labels (each its own element,
+`Element::CategoryLabel(i)`, moved by itself through its category's
+`label_offset`; while one is selected a faint dashed ring through the
+labels' start is drawn, and dragging the ring moves them all along their
+spokes as `Element::AxisLabel(Side::Bottom)`, #309), the ring
 labels and the ray (`Element::AxisLabel(Side::Left)` and
 `Element::Axis(Side::Left)`, which turns around the centre) and the data area
 are the polar chart's decorations, with its hit regions, drags and resize
@@ -229,13 +232,13 @@ indices (`radar.positions`) first, then one value column per series
   labels and the legend; `legend` is the legend's visibility with one entry
   per series; the resolved title is `chart_title`.
 - A selected vertex is the typed selection; the offsets of the title, the
-  legend and the ring labels are the matching offsets; `active_layer` and
-  `annotations` carry over.
+  legend and the ring labels are the matching offsets; a spoke label's offset
+  becomes its category's own `label_offset`, in its spoke's frame (#309);
+  `active_layer` and `annotations` carry over.
 - Not carried: `hovered` (transient), a selected whole series (a selection
   names a vertex), `style.emphasis_brightness` (a picked vertex is shown
   with the picked ring instead), `background` (the host's clear colour), an explicit
-  `decorations.data_area`, the spoke label offsets and the decoration
-  selection. The data label offsets become the series' `labels.offsets`.
+  `decorations.data_area` and the decoration selection. The data label offsets become the series' `labels.offsets`.
 
 `FiggyChart.set_radar_document(json)` opens a document in the browser. In
 this release, the `"radar"` family of `FiggyBoundedChart` returns an error
@@ -306,7 +309,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 바큇살에 있는 다른 시리즈의 값을 따르며, 그 값이 바뀌면 다시 정한다. 라벨은 `PickedData::ValueLabel`로 고를 수 있고, 선택 상자는 라벨의
 테두리이며, 끌면 `labels.offsets`(범주마다 하나, 논리 픽셀)에 기록한다.
 
-제목, 범례, 범주 라벨(각도 축 눈금 라벨, 스포크를 따라 이동), 고리 라벨과 반지름 선(중심을
+제목, 범례, 범주 라벨(라벨마다 따로 고르는 `Element::CategoryLabel(i)`이며 범주의 `label_offset`으로 하나씩 움직인다. 라벨을 고르면 라벨이 시작하는 자리에 연한 점선 원이 나타나고, 원을 끌면 모든 라벨이 `Element::AxisLabel(Side::Bottom)`으로 스포크를 따라 함께 움직인다, #309), 고리 라벨과 반지름 선(중심을
 돌며 회전), 그리기 영역은 극좌표 차트의 장식 요소이며 선택·이동·크기 조절 규칙은
 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를
 따른다. 주석 층은 데이터 영역 기준 비율 앵커를 그리고, 데이터 앵커는 극좌표 축에 자리가 없어
@@ -324,7 +327,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 고리(`style.ring_color`, 바깥 고리 포함)와 스포크(`style.spoke_color`)를 보인다. 시리즈 스타일의
 빈 필드는 차트 스타일로 채우고(`RadarSeriesStyle::resolved_from`), 차트의 라벨 설정과 값에서
 적은 라벨 문자열을 모든 시리즈에 넣는다. 글꼴과 글자색은 범주·고리 라벨과 범례로, 선택한
-꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로 옮긴다. 호버, 시리즈 전체
-선택, 차트 스타일의 `emphasis_brightness`(고른 꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역, 스포크 라벨 이동량은 옮기지 않는다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
+꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로, 스포크 라벨 하나의 이동량은 그 범주의 `label_offset`(스포크 기준 좌표, #309)으로 옮긴다. 호버, 시리즈 전체
+선택, 차트 스타일의 `emphasis_brightness`(고른 꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역은 옮기지 않는다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
 `FiggyChart.set_radar_document(json)`로 문서를 연다. 이번 릴리스에서 `FiggyBoundedChart`의 `"radar"` 계열은
 이 메서드를 안내하는 오류를 돌려준다.

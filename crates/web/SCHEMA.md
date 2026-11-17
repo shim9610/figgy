@@ -1410,6 +1410,7 @@ of a polygon edge the cursor's rightward ray crosses.
 - 생략한 `style`은 기본값을 쓴다. 기본값과 같은 `style`, `show: "Main"`, 빈 목록, 0인 오프셋은 `get_series`가 쓰지 않는다.
 - 어떤 목록에도 개수 상한이 없다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
 - 피킹은 준위를 `"histogram_bin"`, 전이를 `"point"`, 라벨을 `"part"`(`"level"`·`"transition"`·`"limit"`·`"band"`)가 붙은 `"value_label"`로 돌려준다. 띠의 채움을 집으면 그 첫 준위로 답한다(#205). `press_energy_label(series_id, part, index)`로 라벨을 선택하고 드래그하면 그 행의 `label_offset`이 바뀐다.
+- 선택한 라벨의 `selection_details()`는 `part`와 `category_index`가 가리키는 행을 읽어 `index`, `part`, 행의 `id`, `label`(리치 텍스트 또는 `null`), 일반 문자열 `text`(또는 `null`), 드래그 `offset`을 돌려준다(#318). 범주형 `labels.text`는 보지 않는다.
 
 ## `Feynman` render_type
 

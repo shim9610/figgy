@@ -59,6 +59,12 @@ pub enum Element {
     /// `bottom_x` (#203). A drag updates the axis'
     /// `category_groups.offset`.
     CategoryGroupLabel(Side),
+    /// The label of category `i` on a polar chart's categorical angle axis
+    /// (#309), by its index in `bottom_x.categories`, as
+    /// [`Self::ParallelAxisLabel`] names an axis. A drag moves only that
+    /// label, through its `Category::label_offset` in its spoke's frame; the
+    /// angle labels as a whole stay [`Self::AxisLabel`]`(Side::Bottom)`.
+    CategoryLabel(usize),
     /// Subplot `i`'s frame, its `chart_area` (#205): a drag moves the
     /// subplot, plot and decorations together, by whole pixels. A frame may
     /// go anywhere; one moved past the document's top or left edge shifts
@@ -151,7 +157,8 @@ impl Config {
             | Element::DataArea
             | Element::ColorBarEdge(_)
             | Element::SubplotFrame(_)
-            | Element::SubplotFrameEdge(..) => return None,
+            | Element::SubplotFrameEdge(..)
+            | Element::CategoryLabel(_) => return None,
         })
     }
 
@@ -211,7 +218,8 @@ impl Config {
             | Element::DataArea
             | Element::ColorBarEdge(_)
             | Element::SubplotFrame(_)
-            | Element::SubplotFrameEdge(..) => {}
+            | Element::SubplotFrameEdge(..)
+            | Element::CategoryLabel(_) => {}
         }
     }
 
@@ -277,8 +285,15 @@ impl Config {
                 Element::AxisLabel(side) => {
                     return self.nudge_polar_axis_label(side.clone(), measure, at, dx, dy);
                 }
+                Element::CategoryLabel(index) => {
+                    return self.nudge_polar_category_label(*index, measure, dx, dy);
+                }
                 _ => {}
             }
+        }
+        // A category label has its own element only on a polar chart.
+        if let Element::CategoryLabel(_) = element {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
         if self.view_3d().is_some() {
             match &element {
@@ -569,6 +584,52 @@ impl Config {
         self.set_offset(&element, (previous.0 + delta.0, previous.1 + delta.1));
         if self.grabbable(&element, measure) != Some(true) {
             self.set_offset(&element, previous);
+            return reject;
+        }
+        NudgeResult::Moved
+    }
+
+    /// Polar: one category's angle label moves by the whole drag, stored in
+    /// its own spoke's frame (`Category::label_offset`, #309), so it keeps
+    /// its place beside the spoke when the chart turns. It must stay
+    /// grabbable, as every other element.
+    fn nudge_polar_category_label(
+        &mut self,
+        index: usize,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        let Some(map) = self.polar_angle_map() else {
+            return reject;
+        };
+        let angle = map.screen_angle(index as f64);
+        let spoke = [angle.cos() as f32, -(angle.sin() as f32)];
+        let [along, across] = crate::polar::screen_to_spoke_offset(spoke, [dx, dy]);
+        let element = Element::CategoryLabel(index);
+        let set = |config: &mut Config, offset: [f32; 2]| {
+            if let Some(category) = config
+                .bottom_x
+                .categories
+                .as_mut()
+                .and_then(|categories| categories.get_mut(index))
+            {
+                category.label_offset = offset;
+            }
+        };
+        let Some(previous) = self
+            .bottom_x
+            .categories
+            .as_deref()
+            .and_then(|categories| categories.get(index))
+            .map(|c| c.label_offset)
+        else {
+            return reject;
+        };
+        set(self, [previous[0] + along, previous[1] + across]);
+        if self.grabbable(&element, measure) != Some(true) {
+            set(self, previous);
             return reject;
         }
         NudgeResult::Moved

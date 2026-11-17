@@ -80,6 +80,7 @@ pub struct SelectionBox {
     stroke_width: f32,
     handles: Vec<RectF>,
     outline: SelectionOutline,
+    ring: Option<([f32; 2], f32)>,
 }
 
 impl SelectionBox {
@@ -105,6 +106,14 @@ impl SelectionBox {
     /// What the highlight outlines: `rect`, or each drawn part.
     pub fn outline(&self) -> &SelectionOutline {
         &self.outline
+    }
+
+    /// The guide circle drawn dashed and faint with the highlight, centre
+    /// and radius in chart-surface pixels: the ring a polar category
+    /// label's selection shows, grabbed to move every angle label together
+    /// (#309). `None` for every other element.
+    pub fn ring(&self) -> Option<([f32; 2], f32)> {
+        self.ring
     }
 
     /// This box inside `area`: its rectangle intersected with it, for an
@@ -169,6 +178,14 @@ pub trait Selectable<C: DragConfig = Config> {
     /// [`Resizable`] override this with `Some(self)` — their selection box
     /// then grows the eight resize handles automatically.
     fn as_resizable(&self) -> Option<&dyn Resizable<C>> {
+        None
+    }
+
+    /// The guide circle the selection also draws, dashed and faint, and
+    /// that a press may grab while the element is selected: a polar
+    /// category label's ring of angle labels (#309), its centre and radius
+    /// in the chart frame. `None` for every other element.
+    fn selection_ring(&self, _cfg: &C) -> Option<([f32; 2], f32)> {
         None
     }
 
@@ -581,6 +598,7 @@ impl<C: DragConfig, T: Selectable<C> + ?Sized> SelectionGeometry<C> for T {
             stroke_width: SELECTION_STROKE_WIDTH,
             handles,
             outline,
+            ring: self.selection_ring(cfg),
         })
     }
 }
@@ -796,6 +814,15 @@ impl HitMap<Config> {
                     map.register(ParallelAxisLabelElement { axis });
                 }
             }
+            // A polar chart's category labels (#309), each its own element
+            // over the angle labels as a whole.
+            if cfg.polar().is_some()
+                && let Some(categories) = cfg.bottom_x.categories.as_deref()
+            {
+                for index in 0..categories.len() {
+                    map.register(CategoryLabelElement { index });
+                }
+            }
             map.register_subplots(cfg);
             return map;
         }
@@ -840,6 +867,16 @@ impl HitMap<Config> {
             .filter(|side| matches!(side, Side::Top | Side::Bottom))
         {
             map.register(CategoryGroupLabelElement { side: side.clone() });
+        }
+        // A polar chart's category labels (#309) go with the shared angle
+        // labels (the annotation layer; polar charts have no overlays).
+        if shared.contains(&Side::Bottom)
+            && cfg.polar().is_some()
+            && let Some(categories) = cfg.bottom_x.categories.as_deref()
+        {
+            for index in 0..categories.len() {
+                map.register(CategoryLabelElement { index });
+            }
         }
         if let LayerRef::Overlay(index) = layer {
             if own_x {
@@ -1032,6 +1069,11 @@ impl Selectable for SubplotElement {
         self.inner.as_resizable().map(|_| self as &dyn Resizable)
     }
 
+    fn selection_ring(&self, cfg: &Config) -> Option<([f32; 2], f32)> {
+        self.inner
+            .selection_ring(&cfg.subplot_config(self.subplot)?)
+    }
+
     fn owns_point(&self, cfg: &Config, x: f32, y: f32) -> bool {
         !self.routed || cfg.subplot_at(x, y) == Some(self.subplot)
     }
@@ -1132,6 +1174,20 @@ impl Resizable for SubplotElement {
         {
             resize.resize_handles(&chart, measure, each);
         }
+    }
+
+    /// The inner element's own hit rule on the subplot's chart, so a
+    /// handle that is not a square (a category label's ring, #309) is
+    /// grabbed inside a subplot too.
+    fn hit_resize_handle(
+        &self,
+        cfg: &Config,
+        measure: &dyn MeasureText,
+        x: f32,
+        y: f32,
+    ) -> Option<ResizeHandle> {
+        let resize = self.inner.as_resizable()?;
+        resize.hit_resize_handle(&cfg.subplot_config(self.subplot)?, measure, x, y)
     }
 }
 
@@ -1260,6 +1316,32 @@ pub struct AxisLabelElement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParallelAxisLabelElement {
     pub axis: usize,
+}
+
+impl Config {
+    /// How many polar category labels [`HitMap::for_active_layer`]
+    /// registers as their own elements (#309), on the chart first and then
+    /// on each subplot in order: a host that keeps a hit map rebuilds it
+    /// when this sequence changes, as when the active layer does.
+    pub fn polar_category_label_counts(&self) -> impl Iterator<Item = usize> + '_ {
+        fn own(config: &Config) -> usize {
+            if config.polar().is_some() {
+                config.bottom_x.categories.as_deref().map_or(0, <[_]>::len)
+            } else {
+                0
+            }
+        }
+        std::iter::once(own(self)).chain(self.subplots.iter().map(|subplot| own(&subplot.config)))
+    }
+}
+
+/// The label of category `index` on a polar chart's categorical angle axis
+/// (#309): hit and outlined where it is drawn, dragged into its own
+/// `Category::label_offset`. Registered over the angle labels as a whole,
+/// so a click on a label selects that label.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategoryLabelElement {
+    pub index: usize,
 }
 
 /// The category group headers of the categorical `top_x` or `bottom_x`
@@ -1424,7 +1506,8 @@ pub fn emit_element(
         | Element::ColorBarAxis
         | Element::ColorBarLabel
         | Element::ParallelAxisLabel(_)
-        | Element::CategoryGroupLabel(_) => {
+        | Element::CategoryGroupLabel(_)
+        | Element::CategoryLabel(_) => {
             // The hit map has no display scale: a broken axis' frames snap
             // on the grid of the pixels it is given, within a logical pixel
             // of the drawn frame and well inside the stroke grab width.
@@ -1766,6 +1849,109 @@ impl Selectable for ParallelAxisLabelElement {
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
         Some(self)
+    }
+}
+
+impl Selectable for CategoryLabelElement {
+    fn element_id(&self) -> String {
+        format!("category_label_{}", self.index)
+    }
+
+    /// The label as the renderer draws it ([`crate::chrome::emit_part_of`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::CategoryLabel(self.index), measure, sink)
+        })
+    }
+
+    /// The label is outlined and hit where it is drawn.
+    fn outlines_parts(&self, _: &Config) -> bool {
+        true
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+
+    /// The ring every angle label starts from: grabbed while this label is
+    /// selected, it moves them all together ([`Resizable`] below).
+    fn as_resizable(&self) -> Option<&dyn Resizable> {
+        Some(self)
+    }
+
+    fn selection_ring(&self, cfg: &Config) -> Option<([f32; 2], f32)> {
+        on_drawn_panel(cfg, crate::chrome::polar_angle_label_ring)
+    }
+}
+
+/// How far, px, a press may land from a selected category label's ring and
+/// still grab it (#309): the stroke grab width.
+pub const RING_GRAB_HALF_WIDTH: f32 = STROKE_GRAB_HALF_WIDTH;
+
+/// A selected polar category label's ring (#309) is its one handle: no
+/// squares, a press within [`RING_GRAB_HALF_WIDTH`] of the circle, and a
+/// drag that moves the angle labels as a whole along their spokes
+/// (`Element::AxisLabel(Side::Bottom)`), the label's own offset unchanged.
+impl Resizable for CategoryLabelElement {
+    fn resize_targets(&self, _: ResizeHandle) -> (Option<Element>, Option<Element>) {
+        (Some(Element::AxisLabel(Side::Bottom)), None)
+    }
+
+    fn resize_handles(
+        &self,
+        _: &Config,
+        _: &dyn MeasureText,
+        _: &mut dyn FnMut(ResizeHandle, RectF),
+    ) {
+    }
+
+    /// Near the ring and not on a drawn angle label, so a press on a label
+    /// where the ring passes under it still selects that label.
+    fn hit_resize_handle(
+        &self,
+        cfg: &Config,
+        measure: &dyn MeasureText,
+        x: f32,
+        y: f32,
+    ) -> Option<ResizeHandle> {
+        let (center, radius) = self.selection_ring(cfg)?;
+        let distance = (x - center[0]).hypot(y - center[1]);
+        if (distance - radius).abs() > RING_GRAB_HALF_WIDTH {
+            return None;
+        }
+        let mut on_label = false;
+        on_drawn_panel(cfg, |panel| {
+            emit_element(
+                panel,
+                &Element::AxisLabel(Side::Bottom),
+                measure,
+                &mut Parts(&mut |part| on_label |= part_contains(&part, x, y)),
+            )
+        });
+        (!on_label).then_some(ResizeHandle::N)
+    }
+
+    fn resize_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        _: ResizeHandle,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        cfg.nudge(Element::AxisLabel(Side::Bottom), measure, dx, dy)
+    }
+
+    fn resize_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        _: ResizeHandle,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        cfg.nudge_at(Element::AxisLabel(Side::Bottom), measure, at, dx, dy)
     }
 }
 

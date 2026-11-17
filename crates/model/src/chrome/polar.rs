@@ -544,10 +544,59 @@ pub fn emit_polar_angle_labels(
         axis,
         &majors,
         measure,
-        |text, center, m| {
+        |_, text, center, m| {
             place_centered(sink, text, center, m, ls);
         },
     );
+}
+
+/// One category's angle label (`Element::CategoryLabel`, #309): the label
+/// of category `wanted` (its index in `bottom_x.categories`) as
+/// [`emit_polar_angle_labels`] places it; nothing when the chart is not
+/// polar or its label is not drawn (hidden, thinned, empty or past the
+/// categories).
+pub fn emit_polar_category_label(
+    config: &Config,
+    da: &DataArea,
+    wanted: usize,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
+    let (Some(geometry), Some(map)) = (config.polar_geometry(), config.polar_angle_map()) else {
+        return;
+    };
+    let axis = &config.bottom_x;
+    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), measure);
+    let ls = &axis.label_style;
+    each_angle_label(
+        &map,
+        &geometry,
+        axis,
+        &majors,
+        measure,
+        |category, text, center, m| {
+            if category == Some(wanted) {
+                place_centered(sink, text, center, m, ls);
+            }
+        },
+    );
+}
+
+/// The ring the angle labels of a polar chart start from (#309), drawn as
+/// the selection's dashed circle and grabbed to move the labels together:
+/// its centre and its radius, the ring plus the outward ticks, the label
+/// gap and the shared radial offset, where each label's box begins before
+/// its own offset. `None` when the chart is not polar or the angle labels
+/// are hidden.
+pub fn polar_angle_label_ring(config: &Config) -> Option<([f32; 2], f32)> {
+    let geometry = config.polar_geometry()?;
+    let axis = &config.bottom_x;
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return None;
+    }
+    let radius = geometry.radius + outward_tick(axis) + 4.0 + PolarOptions::angle_label_offset(ls);
+    Some((geometry.center, radius.max(0.0)))
 }
 
 /// The radius axis' ray and ticks (`Element::Axis(Side::Left)`), from the
@@ -620,7 +669,7 @@ pub fn emit_polar_radius_labels(
                 &config.bottom_x,
                 &angle_majors,
                 measure,
-                |_, center, m| each(centered_rect(center, m)),
+                |_, _, center, m| each(centered_rect(center, m)),
             );
         }
     };
@@ -750,7 +799,7 @@ fn each_angle_label(
     axis: &AxisOptions,
     majors: &[f64],
     measure: &dyn MeasureText,
-    mut place: impl FnMut(TickText<'_>, (f32, f32), TextExtents),
+    mut place: impl FnMut(Option<usize>, TickText<'_>, (f32, f32), TextExtents),
 ) {
     let ls = &axis.label_style;
     if !(ls.visible && ls.label_visible) {
@@ -810,8 +859,19 @@ fn each_angle_label(
             geometry.center[0] + dx * (geometry.radius + reach),
             geometry.center[1] + dy * (geometry.radius + reach),
         );
-        // Along the spoke, so every label keeps its distance to the ring.
-        place(text, (center.0 + dx * radial, center.1 + dy * radial), m);
+        // Along the spoke, so every label keeps its distance to the ring,
+        // then the category's own offset in its spoke's frame (#309).
+        let category = axis.categories.as_deref().map(|_| *value as usize);
+        let own = category
+            .and_then(|index| axis.categories.as_deref()?.get(index))
+            .map_or([0.0, 0.0], |c| c.label_offset);
+        let [ox, oy] = crate::polar::spoke_offset_to_screen([dx, dy], own);
+        place(
+            category,
+            text,
+            (center.0 + dx * radial + ox, center.1 + dy * radial + oy),
+            m,
+        );
     }
 }
 

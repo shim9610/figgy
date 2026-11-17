@@ -148,7 +148,9 @@ Radar series are a polar series kind (`DataRenderType::Radar` on a polar
 chart with a categorical angle axis, [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)),
 so the polar interactions apply unchanged: the title, legend, ring and ray
 axes, spoke (category) and ring labels and axis titles are selected and
-dragged as on any polar chart, the plot area is dragged and resized, the
+dragged as on any polar chart (each category label is its own element,
+`category_label_<i>`, and its selection shows the dashed ring that moves
+them all, #309), the plot area is dragged and resized, the
 annotation layer places ratio anchors, and polar subplots carry their own
 radar groups. A vertex is picked by `pick_chart_data` as
 `PickedData::Point { series_id, point_index }`, `point_index` the category row; the
@@ -449,6 +451,13 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형 차트를 위한
 원 전체를 감싸는 상자 하나 대신 라벨마다 그려진 자리에 선택 상자를 그린다
 (`SelectionBox::outline()`이 `SelectionOutline::Parts`이고, 반직선도 선과 눈금마다 그려진 자리에 상자를 그린다). 차트 제목, 하단·좌측 축 제목, 범례,
 그리기 영역은 일반 차트와 같이 움직인다.
+각도 축이 범주형이면(레이더 차트 등) 범주 라벨마다 따로 고르는 요소(`Element::CategoryLabel(i)`, id
+`category_label_<i>`)가 각도 눈금 라벨 전체 위에 등록된다(#309). 라벨을 누르면 그 라벨만 골라지고,
+끌면 그 범주의 `Category::label_offset`(스포크 기준 `[바깥, 옆]`)에 기록되어 그 라벨만 움직인다.
+라벨을 고르면 라벨이 시작하는 자리에 연한 점선 원(`SelectionBox::ring()`)이 함께 그려지고,
+고른 동안 이 원을 누르면(`Resizable::hit_resize_handle`) 잡히며 끌면 모든 라벨이 공유 오프셋
+`bottom_x.label_style.label_offset_y`로 스포크를 따라 함께 움직인다. 각 라벨의 자기 오프셋은 그대로다.
+차트와 서브플롯마다의 범주 수가 바뀌면 히트 맵을 다시 만든다(`Config::polar_category_label_counts`).
 자세한 규칙은 `CONFIG.md`의 `PolarOptions` 절에 있다.
 
 ## Independent radial chart titles

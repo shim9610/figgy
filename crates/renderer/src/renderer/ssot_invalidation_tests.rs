@@ -628,6 +628,15 @@ fn category_edits() -> Vec<Edit> {
         Prefix,
         Changed
     );
+    // A category's own label offset (#309) is tick chrome: it refreshes the
+    // raster, and a straight axis does not draw it (the polar walk does,
+    // `tests/polar_category_labels.rs`).
+    category!(
+        "bottom_x.categories[1].label_offset",
+        |c| c.bottom_x.categories.as_mut().unwrap()[1].label_offset = [6.0, -2.0],
+        Prefix,
+        Unchanged
+    );
     category!(
         "bottom_x.category_groups (None -> Some)",
         |c| c.bottom_x.category_groups = Some(crate::config::CategoryGroups {

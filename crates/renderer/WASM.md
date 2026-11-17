@@ -1780,7 +1780,11 @@ polar ray, annotations), it also returns `outline`: a list of polygons, one per
 drawn part, each a list of `[x, y]` corners in physical canvas pixels. They are
 exactly the shapes the canvas strokes around the selection: a text block or
 rectangle as its box padded by 2 logical px, a stroke as the thin oriented box
-around it, and an arrow head as its triangle grown outward. `step_selection(dx, dy)` navigates
+around it, and an arrow head as its triangle grown outward. For a polar
+category label (`category_label_<i>`, #309) it also returns `ring`:
+`{ center: [x, y], radius }`, the dashed circle the selection draws where the
+angle labels start; a press on it while the label is selected drags every
+angle label along its spoke. `step_selection(dx, dy)` navigates
 resident point, histogram or matrix selections using source indices. For a point, `dx` moves the source index and `dy` switches
 between the series that draw points or lines; a selected point-vector arrow
 steps along its series' points like a scatter point. Histogram bin navigation
