@@ -554,6 +554,18 @@ pub struct RadialRenderer {
     annotation_layer: crate::annotation::RadialAnnotationCache,
     cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<RadialFrame>)>,
 }
+/// The browser device outlives the radial renderer's submitted work, as for
+/// [`crate::Renderer`] (`release_after_submitted_work`).
+#[cfg(target_arch = "wasm32")]
+impl Drop for RadialRenderer {
+    fn drop(&mut self) {
+        crate::renderer::release_after_submitted_work(
+            self.gpu.health(),
+            self.gpu.device(),
+            self.gpu.queue(),
+        );
+    }
+}
 impl RadialRenderer {
     /// Initialize browser pipelines through WebGPU's asynchronous compiler.
     /// Uses the checked production pipeline descriptors before publishing the
