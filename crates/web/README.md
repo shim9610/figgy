@@ -146,7 +146,10 @@ selected bin's boundaries, stored value and orientation; a category bar
 reports its `category_id`, `category_label`, `value`, `direction` and `mode`.
 Points report their
 index and coordinates, plus `color_value` / `size_value` when the series has a
-point color or size map; matrix cells report their indices, coordinates and
+point color or size map, and with a size map also `mapped_radius_px` (the
+radius `PointSizeMap::radius_px` gives that value, in logical pixels; `null`
+for a non-finite value) and `size_hidden` (`true` when the value is not finite
+and the draw skips the marker); matrix cells report their indices, coordinates and
 cell value; vector series report their `u` and `v` components in place of a
 value. The call reads back only the selected values, not whole columns.
 `chart.step_selection(dx, dy)` moves the selection through resident data:

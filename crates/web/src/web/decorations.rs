@@ -224,6 +224,99 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// Fit a candidate config without installing it (#312): `config_json`
+    /// is a whole `Config` (what `get_config` returns, edited); the result
+    /// is that config as JSON with the ranges of every layer, link and
+    /// subplot fitted from the resident columns' statistics by the same
+    /// code as `fit_ranges` (`Renderer::fit_config`), with `padding` (the
+    /// fraction of the data span left on each side, finite and at least 0)
+    /// instead of the fixed 5%. The fit uses this chart's registered
+    /// series. The installed chart, its view and its columns are
+    /// untouched; install the result with `set_config`.
+    ///
+    /// Refused (an exception, nothing changes): JSON that is not a
+    /// `Config`, a negative or non-finite padding, a candidate whose
+    /// overlays, subplots or line offsets name a series this chart has not
+    /// registered (`LayerSeriesUnknown`) or break their rules, a series
+    /// whose column is not registered or is streamed (rule 8), and a
+    /// monotonic chart. The call is synchronous, so the columns and series
+    /// it reads cannot change while it runs.
+    /// JS: `const fitted = JSON.parse(chart.fit_config(JSON.stringify(cfg), 0.05));`
+    pub fn fit_config(&self, config_json: &str, padding: f64) -> Result<String, JsValue> {
+        let candidate: renderer::Config = serde_json::from_str(config_json).map_err(js_err)?;
+        let fitted = self
+            .renderer
+            .fit_config(&candidate, self.chart_series()?, padding)
+            .map_err(js_err)?;
+        serde_json::to_string(&fitted).map_err(js_err)
+    }
+
+    /// `fit_config` that moves only Y axes (#312): every X axis of the
+    /// candidate (`bottom_x`, `top_x`, each overlay's `x_axis`, the same in
+    /// each subplot) comes back exactly as given, ticks and label format
+    /// included; the Y axes (`left_y`, `right_y` — the z axis of a 3D
+    /// chart —, overlay `y_axis` and parallel axes) are fitted. An axis no
+    /// fit moves (categorical, ternary) keeps its range. The config has no
+    /// "manual range" flag: a host that holds a Y range by hand restores it
+    /// in the result. Same refusals as `fit_config`.
+    /// JS: `chart.fit_y_axes_config(JSON.stringify(cfg), 0.05)`
+    pub fn fit_y_axes_config(&self, config_json: &str, padding: f64) -> Result<String, JsValue> {
+        let candidate: renderer::Config = serde_json::from_str(config_json).map_err(js_err)?;
+        let fitted = self
+            .renderer
+            .fit_y_axes_config(&candidate, self.chart_series()?, padding)
+            .map_err(js_err)?;
+        serde_json::to_string(&fitted).map_err(js_err)
+    }
+
+    /// Fit series `series_id`'s point size map domain to its size column's
+    /// native extent, from the column's cached statistics
+    /// (`PointSizeMap::fit_domain`, #312): only that series' `domain_min`
+    /// and `domain_max` change, and no column is read back. Refused
+    /// (an exception, the style unchanged): an unknown series, a series
+    /// without `point_size_map`, a streamed or unregistered size column,
+    /// and an extent that is empty, non-finite or a single value.
+    /// JS: `chart.fit_point_size_domain("bubbles")`
+    pub fn fit_point_size_domain(&mut self, series_id: &str) -> Result<(), JsValue> {
+        let mut series = self.chart_series()?.to_vec();
+        let item = series
+            .iter_mut()
+            .find(|item| item.series_id == series_id)
+            .ok_or_else(|| js_err("no series with this id in the chart"))?;
+        self.renderer.fit_point_size_domain(item).map_err(js_err)?;
+        let config = self.chart_config()?.clone();
+        self.replace_chart_state(config, series)?;
+        self.request_host_redraw();
+        Ok(())
+    }
+
+    /// Fit vector series `series_id`'s scale so the longest vector its U/V
+    /// columns' extents allow draws `target` long
+    /// (`VectorStyle::fit_scale`, #312): logical pixels for a `Pixels`
+    /// scale, data units for a `Data` scale. Point and grid components
+    /// both fit (a grid from the union of its columns' statistics), and a
+    /// point field drawn in 3D fits its `w` column too
+    /// (`fit_scale_3d`). Only that series' scale value changes, and no
+    /// column is read back. Refused (an exception, the style unchanged):
+    /// an unknown or non-vector series, a `target` that is not finite and
+    /// positive, a streamed or unregistered component column, and
+    /// components whose extent is empty, non-finite or all zero.
+    /// JS: `chart.fit_vector_scale("wind", 24)`
+    pub fn fit_vector_scale(&mut self, series_id: &str, target: f64) -> Result<(), JsValue> {
+        let mut series = self.chart_series()?.to_vec();
+        let config = self.chart_config()?.clone();
+        let item = series
+            .iter_mut()
+            .find(|item| item.series_id == series_id)
+            .ok_or_else(|| js_err("no series with this id in the chart"))?;
+        self.renderer
+            .fit_vector_scale(&config, item, target)
+            .map_err(js_err)?;
+        self.replace_chart_state(config, series)?;
+        self.request_host_redraw();
+        Ok(())
+    }
+
     /// Fit the axes of the active layer to the union of that layer's
     /// series, leaving a uniform `padding` fraction of the data span as
     /// margin on each side (`0.0` = no padding, `0.05` = 5%
