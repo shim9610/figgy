@@ -166,7 +166,8 @@ pub use renderer::{
     RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
     RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
     StreamingSelectionTicket, WindowedRenderer, clamp_export_scale, display_config_for_surface,
-    dpi_to_scale, draw_style_supports, encode_png, fit_display_panel, place_document,
+    dpi_to_scale, draw_style_supports, encode_png, energy_level_records, fit_display_panel,
+    place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
