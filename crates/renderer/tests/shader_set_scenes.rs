@@ -14,13 +14,20 @@
 //! its own reading of each scene's model.
 //!
 //! The two sets are two shader programs, and a shader compiler may round
-//! the same arithmetic differently in each. Measured on #155 and #301
+//! the same arithmetic differently in each. WGSL lets an implementation
+//! reassociate floating-point operations, and DXC compiles with fast-math
+//! flags: on #304 the DXIL of the arrow corner computation in
+//! `vector_points` and `vector_points_3d` is `(a + b) - c` in the basic set
+//! and `(a - c) + b` in the full one. `@invariant` cannot pin this, as it
+//! applies to the position output only and only between programs with the
+//! same control flow. Measured on #155 and #301
 //! (DX12 with WARP and DXC, and Metal), a scene drawn twice through one set
 //! is identical, while the two sets differ in a few edge pixels: by one
 //! level in one channel (the quiver: 82 pixels at 1x, 262 at 2x; the
 //! streamlines: 17 and 52; a few in the line, annotation and large-data
-//! scenes), and in one arrowhead tip pixel of the 3D vector field by 51
-//! levels of alpha (152 against 203), a partly covered pixel. Vulkan draws
+//! scenes), and in arrowhead tip pixels of the 3D vector field by up to 51
+//! levels of alpha (152 against 203 at 1x; 0 against 6 at 2x), partly
+//! covered pixels. Vulkan draws
 //! both sets identically. A misplaced, recoloured or clipped element changes
 //! fully covered or empty pixels by far more than one level, which the
 //! comparison still refuses.
@@ -198,15 +205,29 @@ fn the_known_full_scenes_are_catalogue_scenes() {
     assert!(scenes.len() > KNOWN_FULL_SCENES.len() + 30);
 }
 
-/// Whether two exports show the same pixel: every channel within one level
-/// (a shader compiler's rounding), or both partly covered (an alpha strictly
-/// between 0 and 255), where an edge's coverage may round differently
-/// between the two programs. See the module documentation for the measured
-/// differences.
+/// Whether two exports show the same pixel. The colours are compared
+/// premultiplied by their alpha, so an empty pixel's colour channels, which
+/// show nothing, take no part. A pixel is the same when every premultiplied
+/// channel is within one level (a shader compiler's rounding), or when
+/// either side is partly covered (an alpha strictly between 0 and 255):
+/// there an edge's coverage may round differently between the two
+/// programs, down to empty or up to fully covered. A pixel that is fully
+/// covered or empty in both exports and differs by more than one level is
+/// refused. See the module documentation for the measured differences.
 fn same_picture(a: &[u8], b: &[u8]) -> bool {
-    let within_one = a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 1);
+    let premultiplied = |pixel: &[u8], channel: usize| -> u16 {
+        let alpha = u16::from(pixel.get(3).copied().unwrap_or(255));
+        let value = u16::from(pixel.get(channel).copied().unwrap_or(0));
+        if channel == 3 {
+            value
+        } else {
+            (value * alpha + 127) / 255
+        }
+    };
+    let within_one = (0..a.len().min(b.len()))
+        .all(|channel| premultiplied(a, channel).abs_diff(premultiplied(b, channel)) <= 1);
     let partly_covered = |pixel: &[u8]| pixel.get(3).is_some_and(|alpha| (1..=254).contains(alpha));
-    within_one || (partly_covered(a) && partly_covered(b))
+    within_one || partly_covered(a) || partly_covered(b)
 }
 
 /// How the differing pixels of two same-sized exports differ: the largest
@@ -275,11 +296,17 @@ fn the_comparison_refuses_what_a_real_difference_changes() {
     // Rounding: one level in a channel, anywhere.
     assert!(same_picture(&[10, 20, 30, 255], &[11, 20, 30, 255]));
     assert!(same_picture(&[0, 0, 0, 0], &[0, 0, 0, 1]));
-    // An edge pixel covered differently in both exports.
+    // An empty pixel's colour shows nothing: only its alpha counts.
+    assert!(same_picture(&[0, 0, 0, 0], &[191, 221, 54, 0]));
+    // An edge pixel covered differently in both exports, or rounded to
+    // empty or to fully covered in one of them (DX12: alpha 0 against 6 at
+    // a 3D arrowhead at 2x).
     assert!(same_picture(&[53, 183, 121, 152], &[53, 183, 121, 203]));
+    assert!(same_picture(&[0, 0, 0, 0], &[191, 221, 54, 6]));
+    assert!(same_picture(&[53, 183, 121, 255], &[53, 183, 121, 250]));
     // A pixel an element moved onto or off: covered against empty.
     assert!(!same_picture(&[53, 183, 121, 255], &[0, 0, 0, 0]));
-    assert!(!same_picture(&[53, 183, 121, 152], &[0, 0, 0, 0]));
+    assert!(!same_picture(&[53, 183, 121, 255], &[0, 0, 0, 255]));
     // A recoloured, fully covered pixel.
     assert!(!same_picture(&[10, 20, 30, 255], &[12, 20, 30, 255]));
 }
