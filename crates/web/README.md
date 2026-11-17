@@ -87,9 +87,9 @@ node --experimental-vm-modules --test crates/web/tests/figgy-chart.test.mjs
 
 Await `FiggyChart.create(canvas)` before using a raw Cartesian chart. It
 waits for its initial empty frame and for no pipeline compile: the renderer
-starts compiling every render pipeline at once and the browser goes on
-compiling them after the chart is on screen. A chart drawn meanwhile is drawn
-whole; the host calls and awaits nothing for this. `await chart.prewarm_all()`
+schedules its render pipelines and the browser goes on compiling them after
+the chart is on screen. The host calls and awaits nothing for this.
+`await chart.prewarm_all()`
 remains for a host that wants every pipeline prepared before it goes on.
 While a chart's pipelines compile in the background
 ([#299](https://github.com/shim9610/figgy/issues/299)), a frame draws every
@@ -98,7 +98,7 @@ out; `frame()` draws again as soon as one of them has compiled, so a chart fills
 without host calls. `chart.frame_complete()` tells whether the last frame drew every
 series, and `chart.pipeline_status()` returns `{ screen: { total, ready, compiling,
 failed }, all: { … }, frame_complete }`: `screen` counts what the chart on screen
-needs, so a progress bar over it never goes back. `await chart.series_ready()` resolves
+needs, and its `total` changes only with the chart. `await chart.series_ready()` resolves
 once a frame draws every series (`first_frame_ready()` also waits for that frame's GPU
 work) and `await chart.pipelines_ready()` once every compile has ended; both reject
 with an `Error` carrying `label` and `kind` when one failed, and
@@ -202,7 +202,7 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 끝나면 `frame()`이 다시 그리므로 호스트가 호출하지 않아도 차트가 채워진다.
 `chart.frame_complete()`는 마지막 프레임이 모든 시리즈를 그렸는지 알려 준다.
 `chart.pipeline_status()`는 `{ screen, all, frame_complete }` 객체로 컴파일 현황을 돌려준다.
-`screen`은 지금 화면에 필요한 것만 세므로 이것으로 만든 진행률은 뒤로 가지 않는다.
+`screen`은 지금 화면에 필요한 것만 세며, 그 `total`은 차트가 바뀔 때만 바뀐다.
 `await chart.series_ready()`는 모든 시리즈가 그려지면, `await chart.pipelines_ready()`는 모든
 컴파일이 끝나면 풀린다. 둘 다 컴파일이 실패하면 `label`과 `kind`가 담긴 `Error`로 거부되고,
 `chart.pipeline_failures()`가 실패 목록(`[{ label, kind, message }]`)을 돌려준다.

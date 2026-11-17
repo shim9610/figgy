@@ -483,8 +483,10 @@ point is the same and one pipeline descriptor fits both
   ARCHITECTURE.md "Shader sets"). Such a chart is never drawn or picked
   through a basic module: the draw and the picks refuse it.
 - With no cut, probability code 0 and polar flag 0 the full fragments
-  compute what the basic ones do, so a chart with none of the three has the
-  same pixels through either
+  compute what the basic ones do, so a chart with none of the three draws the
+  same picture through either; a compiler may still round an edge's coverage
+  differently in the two programs (up to one level, and more only in partly
+  covered edge pixels, on DX12 and Metal)
   (`removing_a_break_keeps_the_full_shaders_and_the_same_pixels` and its
   probability and polar twins, `tests/axis_break_render.rs`;
   `tests/shader_set_scenes.rs` holds every Cartesian scene of the
