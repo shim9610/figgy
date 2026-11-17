@@ -633,54 +633,110 @@ pub(crate) fn emit_annotation_layer(
     sink: &mut dyn Sink,
     placed: &mut dyn FnMut(Result<AnnotationElement, RenderWarning>),
 ) {
-    let scale = request.scale;
-    let space = request.space;
     for (index, item) in request.layer.items.iter().enumerate() {
         if !item.visible {
             continue;
         }
-        let measured = match &item.kind {
-            AnnotationKind::ReferenceLine { label, .. } => label
-                .as_ref()
-                .and_then(|t| measure(t, 0.0, scale, request.policy)),
-            AnnotationKind::Span { .. }
-            | AnnotationKind::Rect { .. }
-            | AnnotationKind::Ellipse { .. }
-            | AnnotationKind::Polygon { .. } => None,
-            AnnotationKind::Text {
-                text, box_style, ..
-            } => measure(
-                text,
-                box_style.as_ref().map_or(0.0, |b| b.padding),
-                scale,
-                request.policy,
-            ),
-            AnnotationKind::Arrow { text, .. } => text
-                .as_ref()
-                .and_then(|t| measure(t, 0.0, scale, request.policy)),
-        };
-        let text_size = measured.map(|m| m.size);
-        if geometry(&item.kind, &space, text_size).is_none() {
-            placed(Err(RenderWarning::AnnotationSkipped {
-                index,
-                reason: skip_reason(&item.kind, &space, text_size),
-            }));
-            continue;
+        match place_item(index, item, request.space, request.scale, request.policy) {
+            Ok(element) => {
+                element.emit(request.layer, sink);
+                placed(Ok(element));
+            }
+            Err(reason) => placed(Err(RenderWarning::AnnotationSkipped { index, reason })),
         }
-        let element = AnnotationElement {
-            index,
-            space,
-            text: measured,
-            handle: None,
-        };
-        element.emit(request.layer, sink);
-        placed(Ok(element));
     }
     // The insets' markers (#205): placed from the SSOT on every draw, so
     // they follow the insets and the view. They are not selectable.
     if let Some(document) = request.markers {
         document.emit_inset_markers(sink);
     }
+}
+
+/// Measure `item` at `scale` and check that it has a position in `space`:
+/// the element [`emit_annotation_layer`] registers as `items[index]`, or why
+/// the raster skips it. Visibility is the caller's to check.
+fn place_item(
+    index: usize,
+    item: &Annotation,
+    space: PixelSpace,
+    scale: f32,
+    policy: FontPolicy,
+) -> Result<AnnotationElement, AnnotationSkip> {
+    let measured = match &item.kind {
+        AnnotationKind::ReferenceLine { label, .. } => {
+            label.as_ref().and_then(|t| measure(t, 0.0, scale, policy))
+        }
+        AnnotationKind::Span { .. }
+        | AnnotationKind::Rect { .. }
+        | AnnotationKind::Ellipse { .. }
+        | AnnotationKind::Polygon { .. } => None,
+        AnnotationKind::Text {
+            text, box_style, ..
+        } => measure(
+            text,
+            box_style.as_ref().map_or(0.0, |b| b.padding),
+            scale,
+            policy,
+        ),
+        AnnotationKind::Arrow { text, .. } => {
+            text.as_ref().and_then(|t| measure(t, 0.0, scale, policy))
+        }
+    };
+    let text_size = measured.map(|m| m.size);
+    if geometry(&item.kind, &space, text_size).is_none() {
+        return Err(skip_reason(&item.kind, &space, text_size));
+    }
+    Ok(AnnotationElement {
+        index,
+        space,
+        text: measured,
+        handle: None,
+    })
+}
+
+/// Where an annotation item that is not part of a layer yet would be drawn
+/// ([`preview_annotation`], #312).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnnotationPreview {
+    /// The item's screen geometry, the one its hit bounds and raster share:
+    /// a span's or a reference line's whole extent before a broken axis'
+    /// gaps are cut out of it, a text block's rectangle, an arrow's ends, a
+    /// shape's polygon clipped to the plot.
+    pub geometry: AnnotationGeometry,
+    /// The union of every part the raster paints for the item, its label
+    /// included: the bounds the hit map gives it once it is drawn.
+    pub bounds: RectF,
+}
+
+/// Place `item` the way the annotation raster places an item of a layer in
+/// a frame of anchor space `space` (the space an [`AnnotationMap`] reports,
+/// [`pixel_space_for_config`] of the drawn config), measuring its text at
+/// `scale` physical pixels per logical pixel with `policy`, without drawing
+/// or registering anything. `item` is in the space's pixel units, so a
+/// display-scaled frame takes an item scaled the same way
+/// ([`Annotation::scale_in_place`]). `item.visible` is not consulted: this is
+/// the item as it is drawn once shown. An item the raster would skip
+/// returns the reason it reports for it.
+pub fn preview_annotation(
+    item: &Annotation,
+    space: PixelSpace,
+    scale: f32,
+    policy: FontPolicy,
+) -> std::result::Result<AnnotationPreview, AnnotationSkip> {
+    let element = place_item(0, item, space, scale, policy)?;
+    // The element reads its item from a layer: a one-item layer holding a
+    // shown copy of this configuration.
+    let layer = AnnotationLayer {
+        visible: true,
+        items: vec![Annotation {
+            visible: true,
+            ..item.clone()
+        }],
+    };
+    let geometry = element.geometry(&layer).ok_or(AnnotationSkip::OutOfRange)?;
+    let bounds = SelectionGeometry::bounds(&element, &layer, &CpuTextMeasure::default())
+        .ok_or(AnnotationSkip::OutOfRange)?;
+    Ok(AnnotationPreview { geometry, bounds })
 }
 
 /// The selected annotation index named by the radial chart's decoration
@@ -1349,6 +1405,96 @@ mod tests {
             ]
         );
         assert_eq!(raster.map.entries().count(), 1);
+    }
+
+    /// A preview places an item exactly as the raster places it as an
+    /// item of a layer, at every scale, and reports the raster's skip
+    /// reason for one it would not draw; it ignores `visible` (#312).
+    #[test]
+    fn preview_matches_the_rasterized_item() {
+        let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let items = [
+            Annotation::new(AnnotationKind::ReferenceLine {
+                axis: AnnotationAxis::Y,
+                value: 0.5,
+                style: AnnotationLineStyle::default(),
+                label: Some(RichText::plain("half", Color::BLACK, 10., "")),
+            }),
+            Annotation::new(AnnotationKind::Text {
+                anchor: Anchor::Data { x: 5., y: 0.5 },
+                text: RichText::plain("note", Color::BLACK, 12., ""),
+                box_style: Some(BoxStyle::default()),
+                align: Default::default(),
+            }),
+            Annotation::new(AnnotationKind::Arrow {
+                from: Anchor::Ratio { x: 0.1, y: 0.9 },
+                to: Anchor::Data { x: 8., y: 0.8 },
+                style: Default::default(),
+                text: Some(RichText::plain("up", Color::BLACK, 10., "")),
+            }),
+            Annotation::new(AnnotationKind::Rect {
+                from: Anchor::Data { x: -2., y: 0.2 },
+                to: Anchor::Data { x: 3., y: 0.6 },
+                style: Default::default(),
+            }),
+        ];
+        for scale in [1.0f32, 2.0] {
+            let layer = AnnotationLayer {
+                visible: true,
+                items: items.to_vec(),
+            };
+            let raster = rasterize(&RasterRequest {
+                layer: &layer,
+                space: space(),
+                origin: [0., 0.],
+                size: ((200. * scale) as u32, (120. * scale) as u32),
+                scale,
+                selected: None,
+                policy: FontPolicy::Standard,
+                markers: None,
+            })
+            .unwrap();
+            for (index, item) in items.iter().enumerate() {
+                let id = raster.map.find(index).expect("drawn");
+                let element = raster.map.element(id).unwrap();
+                let preview =
+                    preview_annotation(item, space(), scale, FontPolicy::Standard).unwrap();
+                assert_eq!(Some(preview.geometry), element.geometry(&layer), "{index}");
+                assert_eq!(Some(preview.bounds), raster.map.bounds(id), "{index}");
+                let hidden = Annotation {
+                    visible: false,
+                    ..item.clone()
+                };
+                assert_eq!(
+                    preview_annotation(&hidden, space(), scale, FontPolicy::Standard)
+                        .unwrap()
+                        .bounds,
+                    preview.bounds
+                );
+            }
+        }
+        let skipped = Annotation::new(AnnotationKind::Span {
+            axis: AnnotationAxis::X,
+            from: 20.,
+            to: 30.,
+            fill: Color::BLACK,
+        });
+        assert_eq!(
+            preview_annotation(&skipped, space(), 1., FontPolicy::Standard),
+            Err(AnnotationSkip::OutOfRange)
+        );
+        let empty = Annotation::new(AnnotationKind::Text {
+            anchor: Anchor::Ratio { x: 0.5, y: 0.5 },
+            text: RichText::plain("", Color::BLACK, 10., ""),
+            box_style: None,
+            align: Default::default(),
+        });
+        assert_eq!(
+            preview_annotation(&empty, space(), 1., FontPolicy::Standard),
+            Err(AnnotationSkip::EmptyText)
+        );
     }
 
     #[test]

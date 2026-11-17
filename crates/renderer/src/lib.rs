@@ -115,7 +115,9 @@ pub mod helpers;
 pub use helpers::{ExportFormat, HeadlessOptions, SaveError};
 
 // Public API re-exports.
-pub use annotation::{AnnotationMap, BoundedAnnotationFrame, LayerHit};
+pub use annotation::{
+    AnnotationMap, AnnotationPreview, BoundedAnnotationFrame, LayerHit, preview_annotation,
+};
 pub use chart::{Chart, FitExtent};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};

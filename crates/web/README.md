@@ -155,6 +155,20 @@ with its `label_id` (`"series:<series_id>:label:<index>"`), and
 ends. A selected label reports its category, string and offset in
 `selection_details()`; `step_selection` does not step it.
 
+An editor on the raw `FiggyChart` can ask the renderer, without changing the
+document, the selection or the raster
+([#312](https://github.com/shim9610/figgy/issues/312)):
+`annotation_preview(json)` (where an annotation that is not added yet would be
+drawn, in canvas and document pixels), `convert_annotation_anchor(json, kind)`
+(the same item with `"Data"` or `"Ratio"` anchors at the same drawn position),
+`inspect_document_layout(config_json?)` (the document area, scale and every
+panel's frame, data area and layer, for the installed document or a candidate
+config), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
+(the active layer's exact data area), `legend_entry(series_id)` (one legend row
+as the auto legend writes it) and `render_warnings()` (every warning of the
+last frame). The [WASM guide](../renderer/WASM.md#editor-queries-figgychart-312)
+gives the result shapes and error codes.
+
 A Feynman diagram's parts are pick and drag targets too: `pick_point`
 reports a vertex, a propagator or a label as `{kind: "feynman_vertex" |
 "feynman_propagator" | "feynman_label", series_id, index, part?}`, and
@@ -209,6 +223,15 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 `<figgy-chart>`도 같은 메서드를 갖는다. 요소의 `pipeline_status()`는 마지막 프레임의 스냅샷이라
 차트가 바쁠 때도 읽을 수 있고, `figgy-init-progress` 이벤트로 `"screen complete"`와
 `"all complete"`를 알린다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
+
+원시 `FiggyChart` 위의 편집기는 문서·선택·래스터를 바꾸지 않고 렌더러에 물어볼 수 있다
+([#312](https://github.com/shim9610/figgy/issues/312)). `annotation_preview(json)`는 아직 넣지 않은
+주석이 그려질 자리를 캔버스 픽셀과 문서 픽셀로, `convert_annotation_anchor(json, kind)`는 그려지는
+위치를 지킨 채 앵커를 `"Data"`나 `"Ratio"`로 바꾼 항목을 돌려준다. `inspect_document_layout(config_json?)`는
+설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를, `panel_at(x, y)`는
+그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다.
+`legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
+경고를 돌려준다. 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
 스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가

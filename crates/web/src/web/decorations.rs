@@ -1085,3 +1085,280 @@ impl FiggyChart {
         Ok(json)
     }
 }
+
+// ------------------------------------------------------------------
+// Editor queries (#312): read-only answers from the renderer's own
+// placement, layout and legend code. None of them changes the document,
+// the selection, the undo state or the raster.
+// ------------------------------------------------------------------
+
+impl FiggyChart {
+    /// The installed document as the canvas shows it now.
+    fn with_shown_document<T>(
+        &self,
+        read: impl FnOnce(&ShownDocument<'_>) -> Result<T, JsValue>,
+    ) -> Result<T, JsValue> {
+        let logical = self.chart_config()?;
+        let (placed, _, scale) = self.display_config()?;
+        read(&ShownDocument {
+            logical,
+            placed: &placed,
+            scale,
+        })
+    }
+
+    /// An `Annotation` JSON value, checked by the rules a document's
+    /// annotation layer is.
+    fn parse_annotation(json: &str) -> Result<renderer::Annotation, JsValue> {
+        let item: renderer::Annotation = serde_json::from_str(json).map_err(|error| {
+            coded_error(
+                &format!("annotation is not an Annotation JSON value: {error}"),
+                "annotation_json",
+                [],
+            )
+        })?;
+        item.validate().map_err(|kind| {
+            coded_error(
+                &format!("annotation is not valid: {kind:?}"),
+                "annotation_invalid",
+                [("rule", JsValue::from_str(&format!("{kind:?}")))],
+            )
+        })?;
+        Ok(item)
+    }
+}
+
+#[wasm_bindgen]
+impl FiggyChart {
+    /// Where an annotation that is not part of the document yet would be
+    /// drawn (#312), placed by the annotation layer's own placement code
+    /// from the document as the canvas shows it: the document, the
+    /// selection, the undo state and the raster stay as they are. `json` is
+    /// an `Annotation`, the shape `add_annotation` takes.
+    ///
+    /// Returns JSON `{ kind, visible, drawn, canvas, document }`. `canvas`
+    /// is the shape in physical canvas pixels and `document` in document
+    /// pixels, each `{ shape, points | rect, bounds }`: `shape` is `"line"`
+    /// (a reference line's two ends), `"span"` or `"text"` (`rect`
+    /// `[x, y, w, h]`), `"arrow"` (`from`, `to`) or `"polygon"` (a shape's
+    /// outline clipped to the plot), and `bounds` is everything the raster
+    /// paints for it, labels included. A span or a reference line on a
+    /// broken axis is reported whole, before its gaps are cut out. An item
+    /// the raster would skip has `drawn: false` and the `reason`
+    /// `annotation_warnings` would give (`NonFinite`, `NoValueAxis`,
+    /// `OutOfRange`, `EmptyText`). `visible: false` (a hidden item) is
+    /// placed as it is drawn once shown.
+    /// JS: `const p = JSON.parse(chart.annotation_preview(itemJson));`
+    pub fn annotation_preview(&self, json: &str) -> Result<String, JsValue> {
+        let item = Self::parse_annotation(json)?;
+        let value = self.with_shown_document(|shown| {
+            let mut value = serde_json::json!({
+                "kind": annotation_kind_name(&item.kind),
+                "visible": item.visible,
+            });
+            match shown.annotation_preview(&item) {
+                Ok((canvas, document)) => {
+                    value["drawn"] = true.into();
+                    value["canvas"] = annotation_preview_json(&canvas);
+                    value["document"] = document
+                        .as_ref()
+                        .map_or(serde_json::Value::Null, annotation_preview_json);
+                }
+                Err(reason) => {
+                    value["drawn"] = false.into();
+                    value["reason"] = format!("{reason:?}").into();
+                }
+            }
+            Ok(value)
+        })?;
+        serde_json::to_string(&value).map_err(js_err)
+    }
+
+    /// `json`, an `Annotation`, with every anchor converted to
+    /// `anchor_kind` (`"Data"` or `"Ratio"`) at the position it is drawn
+    /// at now (#312): a text box's anchor, an arrow's and a box shape's
+    /// two ends, a polygon's vertices. A reference line or a span has no
+    /// anchor and comes back unchanged. Nothing is installed; pass the
+    /// result to `add_annotation` or `set_annotation`. An anchor with no
+    /// position (a data anchor on a chart without value axes, a
+    /// non-positive value on a logarithmic axis, a non-finite coordinate)
+    /// is refused with code `anchor_unplaceable`. A ratio anchor is an
+    /// `f32` fraction of the plot, so a round trip keeps the drawn pixel.
+    /// JS: `chart.set_annotation(i, chart.convert_annotation_anchor(itemJson, "Ratio"));`
+    pub fn convert_annotation_anchor(
+        &self,
+        json: &str,
+        anchor_kind: &str,
+    ) -> Result<String, JsValue> {
+        let kind = match anchor_kind {
+            "Data" => renderer::AnchorKind::Data,
+            "Ratio" => renderer::AnchorKind::Ratio,
+            _ => {
+                return Err(coded_error(
+                    &format!("anchor kind must be \"Data\" or \"Ratio\", got {anchor_kind:?}"),
+                    "anchor_kind",
+                    [("accepted", JsValue::from(js_names(&["Data", "Ratio"])))],
+                ));
+            }
+        };
+        let item = Self::parse_annotation(json)?;
+        let converted = self.with_shown_document(|shown| {
+            item.converted_anchors(&shown.annotation_space(), kind)
+                .ok_or_else(|| {
+                    coded_error(
+                        &format!(
+                            "an anchor of this {} has no position on the chart as drawn, so it \
+                             cannot be expressed as {anchor_kind}",
+                            annotation_kind_name(&item.kind)
+                        ),
+                        "anchor_unplaceable",
+                        [],
+                    )
+                })
+        })?;
+        serde_json::to_string(&converted).map_err(js_err)
+    }
+
+    /// The displayed geometry of a document and its panels, read-only
+    /// (#312). Without an argument it is the installed document as the
+    /// canvas shows it; with a `Config` JSON it is that candidate, placed
+    /// on this canvas the way `set_config` would place it, and nothing is
+    /// installed. A candidate whose overlays, subplots or line offsets
+    /// cannot be laid out is refused with code `layout`.
+    ///
+    /// Returns JSON `{ scale, surface, document_area, active_layer, panels }`:
+    /// `scale` is canvas pixels per document pixel, `surface` the canvas
+    /// size, and every rect a `{ document, canvas }` pair of
+    /// `[x, y, w, h]`, in document and physical canvas pixels. `panels`
+    /// lists every panel in the order the renderer draws them (base,
+    /// overlays, line offset members, then each subplot's panels), each
+    /// `{ index, layer, subplot, member, frame, data_area }`: `layer` as
+    /// `set_active_layer` takes it, `member` the line offset series a
+    /// member panel draws, `frame` its chart's `chart_area` and
+    /// `data_area` its exact data area (`null` without one). An overlay
+    /// and a member share their chart's frame and data area.
+    /// JS: `const layout = JSON.parse(chart.inspect_document_layout());`
+    pub fn inspect_document_layout(&self, config_json: Option<String>) -> Result<String, JsValue> {
+        let value = match config_json {
+            None => self.with_shown_document(|shown| Ok(shown.layout_json(self.surface_size)))?,
+            Some(json) => {
+                let candidate: renderer::Config = serde_json::from_str(&json).map_err(|error| {
+                    coded_error(
+                        &format!("config is not a Config JSON value: {error}"),
+                        "config_json",
+                        [],
+                    )
+                })?;
+                if !candidate.overlays.is_empty()
+                    || !candidate.subplots.is_empty()
+                    || candidate.has_offset_members()
+                {
+                    candidate.expand().map_err(|error| {
+                        coded_error(
+                            &format!("the candidate's panels cannot be laid out ({error:?})"),
+                            "layout",
+                            [],
+                        )
+                    })?;
+                }
+                let (placed, _, scale) =
+                    renderer::display_config_for_surface(&candidate, self.surface_size);
+                ShownDocument {
+                    logical: &candidate,
+                    placed: &placed,
+                    scale,
+                }
+                .layout_json(self.surface_size)
+            }
+        };
+        serde_json::to_string(&value).map_err(js_err)
+    }
+
+    /// The panel on top at physical canvas point `(x, y)` (#312), as JSON
+    /// `{ layer, panel, subplot, active, in_data_area, document }`, or
+    /// `null` off every frame. Subplot frames win over the parent chart:
+    /// the one drawn on top (insets in paint order, then subplots of their
+    /// own, later over earlier), the same rule a base-layer press uses.
+    /// Where the active layer is an overlay of the chart found, the
+    /// overlay is reported, since it is drawn over its chart's frame; the
+    /// annotation layer, while active and shown, is reported on the parent
+    /// frame outside every subplot. `panel` indexes
+    /// `inspect_document_layout`'s `panels`, `active` says whether `layer`
+    /// is the active layer, `in_data_area` whether the point is inside that
+    /// chart's exact data area, and `document` is the point in document
+    /// pixels.
+    /// JS: `const hit = JSON.parse(chart.panel_at(x, y));`
+    pub fn panel_at(&self, x: f32, y: f32) -> Result<String, JsValue> {
+        let value = self.with_shown_document(|shown| Ok(shown.panel_at_json(x, y)))?;
+        serde_json::to_string(&value).map_err(js_err)
+    }
+
+    /// The active layer's exact data area (#312), as JSON `{ layer, panel,
+    /// document, canvas }` with `[x, y, w, h]` rects in document and
+    /// physical canvas pixels: the rectangle the data is drawn in, not the
+    /// padded box `decoration_bounds("data_area")` selects. The annotation
+    /// layer reads the parent chart's. Refused with code `data_area` for a
+    /// chart without one.
+    /// JS: `const [x, y, w, h] = JSON.parse(chart.data_area_rect()).canvas;`
+    pub fn data_area_rect(&self) -> Result<String, JsValue> {
+        let value = self.with_shown_document(|shown| {
+            shown
+                .data_area_json()
+                .map_err(|why| coded_error(&why, "data_area", []))
+        })?;
+        serde_json::to_string(&value).map_err(js_err)
+    }
+
+    /// One legend row for series `series_id` as the auto legend writes it
+    /// (#312): its symbol, drawn from the series' style and the chart's
+    /// colourbar map and naming the series, a space, the `"\t"` column
+    /// separator and the series' label. Returns the row's `RichSegment`s as
+    /// a JSON array; append them to `legend.content.segments` (after a
+    /// `"\n"` segment when the legend has rows) with `set_config`, and the
+    /// rest of the legend keeps its text. A series without a label gets an
+    /// empty label. An unknown series is refused with code `series`.
+    /// JS: `const row = JSON.parse(chart.legend_entry("fit"));`
+    pub fn legend_entry(&self, series_id: &str) -> Result<String, JsValue> {
+        let series = self.chart_series()?;
+        let cfg = series
+            .iter()
+            .find(|cfg| cfg.series_id == series_id)
+            .ok_or_else(|| {
+                coded_error(
+                    &format!("no series {series_id:?}"),
+                    "series",
+                    [("series_id", JsValue::from_str(series_id))],
+                )
+            })?;
+        let config = self.chart_config()?;
+        let row = renderer::config::series_legend_entry(
+            cfg,
+            config.colorbar.as_ref().map(|bar| &bar.colormap),
+        );
+        serde_json::to_string(&row).map_err(js_err)
+    }
+
+    /// Every warning of the last drawn frame (#312), as a JSON array: tick
+    /// settings the axis raster drew differently from how they were
+    /// written, on any axis of any panel, and annotations the raster
+    /// skipped. Each is `{ kind, ..., message }`: `MajorSpacingReplaced`
+    /// and `LogDecadeStepAdjusted` (`axis`, `requested`, `used`; a
+    /// replaced spacing also has `reason` and, for `TooManyTicks`,
+    /// `limit`), `MinorCountClamped` (`axis`, `requested`, `used`) and
+    /// `AnnotationSkipped` (`index`, `reason`). `axis` is the `Config`
+    /// field path (`"bottom_x"`, `"overlays[0].y_axis"`,
+    /// `"subplots[1].config.left_y"`), a non-finite number is `null`, and
+    /// `message` is one line naming the setting and both values. A later
+    /// kind has `kind: "Other"`. The list is the one `frame` last
+    /// rasterized; `annotation_warnings` is its annotation part.
+    /// JS: `for (const w of JSON.parse(chart.render_warnings())) console.warn(w.message);`
+    pub fn render_warnings(&self) -> Result<String, JsValue> {
+        let values = self
+            .view
+            .render_warnings()
+            .iter()
+            .map(render_warning_json)
+            .collect::<Vec<_>>();
+        serde_json::to_string(&values).map_err(js_err)
+    }
+}

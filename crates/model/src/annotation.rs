@@ -356,7 +356,9 @@ impl Annotation {
         a.into_iter().chain(b)
     }
 
-    fn validate(&self) -> Result<(), crate::RuleKind> {
+    /// The rules [`AnnotationLayer::validate`] checks for one item: its id,
+    /// its texts and its styles.
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if self.id.chars().count() > 160 || self.id.chars().any(char::is_control) {
             return Err(crate::RuleKind::AnnotationId);
         }
@@ -428,6 +430,43 @@ impl Annotation {
             | AnnotationKind::Ellipse { style, .. }
             | AnnotationKind::Polygon { style, .. } => style.border.width *= s,
         }
+    }
+
+    /// The same item with every anchor expressed as `kind`, each kept at
+    /// the screen position it has in `space` ([`Anchor::converted`]): a text
+    /// box's anchor, an arrow's and a box shape's two ends, a polygon's
+    /// vertices. A reference line or a span has no anchor and is returned
+    /// unchanged. `None` when an anchor cannot be placed in `space` (a data
+    /// anchor on a chart without value axes, a non-finite coordinate, a
+    /// non-positive value on a logarithmic axis) or has no position in
+    /// `kind` there. A ratio anchor is an `f32` fraction, so a round trip
+    /// through it keeps the pixel, not every digit of a data value.
+    pub fn converted_anchors(
+        &self,
+        space: &dyn AnnotationSpace,
+        kind: AnchorKind,
+    ) -> Option<Annotation> {
+        let mut item = self.clone();
+        let convert = |anchor: &mut Anchor| -> Option<()> {
+            *anchor = anchor.converted(space, kind)?;
+            Some(())
+        };
+        match &mut item.kind {
+            AnnotationKind::ReferenceLine { .. } | AnnotationKind::Span { .. } => {}
+            AnnotationKind::Text { anchor, .. } => convert(anchor)?,
+            AnnotationKind::Arrow { from, to, .. }
+            | AnnotationKind::Rect { from, to, .. }
+            | AnnotationKind::Ellipse { from, to, .. } => {
+                convert(from)?;
+                convert(to)?;
+            }
+            AnnotationKind::Polygon { vertices, .. } => {
+                for vertex in vertices.iter_mut() {
+                    convert(vertex)?;
+                }
+            }
+        }
+        Some(item)
     }
 }
 
@@ -2197,6 +2236,70 @@ mod tests {
             none.anchor_to_px(&Anchor::Ratio { x: 0.5, y: 0.5 })
                 .is_some()
         );
+    }
+
+    /// Every anchor of an item converts and keeps its pixel; an item
+    /// without anchors is unchanged; one anchor without a position refuses
+    /// the whole item (#312).
+    #[test]
+    fn converted_anchors_keep_every_drawn_position() {
+        let s = space();
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+        let arrow = Annotation::new(AnnotationKind::Arrow {
+            from: Anchor::Data { x: 2.5, y: 100. },
+            to: Anchor::Ratio { x: 0.75, y: 0.25 },
+            style: crate::defaults::arrow_style(),
+            text: None,
+        });
+        let polygon = Annotation::new(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Data { x: 1., y: 10. },
+                Anchor::Data { x: 9., y: 10. },
+                Anchor::Ratio { x: 0.5, y: 0.1 },
+            ],
+            style: crate::defaults::shape_style(),
+        });
+        let anchors = |item: &Annotation| -> Vec<Anchor> {
+            match &item.kind {
+                AnnotationKind::Arrow { from, to, .. } => vec![*from, *to],
+                AnnotationKind::Polygon { vertices, .. } => vertices.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        for item in [&arrow, &polygon] {
+            for kind in [AnchorKind::Ratio, AnchorKind::Data] {
+                let converted = item.converted_anchors(&s, kind).unwrap();
+                assert_eq!(converted.id, item.id);
+                for (before, after) in anchors(item).iter().zip(anchors(&converted)) {
+                    assert_eq!(after.kind(), kind);
+                    assert!(close(
+                        s.anchor_to_px(before).unwrap(),
+                        s.anchor_to_px(&after).unwrap()
+                    ));
+                }
+            }
+        }
+        let span = Annotation::new(AnnotationKind::Span {
+            axis: AnnotationAxis::X,
+            from: 1.,
+            to: 2.,
+            fill: Color::BLACK,
+        });
+        assert_eq!(span.converted_anchors(&s, AnchorKind::Ratio), Some(span));
+        // y = 0 has no position on the logarithmic Y axis.
+        let unplaceable = Annotation::new(AnnotationKind::Text {
+            anchor: Anchor::Data { x: 1., y: 0. },
+            text: RichText::plain("x", Color::BLACK, 10., ""),
+            box_style: None,
+            align: NoteAlign::TopLeft,
+        });
+        assert_eq!(unplaceable.converted_anchors(&s, AnchorKind::Ratio), None);
+        let mut none = s;
+        none.x = AxisSpace::NONE;
+        none.y = AxisSpace::NONE;
+        assert_eq!(arrow.converted_anchors(&none, AnchorKind::Ratio), None);
+        assert_eq!(polygon.converted_anchors(&none, AnchorKind::Data), None);
     }
 
     #[test]

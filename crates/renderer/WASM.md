@@ -543,6 +543,8 @@ chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 �
 
 전체 필드와 열거형 값, serde 표현 규칙, 함께 수정해야 하는 옵션은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다. SCHEMA.md의 예시 JSON은 소스와 자동으로 대조하지 않으므로, 정확한 형식은 `get_config()` / `get_series()`의 실제 출력으로 확인한다.
 
+편집기용 조회 호출(#312)은 렌더러가 직접 계산한 배치와 레이아웃을 돌려주며 문서·선택·실행 취소 상태·래스터를 바꾸지 않는다. `annotation_preview(json)`는 아직 문서에 넣지 않은 주석을 주석 레이어의 배치 코드로 놓아 본 모양과 좌표를 캔버스 픽셀과 문서 픽셀로 돌려준다. `convert_annotation_anchor(json, "Data" | "Ratio")`는 그려지는 위치를 그대로 둔 채 앵커 종류를 바꾼다. `inspect_document_layout(config_json?)`는 문서 영역, 배율, 패널마다의 프레임·데이터 영역·레이어를 돌려주고, 설정 JSON을 넘기면 설치하지 않고 그 후보를 계산한다. `panel_at(x, y)`는 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다. `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄(기호와 라벨)을 돌려주므로 범례 전체를 다시 쓰지 않고 한 줄만 붙일 수 있다. `render_warnings()`는 마지막 프레임의 모든 경고(모든 패널의 눈금 설정과 건너뛴 주석)를 구조화된 JSON으로 돌려준다. 결과 형식과 오류 코드는 [8장의 Editor queries](#editor-queries-figgychart-312)를 참고한다.
+
 <a id="39-async-메서드와-객체-잠금-필독"></a>
 
 ### 3.9 비동기 호출 중 객체 접근 제한
@@ -1416,3 +1418,67 @@ changed, and a flat chart never does. A data-area drag orbits the camera.
 methods; call them through [`element.kernel`](#figgy-chart-kernel).
 See the [selection JSON contract](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#resident-selection-details).
 Hold the host's async gate during selected-value reads as well as exports.
+
+<a id="editor-queries-figgychart-312"></a>
+
+### Editor queries (`FiggyChart`, [#312](https://github.com/shim9610/figgy/issues/312))
+
+These calls answer an editor from the renderer's own placement and layout
+code. None of them changes the document, the selection, the undo state or
+the raster. Coordinates are physical canvas pixels, and each result also gives
+document pixels (the coordinates of `get_config`).
+
+- `annotation_preview(json)` places an `Annotation` that is not in the
+  document yet, with the annotation layer's own placement. It returns
+  `{ kind, visible, drawn, canvas, document }`. `canvas` and `document` are
+  `{ shape, points | rect, bounds }`. `shape` is one of `"line"` (a reference
+  line's two ends), `"span"`, `"text"` (`rect`), `"arrow"` (`from`, `to`)
+  and `"polygon"` (a shape clipped to the plot). `bounds` covers everything
+  the raster paints for the item, labels included. Once the item is added and
+  drawn, its `annotations()` `rect` is `bounds` padded by 2 logical px. An item
+  the raster would skip has `drawn: false` and the `reason` that
+  `annotation_warnings` gives. A hidden item is placed as it is drawn once
+  shown. Malformed JSON is refused with code `annotation_json`, and an
+  invalid item with `annotation_invalid`.
+- `convert_annotation_anchor(json, "Data" | "Ratio")` returns the item with
+  every anchor converted at its drawn position: a text box's anchor, an
+  arrow's or a box shape's two ends, and a polygon's vertices. Reference
+  lines and spans have no anchor and come back unchanged. An anchor with no
+  position is refused with code `anchor_unplaceable`, and another kind name
+  with `anchor_kind`. Pass the result to `add_annotation` or
+  `set_annotation`.
+- `inspect_document_layout(config_json?)` returns `{ scale, surface,
+  document_area, active_layer, panels }`. Each rect is a `{ document, canvas }`
+  pair of `[x, y, w, h]`. `panels` lists every panel in the order the
+  renderer draws them (base, overlays, line offset members, then each
+  subplot's panels), each as `{ index, layer, subplot, member, frame,
+  data_area }`. Without an argument, it reads the installed document as
+  shown. With a `Config` JSON, it reads that candidate as `set_config` would
+  place it on this canvas, without installing it. A candidate whose panels
+  cannot be laid out is refused with code `layout`.
+- `panel_at(x, y)` returns the panel on top at a point, as `{ layer, panel,
+  subplot, active, in_data_area, document }`, or `null` off every frame.
+  Subplot frames win over the parent chart, and the one drawn on top wins:
+  insets in paint order, then subplots of their own, the later over the
+  earlier. This is the rule a base-layer press uses. When the active layer
+  is an overlay of the chart found, the overlay is reported. While the
+  annotation layer is active and shown, it is reported on the parent frame
+  outside every subplot.
+- `data_area_rect()` returns the active layer's exact data area as `{ layer,
+  panel, document, canvas }`. This is the rectangle the data is drawn in, not
+  the padded box `decoration_bounds("data_area")` selects. A chart without a
+  data area is refused with code `data_area`.
+- `legend_entry(series_id)` returns one legend row as the auto legend writes
+  it, as a JSON array of `RichSegment`. The row holds the series' symbol (its
+  style and the colourbar map, naming the series), a space, `"\t"` and its
+  label. Append it to `legend.content.segments` after a `"\n"` and the rest of
+  a host-written legend keeps its text. An unknown series is refused with code
+  `series`.
+- `render_warnings()` returns every warning of the last drawn frame, on any
+  axis of any panel and for skipped annotations, as `[{ kind, ..., message }]`.
+  `MajorSpacingReplaced` and `LogDecadeStepAdjusted` carry `axis`,
+  `requested` and `used`; a replaced spacing also has `reason`, and `limit`
+  for `TooManyTicks`. `MinorCountClamped` carries the same three fields, and
+  `AnnotationSkipped` carries `index` and `reason`. `axis` is the `Config`
+  field path, such as `"subplots[1].config.left_y"`, and a non-finite number
+  is `null`. `annotation_warnings()` is the annotation part of this list.
