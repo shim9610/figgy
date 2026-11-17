@@ -6,11 +6,24 @@
 //! with none of the three may therefore be drawn by either, depending on
 //! what its renderer was handed before. This suite draws every Cartesian
 //! scene of the playground catalogue (`support/playground_scenes.rs`)
-//! through both and holds the exports to the same pixels, so no fragment of
-//! one set can come to place, shade or clip a plain chart differently
-//! from its twin. The scenes that use one of the three features move their
-//! renderer to the full modules themselves, and only those do; the suite
-//! holds the renderer's choice to its own reading of each scene's model.
+//! through both and holds the exports to the same pixels
+//! ([`same_picture`]), so no fragment of one set can come to place, shade
+//! or clip a plain chart differently from its twin. The scenes that use one
+//! of the three features move their renderer to the full modules
+//! themselves, and only those do; the suite holds the renderer's choice to
+//! its own reading of each scene's model.
+//!
+//! The two sets are two shader programs, and a shader compiler may round
+//! the same arithmetic differently in each. Measured on #155 and #301
+//! (DX12 with WARP and DXC, and Metal), a scene drawn twice through one set
+//! is identical, while the two sets differ in a few edge pixels: by one
+//! level in one channel (the quiver: 82 pixels at 1x, 262 at 2x; the
+//! streamlines: 17 and 52; a few in the line, annotation and large-data
+//! scenes), and in one arrowhead tip pixel of the 3D vector field by 51
+//! levels of alpha (152 against 203), a partly covered pixel. Vulkan draws
+//! both sets identically. A misplaced, recoloured or clipped element changes
+//! fully covered or empty pixels by far more than one level, which the
+//! comparison still refuses.
 #![cfg(not(target_arch = "wasm32"))]
 
 #[path = "support/playground_scenes.rs"]
@@ -131,13 +144,17 @@ fn the_variants_draw_the_same(kinds: &[SceneKind]) {
                 .rgba
                 .chunks_exact(4)
                 .zip(second.rgba.chunks_exact(4))
-                .filter(|(a, b)| a != b)
+                .filter(|(a, b)| !same_picture(a, b))
                 .count();
+            if differing > 0 {
+                save_pair(kind, scale, &first, &second);
+            }
             assert_eq!(
                 differing,
                 0,
-                "{} at {scale}x: {differing} pixels differ between the basic and the full shaders",
-                kind.label()
+                "{} at {scale}x: {differing} pixels differ between the basic and the full shaders ({})",
+                kind.label(),
+                difference_summary(&first, &second)
             );
         }
     }
@@ -179,4 +196,90 @@ fn the_known_full_scenes_are_catalogue_scenes() {
         assert!(scenes.contains(kind), "{}", kind.label());
     }
     assert!(scenes.len() > KNOWN_FULL_SCENES.len() + 30);
+}
+
+/// Whether two exports show the same pixel: every channel within one level
+/// (a shader compiler's rounding), or both partly covered (an alpha strictly
+/// between 0 and 255), where an edge's coverage may round differently
+/// between the two programs. See the module documentation for the measured
+/// differences.
+fn same_picture(a: &[u8], b: &[u8]) -> bool {
+    let within_one = a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 1);
+    let partly_covered = |pixel: &[u8]| pixel.get(3).is_some_and(|alpha| (1..=254).contains(alpha));
+    within_one || (partly_covered(a) && partly_covered(b))
+}
+
+/// How the differing pixels of two same-sized exports differ: the largest
+/// per-channel difference, how many pixels differ by at most 1, 8 and 32
+/// levels in their worst channel, and the bounding box of the differences.
+fn difference_summary(a: &RasterImage, b: &RasterImage) -> String {
+    let mut worst = 0u8;
+    let mut within = [0usize; 3];
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    for (index, (pa, pb)) in a
+        .rgba
+        .chunks_exact(4)
+        .zip(b.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        let delta = pa
+            .iter()
+            .zip(pb)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0);
+        if delta == 0 {
+            continue;
+        }
+        worst = worst.max(delta);
+        for (bucket, limit) in within.iter_mut().zip([1u8, 8, 32]) {
+            if delta <= limit {
+                *bucket += 1;
+            }
+        }
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        let (x, y) = (index % a.width, index / a.width);
+        (min_x, min_y, max_x, max_y) = (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y));
+    }
+    format!(
+        "largest channel difference {worst}; within 1: {}, within 8: {}, within 32: {}; box x {min_x}..={max_x}, y {min_y}..={max_y}",
+        within[0], within[1], within[2]
+    )
+}
+
+/// Save both exports of a scene that differs, next to the test's build
+/// output, so a CI run can upload them.
+fn save_pair(kind: SceneKind, scale: f32, basic: &RasterImage, full: &RasterImage) {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("shader-set-differences");
+    if std::fs::create_dir_all(&dir).is_err() {
+        // Nothing to save into: the assertion still reports the summary.
+        return;
+    }
+    let stem: String = kind
+        .label()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    for (set, image) in [("basic", basic), ("full", full)] {
+        let path = dir.join(format!("{stem}-{scale}x-{set}.png"));
+        if image.save_png(&path).is_err() {
+            // As above: the summary is the report; the image is an aid.
+        }
+    }
+}
+
+/// The comparison allows a compiler's rounding and nothing a misplaced,
+/// recoloured or clipped element produces.
+#[test]
+fn the_comparison_refuses_what_a_real_difference_changes() {
+    // Rounding: one level in a channel, anywhere.
+    assert!(same_picture(&[10, 20, 30, 255], &[11, 20, 30, 255]));
+    assert!(same_picture(&[0, 0, 0, 0], &[0, 0, 0, 1]));
+    // An edge pixel covered differently in both exports.
+    assert!(same_picture(&[53, 183, 121, 152], &[53, 183, 121, 203]));
+    // A pixel an element moved onto or off: covered against empty.
+    assert!(!same_picture(&[53, 183, 121, 255], &[0, 0, 0, 0]));
+    assert!(!same_picture(&[53, 183, 121, 152], &[0, 0, 0, 0]));
+    // A recoloured, fully covered pixel.
+    assert!(!same_picture(&[10, 20, 30, 255], &[12, 20, 30, 255]));
 }
