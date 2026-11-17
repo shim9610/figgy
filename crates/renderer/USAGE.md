@@ -213,6 +213,10 @@ pub trait ColumnSource {
     /// split), each index in `0..len()` once. null → `f32::NAN`.
     fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
+    /// `Single` when every value is written as `(value, 0)`: the resident
+    /// upload then stages 4 bytes per value instead of 8 (#317).
+    fn lanes(&self) -> ColumnLanes { ColumnLanes::Pair }  // default
+
     /// One streamed chunk: `writer.len()` values from `start`. Sources that
     /// are never streamed keep the default, which reports `Unsupported`.
     fn write_pair_range(
@@ -223,7 +227,7 @@ pub trait ColumnSource {
 }
 ```
 
-**Built-in implementors**: `Column<T>`, `Vec<T>`, `[T]` and `&[T]` for `T` = `f64`, `f32`, `u32` and `Option<f64>` (`None` → NaN). Arrays are not implementors: pass `&arr.as_slice()`.
+**Built-in implementors**: `Column<T>`, `Vec<T>`, `[T]` and `&[T]` for `T` = `f64`, `f32`, `u32` and `Option<f64>` (`None` → NaN). Arrays are not implementors: pass `&arr.as_slice()`. The `f32` ones return `ColumnLanes::Single`.
 
 ```rust
 pub trait HiLoColumnSource {
@@ -272,7 +276,10 @@ renderer.add_column("temperature", &my_series)?;   // my_series: MyTimeSeries
 ```
 
 A native `f32` container does the same: iterate the values and call
-`writer.write_pair(index, value, 0.0)`. `ColumnPairWriter` takes values by
+`writer.write_pair(index, value, 0.0)`, and return `ColumnLanes::Single` from
+`lanes()` so the upload stages 4 bytes per value instead of 8; the pool and
+the drawing are the same either way. A source that returns `Single` and writes
+a non-zero second lane fails its upload. `ColumnPairWriter` takes values by
 index, one pair at a time, and does not expose the mapped bytes, so a source
 never handles wgpu types.
 
@@ -1357,6 +1364,10 @@ pub trait ColumnSource {
     /// `0..len()`의 각 인덱스를 한 번씩 쓴다. null은 `f32::NAN`으로 기록한다.
     fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
+    /// 모든 값을 `(value, 0)`으로 쓰면 `Single`을 반환한다. 그러면 상주
+    /// 업로드가 값마다 8바이트 대신 4바이트를 스테이징한다(#317).
+    fn lanes(&self) -> ColumnLanes { ColumnLanes::Pair }  // 디폴트 제공
+
     /// 스트리밍 청크 하나: `start`부터 `writer.len()`개의 값을 쓴다.
     /// 스트리밍하지 않는 소스는 `Unsupported`를 반환하는 기본 구현을 쓴다.
     fn write_pair_range(
@@ -1367,7 +1378,7 @@ pub trait ColumnSource {
 }
 ```
 
-**기본 제공 구현체**: `T`가 `f64`, `f32`, `u32`, `Option<f64>`일 때의 `Column<T>`, `Vec<T>`, `[T]`, `&[T]` (`None` → NaN). 배열은 구현체가 아니므로 `&arr.as_slice()`로 넘긴다.
+**기본 제공 구현체**: `T`가 `f64`, `f32`, `u32`, `Option<f64>`일 때의 `Column<T>`, `Vec<T>`, `[T]`, `&[T]` (`None` → NaN). 배열은 구현체가 아니므로 `&arr.as_slice()`로 넘긴다. `f32` 구현체는 `ColumnLanes::Single`을 반환한다.
 
 `write_pairs`에는 기본 구현이 없으므로 모든 소스가 직접 구현한다. 컬럼 통계는 언제나 소스가 쓴 값에서 나온다. `HiLoColumnSource`도 같은 이름의 메서드로 `(hi, lo)` 쌍을 기록한다.
 
@@ -1391,7 +1402,7 @@ impl renderer::ColumnSource for MyTimeSeries {
 renderer.add_column("temperature", &my_series)?;   // my_series: MyTimeSeries
 ```
 
-네이티브 `f32` 컨테이너도 같다. 값을 순회하며 `writer.write_pair(index, value, 0.0)`를 호출하면 된다. `ColumnPairWriter`는 인덱스로 값 쌍을 하나씩 받을 뿐 매핑된 바이트를 노출하지 않으므로, 소스가 wgpu 타입을 다룰 일은 없다.
+네이티브 `f32` 컨테이너도 같다. 값을 순회하며 `writer.write_pair(index, value, 0.0)`를 호출하면 된다. `lanes()`에서 `ColumnLanes::Single`을 반환하면 업로드가 값마다 8바이트 대신 4바이트를 스테이징하며, 풀과 그려지는 결과는 같다. `Single`을 반환한 소스가 두 번째 레인에 0이 아닌 값을 쓰면 업로드가 실패한다. `ColumnPairWriter`는 인덱스로 값 쌍을 하나씩 받을 뿐 매핑된 바이트를 노출하지 않으므로, 소스가 wgpu 타입을 다룰 일은 없다.
 
 <a id="네이티브-example--사인--rc--cross-section"></a>
 

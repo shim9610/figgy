@@ -10,6 +10,25 @@ pub use ::model::data::*;
 
 pub const COLUMN_VALUE_F32S: usize = 2;
 pub const COLUMN_VALUE_BYTES: usize = std::mem::size_of::<f32>() * COLUMN_VALUE_F32S;
+/// Bytes one value takes in compact single-lane staging (#317): the first
+/// lane only. The pool still stores [`COLUMN_VALUE_BYTES`] per value; the
+/// upload expands the compact values on the GPU.
+pub(crate) const COLUMN_SINGLE_LANE_BYTES: usize = std::mem::size_of::<f32>();
+
+/// Which lanes of the pool's `(hi, lo)` pair a [`ColumnSource`] writes
+/// (#317). The pool stores every value as the pair either way; the lanes
+/// only decide how much the resident upload stages and transfers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnLanes {
+    /// Every value is written as `(value, 0)`: an f32 source. The resident
+    /// upload stages and transfers the first lane only, 4 bytes per value,
+    /// and the GPU writes the zero second lane. A single-lane source that
+    /// writes a non-zero second lane fails its upload with an error.
+    Single,
+    /// Values are written as `(hi, lo)` splits: an f64 source, or any source
+    /// that does not declare otherwise. Staged at 8 bytes per value.
+    Pair,
+}
 /// Safe write-only access to a column's logical `(hi, lo)` f32 pairs.
 ///
 /// Sources can inspect only the number of pairs and write a complete pair by
@@ -24,6 +43,17 @@ pub struct ColumnPairWriter<'a> {
     /// Store each pair as a `u32` index lane instead of the f32 pair: a
     /// ragged column's offsets (`SHADER_COMMON.md` §5.14).
     index_lanes: bool,
+    /// Bytes each value takes in `dst`: [`COLUMN_VALUE_BYTES`] for the pair
+    /// layout, [`COLUMN_SINGLE_LANE_BYTES`] for compact single-lane staging,
+    /// which stores the first lane (the hi f32 bits, or the index lane) at
+    /// `index * 4` and leaves the zero second lane to the GPU (#317).
+    value_bytes: usize,
+    /// Set when a source that declared [`ColumnLanes::Single`] writes a
+    /// second lane whose bits are not zero. The caller rejects the upload
+    /// once the source returns, as for `out_of_range` (#317). `None` for a
+    /// pair source and for index lanes, whose second lane is part of the
+    /// index.
+    second_lane_written: Option<&'a std::cell::Cell<bool>>,
     /// Set when the source writes an index outside `0..len()`. The write is
     /// not performed, and the caller that built the writer rejects the
     /// upload once the source returns (#152).
@@ -44,6 +74,8 @@ impl<'a> ColumnPairWriter<'a> {
             dst,
             observer: None,
             index_lanes: false,
+            value_bytes: COLUMN_VALUE_BYTES,
+            second_lane_written: None,
             out_of_range,
             bounds: EncodedBounds::default(),
         }
@@ -56,6 +88,25 @@ impl<'a> ColumnPairWriter<'a> {
     /// such a column before it is published.
     pub(crate) fn with_index_lanes(mut self, index_lanes: bool) -> Self {
         self.index_lanes = index_lanes;
+        self
+    }
+
+    /// Hold the source to the single-lane contract (#317): a write whose
+    /// second lane is not bitwise zero sets `second_lane_written`, which the
+    /// caller turns into an upload error. With `compact`, each value is
+    /// staged as its first lane alone, 4 bytes at `index * 4`, and `len()`
+    /// counts 4-byte values. Index lanes are always single (their second
+    /// lane is 0) and are never held to the contract: a large index's
+    /// `(hi, lo)` split is the index.
+    pub(crate) fn with_single_lane(
+        mut self,
+        compact: bool,
+        second_lane_written: Option<&'a std::cell::Cell<bool>>,
+    ) -> Self {
+        if compact {
+            self.value_bytes = COLUMN_SINGLE_LANE_BYTES;
+        }
+        self.second_lane_written = second_lane_written;
         self
     }
 
@@ -79,7 +130,7 @@ impl<'a> ColumnPairWriter<'a> {
 
     /// Number of logical `(hi, lo)` pairs available for writing.
     pub fn len(&self) -> usize {
-        self.dst.len() / COLUMN_VALUE_BYTES
+        self.dst.len() / self.value_bytes
     }
 
     /// Returns `true` when no logical pairs are available for writing.
@@ -122,24 +173,35 @@ impl<'a> ColumnPairWriter<'a> {
             self.out_of_range.set(true);
             return false;
         }
-        let start = index * COLUMN_VALUE_BYTES;
         let (hi_bytes, lo_bytes) = if self.index_lanes {
             (index_lane(hi, lo).to_le_bytes(), [0; 4])
         } else {
+            if lo.to_bits() != 0
+                && let Some(flag) = self.second_lane_written
+            {
+                flag.set(true);
+            }
             (hi.to_le_bytes(), lo.to_le_bytes())
         };
-        self.dst
-            .slice(start..start + COLUMN_VALUE_BYTES)
-            .copy_from_slice(&[
-                hi_bytes[0],
-                hi_bytes[1],
-                hi_bytes[2],
-                hi_bytes[3],
-                lo_bytes[0],
-                lo_bytes[1],
-                lo_bytes[2],
-                lo_bytes[3],
-            ]);
+        let start = index * self.value_bytes;
+        if self.value_bytes == COLUMN_SINGLE_LANE_BYTES {
+            self.dst
+                .slice(start..start + COLUMN_SINGLE_LANE_BYTES)
+                .copy_from_slice(&hi_bytes);
+        } else {
+            self.dst
+                .slice(start..start + COLUMN_VALUE_BYTES)
+                .copy_from_slice(&[
+                    hi_bytes[0],
+                    hi_bytes[1],
+                    hi_bytes[2],
+                    hi_bytes[3],
+                    lo_bytes[0],
+                    lo_bytes[1],
+                    lo_bytes[2],
+                    lo_bytes[3],
+                ]);
+        }
         if let Some(observer) = self.observer.as_mut() {
             observer(index, hi, lo);
         }
@@ -323,6 +385,17 @@ pub trait ColumnSource {
     /// for a source that keeps more than f32 precision, each index in
     /// `0..len()` once.
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>);
+
+    /// Which lanes [`Self::write_pairs`] writes (#317). The default,
+    /// [`ColumnLanes::Pair`], stages 8 bytes per value. A source that writes
+    /// every value as `(value, 0)` returns [`ColumnLanes::Single`] so the
+    /// resident upload stages and transfers 4 bytes per value; the pool's
+    /// layout and the values the GPU reads are the same. A single-lane
+    /// source that writes a non-zero second lane fails its upload. Streamed
+    /// uploads ignore it.
+    fn lanes(&self) -> ColumnLanes {
+        ColumnLanes::Pair
+    }
 
     /// Write `dst.len()` values beginning at the logical `start` index
     /// directly into mapped staging: one streamed chunk. The writer records
@@ -516,12 +589,16 @@ impl ColumnSource for [u32] {
     }
 }
 
+// An f32 slice writes `(value, 0)`: single lane (#317).
 impl ColumnSource for [f32] {
     fn len(&self) -> usize {
         <[f32]>::len(self)
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         write_all_with(self, dst, |value| (value, 0.0));
+    }
+    fn lanes(&self) -> ColumnLanes {
+        ColumnLanes::Single
     }
     fn write_pair_range(
         &self,
@@ -586,7 +663,15 @@ impl HiLoColumnSource for [Option<f64>] {
 /// out on purpose: a trait `len` on `[T; N]` would shadow the slice's `len`
 /// in any scope that imports these traits.
 macro_rules! slice_backed_source {
-    ($trait:ident for $($value:ty),+) => {$(
+    // A `ColumnSource` container also forwards its slice's lanes (#317);
+    // `HiLoColumnSource` has none.
+    (ColumnSource for $($value:ty),+) => {$(
+        slice_backed_source!(@one ColumnSource, $value, lanes);
+    )+};
+    (HiLoColumnSource for $($value:ty),+) => {$(
+        slice_backed_source!(@one HiLoColumnSource, $value,);
+    )+};
+    (@one $trait:ident, $value:ty, $($lanes:ident)?) => {
         impl $trait for Column<$value> {
             fn len(&self) -> usize {
                 self.data.len()
@@ -594,6 +679,9 @@ macro_rules! slice_backed_source {
             fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
                 $trait::write_pairs(self.data.as_slice(), dst)
             }
+            $(fn $lanes(&self) -> ColumnLanes {
+                $trait::$lanes(self.data.as_slice())
+            })?
             fn write_pair_range(
                 &self,
                 start: u64,
@@ -609,6 +697,9 @@ macro_rules! slice_backed_source {
             fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
                 $trait::write_pairs(self.as_slice(), dst)
             }
+            $(fn $lanes(&self) -> ColumnLanes {
+                $trait::$lanes(self.as_slice())
+            })?
             fn write_pair_range(
                 &self,
                 start: u64,
@@ -624,6 +715,9 @@ macro_rules! slice_backed_source {
             fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
                 $trait::write_pairs(*self, dst)
             }
+            $(fn $lanes(&self) -> ColumnLanes {
+                $trait::$lanes(*self)
+            })?
             fn write_pair_range(
                 &self,
                 start: u64,
@@ -632,7 +726,7 @@ macro_rules! slice_backed_source {
                 $trait::write_pair_range(*self, start, dst)
             }
         }
-    )+};
+    };
 }
 
 slice_backed_source!(ColumnSource for f64, f32, u32, Option<f64>);

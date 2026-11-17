@@ -472,10 +472,7 @@ async fn generated_labels_follow_an_edit_and_user_text_stays() {
     let rewritten = read(&reopened);
     assert_eq!(
         texts(&rewritten),
-        [
-            Some("75 kg (75%)".into()),
-            Some("25 kg (25%)".into())
-        ]
+        [Some("75 kg (75%)".into()), Some("25 kg (25%)".into())]
     );
     assert!(rewritten.slices.iter().all(|s| s.text_generated));
     reopened.frame().unwrap();

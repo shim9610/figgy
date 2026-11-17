@@ -97,6 +97,20 @@ Zero-copy here means writing directly into mapped staging without a separate
 CPU point array. The GPU copy still occurs; CPU axis/text image buffers are
 outside this column-upload guarantee.
 
+The pool stores every value as an 8-byte `(hi, lo)` pair. A pair column (an
+f64 or `HiLoColumnSource` source) is staged in that layout and copied into the
+pool. A single-lane column, whose source returns `ColumnLanes::Single` from
+`ColumnSource::lanes` (the built-in f32 sources) or which holds index lanes
+(ragged offsets, triangle indices), is staged compact at 4 bytes per value
+(#317). The upload copies the compact bytes into one transient storage buffer
+and a compute pass (`column_expand.wgsl`) writes `(value, 0)` into the
+column's region, so the pool holds the same bytes as a pair upload and no
+shader changes. Staging and the host-to-GPU transfer halve for such a column;
+the transient buffer is GPU-local and charged to the ledger like staging. A
+single-lane source that writes a non-zero second lane fails its upload. A
+device without the needed compute, or a column wider than one storage binding,
+is staged as pairs. Streamed sources always stage pairs.
+
 ### Exact streaming and residency
 
 ![Column-based screen update loop: conditional CPU rasterization, resident GPU data, chunked streaming and composition](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/streaming-architecture-en.png)
@@ -774,6 +788,8 @@ lines, split connectors and annotation overlay through the same sink
 ![네이티브 상주 업로드: 빌린 원본, 매핑된 스테이징, 실제 GPU 복사와 CPU 메타데이터](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/column-upload-kr.png)
 
 여기서 제로카피는 별도 CPU 점 배열 없이 매핑된 스테이징에 직접 기록한다는 뜻이다. GPU 복사는 존재하며, 축·문자용 CPU 이미지 버퍼는 컬럼 업로드의 보장 범위와 별개다.
+
+풀은 모든 값을 8바이트 `(hi, lo)` 쌍으로 저장한다. 쌍 컬럼(f64 소스나 `HiLoColumnSource`)은 이 형식 그대로 스테이징에 쓰고 풀로 복사한다. 단일 레인 컬럼은 값마다 4바이트만 스테이징에 쓴다(#317). `ColumnSource::lanes`가 `ColumnLanes::Single`을 반환하는 소스(내장 f32 소스)와 인덱스 레인(ragged 오프셋, 삼각형 인덱스)이 여기에 해당한다. 업로드는 이 바이트를 임시 스토리지 버퍼 하나로 복사한 뒤, 컴퓨트 패스(`column_expand.wgsl`)로 컬럼 영역에 `(값, 0)`을 기록한다. 그래서 풀에는 쌍 업로드와 같은 바이트가 들어가고 셰이더는 바뀌지 않는다. 이런 컬럼은 스테이징과 호스트→GPU 전송량이 절반으로 줄어든다. 임시 버퍼는 GPU 안에만 있으며 스테이징처럼 메모리 집계에 포함한다. 단일 레인이라고 선언한 소스가 두 번째 레인에 0이 아닌 값을 쓰면 업로드가 실패한다. 필요한 컴퓨트를 지원하지 않는 장치나 스토리지 바인딩 하나에 들어가지 않는 컬럼은 쌍으로 스테이징한다. 스트리밍 소스는 항상 쌍으로 스테이징한다.
 
 ### 원본 데이터 스트리밍과 상주 전환
 
