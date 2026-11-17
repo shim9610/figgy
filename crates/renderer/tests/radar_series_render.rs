@@ -507,6 +507,68 @@ fn the_category_labels_sit_outside_the_ring_at_their_spokes() {
     }
 }
 
+/// A category's rich label is drawn, measured and hit in place of its
+/// plain one on the angle axis (#308), as on a straight categorical axis.
+#[test]
+fn a_rich_category_label_replaces_the_plain_one_on_the_angle_axis() {
+    use renderer::layout::{DrawnPart, Element, Side};
+    use renderer::text::RichText;
+    let mut r = renderer();
+    let mut plain = chart(up_clockwise());
+    plain.config_mut().bottom_x.label_style.visible = true;
+    plain.config_mut().bottom_x.label_style.color = BLUE;
+    let mut rich = Chart::new(plain.config().clone());
+    rich.config_mut().bottom_x.categories.as_mut().unwrap()[0].rich_label =
+        Some(RichText::plain("RICH", RED, 24.0, "sans-serif"));
+    for scale in [1.0, 2.0] {
+        let img_plain = export(&mut r, &plain, &[], scale);
+        let img_rich = export(&mut r, &rich, &[], scale);
+        save(&format!("radar-rich-label-{scale}x"), &img_rich);
+        // The rich label draws in its own colour; the plain labels have none.
+        assert_eq!(count(&img_plain, is_red), 0, "{scale}x");
+        assert!(count(&img_rich, is_red) > 20, "{scale}x: no rich ink");
+        // The rich label is drawn in place of the plain one: the first
+        // category's blue label is gone and the other four keep theirs.
+        let blue_plain = count(&img_plain, is_blue);
+        let blue_rich = count(&img_rich, is_blue);
+        assert!(blue_rich < blue_plain, "{scale}x: {blue_rich} {blue_plain}");
+        assert!(blue_rich > 0, "{scale}x");
+    }
+    // The hit map answers on the rich label's drawn box, which is taller
+    // than any plain label's: it is measured as rich text at 24 px.
+    let measure = renderer::text_render::CpuTextMeasure::for_style(&rich.config().draw_style);
+    let tallest = |chart: &Chart| {
+        let mut tallest: Option<renderer::layout::RectF> = None;
+        assert!(renderer::chrome::emit_part_of(
+            chart.config(),
+            &Element::AxisLabel(Side::Bottom),
+            &measure,
+            &mut renderer::sink::Parts(&mut |part| {
+                if let DrawnPart::Text(rect) = part
+                    && tallest.is_none_or(|t| rect.height > t.height)
+                {
+                    tallest = Some(rect);
+                }
+            }),
+            1.0
+        ));
+        tallest.expect("the angle axis draws labels")
+    };
+    let label = tallest(&rich);
+    let plain_label = tallest(&plain);
+    assert!(
+        label.height > plain_label.height + 3.0,
+        "{label:?} {plain_label:?}"
+    );
+    let probe = (label.x + label.width * 0.5, label.y + label.height * 0.9);
+    let map = renderer::select::HitMap::standard_chart();
+    let hit = map
+        .hit_test(rich.config(), &measure, probe.0, probe.1)
+        .and_then(|id| map.get(id))
+        .map(|el| el.element_id());
+    assert_eq!(hit.as_deref(), Some("tick_labels_bottom"), "{probe:?}");
+}
+
 #[test]
 fn a_picked_vertex_takes_the_picked_ring() {
     let mut r = renderer();
