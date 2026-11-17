@@ -5,10 +5,12 @@ use super::*;
 
 /// Invoke the fused source capability once while the write-only view is
 /// live, measuring the values' uniform step (`UniformStep`, #134) as they
-/// are written.
+/// are written. `lanes` decides the staging layout (#317): `raw_bytes` is
+/// the source's bytes in that layout.
 pub(super) fn write_staging_pairs(
     staging: &Buffer,
     raw_bytes: u64,
+    lanes: StagedLanes,
     write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
 ) -> Result<(Option<crate::StreamBounds>, Option<f64>), AllocError> {
     let mut view = staging
@@ -20,10 +22,12 @@ pub(super) fn write_staging_pairs(
         })?;
     let mut step = crate::data::UniformStep::new();
     let out_of_range = std::cell::Cell::new(false);
+    let second_lane = std::cell::Cell::new(false);
     let bounds = {
         let mut observe = |index: usize, hi: f32, lo: f32| step.record(index, hi, lo);
         let mut writer =
-            ColumnPairWriter::new_observed(view.slice(..), &out_of_range, &mut observe);
+            ColumnPairWriter::new_observed(view.slice(..), &out_of_range, &mut observe)
+                .with_single_lane(lanes.compact, lanes.single.then_some(&second_lane));
         write_pairs(&mut writer);
         writer.bounds()
     };
@@ -31,6 +35,9 @@ pub(super) fn write_staging_pairs(
     staging.unmap();
     if out_of_range.get() {
         return Err(source_wrote_out_of_range());
+    }
+    if second_lane.get() {
+        return Err(source_wrote_second_lane());
     }
     Ok((bounds, step.finish()))
 }
@@ -52,6 +59,58 @@ pub(super) fn source_wrote_out_of_range() -> AllocError {
     }
 }
 
+/// The error for a single-lane source ([`ColumnLanes::Single`](crate::ColumnLanes))
+/// that wrote a second lane whose bits are not zero (#317).
+pub(super) fn source_wrote_second_lane() -> AllocError {
+    AllocError::AllocationFailed {
+        resource: "column source",
+        reason: "a single-lane source (ColumnSource::lanes returns Single) wrote a non-zero \
+                 second lane; return ColumnLanes::Pair to upload (hi, lo) pairs"
+            .into(),
+    }
+}
+
+/// A compact column's expansion (#317), prepared while the upload can still
+/// fail: the cached pipeline and the upload's transient storage buffer.
+pub(super) struct PreparedExpansion {
+    pub(super) expand: ColumnExpand,
+    pub(super) limits: ExpandLimits,
+    pub(super) transient: TrackedBuffer,
+}
+
+/// Encode one column's upload into `target[offset..offset + region_bytes]`:
+/// the staging copy for a pair column, or for a compact one the copy of its
+/// half-region staging into the transient buffer and the expansion.
+pub(super) fn encode_column_upload(
+    device: &Device,
+    encoder: &mut wgpu::CommandEncoder,
+    staging: &Buffer,
+    expansion: Option<&PreparedExpansion>,
+    target: &Buffer,
+    offset: u64,
+    region_bytes: u64,
+) {
+    let Some(prepared) = expansion else {
+        encoder.copy_buffer_to_buffer(staging, 0, target, offset, region_bytes);
+        return;
+    };
+    encoder.copy_buffer_to_buffer(staging, 0, &prepared.transient, 0, region_bytes / 2);
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("figgy column expand"),
+        timestamp_writes: None,
+    });
+    prepared.expand.dispatch(
+        device,
+        &mut pass,
+        prepared.limits,
+        &prepared.transient,
+        0,
+        target,
+        offset,
+        region_bytes,
+    );
+}
+
 /// Source metadata captured before an upload is prepared.
 ///
 /// This deliberately excludes allocator state and the statistics, which the
@@ -59,6 +118,9 @@ pub(super) fn source_wrote_out_of_range() -> AllocError {
 pub(super) struct ColumnInputMeta {
     pub(super) id: ColumnId,
     pub(super) len_values: usize,
+    /// The source's declared lanes, read once (#317). A `HiLoColumnSource`
+    /// is always [`ColumnLanes::Pair`](crate::ColumnLanes).
+    pub(super) lanes: crate::ColumnLanes,
 }
 
 #[derive(Clone, Copy)]
@@ -71,6 +133,9 @@ pub(super) struct StagedStreamedColumn {
     pub(super) min_positive: Option<f64>,
 }
 
+/// Streamed promotion stages `(hi, lo)` pairs whatever a source's
+/// [`ColumnSource::lanes`] says: streaming is not extended (CLAUDE.md rule
+/// 8), so the compact single-lane upload (#317) is resident only.
 pub(super) fn stage_streamed_columns(
     device: &Device,
     ledger: &Arc<GpuLedger>,
@@ -343,6 +408,7 @@ impl ColumnBatchCandidate<'_> {
             backup: _,
             defrag_policy: _,
             growth_policy: _,
+            expand: _,
         } = candidate;
         let old_primary = std::mem::replace(&mut pool.primary, primary);
         let old_capacity = pool.capacity;
@@ -471,6 +537,7 @@ impl<const N: usize> ColumnBatchUpsert<'_, N> {
             backup: _,
             defrag_policy: _,
             growth_policy: _,
+            expand: _,
         } = candidate;
         let old_primary = std::mem::replace(&mut pool.primary, primary);
         pool.slots = slots;
@@ -907,6 +974,8 @@ impl ColumnPool {
             backup: None,
             defrag_policy: self.defrag_policy,
             growth_policy: self.growth_policy,
+            // The live pool keeps its pipeline; commit moves the layout only.
+            expand: None,
         };
         // Dropping an uncommitted candidate drops its tracked slab, which
         // retires the bytes in the device ledger.
@@ -1015,9 +1084,18 @@ impl ColumnPool {
         let region_offset = reservation.offset();
 
         // 7) Staging. One buffer for the batch, split into chunks only when the
-        //    device cannot hold it in one — each chunk mirrors the region's
-        //    layout exactly, so it lands in a single `copy_buffer_to_buffer`.
-        let chunks = plan_batch_chunks(columns, ceiling)?;
+        //    device cannot hold it in one. Pair columns are staged in the
+        //    region's layout and compact single-lane columns at half their
+        //    region (#317); each chunk with a compact column has one transient
+        //    storage buffer, and the expansion pipeline is ready before the
+        //    sources run.
+        let limits = ExpandLimits::of(device);
+        let chunks = plan_batch_chunks(columns, ceiling, limits, index_column)?;
+        let expand = if chunks.iter().any(|chunk| chunk.transient_bytes > 0) {
+            Some(ColumnExpand::ensure(&mut self.expand, device)?.clone())
+        } else {
+            None
+        };
         let mut staging = Vec::new();
         staging
             .try_reserve_exact(chunks.len())
@@ -1026,26 +1104,39 @@ impl ColumnPool {
                 reason: error.to_string(),
             })?;
         for chunk in &chunks {
-            staging.push(create_buffer_checked(
+            // Compact staging is half a region at most: never above the
+            // chunk's share of the region, which the ceiling bounds.
+            debug_assert!(chunk.staging_bytes <= chunk.byte_size);
+            let buffer = create_buffer_checked(
                 device,
                 ctx.ledger,
                 &BufferDescriptor {
                     label: Some("figgy batch column staging"),
-                    size: chunk.byte_size,
+                    size: chunk.staging_bytes,
                     usage: BufferUsages::COPY_SRC,
                     mapped_at_creation: true,
                 },
                 "batch column staging buffer",
-            )?);
+            )?;
+            let transient = if chunk.transient_bytes > 0 {
+                Some(super::expand::create_transient(
+                    device,
+                    ctx.ledger,
+                    chunk.transient_bytes,
+                )?)
+            } else {
+                None
+            };
+            staging.push((buffer, transient));
         }
 
         // ── Staging writes. A failure here un-inserts every id of the batch
         //    (each was new to the pool, step 1) and the reservation un-reserves.
         let mut epoch = first_epoch;
         let written = (|| {
-            for (chunk, buffer) in chunks.iter().zip(&staging) {
+            for (chunk, (buffer, _)) in chunks.iter().zip(&staging) {
                 let mut view = buffer
-                    .slice(0..chunk.byte_size)
+                    .slice(0..chunk.staging_bytes)
                     .get_mapped_range_mut()
                     .map_err(|error| AllocError::Gpu {
                         resource: "batch column staging buffer",
@@ -1053,16 +1144,20 @@ impl ColumnPool {
                     })?;
                 for index in chunk.columns.clone() {
                     let (id, source) = columns[index];
-                    let raw_bytes = column_raw_bytes(source.len());
                     let byte_size =
                         column_region_bytes(source.len()).ok_or(AllocError::Internal {
                             invariant: "every batch column was sized in step 2",
                         })?;
-                    let local = chunk.column_offsets[index - chunk.columns.start];
+                    let placement = chunk.placements[index - chunk.columns.start];
+                    let lanes = placement.lanes;
+                    let raw_bytes = lanes.raw_bytes(source.len());
+                    let local = placement.staging;
                     let dst = view.slice(local..local + raw_bytes as usize);
                     let index_lanes = index_column == Some(index);
                     let mut step = crate::data::UniformStep::new();
                     let out_of_range = std::cell::Cell::new(false);
+                    let second_lane = std::cell::Cell::new(false);
+                    let second_lane_check = lanes.single.then_some(&second_lane);
                     let bounds = if let Some(observe) = observe.as_mut() {
                         let mut per_column = |row: usize, hi: f32, lo: f32| {
                             step.record(row, hi, lo);
@@ -1070,7 +1165,8 @@ impl ColumnPool {
                         };
                         let mut writer =
                             ColumnPairWriter::new_observed(dst, &out_of_range, &mut per_column)
-                                .with_index_lanes(index_lanes);
+                                .with_index_lanes(index_lanes)
+                                .with_single_lane(lanes.compact, second_lane_check);
                         source.write_pairs(&mut writer);
                         writer.bounds()
                     } else {
@@ -1078,7 +1174,8 @@ impl ColumnPool {
                             |row: usize, hi: f32, lo: f32| step.record(row, hi, lo);
                         let mut writer =
                             ColumnPairWriter::new_observed(dst, &out_of_range, &mut per_column)
-                                .with_index_lanes(index_lanes);
+                                .with_index_lanes(index_lanes)
+                                .with_single_lane(lanes.compact, second_lane_check);
                         source.write_pairs(&mut writer);
                         writer.bounds()
                     };
@@ -1086,13 +1183,16 @@ impl ColumnPool {
                     if out_of_range.get() {
                         return Err(source_wrote_out_of_range());
                     }
+                    if second_lane.get() {
+                        return Err(source_wrote_second_lane());
+                    }
                     epoch += 1;
                     self.allocation_epochs.insert(id.to_string(), epoch);
                     self.slots.insert(
                         id.to_string(),
                         ColumnSlot {
                             id: id.to_string(),
-                            offset: region_offset + chunk.region_offset + local as u64,
+                            offset: region_offset + chunk.region_offset + placement.region as u64,
                             byte_size,
                             len_values: source.len(),
                             generation: self.generation,
@@ -1121,14 +1221,88 @@ impl ColumnPool {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy batch column upload"),
         });
-        for (chunk, buffer) in chunks.iter().zip(&staging) {
-            encoder.copy_buffer_to_buffer(
-                buffer,
-                0,
-                &self.primary,
-                region_offset + chunk.region_offset,
-                chunk.byte_size,
-            );
+        // Each run of pair columns is contiguous in the staging and the
+        // region: one copy per run, so an all-pair chunk is one copy as
+        // before. A compact column's half region goes to its transient slot.
+        for (chunk, (buffer, transient)) in chunks.iter().zip(&staging) {
+            let chunk_base = region_offset + chunk.region_offset;
+            // (staging start, region start, bytes) of the open pair run.
+            let mut run: Option<(u64, u64, u64)> = None;
+            for placement in &chunk.placements {
+                let byte_size = placement.bytes;
+                let (staging_at, region_at) = (placement.staging as u64, placement.region as u64);
+                match transient {
+                    Some(transient) if placement.lanes.compact => {
+                        if let Some((from, to, bytes)) = run.take() {
+                            encoder.copy_buffer_to_buffer(
+                                buffer,
+                                from,
+                                &self.primary,
+                                chunk_base + to,
+                                bytes,
+                            );
+                        }
+                        encoder.copy_buffer_to_buffer(
+                            buffer,
+                            staging_at,
+                            transient,
+                            placement.transient,
+                            placement.lanes.staged_bytes(byte_size),
+                        );
+                    }
+                    _ => {
+                        run = match run {
+                            Some((from, to, bytes))
+                                if from + bytes == staging_at && to + bytes == region_at =>
+                            {
+                                Some((from, to, bytes + byte_size))
+                            }
+                            Some((from, to, bytes)) => {
+                                encoder.copy_buffer_to_buffer(
+                                    buffer,
+                                    from,
+                                    &self.primary,
+                                    chunk_base + to,
+                                    bytes,
+                                );
+                                Some((staging_at, region_at, byte_size))
+                            }
+                            None => Some((staging_at, region_at, byte_size)),
+                        };
+                    }
+                }
+            }
+            if let Some((from, to, bytes)) = run {
+                encoder.copy_buffer_to_buffer(buffer, from, &self.primary, chunk_base + to, bytes);
+            }
+        }
+        if let (Some(expand), Some(limits)) = (expand.as_ref(), limits) {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy batch column expand"),
+                timestamp_writes: None,
+            });
+            for (chunk, (_, transient)) in chunks.iter().zip(&staging) {
+                let Some(transient) = transient else {
+                    continue;
+                };
+                let chunk_base = region_offset + chunk.region_offset;
+                for placement in &chunk.placements {
+                    if !placement.lanes.compact {
+                        continue;
+                    }
+                    let byte_size = placement.bytes;
+                    expand.dispatch(
+                        device,
+                        &mut pass,
+                        limits,
+                        transient,
+                        placement.transient,
+                        &self.primary,
+                        chunk_base + placement.region as u64,
+                        byte_size,
+                    );
+                }
+            }
         }
         queue.submit(std::iter::once(encoder.finish()));
 
@@ -1210,6 +1384,7 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
+                lanes: source.lanes(),
             },
             ctx,
             |dst| source.write_pairs(dst),
@@ -1241,6 +1416,7 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
+                lanes: crate::ColumnLanes::Pair,
             },
             ctx,
             |dst| source.write_pairs(dst),
@@ -1276,6 +1452,8 @@ impl ColumnPool {
             min_positive: Option<f64>,
             uniform_step: Option<f64>,
             staging: TrackedBuffer,
+            /// Compact single-lane or pairs, decided once per column (#317).
+            lanes: StagedLanes,
         }
 
         for index in 0..columns.len() {
@@ -1287,10 +1465,13 @@ impl ColumnPool {
             }
         }
 
+        let limits = ExpandLimits::of(device);
         let mut staged = Vec::new();
         // Every staging buffer stays alive until the batch submits, so the
         // charge is cumulative rather than per-buffer.
         let mut staged_bytes = 0u64;
+        // The compact columns' share of the one transient buffer (#317).
+        let mut transient_bytes = 0u64;
         staged
             .try_reserve_exact(columns.len())
             .map_err(|error| AllocError::AllocationFailed {
@@ -1322,20 +1503,24 @@ impl ColumnPool {
                 });
             }
 
+            let lanes = StagedLanes::of(limits, source.lanes(), false, len_values);
             let staging = create_buffer_checked(
                 device,
                 ctx.ledger,
                 &BufferDescriptor {
                     label: Some("figgy batch column staging"),
-                    size: byte_size,
+                    size: lanes.staged_bytes(byte_size),
                     usage: BufferUsages::COPY_SRC,
                     mapped_at_creation: true,
                 },
                 "batch column staging buffer",
             )?;
-            staged_bytes = staged_bytes.saturating_add(byte_size);
+            staged_bytes = staged_bytes.saturating_add(lanes.staged_bytes(byte_size));
+            transient_bytes = transient_bytes.saturating_add(lanes.transient_bytes(byte_size));
             let (bounds, uniform_step) =
-                write_staging_pairs(&staging, raw_bytes, |dst| source.write_pairs(dst))?;
+                write_staging_pairs(&staging, lanes.raw_bytes(len_values), lanes, |dst| {
+                    source.write_pairs(dst)
+                })?;
             let (min, max, min_positive) = slot_statistics(bounds);
             staged.push(StagedColumn {
                 id,
@@ -1346,6 +1531,7 @@ impl ColumnPool {
                 min_positive,
                 uniform_step,
                 staging,
+                lanes,
             });
         }
 
@@ -1495,6 +1681,20 @@ impl ColumnPool {
             });
         }
 
+        // The compact columns' pipeline and transient buffer (#317), while
+        // the batch can still fail.
+        let expansion = if transient_bytes > 0 {
+            let limits = limits.ok_or(AllocError::Internal {
+                invariant: "a compact column was staged on a device that expands",
+            })?;
+            Some(PreparedExpansion {
+                expand: ColumnExpand::ensure(&mut self.expand, device)?.clone(),
+                limits,
+                transient: super::expand::create_transient(device, ctx.ledger, transient_bytes)?,
+            })
+        } else {
+            None
+        };
         let primary = create_buffer_checked(
             device,
             ctx.ledger,
@@ -1523,15 +1723,51 @@ impl ColumnPool {
                 old.byte_size,
             );
         }
+        // Pair columns copy into the candidate; compact ones into their
+        // transient slots, expanded below in the batch's order.
+        let mut transient_offset = 0u64;
         for column in &staged {
             let slot = &planned_slots[&column.id];
-            encoder.copy_buffer_to_buffer(
-                &column.staging,
-                0,
-                &primary,
-                slot.offset,
-                slot.byte_size,
-            );
+            match expansion.as_ref() {
+                Some(prepared) if column.lanes.compact => {
+                    encoder.copy_buffer_to_buffer(
+                        &column.staging,
+                        0,
+                        &prepared.transient,
+                        transient_offset,
+                        column.lanes.staged_bytes(slot.byte_size),
+                    );
+                    transient_offset += column.lanes.transient_bytes(slot.byte_size);
+                }
+                _ => encoder.copy_buffer_to_buffer(
+                    &column.staging,
+                    0,
+                    &primary,
+                    slot.offset,
+                    slot.byte_size,
+                ),
+            }
+        }
+        if let Some(prepared) = expansion.as_ref() {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("figgy batch column expand"),
+                timestamp_writes: None,
+            });
+            let mut transient_offset = 0u64;
+            for column in staged.iter().filter(|column| column.lanes.compact) {
+                let slot = &planned_slots[&column.id];
+                prepared.expand.dispatch(
+                    device,
+                    &mut pass,
+                    prepared.limits,
+                    &prepared.transient,
+                    transient_offset,
+                    &primary,
+                    slot.offset,
+                    slot.byte_size,
+                );
+                transient_offset += column.lanes.transient_bytes(slot.byte_size);
+            }
         }
         queue.submit(std::iter::once(encoder.finish()));
 
@@ -1554,6 +1790,8 @@ impl ColumnPool {
             backup: None,
             defrag_policy: self.defrag_policy,
             growth_policy: self.growth_policy,
+            // The live pool keeps its pipeline; commit moves the layout only.
+            expand: None,
         };
         // The candidate carries the new tracked slab and layout across to
         // `commit`; dropping it uncommitted retires the slab in the ledger.
@@ -1573,7 +1811,11 @@ impl ColumnPool {
     ) -> Result<ColumnUpsert<'a>, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
-        let ColumnInputMeta { id, len_values: n } = input;
+        let ColumnInputMeta {
+            id,
+            len_values: n,
+            lanes,
+        } = input;
         if self.is_member_column(&id) {
             return Err(AllocError::MemberColumn(id));
         }
@@ -1610,10 +1852,19 @@ impl ColumnPool {
         let allocation_epoch = self.checked_allocation_epoch_successor()?;
 
         // Complete every source-dependent/fallible staging operation before
-        // touching allocator metadata or the live primary buffer.
-        let staging = create_staging(byte_size)?;
-        let (bounds, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
+        // touching allocator metadata or the live primary buffer. A compact
+        // single-lane column stages half the region (#317).
+        let limits = ExpandLimits::of(device);
+        let staged_lanes = StagedLanes::of(limits, lanes, false, n);
+        let staging = create_staging(staged_lanes.staged_bytes(byte_size))?;
+        let (bounds, uniform_step) = write_staging_pairs(
+            &staging,
+            staged_lanes.raw_bytes(n),
+            staged_lanes,
+            write_pairs,
+        )?;
         let (min, max, min_positive) = slot_statistics(bounds);
+        let expansion = self.prepare_expansion(ctx, limits, staged_lanes, byte_size)?;
 
         let old_slot = self.slots.get(&id).cloned();
         let replaced_existing = old_slot.is_some();
@@ -1777,7 +2028,15 @@ impl ColumnPool {
                 })?
             }
         };
-        command_encoder.copy_buffer_to_buffer(&staging, 0, target_buffer, new_offset, byte_size);
+        encode_column_upload(
+            device,
+            &mut command_encoder,
+            &staging,
+            expansion.as_ref(),
+            target_buffer,
+            new_offset,
+            byte_size,
+        );
         let upload = command_encoder.finish();
 
         // queue.submit/device loss is deliberately outside the Result
@@ -1838,6 +2097,35 @@ impl ColumnPool {
         })
     }
 
+    /// The pipeline and transient buffer a compact column's upload needs
+    /// (#317); `None` for a column staged as pairs. The pipeline is created
+    /// on the first compact upload and cached on the pool.
+    pub(super) fn prepare_expansion(
+        &mut self,
+        ctx: GpuAllocCtx<'_>,
+        limits: Option<ExpandLimits>,
+        lanes: StagedLanes,
+        region_bytes: u64,
+    ) -> Result<Option<PreparedExpansion>, AllocError> {
+        if !lanes.compact {
+            return Ok(None);
+        }
+        let limits = limits.ok_or(AllocError::Internal {
+            invariant: "a compact column was staged on a device that expands",
+        })?;
+        let pipeline = ColumnExpand::ensure(&mut self.expand, ctx.device)?.clone();
+        let transient = super::expand::create_transient(
+            ctx.device,
+            ctx.ledger,
+            lanes.transient_bytes(region_bytes),
+        )?;
+        Ok(Some(PreparedExpansion {
+            expand: pipeline,
+            limits,
+            transient,
+        }))
+    }
+
     /// Single attempt without auto-retry. Internal + test use.
     ///
     /// 1. First-fit allocation from the free list.
@@ -1855,6 +2143,7 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
+                lanes: source.lanes(),
             },
             ctx,
             |dst| source.write_pairs(dst),
@@ -1871,6 +2160,7 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
+                lanes: crate::ColumnLanes::Pair,
             },
             ctx,
             |dst| source.write_pairs(dst),
@@ -1908,7 +2198,11 @@ impl ColumnPool {
     ) -> Result<ColumnHandle, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
-        let ColumnInputMeta { id, len_values: n } = input;
+        let ColumnInputMeta {
+            id,
+            len_values: n,
+            lanes,
+        } = input;
         if self.slots.contains_key(&id) {
             return Err(AllocError::DuplicateId(id));
         }
@@ -1937,13 +2231,24 @@ impl ColumnPool {
             });
         }
         let allocation_epoch = self.checked_allocation_epoch_successor()?;
+        // A compact single-lane column stages half the region and expands
+        // on the GPU (#317); its pipeline and transient buffer are prepared
+        // before the region is reserved.
+        let limits = ExpandLimits::of(device);
+        let staged_lanes = StagedLanes::of(limits, lanes, false, n);
+        let expansion = self.prepare_expansion(ctx, limits, staged_lanes, byte_size)?;
 
         let reservation = alloc_region(&mut self.free, byte_size)?;
         let region_offset = reservation.offset();
 
         // The source writes and collects stats while the write-only view lives.
-        let staging = create_staging(byte_size)?;
-        let (bounds, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
+        let staging = create_staging(staged_lanes.staged_bytes(byte_size))?;
+        let (bounds, uniform_step) = write_staging_pairs(
+            &staging,
+            staged_lanes.raw_bytes(n),
+            staged_lanes,
+            write_pairs,
+        )?;
         let (min, max, min_positive) = slot_statistics(bounds);
 
         let slot = ColumnSlot {
@@ -1968,11 +2273,20 @@ impl ColumnPool {
         planned_allocation_epochs.insert(id.clone(), allocation_epoch);
         planned_slots.insert(id, slot);
 
-        // staging → primary[region_offset..] (GPU-internal copy).
+        // staging → primary[region_offset..] (GPU-internal copy), or for a
+        // compact column staging → transient and the expansion.
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy column upload encoder"),
         });
-        enc.copy_buffer_to_buffer(&staging, 0, &self.primary, region_offset, byte_size);
+        encode_column_upload(
+            device,
+            &mut enc,
+            &staging,
+            expansion.as_ref(),
+            &self.primary,
+            region_offset,
+            byte_size,
+        );
         queue.submit(std::iter::once(enc.finish()));
 
         self.slots = planned_slots;

@@ -121,7 +121,7 @@ pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
 pub use data::{
-    Column, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
+    Column, ColumnLanes, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
     StreamColumnSource,
 };
 pub use data_config::{
