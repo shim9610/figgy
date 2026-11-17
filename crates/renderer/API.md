@@ -717,16 +717,16 @@ dispatches go through the same queue (`createComputePipelineAsync`), scheduled w
 series first needs them: the arc prefix scan (dashed lines, streamline arrowheads,
 sketch and milkyway lines), the ternary ring-start scan, the contour label anchors
 and the histogram envelope. The series waits for them like for its render pipelines,
-and the preparation then creates them from the browser's cache, never on the page's
-thread. Frame preparation of registered charts
+and the preparation then creates them from the browser's cache, so the page's
+thread does not compile them. Frame preparation of registered charts
 (`prepare_registered`, `WindowedRenderer::draw_registered`) leaves out a series whose
 pipelines have not compiled and draws everything else; `Renderer::frame_complete()`
 tells whether the last screen frame drew every series, `Renderer::compile_redraw_due()`
 whether a compile has resolved since a frame left one out (draw again), and
 `Renderer::pipeline_status()` returns a `PipelineStatus` snapshot: `screen` and `all`
 `PipelineCounts` (`total`, `ready`, `compiling`, `failed`) and `frame_complete`.
-`screen` counts what the last screen frame needed, so a progress bar over it never goes
-back; `all` grows when a chart first needs a module compiled on demand.
+`screen` counts what the last screen frame needed; its `total` changes only with the
+chart. `all` grows when a chart first needs a module compiled on demand.
 `Renderer::pipeline_failures()` lists each compile that failed as a `PipelineFailure`
 (`label`, `kind`: `Validation`, `Internal`, `Rejected`, `DeviceLost` or `Cancelled`,
 `message`). `Renderer::series_ready()` resolves once every compile the last screen frame
@@ -763,7 +763,7 @@ pipeline creates it, which reports the error through the usual path.
 **Shader sets** ([#299](https://github.com/shim9610/figgy/issues/299);
 ARCHITECTURE.md, "Shader sets"). A renderer starts on the basic shader set
 (`ShaderSet::Basic`), which draws rectangular charts with linear and
-logarithmic axes and compiles fastest. The full set (`ShaderSet::Full`) adds
+logarithmic axes and compiles faster than the full set. The full set (`ShaderSet::Full`) adds
 the cut remap of a broken axis, the probability scale and polar coordinates.
 `Renderer::shader_set()` reports which one a renderer is on.
 

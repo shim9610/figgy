@@ -157,7 +157,7 @@ impl RenderRevision {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PipelineStatus {
     /// The compiles the last screen frame needed. Its `total` only changes
-    /// with the chart, so a progress bar over it never goes back.
+    /// with the chart.
     pub screen: PipelineCounts,
     /// Every compile scheduled so far. Its `total` grows when a chart first
     /// needs a module compiled on demand (vector, 3D surface, ternary
