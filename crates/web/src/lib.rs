@@ -3712,7 +3712,8 @@ pub use web::*;
 
 #[cfg(target_arch = "wasm32")]
 mod radial;
-/// The radial host (JS `FiggyBoundedChart`), reachable from Rust for its
-/// static calls such as `supported_families` (#315).
+/// The radial chart's browser host (`FiggyBoundedChart` in JavaScript), for
+/// Rust callers, its static calls such as `supported_families` (#315) and the
+/// browser tests (#313).
 #[cfg(target_arch = "wasm32")]
 pub use radial::FiggyRadialChart;

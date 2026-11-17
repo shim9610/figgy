@@ -64,6 +64,23 @@ impl Renderer {
         &self.pool
     }
 
+    /// The device bundle this renderer was built from (#313): the same
+    /// device and queue, the same device-lost and error record and the same
+    /// GPU ledger and memory budget, starting on this renderer's shader set.
+    /// A [`crate::radial::RadialRenderer`] (or another [`Renderer`]) built
+    /// from it shares the device, its loss and the one budget with this
+    /// renderer. Dropping the renderer built from it, or the bundle, never
+    /// destroys the device: the device lives while any holder of it does.
+    pub fn renderer_device(&self) -> RendererDevice {
+        RendererDevice {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            health: self.health.clone(),
+            ledger: Arc::clone(&self.gpu_ledger),
+            shader_set: self.shader_set(),
+        }
+    }
+
     /// Requested bytes of tracked GPU allocations, one row per [`GpuResourceKind`],
     /// for the whole device bundle: every renderer built from this renderer's
     /// `RendererDevice` charges the same ledger, column pools included (#160).

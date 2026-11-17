@@ -788,6 +788,7 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
   - `subplot_area`: `set_subplot_area`의 테두리가 너무 작아 서브플롯의 플롯이 들어가지 않는다(`index`가 붙는다). 더 큰 테두리를 준다.
   - `subplot_background`, `background`: `set_subplot_background`나 `set_background`의 색 JSON을 읽을 수 없다.
   - `apply_theme`, `apply_theme_to`, `theme`, `subplot_theme`, `apply_custom_theme`, `apply_custom_theme_to`, `set_subplot_area`, `subplot_area`, `set_subplot_background`, `set_background`, `set_subplot_text_scale`, `subplot_text_scale`, `subplot_text_factor`, `FiggyBoundedChart.apply_theme`이 이 코드를 쓴다.
+- `export_background`([#313](https://github.com/shim9610/figgy/issues/313)): `FiggyBoundedChart.export_png_with_background`에 넘긴 배경이 `"document"`, `"transparent"`, 성분이 0~1인 색 JSON 중 어느 것도 아니다. 아무것도 그리지 않고 문서도 그대로 둔다.
 - `gpu_memory_status()`는 요청 할당량의 사용 중·회수 대기·합계(`live/retired/total`), 풀 용량·점유·최대 빈 공간·백업·반환 대기량, 자원별 사용량, 컬럼별 `resident` / `streamed` 상태를 반환한다. 실제 VRAM 잔량을 측정하지는 않는다. 은하수·별자리 스타일의 미리 생성한 텍스처는 일반 집계에서 제외되며 스트리밍 출력의 실행 가능 여부를 검사할 때만 크기를 따로 고려한다.
 - `await release_unused_gpu_memory()`는 활성 스트림이 없을 때 남은 컬럼을 GPU 안에서 작은 풀로 옮기고 이전 버퍼의 작업 완료를 기다린다. 최소 16MiB는 유지한다. 축소용 버퍼도 잠시 필요하므로 예산·장치 한도·할당 오류가 발생할 수 있다. 실패하면 기존 컬럼과 바인딩을 유지한다.
 - 호스트 정책의 예로 전체 예산 `4_000_000_000`바이트, 뷰별 패킹 한도 `500_000_000`바이트를 둘 수 있다. 현재 화면의 캐시가 한도를 넘으면 스트리밍을 유지한다. 컬럼 등록 시 공간·예산이 부족하면 불필요한 컬럼 제거, 정리 완료 대기, 한 번 재시도 순서로 처리한다. 계속 실패하거나 장치 한도·실제 할당 오류가 나면 스트리밍으로 전환한다. 이 수치는 예시이며 렌더러의 기본값이 아니다.
@@ -958,6 +959,7 @@ After the first fit, the source of the same revision must remain available: redr
   - `subplot_area`: the frame given to `set_subplot_area` is too small for the subplot's plot (`index` rides along). Give it a larger frame.
   - `subplot_background`, `background`: the colour JSON given to `set_subplot_background` or `set_background` does not parse.
   - `apply_theme`, `apply_theme_to`, `theme`, `subplot_theme`, `apply_custom_theme`, `apply_custom_theme_to`, `set_subplot_area`, `subplot_area`, `set_subplot_background`, `set_background`, `set_subplot_text_scale`, `subplot_text_scale`, `subplot_text_factor` and `FiggyBoundedChart.apply_theme` throw these codes.
+- `export_background` ([#313](https://github.com/shim9610/figgy/issues/313)): the background given to `FiggyBoundedChart.export_png_with_background` is not `"document"`, `"transparent"` or a colour JSON whose components are 0 to 1. Nothing is drawn and the document is unchanged.
 - Themes ([#295](https://github.com/shim9610/figgy/issues/295)): `FiggyChart.apply_theme(name)` applies a theme family (`gallery`, `cool-slate`, `midnight`, `warm-paper`) to the whole document: the chart, its overlays and every subplot. `apply_theme_to(name, scope)` applies it to the charts `scope` names, like Rust's `Chart::apply_theme_to` with a `ThemeScope`: `"all"`, `"base"` (the base chart alone), a JSON array of indices (those subplots alone, `"[0,2]"`) or a JSON array holding `"base"` (the base chart and those subplots, `["base",0]`); `<figgy-chart>` also takes the array itself. Each chart takes the family's member for its kind, so a dashboard of mixed kinds takes one call, and the layout is fitted to the new text sizes. `theme_names()` returns the four family names as an array of strings. Any other look is a custom theme: `theme(name)` returns the family member the chart takes as a plain object (`Theme`'s fields, colours as `{r, g, b, a}`), and `subplot_theme(i, name)` the member subplot `i` takes. Change any field and pass it to `apply_custom_theme(theme)`, which themes the chart and every subplot of the theme's kind (or without series yet) and leaves the others, or to `apply_custom_theme_to(theme, scope)` with the scopes `apply_theme_to` takes, where every chart in scope must be of the theme's kind: `"[0]"` themes an inset alone, whatever the base chart's kind. `<figgy-chart>` has the same methods.
 - Range fit ([#297](https://github.com/shim9610/figgy/issues/297)): `FiggyChart.fit_ranges()` fits every axis the chart's series use (the base chart, its overlays, each subplot and its overlays; x, y and a 3D chart's z) from the registered columns' statistics with 5% padding, as Rust's `Renderer::fit_ranges` does. A new chart starts at a `0..1` placeholder range, so this is the call for a first plot. It is synchronous and ignores the active layer; a layer without series keeps its ranges. A streamed source and a monotonic chart are refused, and a refusal changes nothing. Error bar ends are not in the column statistics: `await auto_fit_all(padding)` measures the active layer's drawn extents instead. `<figgy-chart>` has the same method.
 - Editor fits ([#312](https://github.com/shim9610/figgy/issues/312)): `FiggyChart.fit_config(config_json, padding)` returns a candidate `Config` (JSON in, JSON out) with every layer's ranges fitted from the resident columns' statistics by the same code as `fit_ranges` (Rust `Renderer::fit_config`), with `padding` (finite, at least 0) in place of the fixed 5%. The installed chart, its view and its columns are untouched. `fit_y_axes_config(config_json, padding)` returns every X axis (`bottom_x`, `top_x`, each overlay's `x_axis`, in each subplot too) exactly as given and fits the Y axes, a 3D chart's z axis and parallel axes; the config has no manual-range flag, so a host that holds a Y range by hand puts it back in the result. Both refuse, with an exception and nothing changed, JSON that is not a `Config`, a bad padding (`FitPadding`), a candidate whose overlays or subplots name a series the chart has not registered (`LayerSeriesUnknown`), invalid overlays, subplots or line offsets, a streamed source and a monotonic chart. `fit_point_size_domain(series_id)` sets that series' `point_size_map` domain to its size column's extent (`PointSizeMap::fit_domain`), and `fit_vector_scale(series_id, target)` sets a vector series' scale so the longest vector its U/V columns' extents allow draws `target` long (logical pixels for `Pixels`, data units for `Data`; `VectorStyle::fit_scale`, grids from the union of their columns, a point field drawn in 3D with `fit_scale_3d`). They read the pool's cached statistics, never the columns, change only that series' domain or scale, and refuse an empty, non-finite or degenerate extent (`PointSizeFitExtent`, `VectorFitExtent`), a series without a size map (`PointSizeFitNoMap`) or that is not a vector field (`VectorFitNotVector`), a bad target (`VectorFitTarget`) and a streamed column, leaving the style unchanged. `<figgy-chart>` has the same four methods.
@@ -1312,13 +1314,52 @@ and prepares its document. It does not submit the first visible frame: call
 frame and awaits the actual GPU completion Promise; rejection/device loss is
 returned to the host. `frame()` alone only submits work.
 
+### One device with a Cartesian chart
+
+`FiggyBoundedChart.create_on(parent, canvas, family, documentJson, width, height)`
+(#313) returns a Promise of a radial chart that draws on the `FiggyChart`
+`parent`'s device and queue instead of requesting its own: its own surface on
+its own canvas, the parent's device-loss record, and the parent's GPU ledger
+and memory budget. It validates the document and rejects the other families
+as `create` does. Switching a page between Cartesian and radial charts this
+way keeps one device and one budget: the parent's `gpu_memory_status()`
+counts the radial chart's allocations.
+
+- **Lifetime.** Each chart holds its own references to the device. Disposing
+  the radial chart (`free()`) never destroys the parent's device, and
+  disposing the parent leaves the radial chart drawing; the device lives
+  while either holds it.
+- **Async calls and dispose.** An async call (`export_png`, `pick`, `hover`,
+  `first_frame_ready`) borrows only the object it is called on: await it
+  before `free()` on that object, as on every wasm-bindgen object. Disposing
+  the other chart meanwhile does not cancel it.
+- **Queue completion.** Both charts submit to the one queue in call order, so
+  a wait on either (`first_frame_ready`, an export's readback) completes after
+  the work submitted before it, the other chart's included.
+- **Device loss.** One loss record: a lost device fails the next frame,
+  export or pick of both charts with the loss.
+- **Budget.** One ledger and one budget for both; the parent's renderer owns
+  them, and each chart's allocations count against them.
+
+### Documents and labels
+
 `set_document(documentJson, width, height)` validates and prepares the new
 document before replacing the whole document, and keeps the previous one on
-failure. A `radial` document's slices draw their `text`: `create` and
-`set_document` fill a missing one from the slice's label format (as
-`RadialChart::normalize_labels` does) and keep one that is set, so after
-editing a value or a format remove the affected `text` fields (or write the
-new strings) before sending the document back. Omitted fields are not kept: they take their defaults or fail to
+failure. A `radial` document's slices draw their `text`, and a slice's
+`text_generated` (#313) says whether that text is the automatic label:
+`create` and `set_document` fill a missing text and write every generated one
+again from the document's values, label format, decimals and suffix (as
+`RadialChart::regenerate_labels` does), and keep a text the host wrote. So a
+host that reads `get_document()`, changes a value or the format and sends the
+document back gets the new percentages on every generated label of the ring
+(its siblings, a sunburst node's children, a split's detail children), and its
+own texts stay. To write your own text, set `text` and remove
+`text_generated` (or set it `false`); to have a slice's automatic label back,
+remove its `text`. `regenerate_labels(rewriteUserText)` rewrites the
+generated labels of the current document, and with `true` every label, the
+host's included (`RadialChart::format_labels`). The percentages and the
+rounding are the model's. A document saved before `text_generated` existed
+reads every stored text as the host's. Omitted fields are not kept: they take their defaults or fail to
 parse, so read `get_document()`, change the fields you need and send the
 complete document back.
 
@@ -1339,6 +1380,12 @@ The interactive editing and export methods are:
 - `drag(id, dx, dy, handle)` moves the decoration, or resizes it when `handle`
   is a compass name such as `"SE"` (`null` for a move), and returns whether it
   moved.
+- `reset_decoration_position(id)` (#313) puts the decoration back where the
+  layout places it: its stored offset is removed (and for `"data_area"` the
+  explicit plot area), as `DecorationLayout::reset` does, rather than dragged
+  back. It returns whether the document changed; an unknown id, and an
+  `"annotation_<n>"` id (an annotation has no offset; drag it with
+  `drag_annotation`), throw.
 - `pick(x, y, toggle)` selects the mark under the point, clears the decoration
   selection and resolves to the data selection as JSON (`"null"` for none).
   With `toggle` true, picking the selected mark again clears it.
@@ -1364,13 +1411,22 @@ The interactive editing and export methods are:
   SVG and PDF hold the slices and background as one image and the title,
   labels, leader lines and annotations as vector content, with every inside
   label above every slice and no selection box.
+- async `export_png_with_background(scale, background)` (#313) is
+  `export_png` over another background: `"document"` (the document's own, as
+  `export_png` draws it), `"transparent"` (no background: the slices, the
+  shadows they cast, the labels and the annotations over transparent pixels)
+  or a colour JSON `{"r":..,"g":..,"b":..,"a":..}` with components 0 to 1. It is
+  an option of the export (`RadialRenderer::export_png_with_background`): the
+  document, the selection and the image on screen are not changed. Any other
+  value throws an `Error` with `code` `"export_background"` before anything is
+  drawn.
 
 Coordinates and drag deltas are document logical pixels; canvas resize does not
 change export size. Keep the object alive until all async calls finish;
 `free()` releases its GPU resources.
 
 ```js
-import init, { FiggyBoundedChart } from "./pkg/figgy.js"; // figgy-chart.js does not export it
+import init, { FiggyBoundedChart, FiggyChart } from "./pkg/figgy.js"; // figgy-chart.js does not export FiggyBoundedChart
 await init(); // load the WASM module before the first create
 // radialDoc is a validated RadialChart value, e.g. serialized by its model.
 const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(radialDoc), 960, 600);
@@ -1383,7 +1439,15 @@ view.select_decoration("chart_title");
 view.drag("chart_title", 12, 6, null); // changes only this decoration's offset
 view.frame();
 const png = await view.export_png(1);
+const cutout = await view.export_png_with_background(2, "transparent");
+view.reset_decoration_position("chart_title"); // the title back in its place
 view.free();
+
+// On a Cartesian chart's device: one device and one budget for both.
+const cartesian = await FiggyChart.create(otherCanvas);
+const pie = await FiggyBoundedChart.create_on(cartesian, pieCanvas, "radial", JSON.stringify(radialDoc), 960, 600);
+await pie.first_frame_ready();
+pie.free(); // the Cartesian chart keeps its device
 ```
 
 <a id="bounded-family-migration"></a>

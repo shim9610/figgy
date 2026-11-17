@@ -49,8 +49,10 @@ fn parse_chart(family: &str, value: &str) -> Result<RadialChart, JsValue> {
         "radial" => {
             let mut chart: RadialChart = serde_json::from_str(value).map_err(js_err)?;
             // A slice without its drawn text gets the one its label format
-            // writes; a text the document carries is drawn as it is.
-            chart.normalize_labels();
+            // writes, and a generated text (`text_generated`) is written
+            // again from the document's values and format (#313); a text
+            // the host wrote is drawn as it is.
+            chart.regenerate_labels();
             Ok(chart)
         }
         "categorical" => Err(js_err(
@@ -76,8 +78,46 @@ fn validate(chart: &RadialChart, size: (u32, u32)) -> Result<(), JsValue> {
     }
     chart.validate().map_err(js_err)
 }
+/// What an export draws under the chart (#313): `"document"`,
+/// `"transparent"` or a colour JSON `{"r":..,"g":..,"b":..,"a":..}` with
+/// components `0..=1`. Anything else is an `Error` with `code`
+/// `"export_background"`.
+fn export_background(value: &str) -> Result<RadialExportBackground, JsValue> {
+    match value {
+        "document" => return Ok(RadialExportBackground::Document),
+        "transparent" => return Ok(RadialExportBackground::Transparent),
+        _ => {}
+    }
+    let refused = |reason: &str| {
+        crate::web::convert::coded_error(
+            &format!(
+                "export background {value:?} is not \"document\", \"transparent\" or a \
+                 colour JSON {{\"r\":..,\"g\":..,\"b\":..,\"a\":..}} with components 0 to 1: \
+                 {reason}"
+            ),
+            "export_background",
+            [],
+        )
+    };
+    let color: renderer::Color =
+        serde_json::from_str(value).map_err(|error| refused(&error.to_string()))?;
+    if ![color.r, color.g, color.b, color.a]
+        .iter()
+        .all(|c| (0.0..=1.0).contains(c))
+    {
+        return Err(refused("a component is outside 0 to 1"));
+    }
+    Ok(RadialExportBackground::Color(color))
+}
 /// The browser host of one radial document, exported to JavaScript as
 /// `FiggyBoundedChart`.
+///
+/// A chart made by [`Self::create`] requests its own adapter and device. A
+/// chart made by [`Self::create_on`] draws on a `FiggyChart`'s device and
+/// queue instead (#313): its own surface on its own canvas, the same
+/// device-loss record, and the same GPU ledger and memory budget. Disposing
+/// either chart (`free()`) drops only its own handles: the device lives while
+/// the other holds it, and is never destroyed by a dispose.
 #[wasm_bindgen(js_name = FiggyBoundedChart)]
 pub struct FiggyRadialChart {
     surface: wgpu::Surface<'static>,
@@ -125,15 +165,66 @@ impl FiggyRadialChart {
         let (device, queue) = renderer::gpu::request_device_async(&adapter)
             .await
             .map_err(js_err)?;
+        let gpu = RendererDevice::new(device, queue).map_err(js_err)?;
+        Self::create_with(
+            canvas,
+            surface,
+            instance,
+            adapter,
+            gpu,
+            chart,
+            (width, height),
+        )
+        .await
+    }
+    /// A radial chart on `parent`'s device and queue (#313), drawn to its
+    /// own `canvas`: a promise of the `FiggyBoundedChart`, which validates
+    /// the document as [`Self::create`] does but requests no adapter and no
+    /// device.
+    ///
+    /// Lifetime: the chart holds clones of the parent's handles. Disposing
+    /// it (`free()`) never destroys the parent's device, and disposing the
+    /// parent leaves this chart drawing; the device lives while either
+    /// holds it. Both share one device-loss record, so a lost device fails
+    /// the next frame, export or pick of each with the loss, and one GPU
+    /// ledger and memory budget: the parent's `gpu_memory_status` counts
+    /// this chart's allocations, and the one budget bounds both charts.
+    /// Both submit to the one queue in call order; a wait on
+    /// either (`first_frame_ready`, an export) completes with the work
+    /// submitted before it, the other chart's included. An async call
+    /// (an export, a pick) borrows only this chart: while it is pending,
+    /// `free()` on this chart throws as on every wasm-bindgen object
+    /// (await it first), and disposing the parent does not cancel it.
+    pub fn create_on(
+        parent: &crate::web::FiggyChart,
+        canvas: HtmlCanvasElement,
+        family: String,
+        value: String,
+        width: u32,
+        height: u32,
+    ) -> js_sys::Promise {
+        let created = Self::create_on_device_of(parent, canvas, family, value, width, height);
+        wasm_bindgen_futures::future_to_promise(async move { created.await.map(JsValue::from) })
+    }
+    /// Configure `surface` for `gpu` and build the chart's renderer and first
+    /// frame: the part [`Self::create`] and [`Self::create_on`] share.
+    async fn create_with(
+        canvas: HtmlCanvasElement,
+        surface: wgpu::Surface<'static>,
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        gpu: RendererDevice,
+        chart: RadialChart,
+        (width, height): (u32, u32),
+    ) -> Result<FiggyRadialChart, JsValue> {
         let config = renderer::gpu::try_configure_surface(
             &surface,
             &adapter,
-            &device,
+            gpu.device(),
             canvas.width(),
             canvas.height(),
         )
         .map_err(js_err)?;
-        let gpu = RendererDevice::new(device, queue).map_err(js_err)?;
         let mut renderer = RadialRenderer::try_new_async(gpu.clone(), config.format)
             .await
             .map_err(js_err)?;
@@ -236,16 +327,31 @@ impl FiggyRadialChart {
     }
 
     pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
-        let image = self
+        self.export_png_with_background(scale, "document").await
+    }
+    /// [`Self::export_png`] over another background (#313): `"document"`
+    /// (the chart's own, as `export_png` draws it), `"transparent"` (no
+    /// background: only the slices, labels and annotations) or a colour JSON
+    /// `{"r":..,"g":..,"b":..,"a":..}` (components `0..=1`). The override is
+    /// the export's alone: the document, its selection and the image on
+    /// screen are unchanged. Any other value throws `code`
+    /// `"export_background"` before anything is drawn.
+    pub async fn export_png_with_background(
+        &mut self,
+        scale: f32,
+        background: &str,
+    ) -> Result<js_sys::Uint8Array, JsValue> {
+        let background = export_background(background)?;
+        let bytes = self
             .renderer
-            .export_rgba(
+            .export_png_with_background(
                 &self.chart,
                 self.size,
                 renderer::ExportOptions::document(scale),
+                background,
             )
             .await
             .map_err(js_err)?;
-        let bytes = renderer::encode_png(&image).map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
     }
     /// The chart as an SVG document at `scale ×` resolution: the slices and
@@ -362,6 +468,49 @@ impl FiggyRadialChart {
             .entries()
             .find(|(_, e)| e.id().element_id() == target)
             .map(|(_, e)| e.index)
+    }
+    /// Put the decoration `id` (an id [`Self::decorations`] lists, such as
+    /// `"chart_title"` or `"radial_label_0_1"`) back where the layout places
+    /// it (#313): its stored offset is removed, and for `"data_area"` the
+    /// explicit plot region too (`DecorationLayout::reset`). Not a drag by
+    /// the negative offset: nothing is left stored. Returns whether the
+    /// document changed. An unknown id, and an annotation (which has a
+    /// position of its own, not an offset), throw.
+    pub fn reset_decoration_position(&mut self, id: &str) -> Result<bool, JsValue> {
+        if self.drawn_annotation(id).is_some() {
+            return Err(js_err(
+                "an annotation has no decoration offset: move it with drag_annotation",
+            ));
+        }
+        let key = self
+            .frame
+            .decoration_ids(&self.chart)
+            .find(|(_, key)| key.element_id() == id)
+            .map(|(_, key)| key)
+            .ok_or_else(|| js_err("unknown decoration"))?;
+        let mut next = self.chart.clone();
+        next.decorations.reset(&key);
+        if next == self.chart {
+            return Ok(false);
+        }
+        self.adopt(next)?;
+        Ok(true)
+    }
+    /// Rewrite the automatic slice labels from the document's values and
+    /// label format (#313): each generated text (`text_generated`) and each
+    /// missing one, as `RadialChart::regenerate_labels` writes them; a text
+    /// the host wrote stays. With `rewrite_user_text`, every text is
+    /// rewritten, the host's included (`RadialChart::format_labels`).
+    /// `set_document` already regenerates the generated texts of the
+    /// document it is given; this is the call for an explicit rewrite.
+    pub fn regenerate_labels(&mut self, rewrite_user_text: bool) -> Result<(), JsValue> {
+        let mut next = self.chart.clone();
+        if rewrite_user_text {
+            next.format_labels();
+        } else {
+            next.regenerate_labels();
+        }
+        self.adopt(next)
     }
     /// `x`, `y` are document logical pixels.
     pub fn resize_handle(&self, target: &str, x: f32, y: f32) -> Option<String> {
@@ -752,6 +901,40 @@ impl FiggyRadialChart {
     }
     pub fn step_selection(&mut self, backwards: bool) {
         self.chart.step_selection(backwards);
+    }
+}
+
+impl FiggyRadialChart {
+    /// [`Self::create_on`] for Rust callers: the chart itself rather than a
+    /// promise. The parent is read before the returned future starts, so
+    /// the future borrows nothing.
+    pub fn create_on_device_of(
+        parent: &crate::web::FiggyChart,
+        canvas: HtmlCanvasElement,
+        family: String,
+        value: String,
+        width: u32,
+        height: u32,
+    ) -> impl std::future::Future<Output = Result<FiggyRadialChart, JsValue>> + 'static {
+        console_error_panic_hook::set_once();
+        let (gpu, instance, adapter) = parent.shared_gpu();
+        async move {
+            let chart = parse_chart(&family, &value)?;
+            validate(&chart, (width, height))?;
+            let surface = instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+                .map_err(js_err)?;
+            Self::create_with(
+                canvas,
+                surface,
+                instance,
+                adapter,
+                gpu,
+                chart,
+                (width, height),
+            )
+            .await
+        }
     }
 }
 

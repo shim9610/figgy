@@ -47,6 +47,19 @@ impl<'w> WindowedRenderer<'w> {
         Renderer::for_window_blocking_observed(target, size, pool_capacity_bytes, observer)
     }
 
+    /// The instance this window's surface was created from: another
+    /// surface drawn with [`Renderer::renderer_device`] (another canvas,
+    /// #313) is created from it.
+    pub fn instance(&self) -> &wgpu::Instance {
+        &self._instance
+    }
+
+    /// The adapter this window's device was requested from: another
+    /// surface drawn with [`Renderer::renderer_device`] is configured for it.
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self._adapter
+    }
+
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
     }
