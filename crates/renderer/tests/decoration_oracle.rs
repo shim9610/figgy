@@ -260,6 +260,26 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#309",
     },
     Exclusion {
+        scene: "Radar",
+        layer: "*",
+        element: "*tick_labels_bottom",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there*category_label_*",
+        reason: "the same: the angle labels as a whole are hit through the per-label category \
+                 label elements over them and through the ring",
+        issue: "#309",
+    },
+    Exclusion {
+        scene: "Rose",
+        layer: "*",
+        element: "*tick_labels_bottom",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there*category_label_*",
+        reason: "the same: the angle labels as a whole are hit through the per-label category \
+                 label elements over them and through the ring",
+        issue: "#309",
+    },
+    Exclusion {
         scene: "*",
         layer: "*",
         element: "*axis_top",
@@ -2976,6 +2996,17 @@ fn check_i3(report: &mut Report, at: &At<'_>, measured: &[Measured], ink: &Scene
         for h in sb.handles() {
             r = renderer::sink::union(r, h.expanded(sb.stroke_width() + 4.0));
         }
+        // A polar category label's dashed ring (#309) is part of its
+        // highlight.
+        if let Some(([cx, cy], radius)) = sb.ring() {
+            let ring = RectF {
+                x: cx - radius,
+                y: cy - radius,
+                width: 2.0 * radius,
+                height: 2.0 * radius,
+            };
+            r = renderer::sink::union(r, ring.expanded(sb.stroke_width() + 4.0));
+        }
         r
     };
     let mut groups: Vec<Vec<usize>> = Vec::new();
@@ -3117,6 +3148,10 @@ fn on_outline(sb: &SelectionBox, x: f32, y: f32, halo: f32) -> bool {
         .iter()
         .any(|&(a, b)| segment_distance((x, y), a, b) <= halo)
         || sb.handles().iter().any(|h| h.expanded(halo).contains(x, y))
+        // The dashed ring a polar category label shows (#309).
+        || sb
+            .ring()
+            .is_some_and(|([cx, cy], radius)| ((x - cx).hypot(y - cy) - radius).abs() <= halo)
 }
 
 /// The edges of `sb`'s outline with no changed pixel along their middle
