@@ -1489,7 +1489,8 @@ mod web {
 
     mod chart;
     pub use chart::{
-        FiggyChart, auto_layout, draw_style_modes, draw_style_param_specs, rich_text_from_tex,
+        FiggyChart, FiggyReadiness, auto_layout, draw_style_modes, draw_style_param_specs,
+        rich_text_from_tex,
     };
     mod columns;
     use columns::{VectorColumns, referenced_columns, vector_columns};
@@ -1502,7 +1503,9 @@ mod web {
     mod decorations;
     pub use decorations::AxisPreset;
     pub(crate) use decorations::vertex_handle_index;
-    pub(crate) use decorations::{annotation_kind_name, annotation_warnings_json};
+    pub(crate) use decorations::{
+        annotation_index_of, annotation_kind_name, annotation_warnings_json,
+    };
     mod export;
     mod monotonic;
     mod picking;
@@ -2672,3 +2675,7 @@ pub use web::*;
 
 #[cfg(target_arch = "wasm32")]
 mod radial;
+/// The radial host (JS `FiggyBoundedChart`), reachable from Rust for its
+/// static calls such as `supported_families` (#315).
+#[cfg(target_arch = "wasm32")]
+pub use radial::FiggyRadialChart;

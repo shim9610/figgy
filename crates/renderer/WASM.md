@@ -554,6 +554,8 @@ chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 �
 - 웹 래퍼의 스트리밍 `auto_fit_all()`은 위 저수준 비동기 메서드를 호출하지 않는다. 렌더러에 범위 계산을 요청하고 스트리밍 작업의 `done`을 기다린다. 청크 공급과 커널 호출을 계속해야 하므로 일반 `busy` 토큰을 잡지 않으며, 작업 중 `busy`가 `false`일 수 있다. 스트리밍 실행기가 변경 요청을 최신 상태에 맞춰 반영한다.
 - 작업 중 들어온 크기 변경과 포인터 해제는 마지막 것만 보관했다가, 작업이 끝나면 WASM에 적용한 뒤 토큰을 해제한다. 연결이 끊겨도 작업이 사용 중인 커널은 작업이 끝난 뒤 해제한다. 이전 연결 세대의 작업이 끝났다고 새 세대의 토큰을 해제하지 않는다.
 
+차트의 `series_ready()` / `pipelines_ready()` / `first_frame_ready()`는 끝날 때까지 차트를 빌린다. 기다리는 동안 `pipeline_status()`를 읽거나 크기를 바꾸거나 차트를 해제해야 하면 `chart.readiness()`가 돌려주는 `FiggyReadiness`를 쓴다([#315](https://github.com/shim9610/figgy/issues/315)). 이 핸들은 차트를 빌리지 않고 렌더러의 컴파일 대기열만 약하게 참조한다. `series_ready()`와 `pipelines_ready()`는 차트의 같은 이름 메서드처럼 풀리거나 거부되지만 그리지는 않는다. `status()`는 `{ screen, all, disposed }` 객체를 돌려주며 기다리는 중에도 읽을 수 있다. 차트를 `free()`하면 기다리던 호출과 그 뒤의 호출이 `"chart disposed"`로 시작하는 `Error`로 거부되고 `status().disposed`가 `true`가 된다. 자세한 내용은 [Readiness without borrowing the chart](#readiness-handle)에 있다.
+
 웹 래퍼 사용 예제는 `crates/web/index.html`에 있다. 저수준 커널은 위 규칙을 직접 구현해야 하는 경우에 사용한다.
 
 ## 4. 제약과 주의사항
@@ -1249,6 +1251,73 @@ const png = await view.export_png(1);
 view.free();
 ```
 
+<a id="bounded-family-migration"></a>
+
+### Migrating the bounded families to `FiggyChart`
+
+`FiggyBoundedChart.supported_families()` returns `["radial"]`
+([#315](https://github.com/shim9610/figgy/issues/315)): `create` opens only
+radial documents. The categorical bar chart, the box plot and the radar chart
+moved to `FiggyChart` setters, which read the same document JSON into the
+Cartesian (or polar) chart. Each document's values become registered
+columns, so the chart is then edited, picked and exported like any other
+`FiggyChart`, with the full interaction set (hover, picking,
+`step_selection`, decoration drag, annotations, exports) and its coordinates
+in physical canvas pixels. The canvas's pixel size is the chart area; there
+is no `width` / `height` argument.
+
+Categorical bar chart:
+
+```js
+// Before
+const view = await FiggyBoundedChart.create(canvas, "categorical", JSON.stringify(categoricalDoc), 960, 600);
+// After
+const chart = await FiggyChart.create(canvas);
+chart.set_categorical_document(JSON.stringify(categoricalDoc));
+await chart.first_frame_ready();
+```
+
+Box plot:
+
+```js
+// Before
+const view = await FiggyBoundedChart.create(canvas, "boxplot", JSON.stringify(boxPlotDoc), 960, 600);
+// After
+const chart = await FiggyChart.create(canvas);
+chart.set_boxplot_document(JSON.stringify(boxPlotDoc));
+await chart.first_frame_ready();
+```
+
+Radar chart (a polar chart, so create it on the full shader set to skip the
+basic one):
+
+```js
+// Before
+const view = await FiggyBoundedChart.create(canvas, "radar", JSON.stringify(radarDoc), 960, 600);
+// After
+const chart = await FiggyChart.create_with_options(canvas, { shaders: "full" });
+chart.set_radar_document(JSON.stringify(radarDoc));
+await chart.first_frame_ready();
+```
+
+Passing `"categorical"`, `"boxplot"` or `"radar"` to `FiggyBoundedChart.create`
+rejects with an error that names the setter. A host that picks the class from
+the family can ask the class itself:
+
+```js
+const bounded = FiggyBoundedChart.supported_families().includes(family);
+```
+
+What changes for code that used the bounded view: `get_document()` becomes
+`get_config()` / `get_series()` (the document is read once, not kept);
+`pick(x, y, toggle)` becomes `pick_data(x, y, maxDistancePx)` and
+`selection_details()`; `hit_decoration` / `select_decoration` / `drag`
+become `hit_test` / `on_press` / `on_move` / `on_release`; and the
+`step_selection(backwards)` boolean becomes `step_selection(dx, dy)`.
+The sections [Categorical bar documents](#categorical-documents),
+[Box plot documents](#box-plot-documents) and
+[Radar documents](#radar-documents) describe each reader.
+
 ### Annotation layer
 
 Both classes expose the annotation layer with the same method set:
@@ -1288,6 +1357,40 @@ animation-frame loop, so read them after the next animation frame.
 `FiggyBoundedChart` prepares the frame and its annotation map inside each
 editing call, so its methods report the new state as soon as the call returns.
 
+<a id="annotation-ids"></a>
+
+#### Annotation ids and how long an index is valid
+
+Every method above addresses an annotation by its index in
+`annotations.items`. An index is valid until the list changes:
+`add_annotation` and `add_corner_note` append (earlier indices stay),
+`remove_annotation(i)` moves every later item down one, and `set_config` /
+`set_document` (or a document load) can replace the list entirely. Index
+values that a host keeps across such a call must be looked up again. The
+item's `id` (`Annotation.id`, a free host label, `""` by default) is kept by
+every edit, by reordering and by serialization, so a host that needs a
+lasting name sets one and finds the item by it
+([#315](https://github.com/shim9610/figgy/issues/315)). Both classes have:
+
+- `annotation_ids()`: every item's `id` in index order, as an array of
+  strings (`""` for an item without one);
+- `annotation_index(id)`: the item's current index, or `undefined` when no
+  item has that id; an empty id, or one that several items share, throws
+  (ids are not required to be unique, so the call does not guess);
+- `select_annotation_by_id(id)`: `select_annotation` with that item's index;
+  it throws, leaving the selection as it was, when no item or more than one
+  has the id, or the id is empty.
+
+```js
+// peakItem and noteItem are Annotation values (the config's shape).
+chart.add_annotation(JSON.stringify({ ...peakItem, id: "peak" }));
+chart.add_annotation(JSON.stringify({ ...noteItem, id: "note" }));
+chart.select_annotation_by_id("note"); // selected_annotation() === 1
+chart.remove_annotation(0);            // "note" moves to index 0
+const i = chart.annotation_index("note"); // 0: look it up again after the edit
+chart.drag_annotation(i, 10, 0, null);
+```
+
 The radial chart has no value axes: a `Span`, a reference line and a
 `Data` anchor are skipped and listed by `annotation_warnings()`, and the frame
 paints its opaque background over a white clear with the annotations above
@@ -1308,6 +1411,83 @@ the data selection. On `FiggyChart`
 the same route drives `hit_test`, `on_press` / `on_move` and
 `decoration_bounds`, as listed in the method table above. The index-based
 annotation methods keep working on every layer.
+
+<a id="readiness-handle"></a>
+
+### Readiness without borrowing the chart
+
+`chart.series_ready()`, `chart.pipelines_ready()` and
+`chart.first_frame_ready()` borrow the chart until they settle (see 3.9), so
+a host cannot read `pipeline_status()`, resize or free the chart while it
+awaits them. `chart.readiness()` returns a `FiggyReadiness` that does not
+borrow the chart ([#315](https://github.com/shim9610/figgy/issues/315)). It
+holds the renderer's background compile queue weakly and keeps nothing
+alive:
+
+- `series_ready()` resolves once every compile the chart's last frame needed
+  has ended, and `pipelines_ready()` once every compile scheduled so far has
+  ended. Both return a `Promise` that owns its own copy of the handle and
+  rejects like the chart's methods (an `Error` with `label`, `kind` and
+  `message`) when one of those compiles failed. Neither draws: after
+  `series_ready()` the host's next `frame()` draws the series (the chart's
+  `series_ready()` draws, but borrows the chart).
+- `status()` returns a plain object, `{ screen: { total, ready, compiling,
+  failed }, all: { … }, disposed }`, the counts as in `pipeline_status()`.
+  It has no `frame_complete`: only a frame decides that, so read it on the
+  chart. It is readable at any time, also while a wait is pending.
+- Once the chart is freed (`chart.free()`), a pending wait and every later
+  one reject with an `Error` whose message starts with `"chart disposed"`,
+  and `status()` reports `disposed: true` with zero counts. The same happens
+  if the renderer stops compiling in the background (it does so only when it
+  cannot schedule the full shader set's compiles), since the handle then has
+  nothing left to watch.
+- A chart that compiles nothing in the background has nothing to wait for:
+  the waits resolve at once and `disposed` stays `false`.
+- Freeing the handle (`readiness.free()`) ends nothing on the chart. The
+  chart's own `series_ready()`, `pipelines_ready()` and `first_frame_ready()`
+  work as before.
+
+```js
+const readiness = chart.readiness();
+const ready = readiness.series_ready(); // the chart stays usable meanwhile
+const { screen } = readiness.status();
+progress.value = screen.total ? screen.ready / screen.total : 1;
+chart.resize(canvas.width, canvas.height);
+try {
+  await ready;
+  chart.frame();
+} catch (error) {
+  if (!String(error.message).startsWith("chart disposed")) throw error;
+}
+```
+
+<a id="typescript-return-types"></a>
+
+### Return types in the TypeScript declarations
+
+wasm-bindgen copies each method's documentation into the generated `.d.ts`,
+and the return types name their form
+([#315](https://github.com/shim9610/figgy/issues/315)):
+
+- `FiggyJson` is a `string` holding JSON text, never an object: parse it with
+  `JSON.parse`. The method's documentation names its shape. `get_config`,
+  `get_series`, `annotations`, `decoration_bounds`, `active_layer`, the pick
+  results (`Promise<FiggyJson | undefined>`) and the
+  status reports (`stream_status`, `gpu_memory_status`, …) return it.
+- A plain object or array is typed as one: `pipeline_status()` returns
+  `FiggyPipelineStatus`, `FiggyReadiness.status()` returns
+  `FiggyReadinessStatus`, `pipeline_failures()` returns
+  `FiggyPipelineFailure[]`, `theme(name)` returns `FiggyThemeObject`, and
+  `theme_names()`, `annotation_ids()` and
+  `FiggyBoundedChart.supported_families()` return `string[]`.
+- A string that is one of a few names is typed as their union, such as
+  `shader_set(): "basic" | "full"`.
+
+Units: `FiggyChart` takes and returns geometry in physical canvas pixels
+(the canvas's `width` / `height` space, not CSS pixels), except where a
+method says document logical pixels (`get_config` lengths, `subplot_area`,
+`take_plot_resize_request`). `FiggyBoundedChart` uses document logical
+pixels throughout. Each method's documentation repeats its units.
 
 ### Math in labels
 

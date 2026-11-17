@@ -36,7 +36,10 @@ Earlier releases opened categorical bar, box plot and radar documents through
 
 `FiggyBoundedChart` keeps its name and its `"radial"` family argument. In this
 release its `"categorical"`, `"boxplot"` and `"radar"` families are errors
-that name the `FiggyChart` method to use instead. The `<figgy-chart>` custom
+that name the `FiggyChart` method to use instead, and
+`FiggyBoundedChart.supported_families()` returns `["radial"]`
+([#315](https://github.com/shim9610/figgy/issues/315); one migration example
+per family is in [WASM.md](../renderer/WASM.md#bounded-family-migration)). The `<figgy-chart>` custom
 element wraps `FiggyChart` only. Hosts using `FiggyBoundedChart` own their
 canvas events and scheduling; see the
 [radial chart host API](../renderer/WASM.md#bounded-chart-host).
@@ -112,6 +115,19 @@ have compiled. Exports and picks always draw the whole chart; they compile what 
 need through the browser's asynchronous compiler first (an export its pipelines,
 `pick_point` and `pick_data` their exact pick variants), so neither compiles on the
 page's thread.
+The chart's waits borrow it until they settle. `chart.readiness()` returns a
+`FiggyReadiness` that does not ([#315](https://github.com/shim9610/figgy/issues/315)):
+its `series_ready()` and `pipelines_ready()` wait for the same compiles without
+drawing, its `status()` (`{ screen, all, disposed }`) is readable meanwhile, and the
+host can resize, draw or `free()` the chart while it waits; freeing the chart rejects
+the wait with an `Error` whose message starts with `"chart disposed"`. See
+[Readiness without borrowing the chart](../renderer/WASM.md#readiness-handle).
+Annotations can be found by their `id` as well as their index:
+`annotation_ids()`, `annotation_index(id)` and `select_annotation_by_id(id)`
+([how long an index is valid](../renderer/WASM.md#annotation-ids)). In the generated
+`.d.ts`, a method returning JSON text is typed `FiggyJson` (a `string` to
+`JSON.parse`), and one returning an object names its interface, such as
+`FiggyPipelineStatus` ([return types](../renderer/WASM.md#typescript-return-types)).
 A chart starts on the basic shader set, which draws rectangular charts with
 linear and logarithmic axes, and moves itself to the full set when its config
 first has an axis break, a probability axis or polar coordinates
@@ -209,6 +225,16 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 `<figgy-chart>`도 같은 메서드를 갖는다. 요소의 `pipeline_status()`는 마지막 프레임의 스냅샷이라
 차트가 바쁠 때도 읽을 수 있고, `figgy-init-progress` 이벤트로 `"screen complete"`와
 `"all complete"`를 알린다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
+차트의 대기 메서드는 끝날 때까지 차트를 빌린다. `chart.readiness()`가 돌려주는 `FiggyReadiness`는
+차트를 빌리지 않는다([#315](https://github.com/shim9610/figgy/issues/315)). 이 핸들의 `series_ready()`와
+`pipelines_ready()`는 같은 컴파일을 기다리되 그리지는 않고, 기다리는 동안에도 `status()`
+(`{ screen, all, disposed }`)를 읽거나 차트의 크기를 바꾸고 그리고 `free()`할 수 있다. 차트를 해제하면
+기다리던 호출이 `"chart disposed"`로 시작하는 `Error`로 거부된다. 주석은 인덱스뿐 아니라 `id`로도
+찾을 수 있다(`annotation_ids()`, `annotation_index(id)`, `select_annotation_by_id(id)`). 생성되는
+`.d.ts`에서 JSON 문자열을 돌려주는 메서드는 `FiggyJson`(`JSON.parse`로 읽는 `string`)으로, 객체를
+돌려주는 메서드는 `FiggyPipelineStatus` 같은 인터페이스 이름으로 표시된다.
+`FiggyBoundedChart.supported_families()`는 `["radial"]`을 돌려준다. 범주형 막대·상자 그림·레이더 차트를
+`FiggyChart` 설정 메서드로 옮기는 예제는 [WASM.md](../renderer/WASM.md#bounded-family-migration)에 있다.
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
 스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가

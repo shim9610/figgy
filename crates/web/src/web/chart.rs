@@ -47,6 +47,170 @@ fn failure_kind(kind: renderer::PipelineFailureKind) -> &'static str {
     }
 }
 
+/// TypeScript names the `unchecked_return_type` of the wrappers' methods
+/// use (#315), emitted into the generated `.d.ts`.
+#[wasm_bindgen(typescript_custom_section)]
+const FIGGY_RETURN_TYPES: &'static str = r#"
+/**
+ * JSON text returned by a figgy method: a `string`, not an object. Parse it
+ * with `JSON.parse`; the method's documentation names its shape. Lengths
+ * in it follow that method's units: `FiggyChart` geometry is in physical
+ * canvas pixels (the canvas's `width`/`height` space) unless the method says
+ * document logical pixels; `FiggyBoundedChart` geometry is in document
+ * logical pixels.
+ */
+export type FiggyJson = string;
+
+/** Background pipeline compiles of one scope (#299). */
+export interface FiggyPipelineCounts {
+    total: number;
+    ready: number;
+    /** Waiting or compiling. */
+    compiling: number;
+    failed: number;
+}
+
+/** `FiggyChart.pipeline_status()`: a plain object, not JSON. */
+export interface FiggyPipelineStatus {
+    /** What the last frame needed. */
+    screen: FiggyPipelineCounts;
+    /** Every compile scheduled so far. */
+    all: FiggyPipelineCounts;
+    /** Whether the last frame drew every series. */
+    frame_complete: boolean;
+}
+
+/** `FiggyReadiness.status()`: a plain object, not JSON (#315). */
+export interface FiggyReadinessStatus {
+    screen: FiggyPipelineCounts;
+    all: FiggyPipelineCounts;
+    /** The chart was freed; the counts are zero then. */
+    disposed: boolean;
+}
+
+/** One failed background compile, from `FiggyChart.pipeline_failures()`. */
+export interface FiggyPipelineFailure {
+    label: string;
+    kind: "validation" | "internal" | "rejected" | "device_lost" | "cancelled";
+    message: string;
+}
+
+/**
+ * A theme as a plain object (not JSON): the model `Theme`'s fields, colours
+ * as `{ r, g, b, a }`. Edit it and pass it to `apply_custom_theme`.
+ */
+export type FiggyThemeObject = Record<string, unknown>;
+"#;
+
+/// `{ total, ready, compiling, failed }` for one scope of background
+/// compiles (#299).
+fn counts_object(counts: renderer::PipelineCounts) -> Result<JsValue, JsValue> {
+    let object = js_sys::Object::new();
+    js_sys::Reflect::set(&object, &"total".into(), &(counts.total as f64).into())?;
+    js_sys::Reflect::set(&object, &"ready".into(), &(counts.ready as f64).into())?;
+    js_sys::Reflect::set(
+        &object,
+        &"compiling".into(),
+        &(counts.compiling as f64).into(),
+    )?;
+    js_sys::Reflect::set(&object, &"failed".into(), &(counts.failed as f64).into())?;
+    Ok(object.into())
+}
+
+/// The message a readiness wait rejects with once its chart was freed
+/// (#315).
+const CHART_DISPOSED: &str = concat!(
+    "chart disposed: the chart was freed ",
+    "(or stopped compiling in the background) before the wait ended"
+);
+
+/// A readiness wait's end as the promise's value: `undefined`, or an
+/// `Error` (#315).
+fn readiness_result(result: Result<(), renderer::ReadinessError>) -> Result<JsValue, JsValue> {
+    match result {
+        Ok(()) => Ok(JsValue::UNDEFINED),
+        Err(renderer::ReadinessError::Failed(failure)) => Err(failure_error(&failure)),
+        Err(renderer::ReadinessError::RendererDropped) => {
+            Err(js_sys::Error::new(CHART_DISPOSED).into())
+        }
+    }
+}
+
+/// A handle on a chart's background pipeline compiles that does not borrow
+/// the chart (#315), from [`FiggyChart::readiness`]. While one of its waits
+/// is pending the host keeps full use of the chart: `pipeline_status()`,
+/// `frame()`, `resize()` and `free()` all work. It holds the chart's compile
+/// queue weakly and keeps nothing alive. Once the chart is freed a pending
+/// or later wait rejects with an `Error` whose message starts with
+/// `"chart disposed"`, and `status().disposed` is `true`. The handle draws
+/// nothing: after `series_ready()` resolves, the host's next `frame()`
+/// draws the series (or use `chart.series_ready()`, which draws, but
+/// borrows the chart until it settles). Free the handle with `free()` when
+/// done; freeing it ends nothing.
+///
+/// A chart that compiles no pipeline in the background (one made without
+/// the browser's async compile queue) gives a handle with nothing to wait
+/// for: its waits resolve at once and `disposed` stays `false`.
+///
+/// JS:
+/// ```js
+/// const readiness = chart.readiness();
+/// const ready = readiness.series_ready(); // the chart stays usable
+/// overlay.textContent = `${readiness.status().screen.ready} /
+/// ${readiness.status().screen.total}`;
+/// chart.resize(w, h);
+/// await ready;
+/// chart.frame();
+/// ```
+#[wasm_bindgen]
+pub struct FiggyReadiness {
+    readiness: renderer::PipelineReadiness,
+}
+
+#[wasm_bindgen]
+impl FiggyReadiness {
+    /// Resolves once every background compile the chart's last frame
+    /// needed has ended, like `chart.series_ready()` but without drawing
+    /// and without borrowing the chart. Rejects with an `Error` carrying
+    /// `label`, `kind` and `message` when one of them failed, or with a
+    /// `"chart disposed"` `Error` once the chart is freed. The promise owns
+    /// a clone of the handle; it does not borrow this object.
+    #[wasm_bindgen(unchecked_return_type = "Promise<void>")]
+    pub fn series_ready(&self) -> js_sys::Promise {
+        let readiness = self.readiness.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            readiness_result(readiness.series_ready().await)
+        })
+    }
+
+    /// Resolves once every background compile scheduled so far has ended,
+    /// like `chart.pipelines_ready()` but without borrowing the chart.
+    /// Rejects like [`Self::series_ready`].
+    #[wasm_bindgen(unchecked_return_type = "Promise<void>")]
+    pub fn pipelines_ready(&self) -> js_sys::Promise {
+        let readiness = self.readiness.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            readiness_result(readiness.pipelines_ready().await)
+        })
+    }
+
+    /// The chart's background compiles now, as a plain object (not a JSON
+    /// string): `{ screen: { total, ready, compiling, failed }, all: { … },
+    /// disposed }`. `screen` and `all` are as in `chart.pipeline_status()`;
+    /// there is no `frame_complete` (only a frame decides it, so read it on
+    /// the chart). `disposed` is `true` once the chart is freed; the counts
+    /// are zero then. Readable at any time, also while a wait is pending.
+    #[wasm_bindgen(unchecked_return_type = "FiggyReadinessStatus")]
+    pub fn status(&self) -> Result<JsValue, JsValue> {
+        let status = self.readiness.status();
+        let object = js_sys::Object::new();
+        js_sys::Reflect::set(&object, &"screen".into(), &counts_object(status.screen)?)?;
+        js_sys::Reflect::set(&object, &"all".into(), &counts_object(status.all)?)?;
+        js_sys::Reflect::set(&object, &"disposed".into(), &status.renderer_dropped.into())?;
+        Ok(object.into())
+    }
+}
+
 /// `{ label, kind, message }` for one failed compile (#299).
 fn failure_object(failure: &renderer::PipelineFailure) -> Result<JsValue, JsValue> {
     let object = js_sys::Object::new();
@@ -275,7 +439,9 @@ pub(super) async fn create_chart_kernel(
 ///
 /// JS: `const specs = JSON.parse(draw_style_param_specs("constellation"));`
 /// Valid modes: `draw_style_modes()`.
-#[wasm_bindgen]
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+#[wasm_bindgen(unchecked_return_type = "FiggyJson")]
 pub fn draw_style_param_specs(mode: &str) -> Result<String, JsValue> {
     let specs = renderer::config::DrawStyle::param_specs_for_mode(mode).ok_or_else(|| {
         js_err(format!(
@@ -292,7 +458,9 @@ pub fn draw_style_param_specs(mode: &str) -> Result<String, JsValue> {
 /// Errors name the TeX byte range.
 ///
 /// JS: `cfg.chart_title.text = JSON.parse(rich_text_from_tex("$E = mc^2$", 16, "", 0, 0, 0, 1));`
-#[wasm_bindgen]
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+#[wasm_bindgen(unchecked_return_type = "FiggyJson")]
 pub fn rich_text_from_tex(
     tex: &str,
     font_size: f32,
@@ -314,13 +482,18 @@ pub fn rich_text_from_tex(
 /// Errors are JSON errors.
 ///
 /// JS: `chart.set_config(autoLayout(chart.get_config()));`
-#[wasm_bindgen(js_name = autoLayout)]
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+/// Lengths in the config are document logical pixels.
+#[wasm_bindgen(js_name = autoLayout, unchecked_return_type = "FiggyJson")]
 pub fn auto_layout(config_json: &str) -> Result<String, JsValue> {
     crate::auto_layout_json(config_json).map_err(js_err)
 }
 
 /// Every valid `draw_style` mode tag, as a JSON string array.
-#[wasm_bindgen]
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+#[wasm_bindgen(unchecked_return_type = "FiggyJson")]
 pub fn draw_style_modes() -> Result<String, JsValue> {
     serde_json::to_string(renderer::config::DrawStyle::mode_tags()).map_err(js_err)
 }
@@ -724,6 +897,9 @@ impl FiggyChart {
     }
 
     /// The shader set this chart compiles (#299): `"basic"` or `"full"`.
+    ///
+    /// Returns a plain string, not JSON.
+    #[wasm_bindgen(unchecked_return_type = "\"basic\" | \"full\"")]
     pub fn shader_set(&self) -> String {
         shader_set_name(self.renderer.shader_set()).into()
     }
@@ -774,6 +950,11 @@ impl FiggyChart {
     /// Read-only accounting. These are requested GPU allocations, not a
     /// driver VRAM measurement; retired bytes remain charged until the
     /// queue completion callback fires.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// Sizes are in bytes.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn gpu_memory_status(&self) -> String {
         let usage = self.renderer.gpu_memory_usage();
         let pool = self.renderer.pool();
@@ -829,6 +1010,10 @@ impl FiggyChart {
     /// Compact live resident columns, drop the unused pool slab, and wait
     /// for the device completion fence before reporting reclaimed bytes.
     /// The 16 MiB startup slab remains as the minimum reusable pool.
+    ///
+    /// Resolves to JSON text (`FiggyJson`) in the shape of `gpu_memory_status`,
+    /// not an object.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub async fn release_unused_gpu_memory(&mut self) -> Result<String, JsValue> {
         let status = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
         if matches!(
@@ -1081,6 +1266,11 @@ impl FiggyChart {
     }
 
     /// Report the effective primitive/grid extent currently drawn.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// `{ drawn_count, cols, rows, truncated }`: counts, not pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn series_draw_info(&self, series_id: &str) -> Result<String, JsValue> {
         let info = match self.monotonic {
             Some(id) => self.renderer.monotonic_series_draw_info(id, series_id),
@@ -1106,6 +1296,12 @@ impl FiggyChart {
 
     /// Serialize the full chart option SSoT to a JSON string.
     /// JS: `const cfg = JSON.parse(chart.get_config());`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// Positions and sizes in it (`chart_area`, margins, decoration offsets)
+    /// are document logical pixels, not canvas pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn get_config(&self) -> Result<String, JsValue> {
         serde_json::to_string(self.chart_config()?).map_err(js_err)
     }
@@ -1146,6 +1342,10 @@ impl FiggyChart {
     }
 
     /// Serialize the series declarations (columns, render type, styles).
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn get_series(&self) -> Result<String, JsValue> {
         serde_json::to_string(self.chart_series()?).map_err(js_err)
     }
@@ -1670,23 +1870,12 @@ impl FiggyChart {
     /// compiles too.
     ///
     /// JS: `const { screen, all, frame_complete } = chart.pipeline_status();`
+    #[wasm_bindgen(unchecked_return_type = "FiggyPipelineStatus")]
     pub fn pipeline_status(&self) -> Result<JsValue, JsValue> {
         let status = self.renderer.pipeline_status();
-        let counts = |counts: renderer::PipelineCounts| -> Result<JsValue, JsValue> {
-            let object = js_sys::Object::new();
-            js_sys::Reflect::set(&object, &"total".into(), &(counts.total as f64).into())?;
-            js_sys::Reflect::set(&object, &"ready".into(), &(counts.ready as f64).into())?;
-            js_sys::Reflect::set(
-                &object,
-                &"compiling".into(),
-                &(counts.compiling as f64).into(),
-            )?;
-            js_sys::Reflect::set(&object, &"failed".into(), &(counts.failed as f64).into())?;
-            Ok(object.into())
-        };
         let object = js_sys::Object::new();
-        js_sys::Reflect::set(&object, &"screen".into(), &counts(status.screen)?)?;
-        js_sys::Reflect::set(&object, &"all".into(), &counts(status.all)?)?;
+        js_sys::Reflect::set(&object, &"screen".into(), &counts_object(status.screen)?)?;
+        js_sys::Reflect::set(&object, &"all".into(), &counts_object(status.all)?)?;
         js_sys::Reflect::set(
             &object,
             &"frame_complete".into(),
@@ -1701,12 +1890,29 @@ impl FiggyChart {
     /// (any other rejection), `"device_lost"` or `"cancelled"`.
     ///
     /// JS: `for (const { label, kind } of chart.pipeline_failures()) …`
+    ///
+    /// Returns an array of plain objects, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "FiggyPipelineFailure[]")]
     pub fn pipeline_failures(&self) -> Result<js_sys::Array, JsValue> {
         let array = js_sys::Array::new();
         for failure in self.renderer.pipeline_failures() {
             array.push(&failure_object(&failure)?);
         }
         Ok(array)
+    }
+
+    /// A handle on the chart's background pipeline compiles that does not
+    /// borrow the chart (#315): see [`FiggyReadiness`]. Its waits leave the
+    /// chart free for `pipeline_status()`, `frame()`, `resize()` and
+    /// `free()`; once the chart is freed they reject with a
+    /// `"chart disposed"` `Error`. `series_ready()`, `pipelines_ready()` and
+    /// `first_frame_ready()` on the chart keep working as before.
+    ///
+    /// JS: `const readiness = chart.readiness(); await readiness.pipelines_ready();`
+    pub fn readiness(&self) -> FiggyReadiness {
+        FiggyReadiness {
+            readiness: self.renderer.pipeline_readiness(),
+        }
     }
 
     /// Alias for [`Self::first_frame_ready`].
