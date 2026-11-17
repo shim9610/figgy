@@ -319,6 +319,91 @@ pub fn auto_layout(config_json: &str) -> Result<String, JsValue> {
     crate::auto_layout_json(config_json).map_err(js_err)
 }
 
+// ------------------------------------------------------------------
+// The model API for editors (#314): pure functions of JSON that need no
+// chart, no canvas and no GPU.
+// ------------------------------------------------------------------
+
+/// The default config (`default::default_config`) as JSON: the document a
+/// new chart starts from, for an editor to fill in. Its `chart_area` is a
+/// placeholder the host sets.
+///
+/// JS: `const config = JSON.parse(default_config());`
+#[wasm_bindgen]
+pub fn default_config() -> Result<String, JsValue> {
+    crate::default_config_json().map_err(js_err)
+}
+
+/// Check a config JSON and, when given, a series list JSON against the
+/// chart rules (`Config::validate_chart`, then `Config::validate_series`)
+/// without a chart. Returns `{"valid": bool, "errors": [..]}`; it does not
+/// throw for a refused document. An error is `{stage, path, field,
+/// series_id, series_index, code, message}`: `stage` is `"parse"`,
+/// `"chart"` or `"series"`; `path` names the field (`"bottom_x"`,
+/// `"colorbar.axis"`, `"series[2]"`, or `"config"` / `"series"` for JSON
+/// that does not parse, which adds `line` and `column`); `code` is the
+/// rule's code, as on the `Error`s `set_config` throws (`"json"` for a
+/// parse error). The rules stop at the first refusal, so `errors` holds at
+/// most one. What needs the column pool (registered columns, lengths, GPU
+/// limits) is checked by `set_config` / `set_series` only.
+///
+/// JS: `const { valid, errors } = JSON.parse(validate_config(JSON.stringify(cfg), JSON.stringify(series)));`
+#[wasm_bindgen]
+pub fn validate_config(config_json: &str, series_json: Option<String>) -> Result<String, JsValue> {
+    crate::validate_config_json(config_json, series_json.as_deref()).map_err(js_err)
+}
+
+/// A config JSON in its normalized form: read and written back, so an
+/// omitted optional field takes its documented default and a field at its
+/// default is written as the renderer writes it. Numbers keep every bit.
+/// Throws the JSON error when the text is not a config; a config that
+/// parses but breaks a rule is returned as it is (`validate_config` checks
+/// it).
+///
+/// JS: `const canonical = normalize_config(text);`
+#[wasm_bindgen]
+pub fn normalize_config(config_json: &str) -> Result<String, JsValue> {
+    crate::normalize_config_json(config_json).map_err(js_err)
+}
+
+/// A legacy categorical bar document (`CategoricalChart` JSON) converted
+/// without a chart (`Config::from_categorical_with_report`): `{config,
+/// series, uploads, columns, notes}`. `uploads` describes each column to
+/// register (`{column, role, len}`, without the values); `columns` names
+/// the document series of each (`{series_id, role, column}`); `notes` lists
+/// every field the document set that the chart does not carry
+/// (`{path, kind: "dropped" | "changed", reason}`). Throws the JSON error,
+/// or the document rule (an `Error` with a `code`), as
+/// `set_categorical_document` does.
+///
+/// JS: `const { config, series, notes } = JSON.parse(convert_categorical_document(text));`
+#[wasm_bindgen]
+pub fn convert_categorical_document(json: &str) -> Result<String, JsValue> {
+    crate::convert_categorical_document_json(json).map_err(js_err)
+}
+
+/// A legacy box plot document (`BoxPlotChart` JSON) converted without a
+/// chart (`Config::from_boxplot_with_report`), in the shape
+/// `convert_categorical_document` returns. A record upload is
+/// `{column, role: "box_record", rows, fields}` and an outlier upload
+/// `{column, role: "box_outliers", len, groups}`.
+///
+/// JS: `const converted = JSON.parse(convert_boxplot_document(text));`
+#[wasm_bindgen]
+pub fn convert_boxplot_document(json: &str) -> Result<String, JsValue> {
+    crate::convert_boxplot_document_json(json).map_err(js_err)
+}
+
+/// A legacy radar document (`RadarChart` JSON) converted without a chart
+/// (`Config::from_radar_with_report`), in the shape
+/// `convert_categorical_document` returns.
+///
+/// JS: `const converted = JSON.parse(convert_radar_document(text));`
+#[wasm_bindgen]
+pub fn convert_radar_document(json: &str) -> Result<String, JsValue> {
+    crate::convert_radar_document_json(json).map_err(js_err)
+}
+
 /// Every valid `draw_style` mode tag, as a JSON string array.
 #[wasm_bindgen]
 pub fn draw_style_modes() -> Result<String, JsValue> {

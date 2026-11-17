@@ -460,6 +460,10 @@ chart.set_config(JSON.stringify(rangeConfig));
 
 범위와 그에 맞는 눈금·라벨 설정을 함께 계산하려면 `fit_ranges`, `auto_fit_x`, `auto_fit_y`, `auto_fit_all`, `auto_fit_colorbar`를 사용한다. `fit_ranges()`는 모든 레이어의 축을 컬럼 통계로 한 번에 맞춘다. `auto_fit_all`은 활성 레이어의 축만 맞춘다(5절 `<figgy-chart>` 공개 API 표의 「범위 맞춤」 참고). `set_title`은 필요하면 제목 영역도 넓힌다. 기존 여백을 그대로 두려면 `chart_title.text`를 직접 편집한다. `set_x_title`과 `set_y_title`은 축 제목 텍스트만 바꾼다. 네이티브에서 같은 작업은 [direct SSOT edits and convenience helpers](API.md#direct-ssot-edits-and-convenience-helpers)를 참고한다.
 
+JSON의 숫자는 `f64`의 모든 비트를 그대로 왕복한다. 웹 패키지는 `serde_json`의 `float_roundtrip` 기능을 켜고 빌드하므로, 읽은 설정을 다시 쓰면 같은 값이 나온다(#314). JSON에는 NaN과 무한대가 없어서 유한하지 않은 `f64`는 `null`로 쓰인다. 일반 `f64` 필드(축의 `min` / `max`, 레이더 시리즈의 `values` 등)는 `null`을 읽지 못하고 JSON 오류로 거부한다. 따라서 NaN이 든 레이더 값은 JSON으로 옮길 수 없다. 범주형 막대의 `values`처럼 값이 없을 수 있는 필드(`Option<f64>`)는 `null`을 빈 값으로 읽고, 빈 값은 NaN으로 올라가 그 막대를 그리지 않는다.
+
+차트 없이 설정 문서를 다루는 독립 함수도 있다(#314). `default_config()`는 기본 설정 JSON을, `validate_config(configJson, seriesJson?)`는 `{ valid, errors }`를 돌려준다. 오류 항목은 `{ stage, path, field, series_id, series_index, code, message }`이고 `path`가 거부된 필드(`"left_y"`, `"series[2]"` 등)를 가리킨다. `normalize_config(configJson)`은 설정을 읽고 다시 써서 표준 형태로 만든다. `convert_categorical_document`, `convert_boxplot_document`, `convert_radar_document`는 레거시 문서를 `{ config, series, uploads, columns, notes }`로 바꾸며, `notes`는 문서에 있었지만 옮기지 못한 필드를 알려 준다. 자세한 내용은 [Model API for editors](#model-api)를 참고한다.
+
 #### 라벨 속 수식
 
 텍스트 설정 함수(`set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`, `add_line_series`와
@@ -1069,6 +1073,60 @@ vertex along its spoke; they pick and drag as the bars' do.
 chart.set_radar_document(JSON.stringify(radarDoc));
 await chart.first_frame_ready();
 ```
+
+<a id="model-api"></a>
+
+### Model API for editors
+
+An editor that builds or converts documents before any chart exists uses
+free functions of `pkg/figgy.js` (#314). They read and return JSON strings
+and need no canvas, no chart and no GPU.
+
+| Function | Returns |
+|---|---|
+| `default_config()` | The default config (`default::default_config`), the document a new chart starts from. Its `chart_area` is a placeholder the host sets. |
+| `validate_config(configJson, seriesJson?)` | `{ valid, errors }`: the config held to `Config::validate_chart` and, when given, the series list to `Config::validate_series`. It does not throw for a refused document. An error is `{ stage, path, field, series_id, series_index, code, message }`: `stage` is `"parse"`, `"chart"` or `"series"`; `path` is the config field (`ConfigError::field`, such as `"bottom_x"` or `"colorbar.axis"`), `series[<index>]` for a series rule, or `"config"` / `"series"` for JSON that does not parse, which adds `line` and `column`; `code` is the rule's `RuleKind::code`, the `code` of the `Error`s `set_config` throws (`"json"` for a parse error). The rules stop at the first refusal, so `errors` holds at most one. What needs the column pool (registered columns, lengths, GPU limits) is checked by `set_config` / `set_series` only. |
+| `normalize_config(configJson)` | The config read and written back: an omitted optional field takes its documented default and a field at its default is written as the renderer writes it. A config that breaks a rule is returned as it is; JSON that is not a config throws its message. |
+| `convert_categorical_document(json)`, `convert_boxplot_document(json)`, `convert_radar_document(json)` | The legacy document converted as `set_categorical_document`, `set_boxplot_document` and `set_radar_document` convert it (`Config::from_*_with_report`), without opening it: `{ config, series, uploads, columns, notes }`. A document that does not parse throws its message; one that breaks its own rules throws an `Error` with the rule's `code`. |
+
+The converted shape:
+
+- `uploads`: one descriptor per upload, without its values: `{ column,
+  role: "positions" | "values", len }`; a box plot's record is
+  `{ column, role: "box_record", rows, fields }` (one row per category in
+  the fields of `BOX_PLOT_RECORD`) and its outliers
+  `{ column, role: "box_outliers", len, groups }`. The values stay in the
+  document; an editor that opens the result registers them itself or opens
+  the document with `set_*_document`.
+- `columns`: `{ series_id, role, column }` per upload, in upload order;
+  `series_id` is `null` for the shared positions.
+- `notes`: `{ path, kind, reason }` for every field the document set that
+  the chart does not carry as set. `path` is the field's JSON path
+  (`decorations.offsets[2]`, `style.emphasis_brightness`); `kind` is
+  `"dropped"` (no counterpart) or `"changed"` (carried as another value, such
+  as an overlay `active_layer` that falls back to the base layer). A field
+  counts as set when it is present or differs from the documented default.
+  The notes cover `hovered`, `background`, `decorations.data_area`,
+  `decorations.selected`, a legacy `title` hidden by `chart_title`, the
+  `active_layer`, a selection the chart cannot hold, each decoration offset
+  without a counterpart (a spoke label's, for one) or whose value label
+  offset is refused, overrides naming no series and, for a radar document,
+  `style.emphasis_brightness`.
+
+```js
+const { config, series, notes } = JSON.parse(convert_radar_document(text));
+for (const note of notes) console.warn(`${note.path}: ${note.reason}`);
+const { valid, errors } = JSON.parse(
+  validate_config(JSON.stringify(config), JSON.stringify(series)));
+```
+
+**Numbers.** Every finite `f64` survives a JSON round trip bit for bit: the
+web package builds `serde_json` with `float_roundtrip`. JSON has no NaN or
+infinity, so a non-finite `f64` is written as `null`, which a plain `f64`
+field (an axis `min` / `max`, a radar series' `values`) refuses to read: a
+radar value that is NaN cannot travel through JSON. An optional value
+(`Option<f64>`, such as a categorical series' `values`) reads `null` as
+missing, which uploads as NaN and draws no bar.
 
 <a id="monotonic-lines"></a>
 

@@ -64,6 +64,210 @@ fn auto_layout_json(json: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The JSON of [`renderer::default::default_config`]: the config every
+/// document starts from, what the `default_config` binding returns.
+#[cfg(any(target_arch = "wasm32", test))]
+fn default_config_json() -> Result<String, String> {
+    serde_json::to_string(&renderer::default::default_config()).map_err(|e| e.to_string())
+}
+
+/// The normalized form of the config JSON `json`, what the
+/// `normalize_config` binding returns: the config read and written back, so
+/// every optional field it omits takes its documented default and every
+/// field holding its default is written the way the renderer writes it
+/// (omitted where the field is skipped at its default). Numbers keep every
+/// bit (`serde_json`'s `float_roundtrip`). The error is the JSON parse
+/// error.
+#[cfg(any(target_arch = "wasm32", test))]
+fn normalize_config_json(json: &str) -> Result<String, String> {
+    let config: renderer::Config = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    serde_json::to_string(&config).map_err(|e| e.to_string())
+}
+
+/// The JSON of one validation error of [`validate_config_json`].
+#[cfg(any(target_arch = "wasm32", test))]
+fn config_error_json(
+    stage: &str,
+    path: &str,
+    error: &renderer::ConfigError,
+    series_index: Option<usize>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "stage": stage,
+        "path": path,
+        "field": error.field,
+        "series_id": error.series_id,
+        "series_index": series_index,
+        "code": error.kind.code(),
+        "message": error.to_string(),
+    })
+}
+
+/// The JSON of a parse error of [`validate_config_json`]: where the JSON
+/// stops being a config (`line` and `column`, from 1) and why.
+#[cfg(any(target_arch = "wasm32", test))]
+fn parse_error_json(path: &str, error: &serde_json::Error) -> serde_json::Value {
+    serde_json::json!({
+        "stage": "parse",
+        "path": path,
+        "field": serde_json::Value::Null,
+        "series_id": serde_json::Value::Null,
+        "series_index": serde_json::Value::Null,
+        "code": "json",
+        "message": error.to_string(),
+        "line": error.line(),
+        "column": error.column(),
+    })
+}
+
+/// What the `validate_config` binding returns for the config JSON `config`
+/// and, when given, the series list JSON `series`:
+/// `{"valid": bool, "errors": [..]}`. The config is held to
+/// `Config::validate_chart` and the series list, against it, to
+/// `Config::validate_series`; the first refusal is the one error (the
+/// rules stop at the first). An error is `{stage, path, field, series_id,
+/// series_index, code, message}`: `stage` is `"parse"`, `"chart"` or
+/// `"series"`; `path` is `"config"` or `"series"` for a parse error, the
+/// config field (`ConfigError::field`, such as `"bottom_x"`) for a chart
+/// rule and `series[<index>]` for a series rule; `code` is the rule's
+/// `RuleKind::code` (`"json"` for a parse error, which adds `line` and
+/// `column`). The checks need no renderer: the renderer adds only what
+/// needs its column pool. The error is a JSON write error.
+#[cfg(any(target_arch = "wasm32", test))]
+fn validate_config_json(config: &str, series: Option<&str>) -> Result<String, String> {
+    let error = match serde_json::from_str::<renderer::Config>(config) {
+        Err(e) => Some(parse_error_json("config", &e)),
+        Ok(config) => match config.validate_chart() {
+            Err(e) => Some(config_error_json("chart", e.field, &e, None)),
+            Ok(()) => match series.map(serde_json::from_str::<Vec<renderer::SeriesConfig>>) {
+                None => None,
+                Some(Err(e)) => Some(parse_error_json("series", &e)),
+                Some(Ok(list)) => config.validate_series(&list).err().map(|e| {
+                    let index = e
+                        .series_id
+                        .as_deref()
+                        .and_then(|id| list.iter().position(|s| s.series_id == id));
+                    let path =
+                        index.map_or_else(|| "series".to_owned(), |i| format!("series[{i}]"));
+                    config_error_json("series", &path, &e, index)
+                }),
+            },
+        },
+    };
+    serde_json::to_string(&serde_json::json!({
+        "valid": error.is_none(),
+        "errors": error.into_iter().collect::<Vec<_>>(),
+    }))
+    .map_err(|e| e.to_string())
+}
+
+/// Why a legacy document did not convert: its JSON, or a rule of the
+/// document's own `validate`.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug)]
+enum DocumentError {
+    Json(serde_json::Error),
+    Rule(renderer::RuleKind),
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl std::fmt::Display for DocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(e) => e.fmt(f),
+            Self::Rule(kind) => kind.fmt(f),
+        }
+    }
+}
+
+/// The descriptor of one upload of a converted document, without its
+/// values: its column (or record, or ragged) id, its role, and its size:
+/// `len` values (`rows` for a record, which holds one row per category in
+/// the fields of `BOX_PLOT_RECORD`), and for the ragged outliers `len`
+/// values in `groups` groups.
+#[cfg(any(target_arch = "wasm32", test))]
+fn upload_descriptor_json(upload: &renderer::SeriesUpload<'_>) -> serde_json::Value {
+    use renderer::UploadValues;
+    match &upload.values {
+        UploadValues::BoxRecord(summaries) => serde_json::json!({
+            "column": upload.column,
+            "role": "box_record",
+            "rows": summaries.len(),
+            "fields": renderer::BoxField::ALL.map(renderer::BoxField::name),
+        }),
+        UploadValues::BoxOutliers(_) => {
+            let (len, groups) = upload
+                .values
+                .box_outliers()
+                .map_or((0, 0), |(values, offsets)| {
+                    (values.len(), offsets.len().saturating_sub(1))
+                });
+            serde_json::json!({
+                "column": upload.column,
+                "role": "box_outliers",
+                "len": len,
+                "groups": groups,
+            })
+        }
+        values => serde_json::json!({
+            "column": upload.column,
+            "role": if matches!(values, UploadValues::Positions(_)) { "positions" } else { "values" },
+            "len": values.len(),
+        }),
+    }
+}
+
+/// The JSON a `convert_*_document` binding returns for a converted legacy
+/// document: `{config, series, uploads, columns, notes}`, the uploads as
+/// descriptors without their values ([`upload_descriptor_json`]), the
+/// columns and notes of its `ConversionReport`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn converted_document_json(
+    (config, series, uploads, report): renderer::ConvertedDocument<'_>,
+) -> Result<String, DocumentError> {
+    let uploads: Vec<_> = uploads.iter().map(upload_descriptor_json).collect();
+    serde_json::to_string(&serde_json::json!({
+        "config": config,
+        "series": series,
+        "uploads": uploads,
+        "columns": report.columns,
+        "notes": report.notes,
+    }))
+    .map_err(DocumentError::Json)
+}
+
+/// What the `convert_categorical_document` binding returns for the legacy
+/// `CategoricalChart` JSON `json` (`Config::from_categorical_with_report`).
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(deprecated)]
+fn convert_categorical_document_json(json: &str) -> Result<String, DocumentError> {
+    let document: renderer::CategoricalChart =
+        serde_json::from_str(json).map_err(DocumentError::Json)?;
+    document.validate().map_err(DocumentError::Rule)?;
+    converted_document_json(renderer::Config::from_categorical_with_report(&document))
+}
+
+/// What the `convert_boxplot_document` binding returns for the legacy
+/// `BoxPlotChart` JSON `json` (`Config::from_boxplot_with_report`).
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(deprecated)]
+fn convert_boxplot_document_json(json: &str) -> Result<String, DocumentError> {
+    let document: renderer::BoxPlotChart =
+        serde_json::from_str(json).map_err(DocumentError::Json)?;
+    document.validate().map_err(DocumentError::Rule)?;
+    converted_document_json(renderer::Config::from_boxplot_with_report(&document))
+}
+
+/// What the `convert_radar_document` binding returns for the legacy
+/// `RadarChart` JSON `json` (`Config::from_radar_with_report`).
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(deprecated)]
+fn convert_radar_document_json(json: &str) -> Result<String, DocumentError> {
+    let document: renderer::RadarChart = serde_json::from_str(json).map_err(DocumentError::Json)?;
+    document.validate().map_err(DocumentError::Rule)?;
+    converted_document_json(renderer::Config::from_radar_with_report(&document))
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 fn consume_successful_frame(view_dirty: &mut bool, redraw_pending: &mut bool) {
     *view_dirty = false;
@@ -827,6 +1031,197 @@ mod tests {
         assert!(json[0]["render_type"]["Scatter"].get("stem").is_none());
     }
 
+    // The model API for editors (#314): the default config, validation with
+    // field paths, normalization and the legacy conversions need no chart.
+    #[test]
+    fn default_config_json_is_the_default_config_and_validates() {
+        let json = super::default_config_json().unwrap();
+        let config: renderer::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(config, renderer::default::default_config());
+        let report: serde_json::Value =
+            serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
+        assert_eq!(report, serde_json::json!({ "valid": true, "errors": [] }));
+    }
+
+    #[test]
+    fn validate_config_json_names_the_refused_field() {
+        let report = |config: &str, series: Option<&str>| -> serde_json::Value {
+            serde_json::from_str(&super::validate_config_json(config, series).unwrap()).unwrap()
+        };
+        let mut config = renderer::default::default_config();
+        config.left_y.min = 2.0;
+        config.left_y.max = 1.0;
+        let refused = report(&serde_json::to_string(&config).unwrap(), None);
+        assert_eq!(refused["valid"], false);
+        let error = &refused["errors"][0];
+        assert_eq!(error["stage"], "chart");
+        assert_eq!(error["path"], "left_y");
+        assert_eq!(error["field"], "left_y");
+        assert_eq!(error["code"], "AxisBoundsOrder");
+        assert_eq!(error["series_id"], serde_json::Value::Null);
+        assert_eq!(refused["errors"].as_array().unwrap().len(), 1);
+
+        // A series rule names the series by id and position.
+        let config = serde_json::to_string(&renderer::default::default_config()).unwrap();
+        let series = serde_json::to_string(&[
+            renderer::SeriesConfig::line("a", "x", "y"),
+            renderer::SeriesConfig::line("b", "x", "y"),
+            renderer::SeriesConfig::line("b", "x", "y"),
+        ])
+        .unwrap();
+        let refused = report(&config, Some(&series));
+        let error = &refused["errors"][0];
+        assert_eq!(error["stage"], "series");
+        assert_eq!(error["code"], "SeriesIdDuplicate");
+        assert_eq!(error["series_id"], "b");
+        assert_eq!(error["field"], "series_id");
+        // The first series of that id: ids are what a rule names.
+        assert_eq!(error["path"], "series[1]");
+        assert_eq!(error["series_index"], 1);
+        let fine = serde_json::to_string(&[renderer::SeriesConfig::line("a", "x", "y")]).unwrap();
+        assert_eq!(report(&config, Some(&fine))["valid"], true);
+
+        // JSON that is not a config, or not a series list.
+        let refused = report("{\n  \"chart_area\": 1\n}", None);
+        let error = &refused["errors"][0];
+        assert_eq!(
+            (
+                error["stage"].clone(),
+                error["path"].clone(),
+                error["code"].clone()
+            ),
+            ("parse".into(), "config".into(), "json".into())
+        );
+        assert_eq!(error["line"], 2);
+        let refused = report(&config, Some("[1]"));
+        assert_eq!(refused["errors"][0]["path"], "series");
+        assert_eq!(refused["errors"][0]["stage"], "parse");
+    }
+
+    #[test]
+    fn normalize_config_json_is_idempotent_and_keeps_every_bit() {
+        let mut config = renderer::default::default_config();
+        config.left_y.min = 0.1 + 0.2;
+        config.left_y.max = 1.0 / 3.0;
+        config.bottom_x.max = 1.000_000_000_000_000_2;
+        let json = serde_json::to_string(&config).unwrap();
+        let normalized = super::normalize_config_json(&json).unwrap();
+        assert_eq!(normalized, json);
+        assert_eq!(
+            super::normalize_config_json(&normalized).unwrap(),
+            normalized
+        );
+        let back: renderer::Config = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(back.left_y.min.to_bits(), (0.1_f64 + 0.2).to_bits());
+        assert_eq!(
+            back.bottom_x.max.to_bits(),
+            1.000_000_000_000_000_2_f64.to_bits()
+        );
+
+        // Pretty JSON written by hand comes back in the renderer's form.
+        let pretty = serde_json::to_string_pretty(&config).unwrap();
+        assert_eq!(super::normalize_config_json(&pretty).unwrap(), json);
+        // A NaN range is written as `null`, which a config refuses to read.
+        assert!(super::normalize_config_json("not json").is_err());
+        let mut value = serde_json::to_value(&config).unwrap();
+        value["left_y"]["min"] = serde_json::Value::Null;
+        assert!(super::normalize_config_json(&value.to_string()).is_err());
+    }
+
+    #[test]
+    fn a_radar_document_converts_with_its_report() {
+        let document = r#"{
+            "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}, {"id": "c", "label": "C"}],
+            "series": [{"id": "s", "label": "S", "values": [1, 2.5, 3],
+                        "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}}],
+            "background": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0},
+            "decorations": {"data_area": {"x": 10, "y": 10, "width": 300, "height": 200},
+                            "offsets": [], "selected": null}
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&super::convert_radar_document_json(document).unwrap()).unwrap();
+        let config: renderer::Config = serde_json::from_value(out["config"].clone()).unwrap();
+        assert!(config.polar().is_some());
+        let series: Vec<renderer::SeriesConfig> =
+            serde_json::from_value(out["series"].clone()).unwrap();
+        assert_eq!(config.validate_series(&series), Ok(()));
+        assert_eq!(
+            out["uploads"],
+            serde_json::json!([
+                {"column": "radar.positions", "role": "positions", "len": 3},
+                {"column": "radar.values.s", "role": "values", "len": 3},
+            ])
+        );
+        assert_eq!(
+            out["columns"],
+            serde_json::json!([
+                {"series_id": null, "role": "positions", "column": "radar.positions"},
+                {"series_id": "s", "role": "values", "column": "radar.values.s"},
+            ])
+        );
+        let notes: Vec<_> = out["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| (n["path"].as_str().unwrap(), n["kind"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                ("background", "dropped"),
+                ("decorations.data_area", "dropped")
+            ]
+        );
+
+        assert!(matches!(
+            super::convert_radar_document_json("{\"series\": 1}"),
+            Err(super::DocumentError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn a_box_plot_document_describes_its_record_and_outliers() {
+        let document = r#"{
+            "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+            "series": [{"id": "s", "label": "S", "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0},
+                        "values": [{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5,
+                                    "outliers": [9, 10]}, null]}]
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&super::convert_boxplot_document_json(document).unwrap()).unwrap();
+        assert_eq!(out["uploads"][1]["role"], "box_record");
+        assert_eq!(out["uploads"][1]["rows"], 2);
+        assert_eq!(out["uploads"][1]["fields"].as_array().unwrap().len(), 9);
+        assert_eq!(
+            out["uploads"][2],
+            serde_json::json!({"column": "boxplot.outliers.s", "role": "box_outliers", "len": 2, "groups": 2})
+        );
+        assert_eq!(out["columns"][2]["series_id"], "s");
+        assert_eq!(out["notes"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_categorical_document_reports_a_refused_rule_with_its_code() {
+        let document = r#"{
+            "categories": [{"id": "a", "label": "A"}],
+            "series": [{"id": "s", "label": "S", "values": [2],
+                        "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}}],
+            "hovered": {"category_id": "a", "series_id": "s"}
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&super::convert_categorical_document_json(document).unwrap())
+                .unwrap();
+        assert_eq!(out["notes"][0]["path"], "hovered");
+        assert_eq!(out["uploads"][1]["len"], 1);
+
+        // A group width outside 0.1..0.95 breaks the document's own rule.
+        let refused = document.replace("\"hovered\"", "\"group_width\": 2.0, \"hovered\"");
+        match super::convert_categorical_document_json(&refused) {
+            Err(super::DocumentError::Rule(_)) => {}
+            other => panic!("expected a rule refusal, got {other:?}"),
+        }
+    }
+
     // The math fields reach JavaScript and come back unchanged through
     // `get_config`/`set_config` and `get_series`/`set_series`; a malformed
     // tree fails at parse, so `set_config` rejects it before it touches
@@ -1489,7 +1884,9 @@ mod web {
 
     mod chart;
     pub use chart::{
-        FiggyChart, auto_layout, draw_style_modes, draw_style_param_specs, rich_text_from_tex,
+        FiggyChart, auto_layout, convert_boxplot_document, convert_categorical_document,
+        convert_radar_document, default_config, draw_style_modes, draw_style_param_specs,
+        normalize_config, rich_text_from_tex, validate_config,
     };
     mod columns;
     use columns::{VectorColumns, referenced_columns, vector_columns};

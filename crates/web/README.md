@@ -34,6 +34,15 @@ Earlier releases opened categorical bar, box plot and radar documents through
 - `set_radar_document(json)` reads `RadarChart` JSON as radar series on a
   polar chart with a categorical angle axis.
 
+Free functions serve an editor before any chart exists (#314):
+`default_config()`, `validate_config(configJson, seriesJson?)` (structured
+errors with field paths), `normalize_config(configJson)` and
+`convert_categorical_document` / `convert_boxplot_document` /
+`convert_radar_document`, which return the converted config and series, the
+uploads without their values, the series of each column and notes on every
+field the document set that the chart does not carry. See the
+[model API for editors](../renderer/WASM.md#model-api).
+
 `FiggyBoundedChart` keeps its name and its `"radial"` family argument. In this
 release its `"categorical"`, `"boxplot"` and `"radar"` families are errors
 that name the `FiggyChart` method to use instead. The `<figgy-chart>` custom
@@ -209,6 +218,13 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 `<figgy-chart>`도 같은 메서드를 갖는다. 요소의 `pipeline_status()`는 마지막 프레임의 스냅샷이라
 차트가 바쁠 때도 읽을 수 있고, `figgy-init-progress` 이벤트로 `"screen complete"`와
 `"all complete"`를 알린다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
+
+차트를 만들기 전에 편집기가 쓸 수 있는 독립 함수가 있다(#314). `default_config()`는 기본 설정을,
+`validate_config(configJson, seriesJson?)`는 거부된 필드의 경로가 담긴 검사 결과를,
+`normalize_config(configJson)`은 표준 형태로 다시 쓴 설정을 돌려준다.
+`convert_categorical_document`, `convert_boxplot_document`, `convert_radar_document`는 레거시 문서를
+변환한 설정과 시리즈, 값을 뺀 업로드 목록, 컬럼별 시리즈, 그리고 문서에 있었지만 옮기지 못한
+필드의 목록(`notes`)을 돌려준다. 자세한 내용은 [편집기용 모델 API](../renderer/WASM.md#model-api)를 참고한다.
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
 스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가

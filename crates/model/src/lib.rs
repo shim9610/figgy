@@ -61,7 +61,10 @@ pub mod validate;
 pub use validate::ConfigError;
 
 // Public API re-exports.
-pub use bounded_sources::{SeriesUpload, UploadValues};
+pub use bounded_sources::{
+    ConversionNote, ConversionNoteKind, ConversionReport, ConvertedColumn, ConvertedColumnRole,
+    ConvertedDocument, SeriesUpload, UploadValues,
+};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{

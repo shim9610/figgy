@@ -104,7 +104,10 @@ pub use ::model::monotonic::{
 /// Chart themes, behind the `helpers` feature (#265).
 #[cfg(feature = "helpers")]
 pub use ::model::theme;
-pub use ::model::{ConfigError, Coordinates, RuleKind, SeriesUpload, UploadValues};
+pub use ::model::{
+    ConfigError, ConversionNote, ConversionNoteKind, ConversionReport, ConvertedColumn,
+    ConvertedColumnRole, ConvertedDocument, Coordinates, RuleKind, SeriesUpload, UploadValues,
+};
 pub use ::model::{
     bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config, drag,
     format, layout, legend, line, preset, resize, select, sink, text, tick, validate,
