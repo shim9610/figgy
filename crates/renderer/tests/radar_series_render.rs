@@ -561,12 +561,14 @@ fn a_rich_category_label_replaces_the_plain_one_on_the_angle_axis() {
         "{label:?} {plain_label:?}"
     );
     let probe = (label.x + label.width * 0.5, label.y + label.height * 0.9);
-    let map = renderer::select::HitMap::standard_chart();
+    let map = renderer::select::HitMap::for_active_layer(rich.config());
     let hit = map
         .hit_test(rich.config(), &measure, probe.0, probe.1)
         .and_then(|id| map.get(id))
         .map(|el| el.element_id());
-    assert_eq!(hit.as_deref(), Some("tick_labels_bottom"), "{probe:?}");
+    // The label is its own element (#309): the press selects that
+    // category's label.
+    assert_eq!(hit.as_deref(), Some("category_label_0"), "{probe:?}");
 }
 
 #[test]

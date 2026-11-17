@@ -889,15 +889,16 @@ impl Config {
     /// `font_family`, `font_size` and `text_color` are the category and
     /// ring labels; `legend` is the legend's visibility with one entry per
     /// series; the resolved title is `chart_title`; the offsets of the
-    /// title, the legend and the ring labels are the matching offsets; a
+    /// title, the legend and the ring labels are the matching offsets, and a
+    /// spoke label's offset is its category's own `label_offset` in its
+    /// spoke's frame (#309); a
     /// selected vertex is the typed selection (a point whose index is its
     /// category); `active_layer` and `annotations` carry over. Not carried:
     /// `hovered` (transient), a selected whole series (a selection names a
     /// vertex), the style's `emphasis_brightness` (the former renderer
     /// brightened the hovered or selected series; a picked vertex takes the
     /// picked ring instead), `background` (the host's clear colour), an explicit
-    /// `decorations.data_area`, the spoke label offsets (the category labels
-    /// move together) and the decoration selection; the data label offsets
+    /// `decorations.data_area` and the decoration selection; the data label offsets
     /// are the series' value label offsets (`labels.offsets`). The chart area is the default
     /// placeholder; the host sets it.
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
@@ -1086,6 +1087,31 @@ impl Config {
                 DecorationId::AxisLabel(Side::Left) => {
                     config.left_y.label_style.label_offset_x = dx;
                     config.left_y.label_style.label_offset_y = dy;
+                }
+                // One spoke label's screen offset (#309): that category's
+                // own label offset, in its spoke's frame on the converted
+                // chart, so it moves the label by the same screen amount.
+                DecorationId::SpokeLabel { category_id } => {
+                    let spoke = config.polar_angle_map().and_then(|map| {
+                        let index = config
+                            .bottom_x
+                            .categories
+                            .as_deref()?
+                            .iter()
+                            .position(|c| &c.id == category_id)?;
+                        let angle = map.screen_angle(index as f64);
+                        Some((index, [angle.cos() as f32, -(angle.sin() as f32)]))
+                    });
+                    if let Some((index, spoke)) = spoke
+                        && let Some(category) = config
+                            .bottom_x
+                            .categories
+                            .as_mut()
+                            .and_then(|categories| categories.get_mut(index))
+                    {
+                        category.label_offset =
+                            crate::polar::screen_to_spoke_offset(spoke, [dx, dy]);
+                    }
                 }
                 _ => {}
             }
@@ -2138,8 +2164,26 @@ mod radar_tests {
         );
         let label = &config.left_y.label_style;
         assert_eq!((label.label_offset_x, label.label_offset_y), (1.0, 2.0));
+        // A spoke label's offset is its own category's (#309): the shared
+        // offset is untouched, the other categories keep none, and the
+        // stored spoke-frame offset moves the label by the legacy screen
+        // offset.
         let spokes = &config.bottom_x.label_style;
         assert_eq!((spokes.label_offset_x, spokes.label_offset_y), (0.0, 0.0));
+        let categories = config.bottom_x.categories.as_deref().unwrap();
+        let index = categories.iter().position(|c| c.id == "speed").unwrap();
+        for (i, category) in categories.iter().enumerate() {
+            if i != index {
+                assert_eq!(category.label_offset, [0.0, 0.0], "{}", category.id);
+            }
+        }
+        let angle = config.polar_angle_map().unwrap().screen_angle(index as f64);
+        let spoke = [angle.cos() as f32, -(angle.sin() as f32)];
+        let screen = crate::polar::spoke_offset_to_screen(spoke, categories[index].label_offset);
+        assert!(
+            (screen[0] - 9.0).abs() < 1e-4 && (screen[1] - 9.0).abs() < 1e-4,
+            "{screen:?}"
+        );
     }
 
     #[test]

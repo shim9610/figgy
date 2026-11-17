@@ -80,15 +80,20 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
 
 /// Whether the hit map `HitMap::for_active_layer` registers for `after`
 /// can differ from `before`'s in what a `HitId` names: another active layer,
-/// or other links of the active overlay (an own X axis registers on the top
-/// side, a followed Y axis registers the chart's left one).
+/// other links of the active overlay (an own X axis registers on the top
+/// side, a followed Y axis registers the chart's left one), or another
+/// number of polar category labels (#309), each its own element.
 pub(in crate::renderer) fn registration_changed(before: &Config, after: &Config) -> bool {
     let links = |config: &Config| {
         config
             .overlay_of_layer(config.active_layer())
             .map(|overlay| (overlay.link_x, overlay.link_y))
     };
-    before.active_layer() != after.active_layer() || links(before) != links(after)
+    before.active_layer() != after.active_layer()
+        || links(before) != links(after)
+        || !before
+            .polar_category_label_counts()
+            .eq(after.polar_category_label_counts())
 }
 
 /// Whether two configs map data to the same pixels on every layer: the
