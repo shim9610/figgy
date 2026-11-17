@@ -214,10 +214,13 @@ fn a_radar_document_converts_with_its_notes() {
     );
     assert_eq!(
         note_paths(&converted),
-        [
-            ("selected".to_owned(), "dropped".to_owned()),
-            ("decorations.offsets[0]".into(), "dropped".into()),
-        ]
+        // The spoke label offset is carried as category "b"'s own label
+        // offset (#309), so only the series selection is dropped.
+        [("selected".to_owned(), "dropped".to_owned())]
+    );
+    assert_ne!(
+        config.bottom_x.categories.as_deref().unwrap()[1].label_offset,
+        [0.0, 0.0]
     );
     // A non-finite value cannot be written in JSON: `null` is refused.
     let refused = document.replace("[1, 2, 3]", "[1, null, 3]");
