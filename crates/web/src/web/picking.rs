@@ -298,9 +298,10 @@ impl FiggyChart {
                 let color_column = scatter
                     .and_then(|scatter| scatter.point_color_map.as_ref())
                     .map(|map| map.column.clone());
-                let size_column = scatter
+                let size_map = scatter
                     .and_then(|scatter| scatter.point_size_map.as_ref())
-                    .map(|map| map.column.clone());
+                    .cloned();
+                let size_column = size_map.as_ref().map(|map| map.column.clone());
                 let three_d = self.chart_config()?.drawn_z_column(&series).is_some();
                 let mut samples = vec![
                     (series.x_column, *point_index),
@@ -380,8 +381,16 @@ impl FiggyChart {
                     result["color_value"] = serde_json::json!(values[next]);
                     next += 1;
                 }
-                if size_column.is_some() {
-                    result["size_value"] = serde_json::json!(values[next]);
+                if let Some(map) = &size_map {
+                    let size_value = values[next];
+                    result["size_value"] = serde_json::json!(size_value);
+                    // The radius the map gives this value (#312), in
+                    // logical pixels, the unit of `point_size`: the draw and
+                    // pick shaders use the same formula. A non-finite value
+                    // has none, and the draw skips that marker.
+                    let radius = map.radius_px(size_value);
+                    result["mapped_radius_px"] = serde_json::json!(radius);
+                    result["size_hidden"] = serde_json::json!(radius.is_none());
                     next += 1;
                 }
                 if let Some((has_w, colour_mapped)) = vector {

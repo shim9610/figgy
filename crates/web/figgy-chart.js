@@ -2426,6 +2426,17 @@ export class FiggyChartElement extends HTMLElement {
   // (#297): the fit for a first plot. Synchronous; `auto_fit_all` measures
   // the active layer's drawn extents instead.
   fit_ranges() { return this.#mutateChart("fit_ranges"); }
+  // A candidate config fitted without installing it (#312): JSON in, JSON
+  // out; the chart is untouched. The Y variant keeps every X axis.
+  fit_config(json, padding) { return this.#kernelForCall().fit_config(json, padding); }
+  fit_y_axes_config(json, padding) {
+    return this.#kernelForCall().fit_y_axes_config(json, padding);
+  }
+  // One series' style domain from its columns' statistics (#312).
+  fit_point_size_domain(seriesId) { return this.#mutateChart("fit_point_size_domain", seriesId); }
+  fit_vector_scale(seriesId, target) {
+    return this.#mutateChart("fit_vector_scale", seriesId, target);
+  }
   async auto_fit_all(padding) {
     const kernel = this.#kernelForCall();
     if (kernel.request_stream_auto_fit(padding)) {

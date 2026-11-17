@@ -1422,6 +1422,14 @@ impl Renderer {
         chart: &mut crate::chart::Chart,
         series: &[SeriesConfig],
     ) -> Result<()> {
+        self.require_fit_series(series)?;
+        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)
+    }
+
+    /// The series rules every whole-chart fit holds to: each series reads
+    /// resident columns (a streamed source is `ColumnNotResident`, rule 8)
+    /// and none is monotonic (`MonotonicMappingEdit`).
+    fn require_fit_series(&self, series: &[SeriesConfig]) -> Result<()> {
         for item in series {
             self.require_resident_series(item)?;
             if item.monotonic().is_some() {
@@ -1431,6 +1439,271 @@ impl Renderer {
                 });
             }
         }
-        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)
+        Ok(())
+    }
+
+    /// A candidate configuration with its ranges fitted, without
+    /// installing it anywhere (#312): `config` with every axis `series`
+    /// use fitted to their registered columns, as [`Self::fit_ranges`]
+    /// fits an installed chart (the base chart, each overlay, each subplot
+    /// and its overlays, and the z axis of a 3D chart, by the same code
+    /// path), but with `padding` instead of [`FIT_RANGES_PADDING`]. No
+    /// chart, view or column changes; the fit reads the columns' cached
+    /// statistics only.
+    ///
+    /// `padding` is the fraction of the data span left on each side and
+    /// must be finite and at least 0 (`InvalidConfig { field: "padding",
+    /// kind: FitPadding }`). The candidate is refused when one of its
+    /// layers or line offsets names a series that is not in `series`
+    /// (`InvalidSeriesConfig { kind: LayerSeriesUnknown }` or
+    /// `InvalidConfig { field: "line_offsets", .. }`), when its overlays or
+    /// subplots break their rules, when a series reads a column that is not
+    /// registered (`UnknownColumn`) or a streamed source
+    /// (`ColumnNotResident`), and when a series is monotonic. An axis no
+    /// series moves keeps its range, as in [`Self::fit_ranges`].
+    pub fn fit_config(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+    ) -> Result<crate::Config> {
+        let result = self.fit_config_unreported(config, series, padding);
+        self.reported(result)
+    }
+
+    /// [`Self::fit_config`] that moves only Y axes (#312): every X axis of
+    /// the candidate (`bottom_x`, `top_x`, each overlay's `x_axis` and the
+    /// same in each subplot) comes back exactly as it was given, ticks and
+    /// label format included. The Y axes (`left_y`, `right_y`, which is
+    /// the z axis of a 3D chart, overlay `y_axis` and the parallel axes)
+    /// are fitted, and an axis the fit never moves (a categorical axis, a
+    /// ternary chart's) keeps its range. The refusals are those of
+    /// [`Self::fit_config`].
+    pub fn fit_y_axes_config(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+    ) -> Result<crate::Config> {
+        let result = self
+            .fit_config_unreported(config, series, padding)
+            .map(|mut fitted| {
+                keep_x_axes(&mut fitted, config);
+                fitted
+            });
+        self.reported(result)
+    }
+
+    fn fit_config_unreported(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+    ) -> Result<crate::Config> {
+        if !padding.is_finite() || padding < 0.0 {
+            return Err(FiggyError::InvalidConfig {
+                field: "padding",
+                kind: crate::RuleKind::FitPadding,
+            });
+        }
+        config
+            .validate_overlays()
+            .map_err(|kind| FiggyError::InvalidConfig {
+                field: "overlays",
+                kind,
+            })?;
+        config
+            .validate_subplots()
+            .map_err(|kind| FiggyError::InvalidConfig {
+                field: "subplots",
+                kind,
+            })?;
+        require_layer_series(config, series)?;
+        config
+            .validate_line_offsets(series)
+            .map_err(|kind| FiggyError::InvalidConfig {
+                field: "line_offsets",
+                kind,
+            })?;
+        self.require_fit_series(series)?;
+        crate::chart::Chart::fitted_every_layer(config, &self.pool, series, padding)
+    }
+
+    /// Fit `series`' point size map domain to its size column's native
+    /// extent, the cached statistics of the resident column
+    /// (`PointSizeMap::fit_domain`, #312). Only `series` changes, and only
+    /// its map's `domain_min` and `domain_max`; nothing is read back.
+    ///
+    /// Refused, leaving `series` unchanged: a series without a point size
+    /// map (`InvalidSeriesConfig { kind: PointSizeFitNoMap }`), a size
+    /// column that is not registered (`UnknownColumn`) or streamed
+    /// (`ColumnNotResident`, rule 8), and an extent that is empty,
+    /// non-finite or a single value (`PointSizeFitExtent`).
+    pub fn fit_point_size_domain(&self, series: &mut SeriesConfig) -> Result<()> {
+        let result = self.fit_point_size_domain_unreported(series);
+        self.reported(result)
+    }
+
+    fn fit_point_size_domain_unreported(&self, series: &mut SeriesConfig) -> Result<()> {
+        let refuse = |series_id: &str, kind| FiggyError::InvalidSeriesConfig {
+            series_id: series_id.to_owned(),
+            kind,
+        };
+        let Some(map) = point_size_map_mut(series) else {
+            return Err(refuse(
+                &series.series_id,
+                crate::RuleKind::PointSizeFitNoMap,
+            ));
+        };
+        let extent = self.resident_extent(&map.column)?;
+        // `fit_domain` writes nothing when it refuses the extent.
+        if map.fit_domain(extent.min, extent.max) {
+            return Ok(());
+        }
+        Err(refuse(
+            &series.series_id,
+            crate::RuleKind::PointSizeFitExtent,
+        ))
+    }
+
+    /// Fit `series`' vector scale so the longest vector its component
+    /// columns' extents allow draws `target` long
+    /// (`VectorStyle::fit_scale`, #312): logical pixels for
+    /// `VectorScale::Pixels`, data units for `VectorScale::Data`. Point and
+    /// grid components both fit, a grid from the union of its columns'
+    /// statistics. A point field with a `w` column that `config` draws in
+    /// 3D fits with `VectorStyle::fit_scale_3d`. Only the scale value of
+    /// `series` changes; nothing is read back.
+    ///
+    /// Refused, leaving `series` unchanged: a series that is not a vector
+    /// field (`VectorFitNotVector`), a `target` that is not finite and
+    /// positive (`VectorFitTarget`), a component column that is not
+    /// registered (`UnknownColumn`) or streamed (`ColumnNotResident`), and
+    /// components whose extent is empty, non-finite or all zero
+    /// (`VectorFitExtent`).
+    pub fn fit_vector_scale(
+        &self,
+        config: &crate::Config,
+        series: &mut SeriesConfig,
+        target: f64,
+    ) -> Result<()> {
+        let result = self.fit_vector_scale_unreported(config, series, target);
+        self.reported(result)
+    }
+
+    fn fit_vector_scale_unreported(
+        &self,
+        config: &crate::Config,
+        series: &mut SeriesConfig,
+        target: f64,
+    ) -> Result<()> {
+        let refuse = |series: &SeriesConfig, kind| FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind,
+        };
+        let three_d = config.drawn_z_column(series).is_some();
+        let DataRenderType::Vector { components, style } = &series.render_type else {
+            return Err(refuse(series, crate::RuleKind::VectorFitNotVector));
+        };
+        if !target.is_finite() || target <= 0.0 {
+            return Err(refuse(series, crate::RuleKind::VectorFitTarget));
+        }
+        let bounds = |extent: crate::chart::FitExtent| (extent.min, extent.max);
+        let mut fitted = style.clone();
+        let fits = match components {
+            crate::data_config::VectorComponents::Points { u, v, w } => {
+                let (u, v) = (self.resident_extent(u)?, self.resident_extent(v)?);
+                match w.as_deref().filter(|_| three_d) {
+                    Some(w) => {
+                        let w = self.resident_extent(w)?;
+                        fitted.fit_scale_3d(bounds(u), bounds(v), bounds(w), target)
+                    }
+                    None => fitted.fit_scale(bounds(u), bounds(v), target),
+                }
+            }
+            crate::data_config::VectorComponents::Grid { u, v } => {
+                let grid = |matrix: &crate::data_config::MatrixRef| {
+                    let mut extent = crate::chart::FitExtent::EMPTY;
+                    for column in &matrix.columns {
+                        extent.union(&self.resident_extent(column)?);
+                    }
+                    Ok::<_, FiggyError>(extent)
+                };
+                fitted.fit_scale(bounds(grid(u)?), bounds(grid(v)?), target)
+            }
+        };
+        if !fits {
+            return Err(refuse(series, crate::RuleKind::VectorFitExtent));
+        }
+        if let DataRenderType::Vector { style, .. } = &mut series.render_type {
+            *style = fitted;
+        }
+        Ok(())
+    }
+
+    /// A resident column's cached statistics as a fit extent: a streamed
+    /// source is `ColumnNotResident` (rule 8) and an unknown id
+    /// `UnknownColumn`. Nothing is read back.
+    fn resident_extent(&self, id: &str) -> Result<crate::chart::FitExtent> {
+        if self.streaming_sources.contains_key(id) {
+            return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
+        }
+        crate::chart::Chart::slot_extent(&self.pool, id)
+    }
+}
+
+/// The point size map a series' markers draw with: an XY or ternary
+/// scatter's `point_size_map`.
+fn point_size_map_mut(series: &mut SeriesConfig) -> Option<&mut crate::data_config::PointSizeMap> {
+    match &mut series.render_type {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            ..
+        })
+        | DataRenderType::Ternary {
+            scatter: Some(scatter),
+            ..
+        } => scatter.point_size_map.as_mut(),
+        _ => None,
+    }
+}
+
+/// Refuse a candidate whose overlays or subplots, at any depth, name a
+/// series `series` does not declare: the model allows such ids while a
+/// document is edited, but a fit of them would silently fit nothing.
+fn require_layer_series(config: &crate::Config, series: &[SeriesConfig]) -> Result<()> {
+    let unknown = |ids: &[String]| {
+        ids.iter()
+            .find(|id| !series.iter().any(|item| item.series_id == **id))
+            .map(|id| FiggyError::InvalidSeriesConfig {
+                series_id: id.clone(),
+                kind: crate::RuleKind::LayerSeriesUnknown,
+            })
+    };
+    for overlay in &config.overlays {
+        if let Some(error) = unknown(&overlay.series) {
+            return Err(error);
+        }
+    }
+    for subplot in &config.subplots {
+        if let Some(error) = unknown(&subplot.series) {
+            return Err(error);
+        }
+        require_layer_series(&subplot.config, series)?;
+    }
+    Ok(())
+}
+
+/// Put every X axis of `original` back into `fitted`: the parent's and each
+/// subplot's `bottom_x` and `top_x`, and each overlay's `x_axis`. Both
+/// configurations have the same layers, since a fit changes ranges only.
+fn keep_x_axes(fitted: &mut crate::Config, original: &crate::Config) {
+    fitted.bottom_x = original.bottom_x.clone();
+    fitted.top_x = original.top_x.clone();
+    for (overlay, kept) in fitted.overlays.iter_mut().zip(&original.overlays) {
+        overlay.x_axis = kept.x_axis.clone();
+    }
+    for (subplot, kept) in fitted.subplots.iter_mut().zip(&original.subplots) {
+        keep_x_axes(&mut subplot.config, &kept.config);
     }
 }

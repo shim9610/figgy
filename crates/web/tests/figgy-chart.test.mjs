@@ -3156,6 +3156,37 @@ test("fit_ranges, the theme pair, fit_layout and place_feynman_vertices forward 
   );
 });
 
+test("the candidate fits and the style domain fits forward (#312)", async () => {
+  const kernel = makeKernel("api-312");
+  const names = ["fit_config", "fit_y_axes_config", "fit_point_size_domain", "fit_vector_scale"];
+  for (const name of names) {
+    kernel[name] = (...args) => {
+      kernel.calls.push([name, ...args]);
+      return name.endsWith("_config") ? `{"fitted":"${name}"}` : undefined;
+    };
+  }
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  assert.equal(element.fit_config("{}", 0.1), '{"fitted":"fit_config"}');
+  assert.equal(element.fit_y_axes_config("{}", 0), '{"fitted":"fit_y_axes_config"}');
+  element.fit_point_size_domain("bubbles");
+  element.fit_vector_scale("wind", 24);
+  const wanted = new Set(names);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(kernel.calls.filter(([name]) => wanted.has(name)))),
+    [
+      ["fit_config", "{}", 0.1],
+      ["fit_y_axes_config", "{}", 0],
+      ["fit_point_size_domain", "bubbles"],
+      ["fit_vector_scale", "wind", 24],
+    ],
+  );
+});
+
 test("the shaders attribute reaches the kernel's create options and round-trips", async () => {
   // Absent: the basic set, which is the kernel's default.
   const plainKernel = makeKernel("shaders-default");
