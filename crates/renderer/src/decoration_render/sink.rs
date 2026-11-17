@@ -293,6 +293,29 @@ pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox, origin: [f32; 2
         }
     }
 
+    // A polar category label's ring of angle labels (#309): a faint dashed
+    // circle, grabbed while the label is selected to move every label
+    // together. Its points step about two device pixels along the circle.
+    if let Some((center, radius)) = b.ring() {
+        let color = b.color();
+        let faint = Color {
+            a: color.a * 0.55,
+            ..color
+        };
+        let paint = Paint::stroke(&faint, scale.max(1.0)).with_dash(&[4.0 * scale, 3.0 * scale]);
+        let device_radius = radius * scale;
+        let steps = (std::f32::consts::TAU * device_radius / 2.0)
+            .ceil()
+            .max(16.0) as usize;
+        let pts: Vec<(f32, f32)> = (0..=steps)
+            .map(|i| {
+                let a = std::f32::consts::TAU * i as f32 / steps as f32;
+                map([center[0] + radius * a.cos(), center[1] + radius * a.sin()])
+            })
+            .collect();
+        canvas.draw_polyline(&pts, &paint);
+    }
+
     if b.handles().is_empty() {
         return;
     }

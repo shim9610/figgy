@@ -198,6 +198,23 @@ impl PolarGeometry {
     }
 }
 
+/// A label offset stored in a spoke's frame (#309), `[along, across]`, as a
+/// screen offset: `along` the unit screen direction `spoke` (outward) and
+/// `across` it a quarter turn counter-clockwise on screen.
+pub fn spoke_offset_to_screen(spoke: [f32; 2], offset: [f32; 2]) -> [f32; 2] {
+    let [dx, dy] = spoke;
+    let [along, across] = offset;
+    [dx * along + dy * across, dy * along - dx * across]
+}
+
+/// A screen delta in a spoke's frame, the inverse of
+/// [`spoke_offset_to_screen`] for a unit `spoke`.
+pub fn screen_to_spoke_offset(spoke: [f32; 2], delta: [f32; 2]) -> [f32; 2] {
+    let [dx, dy] = spoke;
+    let [x, y] = delta;
+    [dx * x + dy * y, dy * x - dx * y]
+}
+
 impl PolarOptions {
     /// The screen unit vector of the radius axis ray, from the centre
     /// outward: `radial_label_angle_degrees` with y down.

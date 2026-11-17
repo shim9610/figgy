@@ -220,6 +220,46 @@ fn glob(pattern: &str, text: &str) -> bool {
 /// maintainer decides on; the hit-region ones are #38's.
 const EXCLUSIONS: &[Exclusion] = &[
     Exclusion {
+        scene: "Radar",
+        layer: "*",
+        element: "*tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "*hit another element that has no ink there*category_label_*",
+        reason: "a polar chart's category labels are each their own element over the angle \
+                 labels as a whole, so a press on a label selects that label; the labels as a \
+                 whole are grabbed by the dashed ring a selected label shows",
+        issue: "#309",
+    },
+    Exclusion {
+        scene: "Radar",
+        layer: "*",
+        element: "*tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "no pixel of its moved ink is on top of the hit map",
+        reason: "the same: every angle label is covered by its own category label element",
+        issue: "#309",
+    },
+    Exclusion {
+        scene: "Rose",
+        layer: "*",
+        element: "*tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "*hit another element that has no ink there*category_label_*",
+        reason: "a polar chart's category labels are each their own element over the angle \
+                 labels as a whole, so a press on a label selects that label; the labels as a \
+                 whole are grabbed by the dashed ring a selected label shows",
+        issue: "#309",
+    },
+    Exclusion {
+        scene: "Rose",
+        layer: "*",
+        element: "*tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "no pixel of its moved ink is on top of the hit map",
+        reason: "the same: every angle label is covered by its own category label element",
+        issue: "#309",
+    },
+    Exclusion {
         scene: "*",
         layer: "*",
         element: "*axis_top",
@@ -1364,7 +1404,9 @@ const PARALLEL_AXIS_LABELS: &str = "parallel_axis_labels";
 /// map: the oracle's side of I7. `cfg` is the document with `layer` active:
 /// a parallel chart (`Config.parallel`, #141) registers one
 /// `parallel_axis_labels_{i}` element per axis after the standard set, in
-/// its base layer and in a parallel subplot's. The base layer then
+/// its base layer and in a parallel subplot's, and a polar chart one
+/// `category_label_{i}` element per category of its angle axis after that
+/// (#309). The base layer then
 /// registers every subplot (#205), in order: its frame
 /// (`subplot_{i}:frame`) and its own base-layer set but the data area,
 /// each id prefixed `subplot_{i}:`, so an inset answers the pointer where
@@ -1399,6 +1441,25 @@ fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
     };
     if let Some((prefix, axes)) = parallel {
         names.extend((0..axes).map(|i| format!("{prefix}{PARALLEL_AXIS_LABELS}_{i}")));
+    }
+    // A polar chart's category labels (#309): one `category_label_{i}` per
+    // category of its angle axis, after the parallel axes.
+    let polar_categories = |chart: &Config| {
+        chart
+            .polar()
+            .and(chart.bottom_x.categories.as_deref())
+            .map_or(0, <[_]>::len)
+    };
+    let categories = match layer {
+        LayerRef::Base | LayerRef::Annotations => Some((String::new(), polar_categories(cfg))),
+        LayerRef::Subplot(i) => cfg
+            .subplots
+            .get(i)
+            .map(|s| (format!("subplot_{i}:"), polar_categories(&s.config))),
+        _ => None,
+    };
+    if let Some((prefix, count)) = categories {
+        names.extend((0..count).map(|i| format!("{prefix}category_label_{i}")));
     }
     if layer == LayerRef::Base {
         for i in 0..cfg.subplots.len() {

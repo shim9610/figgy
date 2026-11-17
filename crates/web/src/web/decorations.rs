@@ -778,6 +778,12 @@ impl FiggyChart {
                             .collect();
                         value["outline"] = serde_json::json!(outline);
                     }
+                    // A polar category label's ring of angle labels (#309):
+                    // the dashed circle drawn with the selection, grabbed
+                    // to move every label together.
+                    if let Some((center, radius)) = b.ring() {
+                        value["ring"] = serde_json::json!({ "center": center, "radius": radius });
+                    }
                     value
                 });
         serde_json::to_string(&value).map_err(js_err)

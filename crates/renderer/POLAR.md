@@ -251,6 +251,15 @@ rules. The axes follow the polar frames instead:
   outward or inward together: `bottom_x.label_style.label_offset_y` is the
   radial offset in polar mode (positive outward) and `label_offset_x` has no
   effect.
+- On a categorical angle axis each category label is also its own element
+  (`"category_label_<i>"`, `Element::CategoryLabel(i)`, #309), registered
+  over the angle labels as a whole: a press selects that label and a drag
+  moves only it, through `Category::label_offset`, `[along, across]` its
+  spoke (outward, then a quarter turn counter-clockwise on screen), added
+  after the shared radial offset. A selected label shows a faint dashed ring
+  where the labels start (`SelectionBox::ring()`); a press on the ring grabs
+  it and the drag moves every label along its spoke through the shared
+  offset, each label's own offset kept.
 - The radius tick labels (`"tick_labels_left"`) move in the ray's frame:
   `left_y.label_style.label_offset_x` along the ray (outward positive) and
   `label_offset_y` across it, so they keep their place when the ray turns.
@@ -426,6 +435,12 @@ draws an antenna-like pattern and a three-leaf rose interactively
 - 각도 눈금 라벨(`"tick_labels_bottom"`)은 각자 자기 스포크를 따라 함께 안팎으로 움직인다.
   극좌표 모드에서 `bottom_x.label_style.label_offset_y`가 반경 오프셋(양수가 바깥)이고
   `label_offset_x`는 효과가 없다.
+- 각도 축이 범주형이면 범주 라벨 하나하나도 따로 고르는 요소다(`"category_label_<i>"`,
+  `Element::CategoryLabel(i)`, #309). 각도 라벨 전체 위에 등록되므로 라벨을 누르면 그 라벨만
+  골라지고, 끌면 `Category::label_offset`(스포크 기준 `[바깥, 옆]`, 옆은 화면에서 반시계 방향으로
+  90도)으로 그 라벨만 움직인다. 이 값은 공유 반경 오프셋 다음에 더한다. 라벨을 고르면 라벨이
+  시작하는 자리에 연한 점선 원(`SelectionBox::ring()`)이 그려지고, 원을 눌러 끌면 모든 라벨이
+  공유 오프셋으로 스포크를 따라 함께 움직인다. 각 라벨의 자기 오프셋은 그대로다.
 - 반지름 눈금 라벨(`"tick_labels_left"`)은 반직선을 기준으로 움직인다.
   `left_y.label_style.label_offset_x`가 반직선 방향(바깥이 양수), `label_offset_y`가 수직 방향이라
   반직선이 돌아도 같은 자리를 지킨다. 글자는 수평을 유지한다.

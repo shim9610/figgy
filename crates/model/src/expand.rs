@@ -1130,7 +1130,26 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.major_spacing = *major_spacing;
     to.minor_count = *minor_count;
     to.log_ticks = *log_ticks;
-    to.categories.clone_from(categories);
+    // A category's own label offset (#309) is the chart's own style, like
+    // `label_style`: each member keeps its offset for the same category id.
+    let kept = to.categories.take();
+    to.categories = categories.as_ref().map(|categories| {
+        categories
+            .iter()
+            .enumerate()
+            .map(|(index, category)| {
+                let own = kept.as_deref().and_then(|kept| {
+                    kept.get(index)
+                        .filter(|k| k.id == category.id)
+                        .or_else(|| kept.iter().find(|k| k.id == category.id))
+                });
+                Category {
+                    label_offset: own.map_or([0.0, 0.0], |k| k.label_offset),
+                    ..category.clone()
+                }
+            })
+            .collect()
+    });
     to.category_groups.clone_from(category_groups);
     to.category_window = *category_window;
     to.breaks.clone_from(breaks);
@@ -1147,7 +1166,6 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
         f64,
         f64,
         bool,
-        Option<&'a [Category]>,
         Option<[f64; 2]>,
         Option<&'a AxisBreaks>,
     );
@@ -1172,7 +1190,8 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             line_style: _,
             major_tick_length: _,
             minor_tick_length: _,
-            categories,
+            // Compared below, without the label offsets.
+            categories: _,
             category_groups: _,
             category_window,
             // Not linked.
@@ -1189,12 +1208,23 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             *min,
             *max,
             *inverted,
-            categories.as_deref(),
             *category_window,
             breaks.as_ref(),
         )
     }
-    range(a) == range(b)
+    // The categories are the range; each one's own label offset (#309) is
+    // the chart's style and does not make an edit a range edit.
+    let same_category = |x: &Category, y: &Category| {
+        x.id == y.id && x.label == y.label && x.rich_label == y.rich_label
+    };
+    let categories_equal = match (a.categories.as_deref(), b.categories.as_deref()) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_category(x, y))
+        }
+        _ => false,
+    };
+    range(a) == range(b) && categories_equal
 }
 
 /// A hidden axis: `template` (canonical defaults) carrying only `axis`'s

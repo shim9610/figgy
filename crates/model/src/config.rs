@@ -559,6 +559,19 @@ pub struct Category {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub rich_label: Option<crate::text::RichText>,
+    /// This category's own label offset, logical pixels, written by a drag
+    /// of [`Element::CategoryLabel`](crate::layout::Element::CategoryLabel)
+    /// (#309). On a polar angle axis it is `[along, across]` the category's
+    /// spoke, outward and then a quarter turn counter-clockwise on screen,
+    /// added after the axis' shared radial offset, so the label keeps its
+    /// place relative to the spoke when the chart turns. Straight
+    /// categorical axes do not read it. Zero (omitted from JSON) keeps the
+    /// label where the axis places it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_zero_offset")
+    )]
+    pub label_offset: [f32; 2],
 }
 
 impl Category {
@@ -567,6 +580,7 @@ impl Category {
             id: id.into(),
             label: label.into(),
             rich_label: None,
+            label_offset: [0.0, 0.0],
         }
     }
 }

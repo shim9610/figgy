@@ -236,6 +236,7 @@ pub(super) async fn create_chart_kernel(
         color_seq: 0,
         hitmap: HitMap::standard_chart(),
         hitmap_layer: (renderer::LayerRef::Base, 0, None, 0, None),
+        hitmap_categories: Vec::new(),
         dragging: false,
         drag_pointer: [0.0; 2],
         resizing: None,
@@ -355,6 +356,11 @@ pub struct FiggyChart {
         usize,
         Option<(bool, bool)>,
     ),
+    /// The polar category label counts, chart then subplots, the hit map
+    /// was registered for (`Config::polar_category_label_counts`, #309):
+    /// one entry per panel, compared in place and replaced only when they
+    /// change.
+    pub(super) hitmap_categories: Vec<usize>,
     pub(super) dragging: bool,
     /// The pointer in document coordinates while a chart element drags:
     /// the press point advanced by every move. Polar axes and tick
@@ -509,13 +515,17 @@ impl FiggyChart {
     /// the overlay count, the active subplot's overlay count, the subplot
     /// count (every subplot registers on the base layer) and the active
     /// overlay's links (an own X axis registers on the top side, a followed
-    /// Y axis registers the chart's left one). Rebuild
+    /// Y axis registers the chart's left one) and the number of polar
+    /// category labels, each its own element (#309). Rebuild
     /// it when any of them changed; the registry has already dropped any
     /// `HitId` of the previous map. A layer change also clears the
     /// annotation selection: it is the element selection of the
     /// annotation layer, one level below the layer like the registry's
     /// `HitId`.
     pub(super) fn sync_hitmap(&mut self) -> Result<(), JsValue> {
+        // Held aside while the config is borrowed; an early error leaves it
+        // empty, which only rebuilds the map on the next call.
+        let mut categories = std::mem::take(&mut self.hitmap_categories);
         let config = self.chart_config()?;
         let layer = config.active_layer();
         let subplot_overlays = match layer {
@@ -536,9 +546,20 @@ impl FiggyChart {
                 .overlay_of_layer(layer)
                 .map(|overlay| (overlay.link_x, overlay.link_y)),
         );
-        if key != self.hitmap_layer {
+        let categories_changed = !categories
+            .iter()
+            .copied()
+            .eq(config.polar_category_label_counts());
+        if categories_changed {
+            categories.clear();
+            categories.extend(config.polar_category_label_counts());
+        }
+        let rebuild = (key != self.hitmap_layer || categories_changed)
+            .then(|| HitMap::for_active_layer(config));
+        self.hitmap_categories = categories;
+        if let Some(map) = rebuild {
             let layer_changed = key.0 != self.hitmap_layer.0;
-            self.hitmap = HitMap::for_active_layer(config);
+            self.hitmap = map;
             self.hitmap_layer = key;
             self.dragging = false;
             self.resizing = None;
