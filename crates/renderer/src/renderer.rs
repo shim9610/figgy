@@ -521,6 +521,17 @@ pub struct Renderer {
     auto_resident_working_set_limit: Option<u64>,
 }
 
+/// In the browser a dropped renderer cannot wait for its submitted work, so
+/// it hands its device and queue to that work's completion instead: the
+/// browser device is never collected with work in flight
+/// (`release_after_submitted_work`).
+#[cfg(target_arch = "wasm32")]
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        release_after_submitted_work(&self.health, &self.device, &self.queue);
+    }
+}
+
 // One descriptor fully defines each stylized render mode. The precise path is
 // represented by `style_variant() == None` and never routes through this table.
 
