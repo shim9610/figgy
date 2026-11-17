@@ -882,7 +882,7 @@ categorical axis maps category indices, as on a chart of box plots). Polar chart
 charts included) and radial charts have no separable value axes: they place ratio
 anchors only and report data anchors as warnings. Drags are converted back
 through the same space, so a data-anchored item follows later zooms and a
-ratio-anchored one stays put. `Anchor::converted(&space, kind)` switches kinds without moving.
+ratio-anchored one stays put. `Anchor::converted(&space, kind)` switches kinds without moving. `Annotation::converted_anchors(&space, kind)` does it for every anchor of an item, and `preview_annotation(&item, space, scale, policy)` places an item that is not in a layer yet the way the raster would (its `AnnotationGeometry` and painted `bounds`, or the `AnnotationSkip` it would report), drawing and registering nothing (#312).
 
 **Revisions and caches.** `annotations.items` has its own raster revision.
 On registered Cartesian charts `ChartRenderStamp::needs_annotation_raster_since`

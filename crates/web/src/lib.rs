@@ -700,6 +700,351 @@ fn prepare_demo_declarations(
     })
 }
 
+/// `[x, y, width, height]` of an integer rect, for the editor queries' JSON.
+#[cfg(any(target_arch = "wasm32", test))]
+fn rect_json(r: renderer::layout::Rect) -> serde_json::Value {
+    serde_json::json!([r.x, r.y, r.width, r.height])
+}
+
+/// `[x, y, width, height]` of a float rect.
+#[cfg(any(target_arch = "wasm32", test))]
+fn rect_f_json(r: renderer::layout::RectF) -> serde_json::Value {
+    serde_json::json!([r.x, r.y, r.width, r.height])
+}
+
+/// The chart of `config` that draws `layer`: the document itself for its
+/// base, overlay and annotation layers, the resolved subplot chart
+/// (`Config::subplot_config`) for a subplot's layers. `None` for a subplot
+/// past the list.
+#[cfg(any(target_arch = "wasm32", test))]
+fn chart_of_layer(
+    config: &renderer::Config,
+    layer: renderer::LayerRef,
+) -> Option<std::borrow::Cow<'_, renderer::Config>> {
+    use renderer::LayerRef;
+    match layer {
+        LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => {
+            Some(std::borrow::Cow::Borrowed(config))
+        }
+        LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+            config.subplot_config(index).map(std::borrow::Cow::Owned)
+        }
+    }
+}
+
+/// The subplot a layer belongs to.
+#[cfg(any(target_arch = "wasm32", test))]
+fn layer_subplot(layer: renderer::LayerRef) -> Option<usize> {
+    match layer {
+        renderer::LayerRef::Subplot(index) | renderer::LayerRef::SubplotOverlay(index, _) => {
+            Some(index)
+        }
+        _ => None,
+    }
+}
+
+/// A document as the canvas shows it (#312): `logical`, the stored
+/// document in document pixels, and `placed`, the same document scaled by
+/// `scale` and placed on the surface (`display_config_for_surface`, or the
+/// held placement while a subplot frame drags), in physical canvas pixels.
+/// Every read is a pure function of the two configs; nothing is installed.
+#[cfg(any(target_arch = "wasm32", test))]
+struct ShownDocument<'a> {
+    logical: &'a renderer::Config,
+    placed: &'a renderer::Config,
+    scale: f32,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl ShownDocument<'_> {
+    /// A canvas point in document pixels: the inverse of the placement.
+    fn to_document(&self, p: [f32; 2]) -> [f32; 2] {
+        let (logical, placed) = (self.logical.document_area(), self.placed.document_area());
+        if self.scale > 0.0 && self.scale.is_finite() {
+            [
+                logical.x as f32 + (p[0] - placed.x as f32) / self.scale,
+                logical.y as f32 + (p[1] - placed.y as f32) / self.scale,
+            ]
+        } else {
+            p
+        }
+    }
+
+    /// The layer whose panel `logical.panel_layers()` lists at `index`
+    /// drawn in both configs: `{ document, canvas }` of its frame and its
+    /// data area (`null` for a chart without one).
+    fn panel_json(&self, index: usize, layer: renderer::LayerRef) -> serde_json::Value {
+        let area = |config: &renderer::Config| {
+            chart_of_layer(config, layer).map(|chart| {
+                (
+                    chart.chart_area.0,
+                    chart.data_area().ok().map(|area| area.0),
+                )
+            })
+        };
+        let (logical, placed) = (area(self.logical), area(self.placed));
+        let pair = |pick: fn(
+            (renderer::layout::Rect, Option<renderer::layout::Rect>),
+        ) -> Option<renderer::layout::Rect>| {
+            match (logical.and_then(pick), placed.and_then(pick)) {
+                (Some(document), Some(canvas)) => serde_json::json!({
+                    "document": rect_json(document),
+                    "canvas": rect_json(canvas),
+                }),
+                _ => serde_json::Value::Null,
+            }
+        };
+        serde_json::json!({
+            "index": index,
+            "layer": layer,
+            "subplot": layer_subplot(layer),
+            "member": self.logical.panel_member(index),
+            "frame": pair(|(frame, _)| Some(frame)),
+            "data_area": pair(|(_, data)| data),
+        })
+    }
+
+    /// The whole layout: the document area in both spaces, the display
+    /// scale, the surface size, the active layer and every panel in
+    /// `Config::panel_layers` order (the order `Config::expand` returns
+    /// them and the renderer draws them).
+    fn layout_json(&self, surface: (u32, u32)) -> serde_json::Value {
+        let panels = self
+            .logical
+            .panel_layers()
+            .into_iter()
+            .enumerate()
+            .map(|(index, layer)| self.panel_json(index, layer))
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "scale": self.scale,
+            "surface": [surface.0, surface.1],
+            "document_area": {
+                "document": rect_json(self.logical.document_area()),
+                "canvas": rect_json(self.placed.document_area()),
+            },
+            "active_layer": self.logical.active_layer(),
+            "panels": panels,
+        })
+    }
+
+    /// The layer whose panel is on top at canvas point `(x, y)`, and that
+    /// panel's index in `layout_json`'s list. Subplot frames come first, the
+    /// one drawn on top winning (`Config::subplot_at`: insets in paint
+    /// order, then subplots of their own, later over earlier); then the
+    /// parent chart's frame. An overlay shares its chart's frame and is
+    /// drawn over it, so where the active layer is an overlay of the chart
+    /// found (`Overlay(i)` on the parent, `SubplotOverlay(s, i)` on subplot
+    /// `s`) the overlay is reported. The annotation layer is anchored on the
+    /// parent's frame: while it is active and shown it is reported there,
+    /// outside every subplot frame. `None` off every frame.
+    fn panel_at(&self, x: f32, y: f32) -> Option<(renderer::LayerRef, usize)> {
+        use renderer::LayerRef;
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let active = self.logical.active_layer();
+        let layer = if let Some(index) = self.placed.subplot_at(x, y) {
+            match active {
+                LayerRef::SubplotOverlay(subplot, _) if subplot == index => active,
+                _ => LayerRef::Subplot(index),
+            }
+        } else {
+            let frame = self.placed.chart_area.0;
+            let inside = x >= frame.x as f32
+                && y >= frame.y as f32
+                && x < (frame.x + frame.width) as f32
+                && y < (frame.y + frame.height) as f32;
+            if !inside {
+                return None;
+            }
+            match active {
+                LayerRef::Overlay(_) => active,
+                LayerRef::Annotations
+                    if renderer::AnnotationMap::receives_pointer(
+                        active,
+                        &self.logical.annotations,
+                    ) =>
+                {
+                    active
+                }
+                _ => LayerRef::Base,
+            }
+        };
+        Some((layer, self.panel_index(layer)))
+    }
+
+    /// The index of `layer`'s own panel in `panel_layers` order; the
+    /// annotation layer is drawn with the base panel.
+    fn panel_index(&self, layer: renderer::LayerRef) -> usize {
+        self.logical
+            .panel_layers()
+            .iter()
+            .position(|panel| *panel == layer)
+            .unwrap_or(0)
+    }
+
+    /// `panel_at` as JSON: `{ layer, panel, subplot, active, in_data_area,
+    /// document }`, `null` off every frame. `in_data_area` is the exact
+    /// data area of the panel's chart, edges included on the top and left.
+    fn panel_at_json(&self, x: f32, y: f32) -> serde_json::Value {
+        let Some((layer, panel)) = self.panel_at(x, y) else {
+            return serde_json::Value::Null;
+        };
+        let in_data_area = chart_of_layer(self.placed, layer)
+            .and_then(|chart| chart.data_area().ok())
+            .is_some_and(|area| {
+                let r = area.0;
+                x >= r.x as f32
+                    && y >= r.y as f32
+                    && x < (r.x + r.width) as f32
+                    && y < (r.y + r.height) as f32
+            });
+        serde_json::json!({
+            "layer": layer,
+            "panel": panel,
+            "subplot": layer_subplot(layer),
+            "active": layer == self.logical.active_layer(),
+            "in_data_area": in_data_area,
+            "document": self.to_document([x, y]),
+        })
+    }
+
+    /// The active layer's data area, exact, in both spaces: `{ layer,
+    /// panel, document, canvas }`. The annotation layer reads the parent's.
+    /// An error for a chart without a data area.
+    fn data_area_json(&self) -> Result<serde_json::Value, String> {
+        let layer = match self.logical.active_layer() {
+            renderer::LayerRef::Annotations => renderer::LayerRef::Base,
+            layer => layer,
+        };
+        let area = |config: &renderer::Config| {
+            chart_of_layer(config, layer)
+                .ok_or_else(|| format!("layer {layer:?} has no chart"))?
+                .data_area()
+                .map(|area| area.0)
+                .map_err(|error| format!("layer {layer:?} has no data area ({error:?})"))
+        };
+        Ok(serde_json::json!({
+            "layer": self.logical.active_layer(),
+            "panel": self.panel_index(layer),
+            "document": rect_json(area(self.logical)?),
+            "canvas": rect_json(area(self.placed)?),
+        }))
+    }
+
+    /// Where `item` (in document units, as `add_annotation` takes it) would
+    /// be drawn on the annotation layer: placed by the raster's own
+    /// placement (`renderer::preview_annotation`) once on the canvas, the
+    /// item scaled like the display, and once in the document. `Err` is the
+    /// raster's skip reason on the canvas.
+    fn annotation_preview(
+        &self,
+        item: &renderer::Annotation,
+    ) -> Result<
+        (
+            renderer::AnnotationPreview,
+            Option<renderer::AnnotationPreview>,
+        ),
+        renderer::AnnotationSkip,
+    > {
+        let place = |item: &renderer::Annotation, config: &renderer::Config| {
+            renderer::preview_annotation(
+                item,
+                renderer::annotation::pixel_space_for_config(config),
+                1.0,
+                renderer::FontPolicy::for_style(&config.draw_style),
+            )
+        };
+        let mut shown = item.clone();
+        shown.scale_in_place(self.scale);
+        let canvas = place(&shown, self.placed)?;
+        Ok((canvas, place(item, self.logical).ok()))
+    }
+
+    /// The anchor space the canvas draws the annotation layer in.
+    fn annotation_space(&self) -> renderer::annotation::PixelSpace {
+        renderer::annotation::pixel_space_for_config(self.placed)
+    }
+}
+
+/// An annotation preview's shape as JSON: `{ shape, points | rect, bounds }`
+/// with `shape` one of `line`, `span`, `text`, `arrow`, `polygon`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn annotation_preview_json(preview: &renderer::AnnotationPreview) -> serde_json::Value {
+    use renderer::annotation::AnnotationGeometry as G;
+    let mut value = match &preview.geometry {
+        G::Line { a, b } => serde_json::json!({ "shape": "line", "points": [a, b] }),
+        G::Span(rect) => serde_json::json!({ "shape": "span", "rect": rect_f_json(*rect) }),
+        G::Text(rect) => serde_json::json!({ "shape": "text", "rect": rect_f_json(*rect) }),
+        G::Arrow { from, to } => serde_json::json!({ "shape": "arrow", "points": [from, to] }),
+        G::Polygon(points) => serde_json::json!({ "shape": "polygon", "points": points }),
+    };
+    value["bounds"] = rect_f_json(preview.bounds);
+    value
+}
+
+/// One `RenderWarning` as JSON (#312): `kind` (the variant name), the
+/// variant's fields (`axis` as the `Config` field path it names, a
+/// non-finite number as `null`) and `message`, its one-line `Display`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn render_warning_json(warning: &renderer::RenderWarning) -> serde_json::Value {
+    use renderer::{RenderWarning as W, SpacingRejection as R};
+    let mut value = match warning {
+        W::MajorSpacingReplaced {
+            axis,
+            requested,
+            used,
+            reason,
+        } => {
+            let mut value = serde_json::json!({
+                "kind": "MajorSpacingReplaced",
+                "axis": axis.to_string(),
+                "requested": requested,
+                "used": used,
+            });
+            match reason {
+                R::TooManyTicks { limit } => {
+                    value["reason"] = "TooManyTicks".into();
+                    value["limit"] = (*limit).into();
+                }
+                other => value["reason"] = format!("{other:?}").into(),
+            }
+            value
+        }
+        W::MinorCountClamped {
+            axis,
+            requested,
+            used,
+        } => serde_json::json!({
+            "kind": "MinorCountClamped",
+            "axis": axis.to_string(),
+            "requested": requested,
+            "used": used,
+        }),
+        W::LogDecadeStepAdjusted {
+            axis,
+            requested,
+            used,
+        } => serde_json::json!({
+            "kind": "LogDecadeStepAdjusted",
+            "axis": axis.to_string(),
+            "requested": requested,
+            "used": used,
+        }),
+        W::AnnotationSkipped { index, reason } => serde_json::json!({
+            "kind": "AnnotationSkipped",
+            "index": index,
+            "reason": format!("{reason:?}"),
+        }),
+        // `RenderWarning` is non-exhaustive: a later kind still reports
+        // its message.
+        other => serde_json::json!({ "kind": "Other", "debug": format!("{other:?}") }),
+    };
+    value["message"] = warning.to_string().into();
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use renderer::data_config::{
@@ -718,6 +1063,7 @@ mod tests {
         prepare_demo_declarations, set_chart_title_label, validate_column_batch,
         validate_column_data_len, validate_column_registry_action,
     };
+    use super::{ShownDocument, annotation_preview_json, render_warning_json};
 
     fn scatter_style() -> DataScatterStyleConfig {
         DataScatterStyleConfig {
@@ -1847,6 +2193,299 @@ mod tests {
         assert_eq!(validate_column_data_len(0), Err("data must not be empty"));
         assert_eq!(validate_column_data_len(1), Ok(()));
     }
+
+    // ---- editor queries (#312) ----
+
+    fn area(x: u32, y: u32, width: u32, height: u32) -> renderer::layout::ChartArea {
+        renderer::layout::ChartArea(renderer::layout::Rect {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    fn rect_of(value: &serde_json::Value) -> renderer::layout::Rect {
+        let n = |i: usize| value[i].as_u64().unwrap() as u32;
+        renderer::layout::Rect {
+            x: n(0),
+            y: n(1),
+            width: n(2),
+            height: n(3),
+        }
+    }
+
+    /// A 400x300 parent with one overlay and a 200x300 subplot to its right.
+    fn layered_document() -> renderer::Config {
+        let mut config = renderer::default::default_config();
+        config.chart_area = area(0, 0, 400, 300);
+        config
+            .overlays
+            .push(serde_json::from_str::<renderer::OverlayLayer>("{}").unwrap());
+        let mut subplot: renderer::Subplot = serde_json::from_str("{}").unwrap();
+        subplot.config = renderer::default::default_config();
+        subplot.config.chart_area = area(400, 0, 200, 300);
+        config.subplots.push(subplot);
+        config
+    }
+
+    /// Every panel reports its frame and exact data area in both spaces,
+    /// at 1x and 2x, in the renderer's panel order; `panel_at` finds the
+    /// panel on top and follows the active layer (#312).
+    #[test]
+    fn document_layout_and_panel_at_follow_the_placed_document() {
+        use renderer::LayerRef;
+        for scale in [1u32, 2] {
+            let mut logical = layered_document();
+            let surface = (600 * scale, 300 * scale);
+            let (placed, _, s) = renderer::display_config_for_surface(&logical, surface);
+            assert!((s - scale as f32).abs() < 1e-6);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            let layout = shown.layout_json(surface);
+            assert_eq!(layout["scale"], serde_json::json!(s));
+            assert_eq!(
+                rect_of(&layout["document_area"]["document"]),
+                logical.document_area()
+            );
+            assert_eq!(
+                rect_of(&layout["document_area"]["canvas"]),
+                placed.document_area()
+            );
+            let panels = layout["panels"].as_array().unwrap();
+            let layers: Vec<LayerRef> = panels
+                .iter()
+                .map(|p| serde_json::from_value(p["layer"].clone()).unwrap())
+                .collect();
+            assert_eq!(layers, logical.panel_layers());
+            assert_eq!(
+                layers,
+                [LayerRef::Base, LayerRef::Overlay(0), LayerRef::Subplot(0)]
+            );
+            let base_data = logical.data_area().unwrap().0;
+            for panel in &panels[..2] {
+                assert_eq!(rect_of(&panel["frame"]["document"]), logical.chart_area.0);
+                assert_eq!(rect_of(&panel["data_area"]["document"]), base_data);
+                assert_eq!(
+                    rect_of(&panel["data_area"]["canvas"]),
+                    placed.data_area().unwrap().0
+                );
+            }
+            let sub = logical.subplot_config(0).unwrap();
+            assert_eq!(panels[2]["subplot"], 0);
+            assert_eq!(rect_of(&panels[2]["frame"]["document"]), sub.chart_area.0);
+            assert_eq!(
+                rect_of(&panels[2]["data_area"]["document"]),
+                sub.data_area().unwrap().0
+            );
+            assert_eq!(
+                rect_of(&panels[2]["data_area"]["canvas"]),
+                placed.subplot_config(0).unwrap().data_area().unwrap().0
+            );
+
+            let centre = |r: renderer::layout::Rect| {
+                (
+                    r.x as f32 + r.width as f32 * 0.5,
+                    r.y as f32 + r.height as f32 * 0.5,
+                )
+            };
+            let (sx, sy) = centre(placed.subplots[0].config.chart_area.0);
+            let (px, py) = centre(placed.chart_area.0);
+            assert_eq!(shown.panel_at(sx, sy), Some((LayerRef::Subplot(0), 2)));
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Base, 0)));
+            assert_eq!(shown.panel_at(-1.0, py), None);
+            assert_eq!(shown.panel_at(f32::NAN, py), None);
+            let hit = shown.panel_at_json(px, py);
+            assert_eq!(hit["in_data_area"], true);
+            assert_eq!(hit["active"], true);
+            let document = hit["document"].as_array().unwrap();
+            assert!((document[0].as_f64().unwrap() - 200.0).abs() < 1.0);
+            assert!((document[1].as_f64().unwrap() - 150.0).abs() < 1.0);
+            // A frame corner is outside the data area.
+            let corner = placed.chart_area.0;
+            let hit = shown.panel_at_json(corner.x as f32 + 1.0, corner.y as f32 + 1.0);
+            assert_eq!(hit["in_data_area"], false);
+            assert_eq!(shown.panel_at_json(-5.0, -5.0), serde_json::Value::Null);
+
+            // The active overlay is reported over its chart's frame; the
+            // subplot keeps its own frame.
+            logical.active_layer = LayerRef::Overlay(0);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Overlay(0), 1)));
+            assert_eq!(shown.panel_at(sx, sy), Some((LayerRef::Subplot(0), 2)));
+            assert_eq!(shown.panel_at_json(sx, sy)["active"], false);
+            // The annotation layer, while shown, on the parent frame only.
+            logical.active_layer = LayerRef::Annotations;
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Annotations, 0)));
+            assert_eq!(shown.panel_at(sx, sy), Some((LayerRef::Subplot(0), 2)));
+            let data = shown.data_area_json().unwrap();
+            assert_eq!(rect_of(&data["document"]), base_data);
+            logical.annotations.visible = false;
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Base, 0)));
+            // The active subplot's data area.
+            logical.active_layer = LayerRef::Subplot(0);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            let data = shown.data_area_json().unwrap();
+            assert_eq!(data["panel"], 2);
+            assert_eq!(rect_of(&data["document"]), sub.data_area().unwrap().0);
+        }
+    }
+
+    /// A chart whose margins leave no data area has no data area to report.
+    #[test]
+    fn data_area_json_refuses_a_chart_without_one() {
+        let mut tiny = renderer::default::default_config();
+        tiny.chart_area = area(0, 0, 4, 4);
+        assert!(tiny.data_area().is_err());
+        let shown = ShownDocument {
+            logical: &tiny,
+            placed: &tiny,
+            scale: 1.0,
+        };
+        assert!(shown.data_area_json().is_err());
+        assert!(shown.layout_json((4, 4))["panels"][0]["data_area"].is_null());
+    }
+
+    /// A preview is placed in both spaces: the canvas shape is the document
+    /// shape scaled and placed, and an item the raster skips reports why.
+    /// Anchor conversion keeps the drawn position (#312).
+    #[test]
+    fn annotation_preview_places_the_item_in_both_spaces() {
+        use renderer::{Anchor, AnchorKind, Annotation, AnnotationKind, AnnotationSpace};
+        let mut logical = renderer::default::default_config();
+        logical.chart_area = area(0, 0, 400, 300);
+        logical.bottom_x.min = 0.0;
+        logical.bottom_x.max = 10.0;
+        logical.left_y.min = 0.0;
+        logical.left_y.max = 1.0;
+        let arrow = Annotation::new(AnnotationKind::Arrow {
+            from: Anchor::Data { x: 2.0, y: 0.25 },
+            to: Anchor::Ratio { x: 0.75, y: 0.25 },
+            style: Default::default(),
+            text: None,
+        });
+        for scale in [1u32, 2] {
+            let (placed, _, s) =
+                renderer::display_config_for_surface(&logical, (400 * scale, 300 * scale));
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            let (canvas, document) = shown.annotation_preview(&arrow).unwrap();
+            let document = document.unwrap();
+            let (canvas, document) = (
+                annotation_preview_json(&canvas),
+                annotation_preview_json(&document),
+            );
+            assert_eq!(canvas["shape"], "arrow");
+            for i in 0..2 {
+                for axis in 0..2 {
+                    let c = canvas["points"][i][axis].as_f64().unwrap();
+                    let d = document["points"][i][axis].as_f64().unwrap();
+                    assert!((c - d * s as f64).abs() < 1.5, "{scale}: {c} vs {d}");
+                }
+            }
+            let space = shown.annotation_space();
+            let ratio = arrow.converted_anchors(&space, AnchorKind::Ratio).unwrap();
+            let (AnnotationKind::Arrow { from: a, .. }, AnnotationKind::Arrow { from: b, .. }) =
+                (&arrow.kind, &ratio.kind)
+            else {
+                unreachable!()
+            };
+            let (pa, pb) = (
+                space.anchor_to_px(a).unwrap(),
+                space.anchor_to_px(b).unwrap(),
+            );
+            assert!((pa[0] - pb[0]).abs() < 1e-3 && (pa[1] - pb[1]).abs() < 1e-3);
+            let outside = Annotation::new(AnnotationKind::ReferenceLine {
+                axis: renderer::AnnotationAxis::X,
+                value: 50.0,
+                style: Default::default(),
+                label: None,
+            });
+            assert_eq!(
+                shown.annotation_preview(&outside).err(),
+                Some(renderer::AnnotationSkip::OutOfRange)
+            );
+        }
+    }
+
+    /// Every warning kind as JSON: the axis as its field path, a NaN as
+    /// null, the reason and its limit, and the one-line message (#312).
+    #[test]
+    fn render_warnings_are_structured() {
+        use renderer::{AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis};
+        let replaced = RenderWarning::MajorSpacingReplaced {
+            axis: WarningAxis::Subplot {
+                index: 1,
+                axis: SubplotAxis::LeftY,
+            },
+            requested: f64::NAN,
+            used: 0.5,
+            reason: SpacingRejection::NonFinite,
+        };
+        let value = render_warning_json(&replaced);
+        assert_eq!(value["kind"], "MajorSpacingReplaced");
+        assert_eq!(value["axis"], "subplots[1].config.left_y");
+        assert!(value["requested"].is_null());
+        assert_eq!(value["used"], 0.5);
+        assert_eq!(value["reason"], "NonFinite");
+        assert_eq!(value["message"], replaced.to_string());
+        let many = render_warning_json(&RenderWarning::MajorSpacingReplaced {
+            axis: WarningAxis::BottomX,
+            requested: 1e-9,
+            used: 1.0,
+            reason: SpacingRejection::TooManyTicks { limit: 1000 },
+        });
+        assert_eq!(many["reason"], "TooManyTicks");
+        assert_eq!(many["limit"], 1000);
+        let minor = render_warning_json(&RenderWarning::MinorCountClamped {
+            axis: WarningAxis::OverlayY(0),
+            requested: 500,
+            used: 99,
+        });
+        assert_eq!(minor["axis"], "overlays[0].y_axis");
+        assert_eq!(
+            (minor["requested"].clone(), minor["used"].clone()),
+            (500.into(), 99.into())
+        );
+        let log = render_warning_json(&RenderWarning::LogDecadeStepAdjusted {
+            axis: WarningAxis::ColorBar,
+            requested: 0.5,
+            used: 1.0,
+        });
+        assert_eq!(log["kind"], "LogDecadeStepAdjusted");
+        assert_eq!(log["axis"], "colorbar.axis");
+        let skipped = render_warning_json(&RenderWarning::AnnotationSkipped {
+            index: 3,
+            reason: AnnotationSkip::EmptyText,
+        });
+        assert_eq!(skipped["index"], 3);
+        assert_eq!(skipped["reason"], "EmptyText");
+        assert!(skipped["message"].as_str().unwrap().contains("items[3]"));
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1878,7 +2517,8 @@ mod web {
     };
     use crate::{
         ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, PreparedDemoDeclarations,
-        consume_successful_frame, frame_decision, prepare_demo_declarations, set_chart_title_label,
+        ShownDocument, annotation_preview_json, consume_successful_frame, frame_decision,
+        prepare_demo_declarations, render_warning_json, set_chart_title_label,
         validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 

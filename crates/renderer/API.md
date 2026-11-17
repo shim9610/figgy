@@ -829,6 +829,8 @@ radial renderer returns the layer as `prepare_annotations(chart, size, scale)` â
 radial chart has no value axes, so it draws no span below the slices). Items
 the raster could not place are `RenderWarning::AnnotationSkipped` on
 `ChartView::render_warnings()` (Cartesian) or
-`BoundedAnnotationFrame::render_warnings()` (radial). See the
+`BoundedAnnotationFrame::render_warnings()` (radial). An editor previews an item
+that is not in the layer yet with `preview_annotation(&item, space, scale, policy)`,
+the raster's own placement without drawing (#312). See the
 [annotation section of the interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)
 and the [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#layerref--annotationlayer).
