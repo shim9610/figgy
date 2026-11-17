@@ -270,9 +270,11 @@ async fn a_document_whose_columns_do_not_fit_the_budget_changes_nothing() {
     chart.on_press(240.0, 16.0).unwrap();
     let before = snapshot(&mut chart).await;
 
-    // The same series with two million outliers: the styles fit the margin,
-    // the outlier column (16 MB) does not.
-    let outliers = (0..2_000_000)
+    // The same series with three million outliers: the styles fit the
+    // margin, the outlier column (24 MB) does not. It must also be larger
+    // than the pool's free capacity (16 MiB at creation), or it is placed
+    // without growing the pool and the budget never sees it.
+    let outliers = (0..3_000_000)
         .map(|i| format!("{}", 100.0 + i as f64 * 1e-3))
         .collect::<Vec<_>>()
         .join(",");

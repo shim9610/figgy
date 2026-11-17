@@ -2437,6 +2437,50 @@ export class FiggyChartElement extends HTMLElement {
   fit_vector_scale(seriesId, target) {
     return this.#mutateChart("fit_vector_scale", seriesId, target);
   }
+  // Edit safety (#311): end every selection and pointer gesture, read a
+  // column's revision, check a candidate document's streaming support, and
+  // upload one column in chunks. The upload handle's `commit()` installs the
+  // column on this element's chart.
+  clear_selection() { return this.#mutateChart("clear_selection"); }
+  column_revision(id) { return this.#kernelForCall().column_revision(id); }
+  inspect_streaming_capabilities(configJson, seriesJson) {
+    return this.#kernelForCall().inspect_streaming_capabilities(configJson, seriesJson);
+  }
+  begin_column_upload(id, length, encoding, sourceRevision, maxChunkBytes) {
+    const handle = this.#kernelForCall().begin_column_upload(
+      id, length, encoding, sourceRevision ?? null, maxChunkBytes);
+    return {
+      push: (offset, chunk) => handle.push(offset, chunk),
+      commit: () => {
+        const result = handle.commit(this.#kernelForCall());
+        this.#notifyStreamingMutation();
+        return result;
+      },
+      cancel: () => handle.cancel(),
+      written: () => handle.written(),
+      length: () => handle.length(),
+      is_open: () => handle.is_open(),
+    };
+  }
+  // Editor queries (#312): JSON text, as the kernel returns it; nothing on
+  // the chart changes.
+  annotation_preview(json) { return this.#kernelForCall().annotation_preview(json); }
+  convert_annotation_anchor(json, kind) {
+    return this.#kernelForCall().convert_annotation_anchor(json, kind);
+  }
+  inspect_document_layout(configJson) {
+    return this.#kernelForCall().inspect_document_layout(configJson ?? null);
+  }
+  panel_at(x, y) { return this.#kernelForCall().panel_at(x, y); }
+  data_area_rect() { return this.#kernelForCall().data_area_rect(); }
+  legend_entry(seriesId) { return this.#kernelForCall().legend_entry(seriesId); }
+  render_warnings() { return this.#kernelForCall().render_warnings(); }
+  // Annotations by id, and a readiness handle that does not borrow the
+  // chart (#315).
+  annotation_ids() { return this.#kernelForCall().annotation_ids(); }
+  annotation_index(id) { return this.#kernelForCall().annotation_index(id); }
+  select_annotation_by_id(id) { return this.#mutateChart("select_annotation_by_id", id); }
+  readiness() { return this.#kernelForCall().readiness(); }
   async auto_fit_all(padding) {
     const kernel = this.#kernelForCall();
     if (kernel.request_stream_auto_fit(padding)) {
