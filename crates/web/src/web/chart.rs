@@ -401,6 +401,19 @@ pub struct FiggyChart {
 }
 
 impl FiggyChart {
+    /// What a radial chart created on this chart draws with (#313,
+    /// `FiggyBoundedChart.create_on`): this chart's device bundle (its
+    /// device, queue, device-loss record, GPU ledger and budget) and the
+    /// instance and adapter its own surface came from. Clones of handles:
+    /// the device lives while either chart holds them.
+    pub(crate) fn shared_gpu(&self) -> (renderer::RendererDevice, wgpu::Instance, wgpu::Adapter) {
+        (
+            self.renderer.renderer_device(),
+            self.renderer.instance().clone(),
+            self.renderer.adapter().clone(),
+        )
+    }
+
     pub(super) fn chart_config(&self) -> Result<&renderer::Config, JsValue> {
         match self.monotonic {
             Some(id) => self.renderer.monotonic_config(id),

@@ -1153,6 +1153,7 @@ fn radial_ssot_fields_are_explicit() {
         label_format: _,
         label_color: _,
         text: _,
+        text_generated: _,
         children: _,
     } = RadialSlice::new("A", 1.0, Color::WHITE);
     let RadialOutline {
@@ -1668,4 +1669,170 @@ fn a_flat_chart_draws_the_same_pixels_as_its_sampled_path() {
             drain(&r);
         }
     }
+}
+
+/// An export's background override (#313) changes the exported pixels
+/// only: transparent and colour overrides at 1x and 2x, while the chart, its
+/// cached frame and a later document export stay as they were.
+#[test]
+fn an_export_background_override_leaves_the_chart_and_its_frame_unchanged() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.background = Color::new(0.4, 0.6, 0.8, 1.0);
+    c.interaction.selected = Some(RadialTarget::main(1));
+    let before = c.clone();
+    let size = (320, 240);
+    let corner = |image: &renderer::RasterImage| image.rgba[..4].to_vec();
+    let centre = |image: &renderer::RasterImage| {
+        let (w, h) = (image.width as usize, image.height as usize);
+        image.rgba[((h / 2) * w + w / 2) * 4..][..4].to_vec()
+    };
+    for scale in [1.0, 2.0] {
+        let options = renderer::ExportOptions::document(scale);
+        let screen = r.prepare(&c, size, scale).unwrap();
+        let document = r
+            .export_rgba_with_background_blocking(
+                &c,
+                size,
+                options,
+                RadialExportBackground::Document,
+            )
+            .unwrap();
+        assert_eq!(
+            document.rgba,
+            r.export_rgba_blocking(&c, size, options).unwrap().rgba,
+            "Document is the plain export"
+        );
+        assert_eq!(corner(&document), [102, 153, 204, 255]);
+        let transparent = r
+            .export_rgba_with_background_blocking(
+                &c,
+                size,
+                options.with_clear(Color::WHITE),
+                RadialExportBackground::Transparent,
+            )
+            .unwrap();
+        assert_eq!(
+            (transparent.width, transparent.height),
+            (document.width, document.height)
+        );
+        assert_eq!(corner(&transparent)[3], 0, "no background at {scale}x");
+        assert_eq!(
+            centre(&transparent),
+            centre(&document),
+            "the slices draw as before at {scale}x"
+        );
+        let green = r
+            .export_rgba_with_background_blocking(
+                &c,
+                size,
+                options,
+                RadialExportBackground::Color(Color::new(0.0, 1.0, 0.0, 1.0)),
+            )
+            .unwrap();
+        assert_eq!(corner(&green), [0, 255, 0, 255]);
+        assert_eq!(centre(&green), centre(&document));
+        // The PNG form encodes the same override.
+        let png = r
+            .export_png_with_background(&c, size, options, RadialExportBackground::Transparent)
+            .block_on()
+            .unwrap();
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut decoded = vec![0; decoder.output_buffer_size().unwrap()];
+        let info = decoder.next_frame(&mut decoded).unwrap();
+        assert_eq!(&decoded[..info.buffer_size()], &transparent.rgba[..]);
+        // The chart, the frame on screen and a document export afterwards
+        // are unchanged.
+        assert_eq!(c, before);
+        assert!(Arc::ptr_eq(&screen, &r.prepare(&c, size, scale).unwrap()));
+        let after = r.export_rgba_blocking(&c, size, options).unwrap();
+        assert_eq!(after.rgba, document.rgba, "the screen's image at {scale}x");
+        drain(&r);
+    }
+    // A colour outside 0..=1 is refused before anything is drawn.
+    for bad in [f32::NAN, -0.1, 1.5] {
+        let result = r.export_rgba_with_background_blocking(
+            &c,
+            size,
+            renderer::ExportOptions::document(1.0),
+            RadialExportBackground::Color(Color::new(bad, 0.0, 0.0, 1.0)),
+        );
+        assert!(
+            matches!(result, Err(RadialError::Invalid(_))),
+            "{bad}: {:?}",
+            result.err()
+        );
+    }
+    assert_eq!(c, before);
+}
+
+/// A radial renderer built on a Cartesian renderer's device bundle (#313)
+/// shares its device, ledger and budget; dropping it leaves the Cartesian
+/// renderer working; a lost device fails both.
+#[test]
+fn a_radial_renderer_on_a_cartesian_renderers_device_shares_it() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (device, queue) = test_gpu::device();
+    let cartesian = renderer::Renderer::try_new(
+        RendererDevice::new(device.clone(), queue).expect("figgy poll thread"),
+        format,
+        64 * 1024,
+    )
+    .unwrap();
+    // Switch between the charts a few times: each radial renderer charges
+    // the Cartesian renderer's ledger and its budget is the Cartesian one.
+    let alone = cartesian.gpu_memory_usage().total_bytes();
+    for round in 0..3 {
+        let shared = cartesian.renderer_device();
+        assert!(shared.device() == cartesian.device(), "one device");
+        let mut radial = RadialRenderer::try_new(shared, format).unwrap();
+        let image = radial
+            .export_rgba(&chart(), (320, 320), renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap();
+        assert_eq!((image.width, image.height), (320, 320));
+        let frame = radial.prepare(&chart(), (320, 320), 1.0).unwrap();
+        assert_eq!(radial.gpu_memory_usage(), cartesian.gpu_memory_usage());
+        assert!(
+            cartesian.gpu_memory_usage().total_bytes() > alone,
+            "{round}"
+        );
+        let ceiling = cartesian.gpu_memory_usage().total_bytes() + 1;
+        assert_eq!(radial.set_memory_budget(Some(ceiling)), None);
+        assert_eq!(cartesian.memory_budget(), Some(ceiling));
+        assert!(
+            matches!(
+                radial.prepare(&chart(), (640, 640), 1.0),
+                Err(RadialError::Budget { .. })
+            ),
+            "the shared budget refuses the radial frame"
+        );
+        assert_eq!(radial.set_memory_budget(None), None);
+        radial.end_frame();
+        drop(frame);
+        drop(radial);
+        // Disposing the radial child leaves the parent's device working.
+        cartesian.wait_idle().unwrap();
+        assert_eq!(cartesian.memory_budget(), None);
+    }
+    // A lost device is reported by both: the loss the Cartesian
+    // renderer's wait observes is the radial renderer's too.
+    let mut radial = RadialRenderer::try_new(cartesian.renderer_device(), format).unwrap();
+    device.destroy();
+    assert!(matches!(
+        cartesian.wait_idle(),
+        Err(renderer::FiggyError::DeviceLost { .. })
+    ));
+    let result = radial
+        .export_rgba(&chart(), (320, 320), renderer::ExportOptions::document(1.0))
+        .block_on();
+    assert!(
+        matches!(&result, Err(RadialError::Gpu(message)) if message.contains("device lost")),
+        "a radial export on a lost device returned {:?}",
+        result.err()
+    );
 }

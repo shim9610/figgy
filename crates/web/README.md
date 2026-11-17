@@ -41,6 +41,16 @@ element wraps `FiggyChart` only. Hosts using `FiggyBoundedChart` own their
 canvas events and scheduling; see the
 [radial chart host API](../renderer/WASM.md#bounded-chart-host).
 
+A page that shows both kinds can keep one GPU device:
+`FiggyBoundedChart.create_on(cartesianChart, canvas, "radial", json, width, height)`
+(#313) draws the radial chart on a `FiggyChart`'s device and queue, with one
+device-loss record and one memory budget. Disposing either chart never
+destroys the device the other uses. The radial chart also exports over a
+transparent or another background (`export_png_with_background`), keeps a
+host's own slice labels while it regenerates the automatic ones after an edit
+(`text_generated`, `regenerate_labels`), and puts a moved decoration back
+(`reset_decoration_position`).
+
 ## Build and run
 
 From the repository root, with Rust 1.99.0 and Node installed:
@@ -188,6 +198,14 @@ on the renderer, with its own deployment and UI.
 `<figgy-chart>` 사용자 정의 요소가 캔버스·이벤트·비동기 호출을 연결한다. 렌더러와 함께 관리하므로
 렌더러에 기능을 더하면 래퍼 메서드도 함께 더한다. WASM으로 컴파일되는 렌더러와 이 래퍼는
 서로 다른 계층이며, `FiggyChart`나 `<figgy-chart>`가 모든 Rust 차트 API를 제공하지는 않는다.
+
+직교 좌표 차트와 원형 차트를 한 페이지에 그릴 때는 GPU 장치 하나를 함께 쓸 수 있다.
+`FiggyBoundedChart.create_on(cartesianChart, canvas, "radial", json, width, height)`(#313)는
+`FiggyChart`의 장치와 큐로 원형 차트를 그리며, 장치 손실 기록과 메모리 예산도 함께 쓴다.
+어느 쪽 차트를 해제해도 다른 차트가 쓰는 장치는 파괴되지 않는다. 원형 차트는 투명하거나 다른 색의
+배경으로 내보낼 수 있고(`export_png_with_background`), 편집 뒤 자동 라벨을 다시 쓰면서 호스트가 쓴
+라벨은 그대로 두며(`text_generated`, `regenerate_labels`), 옮긴 장식을 원래 자리로 돌린다
+(`reset_decoration_position`).
 
 Cargo 패키지 `figgy` 0.15.1은 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
 (`publish = false`, 배포 대상은 아직 정하지 않았다: [#57](https://github.com/shim9610/figgy/issues/57)).

@@ -2672,3 +2672,7 @@ pub use web::*;
 
 #[cfg(target_arch = "wasm32")]
 mod radial;
+/// The radial chart's browser host (`FiggyBoundedChart` in JavaScript), for
+/// Rust callers and the browser tests (#313).
+#[cfg(target_arch = "wasm32")]
+pub use radial::FiggyRadialChart;

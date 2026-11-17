@@ -24,12 +24,14 @@
 | `RadialStyle`, `RadialOutline` | 재질·입체 형상·질감·외곽선 설정 |
 | `RadialLabels`, `RadialLabelFormat` | 라벨 위치와 표시할 내용 |
 | `RadialChart::format_labels()` | 각 조각의 그릴 라벨 문자열(`RadialSlice::text`)을 편집 시점에 기록 |
+| `RadialChart::regenerate_labels()` | 자동으로 만든 라벨(`text_generated`)과 빠진 라벨만 다시 기록하고 호스트가 쓴 라벨은 둔다(#313) |
 | `RadialTarget`, `RadialInteraction` | 조각 식별과 호버·선택 상태 |
 | `RadialChart::validate()` | 값과 옵션 검사. 실제 라벨 배치는 `prepare`에서 추가 검사 |
 | `RadialRenderer::prepare()` | 모델을 읽고 불변 `Arc<RadialFrame>` 반환 |
 | `RadialFrame::draw()` | 호스트가 연 render pass에 그리기 |
 | `RadialFrame::pick()` | 해당 프레임에서 보이는 조각을 GPU에서 고르는 요청. `RadialPickTicket::resolve()`가 결과를 돌려준다 |
 | `export_rgba()` / `export_png()` / `export_svg()` / `export_pdf()` | 현재 모델을 그려 반환. 배율과 배경은 `ExportOptions`로 정한다 |
+| `export_rgba_with_background()` / `export_png_with_background()` | 문서 배경 대신 투명이나 다른 색 위에 내보낸다(`RadialExportBackground`, #313) |
 | `clear_cache()` / `end_frame()` | 내부 캐시 참조 해제 / 제출이 끝난 자원의 회수 예약 |
 
 `RadialChart::default()`는 빈 파이 차트이므로, 그리기 전에 양수 값을 가진 조각을 추가해야 한다.
@@ -313,8 +315,18 @@ chart.interaction.selected = Some(target);
 다시 기록한다. 값·이름·표시 형식·자릿수·접미사를 바꾼 뒤에 호출한다. 호스트가 `text`를 직접
 지정해도 되며, `format_labels()`를 다시 호출하면 그 문자열도 덮어쓴다. `text`가 없는 이전 문서는
 `normalize_labels()`로 비어 있는 `text`만 채우면 이전과 같은 문자열을 그린다. 값이 있고 라벨이
-보이는 조각에 `text`가 없으면 `prepare`가 거부한다. 브라우저 래퍼는 문서를 읽을 때
-`normalize_labels()`를 실행한다. 한 줄은 400자 이내이며 제어 문자를 쓸 수 없다.
+보이는 조각에 `text`가 없으면 `prepare`가 거부한다. 한 줄은 400자 이내이며 제어 문자를 쓸 수 없다.
+
+조각의 `text_generated`(#313)는 그 `text`가 자동 라벨인지 알려 준다. `format_labels()`,
+`normalize_labels()`, `regenerate_labels()`가 쓴 문자열은 `true`, 호스트가 쓴 문자열은 `false`다.
+`regenerate_labels()`는 `text_generated`가 `true`인 라벨과 빠진 라벨만 다시 쓰고 호스트의 라벨은
+그대로 둔다. 값 하나를 바꾸면 그 원의 합계가 바뀌므로 같은 고리의 다른 조각, 선버스트 노드의 자식,
+분할 원의 세부 조각까지 자동 라벨의 백분율이 함께 바뀐다. 백분율과 반올림은 `label_lines()`가 정한다.
+호스트가 직접 문자열을 쓸 때는 `RadialSlice::set_text(Some(..))`로 쓰거나 `text_generated`를 `false`로
+둔다. `set_text(None)`은 문자열을 지워 다음 호출에서 자동 라벨을 다시 받게 한다. 호스트의 문자열까지
+다시 쓰려면 `format_labels()`를 호출한다. 브라우저 래퍼는 문서를 읽을 때(`create`, `set_document`)
+`regenerate_labels()`를 실행하고, `regenerate_labels(rewriteUserText)`로 같은 작업을 직접 요청할 수 있다.
+`text_generated`가 생기기 전에 저장한 문서는 저장된 문자열을 모두 호스트의 것으로 읽는다.
 
 `frame.pick([x, y])`는 차트 내부의 **논리 픽셀**을 받아 그 위치에 실제로 보이는 조각을
 GPU에서 고르는 요청을 제출하고 `RadialPickTicket`을 돌려준다. `ticket.resolve().await`가
@@ -354,6 +366,15 @@ let png = renderer::encode_png(&image)?;
 고른 조각을 계속 띄우려면 `interaction.selected = Some(target)`를 유지한다. 애니메이션 중간
 모양까지 남기려면 원하는 시점에 모델을 복사하고, 내보내기 전에 `interaction`을 초기화하거나
 `hover_progress`를 0으로 바꾸지 않는다.
+
+`export_rgba_with_background(&chart, size, options, background)`와
+`export_png_with_background`(네이티브 동기 버전 `export_rgba_with_background_blocking`)는
+배경만 바꿔 내보낸다(#313). `RadialExportBackground::Document`는 `export_rgba`와 같고,
+`Transparent`는 배경 없이 조각과 조각의 그림자, 라벨, 주석만 투명한 픽셀 위에 그리며, `Color(c)`는
+문서 배경 자리에 `c`(각 성분 0~1)를 칠한다. 이 선택은 내보내기 하나에만 적용된다. 모델을 고치지 않고,
+화면에 쓰는 프레임과 렌더러 캐시도 그대로 둔다. 프레임의 조각 표와 라벨 텍스처는 그대로 쓰고,
+배경만 바꾼 112바이트 uniform을 내보내기 동안 따로 만든다. 성분이 0~1을 벗어난 색은
+`RadialError::Invalid`로 거부한다.
 
 `export_svg(&chart, size, scale)`와 `export_pdf`(네이티브 동기 버전 `export_svg` /
 `export_pdf`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다.
@@ -426,6 +447,8 @@ async fn update_hover(
 저장된 모델과 복원한 모델은 모두 `validate`로 확인한다. 일시적인 호버·선택을 저장하지
 않으려면 저장용 복사본의 `interaction`을 초기화한다.
 
+조각의 `text_generated`(#313)도 없으면 `false`로 읽고, `false`일 때는 저장하지 않는다.
+
 JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialSlice` 구조체 리터럴은 새 필드가
 필요하므로 `RadialSlice::new`를 사용하는 편이 좋다. 차트·스타일은 `..Default::default()`나
 기존 값의 복사본을 사용한다. `Material`은 `#[non_exhaustive]`가 아니므로 재질이 늘어나면
@@ -454,6 +477,11 @@ readback 버퍼를 만들고, 결과를 읽은 뒤 놓는다. 라벨 배치가 �
 타깃과 정렬된 readback 버퍼를 추가한다. GPU 할당 전에 전체 사용량과 예산을 검사한다.
 `gpu_memory_usage()`는 살아 있는 자원과 GPU 완료를 기다리는 자원을 모두 집계한다.
 같은 `RendererDevice` 묶음에서 만든 `Renderer`와 집계를 함께 쓰므로, 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다.
+이미 있는 직교 좌표 `Renderer`의 장치에 원형 차트를 그리려면 `renderer.renderer_device()`(#313)로
+그 묶음을 받아 `RadialRenderer::try_new`에 넘긴다. 두 렌더러는 장치, 큐, 장치 손실 기록, 집계와
+예산을 함께 쓴다. 한쪽 렌더러나 묶음을 놓아도 장치는 파괴되지 않으며, 장치를 가진 쪽이 남아 있는 동안
+유지된다. 장치를 잃으면 두 렌더러의 다음 대기·내보내기가 모두 손실 오류를 돌려준다. 브라우저에서는
+`FiggyBoundedChart.create_on(parent, ...)`가 이 묶음으로 원형 차트를 만든다.
 
 불변 프레임마다 작은 uniform·조각 표를 새로 만들 수 있으므로, 사용이 끝난 프레임을 놓고 관련
 command buffer를 모두 제출하거나 버린 뒤 `end_frame()`을 호출한다. 호버할 때 라벨 해상도 크기의
@@ -477,6 +505,9 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 `frame.decoration_at(&chart, [x, y])`, `drag_decoration(&mut chart, hit, dx, dy)` 같은 프레임
 메서드가 이 호출을 감싼다. 제목은 차트 위쪽의 제목 띠 가운데에 놓이며, 캔버스보다 넓으면
 캔버스에서 잘린다. 이때 히트 영역·선택 테두리·드래그 제한도 캔버스와 겹친 부분이다.
+옮긴 장식을 원래 자리로 돌리려면 `chart.decorations.reset(&id)`를 호출한다. 저장된 오프셋을 지우며
+(`DataArea`는 지정한 그리기 영역도 지운다) 반대 방향으로 끄는 것과 달리 아무 값도 남기지 않는다.
+브라우저에서는 `reset_decoration_position(id)`(#313)가 이 호출을 감싼다.
 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
 
 

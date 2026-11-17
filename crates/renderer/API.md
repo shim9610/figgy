@@ -616,6 +616,13 @@ Build one `RendererDevice` per device and clone it for every renderer, so one
 budget bounds them all. When a device also serves other bundles or host
 allocations, leave headroom for them and for untracked resources. Device limits and a passing budget check do not
 guarantee driver allocation success; handle allocation failure and device loss.
+A host that holds only a built renderer, such as a `WindowedRenderer` from
+`Renderer::for_window`, gets its bundle back with `Renderer::renderer_device()`
+(#313): a `RadialRenderer` built from it shares the device, the queue, the
+device-loss record, the ledger and the budget. `WindowedRenderer::instance()`
+and `adapter()` give the handles another surface on that device is created
+and configured from. Dropping any of these renderers or bundles never destroys
+the device.
 
 ## Render targets, coordinates and output
 
