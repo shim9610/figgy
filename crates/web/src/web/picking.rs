@@ -241,6 +241,36 @@ impl FiggyChart {
             .ok_or_else(|| js_err("selected series no longer exists"))?;
         let mut result = serde_json::json!({"identity": reference, "series_id": series.series_id});
         match &reference {
+            // An energy-level series is DataLess (#321): its pick names a
+            // row of its records, a histogram bin a level stroke and a point
+            // a transition. The row is reported as configured; no column is
+            // read and no histogram path is taken.
+            PickedDataRef::HistogramBin { bin_index, .. }
+                if series.render_type.energy_levels().is_some() =>
+            {
+                let records = self.energy_records(&series)?;
+                let level = records
+                    .levels
+                    .get(*bin_index)
+                    .ok_or_else(|| js_err("selected level no longer exists"))?;
+                result["index"] = serde_json::json!(bin_index);
+                result["part"] = serde_json::json!("level");
+                result["id"] = serde_json::json!(level.id);
+                result["record"] = serde_json::to_value(level).map_err(js_err)?;
+            }
+            PickedDataRef::Point { point_index, .. }
+                if series.render_type.energy_levels().is_some() =>
+            {
+                let records = self.energy_records(&series)?;
+                let transition = records
+                    .transitions
+                    .get(*point_index)
+                    .ok_or_else(|| js_err("selected transition no longer exists"))?;
+                result["index"] = serde_json::json!(point_index);
+                result["part"] = serde_json::json!("transition");
+                result["id"] = serde_json::json!(transition.id);
+                result["record"] = serde_json::to_value(transition).map_err(js_err)?;
+            }
             // A monotonic series' point is a kept point of its envelope
             // (#271): its x and y are read from the envelope, not the GPU.
             PickedDataRef::Point { point_index, .. } if series.monotonic().is_some() => {
@@ -773,10 +803,7 @@ impl FiggyChart {
                 ..
             } if series.render_type.energy_levels().is_some() => {
                 use renderer::energy_levels::LabelPart;
-                let levels = series
-                    .render_type
-                    .energy_levels()
-                    .ok_or_else(|| js_err("selected series is not an energy-level diagram"))?;
+                let levels = self.energy_records(&series)?;
                 let part = part.ok_or_else(|| js_err("an energy-level label names its part"))?;
                 let index = *category_index;
                 let (id, label) = match part {
@@ -1915,4 +1942,20 @@ fn moves_subplot_frame(element: Option<&renderer::layout::Element>) -> bool {
                 | renderer::layout::Element::SubplotFrameEdge(..)
         )
     )
+}
+
+impl FiggyChart {
+    /// The records the energy-level `series` draws, its own or its
+    /// source's among the chart's series (`renderer::energy_level_records`).
+    fn energy_records<'s>(
+        &'s self,
+        series: &'s renderer::SeriesConfig,
+    ) -> Result<&'s renderer::energy_levels::EnergyLevelSeries, JsValue> {
+        let levels = series
+            .render_type
+            .energy_levels()
+            .ok_or_else(|| js_err("selected series is not an energy-level diagram"))?;
+        renderer::energy_level_records(levels, self.chart_series()?)
+            .ok_or_else(|| js_err("the energy-level source names no series with records"))
+    }
 }
