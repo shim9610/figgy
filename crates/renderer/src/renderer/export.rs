@@ -811,9 +811,14 @@ impl Renderer {
         // In a browser, compile what this export draws with in the
         // background first and wait for it (#299): `prepare_export`, which
         // must stay synchronous, then finds the browser's cache instead of
-        // compiling on the main thread.
+        // compiling on the main thread. A chart that needs the full shader
+        // set moves the renderer first, so the background compiles are of
+        // the set `prepare_export` draws with.
         #[cfg(target_arch = "wasm32")]
-        self.compile_for_export().await;
+        {
+            self.admit_full_shaders(config_needs_full_shaders(chart.config()));
+            self.compile_for_export().await;
+        }
         let mut frame = self.prepare_export(chart, series, scale, scope)?;
         let panels = 0..frame.items.len();
         self.paint_export(&mut frame, panels, true, clear, &|_| {
