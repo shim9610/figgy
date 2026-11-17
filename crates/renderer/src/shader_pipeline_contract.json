@@ -3703,6 +3703,18 @@
       "descriptor": {
         "compute": {
           "constants": {},
+          "entryPoint": "expand_single"
+        },
+        "label": "figgy column expand pipeline",
+        "layout": "auto"
+      },
+      "kind": "compute",
+      "source": "a606d40107f96514"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
           "entryPoint": "mask"
         },
         "label": "stream replay mask",

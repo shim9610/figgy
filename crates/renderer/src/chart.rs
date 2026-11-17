@@ -1489,12 +1489,32 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
-        let mut fitted = Chart::new(self.config.clone());
+        let fitted = Self::fitted_every_layer(&self.config, pool, series, padding_ratio)?;
+        if fitted != self.config {
+            self.with_axis_range_change(|config| *config = fitted);
+        }
+        Ok(())
+    }
+
+    /// `config` with the axes of every layer fitted as
+    /// [`Self::auto_fit_every_layer`] fits them, returned without touching
+    /// any chart: the one fit path that `Renderer::fit_ranges` and the
+    /// candidate fits `Renderer::fit_config` and
+    /// `Renderer::fit_y_axes_config` (#312) share. The fit works on a copy
+    /// of the configuration (SSOT configuration only, rule 2) and reads the
+    /// columns' cached statistics only.
+    pub(crate) fn fitted_every_layer(
+        config: &Config,
+        pool: &ColumnPool,
+        series: &[SeriesConfig],
+        padding_ratio: f64,
+    ) -> Result<Config> {
+        let mut fitted = Chart::new(config.clone());
         fitted.auto_fit_layer_union(pool, LayerRef::Base, series, padding_ratio)?;
-        for overlay in 0..self.config.overlays.len() {
+        for overlay in 0..config.overlays.len() {
             fitted.auto_fit_layer_union(pool, LayerRef::Overlay(overlay), series, padding_ratio)?;
         }
-        for (index, subplot) in self.config.subplots.iter().enumerate() {
+        for (index, subplot) in config.subplots.iter().enumerate() {
             fitted.auto_fit_layer_union(pool, LayerRef::Subplot(index), series, padding_ratio)?;
             for overlay in 0..subplot.config.overlays.len() {
                 fitted.auto_fit_layer_union(
@@ -1505,10 +1525,7 @@ impl Chart {
                 )?;
             }
         }
-        if fitted.config != self.config {
-            self.with_axis_range_change(|config| *config = fitted.config);
-        }
-        Ok(())
+        Ok(fitted.config)
     }
 
     /// On a parallel chart (`Config.parallel`, #141), fit each parallel

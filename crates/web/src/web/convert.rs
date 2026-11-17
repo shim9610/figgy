@@ -46,6 +46,15 @@ impl JsErrorSource for renderer::radial::RadialError {
     }
 }
 
+impl JsErrorSource for crate::DocumentError {
+    fn rule(&self) -> Option<&renderer::RuleKind> {
+        match self {
+            crate::DocumentError::Rule(kind) => Some(kind),
+            crate::DocumentError::Json(_) => None,
+        }
+    }
+}
+
 impl JsErrorSource for String {}
 impl JsErrorSource for &str {}
 impl JsErrorSource for serde_json::Error {}

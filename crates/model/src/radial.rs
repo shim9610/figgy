@@ -55,6 +55,18 @@ pub struct RadialSlice {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub text: Option<String>,
+    /// Whether [`Self::text`] is the automatic label (#313): `true` when
+    /// [`RadialChart::normalize_labels`], [`RadialChart::format_labels`] or
+    /// [`RadialChart::regenerate_labels`] wrote it, `false` for a text the
+    /// host wrote. [`RadialChart::regenerate_labels`] rewrites a generated
+    /// text after a value, name, format, decimals or suffix change and keeps
+    /// a host's text. A host that writes its own text clears it
+    /// ([`Self::set_text`] does both). Omitted on the wire while `false`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub text_generated: bool,
     /// The slice's children (#140): a chart whose slices have children is a
     /// sunburst, the tree's rings drawn outward from the centre, each child
     /// the sector of the next ring over its share of its parent's angular
@@ -79,8 +91,18 @@ impl RadialSlice {
             label_format: None,
             label_color: None,
             text: None,
+            text_generated: false,
             children: Vec::new(),
         }
+    }
+    /// Set the slice's drawn text as the host's own (#313): `Some` is kept
+    /// by [`RadialChart::regenerate_labels`] and [`RadialChart::normalize_labels`]
+    /// (only [`RadialChart::format_labels`] replaces it); `None` leaves the
+    /// slice without text, so the next of those calls writes its automatic
+    /// label.
+    pub fn set_text(&mut self, text: Option<String>) {
+        self.text = text;
+        self.text_generated = false;
     }
 }
 
@@ -153,6 +175,17 @@ fn span_walk(
         }
     }
     None
+}
+
+/// Which drawn texts [`RadialChart::write_labels`] writes.
+#[derive(Clone, Copy)]
+enum Rewrite {
+    /// Every text ([`RadialChart::format_labels`]).
+    All,
+    /// Missing and generated texts ([`RadialChart::regenerate_labels`]).
+    Generated,
+    /// Missing texts only ([`RadialChart::normalize_labels`]).
+    Missing,
 }
 
 /// Visits every node of a slice tree, parents before their children, until
@@ -888,41 +921,63 @@ impl RadialChart {
     /// editing values, names, formats, the decimals or the suffix; the
     /// renderer draws the stored strings and formats nothing. A slice whose
     /// text the host wrote itself is overwritten too: set it again after
-    /// this call.
+    /// this call. Every text it writes is marked generated
+    /// ([`RadialSlice::text_generated`]). [`Self::regenerate_labels`] is the
+    /// form that keeps the host's texts.
     pub fn format_labels(&mut self) {
-        self.write_labels(true);
+        self.write_labels(Rewrite::All);
     }
 
     /// Fill the drawn text of every slice and detail child that has none, as
     /// [`Self::format_labels`] writes it, and keep the texts that are set:
     /// the step that makes a document written before `text` existed draw
-    /// the labels it drew then. Run it once when a document is loaded.
+    /// the labels it drew then. Run it once when a document is loaded. A
+    /// text it writes is marked generated ([`RadialSlice::text_generated`]).
     pub fn normalize_labels(&mut self) {
-        self.write_labels(false);
+        self.write_labels(Rewrite::Missing);
     }
 
-    fn write_labels(&mut self, all: bool) {
+    /// Rewrite every generated label and fill every missing one, as
+    /// [`Self::format_labels`] writes them, and keep each text the host
+    /// wrote (#313): the step after a value, name, label format, decimals or
+    /// suffix edit. A value edit changes its circle's total, so every
+    /// generated percentage of that ring (its siblings, a sunburst node's
+    /// children, the detail children of a split) is rewritten with it; the
+    /// percentages and the rounding are [`Self::label_lines`]'. A text the
+    /// host wrote ([`RadialSlice::text_generated`] `false`) is kept as it is;
+    /// [`Self::format_labels`] is the explicit rewrite of those too.
+    pub fn regenerate_labels(&mut self) {
+        self.write_labels(Rewrite::Generated);
+    }
+
+    fn write_labels(&mut self, rewrite: Rewrite) {
         let mut slices = std::mem::take(&mut self.slices);
         let total = slices.iter().map(|s| s.value).sum::<f64>();
-        self.write_group(&mut slices, total, all);
+        self.write_group(&mut slices, total, rewrite);
         self.slices = slices;
         if let Some(mut split) = self.split.take() {
             let total = split.children.iter().map(|s| s.value).sum::<f64>();
-            self.write_group(&mut split.children, total, all);
+            self.write_group(&mut split.children, total, rewrite);
             self.split = Some(split);
         }
     }
 
     /// The texts of one circle or sibling group: percentages are of `total`
     /// (the circle's total, or a sunburst parent's value for its children).
-    fn write_group(&self, slices: &mut [RadialSlice], total: f64, all: bool) {
+    fn write_group(&self, slices: &mut [RadialSlice], total: f64, rewrite: Rewrite) {
         for slice in slices {
-            if all || slice.text.is_none() {
+            let write = match rewrite {
+                Rewrite::All => true,
+                Rewrite::Generated => slice.text.is_none() || slice.text_generated,
+                Rewrite::Missing => slice.text.is_none(),
+            };
+            if write {
                 slice.text = Some(self.label_lines(slice, total).join("\n"));
+                slice.text_generated = true;
             }
             if !slice.children.is_empty() {
                 let parent = slice.value;
-                self.write_group(&mut slice.children, parent, all);
+                self.write_group(&mut slice.children, parent, rewrite);
             }
         }
     }
@@ -1266,6 +1321,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn regenerate_labels_follows_a_sunburst_parent_value() {
+        let mut chart = sunburst();
+        chart.label_format = RadialLabelFormat::Percent;
+        chart.label_decimals = 1;
+        chart.normalize_labels();
+        let fleet = RadialTarget { group: 1, index: 0 };
+        let fuel = RadialTarget { group: 2, index: 0 };
+        assert_eq!(chart.slice(fuel).unwrap().text.as_deref(), Some("62.5%"));
+        chart
+            .slice_mut(fleet)
+            .unwrap()
+            .set_text(Some("Fleet!".into()));
+        // A child's value changes its siblings' shares of their parent.
+        chart
+            .slice_mut(RadialTarget { group: 2, index: 1 })
+            .unwrap()
+            .value = 5.0;
+        chart.slice_mut(fleet).unwrap().value = 30.0;
+        chart.regenerate_labels();
+        assert_eq!(chart.slice(fuel).unwrap().text.as_deref(), Some("83.3%"));
+        assert_eq!(chart.slice(fleet).unwrap().text.as_deref(), Some("Fleet!"));
+    }
+
     /// A sunburst's targets are rings and positions in document order; the
     /// selection steps the centre ring, then each ring outward, skipping
     /// nodes without a value; the ring walk resolves and edits every node.
@@ -1531,6 +1610,14 @@ mod editing_contract {
             .map(|s| s.text.as_deref())
             .collect()
     }
+    fn texts_generated(chart: &RadialChart) -> Vec<bool> {
+        chart
+            .slices
+            .iter()
+            .chain(chart.split.iter().flat_map(|s| s.children.iter()))
+            .map(|s| s.text_generated)
+            .collect()
+    }
     #[test]
     fn format_labels_writes_the_drawn_strings_at_edit_time() {
         let mut chart = split_chart();
@@ -1596,6 +1683,100 @@ mod editing_contract {
         // `format_labels` replaces a host's own text as well.
         chart.format_labels();
         assert_eq!(chart.slices[0].text.as_deref(), Some("A\n20 kg (20%)"));
+    }
+    #[test]
+    fn regenerate_labels_rewrites_generated_texts_and_keeps_the_hosts() {
+        let mut chart = split_chart();
+        chart.normalize_labels();
+        assert!(texts_generated(&chart).iter().all(|g| *g));
+        // A host's own text, on the main circle and on the detail circle.
+        chart.slices[0].set_text(Some("Mine".into()));
+        chart.split.as_mut().unwrap().children[1].set_text(Some("Hers".into()));
+        assert!(!chart.slices[0].text_generated);
+        // A value edit changes the total: every generated percentage of
+        // the ring is rewritten, the host's texts stay.
+        chart.slices[1].value = 180.0;
+        chart.regenerate_labels();
+        assert_eq!(
+            texts(&chart),
+            [
+                Some("Mine"),
+                Some("B\n180 kg (90%)"),
+                Some("B1\n60 kg (75%)"),
+                Some("Hers"),
+            ]
+        );
+        // A detail value changes the detail subtotal only.
+        chart.split.as_mut().unwrap().children[0].value = 20.0;
+        chart.regenerate_labels();
+        assert_eq!(
+            texts(&chart)[2],
+            Some("B1\n20 kg (50%)"),
+            "the detail children's percentages are of their subtotal"
+        );
+        // The format, the decimals and the suffix (trailing zeros are trimmed).
+        chart.label_format = RadialLabelFormat::ValuePercent;
+        chart.label_decimals = 1;
+        chart.value_suffix = " t".into();
+        chart.regenerate_labels();
+        assert_eq!(
+            texts(&chart),
+            [
+                Some("Mine"),
+                Some("180 t (90%)"),
+                Some("20 t (50%)"),
+                Some("Hers"),
+            ]
+        );
+        // A slice whose text was cleared gets its automatic label again.
+        chart.slices[0].set_text(None);
+        chart.regenerate_labels();
+        assert_eq!(texts(&chart)[0], Some("20 t (10%)"));
+        assert!(chart.slices[0].text_generated);
+        // `normalize_labels` keeps a stale generated text; only
+        // `regenerate_labels` rewrites it.
+        chart.slices[1].value = 20.0;
+        chart.normalize_labels();
+        assert_eq!(texts(&chart)[1], Some("180 t (90%)"));
+        chart.regenerate_labels();
+        assert_eq!(texts(&chart)[1], Some("20 t (50%)"));
+        // The explicit rewrite replaces the host's text and marks it.
+        chart.format_labels();
+        assert_eq!(texts(&chart)[3], Some("20 t (50%)"));
+        assert!(texts_generated(&chart).iter().all(|g| *g));
+    }
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_generated_marker_is_additive_and_survives_a_save() {
+        let mut chart = split_chart();
+        chart.normalize_labels();
+        chart.slices[0].set_text(Some("Mine".into()));
+        let json = serde_json::to_value(&chart).unwrap();
+        assert!(json["slices"][0].get("text_generated").is_none());
+        assert_eq!(json["slices"][1]["text_generated"], true);
+        let mut reopened: RadialChart = serde_json::from_value(json).unwrap();
+        assert_eq!(reopened, chart);
+        reopened.slices[1].value = 180.0;
+        reopened.regenerate_labels();
+        assert_eq!(
+            texts(&reopened)[..2],
+            [Some("Mine"), Some("B\n180 kg (90%)")]
+        );
+        // A document written before the marker reads every text as the
+        // host's and re-serializes without the marker.
+        let mut old = serde_json::to_value(&chart).unwrap();
+        old["slices"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("text_generated");
+        let loaded: RadialChart = serde_json::from_value(old.clone()).unwrap();
+        assert!(!loaded.slices[1].text_generated);
+        let split = old["split"]["children"].as_array_mut().unwrap();
+        for child in split {
+            child.as_object_mut().unwrap().remove("text_generated");
+        }
+        let loaded: RadialChart = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&loaded).unwrap(), old);
     }
     #[test]
     fn label_text_keeps_two_lines_and_rejects_control_characters() {

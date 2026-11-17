@@ -428,7 +428,8 @@ Cartesian 차트(범주형 막대·박스플롯 포함)는 `Config`를, 원형 �
 Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형 차트를 위한
 `FiggyBoundedChart`를 제공한다. 이 클래스는 히트맵·ID·선택·드래그·크기 조정·출력을 노출하며,
 호스트는 포인터 이벤트를 연결하고 문서를 바꾼 뒤 새 프레임을 그린다. 초기 표시는
-`first_frame_ready()`를 기다린다. [WASM API](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)를 참고한다.
+`first_frame_ready()`를 기다린다. 장식을 원래 자리로 돌리는 `reset_decoration_position(id)`는
+`decorations.reset(&id)`를 그대로 감싸며(#313), 반대 방향으로 끄는 것과 달리 오프셋을 남기지 않는다. [WASM API](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)를 참고한다.
 레이더 문서는 극좌표 차트이므로 `FiggyChart.set_radar_document`로 연다.
 
 네이티브 연결 예제는 `radial_editor`이며
@@ -891,7 +892,7 @@ categorical axis maps category indices, as on a chart of box plots). Polar chart
 charts included) and radial charts have no separable value axes: they place ratio
 anchors only and report data anchors as warnings. Drags are converted back
 through the same space, so a data-anchored item follows later zooms and a
-ratio-anchored one stays put. `Anchor::converted(&space, kind)` switches kinds without moving.
+ratio-anchored one stays put. `Anchor::converted(&space, kind)` switches kinds without moving. `Annotation::converted_anchors(&space, kind)` does it for every anchor of an item, and `preview_annotation(&item, space, scale, policy)` places an item that is not in a layer yet the way the raster would (its `AnnotationGeometry` and painted `bounds`, or the `AnnotationSkip` it would report), drawing and registering nothing (#312).
 
 **Revisions and caches.** `annotations.items` has its own raster revision.
 On registered Cartesian charts `ChartRenderStamp::needs_annotation_raster_since`

@@ -97,6 +97,22 @@ Zero-copy here means writing directly into mapped staging without a separate
 CPU point array. The GPU copy still occurs; CPU axis/text image buffers are
 outside this column-upload guarantee.
 
+The pool stores every value as an 8-byte `(hi, lo)` pair. A pair column (an
+f64 or `HiLoColumnSource` source) is staged in that layout and copied into the
+pool. A single-lane column, whose source returns `ColumnLanes::Single` from
+`ColumnSource::lanes` (the built-in f32 sources) or which holds index lanes
+(ragged offsets, triangle indices), is staged compact at 4 bytes per value
+(#317). The upload copies the compact bytes into one transient storage buffer
+and a compute pass (`column_expand.wgsl`) writes `(value, 0)` into the
+column's region, so the pool holds the same bytes as a pair upload and no
+shader changes. Staging and the host-to-GPU transfer halve for such a column;
+the transient buffer is GPU-local and charged to the ledger like staging. A
+single-lane source that writes a non-zero second lane fails its upload. A
+device without the needed compute, or a column wider than one storage binding,
+is staged as pairs. Streamed sources always stage pairs. An upload's compact
+columns are placed as one contiguous run of the pool, so one dispatch expands
+them all and a batch's host cost does not grow with their count.
+
 ### Exact streaming and residency
 
 ![Column-based screen update loop: conditional CPU rasterization, resident GPU data, chunked streaming and composition](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/streaming-architecture-en.png)
@@ -471,7 +487,7 @@ maintainer's approval in the issue first.
 | Question | Pattern | Used by |
 |---|---|---|
 | Which renderer issued this? | **Issued number.** A process-wide counter issues a `u64` with a checked increment and fails with `FiggyError::CounterExhausted` instead of wrapping, so a value is never reused. | `issue_renderer_identity` (`src/renderer/device.rs`) issues `renderer_identity`. `ChartId` and `RenderRevision` pair it with a per-renderer sequence, so an id from one renderer never matches another renderer's. `issue_raster_stamp` (`src/chart.rs`) issues a `Chart`'s raster stamp on every raster-affecting change, so a `ChartView` never mistakes another chart for the one it was drawn from (#265); an edit cannot fail, so once the counter is exhausted the stamp is `None` and `prepare` fails with `CounterExhausted`. |
-| Is this the same live instance? | **Allocation identity.** The address of an `Arc` names the instance; compare with `Arc::ptr_eq` or `Weak::as_ptr`. Whoever compares later keeps a clone or a `Weak`, so the allocation cannot be freed and its address reused while the comparison can still be made. A `Weak` also tells when the instance is gone. | `PoolIdentity`: a column pool, checked by the picker before it reuses its bindings. `ChartView::content_revision`: a panel; the resident display cache holds a `Weak` of it and retires the entry once `strong_count()` is 0. `ChartView::stream_revision` and `content_revision` in the streamed draw tokens. The owning tile of a stream-field `RecordedStep`. |
+| Is this the same live instance? | **Allocation identity.** The address of an `Arc` names the instance; compare with `Arc::ptr_eq` or `Weak::as_ptr`. Whoever compares later keeps a clone or a `Weak`, so the allocation cannot be freed and its address reused while the comparison can still be made. A `Weak` also tells when the instance is gone. | `PoolIdentity`: a column pool, checked by the picker before it reuses its bindings. `ChartView::content_revision`: a panel; the resident display cache holds a `Weak` of it and retires the entry once `strong_count()` is 0. `ChartView::stream_revision` and `content_revision` in the streamed draw tokens. The owning tile of a stream-field `RecordedStep`. A `PipelineReadiness` (#315): it holds the renderer's compile queue as a `Weak` and reports the renderer gone once the queue is dropped. |
 | Is this the same stored content? | **Shared storage.** `Arc::ptr_eq` on shared GPU storage: equal means a cheap edit reused it. A shortcut, not an identity. | `RadialFrame::shares_annotations_with`, `BoundedAnnotationFrame::shares_rasters_with`. |
 | Did the content change? | **Generation.** A counter that moves on every change. A token records it and compares it before use. It never names an object. | A column's allocation epoch (one per upload), the pool's `layout_generation`, `target_pipeline_generation`, `font_generation`, the value of a `ChartView` content revision, `RenderRevision`. |
 | Is this the same GPU device? | wgpu's own `Device` equality. | Preparation jobs (`src/renderer/preparation.rs`). |
@@ -775,6 +791,8 @@ lines, split connectors and annotation overlay through the same sink
 
 여기서 제로카피는 별도 CPU 점 배열 없이 매핑된 스테이징에 직접 기록한다는 뜻이다. GPU 복사는 존재하며, 축·문자용 CPU 이미지 버퍼는 컬럼 업로드의 보장 범위와 별개다.
 
+풀은 모든 값을 8바이트 `(hi, lo)` 쌍으로 저장한다. 쌍 컬럼(f64 소스나 `HiLoColumnSource`)은 이 형식 그대로 스테이징에 쓰고 풀로 복사한다. 단일 레인 컬럼은 값마다 4바이트만 스테이징에 쓴다(#317). `ColumnSource::lanes`가 `ColumnLanes::Single`을 반환하는 소스(내장 f32 소스)와 인덱스 레인(ragged 오프셋, 삼각형 인덱스)이 여기에 해당한다. 업로드는 이 바이트를 임시 스토리지 버퍼 하나로 복사한 뒤, 컴퓨트 패스(`column_expand.wgsl`)로 컬럼 영역에 `(값, 0)`을 기록한다. 그래서 풀에는 쌍 업로드와 같은 바이트가 들어가고 셰이더는 바뀌지 않는다. 이런 컬럼은 스테이징과 호스트→GPU 전송량이 절반으로 줄어든다. 임시 버퍼는 GPU 안에만 있으며 스테이징처럼 메모리 집계에 포함한다. 단일 레인이라고 선언한 소스가 두 번째 레인에 0이 아닌 값을 쓰면 업로드가 실패한다. 필요한 컴퓨트를 지원하지 않는 장치나 스토리지 바인딩 하나에 들어가지 않는 컬럼은 쌍으로 스테이징한다. 스트리밍 소스는 항상 쌍으로 스테이징한다. 한 업로드의 단일 레인 컬럼은 풀에 연속으로 배치하므로 디스패치 한 번으로 모두 확장하며, 배치의 호스트 비용이 컬럼 수에 따라 늘지 않는다.
+
 ### 원본 데이터 스트리밍과 상주 전환
 
 ![컬럼 기반 화면 갱신 루프: 조건부 CPU 래스터화, 상주 GPU 데이터와 청크 스트리밍·합성](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/streaming-architecture-kr.png)
@@ -955,7 +973,7 @@ annotation_selection_dirty = false;
 | 질문 | 방식 | 쓰는 곳 |
 |---|---|---|
 | 어느 렌더러가 발급했는가? | **발급 번호.** 프로세스 전체에서 하나인 카운터가 `u64`를 발급한다. 증가는 overflow를 검사하고, 넘치면 값을 되돌리지 않고 `FiggyError::CounterExhausted`로 실패하므로 같은 값이 다시 나오지 않는다. | `issue_renderer_identity`(`src/renderer/device.rs`)가 `renderer_identity`를 발급한다. `ChartId`와 `RenderRevision`은 이 값을 렌더러별 순번과 묶으므로, 한 렌더러의 id가 다른 렌더러의 id와 같아지지 않는다. `issue_raster_stamp`(`src/chart.rs`)는 래스터에 영향을 주는 변경마다 `Chart`의 래스터 스탬프를 발급하므로, `ChartView`가 다른 차트를 자신을 그린 차트로 착각하지 않는다(#265). 편집은 실패할 수 없으므로 카운터가 소진되면 스탬프는 `None`이 되고 `prepare`가 `CounterExhausted`로 실패한다. |
-| 살아 있는 같은 인스턴스인가? | **할당 신원.** `Arc`의 주소가 인스턴스를 가리키며 `Arc::ptr_eq`나 `Weak::as_ptr`로 비교한다. 나중에 비교할 쪽은 그 `Arc`의 복제나 `Weak`를 들고 있어야 한다. 그래야 비교할 수 있는 동안 할당이 해제되지 않아 같은 주소가 다시 쓰이지 않는다. `Weak`는 인스턴스가 사라졌는지도 알려 준다. | `PoolIdentity`: 컬럼 풀. 픽커가 바인딩을 다시 쓰기 전에 확인한다. `ChartView::content_revision`: 패널. 상주 표시 캐시가 이 셀의 `Weak`를 들고 있다가 `strong_count()`가 0이 되면 항목을 지운다. 스트리밍 그리기 토큰의 `ChartView::stream_revision`·`content_revision`. 스트림 필드 `RecordedStep`의 소유 타일. |
+| 살아 있는 같은 인스턴스인가? | **할당 신원.** `Arc`의 주소가 인스턴스를 가리키며 `Arc::ptr_eq`나 `Weak::as_ptr`로 비교한다. 나중에 비교할 쪽은 그 `Arc`의 복제나 `Weak`를 들고 있어야 한다. 그래야 비교할 수 있는 동안 할당이 해제되지 않아 같은 주소가 다시 쓰이지 않는다. `Weak`는 인스턴스가 사라졌는지도 알려 준다. | `PoolIdentity`: 컬럼 풀. 픽커가 바인딩을 다시 쓰기 전에 확인한다. `ChartView::content_revision`: 패널. 상주 표시 캐시가 이 셀의 `Weak`를 들고 있다가 `strong_count()`가 0이 되면 항목을 지운다. 스트리밍 그리기 토큰의 `ChartView::stream_revision`·`content_revision`. 스트림 필드 `RecordedStep`의 소유 타일. `PipelineReadiness`(#315): 렌더러의 컴파일 대기열을 `Weak`로 들고 있다가 대기열이 해제되면 렌더러가 사라졌다고 알린다. |
 | 저장된 내용이 같은가? | **공유 저장소.** 공유 GPU 저장소에 `Arc::ptr_eq`를 쓴다. 같으면 가벼운 편집이 저장소를 그대로 재사용했다는 뜻이다. 빠른 판단용이며 신원이 아니다. | `RadialFrame::shares_annotations_with`, `BoundedAnnotationFrame::shares_rasters_with` |
 | 내용이 바뀌었는가? | **세대.** 바뀔 때마다 올라가는 카운터다. 토큰이 값을 기록해 두었다가 쓰기 전에 비교한다. 객체를 가리키지 않는다. | 컬럼의 할당 epoch(업로드마다 하나), 풀의 `layout_generation`, `target_pipeline_generation`, `font_generation`, `ChartView` content revision의 값, `RenderRevision` |
 | 같은 GPU 장치인가? | wgpu `Device` 자체의 동등 비교 | 준비 작업(`src/renderer/preparation.rs`) |

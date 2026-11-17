@@ -949,6 +949,9 @@ fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
     for failed_index in 0..4 {
         let mut pool =
             ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 4 * ALIGN).unwrap();
+        // A fixed pool refuses what does not fit; a growing one grows the
+        // candidate slab (#311), below.
+        pool.growth_policy = GrowthPolicy::Fixed;
         let before = full_pool_state(&pool);
         let mut columns = Vec::new();
         for index in 0..4 {
@@ -968,6 +971,22 @@ fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
             Err(AllocError::OutOfSpace { .. })
         ));
         assert_eq!(full_pool_state(&pool), before, "replacement {failed_index}");
+
+        // Growth: the candidate doubles the capacity and holds every column.
+        pool.growth_policy = GrowthPolicy::OnAllocFailure;
+        let handles = pool
+            .begin_batch_upsert(
+                demo_batch_columns(sources),
+                GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap()
+            .commit();
+        assert_eq!(pool.capacity(), 8 * ALIGN, "replacement {failed_index}");
+        assert_eq!(
+            handles[failed_index].byte_size,
+            (5 - failed_index) as u64 * ALIGN
+        );
+        assert!(pool.backup.is_none(), "a slab of another size is released");
     }
 }
 
@@ -1566,6 +1585,7 @@ fn legacy_staging_failure_restores_allocator_and_allows_retry() {
             ColumnInputMeta {
                 id: "x".into(),
                 len_values: column.data.len(),
+                lanes: crate::ColumnLanes::Pair,
             },
             GpuAllocCtx::new(&device, &queue, &ledger),
             |dst| ColumnSource::write_pairs(&column, dst),
@@ -1837,14 +1857,20 @@ fn the_staging_plan_splits_only_at_the_device_ceiling() {
     assert_eq!(batch_region_bytes(&columns, u64::MAX).unwrap(), 5 * ALIGN);
 
     // Ceiling above the batch: one chunk, one copy.
-    let whole = plan_batch_chunks(&columns, 64 * ALIGN).unwrap();
+    let whole = plan_batch_chunks(&columns, 64 * ALIGN, None, None).unwrap();
     assert_eq!(whole.len(), 1);
     assert_eq!(whole[0].byte_size, 5 * ALIGN);
     assert_eq!(whole[0].region_offset, 0);
-    assert_eq!(whole[0].column_offsets, vec![0, 256, 512, 768, 1024]);
+    let regions: Vec<usize> = whole[0].placements.iter().map(|p| p.region).collect();
+    assert_eq!(regions, vec![0, 256, 512, 768, 1024]);
+    // Pair columns are staged in the region's layout.
+    let staged: Vec<usize> = whole[0].placements.iter().map(|p| p.staging).collect();
+    assert_eq!(staged, regions);
+    assert_eq!(whole[0].staging_bytes, whole[0].byte_size);
+    assert_eq!(whole[0].transient_bytes, 0);
 
     // Ceiling of two columns: three chunks, contiguous in the region.
-    let split = plan_batch_chunks(&columns, 2 * ALIGN).unwrap();
+    let split = plan_batch_chunks(&columns, 2 * ALIGN, None, None).unwrap();
     assert_eq!(split.len(), 3);
     assert_eq!(split[0].columns, 0..2);
     assert_eq!(split[1].columns, 2..4);
@@ -1853,7 +1879,10 @@ fn the_staging_plan_splits_only_at_the_device_ceiling() {
     for chunk in &split {
         assert_eq!(chunk.region_offset, expected_offset);
         assert!(chunk.byte_size <= 2 * ALIGN);
-        assert_eq!(chunk.column_offsets[0], 0, "each chunk starts at its own 0");
+        assert_eq!(
+            chunk.placements[0].region, 0,
+            "each chunk starts at its own 0"
+        );
         expected_offset += chunk.byte_size;
     }
     assert_eq!(expected_offset, 5 * ALIGN, "chunks tile the region exactly");
@@ -2137,6 +2166,7 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
         ColumnInputMeta {
             id: "x".into(),
             len_values: replacement.data.len(),
+            lanes: crate::ColumnLanes::Pair,
         },
         GpuAllocCtx::new(&device, &queue, &ledger),
         |dst| ColumnSource::write_pairs(&replacement, dst),
@@ -3534,10 +3564,13 @@ fn a_ragged_column_uploads_with_offset_statistics() {
         )
         .unwrap();
     assert_eq!(id, "outliers");
+    // The offsets are index lanes, staged compact through one transient
+    // buffer where the device runs the expansion (#317).
+    let transient = u64::from(ExpandLimits::of(&device).is_some());
     assert_eq!(
         ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
-        1,
-        "one staging buffer"
+        1 + transient,
+        "one staging buffer, and the transient buffer of the compact offsets"
     );
 
     let ragged = pool.ragged("outliers").unwrap();
@@ -3802,9 +3835,12 @@ fn the_monitor_accounts_records_and_ragged_columns() {
     .unwrap();
     let ragged_bytes = 2 * ALIGN + ALIGN;
     assert_eq!(pool.used_bytes(), record_bytes + ragged_bytes);
+    // The ragged offsets are index lanes: their compact staging adds one
+    // transient buffer where the device runs the expansion (#317).
+    let transient = u64::from(ExpandLimits::of(&device).is_some());
     assert_eq!(
         ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
-        2
+        2 + transient
     );
     assert_eq!(
         pool.gpu_bytes(),
@@ -3819,7 +3855,7 @@ fn the_monitor_accounts_records_and_ragged_columns() {
     assert_eq!(pool.free_bytes(), 32 * ALIGN);
     assert_eq!(
         ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
-        2,
+        2 + transient,
         "removal creates no buffer"
     );
 }
@@ -3878,10 +3914,13 @@ fn a_triangle_column_uploads_its_indices_as_index_lanes_with_statistics() {
         .upsert_triangles("mesh", &TriangleSource { indices: &indices }, ctx())
         .unwrap();
     assert_eq!(id, "mesh");
+    // Indices are index lanes, staged compact through one transient buffer
+    // where the device runs the expansion (#317).
+    let transient = u64::from(ExpandLimits::of(&device).is_some());
     assert_eq!(
         ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
-        1,
-        "one staging buffer"
+        1 + transient,
+        "one staging buffer, and the transient buffer of the compact indices"
     );
     let triangles = pool.triangles("mesh").unwrap();
     assert_eq!(triangles.slot().triangles, 2);
@@ -4581,17 +4620,17 @@ fn the_staging_plan_partitions_any_batch_under_any_ceiling() {
         let total: u64 = (0..count).map(region).sum();
         let one = column_region_bytes(1).unwrap();
         for ceiling in [one - 1, one, 3 * one, total.max(1), u64::MAX] {
-            let chunks = plan_batch_chunks(&columns, ceiling).unwrap();
+            let chunks = plan_batch_chunks(&columns, ceiling, None, None).unwrap();
             assert!(!chunks.is_empty());
             let (mut next, mut region_offset) = (0usize, 0u64);
             for chunk in &chunks {
                 assert_eq!(chunk.columns.start, next, "{count} columns under {ceiling}");
                 assert!(count == 0 || chunk.columns.start < chunk.columns.end);
-                assert_eq!(chunk.column_offsets.len(), chunk.columns.len());
+                assert_eq!(chunk.placements.len(), chunk.columns.len());
                 assert_eq!(chunk.region_offset, region_offset);
                 let mut offset = 0u64;
                 for (k, index) in chunk.columns.clone().enumerate() {
-                    assert_eq!(chunk.column_offsets[k] as u64, offset);
+                    assert_eq!(chunk.placements[k].region as u64, offset);
                     offset += region(index);
                 }
                 assert_eq!(offset, chunk.byte_size);
@@ -4731,4 +4770,620 @@ fn box_fields_name_every_record_schema_field() {
     schema.sort_unstable();
     fields.sort_unstable();
     assert_eq!(schema, fields);
+}
+
+// ---- compact single-lane upload (#317) ----
+
+/// An f32 column that writes `(value, 0)` but declares the default
+/// [`ColumnLanes::Pair`](crate::ColumnLanes): it uploads through the pair
+/// staging, the bytes a single-lane upload must reproduce.
+struct PairF32(Vec<f32>);
+
+impl ColumnSource for PairF32 {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        for (index, &value) in self.0.iter().enumerate() {
+            dst.write_pair(index, value, 0.0);
+        }
+    }
+}
+
+/// A source that declares a single lane and writes a second one anyway.
+struct LyingSingle(usize);
+
+impl ColumnSource for LyingSingle {
+    fn len(&self) -> usize {
+        self.0
+    }
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        for index in 0..self.0 {
+            let lo = if index + 1 == self.0 { 0.5 } else { 0.0 };
+            dst.write_pair(index, index as f32, lo);
+        }
+    }
+    fn lanes(&self) -> crate::ColumnLanes {
+        crate::ColumnLanes::Single
+    }
+}
+
+/// Every byte of a column's pool region, its padding included.
+fn read_region_bytes(ctx: GpuAllocCtx<'_>, pool: &ColumnPool, handle: ColumnHandle) -> Vec<u8> {
+    let (device, queue) = (ctx.device, ctx.queue);
+    let readback = device.create_buffer(&BufferDescriptor {
+        label: Some("figgy compact upload test readback"),
+        size: handle.byte_size,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("figgy compact upload test readback"),
+    });
+    encoder.copy_buffer_to_buffer(pool.buffer(), handle.offset, &readback, 0, handle.byte_size);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    encoder.map_buffer_on_submit(&readback, wgpu::MapMode::Read, .., move |result| {
+        let _ = sender.send(result);
+    });
+    let submission = queue.submit(std::iter::once(encoder.finish()));
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(std::time::Duration::from_secs(60)),
+        })
+        .expect("readback poll");
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("readback callback")
+        .expect("map readback");
+    let bytes = readback
+        .slice(..)
+        .get_mapped_range()
+        .expect("mapped readback")
+        .to_vec();
+    readback.unmap();
+    bytes
+}
+
+/// The pair bytes of `(value, 0)` values in a region of `region` bytes: the
+/// old upload's staging, zero padding included.
+fn pair_bytes(values: &[f32], region: u64) -> Vec<u8> {
+    let mut bytes = vec![0u8; region as usize];
+    for (index, value) in values.iter().enumerate() {
+        bytes[index * 8..index * 8 + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+    }
+    bytes
+}
+
+/// f32 values with every bit pattern class: zeros of both signs, NaN with a
+/// payload, infinities, subnormals and ordinary values.
+fn awkward_f32(len: usize) -> Vec<f32> {
+    let specials = [
+        0.0,
+        -0.0,
+        f32::from_bits(0x7fc0_1234),
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::from_bits(1),
+        f32::MIN_POSITIVE,
+        f32::MAX,
+        -1.5,
+    ];
+    (0..len)
+        .map(|i| specials.get(i).copied().unwrap_or(i as f32 * 0.37 - 11.0))
+        .collect()
+}
+
+fn compact_device_or_skip(device: &wgpu::Device) -> bool {
+    let compacts = ExpandLimits::of(device).is_some();
+    if !compacts {
+        eprintln!("device cannot run the expansion; the compact path is not exercised");
+    }
+    compacts
+}
+
+#[test]
+fn staged_lanes_halve_single_lane_staging_only() {
+    let limits = Some(ExpandLimits::for_test(65_535, 1 << 30));
+    let single = StagedLanes::of(limits, crate::ColumnLanes::Single, false, 1000);
+    assert_eq!(
+        single,
+        StagedLanes {
+            compact: true,
+            single: true
+        }
+    );
+    // 1000 values: an 8000-byte pair region padded to 8192.
+    let region = column_region_bytes(1000).unwrap();
+    assert_eq!(region, 8192);
+    assert_eq!(single.raw_bytes(1000), 4000);
+    assert_eq!(single.staged_bytes(region), 4096);
+    assert_eq!(single.transient_bytes(region), 4096);
+    // One value: a 256-byte region, 128 staged, 128 in the transient run.
+    assert_eq!(single.staged_bytes(ALIGN), 128);
+    assert_eq!(single.transient_bytes(ALIGN), 128);
+
+    let pair = StagedLanes::of(limits, crate::ColumnLanes::Pair, false, 1000);
+    assert_eq!(
+        pair,
+        StagedLanes {
+            compact: false,
+            single: false
+        }
+    );
+    assert_eq!(pair.raw_bytes(1000), 8000);
+    assert_eq!(pair.staged_bytes(region), region);
+    assert_eq!(pair.transient_bytes(region), 0);
+
+    // Index lanes are compact without the second-lane contract.
+    let index = StagedLanes::of(limits, crate::ColumnLanes::Pair, true, 1000);
+    assert_eq!(
+        index,
+        StagedLanes {
+            compact: true,
+            single: false
+        }
+    );
+    // A device that cannot expand stages pairs, still holding the contract.
+    let none = StagedLanes::of(None, crate::ColumnLanes::Single, false, 1000);
+    assert_eq!(
+        none,
+        StagedLanes {
+            compact: false,
+            single: true
+        }
+    );
+    // A region past one binding window, or past one 2D grid, stages pairs:
+    // a fallback, never a cap.
+    let narrow = Some(ExpandLimits::for_test(65_535, 4096));
+    assert!(!StagedLanes::of(narrow, crate::ColumnLanes::Single, false, 1000).compact);
+    let tiny_grid = Some(ExpandLimits::for_test(2, 1 << 30));
+    assert!(StagedLanes::of(tiny_grid, crate::ColumnLanes::Single, false, 256).compact);
+    assert!(!StagedLanes::of(tiny_grid, crate::ColumnLanes::Single, false, 257).compact);
+}
+
+/// A compact chunk stages its single-lane columns at half their region, in
+/// the batch's order, and gives each an aligned transient slot.
+#[test]
+fn the_staging_plan_places_compact_columns_at_half_their_region() {
+    let a = vec![1.0f32; 100]; // region 1024
+    let b = col_f64(vec![1.0; 100]); // region 1024, pairs
+    let c = vec![2.0f32; 1]; // region 256
+    let columns: Vec<(&str, &dyn ColumnSource)> = vec![
+        ("a", &a as &dyn ColumnSource),
+        ("b", &b as &dyn ColumnSource),
+        ("c", &c as &dyn ColumnSource),
+    ];
+    let limits = Some(ExpandLimits::for_test(65_535, 1 << 30));
+    let chunks = plan_batch_chunks(&columns, u64::MAX, limits, None).unwrap();
+    assert_eq!(chunks.len(), 1);
+    let chunk = &chunks[0];
+    let at: Vec<(usize, usize, u64, bool)> = chunk
+        .placements
+        .iter()
+        .map(|p| (p.region, p.staging, p.transient, p.lanes.compact))
+        .collect();
+    // Pairs first, then the compact columns as one run; each compact
+    // column's staging and transient offset is half its offset in the run.
+    assert_eq!(
+        at,
+        vec![
+            (1024, 1024, 0, true),
+            (0, 0, 0, false),
+            (2048, 1024 + 512, 512, true)
+        ]
+    );
+    assert_eq!(chunk.byte_size, 2304);
+    assert_eq!(chunk.pair_bytes, 1024);
+    assert_eq!(chunk.compact_bytes(), 1280);
+    assert_eq!(chunk.staging_bytes, 1024 + 640);
+    assert_eq!(chunk.transient_bytes, 640);
+}
+
+/// #317: f32 columns staged compact land in the pool as exactly the bytes a
+/// pair upload writes, padding included, on every resident upload path:
+/// `add_column`, `upsert_column`, the batch insert and the fixed batch
+/// upsert, each with f32 and f64 columns mixed.
+#[test]
+fn compact_single_lane_uploads_match_the_pair_bytes_on_every_path() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(256 * ALIGN) else {
+        return;
+    };
+    if !compact_device_or_skip(&device) {
+        return;
+    }
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let region_of = |pool: &ColumnPool, id: &str| {
+        read_region_bytes(ctx(), pool, pool.handle_for(id).expect("column present"))
+    };
+    for len in [1usize, 31, 32, 33, 64, 65, 1000] {
+        let values = awkward_f32(len);
+        let region = column_region_bytes(len).unwrap();
+        let expected = pair_bytes(&values, region);
+        let compact = Column {
+            data: values.clone(),
+        };
+        let reference = PairF32(values.clone());
+        let f64s = col_f64((0..len).map(|i| i as f64 * 0.1 + 1e9).collect());
+
+        // add_column: the compact column, and the pair reference.
+        pool.add_column(format!("add{len}"), &compact, ctx())
+            .unwrap();
+        pool.add_column(format!("ref{len}"), &reference, ctx())
+            .unwrap();
+        assert!(pool.expand.is_some(), "the compact path ran");
+        assert_eq!(region_of(&pool, &format!("ref{len}")), expected, "{len}");
+        assert_eq!(region_of(&pool, &format!("add{len}")), expected, "{len}");
+        let slot = pool.slot(&format!("add{len}")).unwrap();
+        let reference_slot = pool.slot(&format!("ref{len}")).unwrap();
+        assert_eq!(slot.len_values, len);
+        assert_eq!(
+            (slot.min.to_bits(), slot.max.to_bits(), slot.min_positive),
+            (
+                reference_slot.min.to_bits(),
+                reference_slot.max.to_bits(),
+                reference_slot.min_positive
+            ),
+            "statistics are recorded as before"
+        );
+
+        // upsert_column, over an existing id.
+        pool.upsert_column(format!("add{len}"), &compact, ctx())
+            .unwrap();
+        assert_eq!(region_of(&pool, &format!("add{len}")), expected, "{len}");
+
+        // The batch insert: f32, f64, f32 in one region.
+        let f64_id = format!("bf64{len}");
+        let a_id = format!("ba{len}");
+        let c_id = format!("bc{len}");
+        pool.add_columns(
+            &[
+                (a_id.as_str(), &compact as &dyn ColumnSource),
+                (f64_id.as_str(), &f64s as &dyn ColumnSource),
+                (c_id.as_str(), &values as &dyn ColumnSource),
+            ],
+            ctx(),
+        )
+        .unwrap();
+        assert_eq!(region_of(&pool, &a_id), expected, "{len}");
+        assert_eq!(region_of(&pool, &c_id), expected, "{len}");
+        // The f64 column keeps its (hi, lo) split.
+        let split: Vec<u8> = {
+            let mut bytes = vec![0u8; region as usize];
+            for (index, &value) in f64s.data.iter().enumerate() {
+                let (hi, lo) = crate::data::split_f64_to_f32_pair(value);
+                bytes[index * 8..index * 8 + 4].copy_from_slice(&hi.to_bits().to_le_bytes());
+                bytes[index * 8 + 4..index * 8 + 8].copy_from_slice(&lo.to_bits().to_le_bytes());
+            }
+            bytes
+        };
+        assert_eq!(region_of(&pool, &f64_id), split, "{len}");
+
+        // The fixed batch upsert (the renderer's paired columns).
+        let upsert_a = format!("ua{len}");
+        let upsert_b = format!("ub{len}");
+        pool.begin_batch_upsert(
+            [
+                (upsert_a.clone(), &compact as &dyn ColumnSource),
+                (upsert_b.clone(), &f64s as &dyn ColumnSource),
+            ],
+            ctx(),
+        )
+        .unwrap()
+        .commit();
+        assert_eq!(region_of(&pool, &upsert_a), expected, "{len}");
+        assert_eq!(region_of(&pool, &upsert_b), split, "{len}");
+        // Every earlier column survived the relayout byte for byte.
+        assert_eq!(region_of(&pool, &a_id), expected, "{len}");
+        assert_eq!(region_of(&pool, &f64_id), split, "{len}");
+
+        for id in [
+            format!("add{len}"),
+            format!("ref{len}"),
+            a_id,
+            c_id,
+            f64_id,
+            upsert_a,
+            upsert_b,
+        ] {
+            pool.remove_column(&id).unwrap();
+        }
+    }
+}
+
+/// A ragged column's offsets and a triangle column's indices are index
+/// lanes, staged compact: the pool holds `(index bits, 0)` exactly as before,
+/// for indices past 2^24 too, and the ragged values (an f32 column) are
+/// compact as well.
+#[test]
+fn compact_index_lanes_store_the_same_ragged_and_triangle_words() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
+        return;
+    };
+    if !compact_device_or_skip(&device) {
+        return;
+    }
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let words = |pool: &ColumnPool, handle: ColumnHandle| -> Vec<u32> {
+        read_region_bytes(ctx(), pool, handle)
+            .chunks_exact(4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
+    };
+    let expected = |lanes: &[u32], region: u64| -> Vec<u32> {
+        let mut out = vec![0u32; (region / 4) as usize];
+        for (index, &lane) in lanes.iter().enumerate() {
+            out[index * 2] = lane;
+        }
+        out
+    };
+
+    let values = Column {
+        data: awkward_f32(70),
+    };
+    let offsets = Column {
+        data: vec![0u32, 3, 3, 40, 70],
+    };
+    pool.upsert_ragged(
+        "groups",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let ragged = pool.ragged("groups").unwrap();
+    let value_bits: Vec<u32> = values.data.iter().map(|v| v.to_bits()).collect();
+    assert_eq!(
+        words(&pool, ragged.values().unwrap()),
+        expected(&value_bits, column_region_bytes(70).unwrap())
+    );
+    assert_eq!(
+        words(&pool, ragged.offsets().unwrap()),
+        expected(&offsets.data, ALIGN)
+    );
+    assert_eq!(ragged.stats().groups, 4);
+    assert_eq!(ragged.stats().max_group, 37);
+
+    let indices = Column {
+        data: vec![0u32, 1, 2, 16_777_217, 5, u32::MAX, 7, 8, 4_000_000_001],
+    };
+    pool.upsert_triangles("mesh", &TriangleSource { indices: &indices }, ctx())
+        .unwrap();
+    let triangles = pool.triangles("mesh").unwrap();
+    assert_eq!(
+        words(&pool, triangles.indices().unwrap()),
+        expected(&indices.data, ALIGN),
+        "every index up to u32::MAX is exact"
+    );
+    assert_eq!(triangles.stats().max_index, u32::MAX);
+    assert_eq!(triangles.stats().triangles, 3);
+}
+
+/// A source that declares a single lane and writes a non-zero second lane is
+/// refused on every path, and the pool is left as it was.
+#[test]
+fn a_single_lane_source_writing_a_second_lane_is_refused() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let keep = col_f64(vec![1.0, 2.0]);
+    pool.add_column("keep".into(), &keep, ctx()).unwrap();
+    let used = pool.used_bytes();
+    let lying = LyingSingle(100);
+    let refused = |error: AllocError| match error {
+        AllocError::AllocationFailed { resource, reason } => {
+            assert_eq!(resource, "column source");
+            assert!(reason.contains("single-lane"), "{reason}");
+        }
+        other => panic!("expected the single-lane refusal, got {other:?}"),
+    };
+
+    refused(pool.add_column("lying".into(), &lying, ctx()).unwrap_err());
+    assert!(pool.slot("lying").is_none());
+    refused(
+        pool.upsert_column("keep".into(), &lying, ctx())
+            .unwrap_err(),
+    );
+    assert_eq!(
+        pool.slot("keep").unwrap().len_values,
+        2,
+        "the old column stays"
+    );
+    let fine = vec![1.0f32; 10];
+    refused(
+        pool.add_columns(
+            &[
+                ("fine", &fine as &dyn ColumnSource),
+                ("lying", &lying as &dyn ColumnSource),
+            ],
+            ctx(),
+        )
+        .unwrap_err(),
+    );
+    assert!(
+        pool.slot("fine").is_none(),
+        "the batch is rolled back whole"
+    );
+    let refused_batch = pool
+        .begin_batch_upsert(
+            [
+                ("keep".to_string(), &fine as &dyn ColumnSource),
+                ("lying".to_string(), &lying as &dyn ColumnSource),
+            ],
+            ctx(),
+        )
+        .err()
+        .expect("the batch upsert is refused");
+    refused(refused_batch);
+    assert_eq!(pool.used_bytes(), used);
+    assert_eq!(pool.slot("keep").unwrap().len_values, 2);
+    assert_eq!(
+        read_column_values(ctx(), &pool, pool.handle_for("keep").unwrap()),
+        keep.data
+    );
+}
+
+/// A column needing more workgroups than one grid row holds expands over
+/// several rows: the test hook narrows the row to three workgroups, so a
+/// column of eleven workgroups runs on a 3 x 4 grid and every value lands.
+#[test]
+fn a_compact_column_wider_than_one_grid_row_expands_fully() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
+        return;
+    };
+    if !compact_device_or_skip(&device) {
+        return;
+    }
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    struct ResetGrid;
+    impl Drop for ResetGrid {
+        fn drop(&mut self) {
+            super::expand::FORCED_GRID_X.with(|forced| forced.set(None));
+        }
+    }
+    let _reset = ResetGrid;
+    super::expand::FORCED_GRID_X.with(|forced| forced.set(Some(3)));
+    let len = 64 * 10 + 5;
+    let values = awkward_f32(len);
+    let region = column_region_bytes(len).unwrap();
+    // 672 values in the padded region: eleven 64-wide workgroups.
+    assert_eq!((region / 8).div_ceil(64), 11);
+    let column = Column {
+        data: values.clone(),
+    };
+    pool.add_column("wide".into(), &column, ctx()).unwrap();
+    pool.add_columns(&[("wide batch", &column as &dyn ColumnSource)], ctx())
+        .unwrap();
+    for id in ["wide", "wide batch"] {
+        assert_eq!(
+            read_region_bytes(ctx(), &pool, pool.handle_for(id).unwrap()),
+            pair_bytes(&values, region),
+            "{id}"
+        );
+    }
+}
+
+/// A compact run larger than one window is split into the fewest windows,
+/// not one per column: the test hook narrows the window to 1024 pool bytes,
+/// so a batch of compact columns of mixed sizes expands over windows whose
+/// boundaries fall inside columns, and every byte lands.
+#[test]
+fn a_compact_run_split_into_windows_expands_every_column() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(256 * ALIGN) else {
+        return;
+    };
+    if !compact_device_or_skip(&device) {
+        return;
+    }
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    struct ResetWindow;
+    impl Drop for ResetWindow {
+        fn drop(&mut self) {
+            super::expand::FORCED_WINDOW.with(|forced| forced.set(None));
+        }
+    }
+    let _reset = ResetWindow;
+    super::expand::FORCED_WINDOW.with(|forced| forced.set(Some(1024)));
+    let lens = [1usize, 100, 33, 300, 64, 7];
+    let sources: Vec<Column<f32>> = lens
+        .iter()
+        .enumerate()
+        .map(|(k, &len)| Column {
+            data: awkward_f32(len).iter().map(|v| v + k as f32).collect(),
+        })
+        .collect();
+    let between = col_f64(vec![0.5; 40]);
+    let ids: Vec<String> = (0..lens.len()).map(|k| format!("w{k}")).collect();
+    let mut batch: Vec<(&str, &dyn ColumnSource)> = ids
+        .iter()
+        .zip(&sources)
+        .map(|(id, source)| (id.as_str(), source as &dyn ColumnSource))
+        .collect();
+    batch.insert(2, ("pairs", &between as &dyn ColumnSource));
+    pool.add_columns(&batch, ctx()).unwrap();
+    for (id, source) in ids.iter().zip(&sources) {
+        let region = column_region_bytes(source.data.len()).unwrap();
+        assert_eq!(
+            read_region_bytes(ctx(), &pool, pool.handle_for(id).unwrap()),
+            pair_bytes(&source.data, region),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        read_column_values(ctx(), &pool, pool.handle_for("pairs").unwrap()),
+        between.data
+    );
+}
+
+/// The compact upload's cost at 10M f32 values: staging bytes and upload
+/// time against the pair upload of the same values (`PairF32`, the old
+/// path). Run with `--ignored --nocapture`.
+#[test]
+#[ignore = "timing benchmark: 10M values"]
+fn compact_upload_timing_for_ten_million_f32_values() {
+    const VALUES: usize = 10_000_000;
+    let region = column_region_bytes(VALUES).unwrap();
+    let Some((device, queue, ledger, mut pool)) = mk_pool(region + ALIGN) else {
+        return;
+    };
+    if !compact_device_or_skip(&device) {
+        return;
+    }
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let data: Vec<f32> = (0..VALUES).map(|i| i as f32 * 0.5).collect();
+    let compact = Column { data };
+    let pair = PairF32(compact.data.clone());
+    let wait = || {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(120)),
+            })
+            .expect("poll");
+    };
+    // Warm the expansion pipeline so the timing is the upload's.
+    pool.add_column("warm".into(), &vec![1.0f32; 64], ctx())
+        .unwrap();
+    pool.remove_column("warm").unwrap();
+    wait();
+
+    let lanes = StagedLanes::of(
+        ExpandLimits::of(&device),
+        crate::ColumnLanes::Single,
+        false,
+        VALUES,
+    );
+    // One column at a time: the pool holds one 80 MB region.
+    let measure = |pool: &mut ColumnPool, source: &dyn ColumnSource| {
+        ledger.reset_peak();
+        let before = ledger.snapshot().total_bytes();
+        let started = std::time::Instant::now();
+        pool.add_column("timed".into(), source, ctx()).unwrap();
+        wait();
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let peak = ledger.peak_bytes().saturating_sub(before);
+        let bytes = read_region_bytes(ctx(), pool, pool.handle_for("timed").unwrap());
+        pool.remove_column("timed").unwrap();
+        wait();
+        (ms, peak, bytes)
+    };
+    let (pair_ms, pair_peak, pair_bytes) = measure(&mut pool, &pair);
+    let (compact_ms, compact_peak, compact_bytes) = measure(&mut pool, &compact);
+    println!(
+        "COMPACT_UPLOAD values={VALUES} region={region} \
+         pair_staging={region} compact_staging={} compact_transient={} \
+         pair_ms={pair_ms:.2} compact_ms={compact_ms:.2} \
+         pair_upload_peak={pair_peak} compact_upload_peak={compact_peak}",
+        lanes.staged_bytes(region),
+        lanes.transient_bytes(region),
+    );
+    assert!(lanes.compact);
+    assert_eq!(lanes.staged_bytes(region), region / 2);
+    assert!(
+        compact_bytes == pair_bytes,
+        "the compact upload wrote other bytes"
+    );
 }

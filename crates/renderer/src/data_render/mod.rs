@@ -56,10 +56,11 @@ pub(crate) mod stream_field;
 mod stream_point_style_tests;
 pub mod vector;
 pub use column_pool::{
-    AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, ColumnSlot, DefragPolicy,
-    FreeRegion, GpuAllocCtx, GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot,
-    RaggedSource, RaggedStats, RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource,
-    RecordStats, TriangleId, TriangleRef, TriangleSlot, TriangleSource, TriangleStats,
+    AllocError, BOX_PLOT_RECORD, BatchSource, ColumnHandle, ColumnId, ColumnPool, ColumnSlot,
+    ColumnStaging, ColumnStagingError, DefragPolicy, FreeRegion, GpuAllocCtx, GrowthPolicy,
+    MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot, RaggedSource, RaggedStats, RecordId,
+    RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats, TriangleId, TriangleRef,
+    TriangleSlot, TriangleSource, TriangleStats,
 };
 
 // Instance, adapter, surface, and device setup.

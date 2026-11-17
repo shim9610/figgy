@@ -207,6 +207,10 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("contour_anchor", crate::gpu_contour::CONTOUR_ANCHOR_SHADER),
     ("contour_label", crate::gpu_contour::CONTOUR_LABEL_SHADER),
     ("errorbar_fit", crate::gpu_extent::ERRORBAR_FIT_SHADER),
+    (
+        "column_expand",
+        crate::data_render::column_pool::COLUMN_EXPAND_SHADER,
+    ),
     ("radial", crate::radial::RADIAL_SHADER),
     ("radial_pick", crate::radial::RADIAL_PICK_SHADER),
     (

@@ -983,6 +983,9 @@ impl FiggyChart {
     }
 
     /// Queue cancellation only when an automatic stream is active.
+    ///
+    /// Returns a plain string, not JSON.
+    #[wasm_bindgen(unchecked_return_type = "\"stream_cancel_queued\" | \"resident\"")]
     pub fn interrupt_render(&mut self) -> Result<String, JsValue> {
         let status = self
             .renderer
@@ -1223,6 +1226,8 @@ impl FiggyChart {
     /// Wake after work already submitted to this queue completes. The
     /// returned promise owns only its completion receiver, not a chart or
     /// renderer borrow. Resolving does not service receipts or draw a frame.
+    ///
+    #[wasm_bindgen(unchecked_return_type = "Promise<void>")]
     pub fn streaming_gpu_ready(&self) -> js_sys::Promise {
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.renderer.queue().on_submitted_work_done(move || {
@@ -1239,6 +1244,10 @@ impl FiggyChart {
     }
 
     /// Pure metadata inspection; does not poll, reserve a range, or draw.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn stream_status(&self) -> Result<String, JsValue> {
         let status = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
         let residency = self
@@ -1276,6 +1285,11 @@ impl FiggyChart {
 
     /// Metadata-only admission for incoming columns; no payload is read,
     /// registered, uploaded, or reserved. Chart-derived buffers are excluded.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// Sizes are in bytes.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn inspect_column_admission(&self, lengths: Vec<f64>) -> Result<String, JsValue> {
         let lengths = lengths
             .into_iter()
@@ -1298,6 +1312,9 @@ impl FiggyChart {
         .to_string())
     }
 
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn streaming_capabilities(&self) -> String {
         let supported = self.renderer.inspect_streaming_capability(self.chart_id);
         let render_supported = supported.is_ok();
@@ -1313,6 +1330,33 @@ impl FiggyChart {
             "contour": false,
         })
         .to_string()
+    }
+
+    /// Whether a candidate document could stream (#311), checked with the
+    /// renderer's own streaming rules (`Renderer::inspect_streaming_candidate`,
+    /// the rules `streaming_capabilities` applies to the current chart)
+    /// without changing anything: no state is read but the two JSON
+    /// strings, and the candidate need not be valid for this chart's columns.
+    /// Returns `{ "supported": true, "reason": null }` or
+    /// `{ "supported": false, "reason": "<the first rule it breaks>" }`.
+    /// JSON that does not parse as a `Config` or a series list throws.
+    ///
+    /// JS: `const { supported, reason } = JSON.parse(chart.inspect_streaming_capabilities(cfg, series));`
+    pub fn inspect_streaming_capabilities(
+        &self,
+        config_json: &str,
+        series_json: &str,
+    ) -> Result<String, JsValue> {
+        let config: renderer::Config = serde_json::from_str(config_json)
+            .map_err(|error| js_err(format!("config JSON: {error}")))?;
+        let series: Vec<SeriesConfig> = serde_json::from_str(series_json)
+            .map_err(|error| js_err(format!("series JSON: {error}")))?;
+        let verdict = Renderer::inspect_streaming_candidate(&config, &series);
+        Ok(serde_json::json!({
+            "supported": verdict.is_ok(),
+            "reason": verdict.err().map(|error| error.to_string()),
+        })
+        .to_string())
     }
 
     /// Synchronous fit request routing, allowing the facade to wait for

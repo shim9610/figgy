@@ -847,6 +847,12 @@ impl CompileQueue {
         }
     }
 
+    /// A handle on this queue that does not keep it alive (#315): once the
+    /// renderer drops the queue, the handle sees it gone.
+    pub(crate) fn downgrade(&self) -> WeakCompileQueue {
+        WeakCompileQueue(std::rc::Rc::downgrade(&self.0))
+    }
+
     /// Compiles ended so far; it only grows.
     pub(crate) fn settled(&self) -> u64 {
         self.0.borrow().schedule.settled()
@@ -922,6 +928,77 @@ impl CompileQueue {
             position = end;
         }
         Ok(())
+    }
+}
+
+/// A [`CompileQueue`] held weakly (#315), for a readiness handle that
+/// must not keep the renderer's compiles alive or borrow the renderer.
+/// Allocation identity: the `Weak` tells when the queue, and with it the
+/// renderer, is gone. Every read upgrades it, borrows the state, copies
+/// out what it needs and lets both go before any await.
+#[derive(Clone)]
+pub(crate) struct WeakCompileQueue(std::rc::Weak<std::cell::RefCell<QueueState>>);
+
+/// How a wait on a [`WeakCompileQueue`] ended other than ready.
+pub(crate) enum WeakWaitEnd {
+    /// A compile in the scope ended other than ready: its label and how.
+    Failed(String, CompileOutcome),
+    /// The queue was dropped: its renderer is gone.
+    Dropped,
+}
+
+impl WeakCompileQueue {
+    /// The compiles of the queue's current set in `scope`, or `None` once
+    /// the queue is gone. A queue with nothing scheduled counts zero.
+    pub(crate) fn counts(
+        &self,
+        scope: crate::compile_schedule::Scope,
+    ) -> Option<crate::compile_schedule::Counts> {
+        let queue = self.0.upgrade()?;
+        let state = queue.borrow();
+        let counts = match state.schedule.current_set() {
+            Some(set) => state.schedule.counts(set, scope),
+            None => crate::compile_schedule::Counts::default(),
+        };
+        Some(counts)
+    }
+
+    /// Wait until every compile of the queue's current set in `scope` has
+    /// ended, waking on each change, never by polling. Neither the queue
+    /// nor its state is held across the await: the renderer may draw,
+    /// resize or be dropped meanwhile. Dropping the queue resolves its
+    /// change signal, so a waiter wakes and ends with
+    /// [`WeakWaitEnd::Dropped`]; every compile ends otherwise, so the wait
+    /// always ends.
+    pub(crate) async fn wait_scope(
+        &self,
+        scope: crate::compile_schedule::Scope,
+    ) -> Result<(), WeakWaitEnd> {
+        loop {
+            let promise = {
+                let Some(queue) = self.0.upgrade() else {
+                    return Err(WeakWaitEnd::Dropped);
+                };
+                let state = queue.borrow();
+                let Some(set) = state.schedule.current_set() else {
+                    return Ok(());
+                };
+                match state.schedule.scope_state(set, scope) {
+                    Ok(true) => state.changed.promise.clone(),
+                    Ok(false) => return Ok(()),
+                    Err((index, outcome)) => {
+                        return Err(WeakWaitEnd::Failed(
+                            state.schedule.compile(index).label.clone(),
+                            outcome,
+                        ));
+                    }
+                }
+            };
+            if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+                // The change signal is only ever resolved, never rejected:
+                // there is no failure to report.
+            }
+        }
     }
 }
 

@@ -23,39 +23,141 @@ pub struct RendererColumnUpsert<'a> {
         Option<&'a crate::gpu_extent::GpuErrorbarExtentEngine>,
 }
 
+/// A resident column upload written in chunks (#311), begun by
+/// [`Renderer::begin_column_upload`] and installed by
+/// [`Renderer::commit_column_upload`].
+///
+/// It owns its mapped staging buffer ([`data_render::ColumnStaging`]) and
+/// borrows nothing, so a host can keep it across calls. Chunks are written
+/// in index order with [`Self::write_range`]; a refused chunk changes
+/// nothing. Dropping the upload cancels it and releases the staging buffer.
+pub struct ColumnUpload {
+    pub(in crate::renderer) id: ColumnId,
+    pub(in crate::renderer) staging: data_render::ColumnStaging,
+    /// The renderer that issued the upload: another renderer refuses it.
+    pub(in crate::renderer) renderer_identity: u64,
+    /// The column revision the upload replaces, `None` for a new id: the
+    /// staleness check at commit (a generation, ARCHITECTURE.md).
+    pub(in crate::renderer) expected_revision: Option<u64>,
+}
+
+impl ColumnUpload {
+    /// The column id the upload installs.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The column's length in values.
+    pub fn len(&self) -> usize {
+        self.staging.len()
+    }
+
+    /// Whether the column has no value (never: an empty upload is refused).
+    pub fn is_empty(&self) -> bool {
+        self.staging.is_empty()
+    }
+
+    /// How many values were written: where the next chunk starts.
+    pub fn written(&self) -> usize {
+        self.staging.written()
+    }
+
+    /// The encoding every chunk must have.
+    pub fn encoding(&self) -> crate::StreamEncoding {
+        self.staging.encoding()
+    }
+
+    /// The column revision the upload expects to replace.
+    pub fn expected_revision(&self) -> Option<u64> {
+        self.expected_revision
+    }
+
+    /// The staging bytes the open upload holds on the device.
+    pub fn staging_bytes(&self) -> u64 {
+        self.staging.staging_bytes()
+    }
+
+    /// Write one chunk at value `start`, which must be [`Self::written`]:
+    /// the source writes its whole length into the staging buffer. An
+    /// overlapping or gapped chunk, a chunk past the end and a chunk of
+    /// another encoding are refused with
+    /// [`FiggyError::InvalidColumnUpload`], and nothing changes.
+    pub fn write_range(&mut self, start: u64, source: crate::StreamColumnSource<'_>) -> Result<()> {
+        self.staging
+            .write_range(start, source)
+            .map_err(|error| FiggyError::InvalidColumnUpload {
+                id: self.id.clone(),
+                reason: error.reason(),
+            })
+    }
+}
+
+/// A prepared replacement of some columns, records and ragged columns, the
+/// removal of others and one chart's config and series
+/// ([`Renderer::begin_replace_chart_sources`], #311): nothing is published
+/// until [`Self::commit`], and dropping it leaves the renderer as it was.
+#[must_use = "dropping a ChartSourcesReplacement leaves renderer authority unchanged"]
+pub struct ChartSourcesReplacement<'a> {
+    pub(in crate::renderer) inner: data_render::column_pool::ColumnSourcesBatch<'a>,
+    pub(in crate::renderer) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
+    pub(in crate::renderer) visual_revision: &'a mut RenderRevision,
+    pub(in crate::renderer) pending_defrag: &'a mut bool,
+    pub(in crate::renderer) stream_revision_lineage: &'a mut HashMap<ColumnId, u64>,
+    /// The removed ids, whose stream lineage ends with them.
+    pub(in crate::renderer) removals: &'a [&'a str],
+    pub(in crate::renderer) chart_plan: ChartReplacementPlan,
+    pub(in crate::renderer) picker: Option<PreparedActivePickerMutation<'a>>,
+}
+
+impl ChartSourcesReplacement<'_> {
+    /// The exact pool view that will be live after [`Self::commit`].
+    pub fn pool(&self) -> &ColumnPool {
+        self.inner.pool()
+    }
+
+    /// Publish the pool, the chart, the picker and the maintenance bit
+    /// together.
+    pub fn commit(self) {
+        let Self {
+            inner,
+            chart_states,
+            visual_revision,
+            pending_defrag,
+            stream_revision_lineage,
+            removals,
+            chart_plan,
+            picker,
+        } = self;
+        inner.commit();
+        // As `remove_column` ends a removed column's lineage.
+        for id in removals {
+            stream_revision_lineage.remove(*id);
+        }
+        chart_plan.publish(chart_states, visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        // The candidate is packed: nothing is left to compact.
+        *pending_defrag = false;
+    }
+}
+
 /// Prepared renderer side of the bundled demo transaction.
 /// A prepared replacement of some columns and one chart
 /// ([`Renderer::begin_replace_chart_columns`]): nothing is published until
 /// [`Self::commit`], and dropping it leaves the renderer as it was.
 #[must_use = "dropping a ChartColumnsReplacement leaves renderer authority unchanged"]
 pub struct ChartColumnsReplacement<'a, const N: usize> {
-    pub(in crate::renderer) inner: data_render::column_pool::ColumnBatchUpsert<'a, N>,
-    pub(in crate::renderer) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
-    pub(in crate::renderer) visual_revision: &'a mut RenderRevision,
-    pub(in crate::renderer) pending_defrag: &'a mut bool,
-    pub(in crate::renderer) chart_plan: ChartReplacementPlan,
-    pub(in crate::renderer) picker: Option<PreparedActivePickerMutation<'a>>,
+    pub(in crate::renderer) inner: ChartSourcesReplacement<'a>,
+    pub(in crate::renderer) handles: [ColumnHandle; N],
 }
 
 impl<const N: usize> ChartColumnsReplacement<'_, N> {
     /// Publish the columns, the chart, the picker and the maintenance bit
     /// together; the handles are the columns' in the order they were given.
     pub fn commit(self) -> [ColumnHandle; N] {
-        let Self {
-            inner,
-            chart_states,
-            visual_revision,
-            pending_defrag,
-            chart_plan,
-            picker,
-        } = self;
-        let handles = inner.commit();
-        chart_plan.publish(chart_states, visual_revision);
-        if let Some(picker) = picker {
-            picker.commit();
-        }
-        *pending_defrag = false;
-        handles
+        self.inner.commit();
+        self.handles
     }
 }
 

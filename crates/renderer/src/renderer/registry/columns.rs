@@ -267,7 +267,9 @@ impl Renderer {
     }
 
     /// Prepare one commit that uploads `columns` (new ids, or replacements
-    /// of resident ones) and replaces chart `chart_id`'s config and series.
+    /// of resident ones) and replaces chart `chart_id`'s config and series:
+    /// [`Self::begin_replace_chart_sources`] with plain columns only and no
+    /// removals, whose commit returns the columns' handles in order.
     ///
     /// `prepare_state` receives the complete candidate pool, so the chart's
     /// axis ranges can be derived from the new columns before anything is
@@ -284,29 +286,124 @@ impl Renderer {
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
+        let uploads = columns.map(|(id, source)| (id, BatchSource::Column(source)));
+        let inner = self.begin_replace_chart_sources(chart_id, &uploads, &[], prepare_state)?;
+        let handles = inner.inner.handles(&columns.map(|(id, _)| id))?;
+        Ok(ChartColumnsReplacement { inner, handles })
+    }
+
+    /// Prepare one commit (#311) that uploads `uploads` — plain columns,
+    /// records and ragged columns, each inserted under its id or replacing
+    /// what the id holds of the same kind —, removes `removals` (plain
+    /// columns, records, ragged or triangle index columns no series of
+    /// another chart reads) and replaces chart `chart_id`'s config and
+    /// series.
+    ///
+    /// The pool side is one candidate pool
+    /// ([`ColumnPool::upsert_record`]'s and [`ColumnPool::upsert_ragged`]'s
+    /// rules apply to the records and ragged columns): `prepare_state`
+    /// receives it complete, uploads in and removals out, so the chart's
+    /// axes can be fitted from the new columns before anything is
+    /// published. The returned series are validated against it, the chart
+    /// plan and the active picker are prepared, and
+    /// [`ChartSourcesReplacement::commit`] publishes the pool, the chart and
+    /// the picker together. Dropping the guard, or any error before it is
+    /// returned, leaves the pool, every chart, the picker and the device
+    /// ledger's live bytes as they were. Other charts that read a replaced
+    /// column move their data revision.
+    ///
+    /// Peak memory: the live slab plus every upload's staging, the compact
+    /// columns' transient buffer and a candidate slab of the live capacity,
+    /// or a grown one when the survivors and the uploads need it; a memory
+    /// budget that cannot hold the peak refuses the call with
+    /// [`AllocError::BudgetExceeded`](crate::AllocError) before any buffer
+    /// is made. A streamed id, in `uploads` or `removals`, is refused (rule
+    /// 8), as is an id twice.
+    pub fn begin_replace_chart_sources<'a, F>(
+        &'a mut self,
+        chart_id: ChartId,
+        uploads: &[(&str, BatchSource<'_>)],
+        removals: &'a [&'a str],
+        prepare_state: F,
+    ) -> Result<ChartSourcesReplacement<'a>>
+    where
+        F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
+    {
         // The guard borrows the renderer, so the check uses a clone of the
         // health record; a failed check drops the guard, which rolls back.
         let health = self.health.clone();
-        let guard =
-            self.begin_replace_chart_columns_unreported(chart_id, columns, prepare_state)?;
+        let guard = self.begin_replace_chart_sources_unreported(
+            chart_id,
+            uploads,
+            removals,
+            prepare_state,
+        )?;
         health.check()?;
         Ok(guard)
     }
 
-    pub(super) fn begin_replace_chart_columns_unreported<const N: usize, F>(
-        &mut self,
+    pub(super) fn begin_replace_chart_sources_unreported<'a, F>(
+        &'a mut self,
         chart_id: ChartId,
-        columns: [(&str, &dyn ColumnSource); N],
+        uploads: &[(&str, BatchSource<'_>)],
+        removals: &'a [&'a str],
         prepare_state: F,
-    ) -> Result<ChartColumnsReplacement<'_, N>>
+    ) -> Result<ChartSourcesReplacement<'a>>
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
         self.health.check()?;
-        let ids = columns.map(|(id, _)| id);
-        for id in ids {
-            self.reject_streamed_id(id)?;
+        for (id, source) in uploads {
+            match source {
+                BatchSource::Column(_) => self.reject_streamed_id(id)?,
+                BatchSource::Record(_) => self.reject_streamed_composite(id, "a record")?,
+                BatchSource::Ragged(_) => self.reject_streamed_composite(id, "a ragged column")?,
+            }
         }
+        for id in removals {
+            if self.streaming_sources.contains_key(*id) {
+                return Err(FiggyError::InvalidStreamSource {
+                    id: (*id).to_owned(),
+                    reason: "a streamed column is removed with remove_column, \
+                             not in a batch transaction",
+                });
+            }
+            if self.monotonic.owns_column(id) {
+                return Err(FiggyError::ReservedColumnId {
+                    id: (*id).to_owned(),
+                });
+            }
+        }
+        // A removed id another chart reads would leave that chart reading
+        // nothing: the transaction is refused instead.
+        for other in self.every_chart() {
+            if *other == chart_id {
+                continue;
+            }
+            let state = self
+                .chart_states
+                .get(other)
+                .ok_or(FiggyError::UnknownChart { id: *other })?;
+            if let Some(id) = removals
+                .iter()
+                .find(|id| series_list_references_any_column(&state.series, std::iter::once(**id)))
+            {
+                return Err(FiggyError::InvalidColumnUpload {
+                    id: (*id).to_owned(),
+                    reason: "another chart reads a column the replacement removes",
+                });
+            }
+        }
+        // Every id whose contents change: the uploads and the removals.
+        let mut changed = Vec::new();
+        changed
+            .try_reserve_exact(uploads.len().saturating_add(removals.len()))
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "chart replacement column ids",
+                reason: error.to_string(),
+            })?;
+        changed.extend(uploads.iter().map(|(id, _)| *id));
+        changed.extend(removals.iter().copied());
         let Renderer {
             device,
             queue,
@@ -318,10 +415,12 @@ impl Renderer {
             pending_defrag,
             picker,
             gpu_ledger,
+            stream_revision_lineage,
             ..
         } = self;
-        let inner = pool.begin_batch_upsert(
-            columns.map(|(id, source)| (id.to_string(), source)),
+        let inner = pool.begin_batch_upsert_sources(
+            uploads,
+            removals,
             pool_alloc_ctx(&*device, &*queue, &gpu_ledger),
         )?;
         let (config, series) = prepare_state(inner.pool())?;
@@ -336,7 +435,7 @@ impl Renderer {
             chart_id,
             config,
             series,
-            &ids,
+            &changed,
         )?;
 
         let picker = match picker.active.as_ref().map(|active| active.chart_id) {
@@ -353,16 +452,18 @@ impl Renderer {
                         .ok_or(FiggyError::UnknownChart { id: active_id })?;
                     PickChartPlan::for_active_layer_in(inner.pool(), &state.config, &state.series)?
                 };
-                picker.prepare_active_pool_mutation(inner.pool(), active_id, plan, &ids)?
+                picker.prepare_active_pool_mutation(inner.pool(), active_id, plan, &changed)?
             }
             None => None,
         };
 
-        Ok(ChartColumnsReplacement {
+        Ok(ChartSourcesReplacement {
             inner,
             chart_states,
             visual_revision,
             pending_defrag,
+            stream_revision_lineage,
+            removals,
             chart_plan,
             picker,
         })
@@ -573,6 +674,130 @@ impl Renderer {
             &self.queue,
             self.errorbar_extent_engine.as_ref(),
         )
+    }
+
+    /// Begin a chunked upload of the resident column `id` (#311): `len`
+    /// values of `encoding`, written chunk by chunk into one mapped staging
+    /// buffer ([`ColumnUpload::write_range`]) and installed at once by
+    /// [`Self::commit_column_upload`]. Nothing is registered until then.
+    ///
+    /// `expected_revision` is the [`Self::column_revision`] of the column the
+    /// upload replaces, `None` for an id that is not registered; anything
+    /// else is refused as stale ([`FiggyError::StaleStateToken`]), and so is
+    /// a commit after the column changed. A streamed id and a reserved id
+    /// are refused, as for every resident insertion. The staging buffer is
+    /// held to the device's buffer limit and the memory budget
+    /// ([`FiggyError::Pool`]); it is charged to the ledger while the upload
+    /// is open.
+    pub fn begin_column_upload(
+        &self,
+        id: impl Into<ColumnId>,
+        len: usize,
+        encoding: crate::StreamEncoding,
+        expected_revision: Option<u64>,
+    ) -> Result<ColumnUpload> {
+        self.health.check()?;
+        let id = id.into();
+        self.reject_streamed_id(&id)?;
+        self.check_upload_revision(&id, expected_revision)?;
+        let staging = data_render::ColumnStaging::new(
+            len,
+            encoding,
+            pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
+        )?;
+        // The staging buffer was created on this device; an error scope that
+        // caught a failure is reported here.
+        self.health.check()?;
+        Ok(ColumnUpload {
+            id,
+            staging,
+            renderer_identity: self.renderer_identity,
+            expected_revision,
+        })
+    }
+
+    /// Install a chunked upload (#311) as a failure-atomic insert or
+    /// same-id replacement, as [`Self::upsert_column`] installs a column a
+    /// source writes in one call: the charts that read it move their data
+    /// revision, the picker is prepared against the new pool. Refused,
+    /// changing nothing, when a value was not written
+    /// ([`FiggyError::InvalidColumnUpload`]), when another renderer began
+    /// it or the column's revision is no longer the one the upload expects
+    /// ([`FiggyError::StaleStateToken`]), or when the pool cannot hold the
+    /// column ([`FiggyError::Pool`]). The upload is consumed either way.
+    pub fn commit_column_upload(&mut self, upload: ColumnUpload) -> Result<ColumnHandle> {
+        let result = self.commit_column_upload_unreported(upload);
+        self.reported(result)
+    }
+
+    pub(super) fn commit_column_upload_unreported(
+        &mut self,
+        upload: ColumnUpload,
+    ) -> Result<ColumnHandle> {
+        self.health.check()?;
+        let ColumnUpload {
+            id,
+            staging,
+            renderer_identity,
+            expected_revision,
+        } = upload;
+        if renderer_identity != self.renderer_identity {
+            return Err(FiggyError::StaleStateToken {
+                reason: format!("column upload {id} was begun on another renderer"),
+            });
+        }
+        if !staging.is_complete() {
+            return Err(FiggyError::InvalidColumnUpload {
+                id,
+                reason: data_render::ColumnStagingError::Incomplete.reason(),
+            });
+        }
+        self.reject_streamed_id(&id)?;
+        self.check_upload_revision(&id, expected_revision)?;
+        let health = self.health.clone();
+        let invalidation = self.prepare_column_invalidation(&id)?;
+        let old_layout_generation = self.pool.layout_generation();
+        let inner = self.pool.begin_upsert_staged_column(
+            id.clone(),
+            staging,
+            pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
+        )?;
+        let guard = finish_renderer_column_upsert(
+            inner,
+            &self.streaming_sources,
+            &id,
+            old_layout_generation,
+            &mut self.chart_states,
+            &mut self.visual_revision,
+            &mut self.pending_defrag,
+            &mut self.picker,
+            Some(invalidation),
+            &self.device,
+            &self.queue,
+            self.errorbar_extent_engine.as_ref(),
+        )?;
+        // A failed check drops the guard, which rolls back.
+        health.check()?;
+        Ok(guard.commit())
+    }
+
+    /// Refuse an upload whose expected revision is not column `id`'s.
+    fn check_upload_revision(&self, id: &str, expected: Option<u64>) -> Result<()> {
+        let current = self.column_revision(id);
+        if current == expected {
+            return Ok(());
+        }
+        let describe = |revision: Option<u64>| match revision {
+            Some(revision) => format!("revision {revision}"),
+            None => "no registered column".to_owned(),
+        };
+        Err(FiggyError::StaleStateToken {
+            reason: format!(
+                "column upload {id} expects {}, the renderer holds {}",
+                describe(expected),
+                describe(current)
+            ),
+        })
     }
 
     /// Failure-atomic scalar upsert without an intermediate batch-preparation

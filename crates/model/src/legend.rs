@@ -554,6 +554,34 @@ pub fn append_legend_entry_rich(
     content.segments.extend(label);
 }
 
+/// The one legend entry that stands for `cfg`, as the auto legend writes
+/// it ([`append_legend_entry_rich`] into an empty legend): the series'
+/// symbol ([`series_symbol_segments`] with the chart's colourbar map
+/// `colormap`, so the symbol names the series), one space, the `'\t'` column
+/// separator and the series' label (none when it has no
+/// [`SeriesConfig::label`]). A host appending it after existing entries puts
+/// a `'\n'` segment before it; [`update_legend_symbols_preserving_text`]
+/// and [`legend_entry_of_series`] then find it by the series it names
+/// (#312).
+pub fn series_legend_entry(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegment> {
+    // Only the segments are returned; the document style is a placeholder.
+    let mut row = RichText {
+        segments: Vec::new(),
+        color: Color::BLACK,
+        font_size: 0.0,
+        font: String::new(),
+        align: crate::text::TextAlign::Left,
+    };
+    append_legend_entry_rich(
+        &mut row,
+        series_symbol_segments(cfg, colormap),
+        cfg.label
+            .as_ref()
+            .map_or_else(Vec::new, |label| label.segments.clone()),
+    );
+    row.segments
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LegendEntrySpan {
     symbol: Range<usize>,
@@ -814,6 +842,40 @@ mod tests {
             font: String::new(),
             align: TextAlign::Left,
         }
+    }
+
+    /// One series' entry is the row the auto legend appends for it, found
+    /// again by the series its symbol names (#312).
+    #[test]
+    fn series_legend_entry_is_the_auto_row() {
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let mut cfg = line_cfg(red);
+        cfg.label = Some(RichText::plain("Signal", Color::BLACK, 14.0, ""));
+        let row = series_legend_entry(&cfg, None);
+        let mut auto = empty_content();
+        append_legend_entry_rich(
+            &mut auto,
+            series_symbol_segments(&cfg, None),
+            cfg.label.clone().unwrap().segments,
+        );
+        assert_eq!(row, auto.segments);
+        assert_eq!(row[0].series_id.as_deref(), Some("s"));
+        let mut content = empty_content();
+        append_legend_entry(
+            &mut content,
+            symbol_segments(&LegendEntryKind::Line, red),
+            "user",
+        );
+        content.segments.push(RichSegment::plain('\n'));
+        content.segments.extend(row);
+        assert_eq!(legend_entry_count(&content), 2);
+        assert_eq!(
+            legend_entry_of_series(&content, std::slice::from_ref(&cfg), "s"),
+            Some(1)
+        );
+        cfg.label = None;
+        let unlabelled = series_legend_entry(&cfg, None);
+        assert_eq!(unlabelled.last().map(|s| s.text), Some('\t'));
     }
 
     #[test]

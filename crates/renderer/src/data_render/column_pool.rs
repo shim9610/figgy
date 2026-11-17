@@ -11,6 +11,44 @@
 //! - `defragment` packs survivors into a backup buffer with GPU-internal
 //!   copies (no PCIe traffic) then swaps `primary <-> backup`.
 //!
+//! # Resident upload: pair and compact staging
+//!
+//! The pool stores every value as an 8-byte `(hi, lo)` f32 pair, and every
+//! shader reads that layout. How a column reaches it depends on its lanes
+//! (#317):
+//!
+//! - **Pair** columns (f64 sources, `HiLoColumnSource`, any source that
+//!   keeps the default [`ColumnLanes::Pair`](crate::ColumnLanes)) are staged
+//!   in the region's layout, 8 bytes per value, and copied staging → pool.
+//! - **Single-lane** columns (a source whose [`ColumnSource::lanes`] is
+//!   `Single`, such as an f32 slice, and the index lanes of ragged offsets
+//!   and triangle indices) are staged compact, 4 bytes per value: the
+//!   writer stores the first lane only, at `index * 4`. The upload copies
+//!   those bytes into one transient `STORAGE | COPY_DST` buffer per upload
+//!   (per staging chunk in a batch). An upload's compact columns are placed
+//!   as one contiguous run after its pair columns and the transient buffer
+//!   holds the run's compact half, so one dispatch of `column_expand.wgsl`
+//!   (split into windows only past one storage binding or one 2D grid, never
+//!   per column) writes `(value, 0)` over the whole run, every column's zero
+//!   padding included. The pool bytes are exactly those of a pair
+//!   upload. A single-lane source that writes a non-zero second lane fails
+//!   its upload ([`AllocError::AllocationFailed`], resource
+//!   `"column source"`).
+//!
+//! A compact column stages half its padded region instead of all of it; the
+//! transient buffer takes the same half again, and
+//! both are charged to the ledger like any staging. Copies, dispatches and
+//! the submission are one encoder per upload, as before. The expansion
+//! pipeline is created on the first compact upload and cached on the pool.
+//! A device without the compute the expansion needs, or a column whose
+//! region does not fit one storage binding or one 2D dispatch grid, is
+//! staged as pairs: a fallback, never a limit. Every resident upload site
+//! takes this path: `add_column`, the upserts, `add_columns` and the batch
+//! upserts, records, ragged and triangle columns. Relayout, growth and
+//! defragmentation copy pool bytes on the GPU and stage nothing. Streamed
+//! sources and streamed promotion stage pairs as before (streaming is not
+//! extended).
+//!
 //! # Source kinds
 //!
 //! Per-point data enters the pool in one of four kinds, all through
@@ -84,6 +122,7 @@ use crate::data::{
 pub use crate::data::ColumnId;
 
 mod alloc;
+mod expand;
 mod monitor;
 mod transactions;
 
@@ -91,12 +130,16 @@ pub use alloc::{ColumnDefragment, DefragPolicy, FreeRegion, GrowthPolicy};
 use alloc::{RegionUndo, align_up, alloc_region, alloc_region_from, batch_region_bytes};
 use alloc::{coalesce_regions, column_raw_bytes, column_region_bytes, out_of_space};
 use alloc::{plan_batch_chunks, streamed_batch_region_bytes, try_align_up};
+pub(crate) use expand::{COLUMN_EXPAND_SHADER, ColumnExpand};
+use expand::{ExpandLimits, StagedLanes};
 pub use monitor::GpuAllocCtx;
 pub(crate) use monitor::PoolIdentity;
-use monitor::{buffer_ceiling, create_buffer_checked};
+use monitor::{buffer_ceiling, create_buffer_checked, pool_gpu_error};
 pub(crate) use transactions::StreamedColumnUpload;
-pub use transactions::{ColumnBatchInsert, ColumnRemoval, ColumnUpsert};
-pub(crate) use transactions::{ColumnBatchUpsert, ResidentBatchCapacityError};
+pub use transactions::{
+    ColumnBatchInsert, ColumnRemoval, ColumnStaging, ColumnStagingError, ColumnUpsert,
+};
+pub(crate) use transactions::{ColumnSourcesBatch, ResidentBatchCapacityError};
 
 /// Alignment (in bytes) for every offset and size in the pool.
 pub const ALIGN: u64 = 256;
@@ -228,6 +271,20 @@ pub struct RaggedSource<'a> {
 #[derive(Clone, Copy)]
 pub struct TriangleSource<'a> {
     pub indices: &'a dyn ColumnSource,
+}
+
+/// One upload of a batch transaction (#311,
+/// `Renderer::begin_replace_chart_sources`): a plain column, a record or a
+/// ragged column, inserted under its id or replacing what the id holds of
+/// the same kind. The sources are borrowed; nothing is copied.
+#[derive(Clone, Copy)]
+pub enum BatchSource<'a> {
+    /// A plain column, as `Renderer::add_columns` registers one.
+    Column(&'a dyn ColumnSource),
+    /// A record, checked as [`ColumnPool::upsert_record`] checks one.
+    Record(RecordSource<'a>),
+    /// A ragged column, checked as [`ColumnPool::upsert_ragged`] checks one.
+    Ragged(RaggedSource<'a>),
 }
 
 /// The scalar statistics of a record, measured from the encoded `(hi, lo)`
@@ -546,6 +603,9 @@ pub struct ColumnPool {
     /// Whether an upload that does not fit may enlarge the pool.
     /// Default `OnAllocFailure`: the pool grows to the device's limit.
     pub growth_policy: GrowthPolicy,
+    /// The compact upload's expansion pipeline (#317), created on the first
+    /// upload that stages a single-lane column and kept for the pool's life.
+    expand: Option<ColumnExpand>,
 }
 
 impl ColumnPool {
@@ -599,6 +659,7 @@ impl ColumnPool {
             backup: None,
             defrag_policy: DefragPolicy::Manual,
             growth_policy: GrowthPolicy::OnAllocFailure,
+            expand: None,
         })
     }
 

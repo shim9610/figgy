@@ -452,6 +452,10 @@ impl FiggyChart {
     /// chart). Returns `{ len, truncated, dropped, x_range, pixel_offset }`
     /// as JSON.
     /// JS: `chart.set_monotonic("daq", 0, 1e-3, [ch0, ch1], "autoscale")`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn set_monotonic(
         &mut self,
         group: &str,
@@ -477,6 +481,10 @@ impl FiggyChart {
     /// chart's x range moves by exactly the new samples' span; the host may
     /// drop every sample before the window. Returns the update as JSON.
     /// JS: `chart.append_monotonic("daq", [new0, new1], true)`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn append_monotonic(
         &mut self,
         group: &str,
@@ -608,6 +616,10 @@ impl FiggyChart {
     /// document pixels, or `undefined` (#271). Read once: the element emits
     /// it as `figgy-plot-resize`, and the host applies it with
     /// `resize_monotonic(width, height, sources, plotArea)`.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson | undefined")]
     pub fn take_plot_resize_request(&mut self) -> Result<Option<String>, JsValue> {
         self.plot_resize_request
             .take()
@@ -649,6 +661,10 @@ impl FiggyChart {
     /// The chart's monotonic groups, each once, as a JSON array of names
     /// (#271): the groups whose sources `resize_monotonic`, `fit_layout`
     /// and the monotonic exports take. Empty for a chart without them.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn monotonic_groups(&self) -> Result<String, JsValue> {
         let mut groups: Vec<&str> = Vec::new();
         for series in self.chart_series()? {
@@ -666,6 +682,10 @@ impl FiggyChart {
     /// series whose group was never supplied, which draw nothing until
     /// `set_monotonic` supplies it. A call that moves the mapping takes the
     /// source or is refused, so no other series is listed.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn needs_source(&self) -> Result<String, JsValue> {
         let needs = match self.monotonic {
             Some(id) => self.renderer.monotonic_needs_source(id).map_err(js_err)?,

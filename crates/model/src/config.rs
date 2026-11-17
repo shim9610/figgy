@@ -2324,8 +2324,8 @@ mod colorbar_scale_tests {
 pub use crate::legend::{
     Legend, LegendCorner, LegendEntryKind, append_legend_entry, append_legend_entry_rich,
     legend_entry_count, legend_entry_of_series, legend_entry_series_id, remove_legend_entry,
-    scatter_shape_char, series_symbol_segments, set_legend_entry_label, symbol_segments,
-    update_legend_symbols_preserving_text,
+    scatter_shape_char, series_legend_entry, series_symbol_segments, set_legend_entry_label,
+    symbol_segments, update_legend_symbols_preserving_text,
 };
 
 // The wire form of `Config`: every field added after a release is additive

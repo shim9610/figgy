@@ -370,6 +370,18 @@ pub enum RuleKind {
     SeriesInManyLayers,
     /// a series id may belong to at most one overlay layer
     SeriesInManyOverlays,
+    /// a layer names a series the chart has not registered
+    LayerSeriesUnknown,
+    /// the series has no point size map to fit
+    PointSizeFitNoMap,
+    /// the size column has no finite, non-empty extent to fit the size domain to
+    PointSizeFitExtent,
+    /// the series is not a vector field
+    VectorFitNotVector,
+    /// a vector fit target must be finite and positive
+    VectorFitTarget,
+    /// the vector components have no finite, non-zero extent to fit the scale to
+    VectorFitExtent,
     /// a category group names categories of its axis
     CategoryGroupCategories,
     /// a category group's first category comes before its last
@@ -1365,6 +1377,12 @@ impl RuleKind {
             Self::SubplotLink => "SubplotLink",
             Self::SeriesInManyLayers => "SeriesInManyLayers",
             Self::SeriesInManyOverlays => "SeriesInManyOverlays",
+            Self::LayerSeriesUnknown => "LayerSeriesUnknown",
+            Self::PointSizeFitNoMap => "PointSizeFitNoMap",
+            Self::PointSizeFitExtent => "PointSizeFitExtent",
+            Self::VectorFitNotVector => "VectorFitNotVector",
+            Self::VectorFitTarget => "VectorFitTarget",
+            Self::VectorFitExtent => "VectorFitExtent",
             Self::CategoryGroupCategories => "CategoryGroupCategories",
             Self::CategoryGroupOrder => "CategoryGroupOrder",
             Self::CategoryGroupOverlap => "CategoryGroupOverlap",
@@ -2006,6 +2024,16 @@ impl std::fmt::Display for RuleKind {
                 "a series id may belong to at most one subplot or overlay layer"
             }
             Self::SeriesInManyOverlays => "a series id may belong to at most one overlay layer",
+            Self::LayerSeriesUnknown => "a layer names a series the chart has not registered",
+            Self::PointSizeFitNoMap => "the series has no point size map to fit",
+            Self::PointSizeFitExtent => {
+                "the size column has no finite, non-empty extent to fit the size domain to"
+            }
+            Self::VectorFitNotVector => "the series is not a vector field",
+            Self::VectorFitTarget => "a vector fit target must be finite and positive",
+            Self::VectorFitExtent => {
+                "the vector components have no finite, non-zero extent to fit the scale to"
+            }
             Self::CategoryGroupCategories => "a category group names categories of its axis",
             Self::CategoryGroupOrder => "a category group's first category comes before its last",
             Self::CategoryGroupOverlap => "category groups run in axis order without overlapping",
@@ -3550,6 +3578,30 @@ mod tests {
             (
                 RuleKind::SeriesInManyOverlays,
                 "a series id may belong to at most one overlay layer",
+            ),
+            (
+                RuleKind::LayerSeriesUnknown,
+                "a layer names a series the chart has not registered",
+            ),
+            (
+                RuleKind::PointSizeFitNoMap,
+                "the series has no point size map to fit",
+            ),
+            (
+                RuleKind::PointSizeFitExtent,
+                "the size column has no finite, non-empty extent to fit the size domain to",
+            ),
+            (
+                RuleKind::VectorFitNotVector,
+                "the series is not a vector field",
+            ),
+            (
+                RuleKind::VectorFitTarget,
+                "a vector fit target must be finite and positive",
+            ),
+            (
+                RuleKind::VectorFitExtent,
+                "the vector components have no finite, non-zero extent to fit the scale to",
             ),
             (
                 RuleKind::CategoryGroupCategories,

@@ -257,22 +257,103 @@ pub(super) fn batch_region_bytes(
     Ok(total)
 }
 
-/// One staging buffer's worth of a batch: a run of columns, their offsets
-/// inside the buffer, and where the run starts inside the pool region.
+/// One staging buffer's worth of a batch: a run of columns, where each goes
+/// inside the buffer and the pool region, and where the run starts inside
+/// the pool region.
 ///
-/// Because a chunk mirrors the region layout byte for byte, the upload is one
-/// `copy_buffer_to_buffer` per chunk — and one chunk covers the whole batch
-/// unless the device ceiling forces a split.
+/// Inside a chunk the pair columns come first, in the batch's order, and
+/// the compact single-lane columns after them, in the batch's order (#317):
+/// the compact ones form one contiguous run of the region. The staging
+/// holds the pairs in the region's layout, then the compact run's half,
+/// each compact column at half its offset in the run. So a chunk uploads
+/// with at most two copies (the pairs into the pool, the compact half into
+/// the transient buffer) and one expansion of the whole run, whatever its
+/// column count — and one chunk covers the whole batch unless the device
+/// ceiling forces a split.
 pub(super) struct BatchChunk {
     pub(super) columns: std::ops::Range<usize>,
-    pub(super) column_offsets: Vec<usize>,
+    pub(super) placements: Vec<ChunkColumn>,
     pub(super) region_offset: u64,
+    /// The chunk's share of the pool region.
     pub(super) byte_size: u64,
+    /// The pair columns' bytes: where the compact run starts, in the region
+    /// and in the staging.
+    pub(super) pair_bytes: u64,
+    /// The chunk's staging buffer: `pair_bytes` plus the compact run's half.
+    pub(super) staging_bytes: u64,
+    /// The chunk's transient storage buffer, the compact run's half; zero
+    /// without a compact column.
+    pub(super) transient_bytes: u64,
 }
 
+impl BatchChunk {
+    /// The compact run's bytes in the pool region.
+    pub(super) fn compact_bytes(&self) -> u64 {
+        self.byte_size - self.pair_bytes
+    }
+}
+
+/// Where one batch column goes inside its chunk, decided once per column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ChunkColumn {
+    /// Offset inside the chunk's share of the pool region.
+    pub(super) region: usize,
+    /// Offset inside the chunk's staging buffer.
+    pub(super) staging: usize,
+    /// Offset inside the chunk's transient buffer (compact columns only):
+    /// half the column's offset in the compact run.
+    pub(super) transient: u64,
+    /// The column's padded region size.
+    pub(super) bytes: u64,
+    pub(super) lanes: StagedLanes,
+}
+
+/// Close a chunk: lay its pair columns out first and its compact columns as
+/// one run after them.
+fn close_chunk(
+    columns: std::ops::Range<usize>,
+    mut placements: Vec<ChunkColumn>,
+    region_offset: u64,
+) -> BatchChunk {
+    let pair_bytes: u64 = placements
+        .iter()
+        .filter(|p| !p.lanes.compact)
+        .map(|p| p.bytes)
+        .sum();
+    let (mut pair_at, mut run_at) = (0u64, 0u64);
+    for placement in &mut placements {
+        if placement.lanes.compact {
+            placement.region = (pair_bytes + run_at) as usize;
+            placement.staging = (pair_bytes + run_at / 2) as usize;
+            placement.transient = run_at / 2;
+            run_at += placement.bytes;
+        } else {
+            placement.region = pair_at as usize;
+            placement.staging = pair_at as usize;
+            placement.transient = 0;
+            pair_at += placement.bytes;
+        }
+    }
+    BatchChunk {
+        columns,
+        placements,
+        region_offset,
+        byte_size: pair_bytes + run_at,
+        pair_bytes,
+        staging_bytes: pair_bytes + run_at / 2,
+        transient_bytes: run_at / 2,
+    }
+}
+
+/// Split a batch into chunks of at most `ceiling` region bytes. `limits` is
+/// the device's expansion support (`None` stages every column as pairs) and
+/// `index_column` the column stored as index lanes. Each source's
+/// [`ColumnSource::lanes`] is read here, once.
 pub(super) fn plan_batch_chunks(
     columns: &[(&str, &dyn ColumnSource)],
     ceiling: u64,
+    limits: Option<ExpandLimits>,
+    index_column: Option<usize>,
 ) -> Result<Vec<BatchChunk>, AllocError> {
     let alloc_failed = |error: std::collections::TryReserveError| AllocError::AllocationFailed {
         resource: "batch staging plan",
@@ -280,40 +361,49 @@ pub(super) fn plan_batch_chunks(
     };
     let mut chunks: Vec<BatchChunk> = Vec::new();
     let mut start = 0usize;
-    let mut offsets: Vec<usize> = Vec::new();
-    offsets.try_reserve(columns.len()).map_err(alloc_failed)?;
+    let mut placements: Vec<ChunkColumn> = Vec::new();
+    placements
+        .try_reserve(columns.len())
+        .map_err(alloc_failed)?;
     let mut chunk_bytes = 0u64;
     let mut region_offset = 0u64;
 
     for (index, (_, source)) in columns.iter().enumerate() {
-        let byte_size = column_region_bytes(source.len()).ok_or(AllocError::Internal {
+        let len_values = source.len();
+        let byte_size = column_region_bytes(len_values).ok_or(AllocError::Internal {
             invariant: "every batch column was sized by batch_region_bytes",
         })?;
         if chunk_bytes + byte_size > ceiling && index > start {
             chunks.try_reserve(1).map_err(alloc_failed)?;
-            chunks.push(BatchChunk {
-                columns: start..index,
-                column_offsets: std::mem::take(&mut offsets),
+            chunks.push(close_chunk(
+                start..index,
+                std::mem::take(&mut placements),
                 region_offset,
-                byte_size: chunk_bytes,
-            });
-            offsets
+            ));
+            placements
                 .try_reserve(columns.len() - index)
                 .map_err(alloc_failed)?;
             region_offset += chunk_bytes;
             chunk_bytes = 0;
             start = index;
         }
-        offsets.push(chunk_bytes as usize);
+        let lanes = StagedLanes::of(
+            limits,
+            source.lanes(),
+            index_column == Some(index),
+            len_values,
+        );
+        placements.push(ChunkColumn {
+            region: 0,
+            staging: 0,
+            transient: 0,
+            bytes: byte_size,
+            lanes,
+        });
         chunk_bytes += byte_size;
     }
     chunks.try_reserve(1).map_err(alloc_failed)?;
-    chunks.push(BatchChunk {
-        columns: start..columns.len(),
-        column_offsets: offsets,
-        region_offset,
-        byte_size: chunk_bytes,
-    });
+    chunks.push(close_chunk(start..columns.len(), placements, region_offset));
     Ok(chunks)
 }
 
