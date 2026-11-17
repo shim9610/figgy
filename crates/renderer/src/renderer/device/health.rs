@@ -334,6 +334,42 @@ pub(in crate::renderer) fn pool_alloc_ctx<'a>(
     data_render::GpuAllocCtx::new(device, queue, ledger)
 }
 
+/// Keep the browser `GPUDevice` and `GPUQueue` behind `device` and `queue`
+/// reachable until the work submitted on the queue completes, then release
+/// them.
+///
+/// wgpu's WebGPU backend releases nothing on drop: a device lives as long as
+/// JavaScript can reach it. Chromium 152 to 158 can deadlock the page's main
+/// thread when a device with submitted work still in flight is garbage
+/// collected: the queue's work-done callback then runs inside the GPU reply
+/// handler while that handler holds its lock, and the callback's own command
+/// flush waits on the same lock. Holding the handles until
+/// `onSubmittedWorkDone` resolves means a collected device never has work in
+/// flight (#322). A lost device has no work left, so nothing is held then.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn release_after_submitted_work(
+    health: &DeviceHealth,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) {
+    if health.is_lost() {
+        return;
+    }
+    let held = (device.clone(), queue.clone());
+    let (sender, receiver) = futures_channel::oneshot::channel();
+    queue.on_submitted_work_done(move || {
+        if sender.send(()).is_err() {
+            // The receiver was dropped: the waiting task was cancelled.
+        }
+    });
+    wasm_bindgen_futures::spawn_local(async move {
+        if receiver.await.is_err() {
+            // The callback was dropped without running: the device is gone.
+        }
+        drop(held);
+    });
+}
+
 /// Hand every retirement the ledger holds to the queue's completion: the
 /// resources are destroyed and their bytes credited once the work submitted
 /// before this call completes. One path for every renderer on a device
