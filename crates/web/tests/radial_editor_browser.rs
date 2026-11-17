@@ -443,7 +443,7 @@ async fn generated_labels_follow_an_edit_and_user_text_stays() {
     let read_back = read(&chart);
     assert_eq!(
         texts(&read_back),
-        [Some("Mine".into()), Some("25.0 kg (50.0%)".into())]
+        [Some("Mine".into()), Some("25 kg (50%)".into())]
     );
     assert!(!read_back.slices[0].text_generated);
     assert!(read_back.slices[1].text_generated);
@@ -462,7 +462,7 @@ async fn generated_labels_follow_an_edit_and_user_text_stays() {
         .unwrap();
     assert_eq!(
         texts(&read(&reopened)),
-        [Some("Mine".into()), Some("25.0 kg (25.0%)".into())]
+        [Some("Mine".into()), Some("25 kg (25%)".into())]
     );
 
     // The explicit rewrite replaces the host's text.
@@ -473,8 +473,8 @@ async fn generated_labels_follow_an_edit_and_user_text_stays() {
     assert_eq!(
         texts(&rewritten),
         [
-            Some("75.0 kg (75.0%)".into()),
-            Some("25.0 kg (25.0%)".into())
+            Some("75 kg (75%)".into()),
+            Some("25 kg (25%)".into())
         ]
     );
     assert!(rewritten.slices.iter().all(|s| s.text_generated));

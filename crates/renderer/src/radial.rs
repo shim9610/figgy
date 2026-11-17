@@ -393,6 +393,7 @@ impl RadialFrame {
         {
             return Ok(RadialPickTicket::none());
         }
+        self.gpu.health().check().map_err(radial_gpu_error)?;
         let device = self.gpu.device();
         // gpu-alloc: PickScratch
         let query = gpu_created(device, "radial pick query", || {
@@ -926,6 +927,9 @@ impl RadialRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<Arc<RadialFrame>, RadialError> {
+        // A lost device refuses here, before any buffer is created: wgpu's
+        // `create_buffer_init` panics on a destroyed device.
+        self.gpu.health().check().map_err(radial_gpu_error)?;
         let (width, height) = self.frame_size(chart, size, scale)?;
         let fonts = crate::text_render::font_generation();
         if let Some((_, _, _, _, frame)) =

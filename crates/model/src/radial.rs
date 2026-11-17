@@ -1714,7 +1714,7 @@ mod editing_contract {
             Some("B1\n20 kg (50%)"),
             "the detail children's percentages are of their subtotal"
         );
-        // The format, the decimals and the suffix.
+        // The format, the decimals and the suffix (trailing zeros are trimmed).
         chart.label_format = RadialLabelFormat::ValuePercent;
         chart.label_decimals = 1;
         chart.value_suffix = " t".into();
@@ -1723,26 +1723,26 @@ mod editing_contract {
             texts(&chart),
             [
                 Some("Mine"),
-                Some("180.0 t (90.0%)"),
-                Some("20.0 t (50.0%)"),
+                Some("180 t (90%)"),
+                Some("20 t (50%)"),
                 Some("Hers"),
             ]
         );
         // A slice whose text was cleared gets its automatic label again.
         chart.slices[0].set_text(None);
         chart.regenerate_labels();
-        assert_eq!(texts(&chart)[0], Some("20.0 t (10.0%)"));
+        assert_eq!(texts(&chart)[0], Some("20 t (10%)"));
         assert!(chart.slices[0].text_generated);
         // `normalize_labels` keeps a stale generated text; only
         // `regenerate_labels` rewrites it.
         chart.slices[1].value = 20.0;
         chart.normalize_labels();
-        assert_eq!(texts(&chart)[1], Some("180.0 t (90.0%)"));
+        assert_eq!(texts(&chart)[1], Some("180 t (90%)"));
         chart.regenerate_labels();
-        assert_eq!(texts(&chart)[1], Some("20.0 t (50.0%)"));
+        assert_eq!(texts(&chart)[1], Some("20 t (50%)"));
         // The explicit rewrite replaces the host's text and marks it.
         chart.format_labels();
-        assert_eq!(texts(&chart)[3], Some("20.0 t (50.0%)"));
+        assert_eq!(texts(&chart)[3], Some("20 t (50%)"));
         assert!(texts_generated(&chart).iter().all(|g| *g));
     }
     #[cfg(feature = "serde")]

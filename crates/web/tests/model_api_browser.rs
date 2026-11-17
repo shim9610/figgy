@@ -144,12 +144,12 @@ fn a_categorical_document_converts_with_its_notes() {
         ]
     );
 
-    // A document rule throws an `Error` with the rule's code; JSON that is
-    // not a document throws its message.
+    // A document rule throws an `Error` with the rule's code; text that
+    // does not parse as a document throws its message.
     let refused = document.replace("\"hovered\"", "\"bar_gap\": -1, \"hovered\"");
     let error = convert_categorical_document(&refused).unwrap_err();
     assert!(code(&error).is_some(), "{error:?}");
-    let error = convert_categorical_document("[]").unwrap_err();
+    let error = convert_categorical_document("{\"categories\":").unwrap_err();
     assert_eq!(code(&error), None);
     assert!(error.as_string().is_some());
 }
