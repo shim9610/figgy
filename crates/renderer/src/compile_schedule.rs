@@ -312,6 +312,17 @@ impl CompileSchedule {
         &self.compiles[index]
     }
 
+    /// The shader set the queue serves now, `None` before anything is
+    /// scheduled: the set of the newest compile. A renderer schedules only
+    /// for its current set and never goes back (an upgrade schedules the
+    /// full set before superseding the basic one), so the newest compile
+    /// names it. A readiness handle (#315) reads it instead of the
+    /// renderer's own set, which it cannot borrow.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn current_set(&self) -> Option<ShaderSet> {
+        self.compiles.last().map(|compile| compile.set)
+    }
+
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn len(&self) -> usize {
         self.compiles.len()
@@ -671,10 +682,13 @@ mod tests {
     #[test]
     fn an_upgrade_supersedes_the_waiting_basic_compiles() {
         let mut s = schedule(1, &["a", "b", "c"]);
+        assert_eq!(s.current_set(), Some(ShaderSet::Basic));
         let first = s.issue_next().unwrap();
         let full_a = s.push(ShaderSet::Full, "a".to_owned(), "stage");
         let full_b = s.push(ShaderSet::Full, "b".to_owned(), "stage");
         s.supersede(ShaderSet::Basic, ShaderSet::Full);
+        // The queue serves the set it moved to (#315).
+        assert_eq!(s.current_set(), Some(ShaderSet::Full));
         assert_eq!(
             s.compile(1).state,
             CompileState::Settled(CompileOutcome::Superseded { by: full_b })

@@ -129,7 +129,7 @@ handle reaches it; the general chart calls take a `ChartId`, which it never
 hands out (monotonic charts are not in `chart_order`), so no general call
 can change its config, view, display, fit or stream. A monotonic line series
 lives only there: `register_chart`, `set_chart_series`, `set_chart_state`
-and `begin_replace_chart_columns` refuse it with
+and `begin_replace_chart_columns` / `begin_replace_chart_sources` refuse it with
 `FiggyError::InvalidSeriesConfig { kind: RuleKind::MonotonicGeneralChart, .. }`.
 `monotonic_chart(id) -> MonotonicChart` lends its calls:
 
@@ -167,6 +167,22 @@ renderer-owned envelope columns: writing or removing them is
 `FiggyError::ReservedColumnId`. See
 [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
 
+A resident column can also arrive in chunks (#311):
+`begin_column_upload(id, len, encoding, expected_revision) -> ColumnUpload`
+creates one mapped staging buffer of the column's size (refused by the
+device buffer limit or the memory budget with `FiggyError::Pool`), each
+`ColumnUpload::write_range(start, StreamColumnSource)` writes a chunk through
+a `ColumnPairWriter` into the mapped range at `start == written()` (an
+overlapping, gapped, empty, past-the-end or mistyped chunk is
+`FiggyError::InvalidColumnUpload` and changes nothing), and
+`commit_column_upload(upload)` installs it as one failure-atomic upsert.
+`expected_revision` is the `column_revision(id)` the upload replaces
+(`None` for a new id); a different one, at begin or at commit, and an upload
+begun on another renderer are `FiggyError::StaleStateToken`. Dropping the
+upload cancels it. `Renderer::inspect_streaming_candidate(&config, &series)`
+applies the rules of `inspect_streaming_capability(chart)` to a candidate
+that no chart holds.
+
 ## Direct SSOT edits and convenience helpers
 
 `Config` is the single source of truth (SSOT). For precise control, start from
@@ -185,6 +201,8 @@ field setters:
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair, give the partner (`top_x`, `right_y`) the `scale` of the main axis (`bottom_x`, `left_y`), and choose each axis's major spacing, minor count, label format and precision from that scale, so a logarithmic `left_y` puts decades on both edges. The auto-fits and subplot setters do the same. A categorical partner keeps its scale, and on a 3D or ternary chart, where `right_y` is the z or c axis, the partner keeps its own scale and gets the ticks of it. A second value axis with its own scale is an overlay layer (`Config::overlays`); a view state applies each axis's scale as it carries it. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the categories it shows, and the full range clears it. |
+| `Renderer::fit_config(&config, &series, padding)` / `fit_y_axes_config(...)` | Return a copy of the candidate `config`, the input and every chart untouched, with the ranges `fit_ranges` would give each layer, by the same code and at the padding given ([#312](https://github.com/shim9610/figgy/issues/312)). The Y variant returns every X axis (`bottom_x`, `top_x`, overlay `x_axis`, in subplots too) as given. A layer naming a series not in `series` is `LayerSeriesUnknown`; a bad padding `FitPadding`; streamed sources and monotonic series are refused as in `fit_ranges`. |
+| `Renderer::fit_point_size_domain(&mut series)` / `fit_vector_scale(&config, &mut series, target)` | Write one series' `PointSizeMap` domain (`fit_domain`) or `VectorStyle` scale (`fit_scale`, `fit_scale_3d` for a point field `config` draws in 3D) from its columns' cached statistics, nothing read back ([#312](https://github.com/shim9610/figgy/issues/312)). An empty, non-finite or degenerate extent, a missing map, a non-vector series, a bad target and a streamed column are errors that leave the series unchanged. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. `$…$` spans are TeX ([math in labels](USAGE.md#math-in-labels)). |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text, `$…$` spans as TeX; these helpers do not fit margins. |
 | `FeynmanSeries::place_vertices()` / `Renderer::place_feynman_vertices(chart, series_id)` | Write the automatic layout's place into the `at` of every vertex without one (#234), as an auto-fit writes a range into the config; the host reads it back through `chart_series`. Placed vertices are untouched. Returns an error when the layout's solver stops converging or its working memory cannot be allocated. `drag_vertex` (`Renderer::drag_feynman` with `FeynmanHit::Vertex`) commits the layout on the first drag, `drag_bend` sets a line's `bend`, and `drag_label` moves a label's offset in logical pixels, the value-label drag. See [Feynman diagrams](FEYNMAN.md). |
@@ -616,6 +634,13 @@ Build one `RendererDevice` per device and clone it for every renderer, so one
 budget bounds them all. When a device also serves other bundles or host
 allocations, leave headroom for them and for untracked resources. Device limits and a passing budget check do not
 guarantee driver allocation success; handle allocation failure and device loss.
+A host that holds only a built renderer, such as a `WindowedRenderer` from
+`Renderer::for_window`, gets its bundle back with `Renderer::renderer_device()`
+(#313): a `RadialRenderer` built from it shares the device, the queue, the
+device-loss record, the ledger and the budget. `WindowedRenderer::instance()`
+and `adapter()` give the handles another surface on that device is created
+and configured from. Dropping any of these renderers or bundles never destroys
+the device.
 
 ## Render targets, coordinates and output
 
@@ -732,7 +757,14 @@ chart. `all` grows when a chart first needs a module compiled on demand.
 `message`). `Renderer::series_ready()` resolves once every compile the last screen frame
 needed has ended (a frame drawn then is complete) and `Renderer::pipelines_ready()` once
 every scheduled compile has; each returns the first `PipelineFailure` among them as its
-error. Exports, host-owned `prepare` and the picks create what they need and are always
+error. `Renderer::pipeline_readiness()` returns a `PipelineReadiness` that holds the
+compile queue weakly and does not borrow the renderer
+([#315](https://github.com/shim9610/figgy/issues/315)): its `series_ready()` and
+`pipelines_ready()` wait like the renderer's (without drawing), its `status()` is a
+`ReadinessStatus` (`screen`, `all`, `renderer_dropped`), and once the renderer is
+dropped a wait ends with `ReadinessError::RendererDropped` (a failed compile is
+`ReadinessError::Failed`). A renderer with no background compiles gives a handle whose
+waits resolve at once. Exports, host-owned `prepare` and the picks create what they need and are always
 complete. A browser export first compiles, in the background, the pipelines the last
 screen frame needed for its own target (`Rgba16Float`, its sample count) through a
 second queue, and waits for them before it prepares; its creations then find the
@@ -827,6 +859,8 @@ radial renderer returns the layer as `prepare_annotations(chart, size, scale)` �
 radial chart has no value axes, so it draws no span below the slices). Items
 the raster could not place are `RenderWarning::AnnotationSkipped` on
 `ChartView::render_warnings()` (Cartesian) or
-`BoundedAnnotationFrame::render_warnings()` (radial). See the
+`BoundedAnnotationFrame::render_warnings()` (radial). An editor previews an item
+that is not in the layer yet with `preview_annotation(&item, space, scale, policy)`,
+the raster's own placement without drawing (#312). See the
 [annotation section of the interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)
 and the [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#layerref--annotationlayer).

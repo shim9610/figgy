@@ -742,6 +742,18 @@ impl Renderer {
         Ok(())
     }
 
+    /// A handle on this renderer's background compiles that does not
+    /// borrow it (#315): see [`PipelineReadiness`]. Cheap: no GPU call.
+    pub fn pipeline_readiness(&self) -> PipelineReadiness {
+        PipelineReadiness {
+            #[cfg(target_arch = "wasm32")]
+            queue: self
+                .compile_queue
+                .as_ref()
+                .map(crate::browser_compile::CompileQueue::downgrade),
+        }
+    }
+
     /// Whether a background compile has ended since the last screen frame
     /// left a series out (#299): a host loop that draws only when something
     /// changed draws again, so the chart fills in without a host call.
@@ -781,6 +793,83 @@ impl Renderer {
         #[cfg(not(target_arch = "wasm32"))]
         false
     }
+}
+
+impl PipelineReadiness {
+    /// The renderer's background compiles now, read without borrowing it
+    /// (#315). Cheap: no GPU call.
+    pub fn status(&self) -> ReadinessStatus {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.queue {
+            use crate::compile_schedule::{Counts, Scope};
+            let counts = |scope| {
+                queue.counts(scope).map(
+                    |Counts {
+                         total,
+                         ready,
+                         compiling,
+                         failed,
+                     }| PipelineCounts {
+                        total,
+                        ready,
+                        compiling,
+                        failed,
+                    },
+                )
+            };
+            return match (counts(Scope::Screen), counts(Scope::All)) {
+                (Some(screen), Some(all)) => ReadinessStatus {
+                    screen,
+                    all,
+                    renderer_dropped: false,
+                },
+                _ => ReadinessStatus {
+                    renderer_dropped: true,
+                    ..ReadinessStatus::default()
+                },
+            };
+        }
+        ReadinessStatus::default()
+    }
+
+    /// [`Renderer::series_ready`] without borrowing the renderer (#315):
+    /// resolves once every background compile the renderer's last screen
+    /// frame needed has ended. It draws nothing; the host's next frame
+    /// draws the series. `Err` is the first that failed, or
+    /// [`ReadinessError::RendererDropped`] once the renderer is gone.
+    pub async fn series_ready(&self) -> std::result::Result<(), ReadinessError> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.queue {
+            return wait_readiness(queue, crate::compile_schedule::Scope::Screen).await;
+        }
+        Ok(())
+    }
+
+    /// [`Renderer::pipelines_ready`] without borrowing the renderer (#315):
+    /// resolves once every background compile scheduled so far has ended.
+    /// `Err` as for [`Self::series_ready`].
+    pub async fn pipelines_ready(&self) -> std::result::Result<(), ReadinessError> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = &self.queue {
+            return wait_readiness(queue, crate::compile_schedule::Scope::All).await;
+        }
+        Ok(())
+    }
+}
+
+/// Wait on a weakly held queue (#315), mapping how the wait ended.
+#[cfg(target_arch = "wasm32")]
+async fn wait_readiness(
+    queue: &crate::browser_compile::WeakCompileQueue,
+    scope: crate::compile_schedule::Scope,
+) -> std::result::Result<(), ReadinessError> {
+    use crate::browser_compile::WeakWaitEnd;
+    queue.wait_scope(scope).await.map_err(|end| match end {
+        WeakWaitEnd::Failed(label, outcome) => {
+            ReadinessError::Failed(pipeline_failure(&label, &outcome))
+        }
+        WeakWaitEnd::Dropped => ReadinessError::RendererDropped,
+    })
 }
 
 /// A compile that ended as `outcome`, as the public failure. Only an

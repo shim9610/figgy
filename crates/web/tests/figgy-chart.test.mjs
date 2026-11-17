@@ -3156,6 +3156,114 @@ test("fit_ranges, the theme pair, fit_layout and place_feynman_vertices forward 
   );
 });
 
+test("the candidate fits and the style domain fits forward (#312)", async () => {
+  const kernel = makeKernel("api-312");
+  const names = ["fit_config", "fit_y_axes_config", "fit_point_size_domain", "fit_vector_scale"];
+  for (const name of names) {
+    kernel[name] = (...args) => {
+      kernel.calls.push([name, ...args]);
+      return name.endsWith("_config") ? `{"fitted":"${name}"}` : undefined;
+    };
+  }
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  assert.equal(element.fit_config("{}", 0.1), '{"fitted":"fit_config"}');
+  assert.equal(element.fit_y_axes_config("{}", 0), '{"fitted":"fit_y_axes_config"}');
+  element.fit_point_size_domain("bubbles");
+  element.fit_vector_scale("wind", 24);
+  const wanted = new Set(names);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(kernel.calls.filter(([name]) => wanted.has(name)))),
+    [
+      ["fit_config", "{}", 0.1],
+      ["fit_y_axes_config", "{}", 0],
+      ["fit_point_size_domain", "bubbles"],
+      ["fit_vector_scale", "wind", 24],
+    ],
+  );
+});
+
+test("the edit-safety, editor-query and annotation-id calls forward (#311, #312, #315)", async () => {
+  const kernel = makeKernel("api-311-315");
+  const names = [
+    "clear_selection", "column_revision", "inspect_streaming_capabilities",
+    "annotation_preview", "convert_annotation_anchor", "inspect_document_layout", "panel_at",
+    "data_area_rect", "legend_entry", "render_warnings", "annotation_ids", "annotation_index",
+    "select_annotation_by_id", "readiness",
+  ];
+  for (const name of names) {
+    kernel[name] = (...args) => {
+      kernel.calls.push([name, ...args]);
+      return `{"from":"${name}"}`;
+    };
+  }
+  const upload = [];
+  kernel.begin_column_upload = (...args) => {
+    kernel.calls.push(["begin_column_upload", ...args]);
+    return {
+      push: (offset, chunk) => upload.push(["push", offset, chunk.length]),
+      commit: (target) => { upload.push(["commit", target === kernel]); return "handle"; },
+      cancel: () => upload.push(["cancel"]),
+      written: () => 3,
+      length: () => 4,
+      is_open: () => true,
+    };
+  };
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  element.clear_selection();
+  element.column_revision("y");
+  element.inspect_streaming_capabilities("{}", "[]");
+  assert.equal(element.annotation_preview("{}"), '{"from":"annotation_preview"}');
+  element.convert_annotation_anchor("{}", "Ratio");
+  element.inspect_document_layout();
+  element.panel_at(1, 2);
+  element.data_area_rect();
+  element.legend_entry("a");
+  element.render_warnings();
+  element.annotation_ids();
+  element.annotation_index("note");
+  element.select_annotation_by_id("note");
+  element.readiness();
+  const handle = element.begin_column_upload("y", 4, "f32", undefined, 1024);
+  handle.push(0, new Float32Array(3));
+  assert.equal(handle.written(), 3);
+  assert.equal(handle.length(), 4);
+  assert.equal(handle.is_open(), true);
+  assert.equal(handle.commit(), "handle");
+  handle.cancel();
+  const wanted = new Set([...names, "begin_column_upload"]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(kernel.calls.filter(([name]) => wanted.has(name)))),
+    [
+      ["clear_selection"],
+      ["column_revision", "y"],
+      ["inspect_streaming_capabilities", "{}", "[]"],
+      ["annotation_preview", "{}"],
+      ["convert_annotation_anchor", "{}", "Ratio"],
+      ["inspect_document_layout", null],
+      ["panel_at", 1, 2],
+      ["data_area_rect"],
+      ["legend_entry", "a"],
+      ["render_warnings"],
+      ["annotation_ids"],
+      ["annotation_index", "note"],
+      ["select_annotation_by_id", "note"],
+      ["readiness"],
+      ["begin_column_upload", "y", 4, "f32", null, 1024],
+    ],
+  );
+  assert.deepEqual(upload, [["push", 0, 3], ["commit", true], ["cancel"]]);
+});
+
 test("the shaders attribute reaches the kernel's create options and round-trips", async () => {
   // Absent: the basic set, which is the kernel's default.
   const plainKernel = makeKernel("shaders-default");

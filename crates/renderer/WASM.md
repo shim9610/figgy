@@ -460,6 +460,10 @@ chart.set_config(JSON.stringify(rangeConfig));
 
 범위와 그에 맞는 눈금·라벨 설정을 함께 계산하려면 `fit_ranges`, `auto_fit_x`, `auto_fit_y`, `auto_fit_all`, `auto_fit_colorbar`를 사용한다. `fit_ranges()`는 모든 레이어의 축을 컬럼 통계로 한 번에 맞춘다. `auto_fit_all`은 활성 레이어의 축만 맞춘다(5절 `<figgy-chart>` 공개 API 표의 「범위 맞춤」 참고). `set_title`은 필요하면 제목 영역도 넓힌다. 기존 여백을 그대로 두려면 `chart_title.text`를 직접 편집한다. `set_x_title`과 `set_y_title`은 축 제목 텍스트만 바꾼다. 네이티브에서 같은 작업은 [direct SSOT edits and convenience helpers](API.md#direct-ssot-edits-and-convenience-helpers)를 참고한다.
 
+JSON의 숫자는 `f64`의 모든 비트를 그대로 왕복한다. 웹 패키지는 `serde_json`의 `float_roundtrip` 기능을 켜고 빌드하므로, 읽은 설정을 다시 쓰면 같은 값이 나온다(#314). JSON에는 NaN과 무한대가 없어서 유한하지 않은 `f64`는 `null`로 쓰인다. 일반 `f64` 필드(축의 `min` / `max`, 레이더 시리즈의 `values` 등)는 `null`을 읽지 못하고 JSON 오류로 거부한다. 따라서 NaN이 든 레이더 값은 JSON으로 옮길 수 없다. 범주형 막대의 `values`처럼 값이 없을 수 있는 필드(`Option<f64>`)는 `null`을 빈 값으로 읽고, 빈 값은 NaN으로 올라가 그 막대를 그리지 않는다.
+
+차트 없이 설정 문서를 다루는 독립 함수도 있다(#314). `default_config()`는 기본 설정 JSON을, `validate_config(configJson, seriesJson?)`는 `{ valid, errors }`를 돌려준다. 오류 항목은 `{ stage, path, field, series_id, series_index, code, message }`이고 `path`가 거부된 필드(`"left_y"`, `"series[2]"` 등)를 가리킨다. `normalize_config(configJson)`은 설정을 읽고 다시 써서 표준 형태로 만든다. `convert_categorical_document`, `convert_boxplot_document`, `convert_radar_document`는 레거시 문서를 `{ config, series, uploads, columns, notes }`로 바꾸며, `notes`는 문서에 있었지만 옮기지 못한 필드를 알려 준다. 자세한 내용은 [Model API for editors](#model-api)를 참고한다.
+
 #### 라벨 속 수식
 
 텍스트 설정 함수(`set_title`, `set_x_title`, `set_y_title`, `set_colorbar_title`, `add_line_series`와
@@ -543,6 +547,8 @@ chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 �
 
 전체 필드와 열거형 값, serde 표현 규칙, 함께 수정해야 하는 옵션은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다. SCHEMA.md의 예시 JSON은 소스와 자동으로 대조하지 않으므로, 정확한 형식은 `get_config()` / `get_series()`의 실제 출력으로 확인한다.
 
+편집기용 조회 호출(#312)은 렌더러가 직접 계산한 배치와 레이아웃을 돌려주며 문서·선택·실행 취소 상태·래스터를 바꾸지 않는다. `annotation_preview(json)`는 아직 문서에 넣지 않은 주석을 주석 레이어의 배치 코드로 놓아 본 모양과 좌표를 캔버스 픽셀과 문서 픽셀로 돌려준다. `convert_annotation_anchor(json, "Data" | "Ratio")`는 그려지는 위치를 그대로 둔 채 앵커 종류를 바꾼다. `inspect_document_layout(config_json?)`는 문서 영역, 배율, 패널마다의 프레임·데이터 영역·레이어를 돌려주고, 설정 JSON을 넘기면 설치하지 않고 그 후보를 계산한다. `panel_at(x, y)`는 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다. `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄(기호와 라벨)을 돌려주므로 범례 전체를 다시 쓰지 않고 한 줄만 붙일 수 있다. `render_warnings()`는 마지막 프레임의 모든 경고(모든 패널의 눈금 설정과 건너뛴 주석)를 구조화된 JSON으로 돌려준다. 결과 형식과 오류 코드는 [8장의 Editor queries](#editor-queries-figgychart-312)를 참고한다.
+
 <a id="39-async-메서드와-객체-잠금-필독"></a>
 
 ### 3.9 비동기 호출 중 객체 접근 제한
@@ -553,6 +559,8 @@ chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 �
 - 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력(`export_png`, 스트림 출력의 `finish_stream_export` / `cancel_stream_operation_and_wait`), `first_frame_ready` / `warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`, `release_unused_gpu_memory`, `cancel_streaming_and_wait`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 저수준 `selection_details()`의 비동기 GPU 읽기 중에도 같은 접근 제한을 적용한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
 - 웹 래퍼의 스트리밍 `auto_fit_all()`은 위 저수준 비동기 메서드를 호출하지 않는다. 렌더러에 범위 계산을 요청하고 스트리밍 작업의 `done`을 기다린다. 청크 공급과 커널 호출을 계속해야 하므로 일반 `busy` 토큰을 잡지 않으며, 작업 중 `busy`가 `false`일 수 있다. 스트리밍 실행기가 변경 요청을 최신 상태에 맞춰 반영한다.
 - 작업 중 들어온 크기 변경과 포인터 해제는 마지막 것만 보관했다가, 작업이 끝나면 WASM에 적용한 뒤 토큰을 해제한다. 연결이 끊겨도 작업이 사용 중인 커널은 작업이 끝난 뒤 해제한다. 이전 연결 세대의 작업이 끝났다고 새 세대의 토큰을 해제하지 않는다.
+
+차트의 `series_ready()` / `pipelines_ready()` / `first_frame_ready()`는 끝날 때까지 차트를 빌린다. 기다리는 동안 `pipeline_status()`를 읽거나 크기를 바꾸거나 차트를 해제해야 하면 `chart.readiness()`가 돌려주는 `FiggyReadiness`를 쓴다([#315](https://github.com/shim9610/figgy/issues/315)). 이 핸들은 차트를 빌리지 않고 렌더러의 컴파일 대기열만 약하게 참조한다. `series_ready()`와 `pipelines_ready()`는 차트의 같은 이름 메서드처럼 풀리거나 거부되지만 그리지는 않는다. `status()`는 `{ screen, all, disposed }` 객체를 돌려주며 기다리는 중에도 읽을 수 있다. 차트를 `free()`하면 기다리던 호출과 그 뒤의 호출이 `"chart disposed"`로 시작하는 `Error`로 거부되고 `status().disposed`가 `true`가 된다. 자세한 내용은 [Readiness without borrowing the chart](#readiness-handle)에 있다.
 
 웹 래퍼 사용 예제는 `crates/web/index.html`에 있다. 저수준 커널은 위 규칙을 직접 구현해야 하는 경우에 사용한다.
 
@@ -606,7 +614,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 데이터 피킹 | `pick_point(x, y, max_distance_px)`는 `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`을 반환한다. 점은 스타일을 반영한 기호 크기, 선은 선분과의 거리로 판정하고 가까운 끝점을 고른다. 오차 막대 몸통·끝선은 대상이 아니다. 좌표는 반환된 인덱스로 원본 컬럼에서 조회한다. 값 라벨(범주형 막대·박스플롯·레이더)을 그리는 차트에서는 포인터 아래의 라벨이 점보다 먼저 답하며, 이때 `point_index`는 범주 행이고 `label_id`(`"series:<시리즈 ID>:label:<행>"`)가 붙는다. `pick_data`는 같은 라벨을 `{ kind: "value_label", series_id, category_index, label_id, distance_px }`로 돌려준다. |
 | 전체 사전 준비 | `prewarm_all_with_progress(callback)`은 상주 렌더링·스타일·경로 길이·범위·피킹·등고선용 캐시를 생성하고 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. 둘 다 연결 세대를 확인하는 작업 직렬화 장치를 사용한다. `warm_up()`은 첫 프레임 대기용 호환 메서드다. |
 | 피킹 준비 | `prewarm_gpu_picking()`으로 미리 준비하거나 재시도할 수 있다. 저수준 API와 래퍼 모두 렌더러의 같은 파이프라인과 차트 캐시를 사용한다. |
-| 범위 맞춤 | `fit_ranges()`는 시리즈가 쓰는 모든 축(기본 차트, 오버레이, 서브플롯과 그 오버레이의 X·Y 축, 3D 차트의 z 축)을 등록된 컬럼의 통계로 한 번에 맞춘다(`Renderer::fit_ranges`, 여백 5%). 새 차트의 범위는 0..1 자리표시자이므로 첫 그림에는 이 호출을 쓴다. 동기 호출이며 활성 레이어와 무관하다. 시리즈가 없는 레이어는 그대로 두고, 스트리밍 소스와 단조 차트는 오류로 거부하며 거부하면 아무것도 바꾸지 않는다. 오차 막대 끝은 컬럼 통계에 없으므로 그려진 범위까지 정확히 맞추려면 `auto_fit_all`을 쓴다. `auto_fit_all(pad)`는 활성 레이어의 축만 맞추며, 각 축은 그 축에 그려지는 시리즈(`Config::layer_of_series`)로 맞춘다. `"Base"`와 `"Annotations"`(주석은 기본 축에 그린다)는 부모의 `bottom_x`·`left_y`를, `{ "Subplot": i }`는 서브플롯 `i`의 `bottom_x`·`left_y`를, `{ "Overlay": n }`과 `{ "SubplotOverlay": [i, n] }`은 그 오버레이 자기 축을 맞춘다. Y 축(`link_y`가 켜져 있으면 따르는 부모 Y 축)과, `link_x`가 꺼져 있으면 X 축도 맞춘다. 기본 설정의 오버레이는 자기 차트의 X 축을 함께 쓰고 Y 축은 따로 가지므로, 오버레이 시리즈는 그 차트의 X 축 범위에는 들어가고 `left_y` 범위에는 들어가지 않는다. `link_x`를 끈 오버레이의 시리즈는 부모 X 축에서 빠지고, `link_y`를 켠 오버레이의 시리즈는 `left_y`에 들어간다. 링크된 축(서브플롯과 오버레이의 `link_x`, `link_y`)은 링크 묶음이 함께 쓰는 하나의 축이다. 그래서 묶음에 속한 모든 차트(루트가 부모이면 부모 포함)의 시리즈로 범위를 정하고, 어느 차트가 활성이든 묶음 전체가 그 범위로 움직인다. X 링크와 Y 링크는 따로 따진다. 예를 들어 서브플롯 1의 `link_y`만 서브플롯 0을 가리키면, 둘 중 어느 쪽을 맞춰도 Y 축은 두 서브플롯 시리즈를 합친 범위가 되고 X 축은 각자 자기 시리즈로 맞춘다. 링크되지 않은 축은 자기 차트의 시리즈로만 맞춘다. 모든 레이어를 맞추려면 레이어마다 `set_active_layer`로 바꾼 뒤 `auto_fit_all`을 호출하거나, 컬럼을 지정해 `auto_fit_overlay_y` / `auto_fit_overlay_x` / `auto_fit_subplot`을 호출한다. 범위는 대상 시리즈의 원본 도형을 모두 포함하며 비율 여백을 더한다(0은 여백 없음, 0.05는 5%). 상주 선·점·오차 막대·행렬·벡터는 GPU로 범위를 계산하며 히스토그램은 경계·빈도 메타데이터와 기준선을 사용한다. 상주 경로는 GPU 결과를 읽어 설정에 반영할 때까지 다른 커널 호출을 막는다. 스트리밍 문서에는 오버레이와 서브플롯이 없으므로 스트리밍 경로는 모든 시리즈로 기본 축을 맞춘다. 래퍼의 스트리밍 경로는 일반 busy 토큰 없이 축 반영과 렌더링 완료를 기다린다. 저수준 스트리밍 호출은 요청만 등록하므로 호스트가 작업을 계속 실행해야 한다. 범위 끝은 반올림하지 않는다. 눈금은 범위 안에서 읽기 좋은 값으로 배치한다. `auto_fit_colorbar(pad)`는 색상 막대가 매핑하는 모든 컬럼(행렬 값, 산점도 `point_color_map`, 점 벡터의 색상 컬럼과 격자 벡터 색상 격자의 모든 컬럼)의 통계로 색상 막대를 맞춘다. 색상 막대가 없는 차트는 바꾸지 않는다. `auto_fit_x/y(col, pad)`는 단일 컬럼 통계를 사용하며 오차 막대를 반영하지 않는다. `load_demo()`는 데모를 불러온다. |
+| 범위 맞춤 | `fit_ranges()`는 시리즈가 쓰는 모든 축(기본 차트, 오버레이, 서브플롯과 그 오버레이의 X·Y 축, 3D 차트의 z 축)을 등록된 컬럼의 통계로 한 번에 맞춘다(`Renderer::fit_ranges`, 여백 5%). 새 차트의 범위는 0..1 자리표시자이므로 첫 그림에는 이 호출을 쓴다. 동기 호출이며 활성 레이어와 무관하다. 시리즈가 없는 레이어는 그대로 두고, 스트리밍 소스와 단조 차트는 오류로 거부하며 거부하면 아무것도 바꾸지 않는다. 오차 막대 끝은 컬럼 통계에 없으므로 그려진 범위까지 정확히 맞추려면 `auto_fit_all`을 쓴다. `auto_fit_all(pad)`는 활성 레이어의 축만 맞추며, 각 축은 그 축에 그려지는 시리즈(`Config::layer_of_series`)로 맞춘다. `"Base"`와 `"Annotations"`(주석은 기본 축에 그린다)는 부모의 `bottom_x`·`left_y`를, `{ "Subplot": i }`는 서브플롯 `i`의 `bottom_x`·`left_y`를, `{ "Overlay": n }`과 `{ "SubplotOverlay": [i, n] }`은 그 오버레이 자기 축을 맞춘다. Y 축(`link_y`가 켜져 있으면 따르는 부모 Y 축)과, `link_x`가 꺼져 있으면 X 축도 맞춘다. 기본 설정의 오버레이는 자기 차트의 X 축을 함께 쓰고 Y 축은 따로 가지므로, 오버레이 시리즈는 그 차트의 X 축 범위에는 들어가고 `left_y` 범위에는 들어가지 않는다. `link_x`를 끈 오버레이의 시리즈는 부모 X 축에서 빠지고, `link_y`를 켠 오버레이의 시리즈는 `left_y`에 들어간다. 링크된 축(서브플롯과 오버레이의 `link_x`, `link_y`)은 링크 묶음이 함께 쓰는 하나의 축이다. 그래서 묶음에 속한 모든 차트(루트가 부모이면 부모 포함)의 시리즈로 범위를 정하고, 어느 차트가 활성이든 묶음 전체가 그 범위로 움직인다. X 링크와 Y 링크는 따로 따진다. 예를 들어 서브플롯 1의 `link_y`만 서브플롯 0을 가리키면, 둘 중 어느 쪽을 맞춰도 Y 축은 두 서브플롯 시리즈를 합친 범위가 되고 X 축은 각자 자기 시리즈로 맞춘다. 링크되지 않은 축은 자기 차트의 시리즈로만 맞춘다. 모든 레이어를 맞추려면 레이어마다 `set_active_layer`로 바꾼 뒤 `auto_fit_all`을 호출하거나, 컬럼을 지정해 `auto_fit_overlay_y` / `auto_fit_overlay_x` / `auto_fit_subplot`을 호출한다. 범위는 대상 시리즈의 원본 도형을 모두 포함하며 비율 여백을 더한다(0은 여백 없음, 0.05는 5%). 상주 선·점·오차 막대·행렬·벡터는 GPU로 범위를 계산하며 히스토그램은 경계·빈도 메타데이터와 기준선을 사용한다. 상주 경로는 GPU 결과를 읽어 설정에 반영할 때까지 다른 커널 호출을 막는다. 스트리밍 문서에는 오버레이와 서브플롯이 없으므로 스트리밍 경로는 모든 시리즈로 기본 축을 맞춘다. 래퍼의 스트리밍 경로는 일반 busy 토큰 없이 축 반영과 렌더링 완료를 기다린다. 저수준 스트리밍 호출은 요청만 등록하므로 호스트가 작업을 계속 실행해야 한다. 범위 끝은 반올림하지 않는다. 눈금은 범위 안에서 읽기 좋은 값으로 배치한다. `auto_fit_colorbar(pad)`는 색상 막대가 매핑하는 모든 컬럼(행렬 값, 산점도 `point_color_map`, 점 벡터의 색상 컬럼과 격자 벡터 색상 격자의 모든 컬럼)의 통계로 색상 막대를 맞춘다. 색상 막대가 없는 차트는 바꾸지 않는다. `auto_fit_x/y(col, pad)`는 단일 컬럼 통계를 사용하며 오차 막대를 반영하지 않는다. `fit_config(json, pad)`는 설치하지 않은 후보 설정을 받아, `fit_ranges`와 같은 코드로 모든 레이어의 범위를 상주 컬럼 통계에 맞춘 설정 JSON을 돌려준다([#312](https://github.com/shim9610/figgy/issues/312)). 여백은 `pad`(유한한 0 이상의 값)를 쓰고, 설치된 차트는 바꾸지 않는다. `fit_y_axes_config(json, pad)`는 모든 X 축을 받은 그대로 돌려주고 Y 축만 맞춘다. 설정에는 수동 범위 표시가 없으므로 손으로 고정한 Y 범위는 호스트가 결과에 다시 넣는다. 등록되지 않은 시리즈를 이름으로 가리키는 레이어(`LayerSeriesUnknown`), 잘못된 여백(`FitPadding`), 스트리밍 소스, 단조 차트는 오류로 거부한다. `fit_point_size_domain(id)`는 그 시리즈의 크기 컬럼 범위로 `point_size_map`의 범위를, `fit_vector_scale(id, target)`은 U/V 컬럼 범위로 가능한 가장 긴 벡터가 `target`이 되도록 벡터 배율을 정한다. 둘 다 컬럼을 읽어 오지 않고 풀의 통계만 쓰며, 그 시리즈의 스타일만 바꾼다. 범위가 비었거나 유한하지 않거나 한 값뿐이면 스타일을 그대로 두고 오류로 거부한다. `load_demo()`는 데모를 불러온다. |
 | 행렬·막대 정보 | `set_contour_nice_levels(series_id, target_count, use_colormap_colors)`는 색상 막대 눈금 규칙으로 등고선 값을 만들고 시리즈 설정에 기록한 뒤 레벨 수를 반환한다. `series_draw_info(series_id)`는 `{ drawn_count, cols, rows, truncated }`를 반환한다. 저수준 WASM은 JSON 문자열, 래퍼는 객체를 반환한다. |
 | 피킹 기준 | 최종 장식 픽셀 대신 원본 점·선분을 기준으로 한다. 산점도는 지정한 기호 반지름을, 선은 인접 원본 점 사이의 직선을 사용한다. 점선의 공백, 사각 끝 모양, 스케치의 흔들림은 판정 경로에 영향을 주지 않는다. |
 | 설정 읽기·쓰기 | `get_config()` / `set_config(json)`, `get_series()` / `set_series(json)`. `set_colorbar_axis(json)`은 색상 막대의 전체 `AxisOptions`를 교체한다. `set_subplot_area(i, x, y, width, height)`는 서브플롯 `i`의 테두리를 문서 픽셀 좌표(`get_config`의 `chart_area`와 같은 좌표)에 놓는다(#205). 부모 차트 안(인셋)이든 다른 패널 위든 바깥이든 어디든 둘 수 있고, 서브플롯의 플롯이 들어가지 않는 크기는 오류이며 문서는 바뀌지 않는다. `subplot_area(i)`는 그 테두리를 `{ "x", "y", "width", "height" }` JSON으로 돌려주고, `set_subplot_background(i, color)`는 서브플롯의 `plot_background`(색 JSON 또는 `null`)를 바꾸고, `set_subplot_text_scale(i, mode)`는 서브플롯의 글자가 셀 크기를 따를지(`"Auto"`, 기본값) 저장된 크기 그대로 그릴지(`"Fixed"`)를 정하며(#292), `subplot_text_scale(i)`는 그 모드(`"Auto"` 또는 `"Fixed"`)를 돌려주고, `subplot_text_factor(i)`는 지금 그 서브플롯의 글자에 곱하는 배율(0.5~1)을 돌려준다(#295). 배율은 `set_subplot_area`, 테두리 드래그, 부모 차트 크기 변경을 따라 바뀌고 저장된 글자 크기는 바뀌지 않는다. `insets()`는 지금 다른 패널의 플롯 안에 놓인 서브플롯의 인덱스를 그려지는 순서(아래부터)로 담은 JSON 배열을 돌려준다. `set_background(color)`는 차트 영역 전체를 채우는 `background`(색 JSON 또는 `null`, #265)를 바꾼다. `apply_theme(name)`은 테마 `name`을 문서 전체(차트와 오버레이, 모든 서브플롯, 그 위의 시리즈)에, `apply_theme_to(name, scope)`는 `scope`가 고른 차트에 적용하고 레이아웃을 바뀐 글자 크기에 다시 맞춘다(#265, #291, #295). 이름은 테마 계열(`gallery`, `cool-slate`, `midnight`, `warm-paper`)이다. 차트와 범위 안의 서브플롯이 각자 자기 종류의 구성원을 받으므로 종류가 다른 서브플롯도 한 번에 꾸민다. `theme_names()`는 이 네 이름을 문자열 배열로 돌려준다. 계열과 종류는 [테마](USAGE.md#테마)에 있고, 그 밖의 모양은 아래의 직접 만든 테마로 적용한다. `scope`는 `"all"`(기본 차트와 모든 서브플롯), `"base"`(기본 차트만), 인덱스 JSON 배열(그 서브플롯만, `"[0,2]"`), `"base"`가 든 JSON 배열(기본 차트와 그 서브플롯, `["base",0]`) 중 하나다(Rust의 `ThemeScope`). 축 범위, 텍스트, 주석, 레이어 구조, 선택은 그대로 둔다. 계열이 아닌 이름이나 잘못된 목록이면 아무것도 바꾸지 않고 `code`가 붙은 오류를 던진다(아래 오류 코드 참고). 모르는 이름의 오류에는 계열 이름이 적힌다. `theme(name)`은 계열 `name`에서 이 차트가 받는 구성원을, `subplot_theme(i, name)`은 서브플롯 `i`가 받는 구성원을 일반 객체(색은 `{r, g, b, a}`)로 돌려준다. 그 객체를 고쳐서 `apply_custom_theme(theme)`에 넘기면 차트와 서브플롯 가운데 테마의 종류인 것(과 아직 시리즈가 없는 것)에 적용하고 다른 종류는 그대로 두며, `apply_custom_theme_to(theme, scope)`는 `apply_theme_to`와 같은 `scope` 값으로 범위를 정하되 범위 안의 차트가 모두 테마의 종류여야 한다(#295). `"[0]"`은 기본 차트의 종류와 관계없이 서브플롯 0만 꾸민다. 직접 만든 테마는 그 그리기 스타일이 범위 안의 시리즈를 모두 그릴 수 있어야 한다. `FiggyBoundedChart.apply_theme(name)`은 원형 차트에 계열의 원형 구성원을 적용하고, `FiggyBoundedChart.theme_names()`는 계열 이름을 돌려준다. `FiggyChart`의 이 메서드들은 `<figgy-chart>`에도 있다. |
@@ -780,6 +788,7 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
   - `subplot_area`: `set_subplot_area`의 테두리가 너무 작아 서브플롯의 플롯이 들어가지 않는다(`index`가 붙는다). 더 큰 테두리를 준다.
   - `subplot_background`, `background`: `set_subplot_background`나 `set_background`의 색 JSON을 읽을 수 없다.
   - `apply_theme`, `apply_theme_to`, `theme`, `subplot_theme`, `apply_custom_theme`, `apply_custom_theme_to`, `set_subplot_area`, `subplot_area`, `set_subplot_background`, `set_background`, `set_subplot_text_scale`, `subplot_text_scale`, `subplot_text_factor`, `FiggyBoundedChart.apply_theme`이 이 코드를 쓴다.
+- `export_background`([#313](https://github.com/shim9610/figgy/issues/313)): `FiggyBoundedChart.export_png_with_background`에 넘긴 배경이 `"document"`, `"transparent"`, 성분이 0~1인 색 JSON 중 어느 것도 아니다. 아무것도 그리지 않고 문서도 그대로 둔다.
 - `gpu_memory_status()`는 요청 할당량의 사용 중·회수 대기·합계(`live/retired/total`), 풀 용량·점유·최대 빈 공간·백업·반환 대기량, 자원별 사용량, 컬럼별 `resident` / `streamed` 상태를 반환한다. 실제 VRAM 잔량을 측정하지는 않는다. 은하수·별자리 스타일의 미리 생성한 텍스처는 일반 집계에서 제외되며 스트리밍 출력의 실행 가능 여부를 검사할 때만 크기를 따로 고려한다.
 - `await release_unused_gpu_memory()`는 활성 스트림이 없을 때 남은 컬럼을 GPU 안에서 작은 풀로 옮기고 이전 버퍼의 작업 완료를 기다린다. 최소 16MiB는 유지한다. 축소용 버퍼도 잠시 필요하므로 예산·장치 한도·할당 오류가 발생할 수 있다. 실패하면 기존 컬럼과 바인딩을 유지한다.
 - 호스트 정책의 예로 전체 예산 `4_000_000_000`바이트, 뷰별 패킹 한도 `500_000_000`바이트를 둘 수 있다. 현재 화면의 캐시가 한도를 넘으면 스트리밍을 유지한다. 컬럼 등록 시 공간·예산이 부족하면 불필요한 컬럼 제거, 정리 완료 대기, 한 번 재시도 순서로 처리한다. 계속 실패하거나 장치 한도·실제 할당 오류가 나면 스트리밍으로 전환한다. 이 수치는 예시이며 렌더러의 기본값이 아니다.
@@ -950,8 +959,10 @@ After the first fit, the source of the same revision must remain available: redr
   - `subplot_area`: the frame given to `set_subplot_area` is too small for the subplot's plot (`index` rides along). Give it a larger frame.
   - `subplot_background`, `background`: the colour JSON given to `set_subplot_background` or `set_background` does not parse.
   - `apply_theme`, `apply_theme_to`, `theme`, `subplot_theme`, `apply_custom_theme`, `apply_custom_theme_to`, `set_subplot_area`, `subplot_area`, `set_subplot_background`, `set_background`, `set_subplot_text_scale`, `subplot_text_scale`, `subplot_text_factor` and `FiggyBoundedChart.apply_theme` throw these codes.
+- `export_background` ([#313](https://github.com/shim9610/figgy/issues/313)): the background given to `FiggyBoundedChart.export_png_with_background` is not `"document"`, `"transparent"` or a colour JSON whose components are 0 to 1. Nothing is drawn and the document is unchanged.
 - Themes ([#295](https://github.com/shim9610/figgy/issues/295)): `FiggyChart.apply_theme(name)` applies a theme family (`gallery`, `cool-slate`, `midnight`, `warm-paper`) to the whole document: the chart, its overlays and every subplot. `apply_theme_to(name, scope)` applies it to the charts `scope` names, like Rust's `Chart::apply_theme_to` with a `ThemeScope`: `"all"`, `"base"` (the base chart alone), a JSON array of indices (those subplots alone, `"[0,2]"`) or a JSON array holding `"base"` (the base chart and those subplots, `["base",0]`); `<figgy-chart>` also takes the array itself. Each chart takes the family's member for its kind, so a dashboard of mixed kinds takes one call, and the layout is fitted to the new text sizes. `theme_names()` returns the four family names as an array of strings. Any other look is a custom theme: `theme(name)` returns the family member the chart takes as a plain object (`Theme`'s fields, colours as `{r, g, b, a}`), and `subplot_theme(i, name)` the member subplot `i` takes. Change any field and pass it to `apply_custom_theme(theme)`, which themes the chart and every subplot of the theme's kind (or without series yet) and leaves the others, or to `apply_custom_theme_to(theme, scope)` with the scopes `apply_theme_to` takes, where every chart in scope must be of the theme's kind: `"[0]"` themes an inset alone, whatever the base chart's kind. `<figgy-chart>` has the same methods.
 - Range fit ([#297](https://github.com/shim9610/figgy/issues/297)): `FiggyChart.fit_ranges()` fits every axis the chart's series use (the base chart, its overlays, each subplot and its overlays; x, y and a 3D chart's z) from the registered columns' statistics with 5% padding, as Rust's `Renderer::fit_ranges` does. A new chart starts at a `0..1` placeholder range, so this is the call for a first plot. It is synchronous and ignores the active layer; a layer without series keeps its ranges. A streamed source and a monotonic chart are refused, and a refusal changes nothing. Error bar ends are not in the column statistics: `await auto_fit_all(padding)` measures the active layer's drawn extents instead. `<figgy-chart>` has the same method.
+- Editor fits ([#312](https://github.com/shim9610/figgy/issues/312)): `FiggyChart.fit_config(config_json, padding)` returns a candidate `Config` (JSON in, JSON out) with every layer's ranges fitted from the resident columns' statistics by the same code as `fit_ranges` (Rust `Renderer::fit_config`), with `padding` (finite, at least 0) in place of the fixed 5%. The installed chart, its view and its columns are untouched. `fit_y_axes_config(config_json, padding)` returns every X axis (`bottom_x`, `top_x`, each overlay's `x_axis`, in each subplot too) exactly as given and fits the Y axes, a 3D chart's z axis and parallel axes; the config has no manual-range flag, so a host that holds a Y range by hand puts it back in the result. Both refuse, with an exception and nothing changed, JSON that is not a `Config`, a bad padding (`FitPadding`), a candidate whose overlays or subplots name a series the chart has not registered (`LayerSeriesUnknown`), invalid overlays, subplots or line offsets, a streamed source and a monotonic chart. `fit_point_size_domain(series_id)` sets that series' `point_size_map` domain to its size column's extent (`PointSizeMap::fit_domain`), and `fit_vector_scale(series_id, target)` sets a vector series' scale so the longest vector its U/V columns' extents allow draws `target` long (logical pixels for `Pixels`, data units for `Data`; `VectorStyle::fit_scale`, grids from the union of their columns, a point field drawn in 3D with `fit_scale_3d`). They read the pool's cached statistics, never the columns, change only that series' domain or scale, and refuse an empty, non-finite or degenerate extent (`PointSizeFitExtent`, `VectorFitExtent`), a series without a size map (`PointSizeFitNoMap`) or that is not a vector field (`VectorFitNotVector`), a bad target (`VectorFitTarget`) and a streamed column, leaving the style unchanged. `<figgy-chart>` has the same four methods.
 - `gpu_memory_status()` returns the live, retired and total requested allocations (`live/retired/total`); the pool capacity, occupancy, largest free region, backup and bytes pending release; the usage per resource; and each column's `resident` / `streamed` state. It does not measure the actual remaining VRAM. The precomputed textures of the Milkyway and constellation styles are excluded from the general totals; their size is considered separately only when checking whether a streaming export can run.
 - `await release_unused_gpu_memory()`, when no stream is active, moves the remaining columns into a smaller pool on the GPU and waits for the work on the previous buffer to complete. At least 16 MiB is kept. The compaction also needs a temporary buffer, so budget, device-limit and allocation errors can occur. On failure the existing columns and bindings are kept.
 - As an example of a host policy, the total budget can be `4_000_000_000` bytes with a per-view packing limit of `500_000_000` bytes. When the current view's cache exceeds the limit, streaming stays in use. When space or budget runs short while registering columns, remove unneeded columns, wait for cleanup to complete, and retry once. If it still fails, or a device-limit or actual allocation error occurs, switch to streaming. These numbers are an example, not renderer defaults.
@@ -976,6 +987,10 @@ Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper'
 - `remove_column(id)`는 해당 컬럼을 참조하는 시리즈도 제거한다. 자동 범례에서는 대응하는 행을 지운다. `set_config`로 직접 편집한 범례는 사용자 텍스트를 보존하고 남은 시리즈의 인식 가능한 기호만 갱신한다.
 - 제거·교체로 생긴 빈 공간은 다음 `frame()` 시작에 렌더러가 모아 정리한다. 연속 교체 중 할당 공간이 부족하면 컬럼을 한 번 재배치한 뒤 다시 시도한다.
 - `add_line_series`는 기존 ID이면 색을 유지하며 교체하고, 새 ID이면 색상 순서의 다음 색을 사용한다. 기존 ID에 빈 라벨을 전달해도 기존 범례 텍스트는 지우지 않는다. 비어 있지 않으면 해당 행의 텍스트만 바꾼다.
+- `begin_column_upload(id, length, encoding, source_revision, max_chunk_bytes)`는 컬럼 하나를 여러 조각으로 나눠 올리는 트랜잭션을 연다. 돌려받은 핸들의 `push(offset, typedArray)`로 조각을 순서대로 쓰고 `commit(chart)`로 한 번에 설치하며 `cancel()`로 취소한다. 겹치거나 빈틈이 있거나 형식이 다른 조각은 거부되고, 낡은 리비전과 다른 차트에서의 커밋도 거부된다([edit safety](#edit-safety)).
+- `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 렌더러 트랜잭션 하나로 차트를 바꾼다. 새 문서의 컬럼·레코드·ragged 컬럼을 문서에 적힌 ID 그대로 올리고 축을 맞춘 다음, 이전 문서에서 다시 쓰지 않는 컬럼의 제거와 설정·시리즈 교체를 한 번에 커밋한다. 그래서 컬럼 ID는 어느 문서를 열어도 문서에 적힌 ID다. 모노토닉 문서를 보여 주는 차트라면 새 문서가 그 뒤의 일반 차트를 바꾸고, 커밋할 때 모노토닉 차트를 끝낸다. 실패하면 모노토닉 문서가 그대로 남는다. 실패하면 `stage`(`validate`·`upload`·`fit`·`commit`)가 담긴 오류를 던지고 차트는 그대로다.
+- 이 트랜잭션은 후보 풀을 통째로 만든다. 가장 많이 쓸 때 GPU에는 지금 풀 슬랩, 새 문서의 스테이징 버퍼, 풀 용량만 한 후보 슬랩(모자라면 두 배나 필요한 만큼 키운 슬랩)이 함께 있다. 이전 문서의 컬럼은 후보 슬랩에 들어가지 않는다. 메모리 예산이 이 양을 감당하지 못하면 `upload` 단계에서 `code` `"budget_exceeded"`로 거부한다.
+- `clear_selection()`은 장식·주석 선택과 진행 중인 끌기·크기 조절을 끝낸다. 데이터 강조(`picked_data`)와 설정·시리즈·컬럼은 그대로 둔다. `inspect_streaming_capabilities(config_json, series_json)`는 후보 문서가 스트리밍될 수 있는지 차트를 바꾸지 않고 검사한다.
 - `free()`로 인스턴스를 해제하면 풀 버퍼·파이프라인·텍스처·surface의 참조를 정리한다. GC의 FinalizationRegistry도 정리를 지원하지만 실행 시점이 정해져 있지 않으므로 SPA에서 컴포넌트를 제거할 때는 `free()`를 직접 호출한다.
 
 <a id="categorical-documents"></a>
@@ -991,7 +1006,8 @@ series a `CategoryBars` series, and its values two kinds of registered
 columns, `categorical.positions` and `categorical.values.<series id>`, the
 value columns registered as one batch. The value axis is fitted and rounded to nice ticks; the
 chart keeps its chart area. Opening another document replaces the series
-and the columns of the previous one; every other column stays. From there
+and the columns of the previous one atomically, alternating the column ids
+([edit safety](#edit-safety)); every other column stays. From there
 on the chart is edited through the Cartesian API (`get_config` /
 `set_config`, `get_series` / `set_series`, the column registry), and bars
 are picked with `pick_data` like histogram bins. The bars' value labels
@@ -1022,7 +1038,8 @@ and, for a series with outliers, one ragged outlier column
 `value_range` the value axis is fitted to the records' and outliers'
 statistics and rounded to nice ticks; the chart keeps its chart area.
 Opening another document replaces the series, columns and records of the
-previous one; every other column stays. From there on the chart is edited
+previous one atomically ([edit safety](#edit-safety)); every other column
+stays. From there on the chart is edited
 through the Cartesian API. Every part of a box (body, whiskers, caps,
 median, mean, outliers) is picked with `pick_data` as the box's
 `HistogramBin`; `selection_details()` reports the selected box's
@@ -1056,7 +1073,8 @@ a document `value_range` the radius axis is fitted to the value columns'
 statistics, from zero when no value is negative, and rounded to nice
 ticks; a document `ring_spacing` is kept either way. The chart keeps its
 chart area. Opening another document replaces the series, columns and
-config of the previous one; every other column stays. From there on the
+config of the previous one atomically ([edit safety](#edit-safety)); every
+other column stays. From there on the
 chart is edited through the Cartesian API. A vertex is picked with
 `pick_data` as a point of its series (the outline, its closing segment and
 the fill pick the series too), `selection_details()` adds the vertex's
@@ -1069,6 +1087,143 @@ vertex along its spoke; they pick and drag as the bars' do.
 chart.set_radar_document(JSON.stringify(radarDoc));
 await chart.first_frame_ready();
 ```
+
+<a id="model-api"></a>
+
+### Model API for editors
+
+An editor that builds or converts documents before any chart exists uses
+free functions of `pkg/figgy.js` (#314). They read and return JSON strings
+and need no canvas, no chart and no GPU.
+
+| Function | Returns |
+|---|---|
+| `default_config()` | The default config (`default::default_config`), the document a new chart starts from. Its `chart_area` is a placeholder the host sets. |
+| `validate_config(configJson, seriesJson?)` | `{ valid, errors }`: the config held to `Config::validate_chart` and, when given, the series list to `Config::validate_series`. It does not throw for a refused document. An error is `{ stage, path, field, series_id, series_index, code, message }`: `stage` is `"parse"`, `"chart"` or `"series"`; `path` is the config field (`ConfigError::field`, such as `"bottom_x"` or `"colorbar.axis"`), `series[<index>]` for a series rule, or `"config"` / `"series"` for JSON that does not parse, which adds `line` and `column`; `code` is the rule's `RuleKind::code`, the `code` of the `Error`s `set_config` throws (`"json"` for a parse error). The rules stop at the first refusal, so `errors` holds at most one. What needs the column pool (registered columns, lengths, GPU limits) is checked by `set_config` / `set_series` only. |
+| `normalize_config(configJson)` | The config read and written back: an omitted optional field takes its documented default and a field at its default is written as the renderer writes it. A config that breaks a rule is returned as it is; JSON that is not a config throws its message. |
+| `convert_categorical_document(json)`, `convert_boxplot_document(json)`, `convert_radar_document(json)` | The legacy document converted as `set_categorical_document`, `set_boxplot_document` and `set_radar_document` convert it (`Config::from_*_with_report`), without opening it: `{ config, series, uploads, columns, notes }`. A document that does not parse throws its message; one that breaks its own rules throws an `Error` with the rule's `code`. |
+
+The converted shape:
+
+- `uploads`: one descriptor per upload, without its values: `{ column,
+  role: "positions" | "values", len }`; a box plot's record is
+  `{ column, role: "box_record", rows, fields }` (one row per category in
+  the fields of `BOX_PLOT_RECORD`) and its outliers
+  `{ column, role: "box_outliers", len, groups }`. The values stay in the
+  document; an editor that opens the result registers them itself or opens
+  the document with `set_*_document`.
+- `columns`: `{ series_id, role, column }` per upload, in upload order;
+  `series_id` is `null` for the shared positions.
+- `notes`: `{ path, kind, reason }` for every field the document set that
+  the chart does not carry as set. `path` is the field's JSON path
+  (`decorations.offsets[2]`, `style.emphasis_brightness`); `kind` is
+  `"dropped"` (no counterpart) or `"changed"` (carried as another value, such
+  as an overlay `active_layer` that falls back to the base layer). A field
+  counts as set when it is present or differs from the documented default.
+  The notes cover `hovered`, `background`, `decorations.data_area`,
+  `decorations.selected`, a legacy `title` hidden by `chart_title`, the
+  `active_layer`, a selection the chart cannot hold, each decoration offset
+  without a counterpart (a spoke label's, for one) or whose value label
+  offset is refused, overrides naming no series and, for a radar document,
+  `style.emphasis_brightness`.
+
+```js
+const { config, series, notes } = JSON.parse(convert_radar_document(text));
+for (const note of notes) console.warn(`${note.path}: ${note.reason}`);
+const { valid, errors } = JSON.parse(
+  validate_config(JSON.stringify(config), JSON.stringify(series)));
+```
+
+**Numbers.** Every finite `f64` survives a JSON round trip bit for bit: the
+web package builds `serde_json` with `float_roundtrip`. JSON has no NaN or
+infinity, so a non-finite `f64` is written as `null`, which a plain `f64`
+field (an axis `min` / `max`, a radar series' `values`) refuses to read: a
+radar value that is NaN cannot travel through JSON. An optional value
+(`Option<f64>`, such as a categorical series' `values`) reads `null` as
+missing, which uploads as NaN and draws no bar.
+
+<a id="edit-safety"></a>
+
+### Edit safety: clearing selections, atomic documents, chunked uploads
+
+These calls ([#311](https://github.com/shim9610/figgy/issues/311)) let a
+host edit a chart without leaving it half changed.
+
+**`chart.clear_selection()`** ends the decoration selection, the
+annotation selection, a value-label or Feynman drag, an element drag or
+handle resize, a pending plot-area resize proposal and a held subplot
+display placement, and redraws. The active layer, config, series and
+columns stay, and so does the data highlight (`picked_data`, including a
+value label's typed selection); `set_picked_data("null")` clears that.
+
+**Document replace.** `set_categorical_document`, `set_boxplot_document`
+and `set_radar_document` replace the chart in one renderer transaction
+(`Renderer::begin_replace_chart_sources`). They prepare the candidate
+config, series and uploads, check them, then upload every column, box plot
+record and ragged outlier column under its documented id
+(`categorical.positions`, `boxplot.record.<series id>`, `radar.values.<series
+id>`, ...), fit the axes from the candidate columns, and commit the columns,
+the removal of the previous document's columns and the config and series in
+one step. The previous document's columns are the `categorical.`,
+`boxplot.` and `radar.` ids the replaced series read, of any family, that
+the new document does not upload again; an id it uploads again is replaced
+in place. The ids are the documented ones for every document opened. A
+failure rejects with an `Error` whose `stage` is `"validate"` (parse,
+validation, styles, a documented id that holds another kind of source than
+the document uploads under it, or a streamed column), `"upload"` (with the `code` and byte fields of
+`register_column_f32`; `"budget_exceeded"` when the memory budget cannot
+hold the transaction's peak), `"fit"` or `"commit"`, and whose message names
+the stage and the cause; the chart's config, series, selections, picks,
+columns and image are then as they were. On a chart that shows a monotonic
+document, the document replaces the general chart behind it and the
+monotonic chart ends with the commit, as `clear_monotonic_document` ends
+it; a failure leaves the monotonic document shown. The shader set the
+document needs (the full set for a radar's polar coordinates) is admitted
+before the transaction (`Renderer::require_shaders_for`).
+
+Memory: the transaction builds a complete candidate column pool. At the
+peak the GPU holds the live pool slab, the new document's staging (half its
+size for single-lane columns, plus their transient expansion buffer) and a
+candidate slab of the pool's capacity, or a grown one (twice the capacity,
+or what the surviving columns and the new document need) when they do not
+fit it. The previous document's columns take no room in the candidate. The
+peak is therefore about twice the pool slab plus the new document's
+staging; after the commit the former slab stays as the pool's backup when
+the capacity did not change, and is released otherwise.
+
+**Chunked column upload.**
+`chart.begin_column_upload(id, length, encoding, source_revision,
+max_chunk_bytes)` begins a transaction for one resident column of `length`
+values: `encoding` is `"f32"` (chunks are `Float32Array`s) or `"f64"`
+(`Float64Array`s, uploaded as `(hi, lo)` pairs). `source_revision` is the
+revision of the column the upload replaces, as `chart.column_revision(id)`
+reports it, or `null` for an id that is not registered. The returned
+`ColumnUploadHandle` owns one mapped GPU staging buffer of the column's size
+(8 bytes per value), counted against the memory budget while it is open.
+
+| Handle call | Contract |
+| --- | --- |
+| `push(offset, typedArray)` | Writes one chunk of at most `max_chunk_bytes` bytes at value `offset`, which must be `written()`. The array is read in place into the mapped staging range. An overlapping, gapped, past-the-end or mistyped chunk throws with `code` `"invalid_chunk"` and changes nothing; the upload stays open. |
+| `commit(chart)` | Installs the column on the chart that began the upload as one atomic insert or replacement. Throws `"invalid_chunk"` when a value was not written, `"stale"` when the column changed since `begin_column_upload` or `chart` is another chart, and the registration codes (`"budget_exceeded"`, `"pool_space"`, `"device_limit"`, `"allocation_failed"`, with byte fields) when the GPU cannot hold it. Closes the handle either way. |
+| `cancel()` | Releases the staging buffer; nothing was registered. |
+| `written()`, `length()`, `is_open()` | The next offset, the column length, whether the handle is open. |
+
+A closed handle throws `"upload_closed"`. `begin_column_upload` itself
+throws `"stale"` for a wrong `source_revision`, and the registration codes
+when the budget or the device cannot hold the staging buffer. A streamed or
+reserved id is refused. One column per transaction.
+
+```js
+const up = chart.begin_column_upload("y", n, "f64", chart.column_revision("y") ?? null, 1 << 20);
+for (let at = 0; at < n; at += 65536) up.push(at, values.subarray(at, at + 65536));
+up.commit(chart);
+```
+
+**`chart.inspect_streaming_capabilities(config_json, series_json)`**
+returns `{ "supported": bool, "reason": string | null }` for a candidate
+document with the rules `streaming_capabilities()` applies to the current
+chart (`Renderer::inspect_streaming_candidate`). It reads only its two
+arguments and changes nothing; JSON that does not parse throws.
 
 <a id="monotonic-lines"></a>
 
@@ -1175,13 +1330,52 @@ and prepares its document. It does not submit the first visible frame: call
 frame and awaits the actual GPU completion Promise; rejection/device loss is
 returned to the host. `frame()` alone only submits work.
 
+### One device with a Cartesian chart
+
+`FiggyBoundedChart.create_on(parent, canvas, family, documentJson, width, height)`
+(#313) returns a Promise of a radial chart that draws on the `FiggyChart`
+`parent`'s device and queue instead of requesting its own: its own surface on
+its own canvas, the parent's device-loss record, and the parent's GPU ledger
+and memory budget. It validates the document and rejects the other families
+as `create` does. Switching a page between Cartesian and radial charts this
+way keeps one device and one budget: the parent's `gpu_memory_status()`
+counts the radial chart's allocations.
+
+- **Lifetime.** Each chart holds its own references to the device. Disposing
+  the radial chart (`free()`) never destroys the parent's device, and
+  disposing the parent leaves the radial chart drawing; the device lives
+  while either holds it.
+- **Async calls and dispose.** An async call (`export_png`, `pick`, `hover`,
+  `first_frame_ready`) borrows only the object it is called on: await it
+  before `free()` on that object, as on every wasm-bindgen object. Disposing
+  the other chart meanwhile does not cancel it.
+- **Queue completion.** Both charts submit to the one queue in call order, so
+  a wait on either (`first_frame_ready`, an export's readback) completes after
+  the work submitted before it, the other chart's included.
+- **Device loss.** One loss record: a lost device fails the next frame,
+  export or pick of both charts with the loss.
+- **Budget.** One ledger and one budget for both; the parent's renderer owns
+  them, and each chart's allocations count against them.
+
+### Documents and labels
+
 `set_document(documentJson, width, height)` validates and prepares the new
 document before replacing the whole document, and keeps the previous one on
-failure. A `radial` document's slices draw their `text`: `create` and
-`set_document` fill a missing one from the slice's label format (as
-`RadialChart::normalize_labels` does) and keep one that is set, so after
-editing a value or a format remove the affected `text` fields (or write the
-new strings) before sending the document back. Omitted fields are not kept: they take their defaults or fail to
+failure. A `radial` document's slices draw their `text`, and a slice's
+`text_generated` (#313) says whether that text is the automatic label:
+`create` and `set_document` fill a missing text and write every generated one
+again from the document's values, label format, decimals and suffix (as
+`RadialChart::regenerate_labels` does), and keep a text the host wrote. So a
+host that reads `get_document()`, changes a value or the format and sends the
+document back gets the new percentages on every generated label of the ring
+(its siblings, a sunburst node's children, a split's detail children), and its
+own texts stay. To write your own text, set `text` and remove
+`text_generated` (or set it `false`); to have a slice's automatic label back,
+remove its `text`. `regenerate_labels(rewriteUserText)` rewrites the
+generated labels of the current document, and with `true` every label, the
+host's included (`RadialChart::format_labels`). The percentages and the
+rounding are the model's. A document saved before `text_generated` existed
+reads every stored text as the host's. Omitted fields are not kept: they take their defaults or fail to
 parse, so read `get_document()`, change the fields you need and send the
 complete document back.
 
@@ -1202,6 +1396,12 @@ The interactive editing and export methods are:
 - `drag(id, dx, dy, handle)` moves the decoration, or resizes it when `handle`
   is a compass name such as `"SE"` (`null` for a move), and returns whether it
   moved.
+- `reset_decoration_position(id)` (#313) puts the decoration back where the
+  layout places it: its stored offset is removed (and for `"data_area"` the
+  explicit plot area), as `DecorationLayout::reset` does, rather than dragged
+  back. It returns whether the document changed; an unknown id, and an
+  `"annotation_<n>"` id (an annotation has no offset; drag it with
+  `drag_annotation`), throw.
 - `pick(x, y, toggle)` selects the mark under the point, clears the decoration
   selection and resolves to the data selection as JSON (`"null"` for none).
   With `toggle` true, picking the selected mark again clears it.
@@ -1227,13 +1427,22 @@ The interactive editing and export methods are:
   SVG and PDF hold the slices and background as one image and the title,
   labels, leader lines and annotations as vector content, with every inside
   label above every slice and no selection box.
+- async `export_png_with_background(scale, background)` (#313) is
+  `export_png` over another background: `"document"` (the document's own, as
+  `export_png` draws it), `"transparent"` (no background: the slices, the
+  shadows they cast, the labels and the annotations over transparent pixels)
+  or a colour JSON `{"r":..,"g":..,"b":..,"a":..}` with components 0 to 1. It is
+  an option of the export (`RadialRenderer::export_png_with_background`): the
+  document, the selection and the image on screen are not changed. Any other
+  value throws an `Error` with `code` `"export_background"` before anything is
+  drawn.
 
 Coordinates and drag deltas are document logical pixels; canvas resize does not
 change export size. Keep the object alive until all async calls finish;
 `free()` releases its GPU resources.
 
 ```js
-import init, { FiggyBoundedChart } from "./pkg/figgy.js"; // figgy-chart.js does not export it
+import init, { FiggyBoundedChart, FiggyChart } from "./pkg/figgy.js"; // figgy-chart.js does not export FiggyBoundedChart
 await init(); // load the WASM module before the first create
 // radialDoc is a validated RadialChart value, e.g. serialized by its model.
 const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(radialDoc), 960, 600);
@@ -1246,8 +1455,83 @@ view.select_decoration("chart_title");
 view.drag("chart_title", 12, 6, null); // changes only this decoration's offset
 view.frame();
 const png = await view.export_png(1);
+const cutout = await view.export_png_with_background(2, "transparent");
+view.reset_decoration_position("chart_title"); // the title back in its place
 view.free();
+
+// On a Cartesian chart's device: one device and one budget for both.
+const cartesian = await FiggyChart.create(otherCanvas);
+const pie = await FiggyBoundedChart.create_on(cartesian, pieCanvas, "radial", JSON.stringify(radialDoc), 960, 600);
+await pie.first_frame_ready();
+pie.free(); // the Cartesian chart keeps its device
 ```
+
+<a id="bounded-family-migration"></a>
+
+### Migrating the bounded families to `FiggyChart`
+
+`FiggyBoundedChart.supported_families()` returns `["radial"]`
+([#315](https://github.com/shim9610/figgy/issues/315)): `create` opens only
+radial documents. The categorical bar chart, the box plot and the radar chart
+moved to `FiggyChart` setters, which read the same document JSON into the
+Cartesian (or polar) chart. Each document's values become registered
+columns, so the chart is then edited, picked and exported like any other
+`FiggyChart`, with the full interaction set (hover, picking,
+`step_selection`, decoration drag, annotations, exports) and its coordinates
+in physical canvas pixels. The canvas's pixel size is the chart area; there
+is no `width` / `height` argument.
+
+Categorical bar chart:
+
+```js
+// Before
+const view = await FiggyBoundedChart.create(canvas, "categorical", JSON.stringify(categoricalDoc), 960, 600);
+// After
+const chart = await FiggyChart.create(canvas);
+chart.set_categorical_document(JSON.stringify(categoricalDoc));
+await chart.first_frame_ready();
+```
+
+Box plot:
+
+```js
+// Before
+const view = await FiggyBoundedChart.create(canvas, "boxplot", JSON.stringify(boxPlotDoc), 960, 600);
+// After
+const chart = await FiggyChart.create(canvas);
+chart.set_boxplot_document(JSON.stringify(boxPlotDoc));
+await chart.first_frame_ready();
+```
+
+Radar chart (a polar chart, so create it on the full shader set to skip the
+basic one):
+
+```js
+// Before
+const view = await FiggyBoundedChart.create(canvas, "radar", JSON.stringify(radarDoc), 960, 600);
+// After
+const chart = await FiggyChart.create_with_options(canvas, { shaders: "full" });
+chart.set_radar_document(JSON.stringify(radarDoc));
+await chart.first_frame_ready();
+```
+
+Passing `"categorical"`, `"boxplot"` or `"radar"` to `FiggyBoundedChart.create`
+rejects with an error that names the setter. A host that picks the class from
+the family can ask the class itself:
+
+```js
+const bounded = FiggyBoundedChart.supported_families().includes(family);
+```
+
+What changes for code that used the bounded view: `get_document()` becomes
+`get_config()` / `get_series()` (the document is read once, not kept);
+`pick(x, y, toggle)` becomes `pick_data(x, y, maxDistancePx)` and
+`selection_details()`; `hit_decoration` / `select_decoration` / `drag`
+become `hit_test` / `on_press` / `on_move` / `on_release`; and the
+`step_selection(backwards)` boolean becomes `step_selection(dx, dy)`.
+The sections [Categorical bar documents](#categorical-documents),
+[Box plot documents](#box-plot-documents) and
+[Radar documents](#radar-documents) describe each reader.
 
 ### Annotation layer
 
@@ -1288,6 +1572,40 @@ animation-frame loop, so read them after the next animation frame.
 `FiggyBoundedChart` prepares the frame and its annotation map inside each
 editing call, so its methods report the new state as soon as the call returns.
 
+<a id="annotation-ids"></a>
+
+#### Annotation ids and how long an index is valid
+
+Every method above addresses an annotation by its index in
+`annotations.items`. An index is valid until the list changes:
+`add_annotation` and `add_corner_note` append (earlier indices stay),
+`remove_annotation(i)` moves every later item down one, and `set_config` /
+`set_document` (or a document load) can replace the list entirely. Index
+values that a host keeps across such a call must be looked up again. The
+item's `id` (`Annotation.id`, a free host label, `""` by default) is kept by
+every edit, by reordering and by serialization, so a host that needs a
+lasting name sets one and finds the item by it
+([#315](https://github.com/shim9610/figgy/issues/315)). Both classes have:
+
+- `annotation_ids()`: every item's `id` in index order, as an array of
+  strings (`""` for an item without one);
+- `annotation_index(id)`: the item's current index, or `undefined` when no
+  item has that id; an empty id, or one that several items share, throws
+  (ids are not required to be unique, so the call does not guess);
+- `select_annotation_by_id(id)`: `select_annotation` with that item's index;
+  it throws, leaving the selection as it was, when no item or more than one
+  has the id, or the id is empty.
+
+```js
+// peakItem and noteItem are Annotation values (the config's shape).
+chart.add_annotation(JSON.stringify({ ...peakItem, id: "peak" }));
+chart.add_annotation(JSON.stringify({ ...noteItem, id: "note" }));
+chart.select_annotation_by_id("note"); // selected_annotation() === 1
+chart.remove_annotation(0);            // "note" moves to index 0
+const i = chart.annotation_index("note"); // 0: look it up again after the edit
+chart.drag_annotation(i, 10, 0, null);
+```
+
 The radial chart has no value axes: a `Span`, a reference line and a
 `Data` anchor are skipped and listed by `annotation_warnings()`, and the frame
 paints its opaque background over a white clear with the annotations above
@@ -1308,6 +1626,83 @@ the data selection. On `FiggyChart`
 the same route drives `hit_test`, `on_press` / `on_move` and
 `decoration_bounds`, as listed in the method table above. The index-based
 annotation methods keep working on every layer.
+
+<a id="readiness-handle"></a>
+
+### Readiness without borrowing the chart
+
+`chart.series_ready()`, `chart.pipelines_ready()` and
+`chart.first_frame_ready()` borrow the chart until they settle (see 3.9), so
+a host cannot read `pipeline_status()`, resize or free the chart while it
+awaits them. `chart.readiness()` returns a `FiggyReadiness` that does not
+borrow the chart ([#315](https://github.com/shim9610/figgy/issues/315)). It
+holds the renderer's background compile queue weakly and keeps nothing
+alive:
+
+- `series_ready()` resolves once every compile the chart's last frame needed
+  has ended, and `pipelines_ready()` once every compile scheduled so far has
+  ended. Both return a `Promise` that owns its own copy of the handle and
+  rejects like the chart's methods (an `Error` with `label`, `kind` and
+  `message`) when one of those compiles failed. Neither draws: after
+  `series_ready()` the host's next `frame()` draws the series (the chart's
+  `series_ready()` draws, but borrows the chart).
+- `status()` returns a plain object, `{ screen: { total, ready, compiling,
+  failed }, all: { … }, disposed }`, the counts as in `pipeline_status()`.
+  It has no `frame_complete`: only a frame decides that, so read it on the
+  chart. It is readable at any time, also while a wait is pending.
+- Once the chart is freed (`chart.free()`), a pending wait and every later
+  one reject with an `Error` whose message starts with `"chart disposed"`,
+  and `status()` reports `disposed: true` with zero counts. The same happens
+  if the renderer stops compiling in the background (it does so only when it
+  cannot schedule the full shader set's compiles), since the handle then has
+  nothing left to watch.
+- A chart that compiles nothing in the background has nothing to wait for:
+  the waits resolve at once and `disposed` stays `false`.
+- Freeing the handle (`readiness.free()`) ends nothing on the chart. The
+  chart's own `series_ready()`, `pipelines_ready()` and `first_frame_ready()`
+  work as before.
+
+```js
+const readiness = chart.readiness();
+const ready = readiness.series_ready(); // the chart stays usable meanwhile
+const { screen } = readiness.status();
+progress.value = screen.total ? screen.ready / screen.total : 1;
+chart.resize(canvas.width, canvas.height);
+try {
+  await ready;
+  chart.frame();
+} catch (error) {
+  if (!String(error.message).startsWith("chart disposed")) throw error;
+}
+```
+
+<a id="typescript-return-types"></a>
+
+### Return types in the TypeScript declarations
+
+wasm-bindgen copies each method's documentation into the generated `.d.ts`,
+and the return types name their form
+([#315](https://github.com/shim9610/figgy/issues/315)):
+
+- `FiggyJson` is a `string` holding JSON text, never an object: parse it with
+  `JSON.parse`. The method's documentation names its shape. `get_config`,
+  `get_series`, `annotations`, `decoration_bounds`, `active_layer`, the pick
+  results (`Promise<FiggyJson | undefined>`) and the
+  status reports (`stream_status`, `gpu_memory_status`, …) return it.
+- A plain object or array is typed as one: `pipeline_status()` returns
+  `FiggyPipelineStatus`, `FiggyReadiness.status()` returns
+  `FiggyReadinessStatus`, `pipeline_failures()` returns
+  `FiggyPipelineFailure[]`, `theme(name)` returns `FiggyThemeObject`, and
+  `theme_names()`, `annotation_ids()` and
+  `FiggyBoundedChart.supported_families()` return `string[]`.
+- A string that is one of a few names is typed as their union, such as
+  `shader_set(): "basic" | "full"`.
+
+Units: `FiggyChart` takes and returns geometry in physical canvas pixels
+(the canvas's `width` / `height` space, not CSS pixels), except where a
+method says document logical pixels (`get_config` lengths, `subplot_area`,
+`take_plot_resize_request`). `FiggyBoundedChart` uses document logical
+pixels throughout. Each method's documentation repeats its units.
 
 ### Math in labels
 
@@ -1409,6 +1804,11 @@ GPU values (or `"null"` for no supported selection). Histogram fields are
 `category_id`, `category_label`, `value`, `direction` and `mode`; `identity`
 uses a flat `kind` tag. Points and matrix cells are
 also supported; a colour- or size-mapped point adds `color_value` / `size_value`,
+and a size-mapped point also adds `mapped_radius_px`, the marker radius
+`PointSizeMap::radius_px` gives that value in logical pixels (the unit of
+`point_size`, before the export scale; `null` for a non-finite value), and
+`size_hidden`, `true` when the value is not finite and the draw skips the
+marker ([#312](https://github.com/shim9610/figgy/issues/312)),
 and a vector selection adds `u` / `v` (plus `color_value` with a colour map).
 A point of a ternary series adds `c`, its third component as uploaded.
 A sample of a 3D surface coloured by a second grid adds `color_value`, and
@@ -1420,3 +1820,67 @@ changed, and a flat chart never does. A data-area drag orbits the camera.
 methods; call them through [`element.kernel`](#figgy-chart-kernel).
 See the [selection JSON contract](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#resident-selection-details).
 Hold the host's async gate during selected-value reads as well as exports.
+
+<a id="editor-queries-figgychart-312"></a>
+
+### Editor queries (`FiggyChart`, [#312](https://github.com/shim9610/figgy/issues/312))
+
+These calls answer an editor from the renderer's own placement and layout
+code. None of them changes the document, the selection, the undo state or
+the raster. Coordinates are physical canvas pixels, and each result also gives
+document pixels (the coordinates of `get_config`).
+
+- `annotation_preview(json)` places an `Annotation` that is not in the
+  document yet, with the annotation layer's own placement. It returns
+  `{ kind, visible, drawn, canvas, document }`. `canvas` and `document` are
+  `{ shape, points | rect, bounds }`. `shape` is one of `"line"` (a reference
+  line's two ends), `"span"`, `"text"` (`rect`), `"arrow"` (`from`, `to`)
+  and `"polygon"` (a shape clipped to the plot). `bounds` covers everything
+  the raster paints for the item, labels included. Once the item is added and
+  drawn, its `annotations()` `rect` is `bounds` padded by 2 logical px. An item
+  the raster would skip has `drawn: false` and the `reason` that
+  `annotation_warnings` gives. A hidden item is placed as it is drawn once
+  shown. Malformed JSON is refused with code `annotation_json`, and an
+  invalid item with `annotation_invalid`.
+- `convert_annotation_anchor(json, "Data" | "Ratio")` returns the item with
+  every anchor converted at its drawn position: a text box's anchor, an
+  arrow's or a box shape's two ends, and a polygon's vertices. Reference
+  lines and spans have no anchor and come back unchanged. An anchor with no
+  position is refused with code `anchor_unplaceable`, and another kind name
+  with `anchor_kind`. Pass the result to `add_annotation` or
+  `set_annotation`.
+- `inspect_document_layout(config_json?)` returns `{ scale, surface,
+  document_area, active_layer, panels }`. Each rect is a `{ document, canvas }`
+  pair of `[x, y, w, h]`. `panels` lists every panel in the order the
+  renderer draws them (base, overlays, line offset members, then each
+  subplot's panels), each as `{ index, layer, subplot, member, frame,
+  data_area }`. Without an argument, it reads the installed document as
+  shown. With a `Config` JSON, it reads that candidate as `set_config` would
+  place it on this canvas, without installing it. A candidate whose panels
+  cannot be laid out is refused with code `layout`.
+- `panel_at(x, y)` returns the panel on top at a point, as `{ layer, panel,
+  subplot, active, in_data_area, document }`, or `null` off every frame.
+  Subplot frames win over the parent chart, and the one drawn on top wins:
+  insets in paint order, then subplots of their own, the later over the
+  earlier. This is the rule a base-layer press uses. When the active layer
+  is an overlay of the chart found, the overlay is reported. While the
+  annotation layer is active and shown, it is reported on the parent frame
+  outside every subplot.
+- `data_area_rect()` returns the active layer's exact data area as `{ layer,
+  panel, document, canvas }`. This is the rectangle the data is drawn in, not
+  the padded box `decoration_bounds("data_area")` selects. A chart without a
+  data area is refused with code `data_area`.
+- `legend_entry(series_id)` returns one legend row as the auto legend writes
+  it, as a JSON array of `RichSegment`. The row holds the series' symbol (its
+  style and the colourbar map, naming the series), a space, `"\t"` and its
+  label. Append it to `legend.content.segments` after a `"\n"` and the rest of
+  a host-written legend keeps its text. An unknown series is refused with code
+  `series`.
+- `render_warnings()` returns every warning of the last drawn frame, on any
+  axis of any panel and for skipped annotations, as `[{ kind, ..., message }]`.
+  `MajorSpacingReplaced` and `LogDecadeStepAdjusted` carry `axis`,
+  `requested` and `used`; a replaced spacing also has `reason`, and `limit`
+  for `TooManyTicks`. `MinorCountClamped` carries the same three fields, and
+  `AnnotationSkipped` carries `index` and `reason`. `axis` is the `Config`
+  field path, such as `"subplots[1].config.left_y"`, and a non-finite number
+  is `null`. `annotation_warnings()` is the annotation part of this list.

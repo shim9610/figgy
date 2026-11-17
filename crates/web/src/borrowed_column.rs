@@ -2,7 +2,9 @@
 //! buffers without constructing an owned per-value mirror. Each adapter only
 //! writes values; the renderer's writer records their statistics.
 
-use renderer::{ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource};
+use renderer::{
+    ColumnLanes, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
+};
 
 /// The slice range a streamed chunk of `len` values from `start` reads.
 fn chunk_range(
@@ -37,6 +39,11 @@ impl ColumnSource for BorrowedF32Column<'_> {
 
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         HiLoColumnSource::write_pairs(self, dst)
+    }
+
+    /// Every value is `(value, 0)`: staged at 4 bytes per value (#317).
+    fn lanes(&self) -> ColumnLanes {
+        ColumnLanes::Single
     }
 
     fn write_pair_range(
@@ -89,6 +96,11 @@ impl ColumnSource for BorrowedCastF32Column<'_> {
         for (index, &value) in self.data.iter().enumerate().take(dst.len()) {
             dst.write_pair(index, value as f32, 0.0);
         }
+    }
+
+    /// Every value is `(value as f32, 0)`: staged at 4 bytes per value (#317).
+    fn lanes(&self) -> ColumnLanes {
+        ColumnLanes::Single
     }
 }
 
@@ -249,6 +261,12 @@ impl ColumnSource for JsF32StreamSource {
         for index in 0..dst.len() {
             dst.write_pair(index, self.0.get_index(index as u32), 0.0);
         }
+    }
+
+    /// Every value is `(value, 0)`: a resident upload stages 4 bytes per
+    /// value (#317). Streamed uploads ignore it.
+    fn lanes(&self) -> ColumnLanes {
+        ColumnLanes::Single
     }
 
     fn write_pair_range(

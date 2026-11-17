@@ -125,6 +125,66 @@ const _: () = assert!(
 );
 const RADIAL_PICK_RESULT_BYTES: u64 = std::mem::size_of::<RadialPickResultGpu>() as u64;
 
+/// The globals of a frame of `chart` laid out as `l`, `width x height`
+/// physical pixels, drawn into a target of `format`.
+fn frame_globals(
+    chart: &RadialChart,
+    l: &layout::Layout,
+    (width, height): (u32, u32),
+    format: wgpu::TextureFormat,
+) -> Globals {
+    Globals {
+        size: [width as f32, height as f32, l.sectors.len() as f32, 2.0],
+        background: [
+            chart.background.r,
+            chart.background.g,
+            chart.background.b,
+            chart.background.a,
+        ],
+        light: [
+            chart.style.light[0],
+            chart.style.light[1],
+            chart.style.light[2],
+            0.0,
+        ],
+        shadow: [if chart.style.shadow { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        groups: l.groups,
+        meta: [
+            if chart.split.is_some() { 2.0 } else { 1.0 },
+            if format.is_srgb() { 1.0 } else { 0.0 },
+            l.holes[0],
+            l.holes[1],
+        ],
+    }
+}
+
+/// The clear colour of an export over `background`: transparent for
+/// [`RadialExportBackground::Transparent`], the options' own otherwise.
+fn export_clear(clear: crate::Color, background: RadialExportBackground) -> crate::Color {
+    match background {
+        RadialExportBackground::Transparent => crate::Color::new(0.0, 0.0, 0.0, 0.0),
+        _ => clear,
+    }
+}
+
+/// What a radial raster export draws under the chart (#313): an option of
+/// the export alone. The chart, its selection and hover, and every frame
+/// already prepared (the one on screen included) are not changed by it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum RadialExportBackground {
+    /// The chart's own `background` over [`crate::ExportOptions::clear`],
+    /// as [`RadialRenderer::export_rgba`] draws it.
+    #[default]
+    Document,
+    /// No background: the slices, the shadows they cast, the labels and the
+    /// annotations over transparent pixels, whatever the chart's background
+    /// and `ExportOptions::clear`.
+    Transparent,
+    /// This straight-alpha colour (each component in `0..=1`) in place of
+    /// the chart's background, over `ExportOptions::clear`.
+    Color(crate::Color),
+}
+
 /// Immutable GPU snapshot. Its shader draws straight into a same-format,
 /// single-sample target; four analytic subpixel samples provide edge AA.
 /// Labels are rasterized at the requested output resolution, never upscaled.
@@ -137,6 +197,10 @@ pub struct RadialFrame {
     pick_pipeline: wgpu::ComputePipeline,
     pick_layout: wgpu::BindGroupLayout,
     _uniform: TrackedBuffer,
+    /// The frame's globals as its uniform holds them: an export with
+    /// another background ([`RadialExportBackground`]) binds a copy with
+    /// only the background replaced, next to this frame's sectors and labels.
+    globals: Globals,
     sectors: TrackedBuffer,
     _annotations: Arc<TrackedTexture>,
     /// The CPU sectors, kept only for the CPU twin's agreement test.
@@ -329,6 +393,7 @@ impl RadialFrame {
         {
             return Ok(RadialPickTicket::none());
         }
+        self.gpu.health().check().map_err(radial_gpu_error)?;
         let device = self.gpu.device();
         // gpu-alloc: PickScratch
         let query = gpu_created(device, "radial pick query", || {
@@ -427,10 +492,15 @@ impl RadialFrame {
     /// Requires sample count 1; sets viewport/scissor to the whole attachment.
     /// For an embedded UI region, render into a matching offscreen texture.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.draw_bound(pass, &self.bind_group);
+    }
+    /// [`Self::draw`] with `bind_group` in place of the frame's own: an
+    /// export's background override ([`RadialRenderer::export_rgba_with_background`]).
+    fn draw_bound(&self, pass: &mut wgpu::RenderPass<'_>, bind_group: &wgpu::BindGroup) {
         pass.set_viewport(0.0, 0.0, self.size.0 as f32, self.size.1 as f32, 0.0, 1.0);
         pass.set_scissor_rect(0, 0, self.size.0, self.size.1);
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
 }
@@ -553,6 +623,18 @@ pub struct RadialRenderer {
     /// The dedicated annotation layer, drawn over the frame by its own pass.
     annotation_layer: crate::annotation::RadialAnnotationCache,
     cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<RadialFrame>)>,
+}
+/// The browser device outlives the radial renderer's submitted work, as for
+/// [`crate::Renderer`] (`release_after_submitted_work`).
+#[cfg(target_arch = "wasm32")]
+impl Drop for RadialRenderer {
+    fn drop(&mut self) {
+        crate::renderer::release_after_submitted_work(
+            self.gpu.health(),
+            self.gpu.device(),
+            self.gpu.queue(),
+        );
+    }
 }
 impl RadialRenderer {
     /// Initialize browser pipelines through WebGPU's asynchronous compiler.
@@ -857,6 +939,9 @@ impl RadialRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<Arc<RadialFrame>, RadialError> {
+        // A lost device refuses here, before any buffer is created: wgpu's
+        // `create_buffer_init` panics on a destroyed device.
+        self.gpu.health().check().map_err(radial_gpu_error)?;
         let (width, height) = self.frame_size(chart, size, scale)?;
         let fonts = crate::text_render::font_generation();
         if let Some((_, _, _, _, frame)) =
@@ -937,8 +1022,8 @@ impl RadialRenderer {
             );
             Arc::new(annotations)
         };
-        let (uniform, sectors, bind_group) =
-            self.bind_frame(chart, &l, (width, height), &annotations)?;
+        let globals = frame_globals(chart, &l, (width, height), self.format);
+        let (uniform, sectors, bind_group) = self.bind_frame(&globals, &l, &annotations)?;
         let frame = Arc::new(RadialFrame {
             decorations: l.decorations,
             gpu: self.gpu.clone(),
@@ -948,6 +1033,7 @@ impl RadialRenderer {
             pick_pipeline: self.pick_pipeline.clone(),
             pick_layout: self.pick_layout.clone(),
             _uniform: uniform,
+            globals,
             sectors,
             _annotations: Arc::clone(&annotations),
             #[cfg(feature = "cpu-twin")]
@@ -1039,8 +1125,8 @@ impl RadialRenderer {
         )
         .map_err(radial_gpu_error)?;
         let labels = TrackedTexture::new(self.gpu.ledger(), GpuResourceKind::PanelTexture, labels);
-        let (uniform, sectors, bind_group) =
-            self.bind_frame(chart, &l, (width, height), &labels)?;
+        let globals = frame_globals(chart, &l, (width, height), self.format);
+        let (uniform, sectors, bind_group) = self.bind_frame(&globals, &l, &labels)?;
         Ok(RadialVectorFrame {
             size: (width, height),
             layout: l,
@@ -1150,44 +1236,20 @@ impl RadialRenderer {
         Ok((width as u32, height as u32))
     }
 
-    /// The GPU inputs of one frame of layout `l`: its globals, its sectors
+    /// The GPU inputs of one frame of layout `l`: its `globals`, its sectors
     /// and the bind group that reads them with the label texture `labels`.
     fn bind_frame(
         &self,
-        chart: &RadialChart,
+        globals: &Globals,
         l: &layout::Layout,
-        (width, height): (u32, u32),
         labels: &TrackedTexture,
     ) -> Result<(TrackedBuffer, TrackedBuffer, wgpu::BindGroup), RadialError> {
-        let globals = Globals {
-            size: [width as f32, height as f32, l.sectors.len() as f32, 2.0],
-            background: [
-                chart.background.r,
-                chart.background.g,
-                chart.background.b,
-                chart.background.a,
-            ],
-            light: [
-                chart.style.light[0],
-                chart.style.light[1],
-                chart.style.light[2],
-                0.0,
-            ],
-            shadow: [if chart.style.shadow { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
-            groups: l.groups,
-            meta: [
-                if chart.split.is_some() { 2.0 } else { 1.0 },
-                if self.format.is_srgb() { 1.0 } else { 0.0 },
-                l.holes[0],
-                l.holes[1],
-            ],
-        };
         let device = self.gpu.device();
         // gpu-alloc: Uniform
         let uniform = gpu_created(device, "radial globals", || {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("radial globals"),
-                contents: bytemuck::bytes_of(&globals),
+                contents: bytemuck::bytes_of(globals),
                 usage: wgpu::BufferUsages::UNIFORM,
             })
         })?;
@@ -1201,27 +1263,84 @@ impl RadialRenderer {
             })
         })?;
         let sectors = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::FieldTable, sectors);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("radial frame"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: sectors.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(
-                        &labels.create_view(&Default::default()),
-                    ),
-                },
-            ],
-        });
+        let bind_group = self.frame_bind_group(&uniform, &sectors, labels);
         Ok((uniform, sectors, bind_group))
+    }
+
+    /// The bind group of one frame: its globals, its sectors and its label
+    /// texture.
+    fn frame_bind_group(
+        &self,
+        uniform: &TrackedBuffer,
+        sectors: &TrackedBuffer,
+        labels: &TrackedTexture,
+    ) -> wgpu::BindGroup {
+        self.gpu
+            .device()
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("radial frame"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: sectors.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(
+                            &labels.create_view(&Default::default()),
+                        ),
+                    },
+                ],
+            })
+    }
+
+    /// The bind group that draws `frame` over `background` instead of its
+    /// chart's (#313): a uniform of the frame's globals with the background
+    /// replaced, next to the frame's own sectors and label texture. The
+    /// frame, the renderer's cache and the chart are not changed. `None`
+    /// for [`RadialExportBackground::Document`], which draws the frame as
+    /// it is.
+    fn export_bind_group(
+        &self,
+        frame: &RadialFrame,
+        background: RadialExportBackground,
+    ) -> Result<Option<(TrackedBuffer, wgpu::BindGroup)>, RadialError> {
+        let color = match background {
+            RadialExportBackground::Document => return Ok(None),
+            RadialExportBackground::Transparent => crate::Color::new(0.0, 0.0, 0.0, 0.0),
+            RadialExportBackground::Color(color) => color,
+        };
+        let components = [color.r, color.g, color.b, color.a];
+        if !components
+            .iter()
+            .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
+        {
+            return Err(RadialError::Invalid(
+                crate::RuleKind::RadialTextOrBackground,
+            ));
+        }
+        self.admit(std::mem::size_of::<Globals>() as u64)?;
+        let globals = Globals {
+            background: components,
+            ..frame.globals
+        };
+        let device = self.gpu.device();
+        // gpu-alloc: Uniform
+        let uniform = gpu_created(device, "radial export globals", || {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("radial export globals"),
+                contents: bytemuck::bytes_of(&globals),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        })?;
+        let uniform = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::Uniform, uniform);
+        let bind_group = self.frame_bind_group(&uniform, &frame.sectors, &frame._annotations);
+        Ok(Some((uniform, bind_group)))
     }
 
     /// Drop internal frame/annotation references. External frames stay valid.
@@ -1247,10 +1366,31 @@ impl RadialRenderer {
         size: (u32, u32),
         options: crate::ExportOptions,
     ) -> Result<RasterImage, RadialError> {
+        self.export_rgba_with_background(chart, size, options, RadialExportBackground::Document)
+            .await
+    }
+
+    /// [`Self::export_rgba`] over `background` instead of the chart's own
+    /// (#313): transparent, or another colour. The override is the
+    /// export's alone: the chart is read, never edited, and the frame
+    /// [`Self::prepare`] returns for it keeps drawing the chart's
+    /// background (the export binds its own copy of the frame's globals).
+    pub async fn export_rgba_with_background(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+        background: RadialExportBackground,
+    ) -> Result<RasterImage, RadialError> {
         let frame = self.prepare(chart, size, options.scale)?;
         let annotations = self.prepare_annotations_for(&frame, chart, options.scale)?;
-        self.render_rgba(frame.size, options.clear, |pass| {
-            frame.draw(pass);
+        let bound = self.export_bind_group(&frame, background)?;
+        let clear = export_clear(options.clear, background);
+        self.render_rgba(frame.size, clear, |pass| {
+            match &bound {
+                Some((_, bind_group)) => frame.draw_bound(pass, bind_group),
+                None => frame.draw(pass),
+            }
             annotations.draw_overlay(pass);
         })
         .await
@@ -1265,10 +1405,33 @@ impl RadialRenderer {
         size: (u32, u32),
         options: crate::ExportOptions,
     ) -> Result<RasterImage, RadialError> {
+        self.export_rgba_with_background_blocking(
+            chart,
+            size,
+            options,
+            RadialExportBackground::Document,
+        )
+    }
+
+    /// [`Self::export_rgba_with_background`], polling the device on this
+    /// thread until the readback completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_rgba_with_background_blocking(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+        background: RadialExportBackground,
+    ) -> Result<RasterImage, RadialError> {
         let frame = self.prepare(chart, size, options.scale)?;
         let annotations = self.prepare_annotations_for(&frame, chart, options.scale)?;
-        self.render_rgba_blocking(frame.size, options.clear, |pass| {
-            frame.draw(pass);
+        let bound = self.export_bind_group(&frame, background)?;
+        let clear = export_clear(options.clear, background);
+        self.render_rgba_blocking(frame.size, clear, |pass| {
+            match &bound {
+                Some((_, bind_group)) => frame.draw_bound(pass, bind_group),
+                None => frame.draw(pass),
+            }
             annotations.draw_overlay(pass);
         })
     }
@@ -1293,6 +1456,20 @@ impl RadialRenderer {
         options: crate::ExportOptions,
     ) -> Result<Vec<u8>, RadialError> {
         let image = self.export_rgba(chart, size, options).await?;
+        crate::encode_png(&image).map_err(radial_gpu_error)
+    }
+
+    /// [`Self::export_rgba_with_background`], encoded as PNG bytes in memory.
+    pub async fn export_png_with_background(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+        background: RadialExportBackground,
+    ) -> Result<Vec<u8>, RadialError> {
+        let image = self
+            .export_rgba_with_background(chart, size, options, background)
+            .await?;
         crate::encode_png(&image).map_err(radial_gpu_error)
     }
 

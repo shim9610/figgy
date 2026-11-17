@@ -91,6 +91,14 @@ pub enum FiggyError {
         reason: &'static str,
     },
 
+    /// A range of a chunked column upload (`Renderer::begin_column_upload`,
+    /// #311) was refused, or the upload was committed before every value was
+    /// written. A refused range changes nothing.
+    InvalidColumnUpload {
+        id: String,
+        reason: &'static str,
+    },
+
     /// The column id belongs to renderer maintenance and is not host-mutable.
     ReservedColumnId {
         id: String,
@@ -260,6 +268,9 @@ impl std::fmt::Display for FiggyError {
             }
             Self::InvalidStreamSource { id, reason } => {
                 write!(f, "invalid streamed source {id}: {reason}")
+            }
+            Self::InvalidColumnUpload { id, reason } => {
+                write!(f, "column upload {id}: {reason}")
             }
             Self::ReservedColumnId { id } => {
                 write!(f, "column id is reserved for renderer maintenance: {id}")

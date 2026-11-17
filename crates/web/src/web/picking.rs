@@ -43,6 +43,10 @@ impl FiggyChart {
     /// index past the overlay list is stored as `"Base"`; the stored
     /// layer is returned as JSON. Drawn pixels never depend on it.
     /// JS: `chart.set_active_layer(JSON.stringify({ Overlay: 0 }))`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn set_active_layer(&mut self, json: &str) -> Result<String, JsValue> {
         let layer: renderer::LayerRef = serde_json::from_str(json).map_err(js_err)?;
         let stored = match self.monotonic {
@@ -67,6 +71,10 @@ impl FiggyChart {
     /// The layer that receives pointer interaction, as JSON, with the
     /// out-of-range fallback applied.
     /// JS: `JSON.parse(chart.active_layer())`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn active_layer(&self) -> Result<String, JsValue> {
         let layer = match self.monotonic {
             Some(_) => self.chart_config()?.active_layer(),
@@ -96,6 +104,9 @@ impl FiggyChart {
     /// While the annotation layer is active (and shown) its drawn items
     /// sit on top and answer as `"annotation_<n>"`; on every other layer
     /// they are not registered and clicks pass through them.
+    ///
+    /// `x`, `y` are physical canvas pixels (the canvas's `width`/`height`
+    /// space, not CSS pixels). Returns the plain id string, not JSON.
     pub fn hit_test(&self, x: f32, y: f32) -> Result<Option<String>, JsValue> {
         let (display_config, _, _) = self.display_config()?;
         Ok(
@@ -207,6 +218,10 @@ impl FiggyChart {
     /// expose `bin_start`, `bin_end`, `value`, and `orientation`; the value
     /// is the stored height (also valid for weighted/density histograms).
     /// Point and matrix selections expose their coordinates and cell value.
+    ///
+    /// Resolves to JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub async fn selection_details(&self) -> Result<String, JsValue> {
         use renderer::config::PickedDataRef;
         let Some(reference) = self
@@ -226,6 +241,36 @@ impl FiggyChart {
             .ok_or_else(|| js_err("selected series no longer exists"))?;
         let mut result = serde_json::json!({"identity": reference, "series_id": series.series_id});
         match &reference {
+            // An energy-level series is DataLess (#321): its pick names a
+            // row of its records, a histogram bin a level stroke and a point
+            // a transition. The row is reported as configured; no column is
+            // read and no histogram path is taken.
+            PickedDataRef::HistogramBin { bin_index, .. }
+                if series.render_type.energy_levels().is_some() =>
+            {
+                let records = self.energy_records(&series)?;
+                let level = records
+                    .levels
+                    .get(*bin_index)
+                    .ok_or_else(|| js_err("selected level no longer exists"))?;
+                result["index"] = serde_json::json!(bin_index);
+                result["part"] = serde_json::json!("level");
+                result["id"] = serde_json::json!(level.id);
+                result["record"] = serde_json::to_value(level).map_err(js_err)?;
+            }
+            PickedDataRef::Point { point_index, .. }
+                if series.render_type.energy_levels().is_some() =>
+            {
+                let records = self.energy_records(&series)?;
+                let transition = records
+                    .transitions
+                    .get(*point_index)
+                    .ok_or_else(|| js_err("selected transition no longer exists"))?;
+                result["index"] = serde_json::json!(point_index);
+                result["part"] = serde_json::json!("transition");
+                result["id"] = serde_json::json!(transition.id);
+                result["record"] = serde_json::to_value(transition).map_err(js_err)?;
+            }
             // A monotonic series' point is a kept point of its envelope
             // (#271): its x and y are read from the envelope, not the GPU.
             PickedDataRef::Point { point_index, .. } if series.monotonic().is_some() => {
@@ -298,9 +343,10 @@ impl FiggyChart {
                 let color_column = scatter
                     .and_then(|scatter| scatter.point_color_map.as_ref())
                     .map(|map| map.column.clone());
-                let size_column = scatter
+                let size_map = scatter
                     .and_then(|scatter| scatter.point_size_map.as_ref())
-                    .map(|map| map.column.clone());
+                    .cloned();
+                let size_column = size_map.as_ref().map(|map| map.column.clone());
                 let three_d = self.chart_config()?.drawn_z_column(&series).is_some();
                 let mut samples = vec![
                     (series.x_column, *point_index),
@@ -380,8 +426,16 @@ impl FiggyChart {
                     result["color_value"] = serde_json::json!(values[next]);
                     next += 1;
                 }
-                if size_column.is_some() {
-                    result["size_value"] = serde_json::json!(values[next]);
+                if let Some(map) = &size_map {
+                    let size_value = values[next];
+                    result["size_value"] = serde_json::json!(size_value);
+                    // The radius the map gives this value (#312), in
+                    // logical pixels, the unit of `point_size`: the draw and
+                    // pick shaders use the same formula. A non-finite value
+                    // has none, and the draw skips that marker.
+                    let radius = map.radius_px(size_value);
+                    result["mapped_radius_px"] = serde_json::json!(radius);
+                    result["size_hidden"] = serde_json::json!(radius.is_none());
                     next += 1;
                 }
                 if let Some((has_w, colour_mapped)) = vector {
@@ -749,10 +803,7 @@ impl FiggyChart {
                 ..
             } if series.render_type.energy_levels().is_some() => {
                 use renderer::energy_levels::LabelPart;
-                let levels = series
-                    .render_type
-                    .energy_levels()
-                    .ok_or_else(|| js_err("selected series is not an energy-level diagram"))?;
+                let levels = self.energy_records(&series)?;
                 let part = part.ok_or_else(|| js_err("an energy-level label names its part"))?;
                 let index = *category_index;
                 let (id, label) = match part {
@@ -1103,6 +1154,10 @@ impl FiggyChart {
     /// takes to drag it.
     /// The `<figgy-chart>` facade parses the string and normalizes
     /// `undefined` to `null`.
+    ///
+    /// Resolves to JSON text (`FiggyJson`), not an object. `x`, `y` and
+    /// `max_distance_px` are physical canvas pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson | undefined")]
     pub async fn pick_point(
         &mut self,
         x: f32,
@@ -1474,6 +1529,9 @@ impl FiggyChart {
 
     /// Move among source rows represented in the completed packed view.
     /// Returns only the original source index; no source or GPU readback.
+    ///
+    /// Returns a number, or `undefined`.
+    #[wasm_bindgen(unchecked_return_type = "number | undefined")]
     pub fn next_view_point_index(
         &self,
         source_id: Option<String>,
@@ -1502,6 +1560,10 @@ impl FiggyChart {
     /// cells and contour levels. The tagged result contains only stable
     /// source/series indices plus `distance_px`; values and geometry stay
     /// in the renderer's GPU-backed SSoT. Resolves to `undefined` on miss.
+    ///
+    /// Resolves to JSON text (`FiggyJson`), not an object. `x`, `y` and
+    /// `max_distance_px` are physical canvas pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson | undefined")]
     pub async fn pick_data(
         &mut self,
         x: f32,
@@ -1785,6 +1847,37 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// End every element selection and pointer gesture (#311): the
+    /// decoration selection (`HitId`), the annotation selection, a value
+    /// label or Feynman part drag, an element drag or handle resize, a
+    /// pending plot-area resize proposal and a held subplot display
+    /// placement. The chart redraws. The active layer, the config, the
+    /// series and the columns stay as they are, and so does the data
+    /// highlight (`picked_data`, a value label's typed selection included):
+    /// clear that with `set_picked_data("null")`.
+    ///
+    /// JS: `chart.clear_selection();`
+    pub fn clear_selection(&mut self) -> Result<(), JsValue> {
+        if self.chart_selection()?.is_some() {
+            self.set_chart_selection(None)?;
+        }
+        self.set_selected_annotation(None);
+        self.dragging = false;
+        self.resizing = None;
+        self.annotation_pointer = false;
+        self.value_label_pointer = false;
+        self.feynman_pointer = None;
+        self.plot_resize = None;
+        if self.display_held {
+            self.display_held = false;
+            self.renderer
+                .hold_chart_display(self.chart_id, false)
+                .map_err(js_err)?;
+        }
+        self.request_host_redraw();
+        Ok(())
+    }
+
     /// `true` while a chart element or an annotation is selected.
     pub fn has_selection(&self) -> Result<bool, JsValue> {
         Ok(self.chart_selection()?.is_some() || self.selected_annotation.is_some())
@@ -1818,6 +1911,9 @@ impl FiggyChart {
     }
 
     /// Compatibility entry point; no streamed pick operation can start.
+    ///
+    /// Always rejects.
+    #[wasm_bindgen(unchecked_return_type = "never")]
     pub async fn finish_stream_pick_point(
         &mut self,
         _handle: &StreamingOperationHandle,
@@ -1826,6 +1922,9 @@ impl FiggyChart {
     }
 
     /// Compatibility entry point; no streamed pick operation can start.
+    ///
+    /// Always rejects.
+    #[wasm_bindgen(unchecked_return_type = "never")]
     pub async fn finish_stream_pick_data(
         &mut self,
         _handle: &StreamingOperationHandle,
@@ -1843,4 +1942,20 @@ fn moves_subplot_frame(element: Option<&renderer::layout::Element>) -> bool {
                 | renderer::layout::Element::SubplotFrameEdge(..)
         )
     )
+}
+
+impl FiggyChart {
+    /// The records the energy-level `series` draws, its own or its
+    /// source's among the chart's series (`renderer::energy_level_records`).
+    fn energy_records<'s>(
+        &'s self,
+        series: &'s renderer::SeriesConfig,
+    ) -> Result<&'s renderer::energy_levels::EnergyLevelSeries, JsValue> {
+        let levels = series
+            .render_type
+            .energy_levels()
+            .ok_or_else(|| js_err("selected series is not an energy-level diagram"))?;
+        renderer::energy_level_records(levels, self.chart_series()?)
+            .ok_or_else(|| js_err("the energy-level source names no series with records"))
+    }
 }

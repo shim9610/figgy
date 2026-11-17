@@ -64,6 +64,23 @@ impl Renderer {
         &self.pool
     }
 
+    /// The device bundle this renderer was built from (#313): the same
+    /// device and queue, the same device-lost and error record and the same
+    /// GPU ledger and memory budget, starting on this renderer's shader set.
+    /// A [`crate::radial::RadialRenderer`] (or another [`Renderer`]) built
+    /// from it shares the device, its loss and the one budget with this
+    /// renderer. Dropping the renderer built from it, or the bundle, never
+    /// destroys the device: the device lives while any holder of it does.
+    pub fn renderer_device(&self) -> RendererDevice {
+        RendererDevice {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            health: self.health.clone(),
+            ledger: Arc::clone(&self.gpu_ledger),
+            shader_set: self.shader_set(),
+        }
+    }
+
     /// Requested bytes of tracked GPU allocations, one row per [`GpuResourceKind`],
     /// for the whole device bundle: every renderer built from this renderer's
     /// `RendererDevice` charges the same ledger, column pools included (#160).
@@ -456,6 +473,16 @@ impl Renderer {
     /// [`Self::for_window_with_shader_set_async_observed`]).
     pub fn require_shader_set(&mut self, set: ShaderSet) {
         self.admit_full_shaders(set == ShaderSet::Full);
+    }
+
+    /// Move this renderer to the shader set `config` needs (#299, #311),
+    /// as `set_chart_state` does when it stores a config: the full set for
+    /// an axis break, a probability axis or polar coordinates on any layer,
+    /// nothing otherwise. A host that installs a chart through
+    /// [`Self::begin_replace_chart_sources`] calls it with the candidate
+    /// config first, so the pipelines are compiled for it from the start.
+    pub fn require_shaders_for(&mut self, config: &Config) {
+        self.admit_full_shaders(config_needs_full_shaders(config));
     }
 
     /// Compile every data shader as its full module from now on, when

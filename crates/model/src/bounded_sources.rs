@@ -308,12 +308,319 @@ pub struct SeriesUpload<'a> {
     pub values: UploadValues<'a>,
 }
 
+/// What a converter did with a field the document set
+/// ([`ConversionNote::kind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
+pub enum ConversionNoteKind {
+    /// The value has no counterpart in the converted chart: it is not
+    /// carried at all.
+    Dropped,
+    /// The value is carried, but as a different value.
+    Changed,
+}
+
+/// One field of a legacy document that its conversion did not carry as it
+/// was set ([`ConversionReport::notes`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ConversionNote {
+    /// Where the field is in the document's JSON: keys joined by `.`, array
+    /// elements as `[index]`, such as `decorations.offsets[2]` or
+    /// `style.emphasis_brightness`.
+    pub path: String,
+    /// Whether the value was dropped or changed.
+    pub kind: ConversionNoteKind,
+    /// Why, as one sentence.
+    pub reason: &'static str,
+}
+
+/// What an upload of a converted document holds
+/// ([`ConvertedColumn::role`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(rename_all = "snake_case")
+)]
+pub enum ConvertedColumnRole {
+    /// The shared category positions `0..n` ([`UploadValues::Positions`]).
+    Positions,
+    /// One series' values in category order ([`UploadValues::Values`] or
+    /// [`UploadValues::Dense`]).
+    Values,
+    /// One box plot series' statistics record ([`UploadValues::BoxRecord`]).
+    BoxRecord,
+    /// One box plot series' ragged outliers ([`UploadValues::BoxOutliers`]).
+    BoxOutliers,
+}
+
+/// Which document series an upload of a conversion belongs to
+/// ([`ConversionReport::columns`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ConvertedColumn {
+    /// The document series, `None` for the shared positions.
+    pub series_id: Option<String>,
+    /// What the upload holds.
+    pub role: ConvertedColumnRole,
+    /// The column, record or ragged id the converted series read.
+    pub column: ColumnId,
+}
+
+/// What a `Config::from_*_with_report` conversion returns beside the
+/// converted chart: which document series each upload belongs to, and every
+/// field the document set that the chart does not carry as it was set.
+///
+/// A field counts as set when it is present (an optional field, an array
+/// element) or its value is not the documented default the document takes
+/// when it omits the field: a parsed document cannot tell an omitted field
+/// from one that writes its default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ConversionReport {
+    /// One entry per upload, in upload order.
+    pub columns: Vec<ConvertedColumn>,
+    /// The dropped and changed fields, in the order the conversion meets
+    /// them: the document-wide fields first.
+    pub notes: Vec<ConversionNote>,
+}
+
+/// The note recorder a converter writes to: off for the plain
+/// `Config::from_*`, which then neither formats a path nor allocates a
+/// note, and on for the `_with_report` variants.
+struct Notes(Option<Vec<ConversionNote>>);
+
+impl Notes {
+    fn off() -> Self {
+        Self(None)
+    }
+
+    fn on() -> Self {
+        Self(Some(Vec::new()))
+    }
+
+    fn push(
+        &mut self,
+        path: impl FnOnce() -> String,
+        kind: ConversionNoteKind,
+        reason: &'static str,
+    ) {
+        if let Some(notes) = &mut self.0 {
+            notes.push(ConversionNote {
+                path: path(),
+                kind,
+                reason,
+            });
+        }
+    }
+
+    fn dropped(&mut self, path: impl FnOnce() -> String, reason: &'static str) {
+        self.push(path, ConversionNoteKind::Dropped, reason);
+    }
+
+    fn into_vec(self) -> Vec<ConversionNote> {
+        self.0.unwrap_or_default()
+    }
+}
+
+/// The document-wide fields of a legacy bounded document a conversion
+/// reports on.
+struct LegacyDocument<'a> {
+    decorations: &'a crate::DecorationLayout,
+    title: &'a str,
+    has_chart_title: bool,
+    active_layer: crate::layer::LayerRef,
+    hovered: bool,
+    background: Color,
+    default_background: Color,
+}
+
+/// The notes on the document-wide fields no converter carries: the hover,
+/// the background, an explicit data area, the decoration selection, a
+/// legacy title the rich title hides, and an overlay or subplot layer.
+fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
+    if document.hovered {
+        notes.dropped(
+            || "hovered".into(),
+            "hover is transient pointer state; a Config holds no hovered element",
+        );
+    }
+    if document.background != document.default_background {
+        notes.dropped(
+            || "background".into(),
+            "the background is the host's clear colour, not part of a Config",
+        );
+    }
+    if document.decorations.data_area.is_some() {
+        notes.dropped(
+            || "decorations.data_area".into(),
+            "the converted chart area is a placeholder the host sets; the data area follows the layout",
+        );
+    }
+    if document.decorations.selected.is_some() {
+        notes.dropped(
+            || "decorations.selected".into(),
+            "a decoration selection is transient editor state",
+        );
+    }
+    if document.has_chart_title && !document.title.is_empty() {
+        notes.dropped(
+            || "title".into(),
+            "the legacy plain title is ignored when `chart_title` is set",
+        );
+    }
+    if document.active_layer != document.active_layer.bounded() {
+        notes.push(
+            || "active_layer".into(),
+            ConversionNoteKind::Changed,
+            "a legacy document has no overlays or subplots; the base layer is active instead",
+        );
+    }
+}
+
+/// The notes on the overrides that name no series of the document: they
+/// belong to no converted series.
+fn legacy_override_notes<'a>(
+    notes: &mut Notes,
+    override_series: impl Iterator<Item = &'a str>,
+    has_series: impl Fn(&str) -> bool,
+) {
+    for (i, series_id) in override_series.enumerate() {
+        if !has_series(series_id) {
+            notes.dropped(
+                || format!("overrides[{i}]"),
+                "the override names no series of the document",
+            );
+        }
+    }
+}
+
+/// The report of a conversion: one [`ConvertedColumn`] per upload, the
+/// positions with no series and every other upload with the series of
+/// `series_ids` whose column (`column_of(id, role)`) it is, and the notes.
+fn conversion_report<'a>(
+    uploads: &[SeriesUpload<'_>],
+    series_ids: impl Iterator<Item = &'a str> + Clone,
+    column_of: impl Fn(&str, ConvertedColumnRole) -> ColumnId,
+    notes: Notes,
+) -> ConversionReport {
+    let columns = uploads
+        .iter()
+        .map(|upload| {
+            let role = match upload.values {
+                UploadValues::Positions(_) => ConvertedColumnRole::Positions,
+                UploadValues::Values(_) | UploadValues::Dense(_) => ConvertedColumnRole::Values,
+                UploadValues::BoxRecord(_) => ConvertedColumnRole::BoxRecord,
+                UploadValues::BoxOutliers(_) => ConvertedColumnRole::BoxOutliers,
+            };
+            let series_id = (role != ConvertedColumnRole::Positions)
+                .then(|| {
+                    series_ids
+                        .clone()
+                        .find(|id| column_of(id, role) == upload.column)
+                })
+                .flatten()
+                .map(str::to_owned);
+            ConvertedColumn {
+                series_id,
+                role,
+                column: upload.column.clone(),
+            }
+        })
+        .collect();
+    ConversionReport {
+        columns,
+        notes: notes.into_vec(),
+    }
+}
+
 /// The grid colour of a legacy bounded value axis.
 const LEGACY_GRID_COLOR: Color = Color::from_rgb8(224, 229, 235);
+
+/// A converted document with its report: its config, its series, its
+/// uploads and the [`ConversionReport`].
+pub type ConvertedDocument<'a> = (
+    Config,
+    Vec<SeriesConfig>,
+    Vec<SeriesUpload<'a>>,
+    ConversionReport,
+);
+
+impl Config {
+    /// [`Config::from_categorical`] with its [`ConversionReport`]: the
+    /// series each upload belongs to, and a note for each field the
+    /// document set that the chart does not carry as set: `hovered`,
+    /// `background`, `decorations.data_area`, `decorations.selected`, a
+    /// legacy `title` that `chart_title` hides, an overlay or subplot
+    /// `active_layer` (changed to the base layer), a `selected` category the
+    /// document does not hold, each `decorations.offsets[i]` the chart has
+    /// no counterpart for or whose value label offset is refused, and each
+    /// `overrides[i]` that names no series. The config, series and uploads
+    /// are the ones `from_categorical` returns.
+    pub fn from_categorical_with_report(chart: &CategoricalChart) -> ConvertedDocument<'_> {
+        let mut notes = Notes::on();
+        let (config, series, uploads) = Self::categorical_conversion(chart, &mut notes);
+        let report = conversion_report(
+            &uploads,
+            chart.series.iter().map(|s| s.id.as_str()),
+            |id, _| category_values_column(id),
+            notes,
+        );
+        (config, series, uploads, report)
+    }
+
+    /// [`Config::from_boxplot`] with its [`ConversionReport`]: the series
+    /// each upload belongs to (its record and its outliers), and a note for
+    /// each field the document set that the chart does not carry as set,
+    /// the same fields [`Config::from_categorical_with_report`] reports.
+    pub fn from_boxplot_with_report(chart: &BoxPlotChart) -> ConvertedDocument<'_> {
+        let mut notes = Notes::on();
+        let (config, series, uploads) = Self::boxplot_conversion(chart, &mut notes);
+        let report = conversion_report(
+            &uploads,
+            chart.series.iter().map(|s| s.id.as_str()),
+            |id, role| match role {
+                ConvertedColumnRole::BoxOutliers => box_plot_outliers(id),
+                _ => box_plot_record(id),
+            },
+            notes,
+        );
+        (config, series, uploads, report)
+    }
+
+    /// [`Config::from_radar`] with its [`ConversionReport`]: the series each
+    /// upload belongs to, and a note for each field the document set that
+    /// the chart does not carry as set: `hovered`, `background`,
+    /// `decorations.data_area`, `decorations.selected`, a legacy `title`
+    /// that `chart_title` hides, an overlay or subplot `active_layer`
+    /// (changed to the base layer), `style.emphasis_brightness`, a selected
+    /// whole series (`selected` without a category) or a `selected`
+    /// category the document does not hold, and each
+    /// `decorations.offsets[i]` the chart has no counterpart for (a spoke
+    /// label's, among others) or whose value label offset is refused.
+    pub fn from_radar_with_report(chart: &RadarChart) -> ConvertedDocument<'_> {
+        let mut notes = Notes::on();
+        let (config, series, uploads) = Self::radar_conversion(chart, &mut notes);
+        let report = conversion_report(
+            &uploads,
+            chart.series.iter().map(|s| s.id.as_str()),
+            |id, _| radar_values_column(id),
+            notes,
+        );
+        (config, series, uploads, report)
+    }
+}
 
 impl Config {
     /// The Cartesian chart a legacy [`CategoricalChart`] document draws:
     /// its `Config`, its series and the columns to upload.
+    /// [`Config::from_categorical_with_report`] returns the same with a report of
+    /// every field the document set that is not carried as set.
     ///
     /// The chart is a `Config` with a categorical axis (`bottom_x` for
     /// vertical bars, `left_y` for horizontal ones) holding the document's
@@ -347,7 +654,28 @@ impl Config {
     pub fn from_categorical(
         chart: &CategoricalChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
+        Self::categorical_conversion(chart, &mut Notes::off())
+    }
+
+    /// The conversion of [`Config::from_categorical`], writing its notes to
+    /// `notes`.
+    fn categorical_conversion<'a>(
+        chart: &'a CategoricalChart,
+        notes: &mut Notes,
+    ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         let horizontal = chart.direction == CategoryBarDirection::Horizontal;
+        legacy_document_notes(
+            notes,
+            &LegacyDocument {
+                decorations: &chart.decorations,
+                title: &chart.title,
+                has_chart_title: chart.chart_title.is_some(),
+                active_layer: chart.active_layer,
+                hovered: chart.hovered.is_some(),
+                background: chart.background,
+                default_background: crate::defaults::categorical_chart().background,
+            },
+        );
         let mut config = legacy_config(&LegacyChrome {
             horizontal,
             categories: &chart.categories,
@@ -456,13 +784,19 @@ impl Config {
         if let Some(selected) = &chart.selected {
             legacy_selection(
                 &mut config,
+                notes,
                 &chart.categories,
                 &selected.category_id,
                 &selected.series_id,
             );
         }
-        legacy_offsets(&mut config, &chart.decorations);
-        legacy_label_offsets(&mut series, &chart.categories, &chart.decorations);
+        legacy_offsets(&mut config, notes, &chart.decorations);
+        legacy_label_offsets(&mut series, notes, &chart.categories, &chart.decorations);
+        legacy_override_notes(
+            notes,
+            chart.overrides.iter().map(|o| o.target.series_id.as_str()),
+            |id| chart.series.iter().any(|s| s.id == id),
+        );
         (config, series, uploads)
     }
 }
@@ -591,27 +925,33 @@ fn legacy_legend<'a>(
 /// A category the document does not hold selects nothing.
 fn legacy_selection(
     config: &mut Config,
+    notes: &mut Notes,
     categories: &[crate::config::Category],
     category_id: &str,
     series_id: &str,
 ) {
-    if let Some(index) = categories.iter().position(|c| c.id == category_id) {
-        let mut picked = DataSelectionsConfig::empty();
-        picked.refs.push(PickedDataRef::HistogramBin {
-            source_id: None,
-            series_id: series_id.to_owned(),
-            bin_index: index,
-            half: None,
-        });
-        config.picked_data = Some(picked);
-    }
+    let Some(index) = categories.iter().position(|c| c.id == category_id) else {
+        notes.dropped(
+            || "selected.category_id".into(),
+            "the selected category is not a category of the document",
+        );
+        return;
+    };
+    let mut picked = DataSelectionsConfig::empty();
+    picked.refs.push(PickedDataRef::HistogramBin {
+        source_id: None,
+        series_id: series_id.to_owned(),
+        bin_index: index,
+        half: None,
+    });
+    config.picked_data = Some(picked);
 }
 
 /// The decoration offsets of a legacy document as the matching Cartesian
 /// offsets: the title, the legend, the axis lines (across themselves), tick
 /// labels and titles. Every other element's offset is not carried.
-fn legacy_offsets(config: &mut Config, decorations: &crate::DecorationLayout) {
-    for offset in &decorations.offsets {
+fn legacy_offsets(config: &mut Config, notes: &mut Notes, decorations: &crate::DecorationLayout) {
+    for (i, offset) in decorations.offsets.iter().enumerate() {
         let [dx, dy] = offset.offset;
         match &offset.element {
             DecorationId::ChartTitle => {
@@ -639,7 +979,12 @@ fn legacy_offsets(config: &mut Config, decorations: &crate::DecorationLayout) {
                 axis.title_option.offset_x = dx;
                 axis.title_option.offset_y = dy;
             }
-            _ => {}
+            // Read by `legacy_label_offsets`.
+            DecorationId::DataLabel { .. } => {}
+            _ => notes.dropped(
+                || format!("decorations.offsets[{i}]"),
+                "the converted chart has no counterpart for this element's offset",
+            ),
         }
     }
 }
@@ -651,10 +996,11 @@ fn legacy_offsets(config: &mut Config, decorations: &crate::DecorationLayout) {
 /// is dropped.
 fn legacy_label_offsets(
     series: &mut [SeriesConfig],
+    notes: &mut Notes,
     categories: &[crate::config::Category],
     decorations: &crate::DecorationLayout,
 ) {
-    for offset in &decorations.offsets {
+    for (i, offset) in decorations.offsets.iter().enumerate() {
         let DecorationId::DataLabel {
             category_id,
             series_id,
@@ -662,20 +1008,32 @@ fn legacy_label_offsets(
         else {
             continue;
         };
+        let path = || format!("decorations.offsets[{i}]");
         let Some(index) = categories.iter().position(|c| &c.id == category_id) else {
+            notes.dropped(path, "the data label names no category of the document");
             continue;
         };
         let Some(item) = series.iter_mut().find(|s| &s.series_id == series_id) else {
+            notes.dropped(path, "the data label names no series of the document");
             continue;
         };
         let [dx, dy] = offset.offset;
-        let _ = item.drag_value_label(index, categories.len(), dx, dy);
+        if item.drag_value_label(index, categories.len(), dx, dy)
+            != crate::layout::NudgeResult::Moved
+        {
+            notes.dropped(
+                path,
+                "the value label offset is not finite or past the value label offset bound",
+            );
+        }
     }
 }
 
 impl Config {
     /// The Cartesian chart a legacy [`BoxPlotChart`] document draws: its
     /// `Config`, its series and what to upload.
+    /// [`Config::from_boxplot_with_report`] returns the same with a report of
+    /// every field the document set that is not carried as set.
     ///
     /// The chart is a `Config` with a categorical axis (`bottom_x` for
     /// vertical boxes, `left_y` for horizontal ones, top-down as the legacy
@@ -718,7 +1076,28 @@ impl Config {
     pub fn from_boxplot(
         chart: &BoxPlotChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
+        Self::boxplot_conversion(chart, &mut Notes::off())
+    }
+
+    /// The conversion of [`Config::from_boxplot`], writing its notes to
+    /// `notes`.
+    fn boxplot_conversion<'a>(
+        chart: &'a BoxPlotChart,
+        notes: &mut Notes,
+    ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         let horizontal = chart.direction == BoxPlotDirection::Horizontal;
+        legacy_document_notes(
+            notes,
+            &LegacyDocument {
+                decorations: &chart.decorations,
+                title: &chart.title,
+                has_chart_title: chart.chart_title.is_some(),
+                active_layer: chart.active_layer,
+                hovered: chart.hovered.is_some(),
+                background: chart.background,
+                default_background: crate::defaults::box_plot_chart().background,
+            },
+        );
         let mut config = legacy_config(&LegacyChrome {
             horizontal,
             categories: &chart.categories,
@@ -846,13 +1225,19 @@ impl Config {
         if let Some(selected) = &chart.selected {
             legacy_selection(
                 &mut config,
+                notes,
                 &chart.categories,
                 &selected.category_id,
                 &selected.series_id,
             );
         }
-        legacy_offsets(&mut config, &chart.decorations);
-        legacy_label_offsets(&mut series, &chart.categories, &chart.decorations);
+        legacy_offsets(&mut config, notes, &chart.decorations);
+        legacy_label_offsets(&mut series, notes, &chart.categories, &chart.decorations);
+        legacy_override_notes(
+            notes,
+            chart.overrides.iter().map(|o| o.target.series_id.as_str()),
+            |id| chart.series.iter().any(|s| s.id == id),
+        );
         (config, series, uploads)
     }
 }
@@ -860,6 +1245,8 @@ impl Config {
 impl Config {
     /// The polar chart a legacy [`RadarChart`] document draws: its `Config`,
     /// its series and the columns to upload.
+    /// [`Config::from_radar_with_report`] returns the same with a report of
+    /// every field the document set that is not carried as set.
     ///
     /// The chart is a polar `Config` ([`PolarOptions`]) whose angle axis
     /// (`bottom_x`) holds the document's categories, so category `i` sits
@@ -902,6 +1289,33 @@ impl Config {
     /// are the series' value label offsets (`labels.offsets`). The chart area is the default
     /// placeholder; the host sets it.
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
+        Self::radar_conversion(chart, &mut Notes::off())
+    }
+
+    /// The conversion of [`Config::from_radar`], writing its notes to
+    /// `notes`.
+    fn radar_conversion<'a>(
+        chart: &'a RadarChart,
+        notes: &mut Notes,
+    ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
+        legacy_document_notes(
+            notes,
+            &LegacyDocument {
+                decorations: &chart.decorations,
+                title: &chart.title,
+                has_chart_title: chart.chart_title.is_some(),
+                active_layer: chart.active_layer,
+                hovered: chart.hovered.is_some(),
+                background: chart.background,
+                default_background: crate::defaults::radar_chart().background,
+            },
+        );
+        if chart.style.emphasis_brightness != crate::defaults::radar_style().emphasis_brightness {
+            notes.dropped(
+                || "style.emphasis_brightness".into(),
+                "the converted chart does not brighten a series; a picked vertex takes the picked ring",
+            );
+        }
         let mut config = crate::defaults::config();
         let text = |s: &str| {
             RichText::plain(
@@ -1058,19 +1472,30 @@ impl Config {
                     .map(|s| s.label.as_str())
             },
         );
-        if let Some(selected) = &chart.selected
-            && let Some(category) = selected.category_id.as_deref()
-            && let Some(index) = chart.categories.iter().position(|c| c.id == category)
-        {
-            let mut picked = DataSelectionsConfig::empty();
-            picked.refs.push(PickedDataRef::Point {
-                source_id: None,
-                series_id: selected.series_id.clone(),
-                point_index: index,
-            });
-            config.picked_data = Some(picked);
+        if let Some(selected) = &chart.selected {
+            match selected.category_id.as_deref() {
+                None => notes.dropped(
+                    || "selected".into(),
+                    "a selection names a vertex; a whole selected series has no counterpart",
+                ),
+                Some(category) => match chart.categories.iter().position(|c| c.id == category) {
+                    None => notes.dropped(
+                        || "selected.category_id".into(),
+                        "the selected category is not a category of the document",
+                    ),
+                    Some(index) => {
+                        let mut picked = DataSelectionsConfig::empty();
+                        picked.refs.push(PickedDataRef::Point {
+                            source_id: None,
+                            series_id: selected.series_id.clone(),
+                            point_index: index,
+                        });
+                        config.picked_data = Some(picked);
+                    }
+                },
+            }
         }
-        for offset in &chart.decorations.offsets {
+        for (i, offset) in chart.decorations.offsets.iter().enumerate() {
             let [dx, dy] = offset.offset;
             match &offset.element {
                 DecorationId::ChartTitle => {
@@ -1088,6 +1513,8 @@ impl Config {
                     config.left_y.label_style.label_offset_x = dx;
                     config.left_y.label_style.label_offset_y = dy;
                 }
+                // Read below, as the series' value label offsets.
+                DecorationId::DataLabel { .. } => {}
                 // One spoke label's screen offset (#309): that category's
                 // own label offset, in its spoke's frame on the converted
                 // chart, so it moves the label by the same screen amount.
@@ -1111,12 +1538,20 @@ impl Config {
                     {
                         category.label_offset =
                             crate::polar::screen_to_spoke_offset(spoke, [dx, dy]);
+                    } else {
+                        notes.dropped(
+                            || format!("decorations.offsets[{i}]"),
+                            "a spoke label offset names no category of the converted chart",
+                        );
                     }
                 }
-                _ => {}
+                _ => notes.dropped(
+                    || format!("decorations.offsets[{i}]"),
+                    "the converted radar chart has no counterpart for this element's offset",
+                ),
             }
         }
-        legacy_label_offsets(&mut series, &chart.categories, &chart.decorations);
+        legacy_label_offsets(&mut series, notes, &chart.categories, &chart.decorations);
         (config, series, uploads)
     }
 }
@@ -2199,5 +2634,373 @@ mod radar_tests {
         });
         let (after, _, _) = Config::from_radar(&c);
         assert_eq!(after, before);
+    }
+}
+
+// The conversion reports (#314): every field a document sets that its
+// conversion drops or changes is named by its JSON path, the plain
+// converters return the same chart, and each upload names its series.
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    use crate::boxplot::{BoxPlotOverride, BoxPlotSeries, BoxPlotTarget};
+    use crate::categorical::{BarSeries, CategoryBarOverride, CategoryBarTarget};
+    use crate::config::Category;
+    use crate::decoration::DecorationOffset;
+    use crate::layer::LayerRef;
+    use crate::layout::RectF;
+    use crate::radar::{RadarSeries, RadarTarget};
+
+    fn offset(element: DecorationId, offset: [f32; 2]) -> DecorationOffset {
+        DecorationOffset { element, offset }
+    }
+
+    fn data_label(category: &str, series: &str) -> DecorationId {
+        DecorationId::DataLabel {
+            category_id: category.into(),
+            series_id: series.into(),
+        }
+    }
+
+    fn paths(report: &ConversionReport) -> Vec<(&str, ConversionNoteKind)> {
+        report
+            .notes
+            .iter()
+            .map(|n| (n.path.as_str(), n.kind))
+            .collect()
+    }
+
+    fn categories() -> Vec<Category> {
+        vec![Category::new("a", "Alpha"), Category::new("b", "Beta")]
+    }
+
+    /// Set the decoration fields every converter drops: an explicit data
+    /// area and a decoration selection.
+    fn decorate(decorations: &mut crate::DecorationLayout) {
+        decorations.data_area = Some(RectF {
+            x: 10.0,
+            y: 10.0,
+            width: 200.0,
+            height: 150.0,
+        });
+        decorations.selected = Some(DecorationId::Legend);
+    }
+
+    use ConversionNoteKind::{Changed, Dropped};
+
+    #[test]
+    fn a_categorical_document_reports_every_field_it_drops() {
+        let mut c = CategoricalChart {
+            categories: categories(),
+            series: vec![
+                BarSeries::new("s", "Sales", vec![Some(2.0), None], Color::BLACK),
+                BarSeries::new("t", "Costs", vec![Some(3.0), Some(1.5)], Color::BLACK),
+            ],
+            ..crate::defaults::categorical_chart()
+        };
+        // An unedited document drops nothing.
+        let (_, _, _, report) = Config::from_categorical_with_report(&c);
+        assert_eq!(report.notes, []);
+
+        c.hovered = Some(CategoryBarTarget::new("a", "s"));
+        c.background = Color::from_rgb8(10, 20, 30);
+        decorate(&mut c.decorations);
+        c.title = "Old".into();
+        c.chart_title = Some(c.resolved_title());
+        c.active_layer = LayerRef::Overlay(0);
+        c.decorations.offsets = vec![
+            offset(DecorationId::ChartTitle, [4.0, 2.0]),
+            offset(DecorationId::DataArea, [1.0, 1.0]),
+            offset(data_label("zz", "s"), [1.0, 1.0]),
+            offset(data_label("a", "zz"), [1.0, 1.0]),
+            offset(data_label("a", "s"), [5000.0, 0.0]),
+            offset(data_label("b", "t"), [3.0, -2.0]),
+        ];
+        c.selected = Some(CategoryBarTarget::new("zz", "s"));
+        c.overrides = vec![
+            CategoryBarOverride::new(CategoryBarTarget::new("a", "s")),
+            CategoryBarOverride::new(CategoryBarTarget::new("a", "gone")),
+        ];
+        let (config, series, uploads, report) = Config::from_categorical_with_report(&c);
+        assert_eq!(
+            paths(&report),
+            [
+                ("hovered", Dropped),
+                ("background", Dropped),
+                ("decorations.data_area", Dropped),
+                ("decorations.selected", Dropped),
+                ("title", Dropped),
+                ("active_layer", Changed),
+                ("selected.category_id", Dropped),
+                ("decorations.offsets[1]", Dropped),
+                ("decorations.offsets[2]", Dropped),
+                ("decorations.offsets[3]", Dropped),
+                ("decorations.offsets[4]", Dropped),
+                ("overrides[1]", Dropped),
+            ]
+        );
+        assert!(report.notes.iter().all(|n| !n.reason.is_empty()));
+        // The report's chart is the plain converter's.
+        assert_eq!((config, series, uploads), Config::from_categorical(&c));
+        assert_eq!(
+            report.columns,
+            [
+                ConvertedColumn {
+                    series_id: None,
+                    role: ConvertedColumnRole::Positions,
+                    column: CATEGORY_POSITIONS_COLUMN.into(),
+                },
+                ConvertedColumn {
+                    series_id: Some("s".into()),
+                    role: ConvertedColumnRole::Values,
+                    column: category_values_column("s"),
+                },
+                ConvertedColumn {
+                    series_id: Some("t".into()),
+                    role: ConvertedColumnRole::Values,
+                    column: category_values_column("t"),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_box_plot_document_reports_every_field_it_drops() {
+        let mut with_outliers = BoxSummary::new(1.0, 2.0, 3.0, 4.0, 5.0);
+        with_outliers.outliers = vec![9.0];
+        let mut c = BoxPlotChart {
+            categories: categories(),
+            series: vec![
+                BoxPlotSeries::new("s", "Sales", vec![Some(with_outliers), None], Color::BLACK),
+                BoxPlotSeries::new(
+                    "t",
+                    "Costs",
+                    vec![None, Some(BoxSummary::new(0.0, 1.0, 2.0, 3.0, 4.0))],
+                    Color::BLACK,
+                ),
+            ],
+            ..crate::defaults::box_plot_chart()
+        };
+        let (_, _, _, report) = Config::from_boxplot_with_report(&c);
+        assert_eq!(report.notes, []);
+
+        c.background = Color::BLACK;
+        decorate(&mut c.decorations);
+        c.decorations.offsets = vec![
+            offset(DecorationId::Axis(Side::Left), [3.0, 0.0]),
+            offset(
+                DecorationId::SpokeLabel {
+                    category_id: "a".into(),
+                },
+                [1.0, 1.0],
+            ),
+            offset(data_label("b", "s"), [f32::INFINITY, 0.0]),
+        ];
+        c.selected = Some(BoxPlotTarget::new("zz", "t"));
+        c.overrides = vec![BoxPlotOverride::new(BoxPlotTarget::new("a", "gone"))];
+        let (config, series, uploads, report) = Config::from_boxplot_with_report(&c);
+        assert_eq!(
+            paths(&report),
+            [
+                ("background", Dropped),
+                ("decorations.data_area", Dropped),
+                ("decorations.selected", Dropped),
+                ("selected.category_id", Dropped),
+                ("decorations.offsets[1]", Dropped),
+                ("decorations.offsets[2]", Dropped),
+                ("overrides[0]", Dropped),
+            ]
+        );
+        assert_eq!((config, series, uploads), Config::from_boxplot(&c));
+        let columns: Vec<_> = report
+            .columns
+            .iter()
+            .map(|c| (c.series_id.as_deref(), c.role, c.column.as_str()))
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                (
+                    None,
+                    ConvertedColumnRole::Positions,
+                    BOX_PLOT_POSITIONS_COLUMN
+                ),
+                (
+                    Some("s"),
+                    ConvertedColumnRole::BoxRecord,
+                    box_plot_record("s").as_str()
+                ),
+                (
+                    Some("s"),
+                    ConvertedColumnRole::BoxOutliers,
+                    box_plot_outliers("s").as_str()
+                ),
+                (
+                    Some("t"),
+                    ConvertedColumnRole::BoxRecord,
+                    box_plot_record("t").as_str()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_radar_document_reports_every_field_it_drops() {
+        let mut c = RadarChart {
+            categories: categories(),
+            series: vec![
+                RadarSeries::new("a", "A", vec![1.0, 2.0], Color::BLACK),
+                RadarSeries::new("b", "B", vec![3.0, 4.0], Color::BLACK),
+            ],
+            ..crate::defaults::radar_chart()
+        };
+        let (_, _, _, report) = Config::from_radar_with_report(&c);
+        assert_eq!(report.notes, []);
+
+        c.hovered = Some(RadarTarget::series("a"));
+        decorate(&mut c.decorations);
+        c.style.emphasis_brightness = 0.3;
+        c.selected = Some(RadarTarget::series("b"));
+        c.decorations.offsets = vec![
+            offset(DecorationId::AxisLabel(Side::Left), [2.0, 2.0]),
+            offset(
+                DecorationId::SpokeLabel {
+                    category_id: "a".into(),
+                },
+                [1.0, 1.0],
+            ),
+            offset(DecorationId::AxisTitle(Side::Bottom), [1.0, 1.0]),
+            offset(data_label("b", "zz"), [1.0, 1.0]),
+        ];
+        let (config, series, uploads, report) = Config::from_radar_with_report(&c);
+        assert_eq!(
+            paths(&report),
+            [
+                ("hovered", Dropped),
+                ("decorations.data_area", Dropped),
+                ("decorations.selected", Dropped),
+                ("style.emphasis_brightness", Dropped),
+                ("selected", Dropped),
+                // offsets[1], the spoke label, is carried as category "a"'s
+                // own label offset (#309).
+                ("decorations.offsets[2]", Dropped),
+                ("decorations.offsets[3]", Dropped),
+            ]
+        );
+        assert_ne!(
+            config.bottom_x.categories.as_deref().unwrap()[0].label_offset,
+            [0.0, 0.0]
+        );
+        assert_eq!((config, series, uploads), Config::from_radar(&c));
+
+        // A vertex of a category the document does not hold.
+        c.selected = Some(RadarTarget {
+            series_id: "a".into(),
+            category_id: Some("zz".into()),
+        });
+        let (_, _, _, report) = Config::from_radar_with_report(&c);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.path == "selected.category_id" && n.kind == Dropped)
+        );
+        let columns: Vec<_> = report
+            .columns
+            .iter()
+            .map(|c| (c.series_id.as_deref(), c.role))
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                (None, ConvertedColumnRole::Positions),
+                (Some("a"), ConvertedColumnRole::Values),
+                (Some("b"), ConvertedColumnRole::Values),
+            ]
+        );
+    }
+}
+
+// JSON numbers (#314): an `f64` survives a JSON round trip bit for bit
+// (`serde_json`'s `float_roundtrip`, enabled for the workspace's JSON), a
+// non-finite `f64` is written as `null`, which a plain `f64` field refuses,
+// and an optional value reads `null` as missing.
+#[cfg(all(test, feature = "serde"))]
+mod json_number_tests {
+    use super::*;
+    use crate::categorical::BarSeries;
+    use crate::radar::RadarSeries;
+
+    /// `count` finite `f64` values spread over every exponent, from a fixed
+    /// xorshift sequence of bit patterns.
+    fn finite_values(count: usize) -> Vec<f64> {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut out = Vec::with_capacity(count);
+        while out.len() < count {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let value = f64::from_bits(state);
+            if value.is_finite() {
+                out.push(value);
+            }
+        }
+        out.extend([0.1, 1.0 / 3.0, -0.0, f64::MIN_POSITIVE, f64::MAX, 5e-324]);
+        out
+    }
+
+    #[test]
+    fn every_finite_f64_round_trips_bit_for_bit() {
+        let values = finite_values(20_000);
+        let chart = RadarChart {
+            series: vec![RadarSeries::new("a", "A", values.clone(), Color::BLACK)],
+            ..crate::defaults::radar_chart()
+        };
+        let json = serde_json::to_string(&chart).unwrap();
+        let back: RadarChart = serde_json::from_str(&json).unwrap();
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&back.series[0].values), bits(&values));
+
+        let mut config = crate::defaults::config();
+        config.left_y.min = 0.1 + 0.2;
+        config.left_y.max = 1.0 / 3.0;
+        config.bottom_x.min = -1.234_567_890_123_456_7e-300;
+        let back: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back, config);
+        assert_eq!(back.left_y.min.to_bits(), (0.1_f64 + 0.2).to_bits());
+    }
+
+    #[test]
+    fn a_non_finite_value_is_written_as_null_and_refused_by_a_plain_f64() {
+        let chart = RadarChart {
+            series: vec![RadarSeries::new(
+                "a",
+                "A",
+                vec![1.0, f64::NAN, f64::INFINITY],
+                Color::BLACK,
+            )],
+            ..crate::defaults::radar_chart()
+        };
+        let json = serde_json::to_value(&chart).unwrap();
+        assert_eq!(
+            json["series"][0]["values"],
+            serde_json::json!([1.0, null, null])
+        );
+        assert!(serde_json::from_value::<RadarChart>(json).is_err());
+
+        // An optional value reads `null` as missing.
+        let bars = CategoricalChart {
+            series: vec![BarSeries::new(
+                "s",
+                "S",
+                vec![Some(1.5), None],
+                Color::BLACK,
+            )],
+            ..crate::defaults::categorical_chart()
+        };
+        let json = serde_json::to_value(&bars).unwrap();
+        assert_eq!(json["series"][0]["values"], serde_json::json!([1.5, null]));
+        let back: CategoricalChart = serde_json::from_value(json).unwrap();
+        assert_eq!(back.series[0].values, [Some(1.5), None]);
     }
 }

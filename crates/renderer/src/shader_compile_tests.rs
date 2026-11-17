@@ -133,6 +133,9 @@ fn all_shader_compilation_times_and_entry_coverage() {
         );
     }
     crate::radial::RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    // The pool's compact upload expansion (#317), created on the first
+    // single-lane upload.
+    crate::data_render::column_pool::ColumnExpand::new(&device).unwrap();
     let capture = session.finish();
     if let Some(path) = std::env::var_os("FIGGY_SHADER_COMPILE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&capture.json()).unwrap()).unwrap();

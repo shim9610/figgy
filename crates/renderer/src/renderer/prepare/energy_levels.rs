@@ -67,9 +67,11 @@ pub(in crate::renderer) fn source_records<'s>(
     )
 }
 
-/// [`source_records`] over a document's series list: the records `levels`
-/// draws, its own or its source's among `series`.
-pub(crate) fn energy_level_records<'s>(
+/// The records an energy-level series draws: its own, or, when it names a
+/// `source`, those of that series among `series` (the document's series).
+/// `None` when the source names no energy-level series that holds records.
+/// Row indices of a pick or a label on `levels` index these records.
+pub fn energy_level_records<'s>(
     levels: &'s EnergyLevelSeries,
     series: &'s [SeriesConfig],
 ) -> Option<&'s EnergyLevelSeries> {

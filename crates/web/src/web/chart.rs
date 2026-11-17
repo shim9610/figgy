@@ -47,6 +47,170 @@ fn failure_kind(kind: renderer::PipelineFailureKind) -> &'static str {
     }
 }
 
+/// TypeScript names the `unchecked_return_type` of the wrappers' methods
+/// use (#315), emitted into the generated `.d.ts`.
+#[wasm_bindgen(typescript_custom_section)]
+const FIGGY_RETURN_TYPES: &'static str = r#"
+/**
+ * JSON text returned by a figgy method: a `string`, not an object. Parse it
+ * with `JSON.parse`; the method's documentation names its shape. Lengths
+ * in it follow that method's units: `FiggyChart` geometry is in physical
+ * canvas pixels (the canvas's `width`/`height` space) unless the method says
+ * document logical pixels; `FiggyBoundedChart` geometry is in document
+ * logical pixels.
+ */
+export type FiggyJson = string;
+
+/** Background pipeline compiles of one scope (#299). */
+export interface FiggyPipelineCounts {
+    total: number;
+    ready: number;
+    /** Waiting or compiling. */
+    compiling: number;
+    failed: number;
+}
+
+/** `FiggyChart.pipeline_status()`: a plain object, not JSON. */
+export interface FiggyPipelineStatus {
+    /** What the last frame needed. */
+    screen: FiggyPipelineCounts;
+    /** Every compile scheduled so far. */
+    all: FiggyPipelineCounts;
+    /** Whether the last frame drew every series. */
+    frame_complete: boolean;
+}
+
+/** `FiggyReadiness.status()`: a plain object, not JSON (#315). */
+export interface FiggyReadinessStatus {
+    screen: FiggyPipelineCounts;
+    all: FiggyPipelineCounts;
+    /** The chart was freed; the counts are zero then. */
+    disposed: boolean;
+}
+
+/** One failed background compile, from `FiggyChart.pipeline_failures()`. */
+export interface FiggyPipelineFailure {
+    label: string;
+    kind: "validation" | "internal" | "rejected" | "device_lost" | "cancelled";
+    message: string;
+}
+
+/**
+ * A theme as a plain object (not JSON): the model `Theme`'s fields, colours
+ * as `{ r, g, b, a }`. Edit it and pass it to `apply_custom_theme`.
+ */
+export type FiggyThemeObject = Record<string, unknown>;
+"#;
+
+/// `{ total, ready, compiling, failed }` for one scope of background
+/// compiles (#299).
+fn counts_object(counts: renderer::PipelineCounts) -> Result<JsValue, JsValue> {
+    let object = js_sys::Object::new();
+    js_sys::Reflect::set(&object, &"total".into(), &(counts.total as f64).into())?;
+    js_sys::Reflect::set(&object, &"ready".into(), &(counts.ready as f64).into())?;
+    js_sys::Reflect::set(
+        &object,
+        &"compiling".into(),
+        &(counts.compiling as f64).into(),
+    )?;
+    js_sys::Reflect::set(&object, &"failed".into(), &(counts.failed as f64).into())?;
+    Ok(object.into())
+}
+
+/// The message a readiness wait rejects with once its chart was freed
+/// (#315).
+const CHART_DISPOSED: &str = concat!(
+    "chart disposed: the chart was freed ",
+    "(or stopped compiling in the background) before the wait ended"
+);
+
+/// A readiness wait's end as the promise's value: `undefined`, or an
+/// `Error` (#315).
+fn readiness_result(result: Result<(), renderer::ReadinessError>) -> Result<JsValue, JsValue> {
+    match result {
+        Ok(()) => Ok(JsValue::UNDEFINED),
+        Err(renderer::ReadinessError::Failed(failure)) => Err(failure_error(&failure)),
+        Err(renderer::ReadinessError::RendererDropped) => {
+            Err(js_sys::Error::new(CHART_DISPOSED).into())
+        }
+    }
+}
+
+/// A handle on a chart's background pipeline compiles that does not borrow
+/// the chart (#315), from [`FiggyChart::readiness`]. While one of its waits
+/// is pending the host keeps full use of the chart: `pipeline_status()`,
+/// `frame()`, `resize()` and `free()` all work. It holds the chart's compile
+/// queue weakly and keeps nothing alive. Once the chart is freed a pending
+/// or later wait rejects with an `Error` whose message starts with
+/// `"chart disposed"`, and `status().disposed` is `true`. The handle draws
+/// nothing: after `series_ready()` resolves, the host's next `frame()`
+/// draws the series (or use `chart.series_ready()`, which draws, but
+/// borrows the chart until it settles). Free the handle with `free()` when
+/// done; freeing it ends nothing.
+///
+/// A chart that compiles no pipeline in the background (one made without
+/// the browser's async compile queue) gives a handle with nothing to wait
+/// for: its waits resolve at once and `disposed` stays `false`.
+///
+/// JS:
+/// ```js
+/// const readiness = chart.readiness();
+/// const ready = readiness.series_ready(); // the chart stays usable
+/// overlay.textContent = `${readiness.status().screen.ready} /
+/// ${readiness.status().screen.total}`;
+/// chart.resize(w, h);
+/// await ready;
+/// chart.frame();
+/// ```
+#[wasm_bindgen]
+pub struct FiggyReadiness {
+    readiness: renderer::PipelineReadiness,
+}
+
+#[wasm_bindgen]
+impl FiggyReadiness {
+    /// Resolves once every background compile the chart's last frame
+    /// needed has ended, like `chart.series_ready()` but without drawing
+    /// and without borrowing the chart. Rejects with an `Error` carrying
+    /// `label`, `kind` and `message` when one of them failed, or with a
+    /// `"chart disposed"` `Error` once the chart is freed. The promise owns
+    /// a clone of the handle; it does not borrow this object.
+    #[wasm_bindgen(unchecked_return_type = "Promise<void>")]
+    pub fn series_ready(&self) -> js_sys::Promise {
+        let readiness = self.readiness.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            readiness_result(readiness.series_ready().await)
+        })
+    }
+
+    /// Resolves once every background compile scheduled so far has ended,
+    /// like `chart.pipelines_ready()` but without borrowing the chart.
+    /// Rejects like [`Self::series_ready`].
+    #[wasm_bindgen(unchecked_return_type = "Promise<void>")]
+    pub fn pipelines_ready(&self) -> js_sys::Promise {
+        let readiness = self.readiness.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            readiness_result(readiness.pipelines_ready().await)
+        })
+    }
+
+    /// The chart's background compiles now, as a plain object (not a JSON
+    /// string): `{ screen: { total, ready, compiling, failed }, all: { … },
+    /// disposed }`. `screen` and `all` are as in `chart.pipeline_status()`;
+    /// there is no `frame_complete` (only a frame decides it, so read it on
+    /// the chart). `disposed` is `true` once the chart is freed; the counts
+    /// are zero then. Readable at any time, also while a wait is pending.
+    #[wasm_bindgen(unchecked_return_type = "FiggyReadinessStatus")]
+    pub fn status(&self) -> Result<JsValue, JsValue> {
+        let status = self.readiness.status();
+        let object = js_sys::Object::new();
+        js_sys::Reflect::set(&object, &"screen".into(), &counts_object(status.screen)?)?;
+        js_sys::Reflect::set(&object, &"all".into(), &counts_object(status.all)?)?;
+        js_sys::Reflect::set(&object, &"disposed".into(), &status.renderer_dropped.into())?;
+        Ok(object.into())
+    }
+}
+
 /// `{ label, kind, message }` for one failed compile (#299).
 fn failure_object(failure: &renderer::PipelineFailure) -> Result<JsValue, JsValue> {
     let object = js_sys::Object::new();
@@ -276,7 +440,9 @@ pub(super) async fn create_chart_kernel(
 ///
 /// JS: `const specs = JSON.parse(draw_style_param_specs("constellation"));`
 /// Valid modes: `draw_style_modes()`.
-#[wasm_bindgen]
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+#[wasm_bindgen(unchecked_return_type = "FiggyJson")]
 pub fn draw_style_param_specs(mode: &str) -> Result<String, JsValue> {
     let specs = renderer::config::DrawStyle::param_specs_for_mode(mode).ok_or_else(|| {
         js_err(format!(
@@ -293,7 +459,9 @@ pub fn draw_style_param_specs(mode: &str) -> Result<String, JsValue> {
 /// Errors name the TeX byte range.
 ///
 /// JS: `cfg.chart_title.text = JSON.parse(rich_text_from_tex("$E = mc^2$", 16, "", 0, 0, 0, 1));`
-#[wasm_bindgen]
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+#[wasm_bindgen(unchecked_return_type = "FiggyJson")]
 pub fn rich_text_from_tex(
     tex: &str,
     font_size: f32,
@@ -315,13 +483,103 @@ pub fn rich_text_from_tex(
 /// Errors are JSON errors.
 ///
 /// JS: `chart.set_config(autoLayout(chart.get_config()));`
-#[wasm_bindgen(js_name = autoLayout)]
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+/// Lengths in the config are document logical pixels.
+#[wasm_bindgen(js_name = autoLayout, unchecked_return_type = "FiggyJson")]
 pub fn auto_layout(config_json: &str) -> Result<String, JsValue> {
     crate::auto_layout_json(config_json).map_err(js_err)
 }
 
-/// Every valid `draw_style` mode tag, as a JSON string array.
+// ------------------------------------------------------------------
+// The model API for editors (#314): pure functions of JSON that need no
+// chart, no canvas and no GPU.
+// ------------------------------------------------------------------
+
+/// The default config (`default::default_config`) as JSON: the document a
+/// new chart starts from, for an editor to fill in. Its `chart_area` is a
+/// placeholder the host sets.
+///
+/// JS: `const config = JSON.parse(default_config());`
 #[wasm_bindgen]
+pub fn default_config() -> Result<String, JsValue> {
+    crate::default_config_json().map_err(js_err)
+}
+
+/// Check a config JSON and, when given, a series list JSON against the
+/// chart rules (`Config::validate_chart`, then `Config::validate_series`)
+/// without a chart. Returns `{"valid": bool, "errors": [..]}`; it does not
+/// throw for a refused document. An error is `{stage, path, field,
+/// series_id, series_index, code, message}`: `stage` is `"parse"`,
+/// `"chart"` or `"series"`; `path` names the field (`"bottom_x"`,
+/// `"colorbar.axis"`, `"series[2]"`, or `"config"` / `"series"` for JSON
+/// that does not parse, which adds `line` and `column`); `code` is the
+/// rule's code, as on the `Error`s `set_config` throws (`"json"` for a
+/// parse error). The rules stop at the first refusal, so `errors` holds at
+/// most one. What needs the column pool (registered columns, lengths, GPU
+/// limits) is checked by `set_config` / `set_series` only.
+///
+/// JS: `const { valid, errors } = JSON.parse(validate_config(JSON.stringify(cfg), JSON.stringify(series)));`
+#[wasm_bindgen]
+pub fn validate_config(config_json: &str, series_json: Option<String>) -> Result<String, JsValue> {
+    crate::validate_config_json(config_json, series_json.as_deref()).map_err(js_err)
+}
+
+/// A config JSON in its normalized form: read and written back, so an
+/// omitted optional field takes its documented default and a field at its
+/// default is written as the renderer writes it. Numbers keep every bit.
+/// Throws the JSON error when the text is not a config; a config that
+/// parses but breaks a rule is returned as it is (`validate_config` checks
+/// it).
+///
+/// JS: `const canonical = normalize_config(text);`
+#[wasm_bindgen]
+pub fn normalize_config(config_json: &str) -> Result<String, JsValue> {
+    crate::normalize_config_json(config_json).map_err(js_err)
+}
+
+/// A legacy categorical bar document (`CategoricalChart` JSON) converted
+/// without a chart (`Config::from_categorical_with_report`): `{config,
+/// series, uploads, columns, notes}`. `uploads` describes each column to
+/// register (`{column, role, len}`, without the values); `columns` names
+/// the document series of each (`{series_id, role, column}`); `notes` lists
+/// every field the document set that the chart does not carry
+/// (`{path, kind: "dropped" | "changed", reason}`). Throws the JSON error,
+/// or the document rule (an `Error` with a `code`), as
+/// `set_categorical_document` does.
+///
+/// JS: `const { config, series, notes } = JSON.parse(convert_categorical_document(text));`
+#[wasm_bindgen]
+pub fn convert_categorical_document(json: &str) -> Result<String, JsValue> {
+    crate::convert_categorical_document_json(json).map_err(js_err)
+}
+
+/// A legacy box plot document (`BoxPlotChart` JSON) converted without a
+/// chart (`Config::from_boxplot_with_report`), in the shape
+/// `convert_categorical_document` returns. A record upload is
+/// `{column, role: "box_record", rows, fields}` and an outlier upload
+/// `{column, role: "box_outliers", len, groups}`.
+///
+/// JS: `const converted = JSON.parse(convert_boxplot_document(text));`
+#[wasm_bindgen]
+pub fn convert_boxplot_document(json: &str) -> Result<String, JsValue> {
+    crate::convert_boxplot_document_json(json).map_err(js_err)
+}
+
+/// A legacy radar document (`RadarChart` JSON) converted without a chart
+/// (`Config::from_radar_with_report`), in the shape
+/// `convert_categorical_document` returns.
+///
+/// JS: `const converted = JSON.parse(convert_radar_document(text));`
+#[wasm_bindgen]
+pub fn convert_radar_document(json: &str) -> Result<String, JsValue> {
+    crate::convert_radar_document_json(json).map_err(js_err)
+}
+
+/// Every valid `draw_style` mode tag, as a JSON string array.
+///
+/// Returns JSON text (`FiggyJson`), not an object: parse it with `JSON.parse`.
+#[wasm_bindgen(unchecked_return_type = "FiggyJson")]
 pub fn draw_style_modes() -> Result<String, JsValue> {
     serde_json::to_string(renderer::config::DrawStyle::mode_tags()).map_err(js_err)
 }
@@ -407,6 +665,19 @@ pub struct FiggyChart {
 }
 
 impl FiggyChart {
+    /// What a radial chart created on this chart draws with (#313,
+    /// `FiggyBoundedChart.create_on`): this chart's device bundle (its
+    /// device, queue, device-loss record, GPU ledger and budget) and the
+    /// instance and adapter its own surface came from. Clones of handles:
+    /// the device lives while either chart holds them.
+    pub(crate) fn shared_gpu(&self) -> (renderer::RendererDevice, wgpu::Instance, wgpu::Adapter) {
+        (
+            self.renderer.renderer_device(),
+            self.renderer.instance().clone(),
+            self.renderer.adapter().clone(),
+        )
+    }
+
     pub(super) fn chart_config(&self) -> Result<&renderer::Config, JsValue> {
         match self.monotonic {
             Some(id) => self.renderer.monotonic_config(id),
@@ -745,6 +1016,9 @@ impl FiggyChart {
     }
 
     /// The shader set this chart compiles (#299): `"basic"` or `"full"`.
+    ///
+    /// Returns a plain string, not JSON.
+    #[wasm_bindgen(unchecked_return_type = "\"basic\" | \"full\"")]
     pub fn shader_set(&self) -> String {
         shader_set_name(self.renderer.shader_set()).into()
     }
@@ -795,6 +1069,11 @@ impl FiggyChart {
     /// Read-only accounting. These are requested GPU allocations, not a
     /// driver VRAM measurement; retired bytes remain charged until the
     /// queue completion callback fires.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// Sizes are in bytes.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn gpu_memory_status(&self) -> String {
         let usage = self.renderer.gpu_memory_usage();
         let pool = self.renderer.pool();
@@ -850,6 +1129,10 @@ impl FiggyChart {
     /// Compact live resident columns, drop the unused pool slab, and wait
     /// for the device completion fence before reporting reclaimed bytes.
     /// The 16 MiB startup slab remains as the minimum reusable pool.
+    ///
+    /// Resolves to JSON text (`FiggyJson`) in the shape of `gpu_memory_status`,
+    /// not an object.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub async fn release_unused_gpu_memory(&mut self) -> Result<String, JsValue> {
         let status = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
         if matches!(
@@ -1102,6 +1385,11 @@ impl FiggyChart {
     }
 
     /// Report the effective primitive/grid extent currently drawn.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// `{ drawn_count, cols, rows, truncated }`: counts, not pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn series_draw_info(&self, series_id: &str) -> Result<String, JsValue> {
         let info = match self.monotonic {
             Some(id) => self.renderer.monotonic_series_draw_info(id, series_id),
@@ -1127,6 +1415,12 @@ impl FiggyChart {
 
     /// Serialize the full chart option SSoT to a JSON string.
     /// JS: `const cfg = JSON.parse(chart.get_config());`
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// Positions and sizes in it (`chart_area`, margins, decoration offsets)
+    /// are document logical pixels, not canvas pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn get_config(&self) -> Result<String, JsValue> {
         serde_json::to_string(self.chart_config()?).map_err(js_err)
     }
@@ -1167,6 +1461,10 @@ impl FiggyChart {
     }
 
     /// Serialize the series declarations (columns, render type, styles).
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn get_series(&self) -> Result<String, JsValue> {
         serde_json::to_string(self.chart_series()?).map_err(js_err)
     }
@@ -1249,101 +1547,62 @@ impl FiggyChart {
     /// edited through the Cartesian API (`get_config` / `set_config`,
     /// `get_series` / `set_series`, the column registry).
     ///
-    /// A document that does not parse or validate, or whose series styles
-    /// cannot be created, is rejected with the previous chart unchanged. A
-    /// failure while the new columns upload or the axis fits from them
-    /// rejects with a chart that has no series: the previous document's
-    /// series and columns are retired by then.
+    /// The replace is atomic (#311): see "Document replace" on
+    /// [`Self::set_radar_document`]. The ids are the documented ones for
+    /// every document opened.
     ///
     /// JS: `chart.set_categorical_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
     pub fn set_categorical_document(&mut self, json: &str) -> Result<(), JsValue> {
-        let document: renderer::CategoricalChart = serde_json::from_str(json).map_err(js_err)?;
-        document.validate().map_err(js_err)?;
+        const FAMILY: &str = "categorical";
+        let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
+        let document: renderer::CategoricalChart =
+            serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
+        document.validate().map_err(|e| validate(js_err(e)))?;
         let (mut config, series, uploads) = renderer::config::Config::from_categorical(&document);
-        config.chart_area = self.chart_config()?.chart_area.clone();
-        let Some((positions, values)) = uploads.split_first() else {
-            return Err(js_err(
-                "a categorical document converts to at least its positions",
-            ));
-        };
-
-        // Everything that can fail without changing the chart comes first:
-        // the GPU styles and labels of the new series and the id and source lists of the value batch. A failure there
-        // leaves the previous document committed. The chart changes only
-        // after them; the new columns upload and the axis fits from them
-        // last, the chart state is committed at the end.
-        self.renderer
-            .preflight_chart_styles(&series)
-            .map_err(js_err)?;
-        // The value columns go in one batch commit, the one
-        // `register_columns_f64` uses.
-        let mut ids = Vec::new();
-        ids.try_reserve_exact(values.len()).map_err(js_err)?;
-        ids.extend(values.iter().map(|upload| upload.column.clone()));
-        let mut sources = Vec::new();
-        sources.try_reserve_exact(values.len()).map_err(js_err)?;
-        sources.extend(values.iter().map(|upload| upload.values));
-
-        // Retire the previous document's series, then its columns.
-        let empty = self.chart_config()?.clone();
-        self.replace_chart_state(empty, Vec::new())?;
-        for upload in &uploads {
-            if self.renderer.logical_column(&upload.column).is_some() {
-                self.remove_column(&upload.column)?;
-            }
-        }
-        self.upsert_column_atomic(
-            &positions.column,
-            super::columns::ColumnUploadSource::Scalar(&positions.values),
-        )?;
-        self.commit_column_batch(&ids, &sources)?;
-
-        // Fit the value axis to the bars and round it to nice ticks. A range
-        // fit resets the label format, so the document's is put back.
+        config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
         let horizontal = config
             .bar_groups
             .as_ref()
             .is_some_and(|g| g.direction == renderer::CategoryBarDirection::Horizontal);
-        let format = if horizontal {
-            config.bottom_x.label_style.format.clone()
-        } else {
-            config.left_y.label_style.format.clone()
-        };
-        let mut chart = renderer::Chart::new(config);
-        chart
-            .auto_fit_layer_union(self.renderer.pool(), renderer::LayerRef::Base, &series, 0.0)
-            .map_err(js_err)?;
-        let mut config = chart.config().clone();
-        let value = if horizontal {
-            &mut config.bottom_x
-        } else {
-            &mut config.left_y
-        };
-        value.label_style.format = format;
-        let (min, max) = (value.min, value.max);
-        // A fitted range that ticks cannot round (`TickError`: empty, non-finite
-        // or non-positive on a log axis) keeps the fit as it is.
-        if value.auto_ticks(min, max, 5).is_ok() {
-            let fitted = value.clone();
-            let twin = if horizontal {
-                &mut config.top_x
+        self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
+            // Fit the value axis to the bars and round it to nice ticks. A
+            // range fit resets the label format, so the document's is put
+            // back.
+            let format = if horizontal {
+                config.bottom_x.label_style.format.clone()
             } else {
-                &mut config.right_y
+                config.left_y.label_style.format.clone()
             };
-            twin.min = fitted.min;
-            twin.max = fitted.max;
-            twin.major_spacing = fitted.major_spacing;
-            twin.minor_count = fitted.minor_count;
-        }
-
-        let count = series.len();
-        self.replace_chart_state(config, series)?;
-        // The document wrote its own legend.
-        self.legend_auto_managed = false;
-        self.color_seq = count.max(self.color_seq);
-        Ok(())
+            let mut fitted = renderer::Chart::new(config);
+            fitted
+                .auto_fit_layer_union(pool, renderer::LayerRef::Base, series, 0.0)
+                .map_err(js_err)?;
+            let mut config = fitted.config().clone();
+            let value = if horizontal {
+                &mut config.bottom_x
+            } else {
+                &mut config.left_y
+            };
+            value.label_style.format = format;
+            let (min, max) = (value.min, value.max);
+            // A fitted range that ticks cannot round (`TickError`: empty,
+            // non-finite or non-positive on a log axis) keeps the fit as it is.
+            if value.auto_ticks(min, max, 5).is_ok() {
+                let fitted = value.clone();
+                let twin = if horizontal {
+                    &mut config.top_x
+                } else {
+                    &mut config.right_y
+                };
+                twin.min = fitted.min;
+                twin.max = fitted.max;
+                twin.major_spacing = fitted.major_spacing;
+                twin.minor_count = fitted.minor_count;
+            }
+            Ok(config)
+        })
     }
 
     /// Open a legacy box plot document (`BoxPlotChart` JSON, what
@@ -1365,113 +1624,37 @@ impl FiggyChart {
     /// replaced, every other column stays. From here on the chart is edited
     /// through the Cartesian API.
     ///
-    /// A document that does not parse or validate, or whose series styles
-    /// cannot be created, is rejected with the previous chart unchanged. A
-    /// failure while the new columns upload or the axis fits from them
-    /// rejects with a chart that has no series: the previous document's
-    /// series and columns are retired by then.
+    /// The replace is atomic (#311): see "Document replace" on
+    /// [`Self::set_radar_document`]. The ids are the documented ones for
+    /// every document opened.
     ///
     /// JS: `chart.set_boxplot_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
     pub fn set_boxplot_document(&mut self, json: &str) -> Result<(), JsValue> {
-        use renderer::{BOX_PLOT_RECORD, ColumnSource, UploadValues};
-        let document: renderer::BoxPlotChart = serde_json::from_str(json).map_err(js_err)?;
-        document.validate().map_err(js_err)?;
+        const FAMILY: &str = "boxplot";
+        let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
+        let document: renderer::BoxPlotChart =
+            serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
+        document.validate().map_err(|e| validate(js_err(e)))?;
         let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&document);
-        config.chart_area = self.chart_config()?.chart_area.clone();
-
-        // Everything that can fail without changing the chart comes first:
-        // the GPU styles and labels of the new series. A failure there
-        // leaves the previous document committed. The chart changes only
-        // after them; the new columns upload and the axis fits from them
-        // last, the chart state is committed at the end.
-        self.renderer
-            .preflight_chart_styles(&series)
-            .map_err(js_err)?;
-
-        // Retire the previous document's series, then its positions.
-        let empty = self.chart_config()?.clone();
-        self.replace_chart_state(empty, Vec::new())?;
-        for upload in &uploads {
-            match &upload.values {
-                UploadValues::BoxRecord(_) => {
-                    let fields = upload
-                        .values
-                        .box_fields()
-                        .ok_or_else(|| js_err("a box plot record upload has fields"))?;
-                    // Each field names itself (#160): the record is paired by
-                    // name, never by the position of the schema's entries.
-                    let sources: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
-                        (
-                            renderer::BoxField::ALL[k].name(),
-                            &fields[k] as &dyn ColumnSource,
-                        )
-                    });
-                    self.renderer
-                        .upsert_record(
-                            upload.column.clone(),
-                            &renderer::RecordSource {
-                                schema: BOX_PLOT_RECORD,
-                                fields: &sources,
-                            },
-                        )
-                        .map_err(js_err)?;
-                }
-                UploadValues::BoxOutliers(_) => {
-                    let (values, offsets) = upload
-                        .values
-                        .box_outliers()
-                        .ok_or_else(|| js_err("a box plot outlier upload has values"))?;
-                    self.renderer
-                        .upsert_ragged(
-                            upload.column.clone(),
-                            &renderer::RaggedSource {
-                                values: &values,
-                                offsets: &offsets,
-                            },
-                        )
-                        .map_err(js_err)?;
-                }
-                values => {
-                    if self.renderer.logical_column(&upload.column).is_some() {
-                        self.remove_column(&upload.column)?;
-                    }
-                    self.upsert_column_atomic(
-                        &upload.column,
-                        super::columns::ColumnUploadSource::Scalar(values),
-                    )?;
-                }
-            }
-        }
-        // A series without outliers now drops the outliers of a previous
-        // document's series of the same id.
-        for cfg in &series {
-            if cfg
-                .render_type
-                .box_plot()
-                .is_some_and(|b| b.outliers.is_none())
-            {
-                self.renderer
-                    .remove_ragged(&renderer::bounded_sources::box_plot_outliers(
-                        &cfg.series_id,
-                    ))
-                    .map_err(js_err)?;
-            }
-        }
-
+        config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
         let horizontal = document.direction == renderer::BoxPlotDirection::Horizontal;
-        if document.value_range.is_none() {
+        let fit_range = document.value_range.is_none();
+        self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
+            if !fit_range {
+                return Ok(config);
+            }
             let format = if horizontal {
                 config.bottom_x.label_style.format.clone()
             } else {
                 config.left_y.label_style.format.clone()
             };
-            let mut chart = renderer::Chart::new(config);
-            chart
-                .auto_fit_layer_union(self.renderer.pool(), renderer::LayerRef::Base, &series, 0.1)
+            let mut fitted = renderer::Chart::new(config);
+            fitted
+                .auto_fit_layer_union(pool, renderer::LayerRef::Base, series, 0.1)
                 .map_err(js_err)?;
-            config = chart.config().clone();
+            let mut config = fitted.config().clone();
             let value = if horizontal {
                 &mut config.bottom_x
             } else {
@@ -1479,8 +1662,8 @@ impl FiggyChart {
             };
             value.label_style.format = format;
             let (min, max) = (value.min, value.max);
-            // A fitted range that ticks cannot round (`TickError`: empty, non-finite
-            // or non-positive on a log axis) keeps the fit as it is.
+            // A fitted range that ticks cannot round (`TickError`: empty,
+            // non-finite or non-positive on a log axis) keeps the fit as it is.
             if value.auto_ticks(min, max, 5).is_ok() {
                 let fitted = value.clone();
                 let twin = if horizontal {
@@ -1493,14 +1676,8 @@ impl FiggyChart {
                 twin.major_spacing = fitted.major_spacing;
                 twin.minor_count = fitted.minor_count;
             }
-        }
-
-        let count = series.len();
-        self.replace_chart_state(config, series)?;
-        // The document wrote its own legend.
-        self.legend_auto_managed = false;
-        self.color_seq = count.max(self.color_seq);
-        Ok(())
+            Ok(config)
+        })
     }
 
     /// Open a legacy radar document (`RadarChart` JSON, what
@@ -1521,72 +1698,90 @@ impl FiggyChart {
     /// API (`get_config` / `set_config`, `get_series` / `set_series`, the
     /// column registry), and its vertices pick, select and step as points.
     ///
-    /// A document that does not parse or validate, or whose series styles
-    /// cannot be created, is rejected with the previous chart unchanged. A
-    /// failure while the new columns upload or the axis fits from them
-    /// rejects with a chart that has no series: the previous document's
-    /// series and columns are retired by then.
+    /// # Document replace
+    ///
+    /// The three document calls replace the chart atomically (#311), in
+    /// one renderer transaction. They prepare the candidate config, series
+    /// and uploads, check them (styles; each documented id is free or holds
+    /// what the document uploads under it: a column, a record or a ragged
+    /// column, and is not streamed), then upload every column, record and
+    /// ragged column under its documented id (`radar.positions`,
+    /// `boxplot.record.<series id>`, ...), fit the axes from the candidate
+    /// columns, and commit the columns, the removal of the previous
+    /// document's columns and the chart's config and series in one step.
+    /// The previous document's columns are each id under `categorical.`,
+    /// `boxplot.` or `radar.` that the replaced series read, of whichever
+    /// family, that the new document does not upload again; an id it does
+    /// upload again is replaced in place. The ids are therefore the
+    /// documented ones for every document opened.
+    /// On a chart that shows a monotonic document
+    /// (`set_monotonic_document`), the document replaces the general chart
+    /// behind it and the monotonic chart ends with the commit, as
+    /// `clear_monotonic_document` ends it; a failure leaves the monotonic
+    /// document shown.
+    ///
+    /// A failure rejects with an `Error` whose `stage` is `"validate"`
+    /// (parse, validation, styles, ids), `"upload"` (a column that the GPU or the memory budget cannot hold, with the `code` and byte fields of
+    /// `register_column_f32`), `"fit"` or `"commit"` (the series checks
+    /// against the candidate columns, the chart's revisions, the picker)
+    /// and whose message names the stage and the cause. The chart's
+    /// config, series, columns, element and data selections, picks and
+    /// image are then exactly as they were: nothing reaches the chart
+    /// before the commit, which cannot fail. Only a broken internal
+    /// invariant after the commit (the monotonic chart or the chart itself
+    /// gone) rejects then, with an error that names it as internal and no
+    /// `stage`; the new document is shown in that case.
+    ///
+    /// Memory: the transaction builds a complete candidate column pool, so
+    /// at the peak the GPU holds the live pool slab, the new document's
+    /// staging (half of it for single-lane columns, plus their transient
+    /// expansion buffer) and a candidate slab of the pool's capacity — or a
+    /// grown one, twice the capacity or what the surviving columns and the
+    /// new document need, when they do not fit. The previous document's
+    /// columns take no room in the candidate. After the commit the former
+    /// slab stays as the pool's backup when the capacity did not change.
+    /// A memory budget that cannot hold the peak refuses the call at the
+    /// upload stage with `code` `"budget_exceeded"`.
     ///
     /// JS: `chart.set_radar_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
     pub fn set_radar_document(&mut self, json: &str) -> Result<(), JsValue> {
-        let document: renderer::RadarChart = serde_json::from_str(json).map_err(js_err)?;
-        document.validate().map_err(js_err)?;
+        const FAMILY: &str = "radar";
+        let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
+        let document: renderer::RadarChart =
+            serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
+        document.validate().map_err(|e| validate(js_err(e)))?;
         let (mut config, series, uploads) = renderer::config::Config::from_radar(&document);
-        config.chart_area = self.chart_config()?.chart_area.clone();
-
-        // Everything that can fail without changing the chart comes first:
-        // the GPU styles and labels of the new series. A failure there
-        // leaves the previous document committed. The chart changes only
-        // after them; the new columns upload and the axis fits from them
-        // last, the chart state is committed at the end.
-        self.renderer
-            .preflight_chart_styles(&series)
-            .map_err(js_err)?;
-
-        // Retire the previous document's series, then its columns.
-        let empty = self.chart_config()?.clone();
-        self.replace_chart_state(empty, Vec::new())?;
-        for upload in &uploads {
-            if self.renderer.logical_column(&upload.column).is_some() {
-                self.remove_column(&upload.column)?;
+        config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
+        let fit_range = document.value_range.is_none();
+        let ring_spacing = document.ring_spacing;
+        self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
+            if !fit_range {
+                return Ok(config);
             }
-            self.upsert_column_atomic(
-                &upload.column,
-                super::columns::ColumnUploadSource::Scalar(&upload.values),
-            )?;
-        }
-
-        if document.value_range.is_none() {
             // Fit the radius axis to the values, from zero when none is
             // negative, and round it to nice ticks. A range fit resets the
             // label format, so the document's is put back.
             let format = config.left_y.label_style.format.clone();
-            let mut chart = renderer::Chart::new(config);
-            chart
-                .auto_fit_layer_union(self.renderer.pool(), renderer::LayerRef::Base, &series, 0.0)
+            let mut fitted = renderer::Chart::new(config);
+            fitted
+                .auto_fit_layer_union(pool, renderer::LayerRef::Base, series, 0.0)
                 .map_err(js_err)?;
-            config = chart.config().clone();
+            let mut config = fitted.config().clone();
             let radius = &mut config.left_y;
             radius.label_style.format = format;
             let min = if radius.min >= 0.0 { 0.0 } else { radius.min };
             let max = radius.max;
-            // A fitted range that ticks cannot round (`TickError`: empty, non-finite
-            // or non-positive on a log axis) keeps the fit as it is.
+            // A fitted range that ticks cannot round (`TickError`: empty,
+            // non-finite or non-positive on a log axis) keeps the fit as it is.
             if radius.auto_ticks(min, max, 5).is_ok()
-                && let Some(spacing) = document.ring_spacing
+                && let Some(spacing) = ring_spacing
             {
                 radius.major_spacing = spacing;
             }
-        }
-
-        let count = series.len();
-        self.replace_chart_state(config, series)?;
-        // The document wrote its own legend.
-        self.legend_auto_managed = false;
-        self.color_seq = count.max(self.color_seq);
-        Ok(())
+            Ok(config)
+        })
     }
 
     // ---- frame / resize / export ----
@@ -1691,23 +1886,12 @@ impl FiggyChart {
     /// compiles too.
     ///
     /// JS: `const { screen, all, frame_complete } = chart.pipeline_status();`
+    #[wasm_bindgen(unchecked_return_type = "FiggyPipelineStatus")]
     pub fn pipeline_status(&self) -> Result<JsValue, JsValue> {
         let status = self.renderer.pipeline_status();
-        let counts = |counts: renderer::PipelineCounts| -> Result<JsValue, JsValue> {
-            let object = js_sys::Object::new();
-            js_sys::Reflect::set(&object, &"total".into(), &(counts.total as f64).into())?;
-            js_sys::Reflect::set(&object, &"ready".into(), &(counts.ready as f64).into())?;
-            js_sys::Reflect::set(
-                &object,
-                &"compiling".into(),
-                &(counts.compiling as f64).into(),
-            )?;
-            js_sys::Reflect::set(&object, &"failed".into(), &(counts.failed as f64).into())?;
-            Ok(object.into())
-        };
         let object = js_sys::Object::new();
-        js_sys::Reflect::set(&object, &"screen".into(), &counts(status.screen)?)?;
-        js_sys::Reflect::set(&object, &"all".into(), &counts(status.all)?)?;
+        js_sys::Reflect::set(&object, &"screen".into(), &counts_object(status.screen)?)?;
+        js_sys::Reflect::set(&object, &"all".into(), &counts_object(status.all)?)?;
         js_sys::Reflect::set(
             &object,
             &"frame_complete".into(),
@@ -1722,12 +1906,29 @@ impl FiggyChart {
     /// (any other rejection), `"device_lost"` or `"cancelled"`.
     ///
     /// JS: `for (const { label, kind } of chart.pipeline_failures()) …`
+    ///
+    /// Returns an array of plain objects, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "FiggyPipelineFailure[]")]
     pub fn pipeline_failures(&self) -> Result<js_sys::Array, JsValue> {
         let array = js_sys::Array::new();
         for failure in self.renderer.pipeline_failures() {
             array.push(&failure_object(&failure)?);
         }
         Ok(array)
+    }
+
+    /// A handle on the chart's background pipeline compiles that does not
+    /// borrow the chart (#315): see [`FiggyReadiness`]. Its waits leave the
+    /// chart free for `pipeline_status()`, `frame()`, `resize()` and
+    /// `free()`; once the chart is freed they reject with a
+    /// `"chart disposed"` `Error`. `series_ready()`, `pipelines_ready()` and
+    /// `first_frame_ready()` on the chart keep working as before.
+    ///
+    /// JS: `const readiness = chart.readiness(); await readiness.pipelines_ready();`
+    pub fn readiness(&self) -> FiggyReadiness {
+        FiggyReadiness {
+            readiness: self.renderer.pipeline_readiness(),
+        }
     }
 
     /// Alias for [`Self::first_frame_ready`].
@@ -1895,5 +2096,322 @@ impl FiggyChart {
         self.surface_size = (w, h);
         self.view_dirty = true;
         Ok(())
+    }
+}
+
+/// The id prefixes of the columns the legacy document calls register: a
+/// column the replaced series read under one of them belongs to the
+/// replaced document (#311).
+const DOCUMENT_ID_PREFIXES: [&str; 3] = ["categorical.", "boxplot.", "radar."];
+
+/// The borrowed adapters one document upload reads through (#311): none for
+/// a plain column, which is its own source, the nine record fields of a box
+/// plot series, or its outlier values and offsets.
+enum DocumentAdapters<'a> {
+    Column,
+    Record([renderer::BoxColumn<'a>; 9]),
+    Outliers([renderer::BoxColumn<'a>; 2]),
+}
+
+/// `error` with the document replace stage it failed at (#311): the message
+/// names the family and the stage, and the `Error` carries `stage`; the
+/// `code` and byte fields of a registration error stay on it.
+pub(super) fn document_stage_error(family: &str, stage: &str, error: JsValue) -> JsValue {
+    use wasm_bindgen::JsCast;
+    let cause = match error.dyn_ref::<js_sys::Error>() {
+        Some(error) => String::from(error.message()),
+        None => error
+            .as_string()
+            .unwrap_or_else(|| "an error that is not a string".to_owned()),
+    };
+    let message = format!("{family} document {stage} failed: {cause}");
+    let object = match error.dyn_into::<js_sys::Error>() {
+        Ok(object) => {
+            object.set_message(&message);
+            object
+        }
+        Err(_) => js_sys::Error::new(&message),
+    };
+    match js_sys::Reflect::set(
+        object.as_ref(),
+        &JsValue::from_str("stage"),
+        &JsValue::from_str(stage),
+    ) {
+        Ok(true) => object.into(),
+        // The message names the stage either way.
+        Ok(false) | Err(_) => JsValue::from_str(&message),
+    }
+}
+
+impl FiggyChart {
+    /// Whether `id` names anything the renderer holds: a column (resident or
+    /// streamed), a record, a ragged column or a triangle index column.
+    fn document_id_in_use(&self, id: &str) -> bool {
+        let pool = self.renderer.pool();
+        self.renderer.logical_column(id).is_some()
+            || pool.record(id).is_some()
+            || pool.ragged(id).is_some()
+            || pool.triangles(id).is_some()
+    }
+
+    /// Why a document cannot upload `values` under `id`, or `None` (#311):
+    /// the id is free, or holds what the upload replaces — a resident
+    /// column for a column, a record for a record, a ragged column for a
+    /// ragged column.
+    fn document_id_conflict(
+        &self,
+        id: &str,
+        values: &renderer::UploadValues<'_>,
+    ) -> Option<String> {
+        use renderer::{LogicalColumn, UploadValues};
+        let pool = self.renderer.pool();
+        let held = if let Some(LogicalColumn::Streamed(_)) = self.renderer.logical_column(id) {
+            "a streamed column"
+        } else if pool.record(id).is_some() {
+            "a record"
+        } else if pool.ragged(id).is_some() {
+            "a ragged column"
+        } else if pool.triangles(id).is_some() {
+            "a triangle index column"
+        } else if pool.slot(id).is_some() {
+            "a column"
+        } else {
+            return None;
+        };
+        let wanted = match values {
+            UploadValues::BoxRecord(_) => "a record",
+            UploadValues::BoxOutliers(_) => "a ragged column",
+            _ => "a column",
+        };
+        (held != wanted).then(|| {
+            format!(
+                "the id {id} holds {held}, and the document uploads {wanted} under it; \
+                 remove it before opening the document"
+            )
+        })
+    }
+
+    /// Replace the chart with a converted legacy document atomically (#311),
+    /// in one renderer transaction
+    /// (`Renderer::begin_replace_chart_sources`): validate the candidate
+    /// (styles and ids), then upload its columns, records and ragged columns
+    /// under the documented ids, fit (`fit` receives the candidate pool, the
+    /// candidate config and series), remove the previous document's columns
+    /// that the new one does not reuse, and swap the config and series, all
+    /// in one commit. Every failure leaves the chart, its columns and its
+    /// selection as they were; the error names the stage.
+    fn replace_document<'a>(
+        &mut self,
+        family: &'static str,
+        config: renderer::Config,
+        series: Vec<SeriesConfig>,
+        uploads: &[renderer::SeriesUpload<'a>],
+        fit: impl FnOnce(
+            &renderer::ColumnPool,
+            renderer::Config,
+            &[SeriesConfig],
+        ) -> Result<renderer::Config, JsValue>,
+    ) -> Result<(), JsValue> {
+        use renderer::{BatchSource, ColumnSource, UploadValues};
+        use wasm_bindgen::JsCast;
+        let validate = |error: JsValue| document_stage_error(family, "validate", error);
+
+        // ---- validate: the chart, the styles, then the ids ----
+        // A document opens on the general chart; a monotonic document shown
+        // instead ends with the commit (#271), so it must still be there.
+        if let Some(id) = self.monotonic {
+            self.renderer
+                .monotonic_config(id)
+                .map_err(|e| validate(js_err(e)))?;
+        }
+        self.renderer
+            .preflight_chart_styles(&series)
+            .map_err(|e| validate(js_err(e)))?;
+        for upload in uploads {
+            if let Some(conflict) = self.document_id_conflict(&upload.column, &upload.values) {
+                return Err(validate(js_err(conflict)));
+            }
+        }
+        // The previous document's columns the new one does not reuse: every
+        // id under a document prefix that the replaced series of the general
+        // chart read.
+        let mut uploaded = std::collections::HashSet::new();
+        uploaded
+            .try_reserve(uploads.len())
+            .map_err(|e| validate(js_err(e)))?;
+        uploaded.extend(uploads.iter().map(|upload| upload.column.as_str()));
+        let mut stale: Vec<String> = Vec::new();
+        for item in self
+            .renderer
+            .chart_series(self.chart_id)
+            .map_err(|e| validate(js_err(e)))?
+        {
+            let outliers = item.render_type.box_plot().and_then(|b| b.outliers);
+            for id in [
+                Some(item.x_column.as_str()),
+                Some(item.y_column.as_str()),
+                outliers,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let document_column = DOCUMENT_ID_PREFIXES
+                    .iter()
+                    .any(|prefix| id.starts_with(prefix));
+                if document_column && !uploaded.contains(id) && self.document_id_in_use(id) {
+                    stale.try_reserve(1).map_err(|e| validate(js_err(e)))?;
+                    stale.push(id.to_owned());
+                }
+            }
+        }
+        drop(uploaded);
+        stale.sort_unstable();
+        stale.dedup();
+        let mut removals: Vec<&str> = Vec::new();
+        removals
+            .try_reserve_exact(stale.len())
+            .map_err(|e| validate(js_err(e)))?;
+        removals.extend(stale.iter().map(String::as_str));
+
+        // The uploads, borrowed from the document through its adapters.
+        let mut adapters = Vec::new();
+        adapters
+            .try_reserve_exact(uploads.len())
+            .map_err(|e| validate(js_err(e)))?;
+        for upload in uploads {
+            adapters.push(match &upload.values {
+                UploadValues::BoxRecord(_) => DocumentAdapters::Record(
+                    upload
+                        .values
+                        .box_fields()
+                        .ok_or_else(|| validate(js_err("a box plot record upload has fields")))?,
+                ),
+                UploadValues::BoxOutliers(_) => {
+                    let (values, offsets) = upload
+                        .values
+                        .box_outliers()
+                        .ok_or_else(|| validate(js_err("a box plot outlier upload has values")))?;
+                    DocumentAdapters::Outliers([values, offsets])
+                }
+                _ => DocumentAdapters::Column,
+            });
+        }
+        // Each field names itself (#160): the record is paired by name, never
+        // by the position of the schema's entries.
+        let mut fields: Vec<[(&str, &dyn ColumnSource); 9]> = Vec::new();
+        fields
+            .try_reserve_exact(
+                adapters
+                    .iter()
+                    .filter(|adapter| matches!(adapter, DocumentAdapters::Record(_)))
+                    .count(),
+            )
+            .map_err(|e| validate(js_err(e)))?;
+        for adapter in &adapters {
+            if let DocumentAdapters::Record(columns) = adapter {
+                fields.push(std::array::from_fn(|k| {
+                    (
+                        renderer::BoxField::ALL[k].name(),
+                        &columns[k] as &dyn ColumnSource,
+                    )
+                }));
+            }
+        }
+        let mut batch: Vec<(&str, BatchSource<'_>)> = Vec::new();
+        batch
+            .try_reserve_exact(uploads.len())
+            .map_err(|e| validate(js_err(e)))?;
+        let mut records = fields.iter();
+        for (upload, adapter) in uploads.iter().zip(&adapters) {
+            let source = match adapter {
+                DocumentAdapters::Column => BatchSource::Column(&upload.values),
+                DocumentAdapters::Record(_) => BatchSource::Record(renderer::RecordSource {
+                    schema: renderer::BOX_PLOT_RECORD,
+                    fields: records
+                        .next()
+                        .ok_or_else(|| validate(js_err("a box plot record has its fields")))?,
+                }),
+                DocumentAdapters::Outliers([values, offsets]) => {
+                    BatchSource::Ragged(renderer::RaggedSource { values, offsets })
+                }
+            };
+            batch.push((upload.column.as_str(), source));
+        }
+
+        // As `set_chart_state` does: the shader set the document needs
+        // (polar coordinates for a radar) is admitted before it is installed,
+        // so its pipelines compile from the start (#299). The fit changes
+        // only ranges and ticks, never what decides the set.
+        self.renderer.require_shaders_for(&config);
+
+        // ---- upload, fit and the plan, in one transaction ----
+        // The fit's own error, and whether it ran: an error after it is the
+        // commit stage's (the series checks, the chart plan, the picker).
+        let mut fit_error = None;
+        let mut fitted = false;
+        let count = series.len();
+        let guard =
+            self.renderer
+                .begin_replace_chart_sources(self.chart_id, &batch, &removals, |pool| {
+                    match fit(pool, config, &series) {
+                        Ok(config) => {
+                            fitted = true;
+                            Ok((config, series))
+                        }
+                        Err(error) => {
+                            fit_error = Some(error);
+                            // Never reported: the stage error below carries the
+                            // fit's own.
+                            Err(renderer::FiggyError::Internal {
+                                invariant: "the document fit failed",
+                            })
+                        }
+                    }
+                });
+        let guard = match guard {
+            Ok(guard) => guard,
+            Err(error) => {
+                return Err(match fit_error {
+                    Some(error) => document_stage_error(family, "fit", error),
+                    None if fitted => document_stage_error(family, "commit", js_err(error)),
+                    None => {
+                        document_stage_error(family, "upload", column_registration_error(error))
+                    }
+                });
+            }
+        };
+
+        // ---- commit: columns, removals, config and series at once ----
+        guard.commit();
+        // The document wrote its own legend.
+        self.legend_auto_managed = false;
+        self.color_seq = count.max(self.color_seq);
+        // Nothing below fails but for a broken invariant: the monotonic
+        // chart was checked before the transaction and only this call
+        // removes it, and the hit map reads the chart the commit just
+        // wrote. Such a failure is reported as an internal error, not as a
+        // stage: the new document is shown by then.
+        let internal = |what: &str, error: JsValue| {
+            js_err(format!(
+                "internal error after the {family} document was committed: {what}: {}",
+                error
+                    .dyn_ref::<js_sys::Error>()
+                    .map(|error| String::from(error.message()))
+                    .or_else(|| error.as_string())
+                    .unwrap_or_default()
+            ))
+        };
+        // A monotonic document shown instead of the general chart ends: the
+        // document replaces what the chart shows (#271).
+        if let Some(id) = self.monotonic.take() {
+            self.renderer
+                .monotonic_chart(id)
+                .and_then(|chart| chart.remove())
+                .map_err(|error| internal("ending the monotonic chart", js_err(error)))?;
+            self.set_selected_annotation(None);
+            self.view_dirty = true;
+        }
+        self.sync_hitmap()
+            .map_err(|error| internal("rebuilding the hit map", error))
     }
 }

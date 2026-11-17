@@ -64,6 +64,210 @@ fn auto_layout_json(json: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The JSON of [`renderer::default::default_config`]: the config every
+/// document starts from, what the `default_config` binding returns.
+#[cfg(any(target_arch = "wasm32", test))]
+fn default_config_json() -> Result<String, String> {
+    serde_json::to_string(&renderer::default::default_config()).map_err(|e| e.to_string())
+}
+
+/// The normalized form of the config JSON `json`, what the
+/// `normalize_config` binding returns: the config read and written back, so
+/// every optional field it omits takes its documented default and every
+/// field holding its default is written the way the renderer writes it
+/// (omitted where the field is skipped at its default). Numbers keep every
+/// bit (`serde_json`'s `float_roundtrip`). The error is the JSON parse
+/// error.
+#[cfg(any(target_arch = "wasm32", test))]
+fn normalize_config_json(json: &str) -> Result<String, String> {
+    let config: renderer::Config = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    serde_json::to_string(&config).map_err(|e| e.to_string())
+}
+
+/// The JSON of one validation error of [`validate_config_json`].
+#[cfg(any(target_arch = "wasm32", test))]
+fn config_error_json(
+    stage: &str,
+    path: &str,
+    error: &renderer::ConfigError,
+    series_index: Option<usize>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "stage": stage,
+        "path": path,
+        "field": error.field,
+        "series_id": error.series_id,
+        "series_index": series_index,
+        "code": error.kind.code(),
+        "message": error.to_string(),
+    })
+}
+
+/// The JSON of a parse error of [`validate_config_json`]: where the JSON
+/// stops being a config (`line` and `column`, from 1) and why.
+#[cfg(any(target_arch = "wasm32", test))]
+fn parse_error_json(path: &str, error: &serde_json::Error) -> serde_json::Value {
+    serde_json::json!({
+        "stage": "parse",
+        "path": path,
+        "field": serde_json::Value::Null,
+        "series_id": serde_json::Value::Null,
+        "series_index": serde_json::Value::Null,
+        "code": "json",
+        "message": error.to_string(),
+        "line": error.line(),
+        "column": error.column(),
+    })
+}
+
+/// What the `validate_config` binding returns for the config JSON `config`
+/// and, when given, the series list JSON `series`:
+/// `{"valid": bool, "errors": [..]}`. The config is held to
+/// `Config::validate_chart` and the series list, against it, to
+/// `Config::validate_series`; the first refusal is the one error (the
+/// rules stop at the first). An error is `{stage, path, field, series_id,
+/// series_index, code, message}`: `stage` is `"parse"`, `"chart"` or
+/// `"series"`; `path` is `"config"` or `"series"` for a parse error, the
+/// config field (`ConfigError::field`, such as `"bottom_x"`) for a chart
+/// rule and `series[<index>]` for a series rule; `code` is the rule's
+/// `RuleKind::code` (`"json"` for a parse error, which adds `line` and
+/// `column`). The checks need no renderer: the renderer adds only what
+/// needs its column pool. The error is a JSON write error.
+#[cfg(any(target_arch = "wasm32", test))]
+fn validate_config_json(config: &str, series: Option<&str>) -> Result<String, String> {
+    let error = match serde_json::from_str::<renderer::Config>(config) {
+        Err(e) => Some(parse_error_json("config", &e)),
+        Ok(config) => match config.validate_chart() {
+            Err(e) => Some(config_error_json("chart", e.field, &e, None)),
+            Ok(()) => match series.map(serde_json::from_str::<Vec<renderer::SeriesConfig>>) {
+                None => None,
+                Some(Err(e)) => Some(parse_error_json("series", &e)),
+                Some(Ok(list)) => config.validate_series(&list).err().map(|e| {
+                    let index = e
+                        .series_id
+                        .as_deref()
+                        .and_then(|id| list.iter().position(|s| s.series_id == id));
+                    let path =
+                        index.map_or_else(|| "series".to_owned(), |i| format!("series[{i}]"));
+                    config_error_json("series", &path, &e, index)
+                }),
+            },
+        },
+    };
+    serde_json::to_string(&serde_json::json!({
+        "valid": error.is_none(),
+        "errors": error.into_iter().collect::<Vec<_>>(),
+    }))
+    .map_err(|e| e.to_string())
+}
+
+/// Why a legacy document did not convert: its JSON, or a rule of the
+/// document's own `validate`.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug)]
+enum DocumentError {
+    Json(serde_json::Error),
+    Rule(renderer::RuleKind),
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl std::fmt::Display for DocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(e) => e.fmt(f),
+            Self::Rule(kind) => kind.fmt(f),
+        }
+    }
+}
+
+/// The descriptor of one upload of a converted document, without its
+/// values: its column (or record, or ragged) id, its role, and its size:
+/// `len` values (`rows` for a record, which holds one row per category in
+/// the fields of `BOX_PLOT_RECORD`), and for the ragged outliers `len`
+/// values in `groups` groups.
+#[cfg(any(target_arch = "wasm32", test))]
+fn upload_descriptor_json(upload: &renderer::SeriesUpload<'_>) -> serde_json::Value {
+    use renderer::UploadValues;
+    match &upload.values {
+        UploadValues::BoxRecord(summaries) => serde_json::json!({
+            "column": upload.column,
+            "role": "box_record",
+            "rows": summaries.len(),
+            "fields": renderer::BoxField::ALL.map(renderer::BoxField::name),
+        }),
+        UploadValues::BoxOutliers(_) => {
+            let (len, groups) = upload
+                .values
+                .box_outliers()
+                .map_or((0, 0), |(values, offsets)| {
+                    (values.len(), offsets.len().saturating_sub(1))
+                });
+            serde_json::json!({
+                "column": upload.column,
+                "role": "box_outliers",
+                "len": len,
+                "groups": groups,
+            })
+        }
+        values => serde_json::json!({
+            "column": upload.column,
+            "role": if matches!(values, UploadValues::Positions(_)) { "positions" } else { "values" },
+            "len": values.len(),
+        }),
+    }
+}
+
+/// The JSON a `convert_*_document` binding returns for a converted legacy
+/// document: `{config, series, uploads, columns, notes}`, the uploads as
+/// descriptors without their values ([`upload_descriptor_json`]), the
+/// columns and notes of its `ConversionReport`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn converted_document_json(
+    (config, series, uploads, report): renderer::ConvertedDocument<'_>,
+) -> Result<String, DocumentError> {
+    let uploads: Vec<_> = uploads.iter().map(upload_descriptor_json).collect();
+    serde_json::to_string(&serde_json::json!({
+        "config": config,
+        "series": series,
+        "uploads": uploads,
+        "columns": report.columns,
+        "notes": report.notes,
+    }))
+    .map_err(DocumentError::Json)
+}
+
+/// What the `convert_categorical_document` binding returns for the legacy
+/// `CategoricalChart` JSON `json` (`Config::from_categorical_with_report`).
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(deprecated)]
+fn convert_categorical_document_json(json: &str) -> Result<String, DocumentError> {
+    let document: renderer::CategoricalChart =
+        serde_json::from_str(json).map_err(DocumentError::Json)?;
+    document.validate().map_err(DocumentError::Rule)?;
+    converted_document_json(renderer::Config::from_categorical_with_report(&document))
+}
+
+/// What the `convert_boxplot_document` binding returns for the legacy
+/// `BoxPlotChart` JSON `json` (`Config::from_boxplot_with_report`).
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(deprecated)]
+fn convert_boxplot_document_json(json: &str) -> Result<String, DocumentError> {
+    let document: renderer::BoxPlotChart =
+        serde_json::from_str(json).map_err(DocumentError::Json)?;
+    document.validate().map_err(DocumentError::Rule)?;
+    converted_document_json(renderer::Config::from_boxplot_with_report(&document))
+}
+
+/// What the `convert_radar_document` binding returns for the legacy
+/// `RadarChart` JSON `json` (`Config::from_radar_with_report`).
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(deprecated)]
+fn convert_radar_document_json(json: &str) -> Result<String, DocumentError> {
+    let document: renderer::RadarChart = serde_json::from_str(json).map_err(DocumentError::Json)?;
+    document.validate().map_err(DocumentError::Rule)?;
+    converted_document_json(renderer::Config::from_radar_with_report(&document))
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 fn consume_successful_frame(view_dirty: &mut bool, redraw_pending: &mut bool) {
     *view_dirty = false;
@@ -496,6 +700,351 @@ fn prepare_demo_declarations(
     })
 }
 
+/// `[x, y, width, height]` of an integer rect, for the editor queries' JSON.
+#[cfg(any(target_arch = "wasm32", test))]
+fn rect_json(r: renderer::layout::Rect) -> serde_json::Value {
+    serde_json::json!([r.x, r.y, r.width, r.height])
+}
+
+/// `[x, y, width, height]` of a float rect.
+#[cfg(any(target_arch = "wasm32", test))]
+fn rect_f_json(r: renderer::layout::RectF) -> serde_json::Value {
+    serde_json::json!([r.x, r.y, r.width, r.height])
+}
+
+/// The chart of `config` that draws `layer`: the document itself for its
+/// base, overlay and annotation layers, the resolved subplot chart
+/// (`Config::subplot_config`) for a subplot's layers. `None` for a subplot
+/// past the list.
+#[cfg(any(target_arch = "wasm32", test))]
+fn chart_of_layer(
+    config: &renderer::Config,
+    layer: renderer::LayerRef,
+) -> Option<std::borrow::Cow<'_, renderer::Config>> {
+    use renderer::LayerRef;
+    match layer {
+        LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => {
+            Some(std::borrow::Cow::Borrowed(config))
+        }
+        LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+            config.subplot_config(index).map(std::borrow::Cow::Owned)
+        }
+    }
+}
+
+/// The subplot a layer belongs to.
+#[cfg(any(target_arch = "wasm32", test))]
+fn layer_subplot(layer: renderer::LayerRef) -> Option<usize> {
+    match layer {
+        renderer::LayerRef::Subplot(index) | renderer::LayerRef::SubplotOverlay(index, _) => {
+            Some(index)
+        }
+        _ => None,
+    }
+}
+
+/// A document as the canvas shows it (#312): `logical`, the stored
+/// document in document pixels, and `placed`, the same document scaled by
+/// `scale` and placed on the surface (`display_config_for_surface`, or the
+/// held placement while a subplot frame drags), in physical canvas pixels.
+/// Every read is a pure function of the two configs; nothing is installed.
+#[cfg(any(target_arch = "wasm32", test))]
+struct ShownDocument<'a> {
+    logical: &'a renderer::Config,
+    placed: &'a renderer::Config,
+    scale: f32,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl ShownDocument<'_> {
+    /// A canvas point in document pixels: the inverse of the placement.
+    fn to_document(&self, p: [f32; 2]) -> [f32; 2] {
+        let (logical, placed) = (self.logical.document_area(), self.placed.document_area());
+        if self.scale > 0.0 && self.scale.is_finite() {
+            [
+                logical.x as f32 + (p[0] - placed.x as f32) / self.scale,
+                logical.y as f32 + (p[1] - placed.y as f32) / self.scale,
+            ]
+        } else {
+            p
+        }
+    }
+
+    /// The layer whose panel `logical.panel_layers()` lists at `index`
+    /// drawn in both configs: `{ document, canvas }` of its frame and its
+    /// data area (`null` for a chart without one).
+    fn panel_json(&self, index: usize, layer: renderer::LayerRef) -> serde_json::Value {
+        let area = |config: &renderer::Config| {
+            chart_of_layer(config, layer).map(|chart| {
+                (
+                    chart.chart_area.0,
+                    chart.data_area().ok().map(|area| area.0),
+                )
+            })
+        };
+        let (logical, placed) = (area(self.logical), area(self.placed));
+        let pair = |pick: fn(
+            (renderer::layout::Rect, Option<renderer::layout::Rect>),
+        ) -> Option<renderer::layout::Rect>| {
+            match (logical.and_then(pick), placed.and_then(pick)) {
+                (Some(document), Some(canvas)) => serde_json::json!({
+                    "document": rect_json(document),
+                    "canvas": rect_json(canvas),
+                }),
+                _ => serde_json::Value::Null,
+            }
+        };
+        serde_json::json!({
+            "index": index,
+            "layer": layer,
+            "subplot": layer_subplot(layer),
+            "member": self.logical.panel_member(index),
+            "frame": pair(|(frame, _)| Some(frame)),
+            "data_area": pair(|(_, data)| data),
+        })
+    }
+
+    /// The whole layout: the document area in both spaces, the display
+    /// scale, the surface size, the active layer and every panel in
+    /// `Config::panel_layers` order (the order `Config::expand` returns
+    /// them and the renderer draws them).
+    fn layout_json(&self, surface: (u32, u32)) -> serde_json::Value {
+        let panels = self
+            .logical
+            .panel_layers()
+            .into_iter()
+            .enumerate()
+            .map(|(index, layer)| self.panel_json(index, layer))
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "scale": self.scale,
+            "surface": [surface.0, surface.1],
+            "document_area": {
+                "document": rect_json(self.logical.document_area()),
+                "canvas": rect_json(self.placed.document_area()),
+            },
+            "active_layer": self.logical.active_layer(),
+            "panels": panels,
+        })
+    }
+
+    /// The layer whose panel is on top at canvas point `(x, y)`, and that
+    /// panel's index in `layout_json`'s list. Subplot frames come first, the
+    /// one drawn on top winning (`Config::subplot_at`: insets in paint
+    /// order, then subplots of their own, later over earlier); then the
+    /// parent chart's frame. An overlay shares its chart's frame and is
+    /// drawn over it, so where the active layer is an overlay of the chart
+    /// found (`Overlay(i)` on the parent, `SubplotOverlay(s, i)` on subplot
+    /// `s`) the overlay is reported. The annotation layer is anchored on the
+    /// parent's frame: while it is active and shown it is reported there,
+    /// outside every subplot frame. `None` off every frame.
+    fn panel_at(&self, x: f32, y: f32) -> Option<(renderer::LayerRef, usize)> {
+        use renderer::LayerRef;
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let active = self.logical.active_layer();
+        let layer = if let Some(index) = self.placed.subplot_at(x, y) {
+            match active {
+                LayerRef::SubplotOverlay(subplot, _) if subplot == index => active,
+                _ => LayerRef::Subplot(index),
+            }
+        } else {
+            let frame = self.placed.chart_area.0;
+            let inside = x >= frame.x as f32
+                && y >= frame.y as f32
+                && x < (frame.x + frame.width) as f32
+                && y < (frame.y + frame.height) as f32;
+            if !inside {
+                return None;
+            }
+            match active {
+                LayerRef::Overlay(_) => active,
+                LayerRef::Annotations
+                    if renderer::AnnotationMap::receives_pointer(
+                        active,
+                        &self.logical.annotations,
+                    ) =>
+                {
+                    active
+                }
+                _ => LayerRef::Base,
+            }
+        };
+        Some((layer, self.panel_index(layer)))
+    }
+
+    /// The index of `layer`'s own panel in `panel_layers` order; the
+    /// annotation layer is drawn with the base panel.
+    fn panel_index(&self, layer: renderer::LayerRef) -> usize {
+        self.logical
+            .panel_layers()
+            .iter()
+            .position(|panel| *panel == layer)
+            .unwrap_or(0)
+    }
+
+    /// `panel_at` as JSON: `{ layer, panel, subplot, active, in_data_area,
+    /// document }`, `null` off every frame. `in_data_area` is the exact
+    /// data area of the panel's chart, edges included on the top and left.
+    fn panel_at_json(&self, x: f32, y: f32) -> serde_json::Value {
+        let Some((layer, panel)) = self.panel_at(x, y) else {
+            return serde_json::Value::Null;
+        };
+        let in_data_area = chart_of_layer(self.placed, layer)
+            .and_then(|chart| chart.data_area().ok())
+            .is_some_and(|area| {
+                let r = area.0;
+                x >= r.x as f32
+                    && y >= r.y as f32
+                    && x < (r.x + r.width) as f32
+                    && y < (r.y + r.height) as f32
+            });
+        serde_json::json!({
+            "layer": layer,
+            "panel": panel,
+            "subplot": layer_subplot(layer),
+            "active": layer == self.logical.active_layer(),
+            "in_data_area": in_data_area,
+            "document": self.to_document([x, y]),
+        })
+    }
+
+    /// The active layer's data area, exact, in both spaces: `{ layer,
+    /// panel, document, canvas }`. The annotation layer reads the parent's.
+    /// An error for a chart without a data area.
+    fn data_area_json(&self) -> Result<serde_json::Value, String> {
+        let layer = match self.logical.active_layer() {
+            renderer::LayerRef::Annotations => renderer::LayerRef::Base,
+            layer => layer,
+        };
+        let area = |config: &renderer::Config| {
+            chart_of_layer(config, layer)
+                .ok_or_else(|| format!("layer {layer:?} has no chart"))?
+                .data_area()
+                .map(|area| area.0)
+                .map_err(|error| format!("layer {layer:?} has no data area ({error:?})"))
+        };
+        Ok(serde_json::json!({
+            "layer": self.logical.active_layer(),
+            "panel": self.panel_index(layer),
+            "document": rect_json(area(self.logical)?),
+            "canvas": rect_json(area(self.placed)?),
+        }))
+    }
+
+    /// Where `item` (in document units, as `add_annotation` takes it) would
+    /// be drawn on the annotation layer: placed by the raster's own
+    /// placement (`renderer::preview_annotation`) once on the canvas, the
+    /// item scaled like the display, and once in the document. `Err` is the
+    /// raster's skip reason on the canvas.
+    fn annotation_preview(
+        &self,
+        item: &renderer::Annotation,
+    ) -> Result<
+        (
+            renderer::AnnotationPreview,
+            Option<renderer::AnnotationPreview>,
+        ),
+        renderer::AnnotationSkip,
+    > {
+        let place = |item: &renderer::Annotation, config: &renderer::Config| {
+            renderer::preview_annotation(
+                item,
+                renderer::annotation::pixel_space_for_config(config),
+                1.0,
+                renderer::FontPolicy::for_style(&config.draw_style),
+            )
+        };
+        let mut shown = item.clone();
+        shown.scale_in_place(self.scale);
+        let canvas = place(&shown, self.placed)?;
+        Ok((canvas, place(item, self.logical).ok()))
+    }
+
+    /// The anchor space the canvas draws the annotation layer in.
+    fn annotation_space(&self) -> renderer::annotation::PixelSpace {
+        renderer::annotation::pixel_space_for_config(self.placed)
+    }
+}
+
+/// An annotation preview's shape as JSON: `{ shape, points | rect, bounds }`
+/// with `shape` one of `line`, `span`, `text`, `arrow`, `polygon`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn annotation_preview_json(preview: &renderer::AnnotationPreview) -> serde_json::Value {
+    use renderer::annotation::AnnotationGeometry as G;
+    let mut value = match &preview.geometry {
+        G::Line { a, b } => serde_json::json!({ "shape": "line", "points": [a, b] }),
+        G::Span(rect) => serde_json::json!({ "shape": "span", "rect": rect_f_json(*rect) }),
+        G::Text(rect) => serde_json::json!({ "shape": "text", "rect": rect_f_json(*rect) }),
+        G::Arrow { from, to } => serde_json::json!({ "shape": "arrow", "points": [from, to] }),
+        G::Polygon(points) => serde_json::json!({ "shape": "polygon", "points": points }),
+    };
+    value["bounds"] = rect_f_json(preview.bounds);
+    value
+}
+
+/// One `RenderWarning` as JSON (#312): `kind` (the variant name), the
+/// variant's fields (`axis` as the `Config` field path it names, a
+/// non-finite number as `null`) and `message`, its one-line `Display`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn render_warning_json(warning: &renderer::RenderWarning) -> serde_json::Value {
+    use renderer::{RenderWarning as W, SpacingRejection as R};
+    let mut value = match warning {
+        W::MajorSpacingReplaced {
+            axis,
+            requested,
+            used,
+            reason,
+        } => {
+            let mut value = serde_json::json!({
+                "kind": "MajorSpacingReplaced",
+                "axis": axis.to_string(),
+                "requested": requested,
+                "used": used,
+            });
+            match reason {
+                R::TooManyTicks { limit } => {
+                    value["reason"] = "TooManyTicks".into();
+                    value["limit"] = (*limit).into();
+                }
+                other => value["reason"] = format!("{other:?}").into(),
+            }
+            value
+        }
+        W::MinorCountClamped {
+            axis,
+            requested,
+            used,
+        } => serde_json::json!({
+            "kind": "MinorCountClamped",
+            "axis": axis.to_string(),
+            "requested": requested,
+            "used": used,
+        }),
+        W::LogDecadeStepAdjusted {
+            axis,
+            requested,
+            used,
+        } => serde_json::json!({
+            "kind": "LogDecadeStepAdjusted",
+            "axis": axis.to_string(),
+            "requested": requested,
+            "used": used,
+        }),
+        W::AnnotationSkipped { index, reason } => serde_json::json!({
+            "kind": "AnnotationSkipped",
+            "index": index,
+            "reason": format!("{reason:?}"),
+        }),
+        // `RenderWarning` is non-exhaustive: a later kind still reports
+        // its message.
+        other => serde_json::json!({ "kind": "Other", "debug": format!("{other:?}") }),
+    };
+    value["message"] = warning.to_string().into();
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use renderer::data_config::{
@@ -514,6 +1063,7 @@ mod tests {
         prepare_demo_declarations, set_chart_title_label, validate_column_batch,
         validate_column_data_len, validate_column_registry_action,
     };
+    use super::{ShownDocument, annotation_preview_json, render_warning_json};
 
     fn scatter_style() -> DataScatterStyleConfig {
         DataScatterStyleConfig {
@@ -825,6 +1375,197 @@ mod tests {
         )];
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json[0]["render_type"]["Scatter"].get("stem").is_none());
+    }
+
+    // The model API for editors (#314): the default config, validation with
+    // field paths, normalization and the legacy conversions need no chart.
+    #[test]
+    fn default_config_json_is_the_default_config_and_validates() {
+        let json = super::default_config_json().unwrap();
+        let config: renderer::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(config, renderer::default::default_config());
+        let report: serde_json::Value =
+            serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
+        assert_eq!(report, serde_json::json!({ "valid": true, "errors": [] }));
+    }
+
+    #[test]
+    fn validate_config_json_names_the_refused_field() {
+        let report = |config: &str, series: Option<&str>| -> serde_json::Value {
+            serde_json::from_str(&super::validate_config_json(config, series).unwrap()).unwrap()
+        };
+        let mut config = renderer::default::default_config();
+        config.left_y.min = 2.0;
+        config.left_y.max = 1.0;
+        let refused = report(&serde_json::to_string(&config).unwrap(), None);
+        assert_eq!(refused["valid"], false);
+        let error = &refused["errors"][0];
+        assert_eq!(error["stage"], "chart");
+        assert_eq!(error["path"], "left_y");
+        assert_eq!(error["field"], "left_y");
+        assert_eq!(error["code"], "AxisBoundsOrder");
+        assert_eq!(error["series_id"], serde_json::Value::Null);
+        assert_eq!(refused["errors"].as_array().unwrap().len(), 1);
+
+        // A series rule names the series by id and position.
+        let config = serde_json::to_string(&renderer::default::default_config()).unwrap();
+        let series = serde_json::to_string(&[
+            renderer::SeriesConfig::line("a", "x", "y"),
+            renderer::SeriesConfig::line("b", "x", "y"),
+            renderer::SeriesConfig::line("b", "x", "y"),
+        ])
+        .unwrap();
+        let refused = report(&config, Some(&series));
+        let error = &refused["errors"][0];
+        assert_eq!(error["stage"], "series");
+        assert_eq!(error["code"], "SeriesIdDuplicate");
+        assert_eq!(error["series_id"], "b");
+        assert_eq!(error["field"], "series_id");
+        // The first series of that id: ids are what a rule names.
+        assert_eq!(error["path"], "series[1]");
+        assert_eq!(error["series_index"], 1);
+        let fine = serde_json::to_string(&[renderer::SeriesConfig::line("a", "x", "y")]).unwrap();
+        assert_eq!(report(&config, Some(&fine))["valid"], true);
+
+        // JSON that is not a config, or not a series list.
+        let refused = report("{\n  \"chart_area\": 1\n}", None);
+        let error = &refused["errors"][0];
+        assert_eq!(
+            (
+                error["stage"].clone(),
+                error["path"].clone(),
+                error["code"].clone()
+            ),
+            ("parse".into(), "config".into(), "json".into())
+        );
+        assert_eq!(error["line"], 2);
+        let refused = report(&config, Some("[1]"));
+        assert_eq!(refused["errors"][0]["path"], "series");
+        assert_eq!(refused["errors"][0]["stage"], "parse");
+    }
+
+    #[test]
+    fn normalize_config_json_is_idempotent_and_keeps_every_bit() {
+        let mut config = renderer::default::default_config();
+        config.left_y.min = 0.1 + 0.2;
+        config.left_y.max = 1.0 / 3.0;
+        config.bottom_x.max = 1.000_000_000_000_000_2;
+        let json = serde_json::to_string(&config).unwrap();
+        let normalized = super::normalize_config_json(&json).unwrap();
+        assert_eq!(normalized, json);
+        assert_eq!(
+            super::normalize_config_json(&normalized).unwrap(),
+            normalized
+        );
+        let back: renderer::Config = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(back.left_y.min.to_bits(), (0.1_f64 + 0.2).to_bits());
+        assert_eq!(
+            back.bottom_x.max.to_bits(),
+            1.000_000_000_000_000_2_f64.to_bits()
+        );
+
+        // Pretty JSON written by hand comes back in the renderer's form.
+        let pretty = serde_json::to_string_pretty(&config).unwrap();
+        assert_eq!(super::normalize_config_json(&pretty).unwrap(), json);
+        // A NaN range is written as `null`, which a config refuses to read.
+        assert!(super::normalize_config_json("not json").is_err());
+        let mut value = serde_json::to_value(&config).unwrap();
+        value["left_y"]["min"] = serde_json::Value::Null;
+        assert!(super::normalize_config_json(&value.to_string()).is_err());
+    }
+
+    #[test]
+    fn a_radar_document_converts_with_its_report() {
+        let document = r#"{
+            "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}, {"id": "c", "label": "C"}],
+            "series": [{"id": "s", "label": "S", "values": [1, 2.5, 3],
+                        "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}}],
+            "background": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0},
+            "decorations": {"data_area": {"x": 10, "y": 10, "width": 300, "height": 200},
+                            "offsets": [], "selected": null}
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&super::convert_radar_document_json(document).unwrap()).unwrap();
+        let config: renderer::Config = serde_json::from_value(out["config"].clone()).unwrap();
+        assert!(config.polar().is_some());
+        let series: Vec<renderer::SeriesConfig> =
+            serde_json::from_value(out["series"].clone()).unwrap();
+        assert_eq!(config.validate_series(&series), Ok(()));
+        assert_eq!(
+            out["uploads"],
+            serde_json::json!([
+                {"column": "radar.positions", "role": "positions", "len": 3},
+                {"column": "radar.values.s", "role": "values", "len": 3},
+            ])
+        );
+        assert_eq!(
+            out["columns"],
+            serde_json::json!([
+                {"series_id": null, "role": "positions", "column": "radar.positions"},
+                {"series_id": "s", "role": "values", "column": "radar.values.s"},
+            ])
+        );
+        let notes: Vec<_> = out["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| (n["path"].as_str().unwrap(), n["kind"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                ("background", "dropped"),
+                ("decorations.data_area", "dropped")
+            ]
+        );
+
+        assert!(matches!(
+            super::convert_radar_document_json("{\"series\": 1}"),
+            Err(super::DocumentError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn a_box_plot_document_describes_its_record_and_outliers() {
+        let document = r#"{
+            "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+            "series": [{"id": "s", "label": "S", "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0},
+                        "values": [{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5,
+                                    "outliers": [9, 10]}, null]}]
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&super::convert_boxplot_document_json(document).unwrap()).unwrap();
+        assert_eq!(out["uploads"][1]["role"], "box_record");
+        assert_eq!(out["uploads"][1]["rows"], 2);
+        assert_eq!(out["uploads"][1]["fields"].as_array().unwrap().len(), 9);
+        assert_eq!(
+            out["uploads"][2],
+            serde_json::json!({"column": "boxplot.outliers.s", "role": "box_outliers", "len": 2, "groups": 2})
+        );
+        assert_eq!(out["columns"][2]["series_id"], "s");
+        assert_eq!(out["notes"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_categorical_document_reports_a_refused_rule_with_its_code() {
+        let document = r#"{
+            "categories": [{"id": "a", "label": "A"}],
+            "series": [{"id": "s", "label": "S", "values": [2],
+                        "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}}],
+            "hovered": {"category_id": "a", "series_id": "s"}
+        }"#;
+        let out: serde_json::Value =
+            serde_json::from_str(&super::convert_categorical_document_json(document).unwrap())
+                .unwrap();
+        assert_eq!(out["notes"][0]["path"], "hovered");
+        assert_eq!(out["uploads"][1]["len"], 1);
+
+        // A group width outside 0.1..0.95 breaks the document's own rule.
+        let refused = document.replace("\"hovered\"", "\"group_width\": 2.0, \"hovered\"");
+        match super::convert_categorical_document_json(&refused) {
+            Err(super::DocumentError::Rule(_)) => {}
+            other => panic!("expected a rule refusal, got {other:?}"),
+        }
     }
 
     // The math fields reach JavaScript and come back unchanged through
@@ -1452,6 +2193,299 @@ mod tests {
         assert_eq!(validate_column_data_len(0), Err("data must not be empty"));
         assert_eq!(validate_column_data_len(1), Ok(()));
     }
+
+    // ---- editor queries (#312) ----
+
+    fn area(x: u32, y: u32, width: u32, height: u32) -> renderer::layout::ChartArea {
+        renderer::layout::ChartArea(renderer::layout::Rect {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    fn rect_of(value: &serde_json::Value) -> renderer::layout::Rect {
+        let n = |i: usize| value[i].as_u64().unwrap() as u32;
+        renderer::layout::Rect {
+            x: n(0),
+            y: n(1),
+            width: n(2),
+            height: n(3),
+        }
+    }
+
+    /// A 400x300 parent with one overlay and a 200x300 subplot to its right.
+    fn layered_document() -> renderer::Config {
+        let mut config = renderer::default::default_config();
+        config.chart_area = area(0, 0, 400, 300);
+        config
+            .overlays
+            .push(serde_json::from_str::<renderer::OverlayLayer>("{}").unwrap());
+        let mut subplot: renderer::Subplot = serde_json::from_str("{}").unwrap();
+        subplot.config = renderer::default::default_config();
+        subplot.config.chart_area = area(400, 0, 200, 300);
+        config.subplots.push(subplot);
+        config
+    }
+
+    /// Every panel reports its frame and exact data area in both spaces,
+    /// at 1x and 2x, in the renderer's panel order; `panel_at` finds the
+    /// panel on top and follows the active layer (#312).
+    #[test]
+    fn document_layout_and_panel_at_follow_the_placed_document() {
+        use renderer::LayerRef;
+        for scale in [1u32, 2] {
+            let mut logical = layered_document();
+            let surface = (600 * scale, 300 * scale);
+            let (placed, _, s) = renderer::display_config_for_surface(&logical, surface);
+            assert!((s - scale as f32).abs() < 1e-6);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            let layout = shown.layout_json(surface);
+            assert_eq!(layout["scale"], serde_json::json!(s));
+            assert_eq!(
+                rect_of(&layout["document_area"]["document"]),
+                logical.document_area()
+            );
+            assert_eq!(
+                rect_of(&layout["document_area"]["canvas"]),
+                placed.document_area()
+            );
+            let panels = layout["panels"].as_array().unwrap();
+            let layers: Vec<LayerRef> = panels
+                .iter()
+                .map(|p| serde_json::from_value(p["layer"].clone()).unwrap())
+                .collect();
+            assert_eq!(layers, logical.panel_layers());
+            assert_eq!(
+                layers,
+                [LayerRef::Base, LayerRef::Overlay(0), LayerRef::Subplot(0)]
+            );
+            let base_data = logical.data_area().unwrap().0;
+            for panel in &panels[..2] {
+                assert_eq!(rect_of(&panel["frame"]["document"]), logical.chart_area.0);
+                assert_eq!(rect_of(&panel["data_area"]["document"]), base_data);
+                assert_eq!(
+                    rect_of(&panel["data_area"]["canvas"]),
+                    placed.data_area().unwrap().0
+                );
+            }
+            let sub = logical.subplot_config(0).unwrap();
+            assert_eq!(panels[2]["subplot"], 0);
+            assert_eq!(rect_of(&panels[2]["frame"]["document"]), sub.chart_area.0);
+            assert_eq!(
+                rect_of(&panels[2]["data_area"]["document"]),
+                sub.data_area().unwrap().0
+            );
+            assert_eq!(
+                rect_of(&panels[2]["data_area"]["canvas"]),
+                placed.subplot_config(0).unwrap().data_area().unwrap().0
+            );
+
+            let centre = |r: renderer::layout::Rect| {
+                (
+                    r.x as f32 + r.width as f32 * 0.5,
+                    r.y as f32 + r.height as f32 * 0.5,
+                )
+            };
+            let (sx, sy) = centre(placed.subplots[0].config.chart_area.0);
+            let (px, py) = centre(placed.chart_area.0);
+            assert_eq!(shown.panel_at(sx, sy), Some((LayerRef::Subplot(0), 2)));
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Base, 0)));
+            assert_eq!(shown.panel_at(-1.0, py), None);
+            assert_eq!(shown.panel_at(f32::NAN, py), None);
+            let hit = shown.panel_at_json(px, py);
+            assert_eq!(hit["in_data_area"], true);
+            assert_eq!(hit["active"], true);
+            let document = hit["document"].as_array().unwrap();
+            assert!((document[0].as_f64().unwrap() - 200.0).abs() < 1.0);
+            assert!((document[1].as_f64().unwrap() - 150.0).abs() < 1.0);
+            // A frame corner is outside the data area.
+            let corner = placed.chart_area.0;
+            let hit = shown.panel_at_json(corner.x as f32 + 1.0, corner.y as f32 + 1.0);
+            assert_eq!(hit["in_data_area"], false);
+            assert_eq!(shown.panel_at_json(-5.0, -5.0), serde_json::Value::Null);
+
+            // The active overlay is reported over its chart's frame; the
+            // subplot keeps its own frame.
+            logical.active_layer = LayerRef::Overlay(0);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Overlay(0), 1)));
+            assert_eq!(shown.panel_at(sx, sy), Some((LayerRef::Subplot(0), 2)));
+            assert_eq!(shown.panel_at_json(sx, sy)["active"], false);
+            // The annotation layer, while shown, on the parent frame only.
+            logical.active_layer = LayerRef::Annotations;
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Annotations, 0)));
+            assert_eq!(shown.panel_at(sx, sy), Some((LayerRef::Subplot(0), 2)));
+            let data = shown.data_area_json().unwrap();
+            assert_eq!(rect_of(&data["document"]), base_data);
+            logical.annotations.visible = false;
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            assert_eq!(shown.panel_at(px, py), Some((LayerRef::Base, 0)));
+            // The active subplot's data area.
+            logical.active_layer = LayerRef::Subplot(0);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            let data = shown.data_area_json().unwrap();
+            assert_eq!(data["panel"], 2);
+            assert_eq!(rect_of(&data["document"]), sub.data_area().unwrap().0);
+        }
+    }
+
+    /// A chart whose margins leave no data area has no data area to report.
+    #[test]
+    fn data_area_json_refuses_a_chart_without_one() {
+        let mut tiny = renderer::default::default_config();
+        tiny.chart_area = area(0, 0, 4, 4);
+        assert!(tiny.data_area().is_err());
+        let shown = ShownDocument {
+            logical: &tiny,
+            placed: &tiny,
+            scale: 1.0,
+        };
+        assert!(shown.data_area_json().is_err());
+        assert!(shown.layout_json((4, 4))["panels"][0]["data_area"].is_null());
+    }
+
+    /// A preview is placed in both spaces: the canvas shape is the document
+    /// shape scaled and placed, and an item the raster skips reports why.
+    /// Anchor conversion keeps the drawn position (#312).
+    #[test]
+    fn annotation_preview_places_the_item_in_both_spaces() {
+        use renderer::{Anchor, AnchorKind, Annotation, AnnotationKind, AnnotationSpace};
+        let mut logical = renderer::default::default_config();
+        logical.chart_area = area(0, 0, 400, 300);
+        logical.bottom_x.min = 0.0;
+        logical.bottom_x.max = 10.0;
+        logical.left_y.min = 0.0;
+        logical.left_y.max = 1.0;
+        let arrow = Annotation::new(AnnotationKind::Arrow {
+            from: Anchor::Data { x: 2.0, y: 0.25 },
+            to: Anchor::Ratio { x: 0.75, y: 0.25 },
+            style: Default::default(),
+            text: None,
+        });
+        for scale in [1u32, 2] {
+            let (placed, _, s) =
+                renderer::display_config_for_surface(&logical, (400 * scale, 300 * scale));
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale: s,
+            };
+            let (canvas, document) = shown.annotation_preview(&arrow).unwrap();
+            let document = document.unwrap();
+            let (canvas, document) = (
+                annotation_preview_json(&canvas),
+                annotation_preview_json(&document),
+            );
+            assert_eq!(canvas["shape"], "arrow");
+            for i in 0..2 {
+                for axis in 0..2 {
+                    let c = canvas["points"][i][axis].as_f64().unwrap();
+                    let d = document["points"][i][axis].as_f64().unwrap();
+                    assert!((c - d * s as f64).abs() < 1.5, "{scale}: {c} vs {d}");
+                }
+            }
+            let space = shown.annotation_space();
+            let ratio = arrow.converted_anchors(&space, AnchorKind::Ratio).unwrap();
+            let (AnnotationKind::Arrow { from: a, .. }, AnnotationKind::Arrow { from: b, .. }) =
+                (&arrow.kind, &ratio.kind)
+            else {
+                unreachable!()
+            };
+            let (pa, pb) = (
+                space.anchor_to_px(a).unwrap(),
+                space.anchor_to_px(b).unwrap(),
+            );
+            assert!((pa[0] - pb[0]).abs() < 1e-3 && (pa[1] - pb[1]).abs() < 1e-3);
+            let outside = Annotation::new(AnnotationKind::ReferenceLine {
+                axis: renderer::AnnotationAxis::X,
+                value: 50.0,
+                style: Default::default(),
+                label: None,
+            });
+            assert_eq!(
+                shown.annotation_preview(&outside).err(),
+                Some(renderer::AnnotationSkip::OutOfRange)
+            );
+        }
+    }
+
+    /// Every warning kind as JSON: the axis as its field path, a NaN as
+    /// null, the reason and its limit, and the one-line message (#312).
+    #[test]
+    fn render_warnings_are_structured() {
+        use renderer::{AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis};
+        let replaced = RenderWarning::MajorSpacingReplaced {
+            axis: WarningAxis::Subplot {
+                index: 1,
+                axis: SubplotAxis::LeftY,
+            },
+            requested: f64::NAN,
+            used: 0.5,
+            reason: SpacingRejection::NonFinite,
+        };
+        let value = render_warning_json(&replaced);
+        assert_eq!(value["kind"], "MajorSpacingReplaced");
+        assert_eq!(value["axis"], "subplots[1].config.left_y");
+        assert!(value["requested"].is_null());
+        assert_eq!(value["used"], 0.5);
+        assert_eq!(value["reason"], "NonFinite");
+        assert_eq!(value["message"], replaced.to_string());
+        let many = render_warning_json(&RenderWarning::MajorSpacingReplaced {
+            axis: WarningAxis::BottomX,
+            requested: 1e-9,
+            used: 1.0,
+            reason: SpacingRejection::TooManyTicks { limit: 1000 },
+        });
+        assert_eq!(many["reason"], "TooManyTicks");
+        assert_eq!(many["limit"], 1000);
+        let minor = render_warning_json(&RenderWarning::MinorCountClamped {
+            axis: WarningAxis::OverlayY(0),
+            requested: 500,
+            used: 99,
+        });
+        assert_eq!(minor["axis"], "overlays[0].y_axis");
+        assert_eq!(
+            (minor["requested"].clone(), minor["used"].clone()),
+            (500.into(), 99.into())
+        );
+        let log = render_warning_json(&RenderWarning::LogDecadeStepAdjusted {
+            axis: WarningAxis::ColorBar,
+            requested: 0.5,
+            used: 1.0,
+        });
+        assert_eq!(log["kind"], "LogDecadeStepAdjusted");
+        assert_eq!(log["axis"], "colorbar.axis");
+        let skipped = render_warning_json(&RenderWarning::AnnotationSkipped {
+            index: 3,
+            reason: AnnotationSkip::EmptyText,
+        });
+        assert_eq!(skipped["index"], 3);
+        assert_eq!(skipped["reason"], "EmptyText");
+        assert!(skipped["message"].as_str().unwrap().contains("items[3]"));
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1483,15 +2517,19 @@ mod web {
     };
     use crate::{
         ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, PreparedDemoDeclarations,
-        consume_successful_frame, frame_decision, prepare_demo_declarations, set_chart_title_label,
+        ShownDocument, annotation_preview_json, consume_successful_frame, frame_decision,
+        prepare_demo_declarations, render_warning_json, set_chart_title_label,
         validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 
     mod chart;
     pub use chart::{
-        FiggyChart, auto_layout, draw_style_modes, draw_style_param_specs, rich_text_from_tex,
+        FiggyChart, FiggyReadiness, auto_layout, convert_boxplot_document,
+        convert_categorical_document, convert_radar_document, default_config, draw_style_modes,
+        draw_style_param_specs, normalize_config, rich_text_from_tex, validate_config,
     };
     mod columns;
+    pub use columns::ColumnUploadHandle;
     use columns::{VectorColumns, referenced_columns, vector_columns};
     pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};
@@ -1502,7 +2540,9 @@ mod web {
     mod decorations;
     pub use decorations::AxisPreset;
     pub(crate) use decorations::vertex_handle_index;
-    pub(crate) use decorations::{annotation_kind_name, annotation_warnings_json};
+    pub(crate) use decorations::{
+        annotation_index_of, annotation_kind_name, annotation_warnings_json,
+    };
     mod export;
     mod monotonic;
     mod picking;
@@ -2672,3 +3712,8 @@ pub use web::*;
 
 #[cfg(target_arch = "wasm32")]
 mod radial;
+/// The radial chart's browser host (`FiggyBoundedChart` in JavaScript), for
+/// Rust callers, its static calls such as `supported_families` (#315) and the
+/// browser tests (#313).
+#[cfg(target_arch = "wasm32")]
+pub use radial::FiggyRadialChart;

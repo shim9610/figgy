@@ -40,6 +40,8 @@ async fn radial_at(
 async fn has_data(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Result<bool, JsValue> {
     Ok(picked(frame.pick(p)).await?.is_some() || picked(frame.pick_at_rest(p)).await?.is_some())
 }
+/// The families [`FiggyRadialChart::create`] opens (#315).
+const SUPPORTED_FAMILIES: &[&str] = &["radial"];
 /// The radial document of `family`. The three former bounded families name
 /// the `FiggyChart` method that opens their documents.
 fn parse_chart(family: &str, value: &str) -> Result<RadialChart, JsValue> {
@@ -47,8 +49,10 @@ fn parse_chart(family: &str, value: &str) -> Result<RadialChart, JsValue> {
         "radial" => {
             let mut chart: RadialChart = serde_json::from_str(value).map_err(js_err)?;
             // A slice without its drawn text gets the one its label format
-            // writes; a text the document carries is drawn as it is.
-            chart.normalize_labels();
+            // writes, and a generated text (`text_generated`) is written
+            // again from the document's values and format (#313); a text
+            // the host wrote is drawn as it is.
+            chart.regenerate_labels();
             Ok(chart)
         }
         "categorical" => Err(js_err(
@@ -74,8 +78,46 @@ fn validate(chart: &RadialChart, size: (u32, u32)) -> Result<(), JsValue> {
     }
     chart.validate().map_err(js_err)
 }
+/// What an export draws under the chart (#313): `"document"`,
+/// `"transparent"` or a colour JSON `{"r":..,"g":..,"b":..,"a":..}` with
+/// components `0..=1`. Anything else is an `Error` with `code`
+/// `"export_background"`.
+fn export_background(value: &str) -> Result<RadialExportBackground, JsValue> {
+    match value {
+        "document" => return Ok(RadialExportBackground::Document),
+        "transparent" => return Ok(RadialExportBackground::Transparent),
+        _ => {}
+    }
+    let refused = |reason: &str| {
+        crate::web::convert::coded_error(
+            &format!(
+                "export background {value:?} is not \"document\", \"transparent\" or a \
+                 colour JSON {{\"r\":..,\"g\":..,\"b\":..,\"a\":..}} with components 0 to 1: \
+                 {reason}"
+            ),
+            "export_background",
+            [],
+        )
+    };
+    let color: renderer::Color =
+        serde_json::from_str(value).map_err(|error| refused(&error.to_string()))?;
+    if ![color.r, color.g, color.b, color.a]
+        .iter()
+        .all(|c| (0.0..=1.0).contains(c))
+    {
+        return Err(refused("a component is outside 0 to 1"));
+    }
+    Ok(RadialExportBackground::Color(color))
+}
 /// The browser host of one radial document, exported to JavaScript as
 /// `FiggyBoundedChart`.
+///
+/// A chart made by [`Self::create`] requests its own adapter and device. A
+/// chart made by [`Self::create_on`] draws on a `FiggyChart`'s device and
+/// queue instead (#313): its own surface on its own canvas, the same
+/// device-loss record, and the same GPU ledger and memory budget. Disposing
+/// either chart (`free()`) drops only its own handles: the device lives while
+/// the other holds it, and is never destroyed by a dispose.
 #[wasm_bindgen(js_name = FiggyBoundedChart)]
 pub struct FiggyRadialChart {
     surface: wgpu::Surface<'static>,
@@ -91,6 +133,17 @@ pub struct FiggyRadialChart {
 }
 #[wasm_bindgen(js_class = FiggyBoundedChart)]
 impl FiggyRadialChart {
+    /// The chart families `create` opens, as an array of strings (#315):
+    /// `["radial"]`. The categorical, box plot and radar families moved to
+    /// `FiggyChart` (`set_categorical_document`, `set_boxplot_document`,
+    /// `set_radar_document`); passing one of them to `create` is an error
+    /// naming that method.
+    ///
+    /// JS: `FiggyBoundedChart.supported_families() // ["radial"]`
+    #[wasm_bindgen(unchecked_return_type = "string[]")]
+    pub fn supported_families() -> js_sys::Array {
+        crate::web::convert::js_names(SUPPORTED_FAMILIES)
+    }
     /// One GPU surface; no kernel PNG transport is used for interactive frames.
     pub async fn create(
         canvas: HtmlCanvasElement,
@@ -112,15 +165,66 @@ impl FiggyRadialChart {
         let (device, queue) = renderer::gpu::request_device_async(&adapter)
             .await
             .map_err(js_err)?;
+        let gpu = RendererDevice::new(device, queue).map_err(js_err)?;
+        Self::create_with(
+            canvas,
+            surface,
+            instance,
+            adapter,
+            gpu,
+            chart,
+            (width, height),
+        )
+        .await
+    }
+    /// A radial chart on `parent`'s device and queue (#313), drawn to its
+    /// own `canvas`: a promise of the `FiggyBoundedChart`, which validates
+    /// the document as [`Self::create`] does but requests no adapter and no
+    /// device.
+    ///
+    /// Lifetime: the chart holds clones of the parent's handles. Disposing
+    /// it (`free()`) never destroys the parent's device, and disposing the
+    /// parent leaves this chart drawing; the device lives while either
+    /// holds it. Both share one device-loss record, so a lost device fails
+    /// the next frame, export or pick of each with the loss, and one GPU
+    /// ledger and memory budget: the parent's `gpu_memory_status` counts
+    /// this chart's allocations, and the one budget bounds both charts.
+    /// Both submit to the one queue in call order; a wait on
+    /// either (`first_frame_ready`, an export) completes with the work
+    /// submitted before it, the other chart's included. An async call
+    /// (an export, a pick) borrows only this chart: while it is pending,
+    /// `free()` on this chart throws as on every wasm-bindgen object
+    /// (await it first), and disposing the parent does not cancel it.
+    pub fn create_on(
+        parent: &crate::web::FiggyChart,
+        canvas: HtmlCanvasElement,
+        family: String,
+        value: String,
+        width: u32,
+        height: u32,
+    ) -> js_sys::Promise {
+        let created = Self::create_on_device_of(parent, canvas, family, value, width, height);
+        wasm_bindgen_futures::future_to_promise(async move { created.await.map(JsValue::from) })
+    }
+    /// Configure `surface` for `gpu` and build the chart's renderer and first
+    /// frame: the part [`Self::create`] and [`Self::create_on`] share.
+    async fn create_with(
+        canvas: HtmlCanvasElement,
+        surface: wgpu::Surface<'static>,
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        gpu: RendererDevice,
+        chart: RadialChart,
+        (width, height): (u32, u32),
+    ) -> Result<FiggyRadialChart, JsValue> {
         let config = renderer::gpu::try_configure_surface(
             &surface,
             &adapter,
-            &device,
+            gpu.device(),
             canvas.width(),
             canvas.height(),
         )
         .map_err(js_err)?;
-        let gpu = RendererDevice::new(device, queue).map_err(js_err)?;
         let mut renderer = RadialRenderer::try_new_async(gpu.clone(), config.format)
             .await
             .map_err(js_err)?;
@@ -139,6 +243,9 @@ impl FiggyRadialChart {
             size: (width, height),
         })
     }
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn get_document(&self) -> Result<String, JsValue> {
         serde_json::to_string(&self.chart).map_err(js_err)
     }
@@ -220,16 +327,31 @@ impl FiggyRadialChart {
     }
 
     pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
-        let image = self
+        self.export_png_with_background(scale, "document").await
+    }
+    /// [`Self::export_png`] over another background (#313): `"document"`
+    /// (the chart's own, as `export_png` draws it), `"transparent"` (no
+    /// background: only the slices, labels and annotations) or a colour JSON
+    /// `{"r":..,"g":..,"b":..,"a":..}` (components `0..=1`). The override is
+    /// the export's alone: the document, its selection and the image on
+    /// screen are unchanged. Any other value throws `code`
+    /// `"export_background"` before anything is drawn.
+    pub async fn export_png_with_background(
+        &mut self,
+        scale: f32,
+        background: &str,
+    ) -> Result<js_sys::Uint8Array, JsValue> {
+        let background = export_background(background)?;
+        let bytes = self
             .renderer
-            .export_rgba(
+            .export_png_with_background(
                 &self.chart,
                 self.size,
                 renderer::ExportOptions::document(scale),
+                background,
             )
             .await
             .map_err(js_err)?;
-        let bytes = renderer::encode_png(&image).map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
     }
     /// The chart as an SVG document at `scale ×` resolution: the slices and
@@ -260,6 +382,12 @@ impl FiggyRadialChart {
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
     }
     /// Renderer-measured logical pixel bounds and resize handles.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// Rects are `[x, y, width, height]` in document logical pixels, not canvas
+    /// pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn decorations(&self) -> Result<String, JsValue> {
         let entry = |id: &DecorationId, b: renderer::SelectionBox| {
             let r = b.rect();
@@ -279,6 +407,9 @@ impl FiggyRadialChart {
     ///
     /// Asynchronous: over the plot area it asks whether data is drawn
     /// there, which the radial chart answers with its GPU pick.
+    ///
+    /// `x`, `y` are document logical pixels. Resolves to the plain id string,
+    /// not JSON.
     pub async fn hit_decoration(
         &self,
         x: f32,
@@ -338,6 +469,50 @@ impl FiggyRadialChart {
             .find(|(_, e)| e.id().element_id() == target)
             .map(|(_, e)| e.index)
     }
+    /// Put the decoration `id` (an id [`Self::decorations`] lists, such as
+    /// `"chart_title"` or `"radial_label_0_1"`) back where the layout places
+    /// it (#313): its stored offset is removed, and for `"data_area"` the
+    /// explicit plot region too (`DecorationLayout::reset`). Not a drag by
+    /// the negative offset: nothing is left stored. Returns whether the
+    /// document changed. An unknown id, and an annotation (which has a
+    /// position of its own, not an offset), throw.
+    pub fn reset_decoration_position(&mut self, id: &str) -> Result<bool, JsValue> {
+        if self.drawn_annotation(id).is_some() {
+            return Err(js_err(
+                "an annotation has no decoration offset: move it with drag_annotation",
+            ));
+        }
+        let key = self
+            .frame
+            .decoration_ids(&self.chart)
+            .find(|(_, key)| key.element_id() == id)
+            .map(|(_, key)| key)
+            .ok_or_else(|| js_err("unknown decoration"))?;
+        let mut next = self.chart.clone();
+        next.decorations.reset(&key);
+        if next == self.chart {
+            return Ok(false);
+        }
+        self.adopt(next)?;
+        Ok(true)
+    }
+    /// Rewrite the automatic slice labels from the document's values and
+    /// label format (#313): each generated text (`text_generated`) and each
+    /// missing one, as `RadialChart::regenerate_labels` writes them; a text
+    /// the host wrote stays. With `rewrite_user_text`, every text is
+    /// rewritten, the host's included (`RadialChart::format_labels`).
+    /// `set_document` already regenerates the generated texts of the
+    /// document it is given; this is the call for an explicit rewrite.
+    pub fn regenerate_labels(&mut self, rewrite_user_text: bool) -> Result<(), JsValue> {
+        let mut next = self.chart.clone();
+        if rewrite_user_text {
+            next.format_labels();
+        } else {
+            next.regenerate_labels();
+        }
+        self.adopt(next)
+    }
+    /// `x`, `y` are document logical pixels.
     pub fn resize_handle(&self, target: &str, x: f32, y: f32) -> Option<String> {
         if let Some(index) = self.drawn_annotation(target) {
             return self.annotation_handle(index as u32, x, y);
@@ -406,6 +581,9 @@ impl FiggyRadialChart {
     }
     /// The theme names (#291, #295), as an array of strings: the four
     /// families.
+    ///
+    /// Returns an array of strings, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "string[]")]
     pub fn theme_names(&self) -> js_sys::Array {
         crate::web::convert::js_names(renderer::theme::ThemeFamily::NAMES)
     }
@@ -426,6 +604,10 @@ impl FiggyRadialChart {
     /// decoration selection (`decorations.selected`, an annotation
     /// included); the data selection is kept. Returns the stored layer as
     /// JSON. Drawn pixels never depend on it.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn set_active_layer(&mut self, json: &str) -> Result<String, JsValue> {
         let layer: LayerRef = serde_json::from_str(json).map_err(js_err)?;
         let mut next = self.chart.clone();
@@ -436,6 +618,10 @@ impl FiggyRadialChart {
         serde_json::to_string(&stored).map_err(js_err)
     }
     /// The layer that receives pointer interaction, as JSON.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn active_layer(&self) -> Result<String, JsValue> {
         serde_json::to_string(&self.chart.active_layer()).map_err(js_err)
     }
@@ -452,6 +638,11 @@ impl FiggyRadialChart {
     /// The drawn annotations as JSON: `index`, `id`, `kind`, the selection
     /// box `rect` and `handles`, and `selected`. Skipped items are listed by
     /// `annotation_warnings` instead.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// Rects are in document logical pixels, not canvas pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn annotations(&self) -> Result<String, JsValue> {
         let map = self.annotations.annotations();
         let items = &self.chart.annotations.items;
@@ -475,6 +666,8 @@ impl FiggyRadialChart {
         serde_json::to_string(&values).map_err(js_err)
     }
     /// The topmost drawn annotation under a point, as its index.
+    ///
+    /// `x`, `y` are document logical pixels.
     pub fn hit_annotation(&self, x: f32, y: f32) -> Option<u32> {
         let map = self.annotations.annotations();
         let id = map.hit_test([x, y])?;
@@ -496,10 +689,39 @@ impl FiggyRadialChart {
         next.interaction.selected = None;
         self.adopt(next)
     }
+    /// The index of the selected annotation, or `undefined`. An index is
+    /// valid until the annotation list changes (see `annotation_index`).
     pub fn selected_annotation(&self) -> Option<u32> {
         AnnotationLayer::selected_index(self.chart.decorations.selected.as_ref()).map(|i| i as u32)
     }
+    /// The `id` of every annotation, in index order, as an array of strings
+    /// (not a JSON string): `""` for an item without one (#315). Like
+    /// `FiggyChart.annotation_ids`.
+    #[wasm_bindgen(unchecked_return_type = "string[]")]
+    pub fn annotation_ids(&self) -> js_sys::Array {
+        let array = js_sys::Array::new();
+        for item in &self.chart.annotations.items {
+            array.push(&JsValue::from_str(&item.id));
+        }
+        array
+    }
+    /// The current index of the annotation whose `id` is `id`, or
+    /// `undefined` when none has it (#315). An empty id, or one several
+    /// items share, is an error. Like `FiggyChart.annotation_index`.
+    pub fn annotation_index(&self, id: &str) -> Result<Option<u32>, JsValue> {
+        crate::annotation_index_of(&self.chart.annotations.items, id)
+    }
+    /// Select the annotation whose `id` is `id`, like `select_annotation`
+    /// with its index (#315); an error, with the selection unchanged, when
+    /// no annotation or more than one has it, or `id` is empty.
+    pub fn select_annotation_by_id(&mut self, id: &str) -> Result<(), JsValue> {
+        let index = crate::annotation_index_of(&self.chart.annotations.items, id)?
+            .ok_or_else(|| js_err(format!("no annotation has the id {id:?}")))?;
+        self.select_annotation(Some(index))
+    }
     /// The compass name of the annotation's live handle under a point.
+    ///
+    /// `x`, `y` are document logical pixels.
     pub fn annotation_handle(&self, index: u32, x: f32, y: f32) -> Option<String> {
         // An annotation not drawn in the current frame has no handle.
         let id = self.annotations.annotations().find(index as usize)?;
@@ -509,6 +731,8 @@ impl FiggyRadialChart {
             .map(|h| format!("{h:?}"))
     }
     /// The vertex handle (`"v<i>"`) of a polygon annotation under a point.
+    ///
+    /// `x`, `y` are document logical pixels.
     pub fn annotation_vertex(&self, index: u32, x: f32, y: f32) -> Option<String> {
         // An annotation not drawn in the current frame has no handle.
         let id = self.annotations.annotations().find(index as usize)?;
@@ -611,6 +835,11 @@ impl FiggyRadialChart {
     }
     /// The `Anchor` JSON at a point for `"Data"` or `"Ratio"`; `null` when
     /// the point has no such position (a radial chart has no data anchors).
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    /// `x`, `y` are document logical pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn pointer_to_anchor(&self, x: f32, y: f32, kind: &str) -> Result<String, JsValue> {
         let kind = match kind {
             "Data" => renderer::AnchorKind::Data,
@@ -626,12 +855,20 @@ impl FiggyRadialChart {
         serde_json::to_string(&anchor).map_err(js_err)
     }
     /// Annotations the current frame skipped, as `[{index, reason}]`.
+    ///
+    /// Returns JSON text (`FiggyJson`), not an object: parse it with
+    /// `JSON.parse`.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub fn annotation_warnings(&self) -> Result<String, JsValue> {
         crate::annotation_warnings_json(self.annotations.render_warnings())
     }
     /// Select the data under a point (or toggle it off) and resolve to the
     /// selection as JSON. Asynchronous: the radial chart picks on the GPU,
     /// like `FiggyChart.pick_point`.
+    ///
+    /// Resolves to JSON text (`FiggyJson`), not an object. `x`, `y` are
+    /// document logical pixels.
+    #[wasm_bindgen(unchecked_return_type = "FiggyJson")]
     pub async fn pick(&mut self, x: f32, y: f32, toggle: bool) -> Result<String, JsValue> {
         self.chart.decorations.selected = None;
         let hit = radial_at(&self.frame, [x, y], self.chart.interaction.hovered).await?;
@@ -664,6 +901,40 @@ impl FiggyRadialChart {
     }
     pub fn step_selection(&mut self, backwards: bool) {
         self.chart.step_selection(backwards);
+    }
+}
+
+impl FiggyRadialChart {
+    /// [`Self::create_on`] for Rust callers: the chart itself rather than a
+    /// promise. The parent is read before the returned future starts, so
+    /// the future borrows nothing.
+    pub fn create_on_device_of(
+        parent: &crate::web::FiggyChart,
+        canvas: HtmlCanvasElement,
+        family: String,
+        value: String,
+        width: u32,
+        height: u32,
+    ) -> impl std::future::Future<Output = Result<FiggyRadialChart, JsValue>> + 'static {
+        console_error_panic_hook::set_once();
+        let (gpu, instance, adapter) = parent.shared_gpu();
+        async move {
+            let chart = parse_chart(&family, &value)?;
+            validate(&chart, (width, height))?;
+            let surface = instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+                .map_err(js_err)?;
+            Self::create_with(
+                canvas,
+                surface,
+                instance,
+                adapter,
+                gpu,
+                chart,
+                (width, height),
+            )
+            .await
+        }
     }
 }
 

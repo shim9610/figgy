@@ -104,7 +104,10 @@ pub use ::model::monotonic::{
 /// Chart themes, behind the `helpers` feature (#265).
 #[cfg(feature = "helpers")]
 pub use ::model::theme;
-pub use ::model::{ConfigError, Coordinates, RuleKind, SeriesUpload, UploadValues};
+pub use ::model::{
+    ConfigError, ConversionNote, ConversionNoteKind, ConversionReport, ConvertedColumn,
+    ConvertedColumnRole, ConvertedDocument, Coordinates, RuleKind, SeriesUpload, UploadValues,
+};
 pub use ::model::{
     bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config, drag,
     format, layout, legend, line, preset, resize, select, sink, text, tick, validate,
@@ -115,13 +118,15 @@ pub mod helpers;
 pub use helpers::{ExportFormat, HeadlessOptions, SaveError};
 
 // Public API re-exports.
-pub use annotation::{AnnotationMap, BoundedAnnotationFrame, LayerHit};
+pub use annotation::{
+    AnnotationMap, AnnotationPreview, BoundedAnnotationFrame, LayerHit, preview_annotation,
+};
 pub use chart::{Chart, FitExtent};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
 pub use data::{
-    Column, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
+    Column, ColumnLanes, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
     StreamColumnSource,
 };
 pub use data_config::{
@@ -132,10 +137,11 @@ pub use data_config::{
     SeriesConfig, SeriesRef, StreamlineArrows, XySeries,
 };
 pub use data_render::{
-    AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
-    GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot, RaggedSource, RaggedStats,
-    RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats, TriangleId,
-    TriangleRef, TriangleSlot, TriangleSource, TriangleStats,
+    AllocError, BOX_PLOT_RECORD, BatchSource, ColumnHandle, ColumnId, ColumnPool, ColumnStaging,
+    ColumnStagingError, DefragPolicy, GpuAllocCtx, GrowthPolicy, MAX_RECORD_FIELDS, RaggedId,
+    RaggedRef, RaggedSlot, RaggedSource, RaggedStats, RecordId, RecordRef, RecordSchema,
+    RecordSlot, RecordSource, RecordStats, TriangleId, TriangleRef, TriangleSlot, TriangleSource,
+    TriangleStats,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
@@ -158,15 +164,17 @@ pub use render_warning::{
     AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis,
 };
 pub use renderer::{
-    AxisViewState, ChartColumnsReplacement, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle,
-    ChartView, ChartViewLayerStamps, ChartViewState, ExportOptions, ExportScope, ExportSource,
-    FIT_RANGES_PADDING, FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart,
-    MonotonicChartDrawItem, MonotonicChartId, PipelineCounts, PipelineFailure, PipelineFailureKind,
-    PipelinePreparation, PipelineStatus, PreparationFeature, PreparedFrame, PreparedPipelines,
-    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
-    RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
-    StreamingSelectionTicket, WindowedRenderer, clamp_export_scale, display_config_for_surface,
-    dpi_to_scale, draw_style_supports, encode_png, fit_display_panel, place_document,
+    AxisViewState, ChartColumnsReplacement, ChartDrawItem, ChartId, ChartRenderStamp,
+    ChartSourcesReplacement, ChartStyle, ChartView, ChartViewLayerStamps, ChartViewState,
+    ColumnUpload, ExportOptions, ExportScope, ExportSource, FIT_RANGES_PADDING, FitCommitToken,
+    GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart, MonotonicChartDrawItem, MonotonicChartId,
+    PipelineCounts, PipelineFailure, PipelineFailureKind, PipelinePreparation, PipelineReadiness,
+    PipelineStatus, PreparationFeature, PreparedFrame, PreparedPipelines, RasterImage,
+    ReadinessError, ReadinessStatus, RegisteredChartDrawItem, RenderRevision, Renderer,
+    RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
+    StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer, clamp_export_scale,
+    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
+    energy_level_records, fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
