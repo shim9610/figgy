@@ -6,8 +6,8 @@
 //!   drag, and keeps the config, the series and the data highlight;
 //! - the legacy document calls replace the chart atomically: a failure at
 //!   any stage leaves the config, series, columns, selection and image as
-//!   they were and names the stage, and a success alternates the column ids
-//!   and removes the previous document's columns;
+//!   they were and names the stage, and a success keeps the documented
+//!   column ids and removes the previous document's columns;
 //! - a chunked column upload (`begin_column_upload`) refuses overlapping,
 //!   gapped, oversized and mistyped chunks, incomplete and stale commits,
 //!   a commit on another chart and a budget that cannot hold it, and
@@ -248,18 +248,30 @@ async fn a_document_that_does_not_validate_changes_nothing_and_names_the_stage()
     }
     assert_unchanged(&mut chart, &before, "malformed documents").await;
 
-    // The documented and the alternate id both held by host columns.
+    // A documented id held by another kind of source: the box plot record
+    // id taken by a host column.
     let mut fresh = FiggyChart::create(canvas()).await.unwrap();
     fresh
-        .register_column_f64("radar.positions", &[0.0, 1.0])
-        .unwrap();
-    fresh
-        .register_column_f64("radar.positions#alt", &[0.0, 1.0])
+        .register_column_f64("boxplot.record.a", &[0.0, 1.0])
         .unwrap();
     let before = snapshot(&mut fresh).await;
-    let error = fresh.set_radar_document(RADAR).unwrap_err();
+    let error = fresh.set_boxplot_document(BOXPLOT).unwrap_err();
     assert_eq!(error_field(&error, "stage").as_deref(), Some("validate"));
+    assert!(
+        error_message(&error).contains("boxplot.record.a"),
+        "{}",
+        error_message(&error)
+    );
     assert_unchanged(&mut fresh, &before, "held ids").await;
+
+    // A documented id held by a host column of the same kind is replaced in
+    // place.
+    let mut host = FiggyChart::create(canvas()).await.unwrap();
+    host.register_column_f64("radar.positions", &[7.0, 8.0])
+        .unwrap();
+    host.set_radar_document(RADAR).unwrap();
+    assert_eq!(series(&host)[0].x_column, "radar.positions");
+    assert_eq!(column_ids(&host), ["radar.positions", "radar.values.a"]);
 }
 
 #[wasm_bindgen_test(async)]
@@ -270,9 +282,12 @@ async fn a_document_whose_columns_do_not_fit_the_budget_changes_nothing() {
     chart.on_press(240.0, 16.0).unwrap();
     let before = snapshot(&mut chart).await;
 
-    // The same series with two million outliers: the styles fit the margin,
-    // the outlier column (16 MB) does not.
-    let outliers = (0..2_000_000)
+    // The same series with three million outliers: the styles fit the
+    // margin, the outlier values (24 MB as `(hi, lo)` pairs) do not. The web
+    // pool starts at 16 MiB, so a 16 MB column would fit it without growth
+    // and the transaction's peak would stay near the budget; 24 MB needs a
+    // grown candidate slab on top of its staging, past the margin.
+    let outliers = (0..3_000_000)
         .map(|i| format!("{}", 100.0 + i as f64 * 1e-3))
         .collect::<Vec<_>>()
         .join(",");
@@ -333,37 +348,54 @@ async fn a_failed_fit_changes_nothing() {
 }
 
 #[wasm_bindgen_test(async)]
-async fn a_replaced_document_alternates_its_ids_and_removes_the_previous_columns() {
+async fn replaced_documents_keep_the_documented_ids_and_remove_the_stale_columns() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
     chart.register_column_f64("host", &[1.0, 2.0]).unwrap();
 
     chart.set_radar_document(RADAR).unwrap();
     assert_eq!(series(&chart)[0].x_column, "radar.positions");
+    assert_eq!(series(&chart)[0].y_column, "radar.values.a");
     assert_eq!(
         column_ids(&chart),
         ["host", "radar.positions", "radar.values.a"]
     );
 
-    // The second document uploads beside the first and replaces it.
-    chart.set_radar_document(RADAR).unwrap();
-    let second = series(&chart);
-    assert_eq!(second[0].x_column, "radar.positions#alt");
-    assert_eq!(second[0].y_column, "radar.values.a#alt");
+    // The same family again, larger: two series over four categories. The
+    // ids stay the documented ones, replaced in place.
+    let wide = r#"{
+        "categories": [
+            {"id": "speed", "label": "Speed"},
+            {"id": "range", "label": "Range"},
+            {"id": "cost", "label": "Cost"},
+            {"id": "weight", "label": "Weight"}
+        ],
+        "series": [
+            {"id": "a", "label": "A", "values": [4, 3.5, 2, 1],
+             "color": {"r": 0.25, "g": 0.56, "b": 0.82, "a": 1.0}},
+            {"id": "b", "label": "B", "values": [1, 2, 3, 4],
+             "color": {"r": 0.82, "g": 0.36, "b": 0.25, "a": 1.0}}
+        ]
+    }"#;
+    chart.set_radar_document(wide).unwrap();
+    let radar = series(&chart);
+    assert_eq!(radar.len(), 2);
+    assert_eq!(radar[0].x_column, "radar.positions");
+    assert_eq!(radar[1].y_column, "radar.values.b");
     assert_eq!(
         column_ids(&chart),
-        ["host", "radar.positions#alt", "radar.values.a#alt"]
+        [
+            "host",
+            "radar.positions",
+            "radar.values.a",
+            "radar.values.b"
+        ]
     );
 
-    // The third goes back to the documented ids.
-    chart.set_radar_document(RADAR).unwrap();
-    assert_eq!(series(&chart)[0].x_column, "radar.positions");
-    assert_eq!(
-        column_ids(&chart),
-        ["host", "radar.positions", "radar.values.a"]
-    );
-
-    // A document of another family drops the radar columns with its series.
+    // A document of another family: the radar columns go with its series.
     chart.set_categorical_document(CATEGORICAL).unwrap();
+    let categorical = series(&chart);
+    assert_eq!(categorical[0].x_column, "categorical.positions");
+    assert_eq!(categorical[1].y_column, "categorical.values.south");
     assert_eq!(
         column_ids(&chart),
         [
@@ -373,6 +405,30 @@ async fn a_replaced_document_alternates_its_ids_and_removes_the_previous_columns
             "host",
         ]
     );
+
+    // A box plot: its record and ragged outlier column take the documented
+    // ids, and the categorical columns go.
+    chart.set_boxplot_document(BOXPLOT).unwrap();
+    let boxes = series(&chart);
+    assert_eq!(boxes[0].x_column, "boxplot.positions");
+    assert_eq!(boxes[0].y_column, "boxplot.record.a");
+    assert_eq!(column_ids(&chart), ["boxplot.positions", "host"]);
+    chart.set_boxplot_document(BOXPLOT).unwrap();
+    assert_eq!(series(&chart)[0].y_column, "boxplot.record.a");
+
+    // Back to a smaller radar: the box plot's record and outliers are gone,
+    // so their ids take plain columns again.
+    chart.set_radar_document(RADAR).unwrap();
+    assert_eq!(
+        column_ids(&chart),
+        ["host", "radar.positions", "radar.values.a"]
+    );
+    chart
+        .register_column_f64("boxplot.record.a", &[1.0])
+        .expect("the record is gone");
+    chart
+        .register_column_f64("boxplot.outliers.a", &[1.0])
+        .expect("the ragged column is gone");
     chart.frame().unwrap();
     assert!(!chart.export_png(2.0).await.unwrap().to_vec().is_empty());
 }

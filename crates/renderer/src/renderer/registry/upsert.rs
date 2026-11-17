@@ -92,39 +92,72 @@ impl ColumnUpload {
     }
 }
 
+/// A prepared replacement of some columns, records and ragged columns, the
+/// removal of others and one chart's config and series
+/// ([`Renderer::begin_replace_chart_sources`], #311): nothing is published
+/// until [`Self::commit`], and dropping it leaves the renderer as it was.
+#[must_use = "dropping a ChartSourcesReplacement leaves renderer authority unchanged"]
+pub struct ChartSourcesReplacement<'a> {
+    pub(in crate::renderer) inner: data_render::column_pool::ColumnSourcesBatch<'a>,
+    pub(in crate::renderer) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
+    pub(in crate::renderer) visual_revision: &'a mut RenderRevision,
+    pub(in crate::renderer) pending_defrag: &'a mut bool,
+    pub(in crate::renderer) stream_revision_lineage: &'a mut HashMap<ColumnId, u64>,
+    /// The removed ids, whose stream lineage ends with them.
+    pub(in crate::renderer) removals: &'a [&'a str],
+    pub(in crate::renderer) chart_plan: ChartReplacementPlan,
+    pub(in crate::renderer) picker: Option<PreparedActivePickerMutation<'a>>,
+}
+
+impl ChartSourcesReplacement<'_> {
+    /// The exact pool view that will be live after [`Self::commit`].
+    pub fn pool(&self) -> &ColumnPool {
+        self.inner.pool()
+    }
+
+    /// Publish the pool, the chart, the picker and the maintenance bit
+    /// together.
+    pub fn commit(self) {
+        let Self {
+            inner,
+            chart_states,
+            visual_revision,
+            pending_defrag,
+            stream_revision_lineage,
+            removals,
+            chart_plan,
+            picker,
+        } = self;
+        inner.commit();
+        // As `remove_column` ends a removed column's lineage.
+        for id in removals {
+            stream_revision_lineage.remove(*id);
+        }
+        chart_plan.publish(chart_states, visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        // The candidate is packed: nothing is left to compact.
+        *pending_defrag = false;
+    }
+}
+
 /// Prepared renderer side of the bundled demo transaction.
 /// A prepared replacement of some columns and one chart
 /// ([`Renderer::begin_replace_chart_columns`]): nothing is published until
 /// [`Self::commit`], and dropping it leaves the renderer as it was.
 #[must_use = "dropping a ChartColumnsReplacement leaves renderer authority unchanged"]
 pub struct ChartColumnsReplacement<'a, const N: usize> {
-    pub(in crate::renderer) inner: data_render::column_pool::ColumnBatchUpsert<'a, N>,
-    pub(in crate::renderer) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
-    pub(in crate::renderer) visual_revision: &'a mut RenderRevision,
-    pub(in crate::renderer) pending_defrag: &'a mut bool,
-    pub(in crate::renderer) chart_plan: ChartReplacementPlan,
-    pub(in crate::renderer) picker: Option<PreparedActivePickerMutation<'a>>,
+    pub(in crate::renderer) inner: ChartSourcesReplacement<'a>,
+    pub(in crate::renderer) handles: [ColumnHandle; N],
 }
 
 impl<const N: usize> ChartColumnsReplacement<'_, N> {
     /// Publish the columns, the chart, the picker and the maintenance bit
     /// together; the handles are the columns' in the order they were given.
     pub fn commit(self) -> [ColumnHandle; N] {
-        let Self {
-            inner,
-            chart_states,
-            visual_revision,
-            pending_defrag,
-            chart_plan,
-            picker,
-        } = self;
-        let handles = inner.commit();
-        chart_plan.publish(chart_states, visual_revision);
-        if let Some(picker) = picker {
-            picker.commit();
-        }
-        *pending_defrag = false;
-        handles
+        self.inner.commit();
+        self.handles
     }
 }
 

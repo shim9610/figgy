@@ -360,6 +360,9 @@ pub(in crate::renderer) struct ChartReplacementPlan {
     pub(in crate::renderer) series: Vec<SeriesConfig>,
     pub(in crate::renderer) revisions: Vec<ChartReplacementRevision>,
     pub(in crate::renderer) visual: RenderRevision,
+    /// The target's element selection ends: the registration it was made
+    /// in changes.
+    pub(in crate::renderer) clear_selection: bool,
 }
 
 impl ChartReplacementPlan {
@@ -374,6 +377,9 @@ impl ChartReplacementPlan {
         if let Some(target) = chart_states.get_mut(&self.target_id) {
             target.config = self.config;
             target.series = self.series;
+            if self.clear_selection {
+                target.selected = None;
+            }
         }
         for update in self.revisions {
             if let Some(state) = chart_states.get_mut(&update.id) {

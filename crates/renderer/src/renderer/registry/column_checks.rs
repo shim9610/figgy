@@ -238,9 +238,17 @@ pub(in crate::renderer) fn prepare_chart_replacement_plan(
     series: Vec<SeriesConfig>,
     replaced: &[&str],
 ) -> Result<ChartReplacementPlan> {
-    chart_states
+    let target = chart_states
         .get(&target_id)
         .ok_or(FiggyError::UnknownChart { id: target_id })?;
+    // As `Renderer::set_chart_state` stores a config: the active layer
+    // normalized and the subplot links synced, and an element selection
+    // ended when the registration it was made in changes.
+    let mut config = config;
+    config.set_active_layer(config.active_layer);
+    config.sync_subplot_links(Some(&target.config));
+    let clear_selection =
+        registration_changed(&target.config, &config) && target.selected.is_some();
     let mut revisions = Vec::new();
     revisions
         .try_reserve(chart_order.len() + monotonic_order.len())
@@ -273,7 +281,14 @@ pub(in crate::renderer) fn prepare_chart_replacement_plan(
             ChartRevisions {
                 desired,
                 config: config_revision.successor("chart config revision")?,
-                selection: selection_config_revision(selection, &state.config, &config)?,
+                selection: {
+                    let next = selection_config_revision(selection, &state.config, &config)?;
+                    if clear_selection {
+                        next.successor("chart selection revision")?
+                    } else {
+                        next
+                    }
+                },
                 series: series_revision.successor("chart series revision")?,
                 data: if !data_series_declarations_equal(&state.series, &series)
                     || series_list_references_any_column(&state.series, replaced.iter().copied())
@@ -319,6 +334,7 @@ pub(in crate::renderer) fn prepare_chart_replacement_plan(
         series,
         revisions,
         visual,
+        clear_selection,
     })
 }
 

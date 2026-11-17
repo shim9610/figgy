@@ -13,6 +13,29 @@ pub(super) fn write_staging_pairs(
     lanes: StagedLanes,
     write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
 ) -> Result<(Option<crate::StreamBounds>, Option<f64>), AllocError> {
+    write_staging_pairs_observed(
+        staging,
+        raw_bytes,
+        lanes,
+        false,
+        &mut |_, _, _| {},
+        write_pairs,
+    )
+}
+
+/// [`write_staging_pairs`] with an observer of every written pair,
+/// `observe(row, hi, lo)`, and `index_lanes` for a column stored as `u32`
+/// index lanes ([`ColumnPairWriter::with_index_lanes`]): the batch
+/// transaction measures a record's or a ragged column's statistics through
+/// it while the staging write happens (#311).
+pub(super) fn write_staging_pairs_observed(
+    staging: &Buffer,
+    raw_bytes: u64,
+    lanes: StagedLanes,
+    index_lanes: bool,
+    observe: &mut dyn FnMut(usize, f32, f32),
+    write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
+) -> Result<(Option<crate::StreamBounds>, Option<f64>), AllocError> {
     let mut view = staging
         .slice(0..raw_bytes)
         .get_mapped_range_mut()
@@ -24,10 +47,13 @@ pub(super) fn write_staging_pairs(
     let out_of_range = std::cell::Cell::new(false);
     let second_lane = std::cell::Cell::new(false);
     let bounds = {
-        let mut observe = |index: usize, hi: f32, lo: f32| step.record(index, hi, lo);
-        let mut writer =
-            ColumnPairWriter::new_observed(view.slice(..), &out_of_range, &mut observe)
-                .with_single_lane(lanes.compact, lanes.single.then_some(&second_lane));
+        let mut both = |index: usize, hi: f32, lo: f32| {
+            step.record(index, hi, lo);
+            observe(index, hi, lo);
+        };
+        let mut writer = ColumnPairWriter::new_observed(view.slice(..), &out_of_range, &mut both)
+            .with_index_lanes(index_lanes)
+            .with_single_lane(lanes.compact, lanes.single.then_some(&second_lane));
         write_pairs(&mut writer);
         writer.bounds()
     };
@@ -741,32 +767,63 @@ impl Drop for ColumnUpsert<'_> {
     }
 }
 
-#[must_use = "dropping a ColumnBatchUpsert leaves the live pool unchanged"]
-pub(crate) struct ColumnBatchUpsert<'a, const N: usize> {
+/// A prepared batch transaction (#311, [`ColumnPool::begin_batch_upsert_sources`]):
+/// the complete candidate pool. [`Self::commit`] moves it into the live pool;
+/// dropping the guard drops the candidate and leaves the live pool as it was.
+#[must_use = "dropping a ColumnSourcesBatch leaves the live pool unchanged"]
+pub(crate) struct ColumnSourcesBatch<'a> {
     pub(super) pool: &'a mut ColumnPool,
     pub(super) candidate: ColumnPool,
-    pub(super) handles: [ColumnHandle; N],
 }
 
-impl<const N: usize> ColumnBatchUpsert<'_, N> {
+impl ColumnSourcesBatch<'_> {
+    /// The exact pool view that will be live after [`Self::commit`].
     pub(crate) fn pool(&self) -> &ColumnPool {
         &self.candidate
     }
 
-    pub(crate) fn commit(self) -> [ColumnHandle; N] {
-        let Self {
-            pool,
-            candidate,
-            handles,
-        } = self;
+    /// The candidate handles of the plain columns `ids`, in order.
+    pub(crate) fn handles<const N: usize>(
+        &self,
+        ids: &[&str; N],
+    ) -> Result<[ColumnHandle; N], AllocError> {
+        let mut missing = false;
+        let handles = std::array::from_fn(|k| match self.candidate.slots.get(ids[k]) {
+            Some(slot) => ColumnHandle {
+                generation: slot.generation,
+                offset: slot.offset,
+                byte_size: slot.byte_size,
+                len_values: slot.len_values,
+            },
+            None => {
+                missing = true;
+                ColumnHandle {
+                    generation: 0,
+                    offset: 0,
+                    byte_size: 0,
+                    len_values: 0,
+                }
+            }
+        });
+        if missing {
+            return Err(AllocError::Internal {
+                invariant: "a batch prepares one slot per column",
+            });
+        }
+        Ok(handles)
+    }
+
+    /// Publish the candidate: slab, layout, registries and counters.
+    pub(crate) fn commit(self) {
+        let Self { pool, candidate } = self;
         let ColumnPool {
             identity: _,
             primary,
-            capacity: _,
+            capacity,
             slots,
-            records: _,
-            raggeds: _,
-            triangles: _,
+            records,
+            raggeds,
+            triangles,
             free,
             generation,
             allocation_epochs,
@@ -779,15 +836,131 @@ impl<const N: usize> ColumnBatchUpsert<'_, N> {
             expand: _,
         } = candidate;
         let old_primary = std::mem::replace(&mut pool.primary, primary);
+        let old_capacity = std::mem::replace(&mut pool.capacity, capacity);
         pool.slots = slots;
+        pool.records = records;
+        pool.raggeds = raggeds;
+        pool.triangles = triangles;
         pool.free = free;
         pool.generation = generation;
         pool.allocation_epochs = allocation_epochs;
         pool.allocation_epoch_counter = allocation_epoch_counter;
         pool.layout_generation = layout_generation;
-        // The superseded backup retires in the ledger when it drops.
-        pool.backup = Some(old_primary);
-        handles
+        // The superseded slab is the backup when it has the capacity; the
+        // former backup, or a slab of another size, retires in the ledger
+        // when it drops.
+        pool.backup = (old_capacity == capacity).then_some(old_primary);
+    }
+}
+
+/// The const-length plain-column form of [`ColumnSourcesBatch`], with the
+/// columns' handles ([`ColumnPool::begin_batch_upsert`]); the pool tests'
+/// form of the bundled demo's batch.
+#[cfg(test)]
+#[must_use = "dropping a ColumnBatchUpsert leaves the live pool unchanged"]
+pub(crate) struct ColumnBatchUpsert<'a, const N: usize> {
+    pub(super) batch: ColumnSourcesBatch<'a>,
+    pub(super) handles: [ColumnHandle; N],
+}
+
+#[cfg(test)]
+impl<const N: usize> ColumnBatchUpsert<'_, N> {
+    pub(crate) fn pool(&self) -> &ColumnPool {
+        self.batch.pool()
+    }
+
+    pub(crate) fn commit(self) -> [ColumnHandle; N] {
+        self.batch.commit();
+        self.handles
+    }
+}
+
+/// What a member of a batch transaction is to its upload, with the tally
+/// its writes feed (#311).
+enum MemberRole {
+    /// A plain column.
+    Plain,
+    /// Field `slot` of a record's schema.
+    Field { slot: usize, tally: ValueTally },
+    /// A ragged column's values.
+    Values(ValueTally),
+    /// A ragged column's offsets, stored as index lanes.
+    Offsets(OffsetTally),
+}
+
+impl MemberRole {
+    fn record(&mut self, row: usize, hi: f32, lo: f32) {
+        match self {
+            Self::Plain => {}
+            Self::Field { tally, .. } | Self::Values(tally) => tally.record(hi, lo),
+            Self::Offsets(tally) => tally.record(row, hi, lo),
+        }
+    }
+}
+
+/// A member's staging and the statistics its writer measured.
+struct StagedMember {
+    staging: TrackedBuffer,
+    min: f64,
+    max: f64,
+    min_positive: Option<f64>,
+    uniform_step: Option<f64>,
+}
+
+/// One pool column a batch transaction uploads: a plain column, or a member
+/// of a record or a ragged column (#311).
+struct BatchMember<'s> {
+    id: ColumnId,
+    source: &'s dyn ColumnSource,
+    role: MemberRole,
+    len_values: usize,
+    byte_size: u64,
+    /// Compact single-lane or pairs, decided once per column (#317).
+    lanes: StagedLanes,
+    staged: Option<StagedMember>,
+}
+
+impl<'s> BatchMember<'s> {
+    fn new(
+        id: ColumnId,
+        source: &'s dyn ColumnSource,
+        role: MemberRole,
+        limits: Option<ExpandLimits>,
+        ceiling: u64,
+    ) -> Result<Self, AllocError> {
+        let len_values = source.len();
+        if len_values == 0 {
+            return Err(AllocError::EmptySource);
+        }
+        let raw_bytes = (len_values as u64)
+            .checked_mul(COLUMN_VALUE_BYTES as u64)
+            .ok_or(AllocError::ResourceLimit {
+                resource: "column staging buffer",
+                requested: u64::MAX,
+                limit: ceiling,
+            })?;
+        let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
+            resource: "column staging buffer",
+            requested: raw_bytes,
+            limit: ceiling,
+        })?;
+        if byte_size > ceiling {
+            return Err(AllocError::ResourceLimit {
+                resource: "column staging buffer",
+                requested: byte_size,
+                limit: ceiling,
+            });
+        }
+        let index = matches!(role, MemberRole::Offsets(_));
+        Ok(Self {
+            id,
+            source,
+            role,
+            len_values,
+            byte_size,
+            lanes: StagedLanes::of(limits, source.lanes(), index, len_values),
+            staged: None,
+        })
     }
 }
 
@@ -1675,177 +1848,388 @@ impl ColumnPool {
         )
     }
 
+    /// The const-length plain-column form of
+    /// [`Self::begin_batch_upsert_sources`] (the bundled demo's batch), with
+    /// the columns' handles in the order they were given.
+    #[cfg(test)]
     pub(crate) fn begin_batch_upsert<'a, const N: usize>(
         &'a mut self,
         columns: [(ColumnId, &dyn ColumnSource); N],
         ctx: GpuAllocCtx<'_>,
     ) -> Result<ColumnBatchUpsert<'a, N>, AllocError> {
+        let uploads: [(&str, BatchSource<'_>); N] =
+            std::array::from_fn(|k| (columns[k].0.as_str(), BatchSource::Column(columns[k].1)));
+        let batch = self
+            .begin_batch_upsert_sources(&uploads, &[], ctx)
+            .map_err(|error| match error {
+                crate::FiggyError::Pool(error) => error,
+                _ => AllocError::Internal {
+                    invariant: "a plain column batch fails with a pool error",
+                },
+            })?;
+        let handles = batch.handles(&uploads.map(|(id, _)| id))?;
+        Ok(ColumnBatchUpsert { batch, handles })
+    }
+
+    /// The slot ids `id` holds: itself for a plain column, the members of a
+    /// record, a ragged or a triangle index column, none otherwise. A plain
+    /// column of a member id holds none: its owner holds it.
+    fn held_slots(&self, id: &str) -> ([&str; MAX_RECORD_FIELDS], usize) {
+        let mut held = [""; MAX_RECORD_FIELDS];
+        let mut count = 0usize;
+        if let Some(record) = self.records.get(id) {
+            for member in record.fields.iter().flatten() {
+                held[count] = member;
+                count += 1;
+            }
+        } else if let Some(ragged) = self.raggeds.get(id) {
+            held[0] = &ragged.values;
+            held[1] = &ragged.offsets;
+            count = 2;
+        } else if let Some(triangles) = self.triangles.get(id) {
+            held[0] = &triangles.indices;
+            count = 1;
+        } else if self.slots.contains_key(id) && !self.is_member_column(id) {
+            held[0] = self.slots[id].id.as_str();
+            count = 1;
+        }
+        (held, count)
+    }
+
+    /// Begin one failure-atomic transaction (#311) that inserts or replaces
+    /// every upload of `uploads` under its own id — plain columns, records
+    /// and ragged columns, each replacing only what its id holds of the
+    /// same kind — and removes every id of `removals` (a plain column, a
+    /// record, a ragged or a triangle index column) together.
+    ///
+    /// The transaction builds a complete candidate pool: a new slab with the
+    /// surviving columns packed first and every upload after them, the
+    /// composite registries and fresh statistics. The live pool is not
+    /// touched until [`ColumnSourcesBatch::commit`] moves the candidate in;
+    /// dropping the guard drops the candidate. The records and ragged
+    /// columns go through the rules [`Self::upsert_record`] and
+    /// [`Self::upsert_ragged`] apply, measured while their members are
+    /// written; single-lane columns stage compact and expand on the GPU, as
+    /// every upload does (#317).
+    ///
+    /// Peak memory: the live slab and whatever the device ledger already
+    /// holds, plus every upload's staging, the compact columns' transient
+    /// buffer and the candidate slab. The candidate is the live capacity
+    /// when the survivors and the uploads fit it, and otherwise, under
+    /// [`GrowthPolicy::OnAllocFailure`], twice it or what they need; a
+    /// budget that cannot hold that peak refuses the transaction with
+    /// [`AllocError::BudgetExceeded`] before any buffer is made. Removed and
+    /// replaced columns take no room in the candidate.
+    pub(crate) fn begin_batch_upsert_sources<'a>(
+        &'a mut self,
+        uploads: &[(&str, BatchSource<'_>)],
+        removals: &[&str],
+        ctx: GpuAllocCtx<'_>,
+    ) -> crate::Result<ColumnSourcesBatch<'a>> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
-        struct StagedColumn {
-            id: ColumnId,
-            len_values: usize,
-            byte_size: u64,
-            min: f64,
-            max: f64,
-            min_positive: Option<f64>,
-            uniform_step: Option<f64>,
-            staging: TrackedBuffer,
-            /// Compact single-lane or pairs, decided once per column (#317).
-            lanes: StagedLanes,
-        }
-
-        for index in 0..columns.len() {
-            if columns[..index]
-                .iter()
-                .any(|(id, _)| id == &columns[index].0)
-            {
-                return Err(AllocError::DuplicateId(columns[index].0.clone()));
-            }
-        }
-
-        let limits = ExpandLimits::of(device);
-        let mut staged = Vec::new();
-        // Every staging buffer stays alive until the batch submits, so the
-        // charge is cumulative rather than per-buffer.
-        let mut staged_bytes = 0u64;
-        // The compact columns' share of the one transient buffer (#317).
-        let mut transient_bytes = 0u64;
-        staged
-            .try_reserve_exact(columns.len())
-            .map_err(|error| AllocError::AllocationFailed {
-                resource: "batch column staging registry",
+        fn reserve_failed(
+            resource: &'static str,
+        ) -> impl FnOnce(std::collections::TryReserveError) -> AllocError {
+            move |error| AllocError::AllocationFailed {
+                resource,
                 reason: error.to_string(),
-            })?;
-        for (id, source) in columns {
-            let len_values = source.len();
-            if len_values == 0 {
-                return Err(AllocError::EmptySource);
             }
-            let raw_bytes = (len_values as u64)
-                .checked_mul(COLUMN_VALUE_BYTES as u64)
-                .ok_or(AllocError::ResourceLimit {
-                    resource: "column staging buffer",
-                    requested: u64::MAX,
-                    limit: ceiling,
-                })?;
-            let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
-                resource: "column staging buffer",
-                requested: raw_bytes,
-                limit: ceiling,
-            })?;
-            if byte_size > ceiling {
-                return Err(AllocError::ResourceLimit {
-                    resource: "column staging buffer",
-                    requested: byte_size,
-                    limit: ceiling,
+        }
+
+        // 1) Ids: distinct across uploads and removals, each upload free or
+        //    holding its own kind, each removal held.
+        let mut seen = std::collections::HashSet::new();
+        seen.try_reserve(uploads.len().saturating_add(removals.len()))
+            .map_err(reserve_failed("batch id set"))?;
+        let mut composites = false;
+        for (id, source) in uploads {
+            if !seen.insert(*id) {
+                return Err(AllocError::DuplicateId((*id).to_owned()).into());
+            }
+            match source {
+                BatchSource::Column(_) => {
+                    if self.is_member_column(id) {
+                        return Err(AllocError::MemberColumn((*id).to_owned()).into());
+                    }
+                    if self.composite_kind(id).is_some() {
+                        return Err(AllocError::DuplicateId((*id).to_owned()).into());
+                    }
+                }
+                BatchSource::Record(_) => {
+                    self.check_composite_id(id, "record")?;
+                    self.check_composite_kind_free(id, "record")?;
+                    composites = true;
+                }
+                BatchSource::Ragged(_) => {
+                    self.check_composite_id(id, "ragged column")?;
+                    self.check_composite_kind_free(id, "ragged column")?;
+                    composites = true;
+                }
+            }
+        }
+        for id in removals {
+            if !seen.insert(*id) {
+                return Err(AllocError::DuplicateId((*id).to_owned()).into());
+            }
+            if self.held_slots(id).1 == 0 {
+                if self.is_member_column(id) {
+                    return Err(AllocError::MemberColumn((*id).to_owned()).into());
+                }
+                return Err(crate::FiggyError::UnknownColumn {
+                    id: (*id).to_owned(),
                 });
             }
+        }
+        drop(seen);
 
-            let lanes = StagedLanes::of(limits, source.lanes(), false, len_values);
+        // 2) Members: one per plain column, per present record field and two
+        //    per ragged column, sized, with the composite rules checked before
+        //    anything is made. A replacement's members take ids distinct from
+        //    the members they replace: the token is the next allocation epoch.
+        let token = if composites { self.member_token()? } else { 0 };
+        let limits = ExpandLimits::of(device);
+        let member_count = uploads.iter().fold(0usize, |count, (_, source)| {
+            count.saturating_add(match source {
+                BatchSource::Column(_) => 1,
+                BatchSource::Record(record) => record.fields.len(),
+                BatchSource::Ragged(_) => 2,
+            })
+        });
+        let mut members: Vec<BatchMember<'_>> = Vec::new();
+        members
+            .try_reserve_exact(member_count)
+            .map_err(reserve_failed("batch column staging registry"))?;
+        for (id, source) in uploads {
+            match *source {
+                BatchSource::Column(column) => {
+                    members.push(BatchMember::new(
+                        (*id).to_owned(),
+                        column,
+                        MemberRole::Plain,
+                        limits,
+                        ceiling,
+                    )?);
+                }
+                BatchSource::Record(record) => {
+                    let (by_slot, _) = check_record_source(id, &record)?;
+                    for (slot, ((name, _), field)) in record.schema.iter().zip(by_slot).enumerate()
+                    {
+                        if let Some(field) = field {
+                            members.push(BatchMember::new(
+                                member_id(id, token, name),
+                                field,
+                                MemberRole::Field {
+                                    slot,
+                                    tally: ValueTally::EMPTY,
+                                },
+                                limits,
+                                ceiling,
+                            )?);
+                        }
+                    }
+                }
+                BatchSource::Ragged(ragged) => {
+                    check_ragged_source(id, &ragged)?;
+                    members.push(BatchMember::new(
+                        member_id(id, token, "values"),
+                        ragged.values,
+                        MemberRole::Values(ValueTally::EMPTY),
+                        limits,
+                        ceiling,
+                    )?);
+                    // The offsets are indices: stored as `u32` lanes, exact
+                    // up to `u32::MAX` (SHADER_COMMON.md §5.14).
+                    members.push(BatchMember::new(
+                        member_id(id, token, "offsets"),
+                        ragged.offsets,
+                        MemberRole::Offsets(OffsetTally::new()),
+                        limits,
+                        ceiling,
+                    )?);
+                }
+            }
+        }
+
+        // 3) Survivors: every live slot that no upload replaces and no
+        //    removal frees, in their live order.
+        let mut excluded_count = 0usize;
+        for id in uploads
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(removals.iter().copied())
+        {
+            excluded_count = excluded_count.saturating_add(self.held_slots(id).1);
+        }
+        let mut excluded = std::collections::HashSet::new();
+        excluded
+            .try_reserve(excluded_count)
+            .map_err(reserve_failed("batch replaced column set"))?;
+        for id in uploads
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(removals.iter().copied())
+        {
+            let (held, count) = self.held_slots(id);
+            excluded.extend(held.into_iter().take(count));
+        }
+        let survivor_count = self.slots.len().saturating_sub(excluded.len());
+        let mut survivor_ids = Vec::new();
+        survivor_ids
+            .try_reserve_exact(survivor_count)
+            .map_err(reserve_failed("batch survivor order"))?;
+        survivor_ids.extend(
+            self.slots
+                .values()
+                .filter(|slot| !excluded.contains(slot.id.as_str()))
+                .map(|slot| slot.id.clone()),
+        );
+        drop(excluded);
+        survivor_ids.sort_by_key(|id| self.slots[id].offset);
+
+        // 4) Counters, before anything is made.
+        let next_generation = self.checked_generation_successor()?;
+        let next_layout_generation = self.checked_layout_successor()?;
+        let first_epoch = self.allocation_epoch_counter;
+        let last_epoch = u64::try_from(members.len())
+            .ok()
+            .and_then(|count| first_epoch.checked_add(count))
+            .ok_or(AllocError::CounterExhausted {
+                counter: "allocation epoch",
+            })?;
+
+        // 5) The candidate's capacity: the live one when everything fits,
+        //    else grown as the growth policy allows.
+        let overflow = AllocError::ResourceLimit {
+            resource: "batch column pool candidate",
+            requested: u64::MAX,
+            limit: ceiling,
+        };
+        let survivor_bytes = survivor_ids.iter().try_fold(0u64, |sum, id| {
+            sum.checked_add(self.slots[id].byte_size)
+                .ok_or(overflow.clone())
+        })?;
+        let new_bytes = members.iter().try_fold(0u64, |sum, member| {
+            sum.checked_add(member.byte_size).ok_or(overflow.clone())
+        })?;
+        let required = survivor_bytes
+            .checked_add(new_bytes)
+            .ok_or(overflow.clone())?;
+        let capacity = if required <= self.capacity {
+            self.capacity
+        } else if self.growth_policy == GrowthPolicy::OnAllocFailure {
+            // As `grow_for_pending_upload`: double, or what is needed.
+            let requested = self
+                .capacity
+                .saturating_mul(2)
+                .max(required)
+                .min(ceiling)
+                .max(required);
+            let target = try_align_up(requested, ALIGN).ok_or(overflow.clone())?;
+            if target > ceiling {
+                return Err(AllocError::ResourceLimit {
+                    resource: "batch column pool candidate",
+                    requested: target,
+                    limit: ceiling,
+                }
+                .into());
+            }
+            target
+        } else {
+            return Err(out_of_space(new_bytes, &self.free).into());
+        };
+
+        // 6) The budget: the staging, the transient buffer and the candidate
+        //    slab come on top of everything the ledger holds.
+        let staging_bytes = members.iter().fold(0u64, |sum, member| {
+            sum.saturating_add(member.lanes.staged_bytes(member.byte_size))
+        });
+        let transient_bytes = members.iter().fold(0u64, |sum, member| {
+            sum.saturating_add(member.lanes.transient_bytes(member.byte_size))
+        });
+        if let Some(limit) = ctx.ledger.budget() {
+            let peak = ctx
+                .ledger
+                .total_bytes()
+                .saturating_add(staging_bytes)
+                .saturating_add(transient_bytes)
+                .saturating_add(capacity);
+            if peak > limit {
+                return Err(AllocError::BudgetExceeded {
+                    resource: "batch column transition",
+                    requested: peak,
+                    limit,
+                }
+                .into());
+            }
+        }
+
+        // 7) Staging: each member written once into its own mapped buffer,
+        //    its statistics and its composite tallies measured on the way.
+        for member in &mut members {
             let staging = create_buffer_checked(
                 device,
                 ctx.ledger,
                 &BufferDescriptor {
                     label: Some("figgy batch column staging"),
-                    size: lanes.staged_bytes(byte_size),
+                    size: member.lanes.staged_bytes(member.byte_size),
                     usage: BufferUsages::COPY_SRC,
                     mapped_at_creation: true,
                 },
                 "batch column staging buffer",
             )?;
-            staged_bytes = staged_bytes.saturating_add(lanes.staged_bytes(byte_size));
-            transient_bytes = transient_bytes.saturating_add(lanes.transient_bytes(byte_size));
-            let (bounds, uniform_step) =
-                write_staging_pairs(&staging, lanes.raw_bytes(len_values), lanes, |dst| {
-                    source.write_pairs(dst)
-                })?;
+            let index_lanes = matches!(member.role, MemberRole::Offsets(_));
+            let role = &mut member.role;
+            let source = member.source;
+            let (bounds, uniform_step) = write_staging_pairs_observed(
+                &staging,
+                member.lanes.raw_bytes(member.len_values),
+                member.lanes,
+                index_lanes,
+                &mut |row, hi, lo| role.record(row, hi, lo),
+                |dst| source.write_pairs(dst),
+            )?;
             let (min, max, min_positive) = slot_statistics(bounds);
-            staged.push(StagedColumn {
-                id,
-                len_values,
-                byte_size,
+            member.staged = Some(StagedMember {
+                staging,
                 min,
                 max,
                 min_positive,
                 uniform_step,
-                staging,
-                lanes,
             });
         }
-
-        let next_generation = self.checked_generation_successor()?;
-        let next_layout_generation = self.checked_layout_successor()?;
-        let mut next_allocation_epoch = self.allocation_epoch_counter;
-        let mut replacement_epochs = Vec::new();
-        replacement_epochs
-            .try_reserve_exact(staged.len())
-            .map_err(|error| AllocError::AllocationFailed {
-                resource: "batch allocation epochs",
-                reason: error.to_string(),
-            })?;
-        for _ in &staged {
-            next_allocation_epoch =
-                next_allocation_epoch
-                    .checked_add(1)
-                    .ok_or(AllocError::CounterExhausted {
-                        counter: "allocation epoch",
-                    })?;
-            replacement_epochs.push(next_allocation_epoch);
+        // The offsets rules, measured while the offsets were written.
+        let mut cursor = 0usize;
+        for (id, source) in uploads {
+            cursor += match source {
+                BatchSource::Column(_) => 1,
+                BatchSource::Record(record) => record.fields.len(),
+                BatchSource::Ragged(ragged) => {
+                    let shape = check_ragged_source(id, ragged)?;
+                    let MemberRole::Offsets(offsets) = &members[cursor + 1].role else {
+                        return Err(crate::FiggyError::internal(
+                            "a ragged upload stages its offsets second",
+                        ));
+                    };
+                    offsets.check(id, &shape)?;
+                    2
+                }
+            };
         }
 
-        let is_replaced = |id: &str| staged.iter().any(|column| column.id == id);
-        let survivor_count = self.slots.len().saturating_sub(
-            staged
-                .iter()
-                .filter(|column| self.slots.contains_key(&column.id))
-                .count(),
-        );
-        let final_count =
-            survivor_count
-                .checked_add(staged.len())
-                .ok_or(AllocError::AllocationFailed {
-                    resource: "batch column registry",
-                    reason: "column count overflow".into(),
-                })?;
-        let mut survivor_ids = Vec::new();
-        survivor_ids
-            .try_reserve_exact(survivor_count)
-            .map_err(|error| AllocError::AllocationFailed {
-                resource: "batch survivor order",
-                reason: error.to_string(),
-            })?;
-        survivor_ids.extend(
-            self.slots
-                .values()
-                .filter(|slot| !is_replaced(&slot.id))
-                .map(|slot| slot.id.clone()),
-        );
-        survivor_ids.sort_by_key(|id| self.slots[id].offset);
-
+        // 8) The candidate layout: survivors packed, then every member.
+        let final_count = survivor_ids.len().saturating_add(members.len());
         let mut planned_slots = HashMap::new();
         planned_slots
             .try_reserve(final_count)
-            .map_err(|error| AllocError::AllocationFailed {
-                resource: "batch column registry",
-                reason: error.to_string(),
-            })?;
+            .map_err(reserve_failed("batch column registry"))?;
         let mut planned_allocation_epochs = HashMap::new();
         planned_allocation_epochs
             .try_reserve(final_count)
-            .map_err(|error| AllocError::AllocationFailed {
-                resource: "batch allocation epoch registry",
-                reason: error.to_string(),
-            })?;
+            .map_err(reserve_failed("batch allocation epoch registry"))?;
         let mut next_offset = 0u64;
         for id in &survivor_ids {
             let old = &self.slots[id];
-            let end = next_offset
-                .checked_add(old.byte_size)
-                .ok_or_else(|| out_of_space(old.byte_size, &self.free))?;
-            if end > self.capacity {
-                return Err(out_of_space(old.byte_size, &self.free));
-            }
             let mut slot = old.clone();
             slot.offset = next_offset;
             slot.generation = next_generation;
@@ -1856,72 +2240,135 @@ impl ColumnPool {
                 })?,
             );
             planned_slots.insert(id.clone(), slot);
-            next_offset = end;
+            next_offset += old.byte_size;
         }
-
-        let mut handles = Vec::new();
-        handles
-            .try_reserve_exact(staged.len())
-            .map_err(|error| AllocError::AllocationFailed {
-                resource: "batch column handles",
-                reason: error.to_string(),
+        let mut epoch = first_epoch;
+        for member in &members {
+            let staged = member.staged.as_ref().ok_or(AllocError::Internal {
+                invariant: "every batch member was staged",
             })?;
-        for (column, allocation_epoch) in staged.iter().zip(replacement_epochs) {
-            let end = next_offset.checked_add(column.byte_size).ok_or_else(|| {
-                out_of_space(
-                    column.byte_size,
-                    &[FreeRegion {
-                        offset: next_offset,
-                        size: self.capacity.saturating_sub(next_offset),
-                    }],
-                )
-            })?;
-            if end > self.capacity {
-                return Err(out_of_space(
-                    column.byte_size,
-                    &[FreeRegion {
-                        offset: next_offset,
-                        size: self.capacity.saturating_sub(next_offset),
-                    }],
-                ));
-            }
-            let slot = ColumnSlot {
-                id: column.id.clone(),
-                offset: next_offset,
-                byte_size: column.byte_size,
-                len_values: column.len_values,
-                generation: next_generation,
-                min: column.min,
-                max: column.max,
-                min_positive: column.min_positive,
-                uniform_step: column.uniform_step,
-            };
-            handles.push(ColumnHandle {
-                generation: slot.generation,
-                offset: slot.offset,
-                byte_size: slot.byte_size,
-                len_values: slot.len_values,
-            });
-            planned_allocation_epochs.insert(column.id.clone(), allocation_epoch);
-            planned_slots.insert(column.id.clone(), slot);
-            next_offset = end;
+            epoch += 1;
+            planned_allocation_epochs.insert(member.id.clone(), epoch);
+            planned_slots.insert(
+                member.id.clone(),
+                ColumnSlot {
+                    id: member.id.clone(),
+                    offset: next_offset,
+                    byte_size: member.byte_size,
+                    len_values: member.len_values,
+                    generation: next_generation,
+                    min: staged.min,
+                    max: staged.max,
+                    min_positive: staged.min_positive,
+                    uniform_step: staged.uniform_step,
+                },
+            );
+            next_offset += member.byte_size;
         }
         let mut planned_free = Vec::new();
-        if next_offset < self.capacity {
+        if next_offset < capacity {
             planned_free
                 .try_reserve_exact(1)
-                .map_err(|error| AllocError::AllocationFailed {
-                    resource: "batch free list",
-                    reason: error.to_string(),
-                })?;
+                .map_err(reserve_failed("batch free list"))?;
             planned_free.push(FreeRegion {
                 offset: next_offset,
-                size: self.capacity - next_offset,
+                size: capacity - next_offset,
             });
         }
 
-        // The compact columns' pipeline and transient buffer (#317), while
-        // the batch can still fail.
+        // 9) The candidate registries: the live ones, less the removals, with
+        //    every uploaded record and ragged column in its final form.
+        let mut records = HashMap::new();
+        records
+            .try_reserve(self.records.len().saturating_add(uploads.len()))
+            .map_err(reserve_failed("batch record registry"))?;
+        records.extend(
+            self.records
+                .iter()
+                .map(|(id, slot)| (id.clone(), slot.clone())),
+        );
+        let mut raggeds = HashMap::new();
+        raggeds
+            .try_reserve(self.raggeds.len().saturating_add(uploads.len()))
+            .map_err(reserve_failed("batch ragged column registry"))?;
+        raggeds.extend(
+            self.raggeds
+                .iter()
+                .map(|(id, slot)| (id.clone(), slot.clone())),
+        );
+        let mut triangles = HashMap::new();
+        triangles
+            .try_reserve(self.triangles.len())
+            .map_err(reserve_failed("batch triangle registry"))?;
+        triangles.extend(
+            self.triangles
+                .iter()
+                .map(|(id, slot)| (id.clone(), slot.clone())),
+        );
+        for id in removals {
+            records.remove(*id);
+            raggeds.remove(*id);
+            triangles.remove(*id);
+        }
+        let mut cursor = 0usize;
+        for (id, source) in uploads {
+            // The members of an upload are contiguous, and the first one's
+            // epoch is the composite's.
+            let epoch = first_epoch + 1 + cursor as u64;
+            match source {
+                BatchSource::Column(_) => cursor += 1,
+                BatchSource::Record(record) => {
+                    let group = &members[cursor..cursor + record.fields.len()];
+                    let mut fields: [Option<ColumnId>; MAX_RECORD_FIELDS] = Default::default();
+                    let mut tallies = [(0usize, ValueTally::EMPTY); MAX_RECORD_FIELDS];
+                    for (member, tally) in group.iter().zip(&mut tallies) {
+                        if let MemberRole::Field { slot, tally: field } = member.role {
+                            fields[slot] = Some(member.id.clone());
+                            *tally = (slot, field);
+                        }
+                    }
+                    let rows = u32::try_from(group[0].len_values).map_err(|_| {
+                        crate::FiggyError::internal("a checked record has u32 rows")
+                    })?;
+                    records.insert(
+                        (*id).to_owned(),
+                        RecordSlot {
+                            schema: record.schema,
+                            fields,
+                            len: rows,
+                            epoch,
+                            stats: record_stats(rows, tallies.into_iter().take(group.len())),
+                        },
+                    );
+                    cursor += group.len();
+                }
+                BatchSource::Ragged(ragged) => {
+                    let shape = check_ragged_source(id, ragged)?;
+                    let (MemberRole::Values(values), MemberRole::Offsets(offsets)) =
+                        (&members[cursor].role, &members[cursor + 1].role)
+                    else {
+                        return Err(crate::FiggyError::internal(
+                            "a ragged upload stages its values, then its offsets",
+                        ));
+                    };
+                    raggeds.insert(
+                        (*id).to_owned(),
+                        RaggedSlot {
+                            values: members[cursor].id.clone(),
+                            offsets: members[cursor + 1].id.clone(),
+                            groups: shape.groups,
+                            total: shape.total32,
+                            epoch,
+                            stats: offsets.ragged_stats(&shape, values),
+                        },
+                    );
+                    cursor += 2;
+                }
+            }
+        }
+
+        // 10) The compact columns' pipeline and transient buffer (#317), and
+        //     the candidate slab, while the batch can still fail.
         let expansion = if transient_bytes > 0 {
             let limits = limits.ok_or(AllocError::Internal {
                 invariant: "a compact column was staged on a device that expands",
@@ -1939,7 +2386,7 @@ impl ColumnPool {
             ctx.ledger,
             &BufferDescriptor {
                 label: Some("figgy batch column pool candidate"),
-                size: self.capacity,
+                size: capacity,
                 usage: BufferUsages::VERTEX
                     | BufferUsages::STORAGE
                     | BufferUsages::COPY_DST
@@ -1948,6 +2395,8 @@ impl ColumnPool {
             },
             "batch column pool candidate",
         )?;
+
+        // ── Nothing below can fail. ───────────────────────────────────────
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy batch column batch"),
         });
@@ -1965,21 +2414,24 @@ impl ColumnPool {
         // Pair columns copy into the candidate; compact ones into their
         // transient slots, expanded below in the batch's order.
         let mut transient_offset = 0u64;
-        for column in &staged {
-            let slot = &planned_slots[&column.id];
+        for (member, staged) in members
+            .iter()
+            .filter_map(|member| member.staged.as_ref().map(|staged| (member, staged)))
+        {
+            let slot = &planned_slots[&member.id];
             match expansion.as_ref() {
-                Some(prepared) if column.lanes.compact => {
+                Some(prepared) if member.lanes.compact => {
                     encoder.copy_buffer_to_buffer(
-                        &column.staging,
+                        &staged.staging,
                         0,
                         &prepared.transient,
                         transient_offset,
-                        column.lanes.staged_bytes(slot.byte_size),
+                        member.lanes.staged_bytes(slot.byte_size),
                     );
-                    transient_offset += column.lanes.transient_bytes(slot.byte_size);
+                    transient_offset += member.lanes.transient_bytes(slot.byte_size);
                 }
                 _ => encoder.copy_buffer_to_buffer(
-                    &column.staging,
+                    &staged.staging,
                     0,
                     &primary,
                     slot.offset,
@@ -1993,8 +2445,8 @@ impl ColumnPool {
                 timestamp_writes: None,
             });
             let mut transient_offset = 0u64;
-            for column in staged.iter().filter(|column| column.lanes.compact) {
-                let slot = &planned_slots[&column.id];
+            for member in members.iter().filter(|member| member.lanes.compact) {
+                let slot = &planned_slots[&member.id];
                 prepared.expand.dispatch(
                     device,
                     &mut pass,
@@ -2005,26 +2457,23 @@ impl ColumnPool {
                     slot.offset,
                     slot.byte_size,
                 );
-                transient_offset += column.lanes.transient_bytes(slot.byte_size);
+                transient_offset += member.lanes.transient_bytes(slot.byte_size);
             }
         }
         queue.submit(std::iter::once(encoder.finish()));
 
-        let handles: [ColumnHandle; N] = handles.try_into().map_err(|_| AllocError::Internal {
-            invariant: "a batch prepares one handle per column",
-        })?;
         let candidate = ColumnPool {
             identity: self.identity.clone(),
             primary,
-            capacity: self.capacity,
+            capacity,
             slots: planned_slots,
-            records: HashMap::new(),
-            raggeds: HashMap::new(),
-            triangles: HashMap::new(),
+            records,
+            raggeds,
+            triangles,
             free: planned_free,
             generation: next_generation,
             allocation_epochs: planned_allocation_epochs,
-            allocation_epoch_counter: next_allocation_epoch,
+            allocation_epoch_counter: last_epoch,
             layout_generation: next_layout_generation,
             backup: None,
             defrag_policy: self.defrag_policy,
@@ -2034,10 +2483,11 @@ impl ColumnPool {
         };
         // The candidate carries the new tracked slab and layout across to
         // `commit`; dropping it uncommitted retires the slab in the ledger.
-        Ok(ColumnBatchUpsert {
+        // The staging buffers drop on return; the submitted copies keep them
+        // device-resident until queue completion.
+        Ok(ColumnSourcesBatch {
             pool: self,
             candidate,
-            handles,
         })
     }
 
@@ -2821,6 +3271,244 @@ fn finish_member_batch<T>(
     Ok(value)
 }
 
+/// The record rules (#311, shared by [`ColumnPool::upsert_record`] and the
+/// batch transaction): the fields by schema slot and the row count, or the
+/// rule `source` breaks.
+fn check_record_source<'s>(
+    id: &str,
+    source: &RecordSource<'s>,
+) -> crate::Result<([Option<&'s dyn ColumnSource>; MAX_RECORD_FIELDS], u32)> {
+    let schema = source.schema;
+    if schema.len() > MAX_RECORD_FIELDS {
+        return Err(composite_error(
+            &id,
+            crate::RuleKind::RecordSchemaFields {
+                fields: schema.len() as u64,
+                max: MAX_RECORD_FIELDS as u64,
+            },
+        ));
+    }
+    if source.fields.len() > MAX_RECORD_FIELDS {
+        return Err(composite_error(
+            &id,
+            crate::RuleKind::RecordSourceFields {
+                fields: source.fields.len() as u64,
+                max: MAX_RECORD_FIELDS as u64,
+            },
+        ));
+    }
+
+    // Fields by schema slot.
+    let mut by_slot: [Option<&dyn ColumnSource>; MAX_RECORD_FIELDS] = [None; MAX_RECORD_FIELDS];
+    for (name, field) in source.fields {
+        let Some(slot) = schema.iter().position(|(known, _)| known == name) else {
+            return Err(composite_error(
+                &id,
+                crate::RuleKind::RecordUnknownField {
+                    name: name.to_string(),
+                },
+            ));
+        };
+        if by_slot[slot].is_some() {
+            return Err(composite_error(
+                &id,
+                crate::RuleKind::RecordFieldTwice {
+                    name: name.to_string(),
+                },
+            ));
+        }
+        by_slot[slot] = Some(*field);
+    }
+    let mut len: Option<(usize, &str)> = None;
+    for (slot, (name, required)) in schema.iter().enumerate() {
+        let Some(field) = by_slot[slot] else {
+            if *required {
+                return Err(composite_error(
+                    &id,
+                    crate::RuleKind::RecordFieldMissing {
+                        name: name.to_string(),
+                    },
+                ));
+            }
+            continue;
+        };
+        match len {
+            None => len = Some((field.len(), *name)),
+            Some((rows, first)) if rows != field.len() => {
+                return Err(composite_error(
+                    &id,
+                    crate::RuleKind::RecordFieldLength {
+                        name: name.to_string(),
+                        len: field.len() as u64,
+                        first: first.to_string(),
+                        rows: rows as u64,
+                    },
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    let Some((len, _)) = len else {
+        return Err(composite_error(&id, crate::RuleKind::RecordWithoutFields));
+    };
+    if len == 0 {
+        return Err(composite_error(&id, crate::RuleKind::RecordWithoutRows));
+    }
+    let rows = u32::try_from(len).map_err(|_| {
+        composite_error(
+            &id,
+            crate::RuleKind::RecordRowsOverflow {
+                max: u64::from(u32::MAX),
+            },
+        )
+    })?;
+
+    Ok((by_slot, rows))
+}
+
+/// The shape of a ragged source (#311): what its checks before the upload
+/// established.
+#[derive(Clone, Copy)]
+struct RaggedShape {
+    total: usize,
+    total32: u32,
+    offsets_len: usize,
+    groups: u32,
+}
+
+/// The ragged rules checked before the upload (#311, shared by
+/// [`ColumnPool::upsert_ragged`] and the batch transaction).
+fn check_ragged_source(id: &str, source: &RaggedSource<'_>) -> crate::Result<RaggedShape> {
+    let total = source.values.len();
+    if total == 0 {
+        return Err(composite_error(&id, crate::RuleKind::RaggedEmpty));
+    }
+    // Offsets index the values as `u32`: the GPU's index space, as a
+    // column's lane base.
+    let total32 = u32::try_from(total).map_err(|_| {
+        composite_error(
+            &id,
+            crate::RuleKind::RaggedValuesOverflow {
+                max: u64::from(u32::MAX),
+                total: total as u64,
+            },
+        )
+    })?;
+    let offsets_len = source.offsets.len();
+    if offsets_len < 2 {
+        return Err(composite_error(
+            &id,
+            crate::RuleKind::RaggedOffsetCount {
+                offsets: offsets_len as u64,
+            },
+        ));
+    }
+    let groups = u32::try_from(offsets_len - 1).map_err(|_| {
+        composite_error(
+            &id,
+            crate::RuleKind::RaggedGroupsOverflow {
+                max: u64::from(u32::MAX),
+            },
+        )
+    })?;
+    Ok(RaggedShape {
+        total,
+        total32,
+        offsets_len,
+        groups,
+    })
+}
+
+impl OffsetTally {
+    fn new() -> Self {
+        Self {
+            next_row: 0,
+            in_order: true,
+            integral: true,
+            non_decreasing: true,
+            first: f64::NAN,
+            previous: f64::NAN,
+            max_group: 0.0,
+        }
+    }
+
+    /// The offsets rules measured while the offsets were written (#311,
+    /// shared by [`ColumnPool::upsert_ragged`] and the batch transaction).
+    fn check(&self, id: &str, shape: &RaggedShape) -> crate::Result<()> {
+        if !self.in_order || self.next_row != shape.offsets_len {
+            return Err(composite_error(id, crate::RuleKind::RaggedOffsetsOrder));
+        }
+        if !self.integral {
+            return Err(composite_error(id, crate::RuleKind::RaggedOffsetsInteger));
+        }
+        if self.first != 0.0 {
+            return Err(composite_error(
+                id,
+                crate::RuleKind::RaggedOffsetsStart {
+                    first: self.first.to_string(),
+                },
+            ));
+        }
+        if !self.non_decreasing {
+            return Err(composite_error(
+                id,
+                crate::RuleKind::RaggedOffsetsDecreasing,
+            ));
+        }
+        if self.previous != shape.total as f64 {
+            return Err(composite_error(
+                id,
+                crate::RuleKind::RaggedLastOffset {
+                    last: self.previous.to_string(),
+                    total: shape.total as u64,
+                },
+            ));
+        }
+        Ok(())
+    }
+
+    /// The [`RaggedStats`] of a ragged column whose values measured `values`.
+    fn ragged_stats(&self, shape: &RaggedShape, values: &ValueTally) -> RaggedStats {
+        RaggedStats {
+            groups: shape.groups,
+            total: shape.total32,
+            min: values.min,
+            max: values.max,
+            finite: values.finite,
+            nan: values.nan,
+            non_decreasing: self.non_decreasing,
+            max_group: self.max_group as u32,
+        }
+    }
+}
+
+/// The [`RecordStats`] of a record of `rows` rows whose present fields
+/// measured `fields`, each with its schema slot (#311, shared by
+/// [`ColumnPool::upsert_record`] and the batch transaction).
+fn record_stats(rows: u32, fields: impl Iterator<Item = (usize, ValueTally)>) -> RecordStats {
+    let mut stats = RecordStats {
+        len: rows,
+        present: [false; MAX_RECORD_FIELDS],
+        min: [f64::INFINITY; MAX_RECORD_FIELDS],
+        max: [f64::NEG_INFINITY; MAX_RECORD_FIELDS],
+        finite: [0; MAX_RECORD_FIELDS],
+        nan: [0; MAX_RECORD_FIELDS],
+    };
+    for (slot, tally) in fields {
+        stats.present[slot] = true;
+        stats.min[slot] = tally.min;
+        stats.max[slot] = tally.max;
+        stats.finite[slot] = tally.finite;
+        stats.nan[slot] = tally.nan;
+    }
+    stats
+}
+
+/// The id of member `name` of composite `id`, uploaded with `token` (#311).
+fn member_id(id: &str, token: u64, name: &str) -> ColumnId {
+    format!("{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}{name}")
+}
+
 impl ColumnPool {
     /// The record `id`, when one is resident.
     pub fn record(&self, id: &str) -> Option<RecordRef<'_>> {
@@ -2993,99 +3681,14 @@ impl ColumnPool {
         self.check_composite_id(&id, "record")?;
         self.check_composite_kind_free(&id, "record")?;
         let schema = source.schema;
-        if schema.len() > MAX_RECORD_FIELDS {
-            return Err(composite_error(
-                &id,
-                crate::RuleKind::RecordSchemaFields {
-                    fields: schema.len() as u64,
-                    max: MAX_RECORD_FIELDS as u64,
-                },
-            ));
-        }
-        if source.fields.len() > MAX_RECORD_FIELDS {
-            return Err(composite_error(
-                &id,
-                crate::RuleKind::RecordSourceFields {
-                    fields: source.fields.len() as u64,
-                    max: MAX_RECORD_FIELDS as u64,
-                },
-            ));
-        }
-
-        // Fields by schema slot.
-        let mut by_slot: [Option<&dyn ColumnSource>; MAX_RECORD_FIELDS] = [None; MAX_RECORD_FIELDS];
-        for (name, field) in source.fields {
-            let Some(slot) = schema.iter().position(|(known, _)| known == name) else {
-                return Err(composite_error(
-                    &id,
-                    crate::RuleKind::RecordUnknownField {
-                        name: name.to_string(),
-                    },
-                ));
-            };
-            if by_slot[slot].is_some() {
-                return Err(composite_error(
-                    &id,
-                    crate::RuleKind::RecordFieldTwice {
-                        name: name.to_string(),
-                    },
-                ));
-            }
-            by_slot[slot] = Some(*field);
-        }
-        let mut len: Option<(usize, &str)> = None;
-        for (slot, (name, required)) in schema.iter().enumerate() {
-            let Some(field) = by_slot[slot] else {
-                if *required {
-                    return Err(composite_error(
-                        &id,
-                        crate::RuleKind::RecordFieldMissing {
-                            name: name.to_string(),
-                        },
-                    ));
-                }
-                continue;
-            };
-            match len {
-                None => len = Some((field.len(), *name)),
-                Some((rows, first)) if rows != field.len() => {
-                    return Err(composite_error(
-                        &id,
-                        crate::RuleKind::RecordFieldLength {
-                            name: name.to_string(),
-                            len: field.len() as u64,
-                            first: first.to_string(),
-                            rows: rows as u64,
-                        },
-                    ));
-                }
-                Some(_) => {}
-            }
-        }
-        let Some((len, _)) = len else {
-            return Err(composite_error(&id, crate::RuleKind::RecordWithoutFields));
-        };
-        if len == 0 {
-            return Err(composite_error(&id, crate::RuleKind::RecordWithoutRows));
-        }
-        let rows = u32::try_from(len).map_err(|_| {
-            composite_error(
-                &id,
-                crate::RuleKind::RecordRowsOverflow {
-                    max: u64::from(u32::MAX),
-                },
-            )
-        })?;
-
+        let (by_slot, rows) = check_record_source(&id, source)?;
         // Member ids in schema order; `order[i]` is the schema slot of batch
         // column `i`.
         let token = self.member_token()?;
         let mut members: [Option<ColumnId>; MAX_RECORD_FIELDS] = Default::default();
         for (slot, (name, _)) in schema.iter().enumerate() {
             if by_slot[slot].is_some() {
-                members[slot] = Some(format!(
-                    "{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}{name}"
-                ));
+                members[slot] = Some(member_id(&id, token, name));
             }
         }
         // The batch columns are exactly the slots that have both a member id
@@ -3140,21 +3743,14 @@ impl ColumnPool {
             prepare(pool, relocated)
         })?;
 
-        let mut stats = RecordStats {
-            len: rows,
-            present: [false; MAX_RECORD_FIELDS],
-            min: [f64::INFINITY; MAX_RECORD_FIELDS],
-            max: [f64::NEG_INFINITY; MAX_RECORD_FIELDS],
-            finite: [0; MAX_RECORD_FIELDS],
-            nan: [0; MAX_RECORD_FIELDS],
-        };
-        for (tally, slot) in tallies.iter().zip(&order).take(count) {
-            stats.present[*slot] = true;
-            stats.min[*slot] = tally.min;
-            stats.max[*slot] = tally.max;
-            stats.finite[*slot] = tally.finite;
-            stats.nan[*slot] = tally.nan;
-        }
+        let stats = record_stats(
+            rows,
+            order
+                .iter()
+                .copied()
+                .zip(tallies.iter().copied())
+                .take(count),
+        );
         self.records.insert(
             id,
             RecordSlot {
@@ -3199,42 +3795,11 @@ impl ColumnPool {
     ) -> crate::Result<T> {
         self.check_composite_id(&id, "ragged column")?;
         self.check_composite_kind_free(&id, "ragged column")?;
-        let total = source.values.len();
-        if total == 0 {
-            return Err(composite_error(&id, crate::RuleKind::RaggedEmpty));
-        }
-        // Offsets index the values as `u32`: the GPU's index space, as a
-        // column's lane base.
-        let total32 = u32::try_from(total).map_err(|_| {
-            composite_error(
-                &id,
-                crate::RuleKind::RaggedValuesOverflow {
-                    max: u64::from(u32::MAX),
-                    total: total as u64,
-                },
-            )
-        })?;
-        let offsets_len = source.offsets.len();
-        if offsets_len < 2 {
-            return Err(composite_error(
-                &id,
-                crate::RuleKind::RaggedOffsetCount {
-                    offsets: offsets_len as u64,
-                },
-            ));
-        }
-        let groups = u32::try_from(offsets_len - 1).map_err(|_| {
-            composite_error(
-                &id,
-                crate::RuleKind::RaggedGroupsOverflow {
-                    max: u64::from(u32::MAX),
-                },
-            )
-        })?;
+        let shape = check_ragged_source(&id, source)?;
 
         let token = self.member_token()?;
-        let values_id = format!("{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}values");
-        let offsets_id = format!("{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}offsets");
+        let values_id = member_id(&id, token, "values");
+        let offsets_id = member_id(&id, token, "offsets");
         let columns: [(&str, &dyn ColumnSource); 2] = [
             (values_id.as_str(), source.values),
             (offsets_id.as_str(), source.offsets),
@@ -3256,15 +3821,7 @@ impl ColumnPool {
             })?;
         let layout_before = self.layout_generation;
         let mut values = ValueTally::EMPTY;
-        let mut offsets = OffsetTally {
-            next_row: 0,
-            in_order: true,
-            integral: true,
-            non_decreasing: true,
-            first: f64::NAN,
-            previous: f64::NAN,
-            max_group: 0.0,
-        };
+        let mut offsets = OffsetTally::new();
         let mut observe = |column: usize, row: usize, hi: f32, lo: f32| {
             if column == 0 {
                 values.record(hi, lo);
@@ -3276,37 +3833,9 @@ impl ColumnPool {
         // The offsets (column 1) are indices: stored as `u32` lanes, exact up
         // to `u32::MAX` (SHADER_COMMON.md §5.14).
         let batch = self.begin_add_columns_observed(&columns, ctx, Some(observer), Some(1))?;
-        // Rejections below drop `batch`, which un-inserts both members; their
+        // A rejection drops `batch`, which un-inserts both members; their
         // bytes went to regions that were free, so nothing live changed.
-        if !offsets.in_order || offsets.next_row != offsets_len {
-            return Err(composite_error(&id, crate::RuleKind::RaggedOffsetsOrder));
-        }
-        if !offsets.integral {
-            return Err(composite_error(&id, crate::RuleKind::RaggedOffsetsInteger));
-        }
-        if offsets.first != 0.0 {
-            return Err(composite_error(
-                &id,
-                crate::RuleKind::RaggedOffsetsStart {
-                    first: offsets.first.to_string(),
-                },
-            ));
-        }
-        if !offsets.non_decreasing {
-            return Err(composite_error(
-                &id,
-                crate::RuleKind::RaggedOffsetsDecreasing,
-            ));
-        }
-        if offsets.previous != total as f64 {
-            return Err(composite_error(
-                &id,
-                crate::RuleKind::RaggedLastOffset {
-                    last: offsets.previous.to_string(),
-                    total: total as u64,
-                },
-            ));
-        }
+        offsets.check(&id, &shape)?;
         let relocated = batch.pool.layout_generation != layout_before;
         let epoch = batch
             .pool
@@ -3318,23 +3847,14 @@ impl ColumnPool {
             prepare(pool, relocated)
         })?;
 
-        let stats = RaggedStats {
-            groups,
-            total: total32,
-            min: values.min,
-            max: values.max,
-            finite: values.finite,
-            nan: values.nan,
-            non_decreasing: offsets.non_decreasing,
-            max_group: offsets.max_group as u32,
-        };
+        let stats = offsets.ragged_stats(&shape, &values);
         self.raggeds.insert(
             id,
             RaggedSlot {
                 values: values_id,
                 offsets: offsets_id,
-                groups,
-                total: total32,
+                groups: shape.groups,
+                total: shape.total32,
                 epoch,
                 stats,
             },

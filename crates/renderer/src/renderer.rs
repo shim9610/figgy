@@ -88,10 +88,10 @@ use crate::data_config::{
     SizeScale,
 };
 use crate::data_render::{
-    self, AxisLayer, ColumnBarSelectionLayer, ColumnErrorBarDraw, ColumnFieldSelectionLayer,
-    ColumnHandle, ColumnId, ColumnLineLayer, ColumnPickRingLayer, ColumnPool, ColumnScatterLayer,
-    DefragPolicy, ERRORBAR_HAS_X, ERRORBAR_HAS_Y, PrimitiveStyle, RaggedId, RaggedSource, RecordId,
-    RecordSource, TriangleId, TriangleSource,
+    self, AxisLayer, BatchSource, ColumnBarSelectionLayer, ColumnErrorBarDraw,
+    ColumnFieldSelectionLayer, ColumnHandle, ColumnId, ColumnLineLayer, ColumnPickRingLayer,
+    ColumnPool, ColumnScatterLayer, DefragPolicy, ERRORBAR_HAS_X, ERRORBAR_HAS_Y, PrimitiveStyle,
+    RaggedId, RaggedSource, RecordId, RecordSource, TriangleId, TriangleSource,
 };
 use crate::error::{FiggyError, Result};
 use crate::gpu_memory::{

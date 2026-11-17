@@ -129,7 +129,7 @@ handle reaches it; the general chart calls take a `ChartId`, which it never
 hands out (monotonic charts are not in `chart_order`), so no general call
 can change its config, view, display, fit or stream. A monotonic line series
 lives only there: `register_chart`, `set_chart_series`, `set_chart_state`
-and `begin_replace_chart_columns` refuse it with
+and `begin_replace_chart_columns` / `begin_replace_chart_sources` refuse it with
 `FiggyError::InvalidSeriesConfig { kind: RuleKind::MonotonicGeneralChart, .. }`.
 `monotonic_chart(id) -> MonotonicChart` lends its calls:
 

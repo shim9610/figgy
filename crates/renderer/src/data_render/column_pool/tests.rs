@@ -949,6 +949,9 @@ fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
     for failed_index in 0..4 {
         let mut pool =
             ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 4 * ALIGN).unwrap();
+        // A fixed pool refuses what does not fit; a growing one grows the
+        // candidate slab (#311), below.
+        pool.growth_policy = GrowthPolicy::Fixed;
         let before = full_pool_state(&pool);
         let mut columns = Vec::new();
         for index in 0..4 {
@@ -968,6 +971,22 @@ fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
             Err(AllocError::OutOfSpace { .. })
         ));
         assert_eq!(full_pool_state(&pool), before, "replacement {failed_index}");
+
+        // Growth: the candidate doubles the capacity and holds every column.
+        pool.growth_policy = GrowthPolicy::OnAllocFailure;
+        let handles = pool
+            .begin_batch_upsert(
+                demo_batch_columns(sources),
+                GpuAllocCtx::new(&device, &queue, &ledger),
+            )
+            .unwrap()
+            .commit();
+        assert_eq!(pool.capacity(), 8 * ALIGN, "replacement {failed_index}");
+        assert_eq!(
+            handles[failed_index].byte_size,
+            (5 - failed_index) as u64 * ALIGN
+        );
+        assert!(pool.backup.is_none(), "a slab of another size is released");
     }
 }
 

@@ -1527,9 +1527,8 @@ impl FiggyChart {
     /// `get_series` / `set_series`, the column registry).
     ///
     /// The replace is atomic (#311): see "Document replace" on
-    /// [`Self::set_radar_document`]. While the chart shows a document, the
-    /// next one uploads under the alternate ids (`<id>#alt`), so the ids
-    /// alternate between documents; `get_series` names the ones in use.
+    /// [`Self::set_radar_document`]. The ids are the documented ones for
+    /// every document opened.
     ///
     /// JS: `chart.set_categorical_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
@@ -1546,7 +1545,7 @@ impl FiggyChart {
             .bar_groups
             .as_ref()
             .is_some_and(|g| g.direction == renderer::CategoryBarDirection::Horizontal);
-        self.replace_document(FAMILY, config, series, &uploads, |chart, config, series| {
+        self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
             // Fit the value axis to the bars and round it to nice ticks. A
             // range fit resets the label format, so the document's is put
             // back.
@@ -1557,7 +1556,7 @@ impl FiggyChart {
             };
             let mut fitted = renderer::Chart::new(config);
             fitted
-                .auto_fit_layer_union(chart.renderer.pool(), renderer::LayerRef::Base, series, 0.0)
+                .auto_fit_layer_union(pool, renderer::LayerRef::Base, series, 0.0)
                 .map_err(js_err)?;
             let mut config = fitted.config().clone();
             let value = if horizontal {
@@ -1605,8 +1604,8 @@ impl FiggyChart {
     /// through the Cartesian API.
     ///
     /// The replace is atomic (#311): see "Document replace" on
-    /// [`Self::set_radar_document`]. Ids alternate between documents as for
-    /// `set_categorical_document`.
+    /// [`Self::set_radar_document`]. The ids are the documented ones for
+    /// every document opened.
     ///
     /// JS: `chart.set_boxplot_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
@@ -1621,7 +1620,7 @@ impl FiggyChart {
         config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
         let horizontal = document.direction == renderer::BoxPlotDirection::Horizontal;
         let fit_range = document.value_range.is_none();
-        self.replace_document(FAMILY, config, series, &uploads, |chart, config, series| {
+        self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
             if !fit_range {
                 return Ok(config);
             }
@@ -1632,7 +1631,7 @@ impl FiggyChart {
             };
             let mut fitted = renderer::Chart::new(config);
             fitted
-                .auto_fit_layer_union(chart.renderer.pool(), renderer::LayerRef::Base, series, 0.1)
+                .auto_fit_layer_union(pool, renderer::LayerRef::Base, series, 0.1)
                 .map_err(js_err)?;
             let mut config = fitted.config().clone();
             let value = if horizontal {
@@ -1680,33 +1679,41 @@ impl FiggyChart {
     ///
     /// # Document replace
     ///
-    /// The three document calls replace the chart atomically (#311). They
-    /// prepare the candidate config, series and columns, upload the columns
-    /// under ids no column holds, fit the axes from them and only then swap
-    /// the chart's config and series in one step; the previous document's
-    /// columns, records and ragged columns are removed after the swap: each
-    /// id under `categorical.`, `boxplot.` or `radar.` that the replaced
-    /// series read, of whichever family, and each documented id a
-    /// candidate displaced.
-    /// While the chart shows a document whose ids are the documented ones
-    /// (`radar.positions`, ...), the new one uploads under `<id>#alt`, and
-    /// the document after it under the documented ids again; an id is
-    /// refused only when both are held by columns the host registered.
+    /// The three document calls replace the chart atomically (#311), in
+    /// one renderer transaction. They prepare the candidate config, series
+    /// and uploads, check them (styles; each documented id is free or holds
+    /// what the document uploads under it: a column, a record or a ragged
+    /// column, and is not streamed), then upload every column, record and
+    /// ragged column under its documented id (`radar.positions`,
+    /// `boxplot.record.<series id>`, ...), fit the axes from the candidate
+    /// columns, and commit the columns, the removal of the previous
+    /// document's columns and the chart's config and series in one step.
+    /// The previous document's columns are each id under `categorical.`,
+    /// `boxplot.` or `radar.` that the replaced series read, of whichever
+    /// family, that the new document does not upload again; an id it does
+    /// upload again is replaced in place. The ids are therefore the
+    /// documented ones for every document opened.
     ///
     /// A failure rejects with an `Error` whose `stage` is `"validate"`
-    /// (parse, validation, styles, ids), `"upload"` (a column that the GPU
-    /// cannot hold, with the `code` and byte fields of
-    /// `register_column_f32`), `"fit"` or `"commit"` and whose message
-    /// names the stage and the cause. The chart's config, series, element
-    /// and data selections, picks and image are then exactly as they were,
-    /// and every candidate column is removed again. A failure to remove a
-    /// previous document's column after the swap rejects with `stage`
-    /// `"cleanup"`: the new document is shown then, and the column stays
-    /// registered.
+    /// (parse, validation, styles, ids, a chart that shows a monotonic
+    /// document), `"upload"` (a column that the GPU or the memory budget cannot hold, with the `code` and byte fields of
+    /// `register_column_f32`), `"fit"` or `"commit"` (the series checks
+    /// against the candidate columns, the chart's revisions, the picker)
+    /// and whose message names the stage and the cause. The chart's
+    /// config, series, columns, element and data selections, picks and
+    /// image are then exactly as they were: nothing reaches the chart
+    /// before the commit, which cannot fail.
     ///
-    /// Memory: the previous document's columns stay resident until the swap,
-    /// so the GPU holds the old and the new document's columns together at
-    /// the peak (the old document's bytes plus the new one's).
+    /// Memory: the transaction builds a complete candidate column pool, so
+    /// at the peak the GPU holds the live pool slab, the new document's
+    /// staging (half of it for single-lane columns, plus their transient
+    /// expansion buffer) and a candidate slab of the pool's capacity — or a
+    /// grown one, twice the capacity or what the surviving columns and the
+    /// new document need, when they do not fit. The previous document's
+    /// columns take no room in the candidate. After the commit the former
+    /// slab stays as the pool's backup when the capacity did not change.
+    /// A memory budget that cannot hold the peak refuses the call at the
+    /// upload stage with `code` `"budget_exceeded"`.
     ///
     /// JS: `chart.set_radar_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
@@ -1721,7 +1728,7 @@ impl FiggyChart {
         config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
         let fit_range = document.value_range.is_none();
         let ring_spacing = document.ring_spacing;
-        self.replace_document(FAMILY, config, series, &uploads, |chart, config, series| {
+        self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
             if !fit_range {
                 return Ok(config);
             }
@@ -1731,7 +1738,7 @@ impl FiggyChart {
             let format = config.left_y.label_style.format.clone();
             let mut fitted = renderer::Chart::new(config);
             fitted
-                .auto_fit_layer_union(chart.renderer.pool(), renderer::LayerRef::Base, series, 0.0)
+                .auto_fit_layer_union(pool, renderer::LayerRef::Base, series, 0.0)
                 .map_err(js_err)?;
             let mut config = fitted.config().clone();
             let radius = &mut config.left_y;
@@ -2064,22 +2071,19 @@ impl FiggyChart {
     }
 }
 
-/// One upload of a document replace (#311): the id the document names and
-/// the id it uploads under, which no column holds before the upload.
-struct DocumentUpload<'a> {
-    documented: &'a str,
-    candidate: String,
-    values: renderer::UploadValues<'a>,
-}
-
 /// The id prefixes of the columns the legacy document calls register: a
 /// column the replaced series read under one of them belongs to the
 /// replaced document (#311).
 const DOCUMENT_ID_PREFIXES: [&str; 3] = ["categorical.", "boxplot.", "radar."];
 
-/// The suffix of the alternate id a document uploads under while the
-/// documented id is held (#311).
-const DOCUMENT_ALTERNATE_SUFFIX: &str = "#alt";
+/// The borrowed adapters one document upload reads through (#311): none for
+/// a plain column, which is its own source, the nine record fields of a box
+/// plot series, or its outlier values and offsets.
+enum DocumentAdapters<'a> {
+    Column,
+    Record([renderer::BoxColumn<'a>; 9]),
+    Outliers([renderer::BoxColumn<'a>; 2]),
+}
 
 /// `error` with the document replace stage it failed at (#311): the message
 /// names the family and the stage, and the `Error` carries `stage`; the
@@ -2122,230 +2126,90 @@ impl FiggyChart {
             || pool.triangles(id).is_some()
     }
 
-    /// Remove whatever `id` names: a record, a ragged column or a column.
-    /// No series reads it when this is called.
-    fn remove_document_id(&mut self, id: &str) -> Result<(), JsValue> {
-        if self.renderer.pool().record(id).is_some() {
-            self.renderer.remove_record(id).map_err(js_err)?;
-        } else if self.renderer.pool().ragged(id).is_some() {
-            self.renderer.remove_ragged(id).map_err(js_err)?;
-        } else if self.renderer.logical_column(id).is_some() {
-            self.renderer.remove_column(id).map_err(js_err)?;
-        }
-        Ok(())
+    /// Why a document cannot upload `values` under `id`, or `None` (#311):
+    /// the id is free, or holds what the upload replaces — a resident
+    /// column for a column, a record for a record, a ragged column for a
+    /// ragged column.
+    fn document_id_conflict(
+        &self,
+        id: &str,
+        values: &renderer::UploadValues<'_>,
+    ) -> Option<String> {
+        use renderer::{LogicalColumn, UploadValues};
+        let pool = self.renderer.pool();
+        let held = if let Some(LogicalColumn::Streamed(_)) = self.renderer.logical_column(id) {
+            "a streamed column"
+        } else if pool.record(id).is_some() {
+            "a record"
+        } else if pool.ragged(id).is_some() {
+            "a ragged column"
+        } else if pool.triangles(id).is_some() {
+            "a triangle index column"
+        } else if pool.slot(id).is_some() {
+            "a column"
+        } else {
+            return None;
+        };
+        let wanted = match values {
+            UploadValues::BoxRecord(_) => "a record",
+            UploadValues::BoxOutliers(_) => "a ragged column",
+            _ => "a column",
+        };
+        (held != wanted).then(|| {
+            format!(
+                "the id {id} holds {held}, and the document uploads {wanted} under it; \
+                 remove it before opening the document"
+            )
+        })
     }
 
-    /// Remove every candidate of a replace that did not commit. The first
-    /// removal that fails is named in `error`, the failure being reported.
-    fn discard_document_candidates(
-        &mut self,
-        family: &str,
-        stage: &str,
-        uploads: &[DocumentUpload<'_>],
-        error: JsValue,
-    ) -> JsValue {
-        let mut cleanup = None;
-        for upload in uploads {
-            if self.document_id_in_use(&upload.candidate)
-                && let Err(failure) = self.remove_document_id(&upload.candidate)
-                && cleanup.is_none()
-            {
-                cleanup = Some((upload.candidate.clone(), failure));
-            }
-        }
-        let error = document_stage_error(family, stage, error);
-        match cleanup {
-            None => error,
-            Some((id, failure)) => js_err(format!(
-                "{}; the candidate column {id} could not be removed: {}",
-                error
-                    .dyn_ref::<js_sys::Error>()
-                    .map(|error| String::from(error.message()))
-                    .or_else(|| error.as_string())
-                    .unwrap_or_default(),
-                failure.as_string().unwrap_or_default()
-            )),
-        }
-    }
-
-    /// Upload one candidate: a record, a ragged column, or a plain column
-    /// added to the batch `ids` / `sources` uploads.
-    fn upload_document_candidate<'a>(
-        &mut self,
-        upload: &DocumentUpload<'a>,
-        ids: &mut Vec<String>,
-        sources: &mut Vec<renderer::UploadValues<'a>>,
-    ) -> Result<(), JsValue> {
-        use renderer::{BOX_PLOT_RECORD, ColumnSource, UploadValues};
-        match &upload.values {
-            UploadValues::BoxRecord(_) => {
-                let fields = upload
-                    .values
-                    .box_fields()
-                    .ok_or_else(|| js_err("a box plot record upload has fields"))?;
-                // Each field names itself (#160): the record is paired by
-                // name, never by the position of the schema's entries.
-                let sources: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
-                    (
-                        renderer::BoxField::ALL[k].name(),
-                        &fields[k] as &dyn ColumnSource,
-                    )
-                });
-                self.renderer
-                    .upsert_record(
-                        upload.candidate.clone(),
-                        &renderer::RecordSource {
-                            schema: BOX_PLOT_RECORD,
-                            fields: &sources,
-                        },
-                    )
-                    .map_err(column_registration_error)?;
-            }
-            UploadValues::BoxOutliers(_) => {
-                let (values, offsets) = upload
-                    .values
-                    .box_outliers()
-                    .ok_or_else(|| js_err("a box plot outlier upload has values"))?;
-                self.renderer
-                    .upsert_ragged(
-                        upload.candidate.clone(),
-                        &renderer::RaggedSource {
-                            values: &values,
-                            offsets: &offsets,
-                        },
-                    )
-                    .map_err(column_registration_error)?;
-            }
-            values => {
-                ids.try_reserve(1).map_err(js_err)?;
-                sources.try_reserve(1).map_err(js_err)?;
-                ids.push(upload.candidate.clone());
-                sources.push(*values);
-            }
-        }
-        Ok(())
-    }
-
-    /// Replace the chart with a converted legacy document atomically (#311):
-    /// validate the candidate (styles and ids), upload its columns under
-    /// candidate ids, fit (`fit` receives the candidate config and series,
-    /// which read the candidate ids), and swap the config and series in one
-    /// step; then remove the previous document's columns. Every failure
-    /// before the swap removes the candidates and leaves the chart as it
-    /// was; the error names the stage.
+    /// Replace the chart with a converted legacy document atomically (#311),
+    /// in one renderer transaction
+    /// (`Renderer::begin_replace_chart_sources`): validate the candidate
+    /// (styles and ids), then upload its columns, records and ragged columns
+    /// under the documented ids, fit (`fit` receives the candidate pool, the
+    /// candidate config and series), remove the previous document's columns
+    /// that the new one does not reuse, and swap the config and series, all
+    /// in one commit. Every failure leaves the chart, its columns and its
+    /// selection as they were; the error names the stage.
     fn replace_document<'a>(
         &mut self,
         family: &'static str,
         config: renderer::Config,
-        mut series: Vec<SeriesConfig>,
+        series: Vec<SeriesConfig>,
         uploads: &[renderer::SeriesUpload<'a>],
-        fit: impl FnOnce(&Self, renderer::Config, &[SeriesConfig]) -> Result<renderer::Config, JsValue>,
+        fit: impl FnOnce(
+            &renderer::ColumnPool,
+            renderer::Config,
+            &[SeriesConfig],
+        ) -> Result<renderer::Config, JsValue>,
     ) -> Result<(), JsValue> {
+        use renderer::{BatchSource, ColumnSource, UploadValues};
         let validate = |error: JsValue| document_stage_error(family, "validate", error);
 
-        // ---- validate: styles, then the candidate ids ----
+        // ---- validate: the chart, the styles, then the ids ----
+        if self.monotonic.is_some() {
+            return Err(validate(js_err(
+                "a document opens on the general chart; this chart shows a monotonic document",
+            )));
+        }
         self.renderer
             .preflight_chart_styles(&series)
             .map_err(|e| validate(js_err(e)))?;
-        let mut plan = Vec::new();
-        plan.try_reserve_exact(uploads.len())
-            .map_err(|e| validate(js_err(e)))?;
         for upload in uploads {
-            let documented = upload.column.as_str();
-            let alternate = format!("{documented}{DOCUMENT_ALTERNATE_SUFFIX}");
-            let candidate = if !self.document_id_in_use(documented) {
-                documented.to_owned()
-            } else if !self.document_id_in_use(&alternate) {
-                alternate
-            } else {
-                return Err(validate(js_err(format!(
-                    "the ids {documented} and {alternate} are both registered; \
-                     remove one before opening the document"
-                ))));
-            };
-            plan.push(DocumentUpload {
-                documented,
-                candidate,
-                values: upload.values,
-            });
+            if let Some(conflict) = self.document_id_conflict(&upload.column, &upload.values) {
+                return Err(validate(js_err(conflict)));
+            }
         }
-        // The series read the candidate ids. The maps keep the rename and
-        // the cleanup below linear in the number of series.
-        let mut by_documented = std::collections::HashMap::new();
-        by_documented
-            .try_reserve(plan.len())
+        // The previous document's columns the new one does not reuse: every
+        // id under a document prefix that the replaced series read.
+        let mut uploaded = std::collections::HashSet::new();
+        uploaded
+            .try_reserve(uploads.len())
             .map_err(|e| validate(js_err(e)))?;
-        let mut candidates = std::collections::HashSet::new();
-        candidates
-            .try_reserve(plan.len())
-            .map_err(|e| validate(js_err(e)))?;
-        for upload in &plan {
-            by_documented.insert(upload.documented, upload.candidate.clone());
-            candidates.insert(upload.candidate.clone());
-        }
-        let candidate_of = |id: &str| by_documented.get(id).cloned();
-        for item in &mut series {
-            if let Some(id) = candidate_of(&item.x_column) {
-                item.x_column = id;
-            }
-            if let Some(id) = candidate_of(&item.y_column) {
-                item.y_column = id;
-            }
-            if let DataRenderType::BoxPlot {
-                outliers: Some(outliers),
-                ..
-            } = &mut item.render_type
-                && let Some(id) = candidate_of(outliers)
-            {
-                *outliers = id;
-            }
-        }
-        // The previous document's series, whose columns go after the swap.
-        let previous = self.chart_series().map_err(validate)?.to_vec();
-
-        // ---- upload: records and ragged columns one by one, the plain
-        // columns as one batch ----
-        let mut ids = Vec::new();
-        let mut sources = Vec::new();
-        let uploaded = (|| {
-            for upload in &plan {
-                self.upload_document_candidate(upload, &mut ids, &mut sources)?;
-            }
-            self.commit_column_batch(&ids, &sources)
-        })();
-        if let Err(error) = uploaded {
-            return Err(self.discard_document_candidates(family, "upload", &plan, error));
-        }
-
-        // ---- fit, against the candidate columns ----
-        let config = match fit(self, config, &series) {
-            Ok(config) => config,
-            Err(error) => {
-                return Err(self.discard_document_candidates(family, "fit", &plan, error));
-            }
-        };
-
-        // ---- commit: config and series in one step ----
-        let count = series.len();
-        if let Err(error) = self.replace_chart_state(config, series) {
-            return Err(self.discard_document_candidates(family, "commit", &plan, error));
-        }
-        // The document wrote its own legend.
-        self.legend_auto_managed = false;
-        self.color_seq = count.max(self.color_seq);
-
-        // ---- the previous document's columns: the documented or alternate
-        // id a candidate displaced, and every document id (of any family)
-        // the previous series read that no candidate took ----
-        let cleanup = |error: JsValue| document_stage_error(family, "cleanup", error);
-        for upload in &plan {
-            if upload.candidate != upload.documented {
-                self.remove_document_id(upload.documented)
-                    .map_err(cleanup)?;
-            }
-        }
-
-        for item in &previous {
+        uploaded.extend(uploads.iter().map(|upload| upload.column.as_str()));
+        let mut stale: Vec<String> = Vec::new();
+        for item in self.chart_series().map_err(validate)? {
             let outliers = item.render_type.box_plot().and_then(|b| b.outliers);
             for id in [
                 Some(item.x_column.as_str()),
@@ -2358,11 +2222,129 @@ impl FiggyChart {
                 let document_column = DOCUMENT_ID_PREFIXES
                     .iter()
                     .any(|prefix| id.starts_with(prefix));
-                if document_column && !candidates.contains(id) {
-                    self.remove_document_id(id).map_err(cleanup)?;
+                if document_column && !uploaded.contains(id) && self.document_id_in_use(id) {
+                    stale.try_reserve(1).map_err(|e| validate(js_err(e)))?;
+                    stale.push(id.to_owned());
                 }
             }
         }
-        Ok(())
+        drop(uploaded);
+        stale.sort_unstable();
+        stale.dedup();
+        let mut removals: Vec<&str> = Vec::new();
+        removals
+            .try_reserve_exact(stale.len())
+            .map_err(|e| validate(js_err(e)))?;
+        removals.extend(stale.iter().map(String::as_str));
+
+        // The uploads, borrowed from the document through its adapters.
+        let mut adapters = Vec::new();
+        adapters
+            .try_reserve_exact(uploads.len())
+            .map_err(|e| validate(js_err(e)))?;
+        for upload in uploads {
+            adapters.push(match &upload.values {
+                UploadValues::BoxRecord(_) => DocumentAdapters::Record(
+                    upload
+                        .values
+                        .box_fields()
+                        .ok_or_else(|| validate(js_err("a box plot record upload has fields")))?,
+                ),
+                UploadValues::BoxOutliers(_) => {
+                    let (values, offsets) = upload
+                        .values
+                        .box_outliers()
+                        .ok_or_else(|| validate(js_err("a box plot outlier upload has values")))?;
+                    DocumentAdapters::Outliers([values, offsets])
+                }
+                _ => DocumentAdapters::Column,
+            });
+        }
+        // Each field names itself (#160): the record is paired by name, never
+        // by the position of the schema's entries.
+        let mut fields: Vec<[(&str, &dyn ColumnSource); 9]> = Vec::new();
+        fields
+            .try_reserve_exact(
+                adapters
+                    .iter()
+                    .filter(|adapter| matches!(adapter, DocumentAdapters::Record(_)))
+                    .count(),
+            )
+            .map_err(|e| validate(js_err(e)))?;
+        for adapter in &adapters {
+            if let DocumentAdapters::Record(columns) = adapter {
+                fields.push(std::array::from_fn(|k| {
+                    (
+                        renderer::BoxField::ALL[k].name(),
+                        &columns[k] as &dyn ColumnSource,
+                    )
+                }));
+            }
+        }
+        let mut batch: Vec<(&str, BatchSource<'_>)> = Vec::new();
+        batch
+            .try_reserve_exact(uploads.len())
+            .map_err(|e| validate(js_err(e)))?;
+        let mut records = fields.iter();
+        for (upload, adapter) in uploads.iter().zip(&adapters) {
+            let source = match adapter {
+                DocumentAdapters::Column => BatchSource::Column(&upload.values),
+                DocumentAdapters::Record(_) => BatchSource::Record(renderer::RecordSource {
+                    schema: renderer::BOX_PLOT_RECORD,
+                    fields: records
+                        .next()
+                        .ok_or_else(|| validate(js_err("a box plot record has its fields")))?,
+                }),
+                DocumentAdapters::Outliers([values, offsets]) => {
+                    BatchSource::Ragged(renderer::RaggedSource { values, offsets })
+                }
+            };
+            batch.push((upload.column.as_str(), source));
+        }
+
+        // ---- upload, fit and the plan, in one transaction ----
+        // The fit's own error, and whether it ran: an error after it is the
+        // commit stage's (the series checks, the chart plan, the picker).
+        let mut fit_error = None;
+        let mut fitted = false;
+        let count = series.len();
+        let guard =
+            self.renderer
+                .begin_replace_chart_sources(self.chart_id, &batch, &removals, |pool| {
+                    match fit(pool, config, &series) {
+                        Ok(config) => {
+                            fitted = true;
+                            Ok((config, series))
+                        }
+                        Err(error) => {
+                            fit_error = Some(error);
+                            // Never reported: the stage error below carries the
+                            // fit's own.
+                            Err(renderer::FiggyError::Internal {
+                                invariant: "the document fit failed",
+                            })
+                        }
+                    }
+                });
+        let guard = match guard {
+            Ok(guard) => guard,
+            Err(error) => {
+                return Err(match fit_error {
+                    Some(error) => document_stage_error(family, "fit", error),
+                    None if fitted => document_stage_error(family, "commit", js_err(error)),
+                    None => {
+                        document_stage_error(family, "upload", column_registration_error(error))
+                    }
+                });
+            }
+        };
+
+        // ---- commit: columns, removals, config and series at once ----
+        guard.commit();
+        // The document wrote its own legend.
+        self.legend_auto_managed = false;
+        self.color_seq = count.max(self.color_seq);
+        self.sync_hitmap()
+            .map_err(|error| document_stage_error(family, "commit", error))
     }
 }

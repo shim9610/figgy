@@ -136,7 +136,7 @@ pub(crate) use transactions::StreamedColumnUpload;
 pub use transactions::{
     ColumnBatchInsert, ColumnRemoval, ColumnStaging, ColumnStagingError, ColumnUpsert,
 };
-pub(crate) use transactions::{ColumnBatchUpsert, ResidentBatchCapacityError};
+pub(crate) use transactions::{ColumnSourcesBatch, ResidentBatchCapacityError};
 
 /// Alignment (in bytes) for every offset and size in the pool.
 pub const ALIGN: u64 = 256;
@@ -268,6 +268,20 @@ pub struct RaggedSource<'a> {
 #[derive(Clone, Copy)]
 pub struct TriangleSource<'a> {
     pub indices: &'a dyn ColumnSource,
+}
+
+/// One upload of a batch transaction (#311,
+/// `Renderer::begin_replace_chart_sources`): a plain column, a record or a
+/// ragged column, inserted under its id or replacing what the id holds of
+/// the same kind. The sources are borrowed; nothing is copied.
+#[derive(Clone, Copy)]
+pub enum BatchSource<'a> {
+    /// A plain column, as `Renderer::add_columns` registers one.
+    Column(&'a dyn ColumnSource),
+    /// A record, checked as [`ColumnPool::upsert_record`] checks one.
+    Record(RecordSource<'a>),
+    /// A ragged column, checked as [`ColumnPool::upsert_ragged`] checks one.
+    Ragged(RaggedSource<'a>),
 }
 
 /// The scalar statistics of a record, measured from the encoded `(hi, lo)`
