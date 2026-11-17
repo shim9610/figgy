@@ -1518,7 +1518,12 @@ impl ColumnPool {
         for chunk in &chunks {
             // Compact staging is half a region at most: never above the
             // chunk's share of the region, which the ceiling bounds.
-            debug_assert!(chunk.staging_bytes <= chunk.byte_size);
+            if chunk.staging_bytes > chunk.byte_size {
+                return Err(AllocError::AllocationFailed {
+                    resource: "batch staging",
+                    reason: "internal: staging larger than its region".into(),
+                });
+            }
             let buffer = create_buffer_checked(
                 device,
                 ctx.ledger,
