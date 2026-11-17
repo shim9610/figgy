@@ -1332,6 +1332,33 @@ impl FiggyChart {
         .to_string()
     }
 
+    /// Whether a candidate document could stream (#311), checked with the
+    /// renderer's own streaming rules (`Renderer::inspect_streaming_candidate`,
+    /// the rules `streaming_capabilities` applies to the current chart)
+    /// without changing anything: no state is read but the two JSON
+    /// strings, and the candidate need not be valid for this chart's columns.
+    /// Returns `{ "supported": true, "reason": null }` or
+    /// `{ "supported": false, "reason": "<the first rule it breaks>" }`.
+    /// JSON that does not parse as a `Config` or a series list throws.
+    ///
+    /// JS: `const { supported, reason } = JSON.parse(chart.inspect_streaming_capabilities(cfg, series));`
+    pub fn inspect_streaming_capabilities(
+        &self,
+        config_json: &str,
+        series_json: &str,
+    ) -> Result<String, JsValue> {
+        let config: renderer::Config = serde_json::from_str(config_json)
+            .map_err(|error| js_err(format!("config JSON: {error}")))?;
+        let series: Vec<SeriesConfig> = serde_json::from_str(series_json)
+            .map_err(|error| js_err(format!("series JSON: {error}")))?;
+        let verdict = Renderer::inspect_streaming_candidate(&config, &series);
+        Ok(serde_json::json!({
+            "supported": verdict.is_ok(),
+            "reason": verdict.err().map(|error| error.to_string()),
+        })
+        .to_string())
+    }
+
     /// Synchronous fit request routing, allowing the facade to wait for
     /// renderer progress without holding a wasm mutable borrow.
     pub fn request_stream_auto_fit(&mut self, padding: f64) -> Result<bool, JsValue> {

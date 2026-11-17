@@ -3579,10 +3579,20 @@ impl Renderer {
             .chart_states
             .get(&chart)
             .ok_or(FiggyError::UnknownChart { id: chart })?;
-        reject_layered_streaming(&state.config)?;
-        for series in &state.series {
-            PrepareContext::validate_stream_series(&state.config, series)?;
-            stream_draw_phases(&state.config.draw_style, series)
+        Self::inspect_streaming_candidate(&state.config, &state.series)
+    }
+
+    /// [`Self::inspect_streaming_capability`] for a candidate config and
+    /// series that no chart holds (#311): the same rules, checked on the
+    /// candidate alone. Pure: it reads no renderer state, so it changes
+    /// nothing and needs no registered column. `Ok` when the exact
+    /// streaming passes can draw the candidate; otherwise the error names
+    /// the first rule it breaks.
+    pub fn inspect_streaming_candidate(config: &Config, series: &[SeriesConfig]) -> Result<()> {
+        reject_layered_streaming(config)?;
+        for series in series {
+            PrepareContext::validate_stream_series(config, series)?;
+            stream_draw_phases(&config.draw_style, series)
                 .map_err(StreamRequestError::into_figgy)?;
         }
         Ok(())

@@ -167,6 +167,22 @@ renderer-owned envelope columns: writing or removing them is
 `FiggyError::ReservedColumnId`. See
 [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
 
+A resident column can also arrive in chunks (#311):
+`begin_column_upload(id, len, encoding, expected_revision) -> ColumnUpload`
+creates one mapped staging buffer of the column's size (refused by the
+device buffer limit or the memory budget with `FiggyError::Pool`), each
+`ColumnUpload::write_range(start, StreamColumnSource)` writes a chunk through
+a `ColumnPairWriter` into the mapped range at `start == written()` (an
+overlapping, gapped, empty, past-the-end or mistyped chunk is
+`FiggyError::InvalidColumnUpload` and changes nothing), and
+`commit_column_upload(upload)` installs it as one failure-atomic upsert.
+`expected_revision` is the `column_revision(id)` the upload replaces
+(`None` for a new id); a different one, at begin or at commit, and an upload
+begun on another renderer are `FiggyError::StaleStateToken`. Dropping the
+upload cancels it. `Renderer::inspect_streaming_candidate(&config, &series)`
+applies the rules of `inspect_streaming_capability(chart)` to a candidate
+that no chart holds.
+
 ## Direct SSOT edits and convenience helpers
 
 `Config` is the single source of truth (SSOT). For precise control, start from

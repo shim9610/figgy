@@ -61,6 +61,245 @@ pub(super) struct ColumnInputMeta {
     pub(super) len_values: usize,
 }
 
+/// A resident column written in ranges across several calls (#311): one
+/// mapped staging buffer the size of the column, filled range after range in
+/// index order through [`ColumnPairWriter`]s, and installed by
+/// [`ColumnPool::begin_upsert_staged_column`] like any other upsert. The
+/// values reach the GPU through the staging buffer only; the CPU keeps the
+/// statistics the writers recorded (rule 2).
+///
+/// Ranges arrive in order: each starts at the first value not yet written,
+/// so a range that overlaps a written one or leaves a gap is refused, and a
+/// refused range changes nothing. The staging buffer is charged to the
+/// device ledger while the upload is open; dropping the staging releases it.
+pub struct ColumnStaging {
+    staging: TrackedBuffer,
+    len_values: usize,
+    byte_size: u64,
+    written: usize,
+    bounds: Option<crate::StreamBounds>,
+    step: crate::data::UniformStep,
+    encoding: crate::StreamEncoding,
+}
+
+/// Why a range write to a [`ColumnStaging`] was refused (#311).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnStagingError {
+    /// The range starts before the first value not yet written.
+    Overlap,
+    /// The range starts after the first value not yet written.
+    Gap,
+    /// The range runs past the column's length.
+    PastEnd,
+    /// The range holds no value.
+    Empty,
+    /// The range's encoding is not the upload's.
+    EncodingMismatch,
+    /// The source wrote a value outside its own range.
+    SourceOutOfRange,
+    /// The staging buffer is not mapped for writing.
+    Unmapped,
+    /// Not every value was written.
+    Incomplete,
+}
+
+impl ColumnStagingError {
+    /// The refusal as a sentence fragment.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Overlap => "the chunk overlaps values already written",
+            Self::Gap => "the chunk leaves a gap after the values already written",
+            Self::PastEnd => "the chunk runs past the column's length",
+            Self::Empty => "the chunk holds no value",
+            Self::EncodingMismatch => "the chunk's encoding is not the upload's",
+            Self::SourceOutOfRange => "the chunk's source wrote outside its own range",
+            Self::Unmapped => "the staging buffer is not mapped for writing",
+            Self::Incomplete => "not every value of the column was written",
+        }
+    }
+}
+
+impl ColumnStaging {
+    /// A staging buffer for a column of `len_values` values of `encoding`.
+    /// The buffer is sized, checked against the device's buffer limit and
+    /// the ledger's memory budget, and created mapped; nothing else is
+    /// reserved, so the pool region is found when the column is installed.
+    pub fn new(
+        len_values: usize,
+        encoding: crate::StreamEncoding,
+        ctx: GpuAllocCtx<'_>,
+    ) -> Result<Self, AllocError> {
+        const RESOURCE: &str = "column upload staging buffer";
+        if len_values == 0 {
+            return Err(AllocError::EmptySource);
+        }
+        let ceiling = buffer_ceiling(ctx.device);
+        let raw_bytes = (len_values as u64)
+            .checked_mul(COLUMN_VALUE_BYTES as u64)
+            .ok_or(AllocError::ResourceLimit {
+                resource: RESOURCE,
+                requested: u64::MAX,
+                limit: ceiling,
+            })?;
+        let byte_size = try_align_up(raw_bytes, ALIGN).ok_or(AllocError::ResourceLimit {
+            resource: RESOURCE,
+            requested: raw_bytes,
+            limit: ceiling,
+        })?;
+        if byte_size > ceiling {
+            return Err(AllocError::ResourceLimit {
+                resource: RESOURCE,
+                requested: byte_size,
+                limit: ceiling,
+            });
+        }
+        // The staging buffer lives as long as the upload stays open, so it
+        // is held to the budget the pool's growth is held to.
+        if let Some(limit) = ctx.ledger.budget() {
+            let peak = ctx.ledger.total_bytes().checked_add(byte_size).ok_or(
+                AllocError::BudgetExceeded {
+                    resource: RESOURCE,
+                    requested: u64::MAX,
+                    limit,
+                },
+            )?;
+            if peak > limit {
+                return Err(AllocError::BudgetExceeded {
+                    resource: RESOURCE,
+                    requested: peak,
+                    limit,
+                });
+            }
+        }
+        let staging = create_buffer_checked(
+            ctx.device,
+            ctx.ledger,
+            &BufferDescriptor {
+                label: Some("figgy column upload staging"),
+                size: byte_size,
+                usage: BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            },
+            RESOURCE,
+        )?;
+        Ok(Self {
+            staging,
+            len_values,
+            byte_size,
+            written: 0,
+            bounds: None,
+            step: crate::data::UniformStep::new(),
+            encoding,
+        })
+    }
+
+    /// The column's length in values.
+    pub fn len(&self) -> usize {
+        self.len_values
+    }
+
+    /// Whether the column has no value (never: an empty upload is refused).
+    pub fn is_empty(&self) -> bool {
+        self.len_values == 0
+    }
+
+    /// How many values were written: the start of the next range.
+    pub fn written(&self) -> usize {
+        self.written
+    }
+
+    /// The encoding every range must have.
+    pub fn encoding(&self) -> crate::StreamEncoding {
+        self.encoding
+    }
+
+    /// Whether every value was written.
+    pub fn is_complete(&self) -> bool {
+        self.written == self.len_values
+    }
+
+    /// The staging bytes this upload holds on the device.
+    pub fn staging_bytes(&self) -> u64 {
+        self.byte_size
+    }
+
+    /// Write `source.len()` values from value `start`: the source writes
+    /// its whole length (`write_pairs`) straight into the mapped staging
+    /// range. `start` must be [`Self::written`]. A refused range writes
+    /// nothing the upload keeps: the next range may start at the same
+    /// place again.
+    pub fn write_range(
+        &mut self,
+        start: u64,
+        source: StreamColumnSource<'_>,
+    ) -> Result<(), ColumnStagingError> {
+        if source.encoding() != self.encoding {
+            return Err(ColumnStagingError::EncodingMismatch);
+        }
+        let len = source.len();
+        if len == 0 {
+            return Err(ColumnStagingError::Empty);
+        }
+        let start = usize::try_from(start).map_err(|_| ColumnStagingError::Gap)?;
+        if start < self.written {
+            return Err(ColumnStagingError::Overlap);
+        }
+        if start > self.written {
+            return Err(ColumnStagingError::Gap);
+        }
+        let end = start
+            .checked_add(len)
+            .filter(|end| *end <= self.len_values)
+            .ok_or(ColumnStagingError::PastEnd)?;
+        let from = start as u64 * COLUMN_VALUE_BYTES as u64;
+        let to = end as u64 * COLUMN_VALUE_BYTES as u64;
+        let mut view = self
+            .staging
+            .slice(from..to)
+            .get_mapped_range_mut()
+            .map_err(|_| ColumnStagingError::Unmapped)?;
+        // The step is measured on a copy, kept only when the range is.
+        let mut step = self.step;
+        let out_of_range = std::cell::Cell::new(false);
+        let bounds = {
+            let mut observe = |index: usize, hi: f32, lo: f32| step.record(start + index, hi, lo);
+            let mut writer =
+                ColumnPairWriter::new_observed(view.slice(..), &out_of_range, &mut observe);
+            match source {
+                StreamColumnSource::Scalar(source) => source.write_pairs(&mut writer),
+                StreamColumnSource::HiLo(source) => source.write_pairs(&mut writer),
+            }
+            writer.bounds()
+        };
+        drop(view);
+        if out_of_range.get() {
+            return Err(ColumnStagingError::SourceOutOfRange);
+        }
+        self.step = step;
+        self.bounds = merge_bounds(self.bounds, bounds);
+        self.written = end;
+        Ok(())
+    }
+}
+
+/// The statistics of two written ranges together.
+fn merge_bounds(
+    a: Option<crate::StreamBounds>,
+    b: Option<crate::StreamBounds>,
+) -> Option<crate::StreamBounds> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(crate::StreamBounds {
+            min: a.min.min(b.min),
+            max: a.max.max(b.max),
+            min_positive: match (a.min_positive, b.min_positive) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            },
+        }),
+        (a, b) => a.or(b),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct StagedStreamedColumn {
     pub(super) offset: u64,
@@ -1571,6 +1810,68 @@ impl ColumnPool {
         write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
         create_staging: impl FnOnce(u64) -> Result<TrackedBuffer, AllocError>,
     ) -> Result<ColumnUpsert<'a>, AllocError> {
+        self.begin_upsert_column_staged_with(input, ctx, |byte_size, raw_bytes| {
+            let staging = create_staging(byte_size)?;
+            let (bounds, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
+            Ok((staging, bounds, uniform_step))
+        })
+    }
+
+    /// Install a column written range by range into its own staging buffer
+    /// ([`ColumnStaging`], #311) as a failure-atomic insert or same-id
+    /// replacement, exactly as [`Self::begin_upsert_column`] installs one a
+    /// source writes in one call. Every value must have been written.
+    pub fn begin_upsert_staged_column<'a>(
+        &'a mut self,
+        id: ColumnId,
+        staging: ColumnStaging,
+        ctx: GpuAllocCtx<'_>,
+    ) -> Result<ColumnUpsert<'a>, AllocError> {
+        if !staging.is_complete() {
+            return Err(AllocError::Internal {
+                invariant: "a staged column is complete before it is installed",
+            });
+        }
+        let ColumnStaging {
+            staging: buffer,
+            len_values,
+            byte_size: staged_size,
+            bounds,
+            step,
+            ..
+        } = staging;
+        buffer.unmap();
+        self.begin_upsert_column_staged_with(
+            ColumnInputMeta { id, len_values },
+            ctx,
+            move |byte_size, _| {
+                if byte_size != staged_size {
+                    return Err(AllocError::Internal {
+                        invariant: "a staged column's buffer has the size of its region",
+                    });
+                }
+                Ok((buffer, bounds, step.finish()))
+            },
+        )
+    }
+
+    /// The upsert with the staging step supplied: `stage(byte_size,
+    /// raw_bytes)` returns the unmapped staging buffer that holds the
+    /// column's pairs, with the statistics and uniform step its writer
+    /// recorded.
+    #[allow(clippy::type_complexity)]
+    fn begin_upsert_column_staged_with<'a>(
+        &'a mut self,
+        input: ColumnInputMeta,
+        ctx: GpuAllocCtx<'_>,
+        stage: impl FnOnce(
+            u64,
+            u64,
+        ) -> Result<
+            (TrackedBuffer, Option<crate::StreamBounds>, Option<f64>),
+            AllocError,
+        >,
+    ) -> Result<ColumnUpsert<'a>, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
         let ColumnInputMeta { id, len_values: n } = input;
@@ -1611,8 +1912,7 @@ impl ColumnPool {
 
         // Complete every source-dependent/fallible staging operation before
         // touching allocator metadata or the live primary buffer.
-        let staging = create_staging(byte_size)?;
-        let (bounds, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
+        let (staging, bounds, uniform_step) = stage(byte_size, raw_bytes)?;
         let (min, max, min_positive) = slot_statistics(bounds);
 
         let old_slot = self.slots.get(&id).cloned();

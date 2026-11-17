@@ -2529,6 +2529,7 @@ mod web {
         draw_style_param_specs, normalize_config, rich_text_from_tex, validate_config,
     };
     mod columns;
+    pub use columns::ColumnUploadHandle;
     use columns::{VectorColumns, referenced_columns, vector_columns};
     pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};

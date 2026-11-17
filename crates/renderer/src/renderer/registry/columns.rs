@@ -575,6 +575,130 @@ impl Renderer {
         )
     }
 
+    /// Begin a chunked upload of the resident column `id` (#311): `len`
+    /// values of `encoding`, written chunk by chunk into one mapped staging
+    /// buffer ([`ColumnUpload::write_range`]) and installed at once by
+    /// [`Self::commit_column_upload`]. Nothing is registered until then.
+    ///
+    /// `expected_revision` is the [`Self::column_revision`] of the column the
+    /// upload replaces, `None` for an id that is not registered; anything
+    /// else is refused as stale ([`FiggyError::StaleStateToken`]), and so is
+    /// a commit after the column changed. A streamed id and a reserved id
+    /// are refused, as for every resident insertion. The staging buffer is
+    /// held to the device's buffer limit and the memory budget
+    /// ([`FiggyError::Pool`]); it is charged to the ledger while the upload
+    /// is open.
+    pub fn begin_column_upload(
+        &self,
+        id: impl Into<ColumnId>,
+        len: usize,
+        encoding: crate::StreamEncoding,
+        expected_revision: Option<u64>,
+    ) -> Result<ColumnUpload> {
+        self.health.check()?;
+        let id = id.into();
+        self.reject_streamed_id(&id)?;
+        self.check_upload_revision(&id, expected_revision)?;
+        let staging = data_render::ColumnStaging::new(
+            len,
+            encoding,
+            pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
+        )?;
+        // The staging buffer was created on this device; an error scope that
+        // caught a failure is reported here.
+        self.health.check()?;
+        Ok(ColumnUpload {
+            id,
+            staging,
+            renderer_identity: self.renderer_identity,
+            expected_revision,
+        })
+    }
+
+    /// Install a chunked upload (#311) as a failure-atomic insert or
+    /// same-id replacement, as [`Self::upsert_column`] installs a column a
+    /// source writes in one call: the charts that read it move their data
+    /// revision, the picker is prepared against the new pool. Refused,
+    /// changing nothing, when a value was not written
+    /// ([`FiggyError::InvalidColumnUpload`]), when another renderer began
+    /// it or the column's revision is no longer the one the upload expects
+    /// ([`FiggyError::StaleStateToken`]), or when the pool cannot hold the
+    /// column ([`FiggyError::Pool`]). The upload is consumed either way.
+    pub fn commit_column_upload(&mut self, upload: ColumnUpload) -> Result<ColumnHandle> {
+        let result = self.commit_column_upload_unreported(upload);
+        self.reported(result)
+    }
+
+    pub(super) fn commit_column_upload_unreported(
+        &mut self,
+        upload: ColumnUpload,
+    ) -> Result<ColumnHandle> {
+        self.health.check()?;
+        let ColumnUpload {
+            id,
+            staging,
+            renderer_identity,
+            expected_revision,
+        } = upload;
+        if renderer_identity != self.renderer_identity {
+            return Err(FiggyError::StaleStateToken {
+                reason: format!("column upload {id} was begun on another renderer"),
+            });
+        }
+        if !staging.is_complete() {
+            return Err(FiggyError::InvalidColumnUpload {
+                id,
+                reason: data_render::ColumnStagingError::Incomplete.reason(),
+            });
+        }
+        self.reject_streamed_id(&id)?;
+        self.check_upload_revision(&id, expected_revision)?;
+        let health = self.health.clone();
+        let invalidation = self.prepare_column_invalidation(&id)?;
+        let old_layout_generation = self.pool.layout_generation();
+        let inner = self.pool.begin_upsert_staged_column(
+            id.clone(),
+            staging,
+            pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
+        )?;
+        let guard = finish_renderer_column_upsert(
+            inner,
+            &self.streaming_sources,
+            &id,
+            old_layout_generation,
+            &mut self.chart_states,
+            &mut self.visual_revision,
+            &mut self.pending_defrag,
+            &mut self.picker,
+            Some(invalidation),
+            &self.device,
+            &self.queue,
+            self.errorbar_extent_engine.as_ref(),
+        )?;
+        // A failed check drops the guard, which rolls back.
+        health.check()?;
+        Ok(guard.commit())
+    }
+
+    /// Refuse an upload whose expected revision is not column `id`'s.
+    fn check_upload_revision(&self, id: &str, expected: Option<u64>) -> Result<()> {
+        let current = self.column_revision(id);
+        if current == expected {
+            return Ok(());
+        }
+        let describe = |revision: Option<u64>| match revision {
+            Some(revision) => format!("revision {revision}"),
+            None => "no registered column".to_owned(),
+        };
+        Err(FiggyError::StaleStateToken {
+            reason: format!(
+                "column upload {id} expects {}, the renderer holds {}",
+                describe(expected),
+                describe(current)
+            ),
+        })
+    }
+
     /// Failure-atomic scalar upsert without an intermediate batch-preparation
     /// step. Hosts that must prepare additional derived state against the
     /// provisional pool can use [`Self::begin_upsert_column`] and commit its

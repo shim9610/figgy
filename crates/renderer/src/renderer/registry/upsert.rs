@@ -23,6 +23,75 @@ pub struct RendererColumnUpsert<'a> {
         Option<&'a crate::gpu_extent::GpuErrorbarExtentEngine>,
 }
 
+/// A resident column upload written in chunks (#311), begun by
+/// [`Renderer::begin_column_upload`] and installed by
+/// [`Renderer::commit_column_upload`].
+///
+/// It owns its mapped staging buffer ([`data_render::ColumnStaging`]) and
+/// borrows nothing, so a host can keep it across calls. Chunks are written
+/// in index order with [`Self::write_range`]; a refused chunk changes
+/// nothing. Dropping the upload cancels it and releases the staging buffer.
+pub struct ColumnUpload {
+    pub(in crate::renderer) id: ColumnId,
+    pub(in crate::renderer) staging: data_render::ColumnStaging,
+    /// The renderer that issued the upload: another renderer refuses it.
+    pub(in crate::renderer) renderer_identity: u64,
+    /// The column revision the upload replaces, `None` for a new id: the
+    /// staleness check at commit (a generation, ARCHITECTURE.md).
+    pub(in crate::renderer) expected_revision: Option<u64>,
+}
+
+impl ColumnUpload {
+    /// The column id the upload installs.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The column's length in values.
+    pub fn len(&self) -> usize {
+        self.staging.len()
+    }
+
+    /// Whether the column has no value (never: an empty upload is refused).
+    pub fn is_empty(&self) -> bool {
+        self.staging.is_empty()
+    }
+
+    /// How many values were written: where the next chunk starts.
+    pub fn written(&self) -> usize {
+        self.staging.written()
+    }
+
+    /// The encoding every chunk must have.
+    pub fn encoding(&self) -> crate::StreamEncoding {
+        self.staging.encoding()
+    }
+
+    /// The column revision the upload expects to replace.
+    pub fn expected_revision(&self) -> Option<u64> {
+        self.expected_revision
+    }
+
+    /// The staging bytes the open upload holds on the device.
+    pub fn staging_bytes(&self) -> u64 {
+        self.staging.staging_bytes()
+    }
+
+    /// Write one chunk at value `start`, which must be [`Self::written`]:
+    /// the source writes its whole length into the staging buffer. An
+    /// overlapping or gapped chunk, a chunk past the end and a chunk of
+    /// another encoding are refused with
+    /// [`FiggyError::InvalidColumnUpload`], and nothing changes.
+    pub fn write_range(&mut self, start: u64, source: crate::StreamColumnSource<'_>) -> Result<()> {
+        self.staging
+            .write_range(start, source)
+            .map_err(|error| FiggyError::InvalidColumnUpload {
+                id: self.id.clone(),
+                reason: error.reason(),
+            })
+    }
+}
+
 /// Prepared renderer side of the bundled demo transaction.
 /// A prepared replacement of some columns and one chart
 /// ([`Renderer::begin_replace_chart_columns`]): nothing is published until

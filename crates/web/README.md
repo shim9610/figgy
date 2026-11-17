@@ -43,6 +43,15 @@ uploads without their values, the series of each column and notes on every
 field the document set that the chart does not carry. See the
 [model API for editors](../renderer/WASM.md#model-api).
 
+The three calls replace the chart atomically: a document that fails to
+validate, upload, fit or commit rejects with an `Error` whose `stage` names
+the step, and the chart stays as it was. `clear_selection()` ends the
+element and annotation selections and any drag, `begin_column_upload(...)`
+uploads one column in chunks into a GPU staging buffer and installs it on
+`commit(chart)`, and `inspect_streaming_capabilities(config, series)` checks
+a candidate document without changing the chart
+([edit safety](../renderer/WASM.md#edit-safety)).
+
 `FiggyBoundedChart` keeps its name and its `"radial"` family argument. In this
 release its `"categorical"`, `"boxplot"` and `"radar"` families are errors
 that name the `FiggyChart` method to use instead, and
@@ -277,6 +286,13 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다.
 `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
 경고를 돌려준다. 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
+
+`set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 차트를 한 번에 바꾼다.
+검사·업로드·축 맞춤·반영 중 어느 단계에서 실패하든 `stage`로 그 단계를 알려 주는 `Error`를 던지고
+차트는 그대로 둔다. `clear_selection()`은 장식·주석 선택과 진행 중인 끌기를 끝내고,
+`begin_column_upload(...)`는 컬럼 하나를 조각으로 나눠 GPU 스테이징 버퍼에 쓴 뒤 `commit(chart)`에서
+설치한다. `inspect_streaming_capabilities(config, series)`는 차트를 바꾸지 않고 후보 문서의 스트리밍
+가능 여부를 검사한다([edit safety](../renderer/WASM.md#edit-safety)).
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
 스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가
