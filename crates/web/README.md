@@ -34,6 +34,15 @@ Earlier releases opened categorical bar, box plot and radar documents through
 - `set_radar_document(json)` reads `RadarChart` JSON as radar series on a
   polar chart with a categorical angle axis.
 
+The three calls replace the chart atomically: a document that fails to
+validate, upload, fit or commit rejects with an `Error` whose `stage` names
+the step, and the chart stays as it was. `clear_selection()` ends the
+element and annotation selections and any drag, `begin_column_upload(...)`
+uploads one column in chunks into a GPU staging buffer and installs it on
+`commit(chart)`, and `inspect_streaming_capabilities(config, series)` checks
+a candidate document without changing the chart
+([edit safety](../renderer/WASM.md#edit-safety)).
+
 `FiggyBoundedChart` keeps its name and its `"radial"` family argument. In this
 release its `"categorical"`, `"boxplot"` and `"radar"` families are errors
 that name the `FiggyChart` method to use instead. The `<figgy-chart>` custom
@@ -209,6 +218,13 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 `<figgy-chart>`도 같은 메서드를 갖는다. 요소의 `pipeline_status()`는 마지막 프레임의 스냅샷이라
 차트가 바쁠 때도 읽을 수 있고, `figgy-init-progress` 이벤트로 `"screen complete"`와
 `"all complete"`를 알린다. 이미지 출력과 피킹은 늘 차트 전체를 그린다.
+
+`set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 차트를 한 번에 바꾼다.
+검사·업로드·축 맞춤·반영 중 어느 단계에서 실패하든 `stage`로 그 단계를 알려 주는 `Error`를 던지고
+차트는 그대로 둔다. `clear_selection()`은 장식·주석 선택과 진행 중인 끌기를 끝내고,
+`begin_column_upload(...)`는 컬럼 하나를 조각으로 나눠 GPU 스테이징 버퍼에 쓴 뒤 `commit(chart)`에서
+설치한다. `inspect_streaming_capabilities(config, series)`는 차트를 바꾸지 않고 후보 문서의 스트리밍
+가능 여부를 검사한다([edit safety](../renderer/WASM.md#edit-safety)).
 
 차트는 기본 셰이더 세트로 시작하고, 끊긴 축·확률 축·극좌표가 설정에 처음 들어오면 전체 세트로
 스스로 올라간다([#299](https://github.com/shim9610/figgy/issues/299)). 처음부터 전체 세트가

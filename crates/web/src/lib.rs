@@ -1492,6 +1492,7 @@ mod web {
         FiggyChart, auto_layout, draw_style_modes, draw_style_param_specs, rich_text_from_tex,
     };
     mod columns;
+    pub use columns::ColumnUploadHandle;
     use columns::{VectorColumns, referenced_columns, vector_columns};
     pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};

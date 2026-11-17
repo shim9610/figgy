@@ -976,6 +976,9 @@ Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper'
 - `remove_column(id)`는 해당 컬럼을 참조하는 시리즈도 제거한다. 자동 범례에서는 대응하는 행을 지운다. `set_config`로 직접 편집한 범례는 사용자 텍스트를 보존하고 남은 시리즈의 인식 가능한 기호만 갱신한다.
 - 제거·교체로 생긴 빈 공간은 다음 `frame()` 시작에 렌더러가 모아 정리한다. 연속 교체 중 할당 공간이 부족하면 컬럼을 한 번 재배치한 뒤 다시 시도한다.
 - `add_line_series`는 기존 ID이면 색을 유지하며 교체하고, 새 ID이면 색상 순서의 다음 색을 사용한다. 기존 ID에 빈 라벨을 전달해도 기존 범례 텍스트는 지우지 않는다. 비어 있지 않으면 해당 행의 텍스트만 바꾼다.
+- `begin_column_upload(id, length, encoding, source_revision, max_chunk_bytes)`는 컬럼 하나를 여러 조각으로 나눠 올리는 트랜잭션을 연다. 돌려받은 핸들의 `push(offset, typedArray)`로 조각을 순서대로 쓰고 `commit(chart)`로 한 번에 설치하며 `cancel()`로 취소한다. 겹치거나 빈틈이 있거나 형식이 다른 조각은 거부되고, 낡은 리비전과 다른 차트에서의 커밋도 거부된다([edit safety](#edit-safety)).
+- `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 새 문서의 컬럼을 다른 ID로 먼저 올리고 축을 맞춘 뒤 설정과 시리즈를 한 번에 바꾼다. 실패하면 `stage`(`validate`·`upload`·`fit`·`commit`)가 담긴 오류를 던지고 차트는 그대로다. 문서를 바꿀 때마다 컬럼 ID가 문서에 적힌 ID와 `#alt`를 붙인 ID 사이에서 번갈아 바뀐다.
+- `clear_selection()`은 장식·주석 선택과 진행 중인 끌기·크기 조절을 끝낸다. 데이터 강조(`picked_data`)와 설정·시리즈·컬럼은 그대로 둔다. `inspect_streaming_capabilities(config_json, series_json)`는 후보 문서가 스트리밍될 수 있는지 차트를 바꾸지 않고 검사한다.
 - `free()`로 인스턴스를 해제하면 풀 버퍼·파이프라인·텍스처·surface의 참조를 정리한다. GC의 FinalizationRegistry도 정리를 지원하지만 실행 시점이 정해져 있지 않으므로 SPA에서 컴포넌트를 제거할 때는 `free()`를 직접 호출한다.
 
 <a id="categorical-documents"></a>
@@ -991,7 +994,8 @@ series a `CategoryBars` series, and its values two kinds of registered
 columns, `categorical.positions` and `categorical.values.<series id>`, the
 value columns registered as one batch. The value axis is fitted and rounded to nice ticks; the
 chart keeps its chart area. Opening another document replaces the series
-and the columns of the previous one; every other column stays. From there
+and the columns of the previous one atomically, alternating the column ids
+([edit safety](#edit-safety)); every other column stays. From there
 on the chart is edited through the Cartesian API (`get_config` /
 `set_config`, `get_series` / `set_series`, the column registry), and bars
 are picked with `pick_data` like histogram bins. The bars' value labels
@@ -1022,7 +1026,8 @@ and, for a series with outliers, one ragged outlier column
 `value_range` the value axis is fitted to the records' and outliers'
 statistics and rounded to nice ticks; the chart keeps its chart area.
 Opening another document replaces the series, columns and records of the
-previous one; every other column stays. From there on the chart is edited
+previous one atomically ([edit safety](#edit-safety)); every other column
+stays. From there on the chart is edited
 through the Cartesian API. Every part of a box (body, whiskers, caps,
 median, mean, outliers) is picked with `pick_data` as the box's
 `HistogramBin`; `selection_details()` reports the selected box's
@@ -1056,7 +1061,8 @@ a document `value_range` the radius axis is fitted to the value columns'
 statistics, from zero when no value is negative, and rounded to nice
 ticks; a document `ring_spacing` is kept either way. The chart keeps its
 chart area. Opening another document replaces the series, columns and
-config of the previous one; every other column stays. From there on the
+config of the previous one atomically ([edit safety](#edit-safety)); every
+other column stays. From there on the
 chart is edited through the Cartesian API. A vertex is picked with
 `pick_data` as a point of its series (the outline, its closing segment and
 the fill pick the series too), `selection_details()` adds the vertex's
@@ -1069,6 +1075,74 @@ vertex along its spoke; they pick and drag as the bars' do.
 chart.set_radar_document(JSON.stringify(radarDoc));
 await chart.first_frame_ready();
 ```
+
+<a id="edit-safety"></a>
+
+### Edit safety: clearing selections, atomic documents, chunked uploads
+
+These calls ([#311](https://github.com/shim9610/figgy/issues/311)) let a
+host edit a chart without leaving it half changed.
+
+**`chart.clear_selection()`** ends the decoration selection, the
+annotation selection, a value-label or Feynman drag, an element drag or
+handle resize, a pending plot-area resize proposal and a held subplot
+display placement, and redraws. The active layer, config, series and
+columns stay, and so does the data highlight (`picked_data`, including a
+value label's typed selection); `set_picked_data("null")` clears that.
+
+**Document replace.** `set_categorical_document`, `set_boxplot_document`
+and `set_radar_document` prepare the candidate config, series and columns,
+upload the columns (and box plot records and ragged columns) under ids no
+column holds, fit the axes from them, and only then swap the config and
+series in one step. The previous document's columns are removed after the
+swap: each `categorical.`, `boxplot.` or `radar.` id the replaced series
+read, and each documented id a candidate displaced. While the chart shows a
+document under the documented ids, the next one uploads under
+`<id>#alt`, and the one after it under the documented ids again; read the
+ids in use from `get_series`. A failure rejects with an `Error` whose
+`stage` is `"validate"` (parse, validation, styles, an id whose documented
+and alternate forms are both held by host columns), `"upload"` (with the
+`code` and byte fields of `register_column_f32`), `"fit"` or `"commit"`,
+and whose message names the stage and the cause; the chart's config,
+series, selections, picks, columns and image are then as they were. A
+failure to remove an old column after the swap rejects with `"cleanup"`;
+the new document is shown then. The old and the new document's columns are
+resident together until the swap, so the peak GPU use is both documents'
+columns.
+
+**Chunked column upload.**
+`chart.begin_column_upload(id, length, encoding, source_revision,
+max_chunk_bytes)` begins a transaction for one resident column of `length`
+values: `encoding` is `"f32"` (chunks are `Float32Array`s) or `"f64"`
+(`Float64Array`s, uploaded as `(hi, lo)` pairs). `source_revision` is the
+revision of the column the upload replaces, as `chart.column_revision(id)`
+reports it, or `null` for an id that is not registered. The returned
+`ColumnUploadHandle` owns one mapped GPU staging buffer of the column's size
+(8 bytes per value), counted against the memory budget while it is open.
+
+| Handle call | Contract |
+| --- | --- |
+| `push(offset, typedArray)` | Writes one chunk of at most `max_chunk_bytes` bytes at value `offset`, which must be `written()`. The array is read in place into the mapped staging range. An overlapping, gapped, past-the-end or mistyped chunk throws with `code` `"invalid_chunk"` and changes nothing; the upload stays open. |
+| `commit(chart)` | Installs the column on the chart that began the upload as one atomic insert or replacement. Throws `"invalid_chunk"` when a value was not written, `"stale"` when the column changed since `begin_column_upload` or `chart` is another chart, and the registration codes (`"budget_exceeded"`, `"pool_space"`, `"device_limit"`, `"allocation_failed"`, with byte fields) when the GPU cannot hold it. Closes the handle either way. |
+| `cancel()` | Releases the staging buffer; nothing was registered. |
+| `written()`, `length()`, `is_open()` | The next offset, the column length, whether the handle is open. |
+
+A closed handle throws `"upload_closed"`. `begin_column_upload` itself
+throws `"stale"` for a wrong `source_revision`, and the registration codes
+when the budget or the device cannot hold the staging buffer. A streamed or
+reserved id is refused. One column per transaction.
+
+```js
+const up = chart.begin_column_upload("y", n, "f64", chart.column_revision("y") ?? null, 1 << 20);
+for (let at = 0; at < n; at += 65536) up.push(at, values.subarray(at, at + 65536));
+up.commit(chart);
+```
+
+**`chart.inspect_streaming_capabilities(config_json, series_json)`**
+returns `{ "supported": bool, "reason": string | null }` for a candidate
+document with the rules `streaming_capabilities()` applies to the current
+chart (`Renderer::inspect_streaming_candidate`). It reads only its two
+arguments and changes nothing; JSON that does not parse throws.
 
 <a id="monotonic-lines"></a>
 

@@ -1741,6 +1741,37 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// End every element selection and pointer gesture (#311): the
+    /// decoration selection (`HitId`), the annotation selection, a value
+    /// label or Feynman part drag, an element drag or handle resize, a
+    /// pending plot-area resize proposal and a held subplot display
+    /// placement. The chart redraws. The active layer, the config, the
+    /// series and the columns stay as they are, and so does the data
+    /// highlight (`picked_data`, a value label's typed selection included):
+    /// clear that with `set_picked_data("null")`.
+    ///
+    /// JS: `chart.clear_selection();`
+    pub fn clear_selection(&mut self) -> Result<(), JsValue> {
+        if self.chart_selection()?.is_some() {
+            self.set_chart_selection(None)?;
+        }
+        self.set_selected_annotation(None);
+        self.dragging = false;
+        self.resizing = None;
+        self.annotation_pointer = false;
+        self.value_label_pointer = false;
+        self.feynman_pointer = None;
+        self.plot_resize = None;
+        if self.display_held {
+            self.display_held = false;
+            self.renderer
+                .hold_chart_display(self.chart_id, false)
+                .map_err(js_err)?;
+        }
+        self.request_host_redraw();
+        Ok(())
+    }
+
     /// `true` while a chart element or an annotation is selected.
     pub fn has_selection(&self) -> Result<bool, JsValue> {
         Ok(self.chart_selection()?.is_some() || self.selected_annotation.is_some())

@@ -132,10 +132,11 @@ pub use data_config::{
     SeriesConfig, SeriesRef, StreamlineArrows, XySeries,
 };
 pub use data_render::{
-    AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
-    GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot, RaggedSource, RaggedStats,
-    RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats, TriangleId,
-    TriangleRef, TriangleSlot, TriangleSource, TriangleStats,
+    AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, ColumnStaging,
+    ColumnStagingError, DefragPolicy, GpuAllocCtx, GrowthPolicy, MAX_RECORD_FIELDS, RaggedId,
+    RaggedRef, RaggedSlot, RaggedSource, RaggedStats, RecordId, RecordRef, RecordSchema,
+    RecordSlot, RecordSource, RecordStats, TriangleId, TriangleRef, TriangleSlot, TriangleSource,
+    TriangleStats,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
@@ -159,14 +160,15 @@ pub use render_warning::{
 };
 pub use renderer::{
     AxisViewState, ChartColumnsReplacement, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle,
-    ChartView, ChartViewLayerStamps, ChartViewState, ExportOptions, ExportScope, ExportSource,
-    FIT_RANGES_PADDING, FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart,
-    MonotonicChartDrawItem, MonotonicChartId, PipelineCounts, PipelineFailure, PipelineFailureKind,
-    PipelinePreparation, PipelineStatus, PreparationFeature, PreparedFrame, PreparedPipelines,
-    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
-    RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
-    StreamingSelectionTicket, WindowedRenderer, clamp_export_scale, display_config_for_surface,
-    dpi_to_scale, draw_style_supports, encode_png, fit_display_panel, place_document,
+    ChartView, ChartViewLayerStamps, ChartViewState, ColumnUpload, ExportOptions, ExportScope,
+    ExportSource, FIT_RANGES_PADDING, FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE,
+    MonotonicChart, MonotonicChartDrawItem, MonotonicChartId, PipelineCounts, PipelineFailure,
+    PipelineFailureKind, PipelinePreparation, PipelineStatus, PreparationFeature, PreparedFrame,
+    PreparedPipelines, RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer,
+    RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
+    StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer, clamp_export_scale,
+    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png, fit_display_panel,
+    place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

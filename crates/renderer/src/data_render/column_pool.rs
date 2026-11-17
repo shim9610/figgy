@@ -95,7 +95,9 @@ pub use monitor::GpuAllocCtx;
 pub(crate) use monitor::PoolIdentity;
 use monitor::{buffer_ceiling, create_buffer_checked};
 pub(crate) use transactions::StreamedColumnUpload;
-pub use transactions::{ColumnBatchInsert, ColumnRemoval, ColumnUpsert};
+pub use transactions::{
+    ColumnBatchInsert, ColumnRemoval, ColumnStaging, ColumnStagingError, ColumnUpsert,
+};
 pub(crate) use transactions::{ColumnBatchUpsert, ResidentBatchCapacityError};
 
 /// Alignment (in bytes) for every offset and size in the pool.

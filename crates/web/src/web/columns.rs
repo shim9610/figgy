@@ -107,6 +107,217 @@ impl FiggyChart {
     }
 }
 
+/// An open chunked column upload (#311), returned by
+/// `FiggyChart.begin_column_upload`. It owns a mapped GPU staging buffer the
+/// size of the column; `push` writes typed array chunks straight into it in
+/// index order, and `commit(chart)` installs the column at once. Nothing is
+/// registered before the commit. `cancel` (or dropping the handle with
+/// `free()`) releases the staging buffer. After a commit, a cancel or a
+/// commit that failed, the handle is closed and every call but `cancel`
+/// throws with `code` `"upload_closed"`.
+#[wasm_bindgen]
+pub struct ColumnUploadHandle {
+    upload: Option<renderer::ColumnUpload>,
+    /// The chart that began the upload: only it commits it.
+    chart_id: ChartId,
+    max_chunk_bytes: u64,
+}
+
+impl ColumnUploadHandle {
+    fn open(&mut self) -> Result<&mut renderer::ColumnUpload, JsValue> {
+        self.upload.as_mut().ok_or_else(|| {
+            coded_error(
+                "the column upload is closed: it was committed, cancelled or its commit failed",
+                "upload_closed",
+                [],
+            )
+        })
+    }
+}
+
+#[wasm_bindgen]
+impl ColumnUploadHandle {
+    /// Write one chunk at value `offset`: a `Float32Array` for an `"f32"`
+    /// upload, a `Float64Array` for an `"f64"` one, at most
+    /// `max_chunk_bytes` bytes. Chunks arrive in order: `offset` must be
+    /// `written()`, so a chunk that overlaps written values, leaves a gap
+    /// or runs past the length is refused (`code` `"invalid_chunk"`), as is
+    /// one of the other array type. A refused chunk changes nothing; the
+    /// upload stays open. The array's values are read in place and written
+    /// into the mapped staging buffer; nothing is copied on the way.
+    pub fn push(&mut self, offset: f64, values: JsValue) -> Result<(), JsValue> {
+        let max_chunk_bytes = self.max_chunk_bytes;
+        let upload = self.open()?;
+        let offset = js_safe_u64(offset, "offset")?;
+        let chunk = JsStreamColumn::from_js(&values).map_err(|_| {
+            coded_error(
+                &format!(
+                    "column upload {}: a chunk must be a Float32Array or Float64Array",
+                    upload.id()
+                ),
+                "invalid_chunk",
+                [],
+            )
+        })?;
+        let value_bytes = match chunk.encoding() {
+            StreamEncoding::ScalarF32 => 4u64,
+            StreamEncoding::HiLoF32 => 8u64,
+        };
+        let bytes = (chunk.len() as u64).saturating_mul(value_bytes);
+        if bytes > max_chunk_bytes {
+            return Err(coded_error(
+                &format!(
+                    "column upload {}: the chunk holds {bytes} bytes, above max_chunk_bytes {max_chunk_bytes}",
+                    upload.id()
+                ),
+                "invalid_chunk",
+                [],
+            ));
+        }
+        upload
+            .write_range(offset, chunk.source())
+            .map_err(column_upload_error)
+    }
+
+    /// Install the column on `chart`, the chart that began the upload, as
+    /// one atomic insert or replacement: the series that read it redraw with
+    /// the new values. Refused, changing nothing, when a value was not
+    /// written (`"invalid_chunk"`), when `chart` is not the chart that began
+    /// the upload or the column changed since (`"stale"`), or when the GPU
+    /// cannot hold the column (the codes of `register_column_f32`:
+    /// `"budget_exceeded"`, `"pool_space"`, `"device_limit"`,
+    /// `"allocation_failed"`). The handle is closed either way.
+    pub fn commit(&mut self, chart: &mut FiggyChart) -> Result<(), JsValue> {
+        self.open()?;
+        if chart.chart_id != self.chart_id {
+            return Err(coded_error(
+                "the column upload was begun on another chart",
+                "stale",
+                [],
+            ));
+        }
+        let Some(upload) = self.upload.take() else {
+            return Err(js_err("internal: an open column upload holds its upload"));
+        };
+        chart
+            .renderer
+            .commit_column_upload(upload)
+            .map_err(column_upload_error)?;
+        Ok(())
+    }
+
+    /// Abandon the upload and release its staging buffer. Nothing was
+    /// registered. Calling it on a closed handle does nothing.
+    pub fn cancel(&mut self) {
+        self.upload = None;
+    }
+
+    /// Whether the upload is still open.
+    pub fn is_open(&self) -> bool {
+        self.upload.is_some()
+    }
+
+    /// How many values were written: the offset of the next chunk.
+    pub fn written(&self) -> f64 {
+        self.upload
+            .as_ref()
+            .map_or(0.0, |upload| upload.written() as f64)
+    }
+
+    /// The column's length in values.
+    pub fn length(&self) -> f64 {
+        self.upload
+            .as_ref()
+            .map_or(0.0, |upload| upload.len() as f64)
+    }
+}
+
+/// A chunked upload's error with its `code`: `"invalid_chunk"` for a
+/// refused chunk or an incomplete commit, `"stale"` for a stale revision or
+/// chart, and the column registration codes otherwise.
+fn column_upload_error(error: renderer::FiggyError) -> JsValue {
+    match &error {
+        renderer::FiggyError::InvalidColumnUpload { .. } => {
+            coded_error(&error.to_string(), "invalid_chunk", [])
+        }
+        renderer::FiggyError::StaleStateToken { .. } => {
+            coded_error(&error.to_string(), "stale", [])
+        }
+        _ => column_registration_error(error),
+    }
+}
+
+#[wasm_bindgen]
+impl FiggyChart {
+    // ---- chunked column upload (#311) ----
+
+    /// Begin a chunked upload of the resident column `id`: `length` values,
+    /// `encoding` `"f32"` (chunks are `Float32Array`s) or `"f64"`
+    /// (`Float64Array`s, kept as GPU `(hi, lo)` pairs). The returned handle
+    /// takes the chunks (`push`) and installs the column (`commit(chart)`).
+    ///
+    /// `source_revision` is the revision of the column the upload replaces,
+    /// as `column_revision(id)` reports it, or `null` / `undefined` for an id
+    /// that is not registered; anything else throws with `code` `"stale"`,
+    /// and so does a commit after the column changed. `max_chunk_bytes`
+    /// bounds the bytes of each pushed chunk.
+    ///
+    /// One GPU staging buffer of the column's size (8 bytes per value) is
+    /// created here and held until the commit or the cancel; it counts
+    /// against the memory budget, and a budget or device that cannot hold
+    /// it throws with the codes of `register_column_f32`. A streamed id or a
+    /// reserved id is refused.
+    ///
+    /// JS: `const up = chart.begin_column_upload("x", n, "f64", chart.column_revision("x"), 1 << 20);`
+    pub fn begin_column_upload(
+        &mut self,
+        id: &str,
+        length: f64,
+        encoding: &str,
+        source_revision: Option<f64>,
+        max_chunk_bytes: f64,
+    ) -> Result<ColumnUploadHandle, JsValue> {
+        let encoding = match encoding {
+            "f32" => StreamEncoding::ScalarF32,
+            "f64" => StreamEncoding::HiLoF32,
+            other => {
+                return Err(js_err(format!(
+                    "column upload {id}: encoding {other:?} is not \"f32\" or \"f64\""
+                )));
+            }
+        };
+        let length = usize::try_from(js_safe_u64(length, "length")?)
+            .map_err(|_| js_err(format!("column upload {id}: length is too large")))?;
+        let max_chunk_bytes = js_safe_u64(max_chunk_bytes, "max_chunk_bytes")?;
+        if max_chunk_bytes == 0 {
+            return Err(js_err(format!(
+                "column upload {id}: max_chunk_bytes must be positive"
+            )));
+        }
+        let expected_revision = source_revision
+            .map(|revision| js_safe_u64(revision, "source_revision"))
+            .transpose()?;
+        let upload = self
+            .renderer
+            .begin_column_upload(id, length, encoding, expected_revision)
+            .map_err(column_upload_error)?;
+        Ok(ColumnUploadHandle {
+            upload: Some(upload),
+            chart_id: self.chart_id,
+            max_chunk_bytes,
+        })
+    }
+
+    /// The revision of column `id`: what `begin_column_upload` takes as
+    /// `source_revision`. Every upload of a resident column renews it.
+    /// `undefined` for an id that is not registered.
+    pub fn column_revision(&self, id: &str) -> Option<f64> {
+        self.renderer
+            .column_revision(id)
+            .map(|revision| revision as f64)
+    }
+}
+
 #[wasm_bindgen]
 impl FiggyChart {
     // ---- column registry (explicit register / update / unregister) ----
