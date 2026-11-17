@@ -4,7 +4,7 @@
 # `figgy_bg.wasm`, `figgy.d.ts`.
 [package]
 name = "figgy"
-version = "0.15.1"
+version = "0.16.0-beta.1"
 edition = "2024"
 description = "figgy for the browser: the wasm-bindgen wrapper and <figgy-chart> element for the figgy Rust renderer."
 license = "MIT OR Apache-2.0"
@@ -26,7 +26,7 @@ default = []
 wasm-opt = false
 
 [dependencies]
-renderer = { package = "figgy-renderer", path = "../renderer", version = "0.18.1", features = ["serde"] }
+renderer = { package = "figgy-renderer", path = "../renderer", version = "=0.19.0-beta.1", features = ["serde"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 wgpu = "30"
 futures-channel = "0.3"
