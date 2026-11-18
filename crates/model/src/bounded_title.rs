@@ -29,6 +29,21 @@ impl BoundedTitleOptions {
             },
         }
     }
+
+    /// The stored `chart_title`, or the snapshot [`Self::from_legacy`]
+    /// takes of the legacy plain title while there is none.
+    pub(crate) fn resolved(
+        chart_title: Option<&Self>,
+        title: &str,
+        font: &str,
+        label_size: f32,
+        color: Color,
+    ) -> Self {
+        chart_title
+            .cloned()
+            .unwrap_or_else(|| Self::from_legacy(title, font, label_size, color))
+    }
+
     pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.text
             .validate_math()

@@ -239,14 +239,13 @@ impl RadarChart {
     /// The title to draw: `chart_title`, or the legacy `title` in the chart
     /// font and colour.
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
-        self.chart_title.clone().unwrap_or_else(|| {
-            crate::BoundedTitleOptions::from_legacy(
-                &self.title,
-                &self.font_family,
-                self.font_size,
-                self.text_color,
-            )
-        })
+        crate::BoundedTitleOptions::resolved(
+            self.chart_title.as_ref(),
+            &self.title,
+            &self.font_family,
+            self.font_size,
+            self.text_color,
+        )
     }
     /// The series with `id`.
     pub fn series(&self, id: &str) -> Option<&RadarSeries> {

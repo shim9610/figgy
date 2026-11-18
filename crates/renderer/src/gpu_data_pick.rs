@@ -14,6 +14,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use crate::data_render::{ColumnHandle, ColumnPool, ScatterTransform};
+use crate::gpu_compile::{storage_entry, uniform_entry};
 use crate::gpu_memory::{
     ChargeTally, GpuByteCharge, GpuLedger, GpuResourceKind, SharedCharge, charged_buffer,
     charged_buffer_init, shared_charge,
@@ -443,32 +444,6 @@ impl GpuStreamDataPick {
     }
 }
 
-fn compute_storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-fn compute_uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
 /// The shader modules the typed data pick's compute entries live in, next to
 /// the render entries they share geometry with.
 #[derive(Clone, Copy)]
@@ -816,9 +791,9 @@ impl DataPickPipelineBundle {
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("figgy typed data pick query bgl"),
                 entries: &[
-                    compute_uniform_entry(1),
-                    compute_storage_entry(2, true),
-                    compute_storage_entry(3, false),
+                    uniform_entry(1),
+                    storage_entry(2, true),
+                    storage_entry(3, false),
                 ],
             },
         );
@@ -895,11 +870,11 @@ impl DataPickPipelineBundle {
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("figgy value label pick query bgl"),
                 entries: &[
-                    compute_uniform_entry(1),
-                    compute_storage_entry(2, true),
-                    compute_storage_entry(3, false),
-                    compute_uniform_entry(4),
-                    compute_storage_entry(7, true),
+                    uniform_entry(1),
+                    storage_entry(2, true),
+                    storage_entry(3, false),
+                    uniform_entry(4),
+                    storage_entry(7, true),
                 ],
             },
         );
@@ -924,10 +899,7 @@ impl DataPickPipelineBundle {
             &device,
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("figgy streamed typed pick reduction bgl"),
-                entries: &[
-                    compute_storage_entry(0, true),
-                    compute_storage_entry(1, false),
-                ],
+                entries: &[storage_entry(0, true), storage_entry(1, false)],
             },
         );
         let stream_reduce_layout = crate::gpu_compile::pipeline_layout(

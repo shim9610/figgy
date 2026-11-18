@@ -18,6 +18,7 @@
 //! only through [`MeasureText`]. Every measure gets the drawn labels' bounds
 //! (#160).
 
+use crate::chrome::side_tag;
 use crate::color::Color;
 use crate::config::{AxisOptions, ChartTitleOptions, Config};
 use crate::decoration::DecorationId;
@@ -404,7 +405,7 @@ pub fn part_ink_distance(part: &DrawnPart, x: f32, y: f32) -> f32 {
 
 /// How far `(x, y)` stands from the rectangle `r`: 0 inside it or on its
 /// edge.
-fn rect_distance(r: &RectF, x: f32, y: f32) -> f32 {
+pub(crate) fn rect_distance(r: &RectF, x: f32, y: f32) -> f32 {
     let dx = (r.x - x).max(x - (r.x + r.width)).max(0.0);
     let dy = (r.y - y).max(y - (r.y + r.height)).max(0.0);
     dx.hypot(dy)
@@ -600,15 +601,6 @@ impl<C: DragConfig, T: Selectable<C> + ?Sized> SelectionGeometry<C> for T {
             outline,
             ring: self.selection_ring(cfg),
         })
-    }
-}
-
-fn side_str(side: &Side) -> &'static str {
-    match side {
-        Side::Top => "top",
-        Side::Bottom => "bottom",
-        Side::Left => "left",
-        Side::Right => "right",
     }
 }
 
@@ -1440,15 +1432,6 @@ pub struct ColorBarLabelElement;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorBarTitleElement;
 
-fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
-    match side {
-        Side::Top => &cfg.top_x,
-        Side::Bottom => &cfg.bottom_x,
-        Side::Left => &cfg.left_y,
-        Side::Right => &cfg.right_y,
-    }
-}
-
 /// Run `f` on the config the renderer draws the base layer of `cfg` with: a
 /// single-layer document as it is; a layered one as its expanded base panel
 /// (the expansion's own copy of the SSOT configuration, borrowed here), or
@@ -1582,7 +1565,7 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
     if cfg.polar().is_some() && matches!(side, Side::Top | Side::Right) {
         return;
     }
-    let axis = axis_of(cfg, side);
+    let axis = crate::layout::axis_ref(cfg, side);
     let to = &axis.title_option;
     if !to.visible || to.text.segments.is_empty() {
         return;
@@ -1738,7 +1721,7 @@ fn emit_data_area(cfg: &Config, sink: &mut dyn Sink) {
 
 impl Selectable for AxisElement {
     fn element_id(&self) -> String {
-        format!("axis_{}", side_str(&self.side))
+        format!("axis_{}", side_tag(&self.side))
     }
 
     /// The line and ticks the renderer draws ([`crate::chrome::emit_part_of`]): a
@@ -1771,17 +1754,17 @@ impl Selectable for AxisElement {
 /// (#200).
 fn frames_pieces(cfg: &Config, side: &Side) -> bool {
     matches!(
-        &axis_of(cfg, side).breaks,
+        &crate::layout::axis_ref(cfg, side).breaks,
         Some(crate::config::AxisBreaks {
             frame_each_panel: true,
             ..
         })
-    ) && crate::layout::BreakMap::cuts(axis_of(cfg, side)).is_broken()
+    ) && crate::layout::BreakMap::cuts(crate::layout::axis_ref(cfg, side)).is_broken()
 }
 
 impl Selectable for AxisLabelElement {
     fn element_id(&self) -> String {
-        format!("tick_labels_{}", side_str(&self.side))
+        format!("tick_labels_{}", side_tag(&self.side))
     }
 
     /// The labels the renderer draws ([`crate::chrome::emit_part_of`]).
@@ -1804,7 +1787,7 @@ impl Selectable for AxisLabelElement {
 
 impl Selectable for CategoryGroupLabelElement {
     fn element_id(&self) -> String {
-        format!("category_groups_{}", side_str(&self.side))
+        format!("category_groups_{}", side_tag(&self.side))
     }
 
     /// The headers the renderer draws past the axis' tick labels
@@ -1957,7 +1940,7 @@ impl Resizable for CategoryLabelElement {
 
 impl Selectable for AxisTitleElement {
     fn element_id(&self) -> String {
-        format!("axis_title_{}", side_str(&self.side))
+        format!("axis_title_{}", side_tag(&self.side))
     }
 
     /// Placed on the config the base layer is drawn with: in a layered
@@ -2169,268 +2152,60 @@ fn emit_on_overlay_panel(
     }
 }
 
-impl Selectable for OverlayAxisElement {
-    fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::Axis(Side::Right))
-    }
+/// `Selectable` and `Draggable` for the overlay axis elements: each is the
+/// panel element `$inner` on `$side` (`Right` for the overlay's Y axis, `Top`
+/// for its own X axis), emitted on the overlay panel and dragged through
+/// `drag_overlay_axis_element`. `$part` names the matching `Element` and
+/// `DecorationId` variant.
+macro_rules! overlay_axis_element {
+    ($($ty:ident => $part:ident($side:expr), $inner:ident;)*) => {$(
+        impl Selectable for $ty {
+            fn element_id(&self) -> String {
+                overlay_id(self.layer, DecorationId::$part($side))
+            }
 
-    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
-        emit_on_overlay_panel(
-            cfg,
-            self.layer,
-            &AxisElement { side: Side::Right },
-            measure,
-            sink,
-        )
-    }
+            fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+                emit_on_overlay_panel(cfg, self.layer, &$inner { side: $side }, measure, sink)
+            }
 
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
-        Some(self)
-    }
+            fn as_draggable(&self) -> Option<&dyn Draggable> {
+                Some(self)
+            }
+        }
+
+        impl Draggable for $ty {
+            fn nudge_element(&self) -> Element {
+                Element::$part($side)
+            }
+
+            fn drag_by(
+                &self,
+                cfg: &mut Config,
+                measure: &dyn MeasureText,
+                dx: f32,
+                dy: f32,
+            ) -> NudgeResult {
+                drag_overlay_axis_element(
+                    cfg,
+                    self.layer,
+                    $side,
+                    self.nudge_element(),
+                    measure,
+                    dx,
+                    dy,
+                )
+            }
+        }
+    )*};
 }
 
-impl Draggable for OverlayAxisElement {
-    fn nudge_element(&self) -> Element {
-        Element::Axis(Side::Right)
-    }
-
-    fn drag_by(
-        &self,
-        cfg: &mut Config,
-        measure: &dyn MeasureText,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
-        drag_overlay_axis_element(
-            cfg,
-            self.layer,
-            Side::Right,
-            self.nudge_element(),
-            measure,
-            dx,
-            dy,
-        )
-    }
-}
-
-impl Selectable for OverlayAxisLabelElement {
-    fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::AxisLabel(Side::Right))
-    }
-
-    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
-        emit_on_overlay_panel(
-            cfg,
-            self.layer,
-            &AxisLabelElement { side: Side::Right },
-            measure,
-            sink,
-        )
-    }
-
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
-        Some(self)
-    }
-}
-
-impl Draggable for OverlayAxisLabelElement {
-    fn nudge_element(&self) -> Element {
-        Element::AxisLabel(Side::Right)
-    }
-
-    fn drag_by(
-        &self,
-        cfg: &mut Config,
-        measure: &dyn MeasureText,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
-        drag_overlay_axis_element(
-            cfg,
-            self.layer,
-            Side::Right,
-            self.nudge_element(),
-            measure,
-            dx,
-            dy,
-        )
-    }
-}
-
-impl Selectable for OverlayAxisTitleElement {
-    fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::AxisTitle(Side::Right))
-    }
-
-    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
-        emit_on_overlay_panel(
-            cfg,
-            self.layer,
-            &AxisTitleElement { side: Side::Right },
-            measure,
-            sink,
-        )
-    }
-
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
-        Some(self)
-    }
-}
-
-impl Draggable for OverlayAxisTitleElement {
-    fn nudge_element(&self) -> Element {
-        Element::AxisTitle(Side::Right)
-    }
-
-    fn drag_by(
-        &self,
-        cfg: &mut Config,
-        measure: &dyn MeasureText,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
-        drag_overlay_axis_element(
-            cfg,
-            self.layer,
-            Side::Right,
-            self.nudge_element(),
-            measure,
-            dx,
-            dy,
-        )
-    }
-}
-
-impl Selectable for OverlayXAxisElement {
-    fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::Axis(Side::Top))
-    }
-
-    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
-        emit_on_overlay_panel(
-            cfg,
-            self.layer,
-            &AxisElement { side: Side::Top },
-            measure,
-            sink,
-        )
-    }
-
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
-        Some(self)
-    }
-}
-
-impl Draggable for OverlayXAxisElement {
-    fn nudge_element(&self) -> Element {
-        Element::Axis(Side::Top)
-    }
-
-    fn drag_by(
-        &self,
-        cfg: &mut Config,
-        measure: &dyn MeasureText,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
-        drag_overlay_axis_element(
-            cfg,
-            self.layer,
-            Side::Top,
-            self.nudge_element(),
-            measure,
-            dx,
-            dy,
-        )
-    }
-}
-
-impl Selectable for OverlayXAxisLabelElement {
-    fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::AxisLabel(Side::Top))
-    }
-
-    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
-        emit_on_overlay_panel(
-            cfg,
-            self.layer,
-            &AxisLabelElement { side: Side::Top },
-            measure,
-            sink,
-        )
-    }
-
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
-        Some(self)
-    }
-}
-
-impl Draggable for OverlayXAxisLabelElement {
-    fn nudge_element(&self) -> Element {
-        Element::AxisLabel(Side::Top)
-    }
-
-    fn drag_by(
-        &self,
-        cfg: &mut Config,
-        measure: &dyn MeasureText,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
-        drag_overlay_axis_element(
-            cfg,
-            self.layer,
-            Side::Top,
-            self.nudge_element(),
-            measure,
-            dx,
-            dy,
-        )
-    }
-}
-
-impl Selectable for OverlayXAxisTitleElement {
-    fn element_id(&self) -> String {
-        overlay_id(self.layer, DecorationId::AxisTitle(Side::Top))
-    }
-
-    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
-        emit_on_overlay_panel(
-            cfg,
-            self.layer,
-            &AxisTitleElement { side: Side::Top },
-            measure,
-            sink,
-        )
-    }
-
-    fn as_draggable(&self) -> Option<&dyn Draggable> {
-        Some(self)
-    }
-}
-
-impl Draggable for OverlayXAxisTitleElement {
-    fn nudge_element(&self) -> Element {
-        Element::AxisTitle(Side::Top)
-    }
-
-    fn drag_by(
-        &self,
-        cfg: &mut Config,
-        measure: &dyn MeasureText,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
-        drag_overlay_axis_element(
-            cfg,
-            self.layer,
-            Side::Top,
-            self.nudge_element(),
-            measure,
-            dx,
-            dy,
-        )
-    }
+overlay_axis_element! {
+    OverlayAxisElement => Axis(Side::Right), AxisElement;
+    OverlayAxisLabelElement => AxisLabel(Side::Right), AxisLabelElement;
+    OverlayAxisTitleElement => AxisTitle(Side::Right), AxisTitleElement;
+    OverlayXAxisElement => Axis(Side::Top), AxisElement;
+    OverlayXAxisLabelElement => AxisLabel(Side::Top), AxisLabelElement;
+    OverlayXAxisTitleElement => AxisTitle(Side::Top), AxisTitleElement;
 }
 
 impl Selectable for OverlayLegendElement {

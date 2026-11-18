@@ -646,13 +646,17 @@ fn rich_ok(text: &Option<RichText>) -> bool {
         .is_none_or(|t| t.validate_math().is_ok() && t.within_limits())
 }
 
-fn offset_ok(offset: [f32; 2]) -> bool {
+/// Whether both components of a label offset are finite and within
+/// [`MAX_VALUE_LABEL_OFFSET`]. Shared with the Feynman diagram's checks.
+pub(crate) fn offset_ok(offset: [f32; 2]) -> bool {
     offset
         .iter()
         .all(|v| v.is_finite() && v.abs() <= MAX_VALUE_LABEL_OFFSET)
 }
 
-fn color_ok(color: Color) -> bool {
+/// Whether every channel of `color` is finite and within 0..=1. Shared
+/// with the Feynman diagram's checks.
+pub(crate) fn color_ok(color: Color) -> bool {
     [color.r, color.g, color.b, color.a]
         .iter()
         .all(|c| c.is_finite() && (0.0..=1.0).contains(c))

@@ -26,7 +26,8 @@
 
 use crate::annotation::{AnnotationAxis, AnnotationSpace};
 use crate::color::Color;
-use crate::data_config::{MAX_VALUE_LABEL_OFFSET, SeriesConfig};
+use crate::data_config::SeriesConfig;
+use crate::energy_levels::{color_ok, offset_ok};
 use crate::layout::{NudgeReject, NudgeResult, RectF};
 use crate::sink::{PathSegment, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::text::{MeasureText, RichText};
@@ -466,20 +467,8 @@ fn finite_in(v: f32, lo: f32, hi: f32) -> bool {
     v.is_finite() && (lo..=hi).contains(&v)
 }
 
-fn color_ok(color: Color) -> bool {
-    [color.r, color.g, color.b, color.a]
-        .iter()
-        .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
-}
-
 fn rich_ok(text: Option<&RichText>) -> bool {
     text.is_none_or(|t| t.validate_math().is_ok() && t.within_limits())
-}
-
-fn offset_ok(offset: [f32; 2]) -> bool {
-    offset
-        .iter()
-        .all(|v| v.is_finite() && v.abs() <= MAX_VALUE_LABEL_OFFSET)
 }
 
 // Working memory (#234, rule 3).
@@ -1172,7 +1161,8 @@ impl FeynmanSeries {
     /// Move the label of row `index` of `part` by `(dx, dy)` logical pixels
     /// (x right, y down). Rejected for a row past the end, a missing
     /// momentum arrow, a non-finite delta or an offset past
-    /// [`MAX_VALUE_LABEL_OFFSET`]; nothing changes then.
+    /// [`MAX_VALUE_LABEL_OFFSET`](crate::data_config::MAX_VALUE_LABEL_OFFSET);
+    /// nothing changes then.
     pub fn drag_label(
         &mut self,
         part: FeynmanLabelPart,
@@ -1510,7 +1500,7 @@ impl FeynmanSeries {
                 if let Some(text) = placed.label(part, index, measure) {
                     offer(
                         FeynmanHit::Label(part, index),
-                        rect_distance(cursor, text.rect()),
+                        crate::select::rect_distance(&text.rect(), cursor[0], cursor[1]),
                     );
                 }
             }
@@ -1938,13 +1928,6 @@ fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
         0.0
     };
     len(sub(p, lerp(a, b, t)))
-}
-
-/// The distance from `p` to `rect`, zero inside it.
-fn rect_distance(p: [f32; 2], rect: RectF) -> f32 {
-    let dx = (rect.x - p[0]).max(p[0] - (rect.x + rect.width)).max(0.0);
-    let dy = (rect.y - p[1]).max(p[1] - (rect.y + rect.height)).max(0.0);
-    dx.hypot(dy)
 }
 
 /// A placed propagator: its base path, its ends, whether it is a loop and

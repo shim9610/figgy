@@ -192,14 +192,13 @@ impl BoxPlotChart {
         self.active_layer.bounded()
     }
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
-        self.chart_title.clone().unwrap_or_else(|| {
-            crate::BoundedTitleOptions::from_legacy(
-                &self.title,
-                &self.font_family,
-                self.font_size,
-                self.text_color,
-            )
-        })
+        crate::BoundedTitleOptions::resolved(
+            self.chart_title.as_ref(),
+            &self.title,
+            &self.font_family,
+            self.font_size,
+            self.text_color,
+        )
     }
 
     pub fn summary(&self, target: &BoxPlotTarget) -> Option<&BoxSummary> {

@@ -1597,13 +1597,6 @@ pub(super) fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     (p[0] - (a[0] + t * dx)).hypot(p[1] - (a[1] + t * dy))
 }
 
-/// The distance from `p` to `rect`, zero inside it.
-pub(super) fn rect_distance(p: [f32; 2], rect: crate::layout::RectF) -> f32 {
-    let dx = (rect.x - p[0]).max(p[0] - (rect.x + rect.width)).max(0.0);
-    let dy = (rect.y - p[1]).max(p[1] - (rect.y + rect.height)).max(0.0);
-    dx.hypot(dy)
-}
-
 impl LevelPlacement<'_> {
     /// The drawn part of `records` nearest `cursor`, within `max_distance`
     /// of its edge, and that distance (zero on the part). Walks the SSOT
@@ -1632,7 +1625,10 @@ impl LevelPlacement<'_> {
                 self.band_rect(records, style, index),
                 records.levels.iter().position(|l| l.id == band.first),
             ) {
-                offer(LevelHit::Level(row), rect_distance(cursor, rect));
+                offer(
+                    LevelHit::Level(row),
+                    crate::select::rect_distance(&rect, cursor[0], cursor[1]),
+                );
             }
         }
         for index in 0..records.levels.len() {
@@ -1663,7 +1659,7 @@ impl LevelPlacement<'_> {
                 if let Some(text) = self.label(records, style, &layout, part, index, measure) {
                     offer(
                         LevelHit::Label(part, index),
-                        rect_distance(cursor, text.rect()),
+                        crate::select::rect_distance(&text.rect(), cursor[0], cursor[1]),
                     );
                 }
             }
