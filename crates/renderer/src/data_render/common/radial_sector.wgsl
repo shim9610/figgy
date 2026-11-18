@@ -59,19 +59,21 @@ fn hit_sector(ro: vec3<f32>,rd: vec3<f32>,s: Sector) -> Hit {
         if footprint(p.xy,s)<=0.0 { return Hit(t,p,vec3(0.0,0.0,1.0)); }
         return Hit(10000.0,vec3(0.0),vec3(0.0));
     }
+    // The march only finds the surface; the six-sample normal is taken
+    // once, at the point it stopped, outside the loop (#349).
+    var hit=false;var p=vec3(0.0);
     for(var step=0u;step<128u;step++) {
         if t>end { break; }
-        let p=ro+rd*t;let d=solid(p,s);
-        if d<0.00012 {
-            let e=0.0002;
-            let n=vec3(solid(p+vec3(e,0.0,0.0),s)-solid(p-vec3(e,0.0,0.0),s),
-                solid(p+vec3(0.0,e,0.0),s)-solid(p-vec3(0.0,e,0.0),s),
-                solid(p+vec3(0.0,0.0,e),s)-solid(p-vec3(0.0,0.0,e),s));
-            return Hit(t,p,normalize(n+vec3(0.0,0.0,0.00000001)));
-        }
+        p=ro+rd*t;let d=solid(p,s);
+        if d<0.00012 { hit=true;break; }
         t+=max(d,0.00005);
     }
-    return Hit(10000.0,vec3(0.0),vec3(0.0));
+    if !hit { return Hit(10000.0,vec3(0.0),vec3(0.0)); }
+    let e=0.0002;
+    let n=vec3(solid(p+vec3(e,0.0,0.0),s)-solid(p-vec3(e,0.0,0.0),s),
+        solid(p+vec3(0.0,e,0.0),s)-solid(p-vec3(0.0,e,0.0),s),
+        solid(p+vec3(0.0,0.0,e),s)-solid(p-vec3(0.0,0.0,e),s));
+    return Hit(t,p,normalize(n+vec3(0.0,0.0,0.00000001)));
 }
 fn hit_pixel(pixel: vec2<f32>,s: Sector) -> Hit {
     let cs=cos(s.arc.z);let sn=sin(s.arc.z);let mid=s.arc.x+s.arc.y*0.5;
