@@ -547,7 +547,7 @@ chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 �
 
 전체 필드와 열거형 값, serde 표현 규칙, 함께 수정해야 하는 옵션은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다. SCHEMA.md의 예시 JSON은 소스와 자동으로 대조하지 않으므로, 정확한 형식은 `get_config()` / `get_series()`의 실제 출력으로 확인한다.
 
-편집기용 조회 호출(#312)은 렌더러가 직접 계산한 배치와 레이아웃을 돌려주며 문서·선택·실행 취소 상태·래스터를 바꾸지 않는다. `annotation_preview(json)`는 아직 문서에 넣지 않은 주석을 주석 레이어의 배치 코드로 놓아 본 모양과 좌표를 캔버스 픽셀과 문서 픽셀로 돌려준다. `convert_annotation_anchor(json, "Data" | "Ratio")`는 그려지는 위치를 그대로 둔 채 앵커 종류를 바꾼다. `inspect_document_layout(config_json?)`는 문서 영역, 배율, 패널마다의 프레임·데이터 영역·레이어를 돌려주고, 설정 JSON을 넘기면 설치하지 않고 그 후보를 계산한다. `panel_at(x, y)`는 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다. `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄(기호와 라벨)을 돌려주므로 범례 전체를 다시 쓰지 않고 한 줄만 붙일 수 있다. `render_warnings()`는 마지막 프레임의 모든 경고(모든 패널의 눈금 설정과 건너뛴 주석)를 구조화된 JSON으로 돌려준다. 결과 형식과 오류 코드는 [8장의 Editor queries](#editor-queries-figgychart-312)를 참고한다.
+편집기용 조회 호출(#312)은 렌더러가 직접 계산한 배치와 레이아웃을 돌려주며 문서·선택·실행 취소 상태·래스터를 바꾸지 않는다. `annotation_preview(json)`는 아직 문서에 넣지 않은 주석을 주석 레이어의 배치 코드로 놓아 본 모양과 좌표를 캔버스 픽셀과 문서 픽셀로 돌려준다. 원형 차트의 `FiggyBoundedChart.annotation_preview(json)`도 같은 계약과 JSON을 따르며(#334), 문서 좌표는 그 차트의 `annotations()`와 같은 문서 논리 픽셀이다. `convert_annotation_anchor(json, "Data" | "Ratio")`는 그려지는 위치를 그대로 둔 채 앵커 종류를 바꾼다. `inspect_document_layout(config_json?)`는 문서 영역, 배율, 패널마다의 프레임·데이터 영역·레이어를 돌려주고, 설정 JSON을 넘기면 설치하지 않고 그 후보를 계산한다. `panel_at(x, y)`는 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다. `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄(기호와 라벨)을 돌려주므로 범례 전체를 다시 쓰지 않고 한 줄만 붙일 수 있다. `render_warnings()`는 마지막 프레임의 모든 경고(모든 패널의 눈금 설정과 건너뛴 주석)를 구조화된 JSON으로 돌려준다. 결과 형식과 오류 코드는 [8장의 Editor queries](#editor-queries-figgychart-312)를 참고한다.
 
 <a id="39-async-메서드와-객체-잠금-필독"></a>
 
@@ -1611,7 +1611,10 @@ chart.drag_annotation(i, 10, 0, null);
 The radial chart has no value axes: a `Span`, a reference line and a
 `Data` anchor are skipped and listed by `annotation_warnings()`, and the frame
 paints its opaque background over a white clear with the annotations above
-it.
+it. `FiggyBoundedChart.annotation_preview(json)` places an item that is not
+added yet as the layer would draw it, without changing the document or the
+selection ([#334](https://github.com/shim9610/figgy/issues/334); see the
+[Editor queries](#editor-queries-figgychart-312)).
 
 The pointer methods follow the active layer. `FiggyBoundedChart` has
 `set_active_layer(json)` / `active_layer()` (`"Base"` or `"Annotations"`; an
@@ -1844,6 +1847,12 @@ document pixels (the coordinates of `get_config`).
   `annotation_warnings` gives. A hidden item is placed as it is drawn once
   shown. Malformed JSON is refused with code `annotation_json`, and an
   invalid item with `annotation_invalid`.
+  `FiggyBoundedChart.annotation_preview(json)` has the same contract and
+  JSON on the radial chart ([#334](https://github.com/shim9610/figgy/issues/334)).
+  There `document` is in document logical pixels, the units of its
+  `annotations()`, so its `rect` is `bounds` padded by 2 px, and `canvas`
+  is that shape times the display scale. A reference line, a span or a
+  `Data` anchor has no position on a radial chart and reports `NoValueAxis`.
 - `convert_annotation_anchor(json, "Data" | "Ratio")` returns the item with
   every anchor converted at its drawn position: a text box's anchor, an
   arrow's or a box shape's two ends, and a polygon's vertices. Reference

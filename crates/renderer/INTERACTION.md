@@ -1028,7 +1028,9 @@ The WASM wrappers expose the layer on both classes (`FiggyChart`,
 `annotation_handle(index, x, y)`, `drag_annotation(index, dx, dy, handle)`,
 `add_annotation(json)`, `set_annotation(index, json)`,
 `remove_annotation(index)`, `set_annotations_visible(bool)`,
-`pointer_to_anchor(x, y, "Data" | "Ratio")` and `annotation_warnings()`; see
+`pointer_to_anchor(x, y, "Data" | "Ratio")`, `annotation_warnings()` and
+`annotation_preview(json)` (#312, #334: where an item not added yet would be
+drawn, read-only); see
 [the WASM guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host). Their pointer methods (`hit_test`, `on_press`,
 `on_move` and `decoration_bounds` on `FiggyChart`; `hit_decoration`,
 `select_decoration`, `resize_handle` and `drag` on `FiggyBoundedChart`) follow
