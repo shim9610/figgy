@@ -580,10 +580,10 @@ Construction and full Cartesian prewarming are separate operations:
 
 | Entry point | Work performed |
 | --- | --- |
-| `Renderer::try_new` / `try_new_observed` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. The optional resident data and style, path-length (dash) scan, fit reduction, contour-label and picking pipelines are created on first use. |
+| `Renderer::try_new` | Validate device capabilities and create the initial column pool, shared layouts/sampler, shader modules, unit quad and axis pipeline. The optional resident data and style, path-length (dash) scan, fit reduction, contour-label and picking pipelines are created on first use. |
 | Native `for_window_async` / `for_window_async_observed` | Create and retain instance/adapter/device/queue, configure a surface and optional MSAA target, then initialize the same base renderer resources. |
 | Browser `for_window_async` / `for_window_async_observed` | In addition to window setup, await temporary JavaScript warmup pipelines for the Cartesian render entries. Those temporary pipelines are discarded; they do not populate the renderer's retained optional caches. |
-| `for_window_minimal_async_observed` | In a browser, await no pipeline compile: create the fullscreen textured pipeline directly, issue the asynchronous compile of every resident render pipeline at once and return while the browser compiles them. On native targets it has the same base initialization as the ordinary async constructor. It installs no preparation group. |
+| `for_window_with_shader_set_async_observed` | Start on the given `ShaderSet`. In a browser, await no pipeline compile: create the fullscreen textured pipeline directly, issue the asynchronous compile of every resident render pipeline at once and return while the browser compiles them. On native targets it has the same base initialization as the ordinary async constructor. It installs no preparation group. |
 | `prewarm_all` / `prewarm_all_observed` | Compile and retain the resident Cartesian graphics/style pipelines, contour-label compute, path-length scans, fit reduction and GPU picking machinery for the current renderer/target generation. |
 
 Normal preparation creates missing pipelines lazily. To move that work before
@@ -648,7 +648,10 @@ A host that holds only a built renderer, such as a `WindowedRenderer` from
 device-loss record, the ledger and the budget. `WindowedRenderer::instance()`
 and `adapter()` give the handles another surface on that device is created
 and configured from. Dropping any of these renderers or bundles never destroys
-the device.
+the device while another of them holds it. In the browser, the last holder of
+a device figgy requested itself (`RendererDevice::request_async`, a windowed or
+headless renderer) destroys it on drop, after the work submitted on it (#322);
+a device from `RendererDevice::new` stays the host's and is never destroyed.
 
 ## Render targets, coordinates and output
 
@@ -721,7 +724,7 @@ does not know and rejects enum variants it does not know.
 
 ## Detached Cartesian pipeline preparation
 
-`Renderer::for_window_minimal_async_observed` starts the temporary browser render
+`Renderer::for_window_with_shader_set_async_observed` starts the temporary browser render
 warmup without waiting for it, as described above. A host using detached preparation to gate first use
 must compile and install `PreparationFeature::Basic` (which also includes path-length
 scans and fit reduction), plus the groups needed by its charts. Construction
@@ -739,8 +742,8 @@ per renderer and feature, serialize installation with other renderer calls, and
 ignore results after their renderer has been disposed.
 
 **Background compiles in a browser** ([#299](https://github.com/shim9610/figgy/issues/299)).
-A renderer built by `for_window_minimal_async_observed` (or
-`for_window_with_shader_set_async_observed`) compiles the render pipelines of its
+A renderer built by `for_window_with_shader_set_async_observed` compiles the
+render pipelines of its
 shader set in the background, at most as many at once as the browser reports cores
 (`navigator.hardwareConcurrency`, four when it reports none), and issues what a screen
 frame needs before the rest. The vector, 3D surface and ternary region modules are
@@ -815,7 +818,7 @@ the cut remap of a broken axis, the probability scale and polar coordinates.
   preparation begun before it is rejected by `install_preparation` like one
   for another target generation. A `PreparedFrame` prepared before it stays
   valid. In a browser, a renderer that started its pipelines' asynchronous
-  compiles when it was built (`for_window_minimal_async_observed`) starts
+  compiles when it was built (`for_window_with_shader_set_async_observed`) starts
   the full set's the same way at the upgrade.
 - **`Renderer::require_shader_set(ShaderSet)`** asks for the upgrade early,
   before such a chart arrives. It only moves up and is idempotent: asking
@@ -825,8 +828,8 @@ the cut remap of a broken axis, the probability scale and polar coordinates.
   `RendererDevice::with_shader_set(ShaderSet::Full)` for the constructors
   that take a device bundle (`Renderer::try_new` and its siblings), and
   `Renderer::for_window_with_shader_set_async_observed(target, size,
-  pool_capacity_bytes, set, observer)` for a window or canvas, which is
-  `for_window_minimal_async_observed` with the set. The other constructors
+  pool_capacity_bytes, set, observer)` for a window or canvas, which
+  returns before any pipeline compile. The other constructors
   are unchanged and start on the basic set.
 
 `PreparationFeature::ALL`, `for_chart(config, series)` and `preparation_ready`

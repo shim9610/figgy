@@ -8,10 +8,9 @@
 //! [`CategoricalChart`] document still parses and validates here, and
 //! `Config::from_categorical` turns it into that chart and the uploads of its
 //! values. Stable category and series ids identify edits and selections;
-//! values follow category order. The type is deprecated and is removed in
-//! the next milestone.
-// The module defines the deprecated reader type and its tests use it.
-#![allow(deprecated)]
+//! values follow category order. The type is the reader for documents
+//! written before 0.13.
+
 use crate::Color;
 #[cfg(test)]
 use crate::Material;
@@ -27,10 +26,8 @@ pub use crate::data_config::{
     CategoryBarDirection, CategoryBarLabelFormat, CategoryBarLabels, CategoryBarMode,
     CategoryBarOverride, CategoryBarStyle, CategoryBarTarget,
 };
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the CategoricalChart document reader; removed with it in the next milestone"
-)]
+
+/// Part of the [`CategoricalChart`] reader for documents written before 0.13.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarSeries {
@@ -58,17 +55,11 @@ impl BarSeries {
         }
     }
 }
-/// The former bar material enum, now the shared [`Material`](crate::Material). Bars reject
-/// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body) excludes.
-#[deprecated(since = "0.13.0", note = "use Material")]
-pub type CategoryBarMaterial = crate::Material;
-/// A legacy categorical bar chart document. [`Self::validate`] checks it,
+
+/// The reader for categorical bar chart documents written before 0.13.
+/// [`Self::validate`] checks it,
 /// and `Config::from_categorical` opens it as a Cartesian chart of category
 /// bar series.
-#[deprecated(
-    since = "0.13.0",
-    note = "a document reader only: open it with Config::from_categorical; removed in the next milestone"
-)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",

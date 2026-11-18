@@ -661,10 +661,35 @@ impl FiggyChart {
         Ok(())
     }
 
-    /// Explicitly rebuild the auto legend from `SeriesConfig.label`.
-    /// Legacy string labels are used only when a series has no rich label.
+    /// Explicitly rebuild the auto legend from `SeriesConfig.label`: every
+    /// auto legend row from the series' label; a series without one gets no
+    /// row.
     pub fn reset_legend_from_series_labels(&mut self) -> Result<(), JsValue> {
-        self.rebuild_legend_from_series_labels()
+        let series = self.chart_series()?;
+        let mut entries: Vec<(SeriesConfig, RichText)> = Vec::new();
+        entries.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in series {
+            if let Some(label) = &cfg.label {
+                entries.push((cfg.clone(), label.clone()));
+            }
+        }
+
+        let mut config = self.chart_config()?.clone();
+        config.legend.content.segments.clear();
+        for (cfg, label) in entries {
+            renderer::config::append_legend_entry_rich(
+                &mut config.legend.content,
+                renderer::config::series_symbol_segments(
+                    &cfg,
+                    config.colorbar.as_ref().map(|bar| &bar.colormap),
+                ),
+                label.segments,
+            );
+        }
+        config.legend.visible = !config.legend.content.segments.is_empty();
+        self.replace_chart_config(config)?;
+        self.legend_auto_managed = true;
+        Ok(())
     }
 
     pub(super) fn set_selected_annotation(&mut self, selected: Option<usize>) {

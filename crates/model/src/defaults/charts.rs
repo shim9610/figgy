@@ -1,23 +1,16 @@
 //! Chart families: radial, radar, polar, ternary, parallel, 3D and the bounded documents.
 
-#![allow(unused_imports)]
-// The deprecated document readers keep their defaults until they go.
-#![allow(deprecated)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
 use super::*;
 use crate::boxplot::*;
 use crate::categorical::*;
-use crate::format::*;
-use crate::layout::*;
-use crate::line::*;
 use crate::parallel::*;
 use crate::polar::*;
 use crate::radar::*;
 use crate::radial::*;
 use crate::ternary::*;
-use crate::text::*;
 use crate::view3d::*;
 use crate::*;
 

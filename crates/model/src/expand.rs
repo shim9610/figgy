@@ -1308,7 +1308,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         unit: _,
     } = template;
     let (min, max) = axis.data_range();
-    AxisOptions {
+    with_hidden_text(AxisOptions {
         scale: scale.clone(),
         min,
         max,
@@ -1333,21 +1333,15 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         log_ticks,
         breaks: breaks.clone(),
         unit: None,
-    }
-    .with_hidden_text()
+    })
 }
 
-trait HiddenText {
-    fn with_hidden_text(self) -> Self;
-}
-
-impl HiddenText for AxisOptions {
-    fn with_hidden_text(mut self) -> Self {
-        self.label_style.visible = false;
-        self.label_style.label_visible = false;
-        self.title_option.visible = false;
-        self
-    }
+/// `axis` with its tick labels and title hidden.
+fn with_hidden_text(mut axis: AxisOptions) -> AxisOptions {
+    axis.label_style.visible = false;
+    axis.label_style.label_visible = false;
+    axis.title_option.visible = false;
+    axis
 }
 
 impl Config {

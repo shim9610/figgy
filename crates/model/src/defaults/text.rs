@@ -1,21 +1,14 @@
 //! Text, number and date formats, colour maps, materials and line styles.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
-use super::*;
 use crate::colormap::*;
 use crate::format::*;
-use crate::format::*;
-use crate::layout::*;
-use crate::line::*;
 use crate::line::*;
 use crate::material::*;
 use crate::text::math::*;
 use crate::text::*;
-use crate::text::*;
-use crate::*;
 
 /// The documented default of [`ColorMap`]: the value a document that
 /// omits it takes.

@@ -1,10 +1,8 @@
 //! Chart frame: the document, its axes, title, legend, grid and colour bar.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
-use super::*;
 use crate::config::*;
 use crate::format::*;
 use crate::layout::*;

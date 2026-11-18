@@ -28,23 +28,6 @@ pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = ERRORBAR_S
 /// (`Style::line_width_px` for stems, `cap_width_px` for caps; caps span
 /// ±`cap_half_px`). A direction whose err columns sum to <= 0 collapses to
 /// zero-area quads, so its stem and caps draw nothing.
-pub fn create_errorbar_columnar_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::errorbar(device, crate::shader_assembly::ShaderSet::Full);
-    create_errorbar_columnar_pipeline_with_sample_count(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        1,
-    )
-}
-
 pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -62,26 +45,6 @@ pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
         sample_count,
         "vs_main",
         "figgy errorbar columnar pipeline",
-    )
-}
-
-pub fn create_errorbar_columnar_mapped_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::errorbar(device, crate::shader_assembly::ShaderSet::Full);
-    create_errorbar_columnar_mapped_pipeline_from_shader(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        style_map_bgl,
-        target_format,
-        sample_count,
     )
 }
 

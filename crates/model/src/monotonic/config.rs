@@ -12,7 +12,6 @@ use crate::drag::Draggable;
 use crate::layer::{AnnotationLayer, LayerRef};
 use crate::layout::{Element, NudgeReject, NudgeResult, Side};
 use crate::legend::Legend;
-use crate::line::LineStylePreset;
 use crate::text::MeasureText;
 use crate::{Color, RuleKind};
 
@@ -70,10 +69,6 @@ impl<'a> MonotonicConfig<'a> {
 
     pub fn set_background(&mut self, color: Option<Color>) {
         self.config.background = color;
-    }
-
-    pub fn set_plot_background(&mut self, color: Option<Color>) {
-        self.config.plot_background = color;
     }
 
     /// The axis on `side`.
@@ -193,26 +188,6 @@ impl MonotonicAxis<'_> {
 
     pub fn ticks(&mut self) -> &mut TickVisibility {
         &mut self.axis.tick
-    }
-
-    pub fn set_major_spacing(&mut self, spacing: f64) {
-        self.axis.major_spacing = spacing;
-    }
-
-    pub fn set_minor_count(&mut self, count: usize) {
-        self.axis.minor_count = count;
-    }
-
-    pub fn set_tick_lengths(&mut self, major: f32, minor: f32) {
-        self.axis.major_tick_length = major;
-        self.axis.minor_tick_length = minor;
-    }
-
-    pub fn set_line(&mut self, visible: bool, color: Color, width: f32, style: LineStylePreset) {
-        self.axis.line_visible = visible;
-        self.axis.line_color = color;
-        self.axis.line_width = width;
-        self.axis.line_style = style;
     }
 
     /// A y axis' range. An x axis' range is the monotonic calls': refused

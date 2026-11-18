@@ -197,19 +197,13 @@ pub use text_render::{CpuTextMeasure, FontPolicy};
 
 /// The surface material shared by bars, boxes and sectors.
 pub use model::Material;
+pub use model::categorical::*;
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
     RadialLabels, RadialOutline, RadialPickTicket, RadialRenderer, RadialSlice, RadialSplit,
     RadialStyle, RadialTarget,
 };
-// The deprecated name stays importable from the crate root.
-#[allow(deprecated)]
-pub use radial::RadialMaterial;
 
-#[allow(deprecated)]
-pub use model::categorical::*;
-
-#[allow(deprecated)]
 pub use model::boxplot::*;
 /// Polar coordinates for the Cartesian chart: `PolarOptions` for
 /// `Config.polar`, the angle unit and segment interpolation it reads, and the
@@ -273,10 +267,8 @@ pub use model::feynman::{
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {
     #![doc = include_str!("../RADAR.md")]
-    #[allow(deprecated)]
     pub use model::radar::*;
 }
-#[allow(deprecated)]
 pub use model::radar::*;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

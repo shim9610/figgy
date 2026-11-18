@@ -19,8 +19,6 @@
 //! given.
 //!
 //! cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;

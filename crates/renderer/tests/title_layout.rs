@@ -1,7 +1,7 @@
 //! The title helpers' band fitting and multi-line alignment, checked through
 //! the public raster and selection APIs.
 
-use renderer::axis_render::try_raster_chart_to_rgba;
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, Rect, RectF};
 use renderer::text_render::{FontPolicy, measure_rich_text};
@@ -91,7 +91,8 @@ fn with_title_grows_the_band_so_a_multi_line_title_is_not_clipped() {
     assert!(cfg.chart_title.top_margin >= block.height());
     assert!(cfg.data_area().is_ok());
 
-    let rgba = try_raster_chart_to_rgba(&cfg).expect("raster");
+    let rgba = try_raster_chart_layer_to_rgba_with_selection_at(&cfg, AxisLayerKind::All, &[], 1.0)
+        .expect("raster");
     assert!(
         (0..WIDTH).all(|x| !inked(&rgba, x, 0)),
         "nothing may be cut off at the canvas top"
@@ -148,8 +149,20 @@ fn with_title_draws_a_fitting_title_exactly_as_before() {
         injected.chart_title.text.segments = renderer::text::rich_segments_from_text(title);
         assert_eq!(helper.config(), &injected, "{title:?}");
         assert_eq!(
-            try_raster_chart_to_rgba(helper.config()).expect("raster"),
-            try_raster_chart_to_rgba(&injected).expect("raster"),
+            try_raster_chart_layer_to_rgba_with_selection_at(
+                helper.config(),
+                AxisLayerKind::All,
+                &[],
+                1.0
+            )
+            .expect("raster"),
+            try_raster_chart_layer_to_rgba_with_selection_at(
+                &injected,
+                AxisLayerKind::All,
+                &[],
+                1.0
+            )
+            .expect("raster"),
             "{title:?}"
         );
     }
@@ -171,7 +184,9 @@ fn title_alignment_positions_each_line_inside_the_block() {
         // a row just below its baseline separates it from the second line.
         let block = measure_rich_text(&cfg.chart_title.text, FontPolicy::Standard);
         let split = (bounds.y + block.ascent + 4.0) as u32;
-        let rgba = try_raster_chart_to_rgba(&cfg).expect("raster");
+        let rgba =
+            try_raster_chart_layer_to_rgba_with_selection_at(&cfg, AxisLayerKind::All, &[], 1.0)
+                .expect("raster");
         let line1 = ink_bounds(&rgba, 0..split).expect("first line ink");
         let line2 = ink_bounds(&rgba, split..HEIGHT).expect("second line ink");
         (bounds, line1, line2)

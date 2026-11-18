@@ -43,47 +43,26 @@ pub enum AxisLayerKind {
     All,
 }
 
-/// Rasterize the axes into an RGBA8 premultiplied buffer matching
-/// `config.chart_area` in size.
+/// Rasterize one axis layer of `config` into an RGBA8 premultiplied buffer
+/// matching `config.chart_area` in size: the grid below the GPU data layer,
+/// the decoration above it, or both ([`AxisLayerKind::All`]).
 ///
-/// Used as the **CPU raster** that the renderer uploads to a wgpu texture.
 /// The returned buffer is `width * height * 4` bytes; each pixel is
-/// `[R, G, B, A]` with premultiplied alpha.
-///
-/// Returns [`crate::FiggyError::InvalidChartArea`] /
+/// `[R, G, B, A]` with premultiplied alpha. Returns
+/// [`crate::FiggyError::InvalidChartArea`] /
 /// [`crate::FiggyError::RasterWrapFailed`] instead of panicking.
-pub fn try_raster_chart_to_rgba(config: &Config) -> crate::Result<Vec<u8>> {
-    try_raster_chart_layer_to_rgba(config, AxisLayerKind::All)
-}
-
-/// Rasterize a single layer — used to composite grid below and decoration
-/// above the GPU data layer.
-pub fn try_raster_chart_layer_to_rgba(
-    config: &Config,
-    layer: AxisLayerKind,
-) -> crate::Result<Vec<u8>> {
-    try_raster_chart_layer_to_rgba_with_selection(config, layer, &[])
-}
-
-/// [`try_raster_chart_layer_to_rgba`] plus selection highlight boxes drawn on
-/// top (Decoration / All layers only — selection never sits under the data).
 ///
-/// `selection` comes from `SelectionGeometry::selection_box(cfg, …)` and is
-/// in absolute chart-surface coordinates; this function shifts it into the
-/// chart_area-relative raster frame.
-pub fn try_raster_chart_layer_to_rgba_with_selection(
-    config: &Config,
-    layer: AxisLayerKind,
-    selection: &[SelectionBox],
-) -> crate::Result<Vec<u8>> {
-    try_raster_chart_layer_to_rgba_with_selection_at(config, layer, selection, 1.0)
-}
-
-/// [`try_raster_chart_layer_to_rgba_with_selection`] for a `config` whose
-/// pixel values carry the display or export `scale` (#205): what the
-/// renderer rasters for a placed or exported document, where a broken
-/// axis' piece frames snap to whole logical pixels and then scale, so a 2x
-/// raster is the 1x raster doubled. The plain entry is this one at scale 1.
+/// `selection` boxes are drawn on top of the Decoration / All layers
+/// (selection never sits under the data). They come from
+/// `SelectionGeometry::selection_box(cfg, …)` in absolute chart-surface
+/// coordinates; this function shifts them into the chart_area-relative
+/// raster frame.
+///
+/// `scale` is the display or export scale `config`'s pixel values carry
+/// (#205), 1 for a plain logical-pixel config: what the renderer rasters for
+/// a placed or exported document, where a broken axis' piece frames snap to
+/// whole logical pixels and then scale, so a 2x raster is the 1x raster
+/// doubled.
 pub fn try_raster_chart_layer_to_rgba_with_selection_at(
     config: &Config,
     layer: AxisLayerKind,
@@ -115,7 +94,7 @@ pub fn try_raster_chart_layer_to_rgba_with_selection_at(
 }
 
 /// The grid and decoration rasters of one panel from one placement pass:
-/// what [`try_raster_chart_layer_to_rgba_with_selection`] produces for
+/// what [`try_raster_chart_layer_to_rgba_with_selection_at`] produces for
 /// `Grid` and `Decoration`, laid out once. With `grid` false the slot below
 /// the data is not rastered (its buffer comes back empty): a panel whose
 /// grid texture the caller fills otherwise, such as the cached Milkyway
@@ -230,15 +209,6 @@ pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()
 /// legend. Drawn above the data so data never overlaps axis chrome.
 pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
     draw_layers(None, Some(canvas), config, 1.0)
-}
-
-/// Draw the full axis chrome (grid + decoration) into the regions specified
-/// by `config`. If `data_area()` fails, this is a no-op. One canvas cannot
-/// back both slots at once, so this entry runs the placement once per slot;
-/// `raster_panel_layers` is the single pass the renderer uses.
-pub fn draw_axes(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
-    draw_grid_layer(canvas, config)?;
-    draw_decoration_layer(canvas, config)
 }
 
 #[cfg(test)]

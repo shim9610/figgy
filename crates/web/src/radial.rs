@@ -117,7 +117,9 @@ fn export_background(value: &str) -> Result<RadialExportBackground, JsValue> {
 /// queue instead (#313): its own surface on its own canvas, the same
 /// device-loss record, and the same GPU ledger and memory budget. Disposing
 /// either chart (`free()`) drops only its own handles: the device lives while
-/// the other holds it, and is never destroyed by a dispose.
+/// the other holds it, and a dispose never destroys a device another chart
+/// still draws on. Disposing the last chart on the device destroys it, since
+/// figgy requested it, once the work submitted on it completes (#322).
 #[wasm_bindgen(js_name = FiggyBoundedChart)]
 pub struct FiggyRadialChart {
     surface: wgpu::Surface<'static>,
@@ -162,10 +164,11 @@ impl FiggyRadialChart {
         let adapter = renderer::gpu::request_adapter_for_surface_async(&instance, &surface)
             .await
             .map_err(js_err)?;
-        let (device, queue) = renderer::gpu::request_device_async(&adapter)
+        // figgy requests this device, so it is destroyed once the last
+        // chart drawing on it is disposed (#322).
+        let gpu = RendererDevice::request_async(&adapter)
             .await
             .map_err(js_err)?;
-        let gpu = RendererDevice::new(device, queue).map_err(js_err)?;
         Self::create_with(
             canvas,
             surface,
@@ -185,7 +188,7 @@ impl FiggyRadialChart {
     /// Lifetime: the chart holds clones of the parent's handles. Disposing
     /// it (`free()`) never destroys the parent's device, and disposing the
     /// parent leaves this chart drawing; the device lives while either
-    /// holds it. Both share one device-loss record, so a lost device fails
+    /// holds it, and disposing the last of them destroys it (#322). Both share one device-loss record, so a lost device fails
     /// the next frame, export or pick of each with the loss, and one GPU
     /// ledger and memory budget: the parent's `gpu_memory_status` counts
     /// this chart's allocations, and the one budget bounds both charts.

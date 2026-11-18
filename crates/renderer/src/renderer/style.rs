@@ -435,7 +435,7 @@ pub(super) fn category_bar_style_map(
             Some(record)
         })
         .collect();
-    data_render::create_bar_style_map(device, layout, &overrides)
+    data_render::create_bar_style_map_with_slots(device, layout, &[], &overrides)
 }
 
 /// The part styles and per-box overrides of a box plot series as the bar
@@ -1549,7 +1549,7 @@ impl Renderer {
         if !has_index && style_slots.is_empty() && overrides.is_empty() {
             return Ok(None);
         }
-        data_render::create_errorbar_style_map(
+        data_render::create_scatter_style_map(
             &self.device,
             &self.per_point_style_map_bgl,
             &style_slots,
@@ -1591,7 +1591,12 @@ impl Renderer {
         if overrides.is_empty() {
             return Ok(None);
         }
-        data_render::create_bar_style_map(&self.device, &self.per_point_style_map_bgl, &overrides)
-            .map(Some)
+        data_render::create_bar_style_map_with_slots(
+            &self.device,
+            &self.per_point_style_map_bgl,
+            &[],
+            &overrides,
+        )
+        .map(Some)
     }
 }

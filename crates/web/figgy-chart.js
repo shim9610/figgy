@@ -1634,10 +1634,6 @@ export class FiggyChartElement extends HTMLElement {
     }
   }
 
-  warm_up() {
-    return this.first_frame_ready();
-  }
-
   async ensure_extent_engine() {
     await this.#runKernelOperation(
       "extent-prewarm",

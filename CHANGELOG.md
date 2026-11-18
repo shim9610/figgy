@@ -40,6 +40,112 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 `MonotonicLine` series kind, a subplot's `text_scale` and a radial slice's
 `text_generated`) are additive.
 
+- **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
+  Public items with no caller, aliases and one-line twins of another entry,
+  and builders only tests used are removed; serialized documents are
+  unchanged (every field still parses and saves the same). Migration, by
+  crate (removed name → replacement):
+  - `figgy-model`:
+    - `RadialMaterial`, `CategoryBarMaterial`, `BoxPlotMaterial` (also
+      re-exported by the renderer) → `Material`.
+    - `CategoricalChart`, `BarSeries`, `BoxPlotChart`, `BoxSummary`,
+      `BoxPlotDirection`, `BoxPlotSeries`, `RadarChart`, `RadarTarget`,
+      `RadarGridShape`, `RadarStyle` and `RadarSeries` lose their
+      `#[deprecated]` attributes: they stay as the readers for documents
+      written before 0.13, with no removal planned. An
+      `#[allow(deprecated)]` that served them can go.
+    - `Config::from_categorical_with_report(c)`,
+      `from_boxplot_with_report(c)`, `from_radar_with_report(c)` →
+      `Config::from_categorical_with_report_in(c, None)` (likewise
+      `from_boxplot_with_report_in`, `from_radar_with_report_in`).
+    - `FitStrategy::ProportionalScale` and `FitStrategy::Absorb(side)` →
+      `FitStrategy::PreserveTitles`, the strategy every product path uses.
+      An exhaustive `match` on `FitStrategy` has one arm.
+    - `Config::resize_chart_area(area)` → set `config.chart_area` and check
+      `config.data_area()`; `Config::resize_chart_area_scaled`,
+      `Config::set_side_margin` and `Config::set_margins` →
+      `Config::fit_to_data_area(target, FitStrategy::PreserveTitles)` with
+      the data area the margins give.
+    - `AxisOptions::data_value(shown)` → `axis.effective_unit()` and
+      `unit.value(shown)`.
+    - `Coordinates::from_options` and `Coordinates::is_cartesian` → build
+      the variant and `matches!(c, Coordinates::Cartesian)`;
+      `Config::ternary_mut` → `match &mut config.coordinates`.
+    - `Config::nudge_x(e, m, dx)` / `nudge_y(e, m, dy)` →
+      `Config::nudge(e, m, dx, 0.0)` / `nudge(e, m, 0.0, dy)`.
+    - `resize::ALL_HANDLES` → list the eight `ResizeHandle` variants.
+    - `MonotonicEnvelope::append_monotonic_ref` → `append_monotonic` on the
+      typed source; `MonotonicEnvelope::aligned_mapping` → `mapping()` (the
+      columns are aligned after every full call: `is_grid_aligned()`).
+    - `MonotonicConfig::set_plot_background` and
+      `MonotonicAxis::{set_major_spacing, set_minor_count, set_tick_lengths,
+      set_line}` → edit the field on a `Config` copy and
+      `MonotonicConfig::assign` it (refused when the mapping would move).
+    - `default::{default_chart_title_options, default_axis_title_options,
+      default_label_style_x, default_label_style_y,
+      default_axis_options_colorbar, default_grid_options,
+      default_chart_area}` → the field of `default::default_config()` (or
+      of `default_colorbar_options().axis`, `default_config().chart_area`).
+  - `figgy-renderer`:
+    - `data_render::{create_line_columnar_pipeline,
+      create_scatter_columnar_pipeline,
+      create_scatter_columnar_mapped_pipeline,
+      create_errorbar_columnar_pipeline,
+      create_errorbar_columnar_mapped_pipeline,
+      create_bar_columnar_pipeline, create_bar_columnar_mapped_pipeline,
+      create_field_columnar_pipeline, create_vector_pipeline,
+      create_scatter_style_map_bind_group_layout,
+      create_errorbar_style_map, create_bar_style_map,
+      create_point_value_map_bind_group, render_textured, make_uv_gradient,
+      update_style, line_strip_vertex_count, MESH_TABLE_HEIGHTS}` and
+      `data_render::line_arc::{create_arc_scan_pipelines,
+      create_arc_scan_pipelines_observed,
+      create_arc_scan_pipelines_observed_async}`: no replacement. The
+      renderer builds its pipelines from its own shader set; a host draws
+      through `Renderer`. `create_per_point_style_map_bind_group_layout`,
+      `create_scatter_style_map` and `create_bar_style_map_with_slots(device,
+      layout, &[], overrides)` stay. The bar shader's `vs_main` and
+      `vs_mapped` entries, which only the removed builders compiled, are
+      removed with them, and `shader_pipeline_contract.json` is regenerated.
+    - `Renderer::{texture_bind_group_layout, transform_bind_group_layout,
+      style_bind_group_layout, line_pipeline, scatter_pipeline,
+      errorbar_pipeline, bar_pipeline, bar_mapped_pipeline,
+      quad_vertex_buffer}`: no replacement (renderer internals).
+    - `GpuLedger::{end_submission, reset_peak}`,
+      `GpuMemoryUsage::{external_bytes, total_creations}` and
+      `gpu_memory::texture_desc_bytes` are test support now →
+      `Renderer::end_gpu_frame`; `total_bytes() - pool_bytes()`; the sum of
+      `creations_of(kind)`.
+    - `Renderer::try_new_observed` → `Renderer::try_new`.
+    - `WindowedRenderer::for_window_async_observed` /
+      `for_window_blocking_observed` → `Renderer::for_window_async_observed`
+      / `Renderer::for_window_blocking_observed`;
+      `Renderer::for_window_minimal_async_observed(t, s, p, o)` →
+      `Renderer::for_window_with_shader_set_async_observed(t, s, p,
+      ShaderSet::Basic, o)`.
+    - `WindowedRenderer::warm_up` / `warm_up_blocking` →
+      `first_frame_ready` / `first_frame_ready_blocking`.
+    - `axis_render::{try_raster_chart_to_rgba(c),
+      try_raster_chart_layer_to_rgba(c, layer),
+      try_raster_chart_layer_to_rgba_with_selection(c, layer, sel)}` →
+      `try_raster_chart_layer_to_rgba_with_selection_at(c, layer, sel,
+      scale)` with `AxisLayerKind::All`, `&[]` and `1.0` for the omitted
+      arguments; `axis_render::draw_axes` → `draw_grid_layer` then
+      `draw_decoration_layer`.
+    - `PickedData::into_point` → match `PickedData::Point { .. }`;
+      `Canvas::blit_mask` → no replacement (crate text path);
+      `Chart::invalidate` → no replacement (the renderer tracks column
+      changes itself).
+    - The retained iced 0.14 / wgpu 27 integration source
+      (`unsupported/iced_embed_wgpu27.rs`) is removed; USAGE.md states the
+      status.
+  - `figgy` (browser): `FiggyChart.warm_up()` and the element's `warm_up()`
+    → `first_frame_ready()`; `FiggyChart.begin_stream_pick_point`,
+    `begin_stream_pick_data`, `finish_stream_pick_point` and
+    `finish_stream_pick_data` (which always rejected) are removed: stream
+    picking stays disabled. The six `*-probe.html` pages are removed, and
+    the unused `serde` dev-dependency.
+
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
@@ -326,12 +432,12 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   `RichText`. Migration: a `MeasureText` implementation drops its `emit`;
   one whose plain-text measurement differs from its rich-text one
   overrides `measure_plain`.
-- **The deprecated readers' companion types are deprecated too** ([#160](https://github.com/shim9610/figgy/issues/160)).
+- **The readers' companion types** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `BarSeries`, `BoxSummary`, `BoxPlotDirection`, `BoxPlotSeries`,
   `RadarTarget`, `RadarGridShape`, `RadarStyle` and `RadarSeries` exist only
-  inside `CategoricalChart`, `BoxPlotChart` and `RadarChart`, deprecated
-  since 0.13.0, and leave with them. Code that reads a legacy document
-  through them adds `#[allow(deprecated)]`, as for the readers.
+  inside `CategoricalChart`, `BoxPlotChart` and `RadarChart`, the readers for
+  documents written before 0.13 ([#341](https://github.com/shim9610/figgy/issues/341)
+  dropped their `#[deprecated]` attributes).
 - **Unused items removed** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `DataConfig` (a lone `data_id`), `DataCell` (a bundle of columns nothing
   built), `default::default_rich_text` (an empty black 12 px `RichText`) and
@@ -1027,11 +1133,11 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   - Per-family defaults are unchanged (bars Flat, boxes Matte, sectors
     Flat). Serialized documents are unchanged: the variant names are the
     strings the three old enums wrote.
-  - Migration: `RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial`
-    are deprecated aliases of `Material`; replace the name, the sets are
-    the same. `BoxPlotMaterial::default()` is now `Flat` (the enum default);
+  - Migration: replace `RadialMaterial`, `CategoryBarMaterial` and
+    `BoxPlotMaterial` with `Material` (the aliases are removed, #341); the
+    sets are the same. `Material::default()` is `Flat`;
     `BoxPlotStyle::default()` still uses `Matte`. An exhaustive `match` on
-    `CategoryBarMaterial` or `BoxPlotMaterial` needs the new variants.
+    the former bar or box enum needs the new variants.
 - **The polar label band scales with the chart**
   ([#47](https://github.com/shim9610/figgy/issues/47)). `Config::polar_geometry`
   reserved a fixed 6 px beside the tick length and the label line (2 px
@@ -1054,7 +1160,7 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
   configuration alone. Category bars and box plots are Cartesian series kinds and radar
   series a polar one, their per-point data entering through `ColumnSource`.
   `CategoricalChart`, `BoxPlotChart` and `RadarChart` stay only as
-  deprecated readers of the documents of releases up to 0.12, and every
+  readers of the documents of releases up to 0.12, and every
   document model 0.12.1 wrote still reads. Every migration is under
   [Migrating from the bounded group](#unreleased-bounded-migration).
   - **The radial chart is the DataLess chart**
@@ -1288,11 +1394,10 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
     hosts. `PickedDataRef::ValueLabel { source_id, series_id, category_index }`
     is a selected label (`{"kind":"value_label", …}` in `picked_data`). The
     readers carry a legacy document's `DataLabel` offsets into `labels.offsets`.
-  - **Readers deprecated, their dead helpers removed**.
-    `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
-    `#[deprecated(since = "0.13.0")]`, each message naming its reader
-    (`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`);
-    they are removed in the next milestone. The helpers of the removed
+  - **Readers kept, their dead helpers removed**.
+    `CategoricalChart`, `BoxPlotChart` and `RadarChart` are the readers for
+    documents written before 0.13, opened with `Config::from_categorical`,
+    `Config::from_boxplot` and `Config::from_radar`. The helpers of the removed
     renderers and editors that no reader needs are gone:
     `CategoricalChart::bar_override`, the three types' `reorder_categories`,
     `set_active_layer` and `normalize_title`, and `RadarChart::is_emphasized`
@@ -1540,6 +1645,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **`RendererDevice::request_async` and figgy-owned devices** ([#322](https://github.com/shim9610/figgy/issues/322)). New, additive: `RendererDevice::request_async(&adapter)` requests a device with figgy's descriptor (`gpu::request_device_async`) and bundles it as `RendererDevice::new` does, recording that figgy owns the device; the windowed and headless constructors build their bundles this way. In the browser, the drop of the last holder of such a bundle (a renderer, a radial renderer, a clone or a pending ticket) destroys the device after its submitted work (see the browser entry for the Chromium deadlock this avoids). Behavior change for browser hosts that keep the raw `wgpu::Device` of a windowed or headless renderer (`device()`) after dropping every figgy holder of it: keep a `renderer_device()` clone as long as the device is used. `RendererDevice::new` and `RendererDevice::blocking` bundles stay the host's and are never destroyed. Native drops are unchanged.
 
 - **A typed data pick compiles only the kernels its chart dispatches** ([#327](https://github.com/shim9610/figgy/issues/327)). Enabling GPU picking (`enable_gpu_picking`, `enable_gpu_picking_async`, `prewarm_all` and the `Picking` preparation) created all 13 typed data pick kernels: histogram, field contour and cell, vector grid, category bar, box plot, range bar, violin, parallel, triangle mesh, value label and the two streamed-pick reducers. In a browser, the first pick of a small radar chart waited for every one of them; on SwiftShader that took minutes. The data pick bundle now holds only its layouts and placeholders. Each kernel is created by the first pick that dispatches it and kept by the renderer's picker (`DataPickKernels`, next to the exact point pipelines of [#299](https://github.com/shim9610/figgy/issues/299)); a pick of a kind whose kernel does not exist yet creates it, so a pick never fails for that reason. A radar or XY line pick creates none of them. New, browser only: `Renderer::compile_data_pick_pipelines_async` and `WindowedRenderer::compile_data_pick_pipelines_at` compile, through `createComputePipelineAsync`, only the kernels a typed pick of that chart at that position dispatches, then create them from the browser's cache; a streamed typed pick compiles its two reducers the same way. As with `compile_pick_pipelines_at`, a compile the browser rejects is left to the creation, which reports its error as before. `prewarm_all` and the `Picking` preparation no longer create the data kernels, matching the exact point pipelines. Native picks create the kernels they need when they run; a data pick returns the same results as before.
 
@@ -3031,6 +3138,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 
 - **Guard against an upstream Chromium WebGPU deadlock** ([#322](https://github.com/shim9610/figgy/issues/322)). Chromium 152 to 158 can deadlock the page's main thread when a `GPUDevice` is garbage collected while work submitted on it is still running (fixed upstream from Chromium 159). Freeing a chart (`free()`, `<figgy-chart>` disconnect) or a radial chart released its device at once, because a browser cannot wait for the GPU on drop. A dropped renderer now keeps its device and queue until `onSubmittedWorkDone` resolves and then releases them; a lost device is released at once. Native drops are unchanged: they already wait for the GPU.
 
+- **Destroy a device figgy owns when its last chart is freed** ([#322](https://github.com/shim9610/figgy/issues/322)). The guard above did not close the hang: on Chromium 152 to 158 a resolved `onSubmittedWorkDone` does not mean Dawn has delivered its per-submit callbacks, which run only when the device is destroyed, and a device destroyed by garbage collection delivers them inside the GPU reply handler's lock. Measured on Chromium 153 (six runs of `tests/edit_safety_browser.rs` each), the guard hung 6 of 6 runs and destroying the device first 0 of 6. A dropped renderer or radial renderer that is the last holder of a device figgy requested itself now calls `device.destroy()` while it still holds the device, waits for `onSubmittedWorkDone` and then releases it. figgy requested the device for `FiggyChart.create`, `FiggyBoundedChart.create`, `Renderer::for_window_*`, `Renderer::headless` and `RadialRenderer::headless`. A host-supplied device (`RendererDevice::new`, `RendererDevice::blocking`) is never destroyed, nor a device another chart, renderer, `RendererDevice` clone or pending pick or export still holds: a radial chart made with `FiggyBoundedChart.create_on` keeps drawing after its parent is freed, and the device is destroyed with the last of the two. Native drops are unchanged. Tests: `tests/device_release_browser.rs` (the freed rounds, a shared device freed in either order, a radial chart's own device, a host-supplied device) and the native `renderer::device::health` tests.
+
 - **Energy-level strokes and transitions in `selection_details`** ([#321](https://github.com/shim9610/figgy/issues/321)). On an energy-level series a `histogram_bin` selection (a level stroke) and a `point` selection (a transition) report `{ index, part: "level" | "transition", id, record }`, the row as configured; before, they took the histogram and point paths and were refused. A series that draws another's records through `source` reports that source's rows, for its labels too (#318). `renderer::energy_level_records` is now public: it resolves those records.
 
 - **Polar category labels in the browser** ([#309](https://github.com/shim9610/figgy/issues/309)). `hit_test` answers `category_label_<i>` on a polar chart's category label and a drag moves that label alone; `decoration_bounds` returns its `ring` (`{ center, radius }`), and a press on the ring while the label is selected drags every angle label along its spoke. The hit map is rebuilt when the number of polar category labels on the chart or any subplot changes.
@@ -3498,10 +3607,8 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 The migrations of the bounded group in one place; the model, renderer and browser
 entries above describe the changes.
 
-- **Readers.** `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
-  deprecated document readers for this release and are removed in the next
-  milestone; code that names them compiles with a deprecation warning
-  (`#[allow(deprecated)]` silences it while they last). Open a document with
+- **Readers.** `CategoricalChart`, `BoxPlotChart` and `RadarChart` are the
+  readers for documents written before 0.13. Open a document with
   `Config::from_categorical`, `Config::from_boxplot` or `Config::from_radar`,
   which return the `Config`, its series and the `SeriesUpload`s that borrow
   the document's values. Upload them (the positions with
@@ -3757,7 +3864,7 @@ entries above describe the changes.
   ([#40](https://github.com/shim9610/figgy/issues/40)). The guides, in
   English and Korean, describe the radial chart as the DataLess chart and
   `FiggyBoundedChart` as its host, and the three legacy documents as
-  deprecated readers:
+  readers:
   - `CATEGORICAL.md` describes the `CategoryBars` series on a `Config` with
     a categorical axis and `Config::from_categorical`;
   - `BOXPLOT.md` the `BoxPlot` series, its record and ragged sources, the

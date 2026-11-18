@@ -193,7 +193,7 @@ impl Pipelines {
         let data = bg(&self.render_layout, 2);
         let map = match style_map {
             Some(map) => map.clone(),
-            None => create_bar_style_map(device, &self.map_layout, &[])?.bind_group,
+            None => create_bar_style_map_with_slots(device, &self.map_layout, &[], &[])?.bind_group,
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("histogram envelope preparation"),

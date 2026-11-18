@@ -210,10 +210,8 @@ separately in `kind`.
 
 `Material` is one enum for sectors (`RadialStyle::material`), bars
 (`CategoryBarStyle::material`) and boxes (`BoxPlotStyle::material`), and a
-name has the same look in every family.
-`RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial` are deprecated
-aliases of it. A bar or a box is shaded like a flat (zero depth, zero tilt)
-pie top under the default light. Its normal is constant, so its lighting
+name has the same look in every family. A bar or a box is shaded like a
+flat (zero depth, zero tilt) pie top under the default light. Its normal is constant, so its lighting
 and highlights are uniform over the body; textures (grain, brush, paper,
 wood, hatching) still vary across it.
 
@@ -841,10 +839,8 @@ assert_eq!(chart.slice(RadialTarget { group: 1, index: 1 }).map(|s| s.label.as_s
 
 `Material` is one enum for sectors (`RadialStyle::material`), bars
 (`CategoryBarStyle::material`) and boxes (`BoxPlotStyle::material`), and a
-name has the same look in every family.
-`RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial` are deprecated
-aliases of it. A bar or a box is shaded like a flat (zero depth, zero tilt)
-pie top under the default light. Its normal is constant, so its lighting
+name has the same look in every family. A bar or a box is shaded like a
+flat (zero depth, zero tilt) pie top under the default light. Its normal is constant, so its lighting
 and highlights are uniform over the body; textures (grain, brush, paper,
 wood, hatching) still vary across it.
 

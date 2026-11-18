@@ -47,7 +47,6 @@ const DRAW_CALLS: &[&str] = &[
     ".draw_polyline(",
     ".draw_polyline_smooth(",
     ".fill_polygon(",
-    ".blit_mask(",
     ".blit_mask_orthogonal(",
     ".draw_mask(",
 ];

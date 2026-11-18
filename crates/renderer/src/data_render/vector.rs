@@ -448,31 +448,7 @@ pub fn create_vector_data_bind_group(
 /// The vector pipeline for one input form. No vertex buffers: the quad is
 /// emitted from `vertex_index` and every data read goes through group 2
 /// (and, for [`VectorInput::Path`], the arc slot data of group 3, whose
-/// layout `stylized.rs::create_star_data_bind_group_layout` describes and
-/// this creates an equal one of).
-pub fn create_vector_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    vector_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    input: VectorInput,
-) -> wgpu::RenderPipeline {
-    let shader = shader_module(device, input, crate::shader_assembly::ShaderSet::Full);
-    let star_data_bgl = super::create_star_data_bind_group_layout(device);
-    create_vector_pipeline_with_sample_count(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        vector_bgl,
-        &star_data_bgl,
-        target_format,
-        1,
-        input,
-    )
-}
-
+/// layout `stylized.rs::create_star_data_bind_group_layout` describes).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_vector_pipeline_with_sample_count(
     device: &wgpu::Device,

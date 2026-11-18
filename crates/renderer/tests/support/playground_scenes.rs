@@ -8,8 +8,6 @@
 //! here is covered without a test of its own. It uses only the renderer's
 //! public API.
 #![allow(dead_code)]
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 
 // The NIST diagrams the gallery draws, shared with the playground (#205).
 #[allow(dead_code)]

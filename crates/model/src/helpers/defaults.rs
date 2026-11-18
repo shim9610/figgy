@@ -5,9 +5,6 @@
 //! source in `crate::defaults`. The model and the renderer build without the
 //! `helpers` feature, so their own code cannot reach for `Default`.
 
-// The deprecated document readers keep their `Default` until they go.
-#![allow(deprecated)]
-
 impl Default for crate::annotation::AnnotationLineStyle {
     fn default() -> Self {
         crate::defaults::annotation_line_style()

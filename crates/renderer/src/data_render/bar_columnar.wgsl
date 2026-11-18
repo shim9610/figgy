@@ -349,7 +349,7 @@ fn base_bar_style() -> ResolvedBarStyle {
     );
 }
 
-fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle, envelope_enabled: bool) -> VsOut {
+fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle) -> VsOut {
     let seg = in.vi / 6u;
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
 
@@ -364,7 +364,7 @@ fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle, envelope_enabled: bool) -> V
     let span_px = select((raw.z - raw.x) / transform.pixel_to_ndc.x,
         (raw.w - raw.y) / transform.pixel_to_ndc.y, horizontal);
     // Subpixel bins are emitted once per pixel by the max-envelope pass.
-    if (envelope_enabled && span_px > 0.0 && span_px < 1.0) {
+    if (span_px > 0.0 && span_px < 1.0) {
         out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
         return out;
     }
@@ -387,23 +387,13 @@ fn bar_vertex(in: VsIn, resolved: ResolvedBarStyle, envelope_enabled: bool) -> V
 }
 
 @vertex
-fn vs_main(in: VsIn) -> VsOut {
-    return bar_vertex(in, base_bar_style(), false);
-}
-
-@vertex
-fn vs_mapped(in: VsIn, @builtin(instance_index) inst: u32) -> VsOut {
-    return bar_vertex(in, resolve_bar_style(base_bar_style(), inst), false);
-}
-
-@vertex
 fn vs_envelope_bars(in: VsIn) -> VsOut {
-    return bar_vertex(in, base_bar_style(), true);
+    return bar_vertex(in, base_bar_style());
 }
 
 @vertex
 fn vs_envelope_mapped_bars(in: VsIn, @builtin(instance_index) inst: u32) -> VsOut {
-    return bar_vertex(in, resolve_bar_style(base_bar_style(), inst), true);
+    return bar_vertex(in, resolve_bar_style(base_bar_style(), inst));
 }
 
 @fragment
@@ -710,7 +700,8 @@ fn bar_selection_vertex(in: VsIn, resolved: ResolvedBarStyle) -> VsOut {
     return out;
 }
 
-/// The outline of a bin of a series drawn without a style map (`vs_main`).
+/// The outline of a bin of a series drawn without a style map
+/// (`vs_envelope_bars`).
 @vertex
 fn vs_bar_selection(in: VsIn) -> VsOut {
     return bar_selection_vertex(in, base_bar_style());

@@ -453,8 +453,12 @@ impl PrepareContext<'_> {
         let count = u32::try_from(x.len_values.min(y.len_values)).unwrap_or(u32::MAX);
         let group = radar_label_group(config, series.clone(), cfg);
         let params = data_render::radar_label_params(lane(&x)?, count, &group, scale);
-        let style_map =
-            data_render::create_bar_style_map(self.device, self.per_point_style_map_bgl, &[])?;
+        let style_map = data_render::create_bar_style_map_with_slots(
+            self.device,
+            self.per_point_style_map_bgl,
+            &[],
+            &[],
+        )?;
         let own = lane(&y)?;
         data_render::create_category_bar_data_bind_group(
             self.device,

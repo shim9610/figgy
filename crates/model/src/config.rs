@@ -751,15 +751,6 @@ impl AxisOptions {
         }
     }
 
-    /// The data value the axis prints as `shown`; `shown` itself without a
-    /// unit.
-    pub fn data_value(&self, shown: f64) -> f64 {
-        match self.effective_unit() {
-            Some(unit) => unit.value(shown),
-            None => shown,
-        }
-    }
-
     /// The shown values of the data interval `a..b`, low then high: the
     /// interval the tick plan walks (#273). `(a, b)` as given without a
     /// unit.
@@ -2396,7 +2387,6 @@ mod serde_tests {
     // document written before them is byte-identical), parse to the defaults
     // when missing, and round-trip when set. `active_layer` and `annotations`
     // also exist on the radial chart and the legacy documents.
-    #[allow(deprecated)]
     fn layer_fields_default_and_are_omitted_from_json() {
         use crate::LayerRef;
         let json = default_config_json();

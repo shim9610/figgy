@@ -578,25 +578,6 @@ pub fn create_field_data_bind_group(
 
 /// Columnar field pipeline. No vertex buffers — the quad is emitted from
 /// `vertex_index` and every data read goes through group 2's storage bindings.
-pub fn create_field_columnar_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    field_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::field(device, crate::shader_assembly::ShaderSet::Full);
-    create_field_columnar_pipeline_with_sample_count(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        field_bgl,
-        target_format,
-        1,
-    )
-}
-
 pub(crate) fn create_field_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,

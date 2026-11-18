@@ -403,15 +403,11 @@ impl Canvas {
     }
 
     /// Direct integer-position src-over blit of a glyph alpha mask tinted
-    /// with `color`. No filtering — the mask must already be rasterized at
-    /// the right subpixel phase (swash render offset). This is the crisp
-    /// text path; AA happens exactly once, in the glyph rasterizer.
-    pub fn blit_mask(&mut self, ix: i32, iy: i32, w: u32, h: u32, alpha: &[u8], color: &Color) {
-        self.blit_mask_orthogonal(ix, iy, w, h, alpha, color, 0);
-    }
-
-    /// Rotate pixel cells by an exact quarter turn, without filtering or a
-    /// temporary glyph pixmap. Coordinates already include local translation.
+    /// with `color`, rotated by `turn` exact quarter turns. No filtering and
+    /// no temporary glyph pixmap — the mask must already be rasterized at the
+    /// right subpixel phase (swash render offset). This is the crisp text
+    /// path; AA happens exactly once, in the glyph rasterizer. Coordinates
+    /// already include local translation.
     pub(crate) fn blit_mask_orthogonal(
         &mut self,
         ix: i32,

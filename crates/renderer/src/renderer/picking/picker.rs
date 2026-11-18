@@ -275,7 +275,7 @@ impl RendererPicker {
         }
 
         if let Some(active) = self.active.as_mut() {
-            let slots = plan.registry_slots(Some(&active.descriptors))?;
+            let slots = plan.registry_slots_rebuilding(Some(&active.descriptors), &[])?;
             active
                 .engine
                 .prepare_registry_transition(pool, slots)?
@@ -284,7 +284,7 @@ impl RendererPicker {
             active.descriptors = plan.descriptors;
         } else {
             let mut engine = crate::gpu_pick::GpuPickEngine::from_bundle(bundle)?;
-            let slots = plan.registry_slots(None)?;
+            let slots = plan.registry_slots_rebuilding(None, &[])?;
             engine.prepare_registry_transition(pool, slots)?.commit();
             self.active = Some(ActivePickRegistry {
                 chart_id,

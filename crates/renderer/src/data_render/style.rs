@@ -297,10 +297,6 @@ pub fn create_style_bind_group(
     })
 }
 
-pub fn update_style(queue: &wgpu::Queue, buffer: &wgpu::Buffer, style: &PrimitiveStyle) {
-    queue.write_buffer(buffer, 0, bytemuck::bytes_of(style));
-}
-
 /// `ScatterStyleSlotGpu::meta[2]` / `ScatterStyleOverrideGpu::meta[2]` bit:
 /// the slot sets the colour. The scatter shader's `STYLE_MASK_COLOR`.
 pub(crate) const STYLE_MASK_COLOR: u32 = 1;
@@ -592,10 +588,6 @@ pub fn create_per_point_style_map_bind_group_layout(
     )
 }
 
-pub fn create_scatter_style_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    create_per_point_style_map_bind_group_layout(device)
-}
-
 pub fn create_scatter_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -670,24 +662,6 @@ pub fn create_scatter_style_map(
         override_buf,
         meta,
     })
-}
-
-pub fn create_errorbar_style_map(
-    device: &wgpu::Device,
-    bgl: &wgpu::BindGroupLayout,
-    style_slots: &[ErrorBarStyleSlotGpu],
-    overrides: &[ErrorBarStyleOverrideGpu],
-    meta: ErrorBarStyleMapMeta,
-) -> crate::Result<ErrorBarStyleMap> {
-    create_scatter_style_map(device, bgl, style_slots, overrides, meta)
-}
-
-pub fn create_bar_style_map(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    overrides: &[BarStyleOverrideGpu],
-) -> crate::Result<BarStyleMap> {
-    create_bar_style_map_with_slots(device, layout, &[], overrides)
 }
 
 /// A bar style map with style slots: the box plot's part slots
