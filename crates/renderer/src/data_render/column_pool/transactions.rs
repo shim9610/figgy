@@ -168,6 +168,10 @@ pub struct ColumnStaging {
     bounds: Option<crate::StreamBounds>,
     step: crate::data::UniformStep,
     encoding: crate::StreamEncoding,
+    /// Whether the buffer is still mapped: an install unmaps it before it
+    /// copies the values, and a rolled-back batch install leaves it so
+    /// (#334). An atomic only for `&self` access; nothing is shared.
+    mapped: std::sync::atomic::AtomicBool,
 }
 
 /// Why a range write to a [`ColumnStaging`] was refused (#311).
@@ -278,6 +282,7 @@ impl ColumnStaging {
             bounds: None,
             step: crate::data::UniformStep::new(),
             encoding,
+            mapped: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
@@ -311,6 +316,24 @@ impl ColumnStaging {
         self.byte_size
     }
 
+    /// Whether the staging buffer is still mapped for writing: an install
+    /// unmaps it before it copies the values (#334).
+    fn is_mapped(&self) -> bool {
+        self.mapped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Unmap the staging buffer for the copy that installs it. A buffer an
+    /// earlier install that was rolled back unmapped stays as it is: its
+    /// values are written, and unmapping it again would be a device error.
+    fn unmap_for_install(&self) {
+        if self
+            .mapped
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.staging.unmap();
+        }
+    }
+
     /// Write `source.len()` values from value `start`: the source writes
     /// its whole length (`write_pairs`) straight into the mapped staging
     /// range. `start` must be [`Self::written`]. A refused range writes
@@ -327,6 +350,9 @@ impl ColumnStaging {
         let len = source.len();
         if len == 0 {
             return Err(ColumnStagingError::Empty);
+        }
+        if !self.is_mapped() {
+            return Err(ColumnStagingError::Unmapped);
         }
         let start = usize::try_from(start).map_err(|_| ColumnStagingError::Gap)?;
         if start < self.written {
@@ -907,11 +933,19 @@ struct StagedMember {
     uniform_step: Option<f64>,
 }
 
+/// Where a batch member's values come from: a source the batch writes into
+/// its own staging, or a chunked upload's staging, already written (#334).
+#[derive(Clone, Copy)]
+enum MemberInput<'s> {
+    Source(&'s dyn ColumnSource),
+    Staged(&'s ColumnStaging),
+}
+
 /// One pool column a batch transaction uploads: a plain column, or a member
 /// of a record or a ragged column (#311).
 struct BatchMember<'s> {
     id: ColumnId,
-    source: &'s dyn ColumnSource,
+    source: MemberInput<'s>,
     role: MemberRole,
     len_values: usize,
     byte_size: u64,
@@ -954,13 +988,46 @@ impl<'s> BatchMember<'s> {
         let index = matches!(role, MemberRole::Offsets(_));
         Ok(Self {
             id,
-            source,
+            source: MemberInput::Source(source),
             role,
             len_values,
             byte_size,
             lanes: StagedLanes::of(limits, source.lanes(), index, len_values),
             staged: None,
         })
+    }
+
+    /// A plain column whose values a chunked upload already wrote into
+    /// `staging` (#334). Its staging is the upload's, already charged to
+    /// the ledger, and holds `(hi, lo)` pairs, as every chunked upload does.
+    fn staged(id: &str, staging: &'s ColumnStaging) -> crate::Result<Self> {
+        if !staging.is_complete() {
+            return Err(crate::FiggyError::InvalidColumnUpload {
+                id: id.to_owned(),
+                reason: ColumnStagingError::Incomplete.reason(),
+            });
+        }
+        Ok(Self {
+            id: id.to_owned(),
+            source: MemberInput::Staged(staging),
+            role: MemberRole::Plain,
+            len_values: staging.len_values,
+            byte_size: staging.byte_size,
+            lanes: StagedLanes {
+                compact: false,
+                single: false,
+            },
+            staged: None,
+        })
+    }
+
+    /// The staging bytes the batch creates for this member: none for a
+    /// chunked upload, whose staging the ledger already holds.
+    fn new_staging_bytes(&self) -> u64 {
+        match self.source {
+            MemberInput::Source(_) => self.lanes.staged_bytes(self.byte_size),
+            MemberInput::Staged(_) => 0,
+        }
     }
 }
 
@@ -1918,7 +1985,7 @@ impl ColumnPool {
                 return Err(AllocError::DuplicateId((*id).to_owned()).into());
             }
             match source {
-                BatchSource::Column(_) => {
+                BatchSource::Column(_) | BatchSource::Staged(_) => {
                     if self.is_member_column(id) {
                         return Err(AllocError::MemberColumn((*id).to_owned()).into());
                     }
@@ -1961,7 +2028,7 @@ impl ColumnPool {
         let limits = ExpandLimits::of(device);
         let member_count = uploads.iter().fold(0usize, |count, (_, source)| {
             count.saturating_add(match source {
-                BatchSource::Column(_) => 1,
+                BatchSource::Column(_) | BatchSource::Staged(_) => 1,
                 BatchSource::Record(record) => record.fields.len(),
                 BatchSource::Ragged(_) => 2,
             })
@@ -1980,6 +2047,9 @@ impl ColumnPool {
                         limits,
                         ceiling,
                     )?);
+                }
+                BatchSource::Staged(upload) => {
+                    members.push(BatchMember::staged(id, upload.staging())?);
                 }
                 BatchSource::Record(record) => {
                     let (by_slot, _) = check_record_source(id, &record)?;
@@ -2111,8 +2181,9 @@ impl ColumnPool {
 
         // 6) The budget: the staging, the transient buffer and the candidate
         //    slab come on top of everything the ledger holds.
+        // A chunked upload's staging is in the ledger already (#334).
         let staging_bytes = members.iter().fold(0u64, |sum, member| {
-            sum.saturating_add(member.lanes.staged_bytes(member.byte_size))
+            sum.saturating_add(member.new_staging_bytes())
         });
         let transient_bytes = members.iter().fold(0u64, |sum, member| {
             sum.saturating_add(member.lanes.transient_bytes(member.byte_size))
@@ -2136,7 +2207,23 @@ impl ColumnPool {
 
         // 7) Staging: each member written once into its own mapped buffer,
         //    its statistics and its composite tallies measured on the way.
+        //    A chunked upload's staging is written already: the member
+        //    shares its buffer and takes the statistics its chunks measured.
         for member in &mut members {
+            let source = match member.source {
+                MemberInput::Source(source) => source,
+                MemberInput::Staged(written) => {
+                    let (min, max, min_positive) = slot_statistics(written.bounds);
+                    member.staged = Some(StagedMember {
+                        staging: written.staging.clone(),
+                        min,
+                        max,
+                        min_positive,
+                        uniform_step: written.step.finish(),
+                    });
+                    continue;
+                }
+            };
             let staging = create_buffer_checked(
                 device,
                 ctx.ledger,
@@ -2150,7 +2237,6 @@ impl ColumnPool {
             )?;
             let index_lanes = matches!(member.role, MemberRole::Offsets(_));
             let role = &mut member.role;
-            let source = member.source;
             let (bounds, uniform_step) = write_staging_pairs_observed(
                 &staging,
                 member.lanes.raw_bytes(member.len_values),
@@ -2172,7 +2258,7 @@ impl ColumnPool {
         let mut cursor = 0usize;
         for (id, source) in uploads {
             cursor += match source {
-                BatchSource::Column(_) => 1,
+                BatchSource::Column(_) | BatchSource::Staged(_) => 1,
                 BatchSource::Record(record) => record.fields.len(),
                 BatchSource::Ragged(ragged) => {
                     let shape = check_ragged_source(id, ragged)?;
@@ -2302,7 +2388,7 @@ impl ColumnPool {
             // epoch is the composite's.
             let epoch = first_epoch + 1 + cursor as u64;
             match source {
-                BatchSource::Column(_) => cursor += 1,
+                BatchSource::Column(_) | BatchSource::Staged(_) => cursor += 1,
                 BatchSource::Record(record) => {
                     let group = &members[cursor..cursor + record.fields.len()];
                     let mut fields: [Option<ColumnId>; MAX_RECORD_FIELDS] = Default::default();
@@ -2383,6 +2469,13 @@ impl ColumnPool {
         )?;
 
         // ── Nothing below can fail. ───────────────────────────────────────
+        // A chunked upload's staging is unmapped for its copy only here, so
+        // a batch refused above leaves it mapped and the upload usable.
+        for member in &members {
+            if let MemberInput::Staged(written) = member.source {
+                written.unmap_for_install();
+            }
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy batch column batch"),
         });
@@ -2507,6 +2600,7 @@ impl ColumnPool {
                 invariant: "a staged column is complete before it is installed",
             });
         }
+        staging.unmap_for_install();
         let ColumnStaging {
             staging: buffer,
             len_values,
@@ -2515,7 +2609,6 @@ impl ColumnPool {
             step,
             ..
         } = staging;
-        buffer.unmap();
         self.begin_upsert_column_staged_with(
             // A chunked upload stages pairs (#311); its column takes the
             // pair path whatever its source declares.

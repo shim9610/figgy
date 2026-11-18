@@ -12,6 +12,12 @@
 //!   gapped, oversized and mistyped chunks, incomplete and stale commits,
 //!   a commit on another chart and a budget that cannot hold it, and
 //!   installs the column at once on commit;
+//! - a column transaction (`begin_columns_transaction`, #334) stages
+//!   several chunked columns and the next Config and Series, and installs
+//!   them together on commit; a gapped chunk, a stale column, a budget that
+//!   cannot hold the commit and a state that does not hold are refused with
+//!   `stage` and `column`, and leave values, revisions, Config, Series,
+//!   selection and pixels as they were; cancel releases everything;
 //! - `inspect_streaming_capabilities` checks a candidate without changing
 //!   the chart;
 //! - an explicit `decorations.data_area` of a legacy document is the
@@ -718,6 +724,261 @@ async fn a_budget_that_cannot_hold_the_upload_refuses_it_with_a_structured_error
             .is_some()
     );
     assert!(chart.column_revision("big").is_none());
+}
+
+// ---- column transaction (#334) ----
+
+/// A chart that draws `y` over `x` (two f64 values each), with a title
+/// pressed so an element selection is held.
+async fn two_column_chart() -> FiggyChart {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart.register_column_f64("x", &[0.0, 1.0]).unwrap();
+    chart.register_column_f64("y", &[0.0, 1.0]).unwrap();
+    let line = SeriesConfig::line("xy", "x", "y");
+    chart
+        .set_series(&serde_json::to_string(&[line]).unwrap())
+        .unwrap();
+    chart.fit_ranges().unwrap();
+    chart.set_title("Transaction").unwrap();
+    chart.frame().unwrap();
+    assert!(chart.on_press(240.0, 16.0).unwrap());
+    assert!(chart.has_selection().unwrap());
+    chart
+}
+
+fn f64s(values: &[f64]) -> JsValue {
+    js_sys::Float64Array::from(values).into()
+}
+
+fn revisions(chart: &FiggyChart) -> [Option<f64>; 2] {
+    [chart.column_revision("x"), chart.column_revision("y")]
+}
+
+/// A transaction error's `code`, `stage` and `column`.
+fn scoped(error: &JsValue) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        error_field(error, "code"),
+        error_field(error, "stage"),
+        error_field(error, "column"),
+    )
+}
+
+#[wasm_bindgen_test(async)]
+async fn a_column_transaction_refuses_a_gapped_chunk_then_commits_columns_and_state_together() {
+    let mut chart = two_column_chart().await;
+    let before = snapshot(&mut chart).await;
+    let [x_revision, y_revision] = revisions(&chart);
+
+    // The issue's scenario: both staged at their revisions with a 16-byte
+    // chunk allowance, x written whole, y pushed at 1 without 0.
+    let mut tx = chart.begin_columns_transaction(16.0).unwrap();
+    assert!(tx.is_open());
+    tx.stage(&chart, "x", 2.0, "f64", x_revision).unwrap();
+    tx.stage(&chart, "y", 2.0, "f64", y_revision).unwrap();
+    assert_eq!(tx.staged_count(), 2.0);
+    tx.push("x", 0.0, f64s(&[10.0, 20.0])).unwrap();
+    let error = tx.push("y", 1.0, f64s(&[7.0])).unwrap_err();
+    assert_eq!(
+        scoped(&error),
+        (
+            Some("invalid_chunk".into()),
+            Some("push".into()),
+            Some("y".into())
+        ),
+        "{}",
+        error_message(&error)
+    );
+    // Too many bytes for the allowance, and a column that is not staged.
+    let error = tx.push("y", 0.0, f64s(&[1.0, 2.0, 3.0])).unwrap_err();
+    assert_eq!(
+        error_field(&error, "code").as_deref(),
+        Some("invalid_chunk")
+    );
+    let error = tx.push("z", 0.0, f64s(&[1.0])).unwrap_err();
+    assert_eq!(scoped(&error).2.as_deref(), Some("z"));
+    // The same id twice is refused at stage.
+    let error = tx.stage(&chart, "x", 2.0, "f64", x_revision).unwrap_err();
+    assert_eq!(scoped(&error).1.as_deref(), Some("stage"));
+    assert_eq!(scoped(&error).2.as_deref(), Some("x"));
+    assert!(tx.is_open());
+    assert_eq!(tx.written("x"), Some(2.0));
+    assert_eq!(tx.written("y"), Some(0.0));
+    assert_unchanged(&mut chart, &before, "refused chunk").await;
+    assert_eq!(revisions(&chart), [x_revision, y_revision]);
+
+    // The rest of y, and the next Config and Series that read the columns.
+    tx.push("y", 0.0, f64s(&[30.0, 40.0])).unwrap();
+    let mut next = config(&chart);
+    next.bottom_x.min = 0.0;
+    next.bottom_x.max = 25.0;
+    next.left_y.min = 0.0;
+    next.left_y.max = 50.0;
+    let line = SeriesConfig::line("next", "x", "y");
+    tx.set_state(
+        &serde_json::to_string(&next).unwrap(),
+        Some(serde_json::to_string(&[line]).unwrap()),
+    )
+    .unwrap();
+    assert!(tx.has_state());
+    tx.commit(&mut chart).unwrap();
+    assert!(!tx.is_open());
+    let [x_after, y_after] = revisions(&chart);
+    assert!(x_after.is_some() && x_after != x_revision);
+    assert!(y_after.is_some() && y_after != y_revision);
+    assert_eq!(series(&chart)[0].series_id, "next");
+    assert_eq!(config(&chart).bottom_x.max, 25.0);
+    chart.frame().unwrap();
+    assert_ne!(chart.export_png(1.0).await.unwrap().to_vec(), before.png);
+
+    // Closed after the commit.
+    let error = tx.push("y", 0.0, f64s(&[1.0])).unwrap_err();
+    assert_eq!(
+        error_field(&error, "code").as_deref(),
+        Some("upload_closed")
+    );
+    let error = tx.stage(&chart, "w", 1.0, "f64", None).unwrap_err();
+    assert_eq!(
+        error_field(&error, "code").as_deref(),
+        Some("upload_closed")
+    );
+
+    // Without a state the chart keeps its Config and Series.
+    let kept = (chart.get_config().unwrap(), chart.get_series().unwrap());
+    let mut tx = chart.begin_columns_transaction(64.0).unwrap();
+    tx.stage(&chart, "y", 2.0, "f32", y_after).unwrap();
+    tx.push(
+        "y",
+        0.0,
+        js_sys::Float32Array::from(&[1.0f32, 2.0][..]).into(),
+    )
+    .unwrap();
+    tx.commit(&mut chart).unwrap();
+    assert_ne!(chart.column_revision("y"), y_after);
+    assert_eq!(chart.column_revision("x"), x_after);
+    assert_eq!(
+        (chart.get_config().unwrap(), chart.get_series().unwrap()),
+        kept
+    );
+}
+
+#[wasm_bindgen_test(async)]
+async fn a_stale_column_or_a_state_that_does_not_hold_refuses_the_whole_commit() {
+    let mut chart = two_column_chart().await;
+    let [x_revision, y_revision] = revisions(&chart);
+    let mut tx = chart.begin_columns_transaction(64.0).unwrap();
+    tx.stage(&chart, "x", 2.0, "f64", x_revision).unwrap();
+    tx.stage(&chart, "y", 2.0, "f64", y_revision).unwrap();
+    tx.push("x", 0.0, f64s(&[5.0, 6.0])).unwrap();
+    tx.push("y", 0.0, f64s(&[7.0, 8.0])).unwrap();
+    // y changes while the transaction is open.
+    chart.update_register_column_f64("y", &[0.5, 0.25]).unwrap();
+    chart.frame().unwrap();
+    let before = snapshot(&mut chart).await;
+    let current = revisions(&chart);
+    let error = tx.commit(&mut chart).unwrap_err();
+    assert_eq!(
+        scoped(&error),
+        (
+            Some("stale".into()),
+            Some("commit".into()),
+            Some("y".into())
+        ),
+        "{}",
+        error_message(&error)
+    );
+    assert!(!tx.is_open());
+    assert_unchanged(&mut chart, &before, "stale commit").await;
+    assert_eq!(revisions(&chart), current);
+    assert_eq!(current[0], x_revision);
+
+    // A state whose series reads a column nothing registers.
+    let mut tx = chart.begin_columns_transaction(64.0).unwrap();
+    tx.stage(&chart, "x", 2.0, "f64", current[0]).unwrap();
+    tx.push("x", 0.0, f64s(&[5.0, 6.0])).unwrap();
+    let line = SeriesConfig::line("next", "x", "nope");
+    tx.set_state(
+        &chart.get_config().unwrap(),
+        Some(serde_json::to_string(&[line]).unwrap()),
+    )
+    .unwrap();
+    let error = tx.commit(&mut chart).unwrap_err();
+    assert_eq!(
+        error_field(&error, "stage").as_deref(),
+        Some("state"),
+        "{}",
+        error_message(&error)
+    );
+    assert_unchanged(&mut chart, &before, "state that does not hold").await;
+    assert_eq!(revisions(&chart), current);
+
+    // JSON that does not parse is refused at set_state; the
+    // transaction stays open.
+    let mut tx = chart.begin_columns_transaction(64.0).unwrap();
+    let error = tx.set_state("{", None).unwrap_err();
+    assert_eq!(error_field(&error, "stage").as_deref(), Some("state"));
+    assert!(tx.is_open());
+    assert!(!tx.has_state());
+    tx.cancel();
+}
+
+#[wasm_bindgen_test(async)]
+async fn a_budget_that_cannot_hold_the_commit_refuses_it_and_cancel_releases_the_staging() {
+    let mut chart = two_column_chart().await;
+    let [x_revision, y_revision] = revisions(&chart);
+    let mut tx = chart.begin_columns_transaction(1e6).unwrap();
+    tx.stage(&chart, "x", 1_000.0, "f64", x_revision).unwrap();
+    tx.stage(&chart, "y", 1_000.0, "f64", y_revision).unwrap();
+    let values: Vec<f64> = (0..1_000).map(f64::from).collect();
+    tx.push("x", 0.0, f64s(&values)).unwrap();
+    tx.push("y", 0.0, f64s(&values)).unwrap();
+    let before = snapshot(&mut chart).await;
+    // The staging fits, and so does an export; the candidate pool on top
+    // of it (the web pool starts at 16 MiB) does not.
+    let total = total_bytes(&chart);
+    let margin = 8.0 * 1024.0 * 1024.0;
+    chart
+        .configure_auto_residency(total + margin, total + margin)
+        .unwrap();
+    let error = tx.commit(&mut chart).unwrap_err();
+    assert_eq!(
+        scoped(&error).0.as_deref(),
+        Some("budget_exceeded"),
+        "{}",
+        error_message(&error)
+    );
+    assert_eq!(scoped(&error).1.as_deref(), Some("commit"));
+    for field in ["requested", "limit"] {
+        assert!(
+            js_sys::Reflect::get(&error, &JsValue::from_str(field))
+                .unwrap()
+                .as_f64()
+                .is_some(),
+            "{field}"
+        );
+    }
+    assert_unchanged(&mut chart, &before, "budget").await;
+    assert_eq!(revisions(&chart), [x_revision, y_revision]);
+    chart.configure_auto_residency(1e12, 1e12).unwrap();
+
+    // Cancel: nothing registered, the staging released, the handle closed.
+    let before = snapshot(&mut chart).await;
+    let idle = total_bytes(&chart);
+    let mut tx = chart.begin_columns_transaction(1e6).unwrap();
+    tx.stage(&chart, "big", 100_000.0, "f64", None).unwrap();
+    tx.stage(&chart, "x", 2.0, "f64", x_revision).unwrap();
+    tx.push("x", 0.0, f64s(&[1.0, 2.0])).unwrap();
+    assert!(total_bytes(&chart) > idle);
+    tx.cancel();
+    assert!(!tx.is_open());
+    assert_eq!(tx.staged_count(), 0.0);
+    let error = tx.commit(&mut chart).unwrap_err();
+    assert_eq!(
+        error_field(&error, "code").as_deref(),
+        Some("upload_closed")
+    );
+    assert!(chart.column_revision("big").is_none());
+    assert_unchanged(&mut chart, &before, "cancel").await;
+    assert_eq!(revisions(&chart), [x_revision, y_revision]);
 }
 
 // ---- candidate streaming check ----
