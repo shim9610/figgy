@@ -319,6 +319,7 @@ fn heatmap_runtime_cancel_stale_and_budget_are_transactional() {
         .unwrap();
     let mut f = setup(false, false, false, 1, 2);
     f.renderer.wait_idle().unwrap();
+    crate::renderer::tests::settle_gpu_retirement(&mut f.renderer);
     let before = f.renderer.gpu_memory_usage().total_bytes();
     let _ = f.renderer.set_memory_budget(Some(before + 1));
     assert!(f.renderer.auto_stream_chart_request_ranges(f.id).is_err());

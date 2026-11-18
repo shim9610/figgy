@@ -7,7 +7,8 @@ use crate::test_gpu::BlockOn as _;
 /// Wait until every retired GPU charge of `renderer` has completed. A
 /// completion callback can run on another test's polling thread on the
 /// shared device, so one `poll(Wait)` does not guarantee it has run yet.
-fn settle_gpu_retirement(renderer: &mut Renderer) {
+/// The streaming tests nested under `renderer` call it too.
+pub(crate) fn settle_gpu_retirement(renderer: &mut Renderer) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while renderer.gpu_memory_usage().retired_bytes() != 0 {
         renderer.service_gpu_completions().unwrap();
