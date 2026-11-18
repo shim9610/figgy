@@ -213,24 +213,28 @@ impl PrepareContext<'_> {
         // stem entries, a Milkyway jet (its `vs_jet` stem branch), none
         // under Constellation, which drops a stem series.
         let stem_pipe = match styled {
-            None => pipelines.errorbar_stem.as_ref(),
+            None => pipelines.precise(PrecisePipeline::ErrorbarStem),
             Some(StyleSet::Sketch { stem, .. }) => Some(stem),
             Some(StyleSet::Milkyway(c)) => Some(&c.jets),
             Some(StyleSet::Constellation(_)) => None,
         };
         let (line_pick, stars_pick, scatter_pick, errorbar_pipe) = match styled {
             None => (
-                pipelines.line.as_ref().map(|pipeline| LinePick {
-                    pipeline,
-                    verts: 4,
-                    texture_bg: None,
-                }),
+                pipelines
+                    .precise(PrecisePipeline::Line)
+                    .map(|pipeline| LinePick {
+                        pipeline,
+                        verts: 4,
+                        texture_bg: None,
+                    }),
                 None,
-                pipelines.scatter.as_ref().map(|pipeline| ScatterPick {
-                    pipeline,
-                    texture_bg: None,
-                }),
-                pipelines.errorbar.as_ref(),
+                pipelines
+                    .precise(PrecisePipeline::Scatter)
+                    .map(|pipeline| ScatterPick {
+                        pipeline,
+                        texture_bg: None,
+                    }),
+                pipelines.precise(PrecisePipeline::Errorbar),
             ),
             Some(StyleSet::Sketch {
                 line,

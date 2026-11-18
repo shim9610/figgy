@@ -418,97 +418,64 @@ pub(crate) fn create_milkyway_set(
             operation: wgpu::BlendOperation::Max,
         },
     };
-    let ribbon = create_line_columnar_pipeline_with_entries(
+    let ribbon = create_line_pipeline(
         device,
         &shaders.line,
-        transform_bgl,
-        style_bgl,
+        &[Some(transform_bgl), Some(style_bgl), Some(&tex_bgl)],
+        LINE_SLOTS,
         target_format,
         sample_count,
-        "vs_ribbon",
-        "fs_ribbon",
+        ("vs_ribbon", "fs_ribbon", "figgy milkyway ribbon pipeline"),
         max_blend,
         wgpu::PrimitiveTopology::TriangleStrip,
-        Some(&tex_bgl),
-        "figgy milkyway ribbon pipeline",
+        None,
     );
     // Arc-driven star pass: NO vertex buffers — the VS reads the arc-length
     // prefix and the column pool as storage (group 3) and is drawn via
     // DrawIndirect args computed on the GPU from the polyline's total arc.
-    let star_layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy milkyway star layout"),
-            bind_group_layouts: &[
-                Some(transform_bgl),
-                Some(style_bgl),
-                Some(&tex_bgl),
-                Some(star_data_bgl),
-            ],
-            immediate_size: 0,
-        },
+    let star_layout = RenderPipelineSpec::layout(
+        device,
+        "figgy milkyway star layout",
+        &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            Some(&tex_bgl),
+            Some(star_data_bgl),
+        ],
     );
-    let stars = crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some("figgy milkyway stars pipeline"),
-            layout: Some(&star_layout),
-            vertex: wgpu::VertexState {
-                module: &shaders.line,
-                entry_point: Some("vs_stars"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: &shaders.line,
-                entry_point: Some("fs_stars"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(additive),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    );
+    let stars = RenderPipelineSpec {
+        label: "figgy milkyway stars pipeline",
+        layout: &star_layout,
+        shader: &shaders.line,
+        entries: ("vs_stars", "fs_stars"),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(target_format, additive),
+    }
+    .create(device);
     // Planets keep the scatter builder's premultiplied blend — bodies
     // occlude the additive star field behind them.
-    let planets = create_scatter_columnar_pipeline_full(
+    let planets = create_scatter_pipeline(
         device,
         &shaders.scatter,
-        transform_bgl,
-        style_bgl,
+        [transform_bgl, style_bgl],
         target_format,
         sample_count,
-        "vs_planet",
-        "fs_planet",
+        ("vs_planet", "fs_planet", "figgy milkyway planets pipeline"),
         Some(&tex_bgl),
-        "figgy milkyway planets pipeline",
+        false,
+        None,
     );
-    let jets = create_errorbar_columnar_pipeline_full(
+    let jets = create_errorbar_pipeline(
         device,
         &shaders.errorbar,
-        transform_bgl,
-        style_bgl,
+        [transform_bgl, style_bgl],
         target_format,
         sample_count,
-        "vs_jet",
-        "fs_jet",
+        ("vs_jet", "fs_jet", "figgy milkyway jets pipeline"),
         additive,
-        "figgy milkyway jets pipeline",
     );
 
     MilkywaySet {
@@ -660,31 +627,36 @@ pub(crate) fn create_point_constellation_set(
         ],
     });
 
-    let line = create_line_columnar_pipeline_with_entries(
+    let line = create_line_pipeline(
         device,
         &shaders.line,
-        transform_bgl,
-        style_bgl,
+        &[Some(transform_bgl), Some(style_bgl)],
+        LINE_SLOTS,
         target_format,
         sample_count,
-        "vs_main",
-        "fs_constellation_line",
+        (
+            "vs_main",
+            "fs_constellation_line",
+            "figgy point constellation line pipeline",
+        ),
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         wgpu::PrimitiveTopology::TriangleStrip,
         None,
-        "figgy point constellation line pipeline",
     );
-    let stars = create_scatter_columnar_pipeline_full(
+    let stars = create_scatter_pipeline(
         device,
         &shaders.scatter,
-        transform_bgl,
-        style_bgl,
+        [transform_bgl, style_bgl],
         target_format,
         sample_count,
-        "vs_constellation_star",
-        "fs_constellation_star",
+        (
+            "vs_constellation_star",
+            "fs_constellation_star",
+            "figgy point constellation stars pipeline",
+        ),
         Some(&tex_bgl),
-        "figgy point constellation stars pipeline",
+        false,
+        None,
     );
 
     PointConstellationSet {

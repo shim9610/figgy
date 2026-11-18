@@ -210,21 +210,23 @@ macro_rules! picker_shaders {
 macro_rules! preparation_layouts {
     ($job:expr, $contour:expr) => {
         PrewarmLayouts {
-            device: &$job.device,
+            precise: PreciseLayouts {
+                device: &$job.device,
+                transform_bgl: &$job.transform,
+                style_bgl: &$job.style,
+                per_point_style_map_bgl: &$job.mapped,
+                point_value_map_bgl: &$job.value_map,
+                data_selection_bgl: &$job.selection,
+                field_bgl: &$job.field,
+                vector_bgl: &$job.vector,
+                category_bar_data_bgl: &$job.category_bar,
+                parallel_bgl: &$job.parallel,
+                star_data_bgl: &$job.star,
+                label_pipelines: $contour,
+                surface_format: $job.format,
+            },
             queue: &$job.queue,
-            transform_bgl: &$job.transform,
-            style_bgl: &$job.style,
-            per_point_style_map_bgl: &$job.mapped,
-            point_value_map_bgl: &$job.value_map,
-            data_selection_bgl: &$job.selection,
-            field_bgl: &$job.field,
-            vector_bgl: &$job.vector,
-            category_bar_data_bgl: &$job.category_bar,
-            parallel_bgl: &$job.parallel,
-            star_data_bgl: &$job.star,
-            label_pipelines: $contour,
             feature: Some($job.feature),
-            surface_format: $job.format,
         }
     };
 }
@@ -409,51 +411,24 @@ impl Renderer {
     pub fn preparation_ready(&self, feature: PreparationFeature) -> bool {
         let p = &self.pipelines;
         match feature {
-            PreparationFeature::Basic => {
-                p.line.is_some()
-                    && p.line_mapped.is_some()
-                    && p.line_parallel.is_some()
-                    && p.line_parallel_selection.is_some()
-                    && p.scatter.is_some()
-                    && p.scatter_mapped.is_some()
-                    && p.pick_ring.is_some()
-                    && p.pick_ring_mapped.is_some()
-                    && p.ternary.iter().all(Option::is_some)
-                    && p.errorbar.is_some()
-                    && p.errorbar_mapped.is_some()
-                    && self.arc_pipelines.is_some()
-                    && self.errorbar_extent_engine.is_some()
-            }
-            PreparationFeature::Bars => {
-                p.bar.is_some()
-                    && p.bar_envelope.is_some()
-                    && p.bar_mapped.is_some()
-                    && p.bar_selection.is_some()
-                    && p.bar_selection_mapped.is_some()
-                    && p.bar_category.is_some()
-                    && p.bar_category_selection.is_some()
-                    && p.bar_box_plot.is_some()
-                    && p.bar_box_plot_selection.is_some()
-                    && p.bar_range.is_some()
-                    && p.bar_range_selection.is_some()
-                    && p.bar_violin.is_some()
-                    && p.bar_violin_selection.is_some()
-                    && p.bar_box_points.is_some()
-                    && p.bar_box_point_selection.is_some()
-                    && p.bar_value_label.is_some()
-                    && p.bar_value_label_selection.is_some()
-            }
-            PreparationFeature::Fields => {
-                p.field.is_some()
-                    && p.field_selection.is_some()
-                    && p.field_selection_labelled.is_some()
-                    && p.contour.is_some()
-                    && p.contour_labelled.is_some()
-                    && p.contour_label.is_some()
-                    && p.vector_points.is_some()
-                    && p.vector_grid.is_some()
-                    && p.vector_path.is_some()
-                    && self.contour_label_pipelines.is_some()
+            PreparationFeature::Basic | PreparationFeature::Bars | PreparationFeature::Fields => {
+                // Every precise kind the feature prewarms but the line fill
+                // and the stem, which this check has never waited for.
+                let precise = PrecisePipeline::ALL.into_iter().all(|kind| {
+                    !feature.includes_field(kind.field())
+                        || matches!(kind, PrecisePipeline::Area | PrecisePipeline::ErrorbarStem)
+                        || p.precise(kind).is_some()
+                });
+                precise
+                    && match feature {
+                        PreparationFeature::Basic => {
+                            p.ternary.iter().all(Option::is_some)
+                                && self.arc_pipelines.is_some()
+                                && self.errorbar_extent_engine.is_some()
+                        }
+                        PreparationFeature::Bars => p.bar_envelope.is_some(),
+                        _ => self.contour_label_pipelines.is_some(),
+                    }
             }
             PreparationFeature::Picking => matches!(
                 self.picker.pipeline_state,
@@ -546,15 +521,7 @@ impl TargetPipelines {
             axis: source.axis.clone(),
             sample_count: source.sample_count,
             styled: HashMap::new(),
-            line: None,
-            line_mapped: None,
-            line_parallel: None,
-            line_parallel_selection: None,
-            area: None,
-            scatter: None,
-            scatter_mapped: None,
-            pick_ring: None,
-            pick_ring_mapped: None,
+            precise: std::array::from_fn(|_| None),
             ternary: Default::default(),
             view3d: Default::default(),
             surface_shader: source.surface_shader.clone(),
@@ -567,67 +534,17 @@ impl TargetPipelines {
             ternary_region: Default::default(),
             // Compute pipelines: the target's format does not enter them.
             ternary_region_scan: source.ternary_region_scan.clone(),
-            errorbar: None,
-            errorbar_mapped: None,
-            errorbar_stem: None,
-            bar: None,
             bar_envelope: None,
-            bar_mapped: None,
-            bar_selection: None,
-            bar_selection_mapped: None,
-            bar_category: None,
-            bar_category_selection: None,
-            bar_box_plot: None,
-            bar_box_plot_selection: None,
-            bar_range: None,
-            bar_range_selection: None,
-            bar_violin: None,
-            bar_violin_selection: None,
-            bar_box_points: None,
-            bar_box_point_selection: None,
-            bar_value_label: None,
-            bar_value_label_selection: None,
-            field: None,
-            field_selection: None,
-            field_selection_labelled: None,
-            contour: None,
-            contour_labelled: None,
-            contour_label: None,
-            vector_points: None,
-            vector_grid: None,
-            vector_path: None,
         }
     }
     fn merge_preparation(&mut self, other: Self) {
         if self.ternary_region_scan.is_none() {
             self.ternary_region_scan = other.ternary_region_scan.clone();
         }
-        if self.line.is_none() {
-            self.line = other.line;
-        }
-        if self.line_mapped.is_none() {
-            self.line_mapped = other.line_mapped;
-        }
-        if self.line_parallel.is_none() {
-            self.line_parallel = other.line_parallel;
-        }
-        if self.line_parallel_selection.is_none() {
-            self.line_parallel_selection = other.line_parallel_selection;
-        }
-        if self.area.is_none() {
-            self.area = other.area;
-        }
-        if self.scatter.is_none() {
-            self.scatter = other.scatter;
-        }
-        if self.scatter_mapped.is_none() {
-            self.scatter_mapped = other.scatter_mapped;
-        }
-        if self.pick_ring.is_none() {
-            self.pick_ring = other.pick_ring;
-        }
-        if self.pick_ring_mapped.is_none() {
-            self.pick_ring_mapped = other.pick_ring_mapped;
+        for (slot, other) in self.precise.iter_mut().zip(other.precise) {
+            if slot.is_none() {
+                *slot = other;
+            }
         }
         for (slot, other) in self.ternary.iter_mut().zip(other.ternary) {
             if slot.is_none() {
@@ -663,89 +580,8 @@ impl TargetPipelines {
                 *slot = other;
             }
         }
-        if self.errorbar.is_none() {
-            self.errorbar = other.errorbar;
-        }
-        if self.errorbar_mapped.is_none() {
-            self.errorbar_mapped = other.errorbar_mapped;
-        }
-        if self.bar.is_none() {
-            self.bar = other.bar;
-        }
         if self.bar_envelope.is_none() {
             self.bar_envelope = other.bar_envelope;
-        }
-        if self.bar_mapped.is_none() {
-            self.bar_mapped = other.bar_mapped;
-        }
-        if self.bar_selection.is_none() {
-            self.bar_selection = other.bar_selection;
-        }
-        if self.bar_selection_mapped.is_none() {
-            self.bar_selection_mapped = other.bar_selection_mapped;
-        }
-        if self.bar_category.is_none() {
-            self.bar_category = other.bar_category;
-        }
-        if self.bar_category_selection.is_none() {
-            self.bar_category_selection = other.bar_category_selection;
-        }
-        if self.bar_box_plot.is_none() {
-            self.bar_box_plot = other.bar_box_plot;
-        }
-        if self.bar_box_plot_selection.is_none() {
-            self.bar_box_plot_selection = other.bar_box_plot_selection;
-        }
-        if self.bar_range.is_none() {
-            self.bar_range = other.bar_range;
-        }
-        if self.bar_range_selection.is_none() {
-            self.bar_range_selection = other.bar_range_selection;
-        }
-        if self.bar_violin.is_none() {
-            self.bar_violin = other.bar_violin;
-        }
-        if self.bar_violin_selection.is_none() {
-            self.bar_violin_selection = other.bar_violin_selection;
-        }
-        if self.bar_box_points.is_none() {
-            self.bar_box_points = other.bar_box_points;
-        }
-        if self.bar_box_point_selection.is_none() {
-            self.bar_box_point_selection = other.bar_box_point_selection;
-        }
-        if self.bar_value_label.is_none() {
-            self.bar_value_label = other.bar_value_label;
-        }
-        if self.bar_value_label_selection.is_none() {
-            self.bar_value_label_selection = other.bar_value_label_selection;
-        }
-        if self.vector_points.is_none() {
-            self.vector_points = other.vector_points;
-        }
-        if self.vector_grid.is_none() {
-            self.vector_grid = other.vector_grid;
-        }
-        if self.vector_path.is_none() {
-            self.vector_path = other.vector_path;
-        }
-        if self.field.is_none() {
-            self.field = other.field;
-        }
-        if self.field_selection.is_none() {
-            self.field_selection = other.field_selection;
-        }
-        if self.field_selection_labelled.is_none() {
-            self.field_selection_labelled = other.field_selection_labelled;
-        }
-        if self.contour.is_none() {
-            self.contour = other.contour;
-        }
-        if self.contour_labelled.is_none() {
-            self.contour_labelled = other.contour_labelled;
-        }
-        if self.contour_label.is_none() {
-            self.contour_label = other.contour_label;
         }
         for (key, value) in other.styled {
             self.styled.entry(key).or_insert(value);

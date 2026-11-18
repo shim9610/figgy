@@ -413,6 +413,7 @@ fn stream_export_budget_rejection_is_preallocation_and_replay_survives_screen_re
     renderer.end_gpu_frame();
     renderer.wait_idle().unwrap();
     renderer.service_stream_requests();
+    crate::renderer::tests::settle_gpu_retirement(&mut renderer);
     let before = renderer.gpu_memory_usage().total_bytes();
     let screen = renderer.active_stream_job(id);
     let _ = renderer.set_memory_budget(Some(before + 1));

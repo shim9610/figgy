@@ -25,31 +25,6 @@ pub(crate) const LINE_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = cr
 /// break, a probability axis or polar coordinates compiles.
 pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = LINE_SHADER_BY_SET.full;
 
-/// Columnar line pipeline. slots: 0=x_a, 1=y_a, 2=x_b, 3=y_b (per-instance).
-pub(crate) fn create_line_columnar_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_line_columnar_pipeline_with_entries(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        sample_count,
-        "vs_main",
-        "fs_main",
-        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        wgpu::PrimitiveTopology::TriangleStrip,
-        None,
-        "figgy line columnar pipeline",
-    )
-}
-
 /// Strip vertices per instance (one straight segment) for the precise
 /// `vs_main` line entry and the `vs_area` fill entry: one quad.
 pub const LINE_PRECISE_VERTICES_PER_INSTANCE: u32 = 4;
@@ -72,13 +47,10 @@ pub(crate) fn create_line_area_pipeline_with_sample_count(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy line area layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(style_bgl)],
-            immediate_size: 0,
-        },
+    let layout = RenderPipelineSpec::layout(
+        device,
+        "figgy line area layout",
+        &[Some(transform_bgl), Some(style_bgl)],
     );
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
     const ATTRS: [[wgpu::VertexAttribute; 1]; 6] = {
@@ -94,199 +66,40 @@ pub(crate) fn create_line_area_pipeline_with_sample_count(
         }
         attrs
     };
-    let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = ATTRS
-        .iter()
-        .map(|attributes| {
-            Some(wgpu::VertexBufferLayout {
-                array_stride: column_stride,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes,
-            })
+    let buffers: [Option<wgpu::VertexBufferLayout<'_>>; 6] = std::array::from_fn(|slot| {
+        Some(wgpu::VertexBufferLayout {
+            array_stride: column_stride,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ATTRS[slot],
         })
-        .collect();
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some("figgy line area pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_area"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &buffers,
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_area"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
-}
-
-/// Entry-point-parameterized line pipeline builder. Styled variants share
-/// the precise pipeline's six instance slots and differ in entry points,
-/// blend state (constellation is additive), topology (star quads are a
-/// TriangleList), and an optional third bind group (style textures) — the
-/// renderer's style table supplies all of it.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_line_columnar_pipeline_with_entries(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
-    blend: wgpu::BlendState,
-    topology: wgpu::PrimitiveTopology,
-    texture_bgl: Option<&wgpu::BindGroupLayout>,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    let layouts = [Some(transform_bgl), Some(style_bgl), texture_bgl];
-    let groups = if texture_bgl.is_some() { 3 } else { 2 };
-    line_slot_pipeline(
-        device,
+    });
+    RenderPipelineSpec {
+        label: "figgy line area pipeline",
+        layout: &layout,
         shader,
-        &layouts[..groups],
-        LINE_SLOTS,
-        target_format,
-        sample_count,
-        vs_entry,
-        fs_entry,
-        blend,
-        topology,
-        label,
-        None,
-    )
-}
-
-/// The colour-mapped stroke of a streamline series: `vs_main_mapped` /
-/// `fs_main_mapped` over the six line slots plus the value column in
-/// slots 6/7 (eight, the WebGPU default limit), with the point value map
-/// (SHADER_COMMON.md §5.2) as group 3. The shader reads no group 2; the
-/// layout holds the value map's layout there too, bound to the renderer's
-/// neutral value map, so no new layout is needed.
-pub(crate) fn create_line_mapped_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    value_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    line_slot_pipeline(
-        device,
-        shader,
-        &[
-            Some(transform_bgl),
-            Some(style_bgl),
-            Some(value_map_bgl),
-            Some(value_map_bgl),
-        ],
-        LINE_MAPPED_SLOTS,
-        target_format,
-        sample_count,
-        "vs_main_mapped",
-        "fs_main_mapped",
-        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        wgpu::PrimitiveTopology::TriangleStrip,
-        "figgy line mapped pipeline",
-        None,
-    )
+        entries: ("vs_area", "fs_area"),
+        buffers: &buffers,
+        topology: wgpu::PrimitiveTopology::TriangleStrip,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(
+            target_format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        ),
+    }
+    .create(device)
 }
 
 /// Vertex slots of the line entries: x_a, y_a, x_b, y_b and the arc prefix
 /// at A and B.
-const LINE_SLOTS: usize = 6;
+pub(crate) const LINE_SLOTS: usize = 6;
 /// Vertex slots of the colour-mapped stroke: the line's and the colour
 /// value at A and B; the ternary stroke's are the same with the third
 /// component at A and B.
-const LINE_MAPPED_SLOTS: usize = 8;
-// `line_slot_pipeline` takes the first `slots` of its `LINE_MAPPED_SLOTS`
+pub(crate) const LINE_MAPPED_SLOTS: usize = 8;
+// `create_line_pipeline` takes the first `slots` of its `LINE_MAPPED_SLOTS`
 // vertex buffers, and the line entries pass `LINE_SLOTS` (#152).
 const _: () = assert!(LINE_SLOTS <= LINE_MAPPED_SLOTS);
-
-/// The stroke of a ternary series (`vs_ternary` / `fs_main`): the six line
-/// slots plus the third component at slots 6/7, over the line's groups.
-pub(crate) fn create_line_ternary_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    line_slot_pipeline(
-        device,
-        shader,
-        &[Some(transform_bgl), Some(style_bgl)],
-        LINE_MAPPED_SLOTS,
-        target_format,
-        sample_count,
-        "vs_ternary",
-        "fs_main",
-        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        wgpu::PrimitiveTopology::TriangleStrip,
-        "figgy line ternary pipeline",
-        None,
-    )
-}
-
-/// The stroke of a 3D chart's line series (`vs_3d` / `fs_main`, #132): the
-/// six line slots plus the height at slots 6/7, over the line's groups and
-/// the camera group as group 3, drawn into the panel composite with the
-/// depth test; or its 1×1 ID pick (`vs_3d_pick` / `fs_3d_pick`) into the
-/// integer pick target.
-pub(crate) fn create_line_view3d_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    camera_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    pass: super::View3dPass,
-) -> wgpu::RenderPipeline {
-    let (vs, fs, label) = match pass {
-        super::View3dPass::Pick => ("vs_3d_pick", "fs_3d_pick", "figgy line 3D pick pipeline"),
-        _ => ("vs_3d", "fs_main", "figgy line 3D pipeline"),
-    };
-    line_slot_pipeline(
-        device,
-        shader,
-        &[Some(transform_bgl), Some(style_bgl), None, Some(camera_bgl)],
-        LINE_MAPPED_SLOTS,
-        target_format,
-        sample_count,
-        vs,
-        fs,
-        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        wgpu::PrimitiveTopology::TriangleStrip,
-        label,
-        Some(pass),
-    )
-}
 
 /// The attribute of each per-instance vertex slot the line entries read, in
 /// slot order: the X / Y columns bound twice (the second pair starts one
@@ -313,41 +126,36 @@ const LINE_SLOT_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; LINE_MAPPED_SLOTS] = {
 };
 
 /// A line pipeline over the first `slots` vertex slots of
-/// [`LINE_SLOT_ATTRIBUTES`] and the bind group `layouts`.
+/// [`LINE_SLOT_ATTRIBUTES`] and the bind group `layouts`, with `(vertex
+/// entry, fragment entry, label)`.
+///
+/// The precise stroke is `vs_main` / `fs_main` over [`LINE_SLOTS`]. Styled
+/// variants share its slots and differ in entry points, blend state
+/// (constellation is additive), topology (star quads are a TriangleList) and
+/// an optional third group (style textures). The colour-mapped stroke of a
+/// streamline series (`vs_main_mapped` / `fs_main_mapped`) adds the value
+/// column at slots 6/7 ([`LINE_MAPPED_SLOTS`], the WebGPU default limit) and
+/// the point value map (SHADER_COMMON.md §5.2) as group 3; it reads no
+/// group 2, which holds the value map's layout too, bound to the neutral
+/// value map. A ternary stroke (`vs_ternary`) reads the third component at
+/// slots 6/7; a 3D stroke (`vs_3d`, `vs_3d_pick`, #132) the height there and
+/// the camera group as group 3, with `three_d` its pass. The rows of a
+/// parallel coordinates series (`vs_parallel`, `vs_parallel_selected` /
+/// `fs_parallel`, #141) read no slots and their data as group 3.
 #[allow(clippy::too_many_arguments)]
-fn line_slot_pipeline(
+pub(crate) fn create_line_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     layouts: &[Option<&wgpu::BindGroupLayout>],
     slots: usize,
     target_format: wgpu::TextureFormat,
     sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
+    (vs_entry, fs_entry, label): (&str, &str, &str),
     blend: wgpu::BlendState,
     topology: wgpu::PrimitiveTopology,
-    label: &str,
     three_d: Option<super::View3dPass>,
 ) -> wgpu::RenderPipeline {
-    let (depth_stencil, color_target) = match three_d {
-        Some(pass) => (pass.depth_stencil(), pass.color_target(target_format)),
-        None => (
-            None,
-            wgpu::ColorTargetState {
-                format: target_format,
-                blend: Some(blend),
-                write_mask: wgpu::ColorWrites::ALL,
-            },
-        ),
-    };
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy line columnar layout"),
-            bind_group_layouts: layouts,
-            immediate_size: 0,
-        },
-    );
+    let layout = RenderPipelineSpec::layout(device, "figgy line columnar layout", layouts);
     const _: () = assert!(
         crate::data_render::line_arc::ARC_PAIR_BYTES == crate::data::COLUMN_VALUE_BYTES as u64
     );
@@ -362,44 +170,27 @@ fn line_slot_pipeline(
                 attributes: &LINE_SLOT_ATTRIBUTES[slot],
             })
         });
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &buffers[..slots],
-            },
-            primitive: wgpu::PrimitiveState {
-                // Strip per instance for the line entries (4 vertices for
-                // `vs_main`, 2·(S+1) for `vs_sketch`/`vs_ribbon`), TriangleList
-                // for `vs_stars` quads — the caller picks.
-                topology,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil,
-            multisample: three_d.map_or_else(
-                || multisample_state(sample_count),
-                |pass| pass.multisample(sample_count),
-            ),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(color_target)],
-            }),
-            multiview_mask: None,
-            cache: None,
+    RenderPipelineSpec {
+        label,
+        layout: &layout,
+        shader,
+        entries: (vs_entry, fs_entry),
+        buffers: &buffers[..slots],
+        // Strip per instance for the line entries (4 vertices for
+        // `vs_main`, 2·(S+1) for `vs_sketch`/`vs_ribbon`), TriangleList for
+        // `vs_stars` quads — the caller picks.
+        topology,
+        depth_stencil: three_d.and_then(super::View3dPass::depth_stencil),
+        multisample: three_d.map_or_else(
+            || multisample_state(sample_count),
+            |pass| pass.multisample(sample_count),
+        ),
+        target: match three_d {
+            Some(pass) => pass.color_target(target_format),
+            None => blended_target(target_format, blend),
         },
-    )
+    }
+    .create(device)
 }
 
 /// Bundle of handles for drawing one columnar line series. `pool_buffer` is
@@ -860,51 +651,6 @@ pub fn create_parallel_data_bind_group(
         rows: params.rows,
         axes: params.axes,
     })
-}
-
-/// The rows of a parallel coordinates series (`vs_parallel` /
-/// `fs_parallel`), or the picked row's redraw in the selection's style
-/// (`vs_parallel_selected` / `fs_parallel`): groups 0 transform, 1 style,
-/// 3 the series' parallel data; no vertex buffers, one quad per segment
-/// instance.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_line_parallel_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    parallel_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    selection: bool,
-) -> wgpu::RenderPipeline {
-    let (vs, label) = if selection {
-        (
-            "vs_parallel_selected",
-            "figgy selected parallel row pipeline",
-        )
-    } else {
-        ("vs_parallel", "figgy line parallel pipeline")
-    };
-    line_slot_pipeline(
-        device,
-        shader,
-        &[
-            Some(transform_bgl),
-            Some(style_bgl),
-            None,
-            Some(parallel_bgl),
-        ],
-        0,
-        target_format,
-        sample_count,
-        vs,
-        "fs_parallel",
-        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        wgpu::PrimitiveTopology::TriangleStrip,
-        label,
-        None,
-    )
 }
 
 /// The picked row of a parallel coordinates series, redrawn over every

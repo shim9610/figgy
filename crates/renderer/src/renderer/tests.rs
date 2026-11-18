@@ -7,7 +7,8 @@ use crate::test_gpu::BlockOn as _;
 /// Wait until every retired GPU charge of `renderer` has completed. A
 /// completion callback can run on another test's polling thread on the
 /// shared device, so one `poll(Wait)` does not guarantee it has run yet.
-fn settle_gpu_retirement(renderer: &mut Renderer) {
+/// The streaming tests nested under `renderer` call it too.
+pub(crate) fn settle_gpu_retirement(renderer: &mut Renderer) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while renderer.gpu_memory_usage().retired_bytes() != 0 {
         renderer.service_gpu_completions().unwrap();
@@ -5145,13 +5146,38 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
     let mut items = empty_chart_items(&renderer, &chart, &mut view);
     renderer.prepare(&mut items).unwrap();
 
-    assert!(renderer.pipelines.line.is_none());
-    assert!(renderer.pipelines.scatter.is_none());
-    assert!(renderer.pipelines.errorbar.is_none());
-    assert!(renderer.pipelines.bar.is_none());
-    assert!(renderer.pipelines.scatter_mapped.is_none());
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
     crate::test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
 }
@@ -5165,19 +5191,69 @@ fn full_prewarm_materializes_every_deferred_pipeline() {
     crate::test_gpu::block_on(renderer.prewarm_all_observed(&mut |event| events.push(event)))
         .unwrap();
 
-    assert!(renderer.pipelines.line.is_some());
-    assert!(renderer.pipelines.scatter.is_some());
-    assert!(renderer.pipelines.scatter_mapped.is_some());
-    assert!(renderer.pipelines.pick_ring.is_some());
-    assert!(renderer.pipelines.pick_ring_mapped.is_some());
-    assert!(renderer.pipelines.errorbar.is_some());
-    assert!(renderer.pipelines.errorbar_mapped.is_some());
-    assert!(renderer.pipelines.bar.is_some());
-    assert!(renderer.pipelines.bar_selection.is_some());
-    assert!(renderer.pipelines.field.is_some());
-    assert!(renderer.pipelines.field_selection.is_some());
-    assert!(renderer.pipelines.contour.is_some());
-    assert!(renderer.pipelines.contour_label.is_some());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRing)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_some()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::BarSelection)
+            .is_some()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Field).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::FieldSelection)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Contour)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ContourLabel)
+            .is_some()
+    );
     assert!(renderer.pipelines.styled.contains_key(&StyleKey::Sketch));
     assert!(renderer.pipelines.styled.contains_key(&StyleKey::Milkyway));
     assert!(
@@ -5270,12 +5346,32 @@ fn histogram_prepare_compiles_only_the_bar_pipeline() {
     }];
     renderer.prepare(&mut items).unwrap();
 
-    assert!(renderer.pipelines.bar.is_some());
-    assert!(renderer.pipelines.line.is_none());
-    assert!(renderer.pipelines.scatter.is_none());
-    assert!(renderer.pipelines.errorbar.is_none());
-    assert!(renderer.pipelines.scatter_mapped.is_none());
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_some());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
 }
 
@@ -5431,13 +5527,38 @@ fn line_prepare_compiles_only_the_line_pipeline() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.pipelines.line.is_some());
-    assert!(renderer.pipelines.scatter.is_none());
-    assert!(renderer.pipelines.errorbar.is_none());
-    assert!(renderer.pipelines.bar.is_none());
-    assert!(renderer.pipelines.scatter_mapped.is_none());
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_some());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(renderer.pipelines.precise(PrecisePipeline::Bar).is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
 }
 
@@ -5484,15 +5605,38 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.pipelines.line.is_none());
-    assert!(renderer.pipelines.scatter.is_some());
-    assert!(renderer.pipelines.errorbar.is_none());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
     assert!(
-        renderer.pipelines.scatter_mapped.is_none(),
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none(),
         "unmapped scatter must not compile the mapped pipeline"
     );
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
 }
 
 #[test]
@@ -5545,15 +5689,38 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.pipelines.line.is_none());
-    assert!(renderer.pipelines.scatter.is_some());
-    assert!(renderer.pipelines.errorbar.is_some());
+    assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
     assert!(
-        renderer.pipelines.scatter_mapped.is_none(),
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Scatter)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::Errorbar)
+            .is_some()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ScatterMapped)
+            .is_none(),
         "errorbar without a style map must not compile mapped pipelines"
     );
-    assert!(renderer.pipelines.errorbar_mapped.is_none());
-    assert!(renderer.pipelines.pick_ring_mapped.is_none());
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::ErrorbarMapped)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .pipelines
+            .precise(PrecisePipeline::PickRingMapped)
+            .is_none()
+    );
     assert!(!renderer.errorbar_extent_engine_ready());
 }
 
@@ -6154,9 +6321,18 @@ fn render_mapped_style_case(
         }];
         let prepared = renderer.prepare(&mut items).unwrap();
         let pipeline_state = (
-            renderer.pipelines.scatter_mapped.is_some(),
-            renderer.pipelines.errorbar_mapped.is_some(),
-            renderer.pipelines.pick_ring_mapped.is_some(),
+            renderer
+                .pipelines
+                .precise(PrecisePipeline::ScatterMapped)
+                .is_some(),
+            renderer
+                .pipelines
+                .precise(PrecisePipeline::ErrorbarMapped)
+                .is_some(),
+            renderer
+                .pipelines
+                .precise(PrecisePipeline::PickRingMapped)
+                .is_some(),
         );
         (
             paint_prepared_rgba(renderer, &prepared, w, h),
@@ -15534,8 +15710,14 @@ fn pipeline_enums_index_their_target_arrays() {
             .collect(),
         slots(|t| &t.ternary_region),
     );
+    check(
+        "PrecisePipeline",
+        PrecisePipeline::ALL.iter().map(|&k| k as usize).collect(),
+        slots(|t| &t.precise),
+    );
     assert_eq!(slots(|t| &t.ternary), TERNARY_PIPELINES);
     assert_eq!(slots(|t| &t.view3d), VIEW3D_PIPELINES);
+    assert_eq!(slots(|t| &t.precise), PRECISE_PIPELINES);
 }
 
 /// CONTOUR_LEVELS_COVER_DECLARED (#152): `contour_levels` holds at least

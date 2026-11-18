@@ -147,8 +147,7 @@ pub(super) fn packet(
         selected_bars: Vec::new(),
         selected_fields: vec![ColumnFieldSelectionLayer {
             pipeline: pipelines
-                .field_selection
-                .as_ref()
+                .precise(PrecisePipeline::FieldSelection)
                 .ok_or(StreamError::WrongState)?,
             transform_bg: &view.transform_bg,
             selection_bg,

@@ -211,22 +211,9 @@ impl Renderer {
         // variants the next frame needs are recompiled by its prepare phase.
         // Recreate only the lazy variants that were already live so a format
         // change does not re-eager unused data/mapped/ring pipelines.
-        let had_line = self.pipelines.line.is_some();
-        let had_line_mapped = self.pipelines.line_mapped.is_some();
-        let had_line_parallel = self.pipelines.line_parallel.is_some();
-        let had_line_parallel_selection = self.pipelines.line_parallel_selection.is_some();
-        let had_area = self.pipelines.area.is_some();
-        let had_scatter = self.pipelines.scatter.is_some();
-        let had_errorbar = self.pipelines.errorbar.is_some();
-        let had_scatter_mapped = self.pipelines.scatter_mapped.is_some();
-        let had_pick_ring = self.pipelines.pick_ring.is_some();
-        let had_pick_ring_mapped = self.pipelines.pick_ring_mapped.is_some();
+        let had_precise = self.pipelines.precise.each_ref().map(Option::is_some);
         let had_ternary = self.pipelines.ternary.each_ref().map(Option::is_some);
         let had_view3d = self.pipelines.view3d.each_ref().map(Option::is_some);
-        let had_errorbar_mapped = self.pipelines.errorbar_mapped.is_some();
-        let had_errorbar_stem = self.pipelines.errorbar_stem.is_some();
-        let had_bar = self.pipelines.bar.is_some();
-        let had_bar_mapped = self.pipelines.bar_mapped.is_some();
         // The new set keeps the old one's shader set (#299).
         let set = self.pipelines.shaders.set;
         self.pipelines = create_target_pipelines(
@@ -239,174 +226,35 @@ impl Renderer {
             target_sample_count,
             set,
         );
-        if had_line {
-            self.pipelines.line = Some(
-                data_render::create_line_columnar_pipeline_with_sample_count(
-                    &self.device,
-                    &self.pipelines.shaders.line,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    surface_format,
-                    target_sample_count,
-                ),
-            );
-        }
-        if had_line_mapped {
-            self.pipelines.line_mapped =
-                Some(data_render::create_line_mapped_pipeline_with_sample_count(
-                    &self.device,
-                    &self.pipelines.shaders.line,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    &self.point_value_map_bgl,
-                    surface_format,
-                    target_sample_count,
-                ));
-        }
-        for (had, selection) in [
-            (had_line_parallel, false),
-            (had_line_parallel_selection, true),
-        ] {
-            if had {
-                let pipeline = data_render::create_line_parallel_pipeline_with_sample_count(
-                    &self.device,
-                    &self.pipelines.shaders.line,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    &self.parallel_bgl,
-                    surface_format,
-                    target_sample_count,
-                    selection,
-                );
-                if selection {
-                    self.pipelines.line_parallel_selection = Some(pipeline);
-                } else {
-                    self.pipelines.line_parallel = Some(pipeline);
-                }
+        let layouts = PreciseLayouts {
+            device: &self.device,
+            transform_bgl: &self.transform_bgl,
+            style_bgl: &self.style_bgl,
+            per_point_style_map_bgl: &self.per_point_style_map_bgl,
+            point_value_map_bgl: &self.point_value_map_bgl,
+            data_selection_bgl: &self.data_selection_bgl,
+            field_bgl: &self.field_bgl,
+            vector_bgl: &self.vector_bgl,
+            category_bar_data_bgl: &self.category_bar_data_bgl,
+            parallel_bgl: &self.parallel_bgl,
+            star_data_bgl: &self.star_data_bgl,
+            label_pipelines: self.contour_label_pipelines.as_ref(),
+            surface_format,
+        };
+        for kind in PrecisePipeline::ALL {
+            if had_precise[kind as usize] && kind.rebuilt_with_target() {
+                self.pipelines.ensure_precise(kind, &layouts);
             }
-        }
-        if had_area {
-            self.pipelines.area = Some(data_render::create_line_area_pipeline_with_sample_count(
-                &self.device,
-                &self.pipelines.shaders.line,
-                &self.transform_bgl,
-                &self.style_bgl,
-                surface_format,
-                target_sample_count,
-            ));
-        }
-        if had_scatter {
-            self.pipelines.scatter = Some(
-                data_render::create_scatter_columnar_pipeline_with_sample_count(
-                    &self.device,
-                    &self.pipelines.shaders.scatter,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    surface_format,
-                    target_sample_count,
-                ),
-            );
-        }
-        if had_bar {
-            self.pipelines.bar = Some(data_render::create_bar_columnar_pipeline_with_sample_count(
-                &self.device,
-                &self.pipelines.shaders.bar,
-                &self.transform_bgl,
-                &self.style_bgl,
-                surface_format,
-                target_sample_count,
-            ));
-        }
-        if had_bar_mapped {
-            self.pipelines.bar_mapped = Some(
-                data_render::create_bar_columnar_mapped_pipeline_with_sample_count(
-                    &self.device,
-                    &self.pipelines.shaders.bar,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    &self.per_point_style_map_bgl,
-                    surface_format,
-                    target_sample_count,
-                ),
-            );
-        }
-        if had_errorbar {
-            self.pipelines.errorbar = Some(
-                data_render::create_errorbar_columnar_pipeline_with_sample_count(
-                    &self.device,
-                    &self.pipelines.shaders.errorbar,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    surface_format,
-                    target_sample_count,
-                ),
-            );
-        }
-        if had_errorbar_stem {
-            self.pipelines.errorbar_stem = Some(data_render::create_stem_pipeline(
-                &self.device,
-                &self.pipelines.shaders.errorbar,
-                &self.transform_bgl,
-                &self.style_bgl,
-                surface_format,
-                target_sample_count,
-                "vs_stem",
-            ));
-        }
-        if had_scatter_mapped {
-            self.pipelines.scatter_mapped = Some(
-                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
-                    &self.device,
-                    &self.pipelines.shaders.scatter,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    &self.per_point_style_map_bgl,
-                    &self.point_value_map_bgl,
-                    surface_format,
-                    target_sample_count,
-                    "vs_mapped",
-                    "fs_mapped",
-                    "figgy scatter mapped pipeline",
-                ),
-            );
-        }
-        if had_pick_ring {
-            self.pipelines.pick_ring =
-                Some(data_render::create_scatter_columnar_pipeline_with_entries(
-                    &self.device,
-                    &self.pipelines.shaders.scatter,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    surface_format,
-                    target_sample_count,
-                    "vs_pick_ring",
-                    "fs_pick_ring",
-                    "figgy picked point ring pipeline",
-                ));
         }
         for kind in TernaryPipeline::ALL {
             if had_ternary[kind as usize] {
-                self.pipelines.ternary[kind as usize] = Some(create_ternary_pipeline(
-                    kind,
-                    &self.device,
-                    &self.pipelines.shaders,
-                    [
-                        &self.transform_bgl,
-                        &self.style_bgl,
-                        &self.per_point_style_map_bgl,
-                        &self.point_value_map_bgl,
-                    ],
-                    surface_format,
-                    target_sample_count,
-                ));
+                self.pipelines.ensure_ternary(kind, &layouts);
             }
         }
         for kind in View3dPipeline::ALL {
             if had_view3d[kind as usize] {
-                self.pipelines.view3d[kind as usize] = Some(create_view3d_pipeline(
-                    kind,
+                self.pipelines.ensure_view3d_pass(
                     &self.device,
-                    &self.pipelines.shaders,
                     [
                         &self.transform_bgl,
                         &self.style_bgl,
@@ -416,39 +264,9 @@ impl Renderer {
                         &self.vector_bgl,
                     ],
                     surface_format,
-                    target_sample_count,
-                ));
+                    kind,
+                );
             }
-        }
-        if had_pick_ring_mapped {
-            self.pipelines.pick_ring_mapped = Some(
-                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
-                    &self.device,
-                    &self.pipelines.shaders.scatter,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    &self.per_point_style_map_bgl,
-                    &self.point_value_map_bgl,
-                    surface_format,
-                    target_sample_count,
-                    "vs_pick_ring_mapped",
-                    "fs_pick_ring",
-                    "figgy picked point mapped ring pipeline",
-                ),
-            );
-        }
-        if had_errorbar_mapped {
-            self.pipelines.errorbar_mapped = Some(
-                data_render::create_errorbar_columnar_mapped_pipeline_from_shader(
-                    &self.device,
-                    &self.pipelines.shaders.errorbar,
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    &self.per_point_style_map_bgl,
-                    surface_format,
-                    target_sample_count,
-                ),
-            );
         }
         self.surface_format = surface_format;
         self.target_sample_count = target_sample_count;

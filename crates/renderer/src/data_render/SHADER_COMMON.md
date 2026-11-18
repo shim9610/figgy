@@ -2190,8 +2190,8 @@ under `PARALLEL_COLOR` (`nan_color` where non-finite), `style.color_premul`
 otherwise; `fs_parallel` is `line_fragment_color` with it.
 `vs_parallel_selected` is the same geometry in `style.color_premul` (the
 selection's style as group 1): the picked row's segments are redrawn over
-every series body. The pipelines are `TargetPipelines.line_parallel` /
-`line_parallel_selection` (`create_line_parallel_pipeline_with_sample_count`,
+every series body. The pipelines are `PrecisePipeline::LineParallel` /
+`LineParallelSelection` (`create_line_pipeline` with no vertex slots,
 layouts `[transform, style, —, parallel]`).
 
 `pick_parallel` (compute, the data pick query of `data_pick.wgsl` as

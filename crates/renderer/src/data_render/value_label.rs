@@ -567,46 +567,6 @@ pub(crate) fn create_value_label_data(
     })
 }
 
-/// A value label pipeline of the bar module: groups 0 transform, 1 the
-/// series' value label group, 2 its bar style map, 3 its category bar data;
-/// no vertex buffers. `vs_value_label` / `fs_value_label` draw the labels,
-/// `vs_value_label_selection` / `fs_value_label_selection` the selected
-/// label's box.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_value_label_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    value_label_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    data_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    selection: bool,
-) -> wgpu::RenderPipeline {
-    let entries = if selection {
-        (
-            "vs_value_label_selection",
-            "fs_value_label_selection",
-            "figgy value label selection pipeline",
-        )
-    } else {
-        (
-            "vs_value_label",
-            "fs_value_label",
-            "figgy value label pipeline",
-        )
-    };
-    create_category_axis_pipeline(
-        device,
-        shader,
-        [transform_bgl, value_label_bgl, style_map_bgl, data_bgl],
-        target_format,
-        sample_count,
-        entries,
-    )
-}
-
 /// One series' value labels: `count` instances of [`VALUE_LABEL_VERTICES`]
 /// over its category bar group 3 and style map, and, when one of them is
 /// selected, its selection box.

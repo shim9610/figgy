@@ -67,9 +67,11 @@ impl PrepareContext<'_> {
                 data,
                 params.count,
                 data_render::CATEGORY_BAR_VERTICES,
-                pipelines.bar_category.as_ref().ok_or(FiggyError::internal(
-                    "prepare ensured category bar pipeline",
-                ))?,
+                pipelines
+                    .precise(PrecisePipeline::CategoryBar)
+                    .ok_or(FiggyError::internal(
+                        "prepare ensured category bar pipeline",
+                    ))?,
             ))
         } else if primitives.box_plot && phase.is_none() {
             // Box plots: the group is this panel's box plot series; the
@@ -118,8 +120,7 @@ impl PrepareContext<'_> {
                 params.count,
                 vertices,
                 pipelines
-                    .bar_box_plot
-                    .as_ref()
+                    .precise(PrecisePipeline::BoxPlot)
                     .ok_or(FiggyError::internal("prepare ensured box plot pipeline"))?,
             ))
         } else if primitives.range_bars && phase.is_none() {
@@ -149,8 +150,7 @@ impl PrepareContext<'_> {
                 count,
                 data_render::RANGE_BAR_VERTICES,
                 pipelines
-                    .bar_range
-                    .as_ref()
+                    .precise(PrecisePipeline::RangeBar)
                     .ok_or(FiggyError::internal("prepare ensured range bar pipeline"))?,
             ))
         } else {
@@ -225,10 +225,10 @@ impl PrepareContext<'_> {
             })
         };
         let violin = (primitives.violin && phase.is_none())
-            .then(|| box_extra(false, pipelines.bar_violin.as_ref()))
+            .then(|| box_extra(false, pipelines.precise(PrecisePipeline::Violin)))
             .transpose()?;
         let box_points = (primitives.box_points && phase.is_none())
-            .then(|| box_extra(true, pipelines.bar_box_points.as_ref()))
+            .then(|| box_extra(true, pipelines.precise(PrecisePipeline::BoxPoints)))
             .transpose()?;
         Ok((violin, box_points))
     }
@@ -292,12 +292,10 @@ impl PrepareContext<'_> {
                 ),
                 pipeline: match style_map {
                     None => pipelines
-                        .bar
-                        .as_ref()
+                        .precise(PrecisePipeline::Bar)
                         .ok_or(FiggyError::internal("prepare ensured bar pipeline"))?,
                     Some(_) => pipelines
-                        .bar_mapped
-                        .as_ref()
+                        .precise(PrecisePipeline::BarMapped)
                         .ok_or(FiggyError::internal("prepare ensured mapped bar pipeline"))?,
                 },
                 transform_bg: &view.transform_bg,

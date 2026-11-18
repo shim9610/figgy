@@ -969,21 +969,28 @@ mod tests {
         let sb = create_style_uniform_buffer(&device, &style);
         let sbg = create_style_bind_group(&device, &sbgl, &sb);
         for samples in [1, 4] {
-            let line_pipeline = create_line_columnar_pipeline_with_sample_count(
+            let line_pipeline = create_line_pipeline(
                 &device,
                 &shaders.line,
-                &tbgl,
-                &sbgl,
+                &[Some(&tbgl), Some(&sbgl)],
+                LINE_SLOTS,
                 wgpu::TextureFormat::Rgba8Unorm,
                 samples,
+                ("vs_main", "fs_main", "figgy line columnar pipeline"),
+                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                wgpu::PrimitiveTopology::TriangleStrip,
+                None,
             );
-            let scatter_pipeline = create_scatter_columnar_pipeline_with_sample_count(
+            let scatter_pipeline = create_scatter_pipeline(
                 &device,
                 &shaders.scatter,
-                &tbgl,
-                &sbgl,
+                [&tbgl, &sbgl],
                 wgpu::TextureFormat::Rgba8Unorm,
                 samples,
+                ("vs_main", "fs_main", "figgy scatter columnar pipeline"),
+                None,
+                false,
+                None,
             );
             for reversed in [false, true] {
                 let transform = ScatterTransform {
