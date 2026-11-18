@@ -1042,8 +1042,8 @@ let png = renderer::encode_png(&image)?;
 배경만 바꾼 112바이트 uniform을 내보내기 동안 따로 만든다. 성분이 0~1을 벗어난 색은
 `RadialError::Invalid`로 거부한다.
 
-`export_svg(&chart, size, scale)`와 `export_pdf`(네이티브 동기 버전 `export_svg` /
-`export_pdf`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다.
+`export_svg(&chart, size, scale)`와 `export_pdf`(네이티브 동기 버전 `export_svg_blocking` /
+`export_pdf_blocking`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다.
 크기와 배율은 `prepare`와 같은 규칙으로 검사한다. 조각과 배경은 래스터 이미지 한 장으로 들어간다.
 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 들어가며 글자는 글리프
 윤곽선으로 남는다. PNG와 다른 점은 두 가지다.
