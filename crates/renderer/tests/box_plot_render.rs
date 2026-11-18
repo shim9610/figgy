@@ -1036,13 +1036,16 @@ fn a_box_plot_document_draws_through_the_reader() {
         "fixtures/released/model-0.12.1-boxplot-edited.json"
     ))
     .unwrap();
-    let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&doc);
-    config.chart_area = ChartArea(Rect {
+    // Convert on the chart area the chart is drawn on, as the browser setter
+    // does: the document's explicit data area (#334) is fitted to it.
+    let area = ChartArea(Rect {
         x: 0,
         y: 0,
         width: 800,
         height: 600,
     });
+    let (config, series, uploads, _) =
+        renderer::config::Config::from_boxplot_with_report_in(&doc, Some(&area));
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
         RendererDevice::new(device, queue).expect("figgy poll thread"),
