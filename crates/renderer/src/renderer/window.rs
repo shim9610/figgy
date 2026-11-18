@@ -550,13 +550,11 @@ impl Renderer {
             .map_err(|_| FiggyError::AdapterUnavailable)?;
         finished(observer, "window", "adapter");
         started(observer, "window", "device");
-        let (device, queue) = data_render::request_device_async(&adapter)
-            .await
-            .map_err(|e| FiggyError::DeviceCreationFailed {
-                reason: format!("{e}"),
-            })?;
+        // figgy requested this device, so the bundle records it as figgy's
+        // own (#322).
+        let gpu = RendererDevice::request_async(&adapter).await?;
         finished(observer, "window", "device");
-        let target = window_target(&surface, &adapter, device, queue, size, observer)?;
+        let target = window_target(&surface, &adapter, gpu, size, observer)?;
         #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
         let mut inner = Renderer::try_new_with_sample_count_observed_async(
             target.gpu.with_shader_set(set),
@@ -632,8 +630,9 @@ impl Renderer {
         finished(observer, "window", "adapter");
         started(observer, "window", "device");
         let (device, queue) = data_render::request_device_blocking(&adapter)?;
+        let gpu = RendererDevice::requested(device, queue)?;
         finished(observer, "window", "device");
-        let target = window_target(&surface, &adapter, device, queue, size, observer)?;
+        let target = window_target(&surface, &adapter, gpu, size, observer)?;
         let inner = Renderer::try_new_with_sample_count_observed(
             target.gpu,
             target.surface_config.format,
@@ -681,18 +680,17 @@ struct WindowTarget {
     msaa_target: Option<MsaaTarget>,
 }
 
-/// Bundle the device, configure the surface and probe the frame's MSAA.
+/// Configure the surface for the bundle's device and probe the frame's MSAA.
 fn window_target(
     surface: &wgpu::Surface<'_>,
     adapter: &wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    gpu: RendererDevice,
     size: (u32, u32),
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<WindowTarget> {
-    // The bundle registers the device's lost callback and error handler
-    // before figgy uses the device, once for this device.
-    let gpu = RendererDevice::new(device, queue)?;
+    // The bundle, built right after the device request, registered the
+    // device's lost callback and error handler before figgy uses the
+    // device, once for this device.
     let device = gpu.device().clone();
     let surface_config = observe_result(observer, "window", "configure", || {
         data_render::try_configure_surface(surface, adapter, &device, size.0.max(1), size.1.max(1))

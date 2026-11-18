@@ -67,9 +67,44 @@ impl RendererDevice {
     /// start it. A host that only makes blocking calls builds the bundle with
     /// `Self::blocking` instead, which starts no thread. In the browser the
     /// device polls itself and no thread is started.
+    ///
+    /// The device stays the host's: figgy never destroys it, also not when
+    /// the last renderer built from it is dropped.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self> {
+        Self::polled(device, queue, DeviceOrigin::SuppliedByHost)
+    }
+
+    /// Request a device and queue from `adapter` with figgy's device
+    /// descriptor ([`crate::gpu::request_device_async`]) and bundle them as
+    /// [`Self::new`] does, with the poll thread on native.
+    ///
+    /// figgy owns this device. In the browser, when the last holder of the
+    /// bundle is dropped (the last renderer, clone or pending ticket built
+    /// from it), figgy destroys the device after the work submitted on it,
+    /// so the page never relies on garbage collection to end it (#322). A
+    /// host that keeps the raw `wgpu::Device` or `wgpu::Queue` from
+    /// [`Self::device`] past that point keeps a clone of this bundle as well.
+    /// Native drops never destroy a device. Fails with
+    /// [`FiggyError::DeviceCreationFailed`] when the request fails.
+    pub async fn request_async(adapter: &wgpu::Adapter) -> Result<Self> {
+        let (device, queue) =
+            data_render::request_device_async(adapter)
+                .await
+                .map_err(|error| FiggyError::DeviceCreationFailed {
+                    reason: format!("{error}"),
+                })?;
+        Self::requested(device, queue)
+    }
+
+    /// Bundle a device and queue figgy requested itself: [`Self::new`],
+    /// with the record saying figgy owns the device (#322).
+    pub(crate) fn requested(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self> {
+        Self::polled(device, queue, DeviceOrigin::RequestedByFiggy)
+    }
+
+    fn polled(device: wgpu::Device, queue: wgpu::Queue, origin: DeviceOrigin) -> Result<Self> {
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
-        let mut bundle = Self::without_poller(device, queue);
+        let mut bundle = Self::without_poller(device, queue, origin);
         #[cfg(not(target_arch = "wasm32"))]
         bundle.health.start_poller(&bundle.device)?;
         Ok(bundle)
@@ -79,10 +114,11 @@ impl RendererDevice {
     /// thread: every `_blocking` call polls the device on the caller's
     /// thread. An asynchronous GPU wait on this bundle fails with
     /// [`FiggyError::AsyncWaitUnavailable`] instead of never completing.
-    /// Registers the same callbacks as [`Self::new`].
+    /// Registers the same callbacks as [`Self::new`], and the device stays
+    /// the host's.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn blocking(device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        Self::without_poller(device, queue)
+        Self::without_poller(device, queue, DeviceOrigin::SuppliedByHost)
     }
 
     /// Have every renderer built from this bundle start on `set` (#299).
@@ -98,8 +134,8 @@ impl RendererDevice {
         self
     }
 
-    fn without_poller(device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        let health = DeviceHealth::watch(&device);
+    fn without_poller(device: wgpu::Device, queue: wgpu::Queue, origin: DeviceOrigin) -> Self {
+        let health = DeviceHealth::watch(&device, origin);
         Self {
             device,
             queue,

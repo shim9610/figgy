@@ -155,6 +155,10 @@ pub(crate) fn gpu_error(resource: &'static str, error: wgpu::Error) -> FiggyErro
 /// Every clone owns the poll thread (`gpu_poller.rs`): it lives as long as
 /// some renderer, engine or ticket of the bundle holds the record, or a wait
 /// is pending.
+///
+/// The record also keeps who requested the device ([`DeviceOrigin`]), and
+/// its strong count tells the browser drop whether it is the device's last
+/// holder (`release_after_submitted_work`, #322).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeviceHealth {
     state: Arc<DeviceHealthState>,
@@ -170,21 +174,63 @@ pub(super) struct DeviceHealthState {
     errors: std::sync::atomic::AtomicU64,
     reported: std::sync::atomic::AtomicU64,
     first_error: std::sync::OnceLock<String>,
+    /// Who requested the device, set once when the bundle is built and
+    /// never changed (#322). Only the browser drop reads it: a native drop
+    /// never destroys a device.
+    #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+    origin: DeviceOrigin,
+}
+
+/// Who requested a bundle's device: the fact that decides whether figgy may
+/// destroy it when the last holder of the bundle is dropped (#322).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DeviceOrigin {
+    /// figgy requested the device itself (a windowed or headless renderer,
+    /// a browser chart's own device), so no host code holds it.
+    RequestedByFiggy,
+    /// The host built the bundle from its own device and queue
+    /// ([`RendererDevice::new`], `RendererDevice::blocking`), or the record
+    /// was not built from a bundle. figgy never destroys such a device.
+    #[default]
+    SuppliedByHost,
 }
 
 impl DeviceHealth {
-    pub(crate) fn watch(device: &wgpu::Device) -> Self {
-        let health = Self::default();
-        let lost = Arc::clone(&health.state);
+    /// The record of `device`, requested by `origin`: registers the
+    /// device-lost callback and the uncaptured-error handler.
+    ///
+    /// Both callbacks hold the record weakly, so in the browser the record's
+    /// strong count is the number of `DeviceHealth` values that hold it:
+    /// every bundle clone, renderer, engine and ticket of the device
+    /// (`Self::is_last_holder_of_requested_device`). A callback that runs
+    /// after every holder is gone has no one left to tell.
+    pub(crate) fn watch(device: &wgpu::Device, origin: DeviceOrigin) -> Self {
+        let health = Self {
+            state: Arc::new(DeviceHealthState {
+                origin,
+                ..DeviceHealthState::default()
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            poller: None,
+        };
+        let lost = Arc::downgrade(&health.state);
         device.set_device_lost_callback(move |reason, message| {
+            let Some(lost) = lost.upgrade() else {
+                // Every holder of the record is gone: no one reads the loss.
+                return;
+            };
             let text = format!("{reason:?}: {message}");
             if lost.lost.set(text).is_err() {
                 // A second callback for the same device: the first reason
                 // already stands and is what every later call returns.
             }
         });
-        let errors = Arc::clone(&health.state);
+        let errors = Arc::downgrade(&health.state);
         device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+            let Some(errors) = errors.upgrade() else {
+                // Every holder of the record is gone: no call reports it.
+                return;
+            };
             errors
                 .errors
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -194,6 +240,26 @@ impl DeviceHealth {
             }
         }));
         health
+    }
+
+    /// Whether this value is the only holder of the record of a device
+    /// figgy requested itself, so destroying the device can break no one
+    /// (#322).
+    ///
+    /// The last-owner test is the shared-storage pattern of "Identity and
+    /// staleness checks" (`ARCHITECTURE.md`): the strong count of the one
+    /// record every holder of the device's bundle shares. Every bundle
+    /// clone, renderer, engine, preparation job and pick or export ticket
+    /// that can use the device holds a `DeviceHealth` clone, and the device's
+    /// own callbacks hold the record weakly ([`Self::watch`]), so a count of
+    /// one means no one else can still reach the device through figgy. A
+    /// host-supplied device is never reported, whatever the count.
+    ///
+    /// Browser only, and the unit tests: a native bundle's poll thread
+    /// also holds the record, and native drops never destroy the device.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn is_last_holder_of_requested_device(&self) -> bool {
+        self.state.origin == DeviceOrigin::RequestedByFiggy && Arc::strong_count(&self.state) == 1
     }
 
     /// `Err` once the device is lost, or when GPU errors reached the
@@ -336,16 +402,36 @@ pub(in crate::renderer) fn pool_alloc_ctx<'a>(
 
 /// Keep the browser `GPUDevice` and `GPUQueue` behind `device` and `queue`
 /// reachable until the work submitted on the queue completes, then release
-/// them.
+/// them; destroy the device first when figgy requested it and no one else
+/// holds it.
 ///
 /// wgpu's WebGPU backend releases nothing on drop: a device lives as long as
 /// JavaScript can reach it. Chromium 152 to 158 can deadlock the page's main
-/// thread when a device with submitted work still in flight is garbage
-/// collected: the queue's work-done callback then runs inside the GPU reply
-/// handler while that handler holds its lock, and the callback's own command
-/// flush waits on the same lock. Holding the handles until
-/// `onSubmittedWorkDone` resolves means a collected device never has work in
-/// flight (#322). A lost device has no work left, so nothing is held then.
+/// thread when a `GPUDevice` is garbage collected: Dawn delivers its
+/// per-submit callbacks only when the device is destroyed, even after
+/// `onSubmittedWorkDone` resolved, and a collected device delivers them
+/// inside the GPU reply handler while that handler holds its lock, where the
+/// callback's own command flush waits on the same lock (#322). Holding the
+/// handles until `onSubmittedWorkDone` resolves is not enough on these
+/// versions; destroying the device explicitly, while still holding it, runs
+/// those callbacks outside the collection, and the collected device has
+/// nothing left to deliver.
+///
+/// The rule, run in a task after the dropping renderer's own fields are
+/// gone (they hold clones of `health` until then):
+/// 1. When the record says figgy requested the device and this task holds
+///    the record's last clone
+///    ([`DeviceHealth::is_last_holder_of_requested_device`]), call
+///    `device.destroy()`.
+/// 2. Wait for `onSubmittedWorkDone`.
+/// 3. When step 1 did not destroy and the test now passes (another holder
+///    released its clone meanwhile), destroy and wait once more.
+/// 4. Release the handles.
+///
+/// A host-supplied device ([`RendererDevice::new`]) is never destroyed, nor
+/// one another chart, renderer, bundle clone or pending ticket still holds:
+/// each of those holds the record. A lost device has no work left, so
+/// nothing is held then.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn release_after_submitted_work(
     health: &DeviceHealth,
@@ -355,19 +441,46 @@ pub(crate) fn release_after_submitted_work(
     if health.is_lost() {
         return;
     }
-    let held = (device.clone(), queue.clone());
+    let held = (health.clone(), device.clone(), queue.clone());
+    // `spawn_local` runs the task from the microtask queue, after the drop
+    // that called this returns: the renderer's fields have released their
+    // clones of the record by then.
+    wasm_bindgen_futures::spawn_local(async move {
+        let (health, device, queue) = held;
+        let destroyed = destroy_if_last_holder(&health, &device);
+        submitted_work_done(&queue).await;
+        if !destroyed && destroy_if_last_holder(&health, &device) {
+            submitted_work_done(&queue).await;
+        }
+        drop((device, queue, health));
+    });
+}
+
+/// Step 1 of [`release_after_submitted_work`]: destroy `device` when
+/// `health` is the last holder of a device figgy requested.
+#[cfg(target_arch = "wasm32")]
+fn destroy_if_last_holder(health: &DeviceHealth, device: &wgpu::Device) -> bool {
+    let last = health.is_last_holder_of_requested_device() && !health.is_lost();
+    if last {
+        device.destroy();
+    }
+    last
+}
+
+/// Resolves once the work submitted on `queue` before this call completes,
+/// or when the callback is dropped without running (the device is gone).
+#[cfg(target_arch = "wasm32")]
+fn submitted_work_done(queue: &wgpu::Queue) -> impl std::future::Future<Output = bool> + 'static {
+    // wgpu requires a Send completion callback even for WebGPU, but
+    // browser handles must stay on their owning JS thread: the callback
+    // only sends.
     let (sender, receiver) = futures_channel::oneshot::channel();
     queue.on_submitted_work_done(move || {
         if sender.send(()).is_err() {
             // The receiver was dropped: the waiting task was cancelled.
         }
     });
-    wasm_bindgen_futures::spawn_local(async move {
-        if receiver.await.is_err() {
-            // The callback was dropped without running: the device is gone.
-        }
-        drop(held);
-    });
+    async move { receiver.await.is_ok() }
 }
 
 /// Hand every retirement the ledger holds to the queue's completion: the
@@ -384,18 +497,65 @@ pub(crate) fn retire_on_completion(ledger: &Arc<GpuLedger>, queue: &wgpu::Queue)
     queue.on_submitted_work_done(move || ledger.complete_retirement(batch));
     #[cfg(target_arch = "wasm32")]
     {
-        // wgpu requires a Send completion callback even for WebGPU, but
-        // browser buffer handles must stay on their owning JS thread.
-        let (sender, receiver) = futures_channel::oneshot::channel();
-        queue.on_submitted_work_done(move || {
-            if sender.send(()).is_err() {
-                // The receiver was dropped: the waiting task was cancelled.
-            }
-        });
+        let done = submitted_work_done(queue);
         wasm_bindgen_futures::spawn_local(async move {
-            if receiver.await.is_ok() {
+            if done.await {
                 ledger.complete_retirement(batch);
             }
         });
+    }
+}
+
+/// The ownership fact and the last-holder test the browser drop reads
+/// (#322). Native bundles here are built without a poll thread, whose drive
+/// also holds the record.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_callbacks_do_not_count_as_holders_of_a_requested_device() {
+        let (device, _queue) = crate::test_gpu::device();
+        let health = DeviceHealth::watch(&device, DeviceOrigin::RequestedByFiggy);
+        assert!(health.is_last_holder_of_requested_device());
+        let other = health.clone();
+        assert!(!health.is_last_holder_of_requested_device());
+        assert!(!other.is_last_holder_of_requested_device());
+        drop(other);
+        assert!(health.is_last_holder_of_requested_device());
+    }
+
+    #[test]
+    fn a_host_supplied_device_never_reports_a_last_holder() {
+        let (device, queue) = crate::test_gpu::device();
+        let gpu = RendererDevice::without_poller(device, queue, DeviceOrigin::SuppliedByHost);
+        assert!(!gpu.health().is_last_holder_of_requested_device());
+        assert!(!DeviceHealth::default().is_last_holder_of_requested_device());
+    }
+
+    #[test]
+    fn a_renderer_and_its_shared_bundle_hold_a_requested_device() {
+        let (device, queue) = crate::test_gpu::device();
+        let gpu = RendererDevice::without_poller(device, queue, DeviceOrigin::RequestedByFiggy);
+        let renderer = Renderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm, 1 << 20)
+            .expect("required GPU test: renderer initialization failed");
+        drop(gpu);
+        let shared = renderer.renderer_device();
+        assert!(!shared.health().is_last_holder_of_requested_device());
+        // The renderer's own fields hold the record until its drop glue
+        // ends; then the shared bundle is the last holder.
+        drop(renderer);
+        assert!(shared.health().is_last_holder_of_requested_device());
+    }
+
+    #[test]
+    fn a_device_lost_after_a_holder_drops_still_reaches_the_rest() {
+        let (device, _queue) = crate::test_gpu::device();
+        let health = DeviceHealth::watch(&device, DeviceOrigin::RequestedByFiggy);
+        let kept = health.clone();
+        drop(health);
+        device.destroy();
+        let _ = device.poll(wgpu::PollType::Poll);
+        assert!(kept.is_lost());
     }
 }
