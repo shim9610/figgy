@@ -52,103 +52,16 @@ pub const BAR_VERTICES_PER_INSTANCE: u32 = 30;
 /// Must match `vs_bar_selection` in `bar_columnar.wgsl`.
 pub const BAR_SELECTION_VERTICES: u32 = 24;
 
-/// Columnar bar pipeline. Slots (all per-instance): 0 = edge_lo, 1 = edge_hi,
-/// 2 = value. The caller binds the edge column twice, the second time shifted
-/// by one logical value, and picks which pool column is edges vs values from
-/// the bar's orientation.
-pub(crate) fn create_bar_columnar_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_bar_columnar_pipeline_with_entry(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        None,
-        target_format,
-        sample_count,
-        "vs_envelope_bars",
-        "figgy bar columnar pipeline",
-    )
-}
-
-pub(crate) fn create_bar_columnar_mapped_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_bar_columnar_pipeline_with_entry(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        Some(style_map_bgl),
-        target_format,
-        sample_count,
-        "vs_envelope_mapped_bars",
-        "figgy mapped bar columnar pipeline",
-    )
-}
-
-/// The selected bin's outline for a series drawn without a style map: the
-/// bar layouts, groups 0 and 1 only (`vs_bar_selection`).
-pub(crate) fn create_bar_selection_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_bar_columnar_pipeline_with_entry(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        None,
-        target_format,
-        sample_count,
-        "vs_bar_selection",
-        "figgy selected histogram bin pipeline",
-    )
-}
-
-/// The selected bin's outline for a series drawn through its style map: the
-/// mapped bar layout, group 2 = the series' bar style map
-/// (`vs_bar_selection_mapped`).
-pub(crate) fn create_bar_selection_mapped_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_bar_columnar_pipeline_with_entry(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        Some(style_map_bgl),
-        target_format,
-        sample_count,
-        "vs_bar_selection_mapped",
-        "figgy selected mapped histogram bin pipeline",
-    )
-}
-
+/// A histogram bar pipeline from `(vertex entry, label)` into `fs_main`.
+/// Slots (all per-instance): 0 = edge_lo, 1 = edge_hi, 2 = value. The
+/// caller binds the edge column twice, the second time shifted by one
+/// logical value, and picks which pool column is edges vs values from the
+/// bar's orientation. Groups: transform, style (`group_one_bgl`), and for
+/// the mapped draw (`vs_envelope_mapped_bars`) and its selected bin's
+/// outline (`vs_bar_selection_mapped`) the series' bar style map as group 2;
+/// the precise draw is `vs_envelope_bars`, the outline `vs_bar_selection`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn create_bar_columnar_pipeline_with_entry(
+pub(crate) fn create_bar_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
@@ -156,95 +69,47 @@ pub(super) fn create_bar_columnar_pipeline_with_entry(
     group_two_bgl: Option<&wgpu::BindGroupLayout>,
     target_format: wgpu::TextureFormat,
     sample_count: u32,
-    vertex_entry: &str,
-    label: &str,
+    (vertex_entry, label): (&str, &str),
 ) -> wgpu::RenderPipeline {
-    let base_layouts = [Some(transform_bgl), Some(group_one_bgl)];
-    let mapped_layouts = [Some(transform_bgl), Some(group_one_bgl), group_two_bgl];
-    let bind_group_layouts = if group_two_bgl.is_some() {
-        &mapped_layouts[..]
-    } else {
-        &base_layouts[..]
+    let layouts = [Some(transform_bgl), Some(group_one_bgl), group_two_bgl];
+    let groups = if group_two_bgl.is_some() { 3 } else { 2 };
+    let layout =
+        RenderPipelineSpec::layout(device, "figgy bar columnar layout", &layouts[..groups]);
+    const ATTRS: [[wgpu::VertexAttribute; 1]; 3] = {
+        let mut attrs = [[wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x2,
+            offset: 0,
+            shader_location: 0,
+        }]; 3];
+        let mut i = 0;
+        while i < 3 {
+            attrs[i][0].shader_location = i as u32;
+            i += 1;
+        }
+        attrs
     };
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy bar columnar layout"),
-            bind_group_layouts,
-            immediate_size: 0,
-        },
-    );
-
-    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
-    const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 0,
-    }];
-    const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 1,
-    }];
-    const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 2,
-    }];
-    let buffers = [
+    let buffers: [Option<wgpu::VertexBufferLayout<'_>>; 3] = std::array::from_fn(|slot| {
         Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
+            array_stride: crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR0,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR1,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR2,
-        }),
-    ];
-
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vertex_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &buffers,
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
+            attributes: &ATTRS[slot],
+        })
+    });
+    RenderPipelineSpec {
+        label,
+        layout: &layout,
+        shader,
+        entries: (vertex_entry, "fs_main"),
+        buffers: &buffers,
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(
+            target_format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        ),
+    }
+    .create(device)
 }
 
 /// One columnar bar (histogram) series.
@@ -636,176 +501,15 @@ pub fn create_category_bar_data_bind_group(
     })
 }
 
-/// A category bar pipeline: groups 0 transform, 1 style, 2 the series' bar
-/// override table, 3 its data; no vertex buffers. `vs_category_bars` /
-/// `fs_category_bars` draw the bars, `vs_category_bar_selection` /
-/// `fs_category_bar_selection` the picked one's highlight.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_category_bar_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    data_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    selection: bool,
-) -> wgpu::RenderPipeline {
-    let entries = if selection {
-        (
-            "vs_category_bar_selection",
-            "fs_category_bar_selection",
-            "figgy selected category bar columnar pipeline",
-        )
-    } else {
-        (
-            "vs_category_bars",
-            "fs_category_bars",
-            "figgy category bar columnar pipeline",
-        )
-    };
-    create_category_axis_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl, style_map_bgl, data_bgl],
-        target_format,
-        sample_count,
-        entries,
-    )
-}
-
-/// A box plot pipeline, over the category bar pipeline's layout (groups 0
-/// transform, 1 style, 2 the series' bar style map, 3 its data; no vertex
-/// buffers): `vs_box_plot` / `fs_box_plot` draw the boxes,
-/// `vs_box_plot_selection` / `fs_box_plot_selection` the picked one's
-/// highlight.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_box_plot_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    data_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    selection: bool,
-) -> wgpu::RenderPipeline {
-    let entries = if selection {
-        (
-            "vs_box_plot_selection",
-            "fs_box_plot_selection",
-            "figgy selected box plot columnar pipeline",
-        )
-    } else {
-        (
-            "vs_box_plot",
-            "fs_box_plot",
-            "figgy box plot columnar pipeline",
-        )
-    };
-    create_category_axis_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl, style_map_bgl, data_bgl],
-        target_format,
-        sample_count,
-        entries,
-    )
-}
-
-/// A range bar pipeline, over the category bar pipeline's layout (groups 0
-/// transform, 1 style, 2 the series' bar style map, 3 its data; no vertex
-/// buffers): `vs_range_bars` / `fs_range_bars` draw the bars,
-/// `vs_range_bar_selection` / `fs_range_bar_selection` the picked one's
-/// highlight.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_range_bar_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    data_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    selection: bool,
-) -> wgpu::RenderPipeline {
-    let entries = if selection {
-        (
-            "vs_range_bar_selection",
-            "fs_range_bar_selection",
-            "figgy selected range bar columnar pipeline",
-        )
-    } else {
-        (
-            "vs_range_bars",
-            "fs_range_bars",
-            "figgy range bar columnar pipeline",
-        )
-    };
-    create_category_axis_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl, style_map_bgl, data_bgl],
-        target_format,
-        sample_count,
-        entries,
-    )
-}
-
-/// A violin pipeline, over the category bar pipeline's layout:
-/// `vs_violin` / `fs_violin` draw the bodies, `vs_violin_selection` /
-/// `fs_violin_selection` the picked one's highlight; with `points`,
-/// `vs_box_points` / `fs_box_points` draw a box plot's raw points and
-/// `vs_box_point_selection` / `fs_box_point_selection` the picked one's
-/// ring.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_violin_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    data_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    points: bool,
-    selection: bool,
-) -> wgpu::RenderPipeline {
-    let entries = match (points, selection) {
-        (false, false) => ("vs_violin", "fs_violin", "figgy violin columnar pipeline"),
-        (false, true) => (
-            "vs_violin_selection",
-            "fs_violin_selection",
-            "figgy selected violin columnar pipeline",
-        ),
-        (true, false) => (
-            "vs_box_points",
-            "fs_box_points",
-            "figgy box points columnar pipeline",
-        ),
-        (true, true) => (
-            "vs_box_point_selection",
-            "fs_box_point_selection",
-            "figgy selected box point columnar pipeline",
-        ),
-    };
-    create_category_axis_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl, style_map_bgl, data_bgl],
-        target_format,
-        sample_count,
-        entries,
-    )
-}
-
-/// A pipeline of the bar module's category axis entries (category bars,
-/// box plots, range bars, value labels) with `(vertex entry, fragment
-/// entry, label)`.
-pub(super) fn create_category_axis_pipeline(
+/// A pipeline of the bar module's category axis entries with `(vertex
+/// entry, fragment entry, label)`: groups 0 transform, 1 style (a value
+/// label's group for the value labels), 2 the series' bar style map, 3 its
+/// data; no vertex buffers. The category bars (`vs_category_bars` /
+/// `fs_category_bars`), box plots (`vs_box_plot`), range bars
+/// (`vs_range_bars`), violins (`vs_violin`), a box plot's raw points
+/// (`vs_box_points`) and value labels (`vs_value_label`) draw through it,
+/// each with a `_selection` pair for the picked one's highlight.
+pub(crate) fn create_category_axis_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl, style_map_bgl, data_bgl]: [&wgpu::BindGroupLayout; 4],
@@ -813,55 +517,31 @@ pub(super) fn create_category_axis_pipeline(
     sample_count: u32,
     (vertex_entry, fragment_entry, label): (&str, &str, &str),
 ) -> wgpu::RenderPipeline {
-    let layout = crate::gpu_compile::pipeline_layout(
+    let layout = RenderPipelineSpec::layout(
         device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy category bar layout"),
-            bind_group_layouts: &[
-                Some(transform_bgl),
-                Some(style_bgl),
-                Some(style_map_bgl),
-                Some(data_bgl),
-            ],
-            immediate_size: 0,
-        },
+        "figgy category bar layout",
+        &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            Some(style_map_bgl),
+            Some(data_bgl),
+        ],
     );
-    crate::gpu_compile::render_pipeline(
-        device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vertex_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fragment_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
+    RenderPipelineSpec {
+        label,
+        layout: &layout,
+        shader,
+        entries: (vertex_entry, fragment_entry),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(
+            target_format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        ),
+    }
+    .create(device)
 }
 
 /// One category bar series (`count` instances of `CATEGORY_BAR_VERTICES`),

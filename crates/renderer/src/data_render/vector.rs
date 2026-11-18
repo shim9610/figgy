@@ -30,7 +30,7 @@
 //! test, recorded in the pipeline contract and warmed in the browser like
 //! any other shader.
 
-use super::{GridColumnGpu, multisample_state};
+use super::{GridColumnGpu, RenderPipelineSpec, blended_target, multisample_state};
 
 /// Which input fragment an assembled vector module carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -469,56 +469,28 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
     ];
     // Only the path form reads group 3, the arc slots.
     let groups = if input == VectorInput::Path { 4 } else { 3 };
-    let layout = crate::gpu_compile::pipeline_layout(
-        device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy vector layout"),
-            bind_group_layouts: &layouts[..groups],
-            immediate_size: 0,
-        },
-    );
+    let layout = RenderPipelineSpec::layout(device, "figgy vector layout", &layouts[..groups]);
     let label = match input {
         VectorInput::Points => "figgy vector points pipeline",
         VectorInput::Grid => "figgy vector grid pipeline",
         VectorInput::Path => "figgy vector path pipeline",
         VectorInput::Points3d => "figgy vector points 3D flat pipeline",
     };
-    crate::gpu_compile::render_pipeline(
-        device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
+    RenderPipelineSpec {
+        label,
+        layout: &layout,
+        shader,
+        entries: ("vs_main", "fs_main"),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(
+            target_format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        ),
+    }
+    .create(device)
 }
 
 /// The 3D vector pipeline (#211) of [`VectorInput::Points3d`]: groups 0–2
@@ -543,51 +515,28 @@ pub(crate) fn create_vector_view3d_pipeline(
         super::View3dPass::Pick => ("vs_3d_pick", "fs_3d_pick", "figgy vector 3D pick pipeline"),
         _ => ("vs_main", "fs_main", "figgy vector 3D pipeline"),
     };
-    let layout = crate::gpu_compile::pipeline_layout(
+    let layout = RenderPipelineSpec::layout(
         device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy vector 3D layout"),
-            bind_group_layouts: &[
-                Some(transform_bgl),
-                Some(style_bgl),
-                Some(vector_bgl),
-                Some(camera_bgl),
-            ],
-            immediate_size: 0,
-        },
+        "figgy vector 3D layout",
+        &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            Some(vector_bgl),
+            Some(camera_bgl),
+        ],
     );
-    crate::gpu_compile::render_pipeline(
-        device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vs),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: pass.depth_stencil(),
-            multisample: pass.multisample(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fs),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(pass.color_target(target_format))],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
+    RenderPipelineSpec {
+        label,
+        layout: &layout,
+        shader,
+        entries: (vs, fs),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: pass.depth_stencil(),
+        multisample: pass.multisample(sample_count),
+        target: pass.color_target(target_format),
+    }
+    .create(device)
 }
 
 /// One vector series' draw: `draw(0..ARROW_VERTICES, 0..count)` with group 2

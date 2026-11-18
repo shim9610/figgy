@@ -7,21 +7,23 @@ use super::*;
 macro_rules! renderer_prewarm_layouts {
     ($renderer:expr) => {
         PrewarmLayouts {
-            device: &$renderer.device,
+            precise: PreciseLayouts {
+                device: &$renderer.device,
+                transform_bgl: &$renderer.transform_bgl,
+                style_bgl: &$renderer.style_bgl,
+                per_point_style_map_bgl: &$renderer.per_point_style_map_bgl,
+                point_value_map_bgl: &$renderer.point_value_map_bgl,
+                data_selection_bgl: &$renderer.data_selection_bgl,
+                field_bgl: &$renderer.field_bgl,
+                vector_bgl: &$renderer.vector_bgl,
+                category_bar_data_bgl: &$renderer.category_bar_data_bgl,
+                parallel_bgl: &$renderer.parallel_bgl,
+                star_data_bgl: &$renderer.star_data_bgl,
+                label_pipelines: $renderer.contour_label_pipelines.as_ref(),
+                surface_format: $renderer.surface_format,
+            },
             queue: &$renderer.queue,
-            transform_bgl: &$renderer.transform_bgl,
-            style_bgl: &$renderer.style_bgl,
-            per_point_style_map_bgl: &$renderer.per_point_style_map_bgl,
-            point_value_map_bgl: &$renderer.point_value_map_bgl,
-            data_selection_bgl: &$renderer.data_selection_bgl,
-            field_bgl: &$renderer.field_bgl,
-            vector_bgl: &$renderer.vector_bgl,
-            category_bar_data_bgl: &$renderer.category_bar_data_bgl,
-            parallel_bgl: &$renderer.parallel_bgl,
-            star_data_bgl: &$renderer.star_data_bgl,
-            label_pipelines: $renderer.contour_label_pipelines.as_ref(),
             feature: None,
-            surface_format: $renderer.surface_format,
         }
     };
 }

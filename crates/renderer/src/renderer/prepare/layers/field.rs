@@ -30,8 +30,7 @@ impl PrepareContext<'_> {
                 .ok_or(FiggyError::internal("prepare ensured this field's scratch"))?;
             Some(data_render::ColumnFieldLayer {
                 pipeline: pipelines
-                    .field
-                    .as_ref()
+                    .precise(PrecisePipeline::Field)
                     .ok_or(FiggyError::internal("prepare ensured field pipeline"))?,
                 transform_bg: &view.transform_bg,
                 style_bg: scratch.style_bg.clone(),
@@ -167,24 +166,21 @@ impl PrepareContext<'_> {
             let label = scratch
                 .label
                 .as_ref()
-                .zip(pipelines.contour_label.as_ref())
+                .zip(pipelines.precise(PrecisePipeline::ContourLabel))
                 .map(|(snapshot, pipeline)| data_render::ColumnContourLabel {
                     pipeline,
                     snapshot: snapshot.clone(),
                 });
-            let pipeline = if label.is_some() {
-                pipelines
-                    .contour_labelled
-                    .as_ref()
-                    .ok_or(FiggyError::internal(
-                        "prepare ensured labelled contour pipeline",
-                    ))?
-            } else {
-                pipelines
-                    .contour
-                    .as_ref()
-                    .ok_or(FiggyError::internal("prepare ensured contour pipeline"))?
-            };
+            let pipeline =
+                if label.is_some() {
+                    pipelines.precise(PrecisePipeline::ContourLabelled).ok_or(
+                        FiggyError::internal("prepare ensured labelled contour pipeline"),
+                    )?
+                } else {
+                    pipelines
+                        .precise(PrecisePipeline::Contour)
+                        .ok_or(FiggyError::internal("prepare ensured contour pipeline"))?
+                };
             Some(data_render::ColumnContourLayer {
                 pipeline,
                 transform_bg: &view.transform_bg,

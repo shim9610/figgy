@@ -51,17 +51,17 @@ impl PrepareContext<'_> {
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: match style_map {
                 Some(_) => pipelines
-                    .bar_selection_mapped
-                    .as_ref()
+                    .precise(PrecisePipeline::BarSelectionMapped)
                     .ok_or(FiggyError::internal(
                         "prepare ensured mapped histogram selection pipeline",
                     ))?,
-                None => pipelines
-                    .bar_selection
-                    .as_ref()
-                    .ok_or(FiggyError::internal(
-                        "prepare ensured histogram selection pipeline",
-                    ))?,
+                None => {
+                    pipelines
+                        .precise(PrecisePipeline::BarSelection)
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured histogram selection pipeline",
+                        ))?
+                }
             },
             transform_bg: &view.transform_bg,
             style_bg,
@@ -123,12 +123,9 @@ impl PrepareContext<'_> {
             };
             let buffer = data_render::create_style_uniform_buffer(&self.device, &highlight);
             selected_bars.push(ColumnBarSelectionLayer {
-                pipeline: pipelines
-                    .bar_violin_selection
-                    .as_ref()
-                    .ok_or(FiggyError::internal(
-                        "prepare ensured violin selection pipeline",
-                    ))?,
+                pipeline: pipelines.precise(PrecisePipeline::ViolinSelection).ok_or(
+                    FiggyError::internal("prepare ensured violin selection pipeline"),
+                )?,
                 transform_bg: &view.transform_bg,
                 style_bg: data_render::create_style_bind_group(
                     &self.device,
@@ -148,12 +145,9 @@ impl PrepareContext<'_> {
             return Ok(());
         }
         selected_bars.push(ColumnBarSelectionLayer {
-            pipeline: pipelines
-                .bar_box_plot_selection
-                .as_ref()
-                .ok_or(FiggyError::internal(
-                    "prepare ensured box plot selection pipeline",
-                ))?,
+            pipeline: pipelines.precise(PrecisePipeline::BoxPlotSelection).ok_or(
+                FiggyError::internal("prepare ensured box plot selection pipeline"),
+            )?,
             transform_bg: &view.transform_bg,
             style_bg,
             style_map_bg: None,
@@ -201,8 +195,7 @@ impl PrepareContext<'_> {
         let buffer = data_render::create_style_uniform_buffer(&self.device, &highlight);
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: pipelines
-                .bar_box_point_selection
-                .as_ref()
+                .precise(PrecisePipeline::BoxPointSelection)
                 .ok_or(FiggyError::internal(
                     "prepare ensured box point selection pipeline",
                 ))?,
@@ -258,8 +251,7 @@ impl PrepareContext<'_> {
         let style_bg = data_render::create_style_bind_group(&self.device, &self.style_bgl, &buffer);
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: pipelines
-                .bar_range_selection
-                .as_ref()
+                .precise(PrecisePipeline::RangeBarSelection)
                 .ok_or(FiggyError::internal(
                     "prepare ensured range bar selection pipeline",
                 ))?,
@@ -312,8 +304,7 @@ impl PrepareContext<'_> {
         let style_bg = data_render::create_style_bind_group(&self.device, &self.style_bgl, &buffer);
         selected_bars.push(ColumnBarSelectionLayer {
             pipeline: pipelines
-                .bar_category_selection
-                .as_ref()
+                .precise(PrecisePipeline::CategoryBarSelection)
                 .ok_or(FiggyError::internal(
                     "prepare ensured category bar selection pipeline",
                 ))?,

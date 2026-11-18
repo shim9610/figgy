@@ -20,35 +20,42 @@ pub(crate) const ERRORBAR_SHADER_BY_SET: crate::shader_assembly::AssembledBySet 
 /// break, a probability axis or polar coordinates compiles.
 pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = ERRORBAR_SHADER_BY_SET.full;
 
-/// Columnar errorbar pipeline.
-/// slots 0..5 are per-instance f32: x, y, err_y_lo, err_y_hi, err_x_lo,
-/// err_x_hi. Each instance emits 36 vertices on a `TriangleList`: six
-/// axis-aligned quads (Y stem, caps @ y_lo/y_hi, X stem, caps @ x_lo/x_hi),
-/// expanded in the vertex shader by half their pixel stroke width
-/// (`Style::line_width_px` for stems, `cap_width_px` for caps; caps span
-/// ±`cap_half_px`). A direction whose err columns sum to <= 0 collapses to
-/// zero-area quads, so its stem and caps draw nothing.
-pub(crate) fn create_errorbar_columnar_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_errorbar_columnar_pipeline_with_entries(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        sample_count,
-        "vs_main",
-        "figgy errorbar columnar pipeline",
-    )
+/// Bytes per value of every error-bar slot.
+const ERRORBAR_SLOT_STRIDE: wgpu::BufferAddress =
+    crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
+
+/// The attribute of each per-instance vertex slot the error-bar entries
+/// read, in slot order: x, y, err_y_lo, err_y_hi, err_x_lo, err_x_hi, then
+/// the mapped draw's f32 style index at 6.
+const ERRORBAR_SLOT_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; 7] = {
+    let mut attrs = [[wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 0,
+        shader_location: 0,
+    }]; 7];
+    let mut i = 0;
+    while i < 7 {
+        attrs[i][0].shader_location = i as u32;
+        i += 1;
+    }
+    attrs[6][0].format = wgpu::VertexFormat::Float32;
+    attrs
+};
+
+/// The first `slots` error-bar vertex slots.
+fn errorbar_buffers<const SLOTS: usize>() -> [Option<wgpu::VertexBufferLayout<'static>>; SLOTS] {
+    std::array::from_fn(|slot| {
+        Some(wgpu::VertexBufferLayout {
+            array_stride: ERRORBAR_SLOT_STRIDE,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &ERRORBAR_SLOT_ATTRIBUTES[slot],
+        })
+    })
 }
 
-pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
+/// The colour-mapped error bars (`vs_mapped` / `fs_mapped`): the precise
+/// slots plus the style index at slot 6, the series' style map as group 2.
+pub(crate) fn create_errorbar_mapped_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
@@ -57,308 +64,66 @@ pub(crate) fn create_errorbar_columnar_mapped_pipeline_from_shader(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy errorbar mapped layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(style_bgl), Some(style_map_bgl)],
-            immediate_size: 0,
-        },
-    );
-
-    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
-    const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 0,
-    }];
-    const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 1,
-    }];
-    const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 2,
-    }];
-    const ATTR3: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 3,
-    }];
-    const ATTR4: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 4,
-    }];
-    const ATTR5: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 5,
-    }];
-    const ATTR6: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
-        offset: 0,
-        shader_location: 6,
-    }];
-    let buffers = [
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR0,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR1,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR2,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR3,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR4,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR5,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR6,
-        }),
-    ];
-
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some("figgy errorbar mapped pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_mapped"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &buffers,
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_mapped"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
-}
-
-/// Entry-point-parameterized errorbar pipeline builder. Styled variants
-/// (e.g. the sketch `vs_sketch` — fragment stage shared, vertex count
-/// unchanged at 36 per instance) share the precise pipeline's layout and
-/// state; the renderer's style table supplies the entry string.
-// Styled error bars vary shader entries while retaining shared pipeline state.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_errorbar_columnar_pipeline_with_entries(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_errorbar_columnar_pipeline_full(
+    let layout = RenderPipelineSpec::layout(
         device,
+        "figgy errorbar mapped layout",
+        &[Some(transform_bgl), Some(style_bgl), Some(style_map_bgl)],
+    );
+    RenderPipelineSpec {
+        label: "figgy errorbar mapped pipeline",
+        layout: &layout,
         shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        sample_count,
-        vs_entry,
-        "fs_main",
-        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        label,
-    )
+        entries: ("vs_mapped", "fs_mapped"),
+        buffers: &errorbar_buffers::<7>(),
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(
+            target_format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        ),
+    }
+    .create(device)
 }
 
-/// Full-control errorbar builder — the constellation jet variant needs its
-/// own fragment entry and additive blending.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_errorbar_columnar_pipeline_full(
+/// An error-bar pipeline with `(vertex entry, fragment entry, label)` and
+/// `blend`. Slots 0..5 are per-instance f32: x, y, err_y_lo, err_y_hi,
+/// err_x_lo, err_x_hi. The precise draw (`vs_main` / `fs_main`) emits 36
+/// vertices per instance on a `TriangleList`: six axis-aligned quads (Y
+/// stem, caps @ y_lo/y_hi, X stem, caps @ x_lo/x_hi), expanded in the vertex
+/// shader by half their pixel stroke width (`Style::line_width_px` for
+/// stems, `cap_width_px` for caps; caps span ±`cap_half_px`). A direction
+/// whose err columns sum to <= 0 collapses to zero-area quads, so its stem
+/// and caps draw nothing. Styled variants (the sketch `vs_sketch`, the
+/// constellation jets with their own fragment entry and additive blending)
+/// share the layout and state, and a stem series (#206) draws `vs_stem` (or
+/// `vs_stem_sketch`) into `fs_stem`, one quad per instance.
+pub(crate) fn create_errorbar_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
+    [transform_bgl, style_bgl]: [&wgpu::BindGroupLayout; 2],
     target_format: wgpu::TextureFormat,
     sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
+    (vs_entry, fs_entry, label): (&str, &str, &str),
     blend: wgpu::BlendState,
-    label: &str,
 ) -> wgpu::RenderPipeline {
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy errorbar columnar layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(style_bgl)],
-            immediate_size: 0,
-        },
-    );
-
-    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
-    // Hold attributes in const arrays to avoid temporary-lifetime issues.
-    const ATTR0: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 0,
-    }];
-    const ATTR1: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 1,
-    }];
-    const ATTR2: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 2,
-    }];
-    const ATTR3: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 3,
-    }];
-    const ATTR4: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 4,
-    }];
-    const ATTR5: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 5,
-    }];
-    let buffers = [
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR0,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR1,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR2,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR3,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR4,
-        }),
-        Some(wgpu::VertexBufferLayout {
-            array_stride: column_stride,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTR5,
-        }),
-    ];
-
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &buffers,
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
-}
-
-/// A stem series' pipeline (#206): the error-bar module's `vs_stem` (or
-/// `vs_stem_sketch`) into `fs_stem`, over the same six vertex slots, one
-/// quad per instance.
-pub(crate) fn create_stem_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-) -> wgpu::RenderPipeline {
-    create_errorbar_columnar_pipeline_full(
+    let layout = RenderPipelineSpec::layout(
         device,
+        "figgy errorbar columnar layout",
+        &[Some(transform_bgl), Some(style_bgl)],
+    );
+    RenderPipelineSpec {
+        label,
+        layout: &layout,
         shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        sample_count,
-        vs_entry,
-        "fs_stem",
-        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        "figgy stem pipeline",
-    )
+        entries: (vs_entry, fs_entry),
+        buffers: &errorbar_buffers::<6>(),
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: None,
+        multisample: multisample_state(sample_count),
+        target: blended_target(target_format, blend),
+    }
+    .create(device)
 }
 
 pub struct ColumnErrorBarDraw<'a> {

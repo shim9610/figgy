@@ -57,98 +57,21 @@ pub(crate) const SCATTER_SHADER_BY_SET: crate::shader_assembly::AssembledBySet =
 /// break, a probability axis or polar coordinates compiles.
 pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = SCATTER_SHADER_BY_SET.full;
 
-/// Columnar SDF scatter pipeline.
-/// slot 0 (per-vertex): unit quad, slot 1 (per-instance): X, slot 2: Y.
-pub(crate) fn create_scatter_columnar_pipeline_with_sample_count(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_scatter_columnar_pipeline_full(
-        device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        sample_count,
-        "vs_main",
-        "fs_main",
-        None,
-        "figgy scatter columnar pipeline",
-    )
-}
-
-/// Precise scatter pipeline variant that resolves per-point style slots.
-/// It keeps the common WGSL block untouched by using separate entry points
-/// (`vs_mapped` / `fs_mapped` and the picked ring's) and a fourth
-/// per-instance f32 vertex slot for `point_style_index_column` when present.
-/// Sparse-only mappings bind the X column into that slot as inert filler.
-/// Mapping adds index/table layouts to the shared scatter pipeline state,
-/// plus the value-map group (3) and the two value-column vertex slots (4, 5).
+/// The mapped scatter pipeline over `[transform, style, style map, value
+/// map]` with `(vertex entry, fragment entry, label)`: the precise draw
+/// (`vs_mapped` / `fs_mapped`) and the picked ring's, which resolve per-point
+/// style slots through separate entry points and a fourth per-instance f32
+/// vertex slot for `point_style_index_column` when present (sparse-only
+/// mappings bind the X column into that slot as inert filler), plus the
+/// value-map group (3) and the two value-column vertex slots (4, 5). With
+/// `third`, the third component of a ternary chart's entries
+/// (`vs_ternary_mapped`, `vs_pick_ring_ternary_mapped`) or a 3D chart's
+/// height at slot 6; with `three_d`, the pass's depth state and target for
+/// a 3D chart's entries (`vs_3d_mapped`, `vs_3d_mapped_pick`,
+/// `vs_pick_ring_3d_mapped`), whose group 3 is the combined value map and
+/// camera layout (`surface_mesh::create_view3d_value_map_bind_group_layout`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    value_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_scatter_mapped_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl, style_map_bgl, value_map_bgl],
-        target_format,
-        sample_count,
-        (vs_entry, fs_entry, label),
-        false,
-        None,
-    )
-}
-
-/// The mapped scatter pipeline of a ternary chart's entries
-/// (`vs_ternary_mapped`, `vs_pick_ring_ternary_mapped`): the mapped layout
-/// with the third component at slot 6.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_scatter_ternary_mapped_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    value_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_scatter_mapped_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl, style_map_bgl, value_map_bgl],
-        target_format,
-        sample_count,
-        (vs_entry, fs_entry, label),
-        true,
-        None,
-    )
-}
-
-/// The mapped scatter pipeline, with the third component of a ternary
-/// chart's entries (or a 3D chart's height) at slot 6 when `third`, and the
-/// pass's depth state and target for a 3D chart's entries (`three_d`; its
-/// group 3 is the combined value map and camera layout the caller passes).
-#[allow(clippy::too_many_arguments)]
-fn create_scatter_mapped_pipeline(
+pub(crate) fn create_scatter_mapped_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl, style_map_bgl, value_map_bgl]: [&wgpu::BindGroupLayout; 4],
@@ -158,190 +81,180 @@ fn create_scatter_mapped_pipeline(
     third: bool,
     three_d: Option<View3dPass>,
 ) -> wgpu::RenderPipeline {
-    let (depth_stencil, color_target) = match three_d {
-        Some(pass) => (pass.depth_stencil(), pass.color_target(target_format)),
-        None => (
-            None,
-            wgpu::ColorTargetState {
-                format: target_format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            },
-        ),
-    };
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: &[
-                Some(transform_bgl),
-                Some(style_bgl),
-                Some(style_map_bgl),
-                Some(value_map_bgl),
-            ],
-            immediate_size: 0,
-        },
-    );
-
-    let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
-    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: vec2_stride,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 0,
-                        }],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 1,
-                        }],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 2,
-                        }],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32,
-                            offset: 0,
-                            shader_location: 3,
-                        }],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 4,
-                        }],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 5,
-                        }],
-                    }),
-                    // slot 6: a ternary chart's third component.
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 6,
-                        }],
-                    }),
-                ][..if third { 7 } else { 6 }],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil,
-            multisample: three_d.map_or_else(
-                || multisample_state(sample_count),
-                |pass| pass.multisample(sample_count),
-            ),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(color_target)],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
-}
-
-/// Two-entry convenience used by the sketch style (shared layout/state).
-// This wrapper forwards both shader entries and the shared scatter state.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_scatter_columnar_pipeline_with_entries(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_scatter_columnar_pipeline_full(
+    let layout = RenderPipelineSpec::layout(
         device,
-        shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        sample_count,
-        vs_entry,
-        fs_entry,
-        None,
         label,
-    )
-}
-
-/// Entry-point-parameterized scatter pipeline builder. Styled variants share
-/// the precise pipeline's three vertex slots; the constellation planet
-/// variant additionally binds the style textures as group 2.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_scatter_columnar_pipeline_full(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
-    texture_bgl: Option<&wgpu::BindGroupLayout>,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_scatter_pipeline(
-        device,
+        &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            Some(style_map_bgl),
+            Some(value_map_bgl),
+        ],
+    );
+    // Slot 3 is the f32 style index; slot 6 a ternary chart's third
+    // component or a 3D chart's height.
+    let buffers: [Option<wgpu::VertexBufferLayout<'_>>; 7] = std::array::from_fn(|slot| {
+        Some(wgpu::VertexBufferLayout {
+            array_stride: if slot == 0 {
+                QUAD_VERTEX_STRIDE
+            } else {
+                crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress
+            },
+            step_mode: if slot == 0 {
+                wgpu::VertexStepMode::Vertex
+            } else {
+                wgpu::VertexStepMode::Instance
+            },
+            attributes: &MAPPED_SCATTER_ATTRIBUTES[slot],
+        })
+    });
+    point_spec(
+        label,
+        &layout,
         shader,
-        [transform_bgl, style_bgl],
+        (vs_entry, fs_entry),
+        &buffers[..if third { 7 } else { 6 }],
         target_format,
         sample_count,
-        (vs_entry, fs_entry, label),
-        texture_bgl,
-        false,
-        None,
+        three_d,
     )
+    .create(device)
+}
+
+/// Bytes per vertex of the unit quad at slot 0.
+const QUAD_VERTEX_STRIDE: wgpu::BufferAddress =
+    (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
+
+/// The attribute of each vertex slot a scatter pipeline reads, in slot
+/// order: the unit quad, X, Y, then the ternary third component (or 3D
+/// height) for the precise entries.
+const SCATTER_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; 4] = slot_attributes(None);
+
+/// The mapped entries' slots: the precise three, the f32 style index at 3,
+/// the two value columns and the third component at 6.
+const MAPPED_SCATTER_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; 7] = slot_attributes(Some(3));
+
+/// One `Float32x2` attribute per slot at its own location, but `f32_slot`
+/// a `Float32`.
+const fn slot_attributes<const N: usize>(
+    f32_slot: Option<usize>,
+) -> [[wgpu::VertexAttribute; 1]; N] {
+    let mut attrs = [[wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 0,
+        shader_location: 0,
+    }]; N];
+    let mut i = 0;
+    while i < N {
+        attrs[i][0].shader_location = i as u32;
+        if let Some(slot) = f32_slot
+            && slot == i
+        {
+            attrs[i][0].format = wgpu::VertexFormat::Float32;
+        }
+        i += 1;
+    }
+    attrs
+}
+
+/// The spec of a point pipeline: premultiplied blending into the target
+/// without depth, or a 3D pass's depth state, multisampling and target.
+#[allow(clippy::too_many_arguments)]
+fn point_spec<'a>(
+    label: &'a str,
+    layout: &'a wgpu::PipelineLayout,
+    shader: &'a wgpu::ShaderModule,
+    entries: (&'a str, &'a str),
+    buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    three_d: Option<View3dPass>,
+) -> RenderPipelineSpec<'a> {
+    RenderPipelineSpec {
+        label,
+        layout,
+        shader,
+        entries,
+        buffers,
+        topology: wgpu::PrimitiveTopology::TriangleStrip,
+        depth_stencil: three_d.and_then(View3dPass::depth_stencil),
+        multisample: three_d.map_or_else(
+            || multisample_state(sample_count),
+            |pass| pass.multisample(sample_count),
+        ),
+        target: match three_d {
+            Some(pass) => pass.color_target(target_format),
+            None => blended_target(
+                target_format,
+                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            ),
+        },
+    }
+}
+
+/// The precise scatter pipeline over `[transform, style]` with `(vertex
+/// entry, fragment entry, label)`: slot 0 the unit quad (per vertex), slots
+/// 1 and 2 the X and Y columns (per instance). The precise draw is `vs_main`
+/// / `fs_main`; the picked ring and the styled variants share its slots,
+/// and the constellation and planet variants bind the style textures
+/// (`texture_bgl`) as group 2. With `third`, the third component of a
+/// ternary chart's entries (`vs_ternary`, `vs_pick_ring_ternary`) or a 3D
+/// chart's height at slot 3; with `three_d`, a 3D chart's entries
+/// (`vs_3d`, `vs_3d_pick`, `vs_pick_ring_3d`) with the camera group
+/// (`surface_mesh::create_surface_data_bind_group_layout`) as group 3 and
+/// the pass's depth state and target.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_scatter_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    [transform_bgl, style_bgl]: [&wgpu::BindGroupLayout; 2],
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    (vs_entry, fs_entry, label): (&str, &str, &str),
+    texture_bgl: Option<&wgpu::BindGroupLayout>,
+    third: bool,
+    three_d: Option<(&wgpu::BindGroupLayout, View3dPass)>,
+) -> wgpu::RenderPipeline {
+    // The camera is group 3 whether or not the textures fill group 2.
+    let bgls = [
+        Some(transform_bgl),
+        Some(style_bgl),
+        texture_bgl,
+        three_d.map(|(camera_bgl, _)| camera_bgl),
+    ];
+    let groups = match (texture_bgl, three_d) {
+        (_, Some(_)) => 4,
+        (Some(_), None) => 3,
+        (None, None) => 2,
+    };
+    let layout =
+        RenderPipelineSpec::layout(device, "figgy scatter columnar layout", &bgls[..groups]);
+    let buffers: [Option<wgpu::VertexBufferLayout<'_>>; 4] = std::array::from_fn(|slot| {
+        Some(wgpu::VertexBufferLayout {
+            array_stride: if slot == 0 {
+                QUAD_VERTEX_STRIDE
+            } else {
+                crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress
+            },
+            step_mode: if slot == 0 {
+                wgpu::VertexStepMode::Vertex
+            } else {
+                wgpu::VertexStepMode::Instance
+            },
+            attributes: &SCATTER_ATTRIBUTES[slot],
+        })
+    });
+    point_spec(
+        label,
+        &layout,
+        shader,
+        (vs_entry, fs_entry),
+        &buffers[..if third { 4 } else { 3 }],
+        target_format,
+        sample_count,
+        three_d.map(|(_, pass)| pass),
+    )
+    .create(device)
 }
 
 /// Which target a 3D chart's point pipeline draws into (#132): the panel
@@ -392,226 +305,6 @@ impl View3dPass {
             },
         }
     }
-}
-
-/// The precise scatter pipeline of a 3D chart's entries (`vs_3d`,
-/// `vs_3d_pick`, `vs_pick_ring_3d`): the precise layout with the height at
-/// slot 3 and the camera group (`surface_mesh::create_surface_data_bind_group_layout`)
-/// as group 3.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_scatter_view3d_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    camera_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    pass: View3dPass,
-    vs_entry: &str,
-    fs_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_scatter_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl],
-        target_format,
-        sample_count,
-        (vs_entry, fs_entry, label),
-        None,
-        true,
-        Some((camera_bgl, pass)),
-    )
-}
-
-/// The mapped scatter pipeline of a 3D chart's entries (`vs_3d_mapped`,
-/// `vs_3d_mapped_pick`, `vs_pick_ring_3d_mapped`): the mapped layout with
-/// the height at slot 6 and the combined value map and camera group
-/// (`surface_mesh::create_view3d_value_map_bind_group_layout`) as group 3.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_scatter_view3d_mapped_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    view3d_value_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    pass: View3dPass,
-    vs_entry: &str,
-    fs_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_scatter_mapped_pipeline(
-        device,
-        shader,
-        [
-            transform_bgl,
-            style_bgl,
-            style_map_bgl,
-            view3d_value_map_bgl,
-        ],
-        target_format,
-        sample_count,
-        (vs_entry, fs_entry, label),
-        true,
-        Some(pass),
-    )
-}
-
-/// The precise scatter pipeline of a ternary chart's entries (`vs_ternary`,
-/// `vs_pick_ring_ternary`): the precise layout with the third component at
-/// slot 3.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_scatter_ternary_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    vs_entry: &str,
-    fs_entry: &str,
-    label: &str,
-) -> wgpu::RenderPipeline {
-    create_scatter_pipeline(
-        device,
-        shader,
-        [transform_bgl, style_bgl],
-        target_format,
-        sample_count,
-        (vs_entry, fs_entry, label),
-        None,
-        true,
-        None,
-    )
-}
-
-/// The precise scatter pipeline, with the third component of a ternary
-/// chart's entries (or a 3D chart's height) at slot 3 when `third`, and
-/// the camera group as group 3 with the pass's depth state and target for
-/// a 3D chart's entries (`three_d`).
-#[allow(clippy::too_many_arguments)]
-fn create_scatter_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    [transform_bgl, style_bgl]: [&wgpu::BindGroupLayout; 2],
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-    (vs_entry, fs_entry, label): (&str, &str, &str),
-    texture_bgl: Option<&wgpu::BindGroupLayout>,
-    third: bool,
-    three_d: Option<(&wgpu::BindGroupLayout, View3dPass)>,
-) -> wgpu::RenderPipeline {
-    let mut bgls: Vec<Option<&wgpu::BindGroupLayout>> = vec![Some(transform_bgl), Some(style_bgl)];
-    if let Some(t) = texture_bgl {
-        bgls.push(Some(t));
-    }
-    if let Some((camera_bgl, _)) = three_d {
-        bgls.resize(3, None);
-        bgls.push(Some(camera_bgl));
-    }
-    let (depth_stencil, color_target) = match three_d {
-        Some((_, pass)) => (pass.depth_stencil(), pass.color_target(target_format)),
-        None => (
-            None,
-            wgpu::ColorTargetState {
-                format: target_format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            },
-        ),
-    };
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy scatter columnar layout"),
-            bind_group_layouts: &bgls,
-            immediate_size: 0,
-        },
-    );
-
-    let vec2_stride = (std::mem::size_of::<f32>() * 2) as wgpu::BufferAddress;
-    let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
-
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[
-                    // slot 0: unit quad (per-vertex, vec2)
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: vec2_stride,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 0,
-                        }],
-                    }),
-                    // slot 1: X column (per-instance, f32)
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 1,
-                        }],
-                    }),
-                    // slot 2: Y column (per-instance, f32)
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 2,
-                        }],
-                    }),
-                    // slot 3: a ternary chart's third component.
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 3,
-                        }],
-                    }),
-                ][..if third { 4 } else { 3 }],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil,
-            multisample: three_d.map_or_else(
-                || multisample_state(sample_count),
-                |(_, pass)| pass.multisample(sample_count),
-            ),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fs_entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(color_target)],
-            }),
-            multiview_mask: None,
-            cache: None,
-        },
-    )
 }
 
 pub struct ColumnScatterLayer<'a> {

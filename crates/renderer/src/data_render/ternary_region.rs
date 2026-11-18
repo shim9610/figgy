@@ -408,13 +408,10 @@ pub(crate) fn create_ternary_region_pipeline(
     sample_count: u32,
     pass: TernaryRegionPass,
 ) -> wgpu::RenderPipeline {
-    let layout = crate::gpu_compile::pipeline_layout(
-        &device,
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("figgy ternary region layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(region_bgl)],
-            immediate_size: 0,
-        },
+    let layout = super::RenderPipelineSpec::layout(
+        device,
+        "figgy ternary region layout",
+        &[Some(transform_bgl), Some(region_bgl)],
     );
     let (vertex, fragment) = pass.entries();
     let (blend, write_mask) = match pass {
@@ -424,42 +421,22 @@ pub(crate) fn create_ternary_region_pipeline(
             wgpu::ColorWrites::ALL,
         ),
     };
-    crate::gpu_compile::render_pipeline(
-        &device,
-        &wgpu::RenderPipelineDescriptor {
-            label: Some(pass.label()),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some(vertex),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(pass.depth_stencil()),
-            multisample: super::multisample_state(sample_count),
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some(fragment),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend,
-                    write_mask,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
+    super::RenderPipelineSpec {
+        label: pass.label(),
+        layout: &layout,
+        shader,
+        entries: (vertex, fragment),
+        buffers: &[],
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        depth_stencil: Some(pass.depth_stencil()),
+        multisample: super::multisample_state(sample_count),
+        target: wgpu::ColorTargetState {
+            format: target_format,
+            blend,
+            write_mask,
         },
-    )
+    }
+    .create(device)
 }
 
 /// The region group of one series: the pool, its params and its ring
