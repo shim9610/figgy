@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use swash::FontRef;
 
-use super::{PathPaint, VectorOut};
+use super::{PathPaint, VectorOut, segment_is_finite};
 use crate::color::Color;
 use crate::error::Result;
 use crate::layout::Rect;
@@ -127,15 +127,6 @@ fn push_segment(out: &mut String, segment: PathSegment) {
             point(out, p);
         }
         PathSegment::Close => out.push('Z'),
-    }
-}
-
-fn segment_is_finite(segment: &PathSegment) -> bool {
-    let f = |p: &(f32, f32)| p.0.is_finite() && p.1.is_finite();
-    match segment {
-        PathSegment::Move(p) | PathSegment::Line(p) => f(p),
-        PathSegment::Cubic(a, b, c) => f(a) && f(b) && f(c),
-        PathSegment::Close => true,
     }
 }
 

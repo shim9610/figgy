@@ -86,19 +86,11 @@ impl<'a> CanvasSink<'a> {
     }
 
     fn point(&self, p: [f32; 2]) -> (f32, f32) {
-        (
-            (p[0] - self.origin[0]) * self.scale,
-            (p[1] - self.origin[1]) * self.scale,
-        )
+        output_point(self.origin, self.scale, p)
     }
 
     fn place_rect(&self, r: RectF) -> RectF {
-        RectF {
-            x: (r.x - self.origin[0]) * self.scale,
-            y: (r.y - self.origin[1]) * self.scale,
-            width: r.width * self.scale,
-            height: r.height * self.scale,
-        }
+        output_rect(self.origin, self.scale, r)
     }
 
     /// A stroke paint at the sink's scale. Dash patterns have at most eight
@@ -257,6 +249,23 @@ impl Sink for CanvasSink<'_> {
     }
 }
 
+/// The chart-frame point `p` in output pixels: offset by `origin`, then
+/// multiplied by `scale`. Shared by the canvas sink and the vector sink.
+pub(crate) fn output_point(origin: [f32; 2], scale: f32, p: [f32; 2]) -> (f32, f32) {
+    ((p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale)
+}
+
+/// The chart-frame rectangle `r` in output pixels, mapped as
+/// [`output_point`] maps its corner.
+pub(crate) fn output_rect(origin: [f32; 2], scale: f32, r: RectF) -> RectF {
+    RectF {
+        x: (r.x - origin[0]) * scale,
+        y: (r.y - origin[1]) * scale,
+        width: r.width * scale,
+        height: r.height * scale,
+    }
+}
+
 /// Draw one selection highlight box, the raster realization of the model's
 /// selection policy. `b` is in the chart frame; the canvas shows the chart
 /// from `origin` at `scale`, so every coordinate and the stroke width are
@@ -266,7 +275,7 @@ impl Sink for CanvasSink<'_> {
 /// every scale). Resize handles (when present) are drawn as white squares
 /// with the selection color as border, slide-editor style.
 pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox, origin: [f32; 2], scale: f32) {
-    let map = |p: [f32; 2]| ((p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale);
+    let map = |p: [f32; 2]| output_point(origin, scale, p);
     let rect = |r: RectF| {
         let (x, y) = map([r.x, r.y]);
         (x, y, r.width * scale, r.height * scale)

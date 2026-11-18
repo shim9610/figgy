@@ -137,6 +137,36 @@ pub(crate) fn bind_group_layout(
     result
 }
 
+/// A compute-stage buffer binding at `binding`: storage, read-only or
+/// read-write, with no minimum size.
+pub(crate) const fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// A compute-stage uniform buffer binding at `binding`, with no minimum
+/// size.
+pub(crate) const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
 #[inline]
 pub(crate) fn pipeline_layout(
     device: &wgpu::Device,

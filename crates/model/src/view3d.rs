@@ -338,14 +338,8 @@ fn label_band(axis: &AxisOptions) -> f32 {
 }
 
 /// The axis of box direction `k`: 0 x `bottom_x`, 1 y `left_y`, 2 z
-/// `right_y`.
-pub fn box_axis(config: &Config, k: usize) -> &AxisOptions {
-    match k {
-        0 => &config.bottom_x,
-        1 => &config.left_y,
-        _ => &config.right_y,
-    }
-}
+/// `right_y`. The same slots a ternary chart reads its components on.
+pub use crate::ternary::ternary_axis as box_axis;
 
 impl Config {
     /// The camera matrix of this 3D chart, when it is one and has a data

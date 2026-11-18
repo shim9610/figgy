@@ -57,7 +57,7 @@ pub fn timestamp_tick_plan(
     let ls = &axis.label_style;
     crate::chrome::time::build_timestamp_tick_plan(
         axis,
-        axis_pixel_len(side.clone(), plot),
+        crate::chrome::axis_len(&side, plot),
         LABEL_COLLISION_GAP,
         |text| {
             let m = measure.measure_plain(text, &ls.label_font, ls.font_size);
@@ -67,13 +67,6 @@ pub fn timestamp_tick_plan(
             }
         },
     )
-}
-
-pub fn axis_pixel_len(side: Side, plot: &RectF) -> f32 {
-    match side {
-        Side::Top | Side::Bottom => plot.width,
-        Side::Left | Side::Right => plot.height,
-    }
 }
 
 /// The major tick values the numeric walker draws: [`crate::tick::major_ticks`],

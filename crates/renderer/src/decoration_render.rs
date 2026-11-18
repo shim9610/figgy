@@ -15,5 +15,5 @@ pub(crate) use colorbar::*;
 mod sink;
 #[cfg(test)]
 mod tick_format_tests;
-pub(crate) use sink::CanvasSink;
+pub(crate) use sink::{CanvasSink, output_point, output_rect};
 pub use sink::{draw_selection_box, draw_selection_boxes};

@@ -175,7 +175,8 @@ fn edge_band(axis: &AxisOptions) -> (f32, f32) {
 }
 
 /// The axis component `k` is read on: 0 `bottom_x`, 1 `left_y`, 2
-/// `right_y`.
+/// `right_y`. A 3D box reads its x, y and z directions on the same slots
+/// ([`crate::view3d::box_axis`]).
 pub fn ternary_axis(config: &Config, k: usize) -> &AxisOptions {
     match k {
         0 => &config.bottom_x,

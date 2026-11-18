@@ -57,8 +57,20 @@ use crate::text_render::{FontPolicy, GlyphSink, place_plain_text, place_rich_tex
 
 mod pdf;
 mod svg;
+
 pub(crate) use pdf::PdfOut;
 pub(crate) use svg::SvgOut;
+
+/// Whether every point of `segment` is finite: the SVG and PDF writers
+/// write only finite segments.
+fn segment_is_finite(segment: &PathSegment) -> bool {
+    let f = |p: &(f32, f32)| p.0.is_finite() && p.1.is_finite();
+    match segment {
+        PathSegment::Move(p) | PathSegment::Line(p) => f(p),
+        PathSegment::Cubic(a, b, c) => f(a) && f(b) && f(c),
+        PathSegment::Close => true,
+    }
+}
 
 /// The page size in points of a `logical` pixel size: 1 px = 0.75 pt.
 pub(crate) fn page_points(logical: (u32, u32)) -> [f32; 2] {
@@ -330,19 +342,11 @@ impl<'a> VectorSink<'a> {
     }
 
     fn point(&self, p: [f32; 2]) -> (f32, f32) {
-        (
-            (p[0] - self.origin[0]) * self.scale,
-            (p[1] - self.origin[1]) * self.scale,
-        )
+        crate::decoration_render::output_point(self.origin, self.scale, p)
     }
 
     fn place_rect(&self, r: RectF) -> RectF {
-        RectF {
-            x: (r.x - self.origin[0]) * self.scale,
-            y: (r.y - self.origin[1]) * self.scale,
-            width: r.width * self.scale,
-            height: r.height * self.scale,
-        }
+        crate::decoration_render::output_rect(self.origin, self.scale, r)
     }
 
     /// Stroke `points` with `color` at `width` logical pixels and `dash`:

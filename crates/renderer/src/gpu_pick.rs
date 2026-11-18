@@ -31,6 +31,7 @@ mod registry;
 mod shader;
 pub(crate) mod types;
 
+use crate::gpu_compile::{storage_entry, uniform_entry};
 pub(crate) use engine::GpuPickEngine;
 pub use engine::GpuPickTicket;
 #[cfg(test)]
@@ -55,6 +56,7 @@ use shader::{
 };
 pub(crate) use shader::{PickExactKey, PickExactPipelines, PickPipelineBundle, PickShader};
 pub use types::GpuPickError;
+use types::style_max_extent;
 use types::{CANDIDATE_BYTES, FLAG_LINE, FLAG_SCATTER, FLAG_SIZE_AREA, FLAG_SIZE_MAP};
 use types::{
     ERRORBAR_COLUMNS, PickAreaGpu, PickErrorBarGpu, PickTernaryGpu, create_rows_buffer_checked,
@@ -69,7 +71,6 @@ pub(crate) use types::{GpuStreamPickColumns, validate_stream_handle};
 use types::{PICK_LINE_PRECISE, PICK_LINE_RIBBON, PICK_LINE_SKETCH, PICK_MARKER_PLANET};
 use types::{PICK_MARKER_PRECISE, PICK_MARKER_SKETCH, PICK_MARKER_STAR, PickCandidateGpu};
 use types::{PickQueryParamsGpu, PickSeriesGpu, VECTOR_SCALE_PIXELS, nonnegative};
-use types::{storage_entry, style_max_extent, uniform_entry};
 
 #[cfg(test)]
 mod tests;

@@ -37,6 +37,7 @@
 use crate::shader_assembly::ShaderSet;
 use std::sync::Arc;
 
+use crate::gpu_compile::{storage_entry, uniform_entry};
 use crate::gpu_memory::{
     ChargeTally, GpuLedger, GpuResourceKind, SharedCharge, charged_buffer, charged_buffer_init,
     shared_charge,
@@ -276,48 +277,20 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy arc transform bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &[uniform_entry(0)],
         },
     );
 
-    let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    };
     let storage_bgl = crate::gpu_compile::bind_group_layout(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy arc storage bgl"),
             entries: &[
-                storage(0, true),  // pool (whole buffer; element bases in params)
-                storage(1, false), // dst
-                storage(2, false), // block sums
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                storage(4, false), // cross-chunk carry (1 element)
+                storage_entry(0, true),  // pool (whole buffer; element bases in params)
+                storage_entry(1, false), // dst
+                storage_entry(2, false), // block sums
+                uniform_entry(3),
+                storage_entry(4, false), // cross-chunk carry (1 element)
             ],
         },
     );
@@ -327,17 +300,8 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy bounded arc replay bgl"),
             entries: &[
-                storage(0, false), // canonical sums0 for this natural scan chunk
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                storage_entry(0, false), // canonical sums0 for this natural scan chunk
+                uniform_entry(2),
             ],
         },
     );
@@ -350,17 +314,8 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy star args bgl"),
             entries: &[
-                storage(0, false), // DrawIndirect args (4 × u32)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                storage_entry(0, false), // DrawIndirect args (4 × u32)
+                uniform_entry(1),
             ],
         },
     );
@@ -376,21 +331,11 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
     // The surface data layout's bindings (the camera and params, 4 and 5)
     // visible to the compute stage: `seg_init_3d` reads the camera.
     let view3d_bgl = {
-        let uniform = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         crate::gpu_compile::bind_group_layout(
             &device,
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("figgy arc view3d bgl"),
-                entries: &[uniform(4), uniform(5)],
+                entries: &[uniform_entry(4), uniform_entry(5)],
             },
         )
     };

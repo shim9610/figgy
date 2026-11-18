@@ -120,34 +120,15 @@ pub(crate) fn create_ring_scan_pipelines(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
 ) -> RingScanPipelines {
-    let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    };
     let bgl = crate::gpu_compile::bind_group_layout(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy ternary ring scan bgl"),
             entries: &[
-                storage(0, true),
-                storage(1, false),
-                storage(2, false),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                crate::gpu_compile::storage_entry(0, true),
+                crate::gpu_compile::storage_entry(1, false),
+                crate::gpu_compile::storage_entry(2, false),
+                crate::gpu_compile::uniform_entry(3),
             ],
         },
     );

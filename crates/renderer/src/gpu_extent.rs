@@ -580,16 +580,6 @@ impl GpuErrorbarExtentEngine {
             },
         );
 
-        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         let uniform = wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -605,7 +595,11 @@ impl GpuErrorbarExtentEngine {
                 &device,
                 &wgpu::BindGroupLayoutDescriptor {
                     label: Some(label),
-                    entries: &[storage(0, true), storage(1, false), uniform],
+                    entries: &[
+                        crate::gpu_compile::storage_entry(0, true),
+                        crate::gpu_compile::storage_entry(1, false),
+                        uniform,
+                    ],
                 },
             )
         };
@@ -685,16 +679,6 @@ impl GpuErrorbarExtentEngine {
             },
         );
 
-        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
         let uniform = wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -710,7 +694,11 @@ impl GpuErrorbarExtentEngine {
                 &device,
                 &wgpu::BindGroupLayoutDescriptor {
                     label: Some(label),
-                    entries: &[storage(0, true), storage(1, false), uniform],
+                    entries: &[
+                        crate::gpu_compile::storage_entry(0, true),
+                        crate::gpu_compile::storage_entry(1, false),
+                        uniform,
+                    ],
                 },
             )
         };
