@@ -210,12 +210,17 @@ document, the selection or the raster
 `annotation_preview(json)` (where an annotation that is not added yet would be
 drawn, in canvas and document pixels), `convert_annotation_anchor(json, kind)`
 (the same item with `"Data"` or `"Ratio"` anchors at the same drawn position),
-`inspect_document_layout(config_json?)` (the document area, scale and every
-panel's frame, data area and layer, for the installed document or a candidate
-config), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
+`inspect_document_layout(config_json?, surface_width?, surface_height?)` (the
+document area, scale and every panel's frame, data area and layer, for the
+installed document or a candidate config, on this canvas or at the physical
+surface size given without resizing anything), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
 (the active layer's exact data area), `legend_entry(series_id)` (one legend row
 as the auto legend writes it) and `render_warnings()` (every warning of the
-last frame). The radial `FiggyBoundedChart` has `annotation_preview(json)` too,
+last frame). The free function
+`inspect_config_layout(config_json, surface_width, surface_height)`
+returns that layout for a candidate without a chart, and equals what a chart
+with that surface reports ([#334](https://github.com/shim9610/figgy/issues/334)).
+The radial `FiggyBoundedChart` has `annotation_preview(json)` too,
 with the same contract and JSON in its document logical pixels
 ([#334](https://github.com/shim9610/figgy/issues/334)). The
 [WASM guide](../renderer/WASM.md#editor-queries-figgychart-312) gives the
@@ -304,12 +309,13 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 원시 `FiggyChart` 위의 편집기는 문서·선택·래스터를 바꾸지 않고 렌더러에 물어볼 수 있다
 ([#312](https://github.com/shim9610/figgy/issues/312)). `annotation_preview(json)`는 아직 넣지 않은
 주석이 그려질 자리를 캔버스 픽셀과 문서 픽셀로, `convert_annotation_anchor(json, kind)`는 그려지는
-위치를 지킨 채 앵커를 `"Data"`나 `"Ratio"`로 바꾼 항목을 돌려준다. `inspect_document_layout(config_json?)`는
-설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를, `panel_at(x, y)`는
+위치를 지킨 채 앵커를 `"Data"`나 `"Ratio"`로 바꾼 항목을 돌려준다. `inspect_document_layout(config_json?, surface_width?, surface_height?)`는
+설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를 이 캔버스에서, 또는 캔버스를 바꾸지 않고 주어진 물리 표면 크기에서, `panel_at(x, y)`는
 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다.
 `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
 경고를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
 좌표는 그 차트의 문서 논리 픽셀이다([#334](https://github.com/shim9610/figgy/issues/334)).
+차트 없이 쓰는 `inspect_config_layout(config_json, surface_width, surface_height)`은 그 표면 크기의 차트와 같은 레이아웃을 돌려준다(#334).
 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
 
 `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 차트를 한 번에 바꾼다.

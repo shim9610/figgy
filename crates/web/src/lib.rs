@@ -1081,6 +1081,109 @@ impl ShownDocument<'_> {
     }
 }
 
+/// Why a layout query (`inspect_document_layout`, `inspect_config_layout`)
+/// was refused: the error's `code` and its message (#312, #334).
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, PartialEq)]
+struct LayoutQueryError {
+    code: &'static str,
+    message: String,
+}
+
+/// A candidate `Config` JSON for a layout query, read and checked the way
+/// `set_config` lays it out: code `config_json` for JSON that is not a
+/// `Config`, `layout` for overlays, subplots or line offset members that
+/// cannot be laid out.
+#[cfg(any(target_arch = "wasm32", test))]
+fn layout_candidate(json: &str) -> Result<renderer::Config, LayoutQueryError> {
+    let candidate: renderer::Config =
+        serde_json::from_str(json).map_err(|error| LayoutQueryError {
+            code: "config_json",
+            message: format!("config is not a Config JSON value: {error}"),
+        })?;
+    if !candidate.overlays.is_empty()
+        || !candidate.subplots.is_empty()
+        || candidate.has_offset_members()
+    {
+        candidate.expand().map_err(|error| LayoutQueryError {
+            code: "layout",
+            message: format!("the candidate's panels cannot be laid out ({error:?})"),
+        })?;
+    }
+    Ok(candidate)
+}
+
+/// One physical surface dimension given to a layout query, refused with
+/// code `invalid_size` unless it is a whole number of pixels from 1 that
+/// fits a `u32` (#334).
+#[cfg(any(target_arch = "wasm32", test))]
+fn layout_dimension(name: &str, value: f64) -> Result<u32, LayoutQueryError> {
+    if value.is_finite() && value >= 1.0 && value.fract() == 0.0 && value <= f64::from(u32::MAX) {
+        Ok(value as u32)
+    } else {
+        Err(LayoutQueryError {
+            code: "invalid_size",
+            message: format!("{name} must be a whole number of pixels from 1, got {value}"),
+        })
+    }
+}
+
+/// A physical surface size given to a layout query: both dimensions or
+/// neither (`None`), each checked by [`layout_dimension`]. One alone is
+/// refused with code `invalid_size`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn layout_surface(
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<Option<(u32, u32)>, LayoutQueryError> {
+    match (width, height) {
+        (None, None) => Ok(None),
+        (Some(width), Some(height)) => Ok(Some((
+            layout_dimension("surface width", width)?,
+            layout_dimension("surface height", height)?,
+        ))),
+        _ => Err(LayoutQueryError {
+            code: "invalid_size",
+            message: "give both surface dimensions or neither".to_owned(),
+        }),
+    }
+}
+
+/// The layout JSON of `logical` fitted to a `surface` of physical pixels
+/// the way the canvas places a document (`display_config_for_surface`):
+/// what `ShownDocument::layout_json` reports for a canvas of that size
+/// showing `logical`. The installed document read at its own size, an
+/// installed document at other dimensions, a candidate on the canvas and
+/// a candidate without a chart all go through it (#334).
+#[cfg(any(target_arch = "wasm32", test))]
+fn fitted_layout_json(logical: &renderer::Config, surface: (u32, u32)) -> serde_json::Value {
+    let (placed, _, scale) = renderer::display_config_for_surface(logical, surface);
+    ShownDocument {
+        logical,
+        placed: &placed,
+        scale,
+    }
+    .layout_json(surface)
+}
+
+/// `inspect_config_layout` without a chart (#334): the candidate `json`
+/// laid out on a `width` x `height` physical surface, as
+/// `FiggyChart.inspect_document_layout` reports it on a canvas of that
+/// size: a canvas places its document by its surface size alone.
+#[cfg(any(target_arch = "wasm32", test))]
+fn config_layout_json(
+    json: &str,
+    width: f64,
+    height: f64,
+) -> Result<serde_json::Value, LayoutQueryError> {
+    let surface = (
+        layout_dimension("surface width", width)?,
+        layout_dimension("surface height", height)?,
+    );
+    let candidate = layout_candidate(json)?;
+    Ok(fitted_layout_json(&candidate, surface))
+}
+
 /// An annotation preview's shape as JSON: `{ shape, points | rect, bounds }`
 /// with `shape` one of `line`, `span`, `text`, `arrow`, `polygon`, every
 /// coordinate multiplied by `scale` (1 keeps the preview's own pixels; the
@@ -1219,6 +1322,7 @@ mod tests {
     use super::{
         ShownDocument, annotation_preview_json, radial_annotation_preview, render_warning_json,
     };
+    use super::{config_layout_json, fitted_layout_json, layout_candidate, layout_surface};
 
     fn scatter_style() -> DataScatterStyleConfig {
         DataScatterStyleConfig {
@@ -2647,6 +2751,135 @@ mod tests {
         assert!(shown.layout_json((4, 4))["panels"][0]["data_area"].is_null());
     }
 
+    /// The chart-less layout query is the canvas's layout for the same
+    /// candidate and surface: the same JSON a `ShownDocument` of the placed
+    /// document reports (#334).
+    #[test]
+    fn config_layout_is_the_canvas_layout_at_that_surface() {
+        let logical = layered_document();
+        let json = serde_json::to_string(&logical).unwrap();
+        for surface in [(600, 300), (1200, 600), (900, 450)] {
+            let (placed, _, scale) = renderer::display_config_for_surface(&logical, surface);
+            let shown = ShownDocument {
+                logical: &logical,
+                placed: &placed,
+                scale,
+            };
+            let expected = shown.layout_json(surface);
+            let free =
+                config_layout_json(&json, f64::from(surface.0), f64::from(surface.1)).unwrap();
+            assert_eq!(free, expected);
+            assert_eq!(fitted_layout_json(&logical, surface), expected);
+        }
+    }
+
+    /// Surface dimensions scale every canvas rect with the fit and leave
+    /// the document rects; a surface wider than the document's aspect
+    /// centres it (#334).
+    #[test]
+    fn config_layout_follows_the_surface_dimensions() {
+        let json = serde_json::to_string(&layered_document()).unwrap();
+        let at = |w: f64, h: f64| config_layout_json(&json, w, h).unwrap();
+        let (one, two) = (at(600.0, 300.0), at(1200.0, 600.0));
+        assert_eq!(one["scale"], serde_json::json!(1.0));
+        assert_eq!(two["scale"], serde_json::json!(2.0));
+        assert_eq!(two["surface"], serde_json::json!([1200, 600]));
+        let doubled = |r: renderer::layout::Rect| renderer::layout::Rect {
+            x: r.x * 2,
+            y: r.y * 2,
+            width: r.width * 2,
+            height: r.height * 2,
+        };
+        assert_eq!(
+            rect_of(&two["document_area"]["canvas"]),
+            doubled(rect_of(&one["document_area"]["canvas"]))
+        );
+        let (p1, p2) = (
+            one["panels"].as_array().unwrap(),
+            two["panels"].as_array().unwrap(),
+        );
+        assert_eq!(p1.len(), 3);
+        for (a, b) in p1.iter().zip(p2) {
+            assert_eq!(a["layer"], b["layer"]);
+            assert_eq!(a["frame"]["document"], b["frame"]["document"]);
+            assert_eq!(a["data_area"]["document"], b["data_area"]["document"]);
+            assert_eq!(
+                rect_of(&b["frame"]["canvas"]),
+                doubled(rect_of(&a["frame"]["canvas"]))
+            );
+            // The data area is laid out from margins in placed pixels, so it
+            // follows the frame within a pixel of rounding.
+            let (da, db) = (
+                rect_of(&a["data_area"]["canvas"]),
+                rect_of(&b["data_area"]["canvas"]),
+            );
+            let near = |x: u32, y: u32| x.abs_diff(y * 2) <= 2;
+            assert!(near(db.x, da.x) && near(db.y, da.y), "{da:?} {db:?}");
+            assert!(near(db.width, da.width) && near(db.height, da.height));
+        }
+        let wide = at(1200.0, 300.0);
+        assert_eq!(wide["scale"], serde_json::json!(1.0));
+        assert_eq!(
+            rect_of(&wide["document_area"]["canvas"]),
+            renderer::layout::Rect {
+                x: 300,
+                y: 0,
+                width: 600,
+                height: 300,
+            }
+        );
+    }
+
+    /// Layout queries refuse a size that is not a whole number of pixels
+    /// from 1 and a lone dimension with `invalid_size`, and a candidate as
+    /// before (#334).
+    #[test]
+    fn layout_queries_refuse_bad_sizes_and_candidates() {
+        let json = serde_json::to_string(&layered_document()).unwrap();
+        let code =
+            |result: Result<serde_json::Value, super::LayoutQueryError>| result.unwrap_err().code;
+        for bad in [
+            0.0,
+            -1.0,
+            0.5,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::from(u32::MAX) + 1.0,
+        ] {
+            assert_eq!(code(config_layout_json(&json, bad, 300.0)), "invalid_size");
+            assert_eq!(code(config_layout_json(&json, 600.0, bad)), "invalid_size");
+            assert_eq!(
+                layout_surface(Some(bad), Some(300.0)).unwrap_err().code,
+                "invalid_size"
+            );
+        }
+        assert_eq!(layout_surface(None, None), Ok(None));
+        assert_eq!(
+            layout_surface(Some(640.0), Some(480.0)),
+            Ok(Some((640, 480)))
+        );
+        assert_eq!(
+            layout_surface(Some(640.0), None).unwrap_err().code,
+            "invalid_size"
+        );
+        assert_eq!(
+            layout_surface(None, Some(480.0)).unwrap_err().code,
+            "invalid_size"
+        );
+        assert_eq!(code(config_layout_json("{", 600.0, 300.0)), "config_json");
+        assert_eq!(layout_candidate("{").unwrap_err().code, "config_json");
+        let mut infeasible = layered_document();
+        infeasible.overlays[0].series = vec!["a".into()];
+        infeasible.overlays.push(infeasible.overlays[0].clone());
+        let infeasible = serde_json::to_string(&infeasible).unwrap();
+        assert_eq!(
+            code(config_layout_json(&infeasible, 600.0, 300.0)),
+            "layout"
+        );
+        assert_eq!(layout_candidate(&infeasible).unwrap_err().code, "layout");
+    }
+
     /// A preview is placed in both spaces: the canvas shape is the document
     /// shape scaled and placed, and an item the raster skips reports why.
     /// Anchor conversion keeps the drawn position (#312).
@@ -2905,8 +3138,8 @@ mod web {
         theme_error, theme_from_js, theme_to_js,
     };
     mod decorations;
-    pub use decorations::AxisPreset;
     pub(crate) use decorations::vertex_handle_index;
+    pub use decorations::{AxisPreset, inspect_config_layout};
     pub(crate) use decorations::{
         annotation_index_of, annotation_kind_name, annotation_preview_value,
         annotation_warnings_json,
