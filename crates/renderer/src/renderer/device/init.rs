@@ -30,23 +30,6 @@ impl Renderer {
         Self::try_new_with_sample_count(gpu, surface_format, pool_capacity_bytes, 1)
     }
 
-    /// Initialize the same base resources as [`Self::try_new`] and report
-    /// timestamp-free startup stage boundaries to `observer`.
-    pub fn try_new_observed(
-        gpu: RendererDevice,
-        surface_format: wgpu::TextureFormat,
-        pool_capacity_bytes: u64,
-        observer: &mut dyn FnMut(InitEvent),
-    ) -> Result<Self> {
-        Self::try_new_with_sample_count_observed(
-            gpu,
-            surface_format,
-            pool_capacity_bytes,
-            1,
-            observer,
-        )
-    }
-
     pub(in crate::renderer) fn try_new_with_sample_count(
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,

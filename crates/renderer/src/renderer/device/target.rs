@@ -595,40 +595,8 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.texture_bgl
-    }
-
-    pub fn transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.transform_bgl
-    }
-
-    pub fn style_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.style_bgl
-    }
-
     pub fn axis_pipeline(&self) -> &wgpu::RenderPipeline {
         &self.pipelines.axis
-    }
-
-    pub fn line_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
-        self.pipelines.line.as_ref()
-    }
-
-    pub fn scatter_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
-        self.pipelines.scatter.as_ref()
-    }
-
-    pub fn errorbar_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
-        self.pipelines.errorbar.as_ref()
-    }
-
-    pub fn bar_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
-        self.pipelines.bar.as_ref()
-    }
-
-    pub fn bar_mapped_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
-        self.pipelines.bar_mapped.as_ref()
     }
 
     /// Wait until previously submitted GPU work has finished executing.
@@ -684,10 +652,6 @@ impl Renderer {
 
     pub fn sampler(&self) -> &wgpu::Sampler {
         &self.sampler
-    }
-
-    pub fn quad_vertex_buffer(&self) -> &wgpu::Buffer {
-        &self.quad_vb
     }
 }
 

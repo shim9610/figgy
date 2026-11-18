@@ -470,8 +470,9 @@ pub struct Renderer {
     monotonic: monotonic::MonotonicState,
     arc_pipelines: Option<data_render::line_arc::ArcScanPipelines>,
     /// The background compiles of this renderer's render pipelines in the
-    /// browser (#299): a renderer built by `for_window_minimal_async_observed`
-    /// (or with a shader set) has one; any other renderer creates each
+    /// browser (#299): a renderer built by
+    /// `for_window_with_shader_set_async_observed` has one; any other
+    /// renderer creates each
     /// pipeline when it first draws it, as before.
     #[cfg(target_arch = "wasm32")]
     compile_queue: Option<crate::browser_compile::CompileQueue>,

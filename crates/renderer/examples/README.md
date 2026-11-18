@@ -89,10 +89,10 @@ file name. To refresh an image, run the example's command from
 
 ### Category bars, box plots and radar series
 
-These three examples open legacy documents through the deprecated readers
+These three examples open legacy documents through the readers
 (`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`),
 upload the borrowed columns and export the Cartesian or polar chart they read
-into. The readers are removed in the next milestone.
+into.
 
 | Image | Asset | Drawn by | Shows |
 |---|---|---|---|
@@ -230,8 +230,7 @@ images are not in the README.
 - **데이터 경로**: 선·오차 막대·히스토그램·행렬·극좌표·벡터장 예제는 컬럼을 등록한다.
   범주형 막대 예제는 `Config::from_categorical`로, 박스플롯 예제는 `Config::from_boxplot`으로
   문서를 읽어 컬럼·레코드를 등록하고, 레이더 예제는 `Config::from_radar`로 문서를 읽어 컬럼을
-  등록한다. 세 문서 리더는 이번 릴리스에서 사용 중단(deprecated)되며 다음 마일스톤에서
-  제거된다. 원형 예제는 차트의 소량 데이터 모델을 직접 만든다.
+  등록한다. 세 문서 리더는 0.13 이전에 쓰인 문서를 읽는다. 원형 예제는 차트의 소량 데이터 모델을 직접 만든다.
   박스플롯의 사분위수 등 통계값은 호출자가 제공한다.
 - **0.19 차트**: 삼각 좌표, 3D 곡면·화살표, 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미, 선버스트,
   평행 좌표, 바이올린·레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위,

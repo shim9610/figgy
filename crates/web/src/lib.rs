@@ -371,7 +371,6 @@ pub(crate) trait LegacyDocument: Sized {
 macro_rules! legacy_document {
     ($document:ty, $convert:ident) => {
         #[cfg(any(target_arch = "wasm32", test))]
-        #[allow(deprecated)]
         impl LegacyDocument for $document {
             fn read(json: &str) -> Result<Self, DocumentError> {
                 let document: Self = serde_json::from_str(json).map_err(DocumentError::Json)?;
@@ -1973,8 +1972,6 @@ mod tests {
     }
 
     #[test]
-    // The legacy documents are read through their deprecated reader types.
-    #[allow(deprecated)]
     fn a_radar_document_converts_with_its_report() {
         let document = r#"{
             "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}, {"id": "c", "label": "C"}],
@@ -2028,8 +2025,6 @@ mod tests {
     }
 
     #[test]
-    // The legacy documents are read through their deprecated reader types.
-    #[allow(deprecated)]
     fn a_box_plot_document_describes_its_record_and_outliers() {
         let document = r#"{
             "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
@@ -2053,8 +2048,6 @@ mod tests {
     }
 
     #[test]
-    // The legacy documents are read through their deprecated reader types.
-    #[allow(deprecated)]
     fn a_categorical_document_reports_a_refused_rule_with_its_code() {
         let document = r#"{
             "categories": [{"id": "a", "label": "A"}],
@@ -2079,8 +2072,6 @@ mod tests {
 
     /// The setter's conversion of a document on a chart area (#334): what
     /// `set_*_document` runs before it installs anything.
-    // The legacy documents are read through their deprecated reader types.
-    #[allow(deprecated)]
     fn setter_report<D: super::LegacyDocument>(
         json: &str,
         chart_area: &renderer::layout::ChartArea,
@@ -2095,8 +2086,6 @@ mod tests {
     /// included, for each family (#334); the loss policy refuses exactly
     /// the listed paths (and the paths under them), or any note.
     #[test]
-    // The legacy documents are read through their deprecated reader types.
-    #[allow(deprecated)]
     fn a_preview_on_the_chart_area_is_the_setters_report() {
         let color = r#"{"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}"#;
         // A black background (dropped), and a data area the 1000 x 800
@@ -2211,8 +2200,6 @@ mod tests {
     /// The options of `convert_*_document` and `set_*_document` (#334):
     /// what each accepts, and every field or shape it refuses.
     #[test]
-    // The legacy documents are read through their deprecated reader types.
-    #[allow(deprecated)]
     fn document_options_are_parsed_strictly() {
         use super::LossPolicy;
         assert_eq!(LossPolicy::parse(None).unwrap(), LossPolicy::Accept);
@@ -2284,8 +2271,6 @@ mod tests {
     /// (#334): the issue's rectangle is its data area with no note, and one
     /// the converted layout cannot hold is noted as dropped with a reason.
     #[test]
-    // The legacy documents are read through their deprecated reader types.
-    #[allow(deprecated)]
     fn the_converters_carry_an_explicit_data_area() {
         let color = r#"{"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}"#;
         let categorical = format!(

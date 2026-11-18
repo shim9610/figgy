@@ -13,7 +13,7 @@
 //! labels and annotations through the decoration oracle's GPU exports,
 //! overlays and subplots.
 
-use renderer::axis_render::try_raster_chart_to_rgba;
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side};
 use renderer::legend::{
@@ -122,8 +122,12 @@ fn check_element<E: SelectionGeometry + Draggable>(
         let width = cfg.chart_area.0.width;
         let at = format!("{name} at {scale}x");
         let measure = CpuTextMeasure::for_style(&cfg.draw_style);
-        let base = try_raster_chart_to_rgba(&empty).expect("raster");
-        let drawn = try_raster_chart_to_rgba(&cfg).expect("raster");
+        let base =
+            try_raster_chart_layer_to_rgba_with_selection_at(&empty, AxisLayerKind::All, &[], 1.0)
+                .expect("raster");
+        let drawn =
+            try_raster_chart_layer_to_rgba_with_selection_at(&cfg, AxisLayerKind::All, &[], 1.0)
+                .expect("raster");
         let ink = diff_box(&drawn, &base, width).unwrap_or_else(|| panic!("{at}: no ink"));
         let bounds = element.bounds(&cfg, &measure).expect("bounds");
         assert!(
@@ -168,9 +172,16 @@ fn check_element<E: SelectionGeometry + Draggable>(
         // moved formula's ink is told apart from.
         let mut moved_empty = empty.clone();
         element.drag_by(&mut moved_empty, &measure, 7.0, 5.0);
-        let moved_base = try_raster_chart_to_rgba(&moved_empty).unwrap();
+        let moved_base = try_raster_chart_layer_to_rgba_with_selection_at(
+            &moved_empty,
+            AxisLayerKind::All,
+            &[],
+            1.0,
+        )
+        .unwrap();
         let moved_ink = diff_box(
-            &try_raster_chart_to_rgba(&moved).unwrap(),
+            &try_raster_chart_layer_to_rgba_with_selection_at(&moved, AxisLayerKind::All, &[], 1.0)
+                .unwrap(),
             &moved_base,
             width,
         )
@@ -317,8 +328,10 @@ fn a_sketch_chart_draws_math_from_the_math_face() {
     let mut sketch = precise.clone();
     sketch.draw_style = renderer::config::DrawStyle::Sketch(Default::default());
     assert_eq!(
-        try_raster_chart_to_rgba(&precise).unwrap(),
-        try_raster_chart_to_rgba(&sketch).unwrap()
+        try_raster_chart_layer_to_rgba_with_selection_at(&precise, AxisLayerKind::All, &[], 1.0)
+            .unwrap(),
+        try_raster_chart_layer_to_rgba_with_selection_at(&sketch, AxisLayerKind::All, &[], 1.0)
+            .unwrap()
     );
 }
 
@@ -562,8 +575,15 @@ fn tex_series_labels_reach_the_legend_through_the_helpers() {
         let mut hidden = cfg.clone();
         hidden.legend.visible = false;
         let ink = diff_box(
-            &try_raster_chart_to_rgba(cfg).expect("raster"),
-            &try_raster_chart_to_rgba(&hidden).expect("raster"),
+            &try_raster_chart_layer_to_rgba_with_selection_at(cfg, AxisLayerKind::All, &[], 1.0)
+                .expect("raster"),
+            &try_raster_chart_layer_to_rgba_with_selection_at(
+                &hidden,
+                AxisLayerKind::All,
+                &[],
+                1.0,
+            )
+            .expect("raster"),
             cfg.chart_area.0.width,
         )
         .unwrap_or_else(|| panic!("{name}: no ink"));

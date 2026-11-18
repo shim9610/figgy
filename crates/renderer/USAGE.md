@@ -445,10 +445,10 @@ if let Some(ticket) = pending.take() {
 
 ### iced integration status
 
-The retained [iced integration source](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)
-documents the intended `prepare` / `paint_prepared` ownership pattern, but its
-build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
-queue, and render-pass types cannot be shared across major versions.
+figgy ships no iced integration while iced 0.14 remains on wgpu 27: wgpu
+device, queue, and render-pass types cannot be shared across major versions.
+An embedder follows the same `prepare` / `paint_prepared` ownership pattern
+as the other hosts above.
 
 ### Series constructors
 
@@ -1527,7 +1527,7 @@ if let Some(ticket) = pending.take() {
 
 ### iced 통합 상태
 
-[보관 중인 iced 통합 예제](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
+iced 0.14는 wgpu 27을 사용하므로 figgy는 iced 통합을 제공하지 않는다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다. 임베드하는 호스트는 위의 다른 호스트와 같은 `prepare` / `paint_prepared` 소유권 패턴을 따른다.
 
 ### 시리즈 생성 함수
 

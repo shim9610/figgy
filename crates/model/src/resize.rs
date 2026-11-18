@@ -35,17 +35,6 @@ pub enum ResizeHandle {
     W,
 }
 
-pub const ALL_HANDLES: [ResizeHandle; 8] = [
-    ResizeHandle::NW,
-    ResizeHandle::N,
-    ResizeHandle::NE,
-    ResizeHandle::E,
-    ResizeHandle::SE,
-    ResizeHandle::S,
-    ResizeHandle::SW,
-    ResizeHandle::W,
-];
-
 /// The eight handle squares for a selection rect: corners + edge midpoints,
 /// each centered on its anchor point.
 pub fn handle_rects(rect: &RectF) -> [(ResizeHandle, RectF); 8] {

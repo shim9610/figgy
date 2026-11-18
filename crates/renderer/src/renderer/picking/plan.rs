@@ -365,16 +365,6 @@ impl PickChartPlan {
         Ok(Self { descriptors })
     }
 
-    pub(in crate::renderer) fn registry_slots<'a>(
-        &'a self,
-        current: Option<&[OwnedGpuPickSeriesDescriptor]>,
-    ) -> std::result::Result<
-        Vec<crate::gpu_pick::GpuPickRegistrySlot<'a>>,
-        crate::gpu_pick::GpuPickError,
-    > {
-        self.registry_slots_rebuilding(current, &[])
-    }
-
     pub(in crate::renderer) fn registry_slots_rebuilding<'a>(
         &'a self,
         current: Option<&[OwnedGpuPickSeriesDescriptor]>,

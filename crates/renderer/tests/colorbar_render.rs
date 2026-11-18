@@ -15,9 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use renderer::axis_render::{
-    AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection, try_raster_chart_to_rgba,
-};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::colormap::ColorMap;
 use renderer::config::AxisScale;
 use renderer::format::LabelFormat;
@@ -170,7 +168,9 @@ fn every_side_and_scale_paints_the_ramp_beside_the_data_area() {
     fs::create_dir_all(&dir).expect("create image directory");
 
     for (name, config) in probes() {
-        let rgba = try_raster_chart_to_rgba(&config).expect("colourbar raster");
+        let rgba =
+            try_raster_chart_layer_to_rgba_with_selection_at(&config, AxisLayerKind::All, &[], 1.0)
+                .expect("colourbar raster");
         assert_eq!(rgba.len(), (WIDTH * HEIGHT * 4) as usize);
         let bar = config.colorbar.as_ref().expect("a colourbar");
         let da = config.data_area().expect("data area");
@@ -265,7 +265,13 @@ fn colorbar_strip_raster_cost() {
     let time = |config: &renderer::Config| {
         let start = std::time::Instant::now();
         for _ in 0..20 {
-            let rgba = try_raster_chart_to_rgba(config).expect("raster");
+            let rgba = try_raster_chart_layer_to_rgba_with_selection_at(
+                config,
+                AxisLayerKind::All,
+                &[],
+                1.0,
+            )
+            .expect("raster");
             // Cheap, but it keeps the loop from being a timing of nothing.
             assert_eq!(rgba.len(), (WIDTH * HEIGHT * 4) as usize);
         }
@@ -332,16 +338,19 @@ fn the_selected_colorbar_draws_its_box_and_handles_and_follows_a_drag_and_resize
             .expect("the colourbar is selectable");
         assert_eq!(box_.handles().len(), 8, "{name}: eight resize handles");
 
-        let rgba = try_raster_chart_layer_to_rgba_with_selection(
+        let rgba = try_raster_chart_layer_to_rgba_with_selection_at(
             &config,
             AxisLayerKind::All,
             std::slice::from_ref(&box_),
+            1.0,
         )
         .expect("selection raster");
 
         // The highlight is the only difference from the plain chart, and it
         // lies on the box and its handles: nothing else moves or recolours.
-        let plain = try_raster_chart_to_rgba(&config).expect("plain raster");
+        let plain =
+            try_raster_chart_layer_to_rgba_with_selection_at(&config, AxisLayerKind::All, &[], 1.0)
+                .expect("plain raster");
         let mut reach = box_.rect();
         for handle in box_.handles() {
             let x1 = (reach.x + reach.width).max(handle.x + handle.width);
@@ -402,8 +411,12 @@ fn colorbar_raster_work_is_bounded_by_the_canvas() {
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result =
-            try_raster_chart_layer_to_rgba_with_selection(&cfg, AxisLayerKind::Decoration, &[]);
+        let result = try_raster_chart_layer_to_rgba_with_selection_at(
+            &cfg,
+            AxisLayerKind::Decoration,
+            &[],
+            1.0,
+        );
         let _ = tx.send(result);
     });
     let rgba = rx
@@ -433,8 +446,9 @@ fn issue_6_title_margin_reproduction_returns_promptly() {
     cfg.colorbar = Some(renderer::default::default_colorbar_options());
     cfg.chart_title.top_margin = -1e38;
     assert!(cfg.validate().is_err());
-    let rgba = try_raster_chart_layer_to_rgba_with_selection(&cfg, AxisLayerKind::Decoration, &[])
-        .expect("raster succeeds");
+    let rgba =
+        try_raster_chart_layer_to_rgba_with_selection_at(&cfg, AxisLayerKind::Decoration, &[], 1.0)
+            .expect("raster succeeds");
     assert_eq!(rgba.len(), 320 * 240 * 4);
 }
 
@@ -472,7 +486,9 @@ fn an_adaptive_log_colorbar_labels_its_ladder() {
     assert!(drawn >= 3, "{drawn} labels");
     assert_eq!(labels(&config.scaled(2.0)), drawn);
     assert_ne!(
-        try_raster_chart_to_rgba(&config).unwrap(),
-        try_raster_chart_to_rgba(&decades).unwrap()
+        try_raster_chart_layer_to_rgba_with_selection_at(&config, AxisLayerKind::All, &[], 1.0)
+            .unwrap(),
+        try_raster_chart_layer_to_rgba_with_selection_at(&decades, AxisLayerKind::All, &[], 1.0)
+            .unwrap()
     );
 }

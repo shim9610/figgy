@@ -116,15 +116,6 @@ impl MonotonicEnvelope {
         with_monotonic_source!(source, s => self.set_monotonic(s, mapping))
     }
 
-    /// [`Self::append_monotonic`] for a source of any element type.
-    pub fn append_monotonic_ref(
-        &mut self,
-        new: MonotonicSourceRef<'_>,
-        options: MonotonicAppend,
-    ) -> Result<MonotonicUpdate, MonotonicError> {
-        with_monotonic_source!(new, s => self.append_monotonic(s, options))
-    }
-
     /// Reduces `source` in full on `grid` (which may be shifted), recording
     /// `mapping`. The full call is this on a fresh grid; tests also build on
     /// a slid envelope's own grid, to compare with it.
@@ -260,18 +251,6 @@ impl MonotonicEnvelope {
     /// The current mapping. A slide moves its x range.
     pub fn mapping(&self) -> Option<&MonotonicMapping> {
         self.built.as_ref().map(|b| &b.mapping)
-    }
-
-    /// The mapping the columns are aligned to: the current one with the x
-    /// range of the column grid. A full call on it builds the same columns.
-    pub fn aligned_mapping(&self) -> Option<MonotonicMapping> {
-        let b = self.built.as_ref()?;
-        let (x_min, x_max) = b.grid.aligned_range();
-        Some(MonotonicMapping {
-            x_min,
-            x_max,
-            ..b.mapping.clone()
-        })
     }
 
     /// The offset of the columns from the current x range, in pixel columns,

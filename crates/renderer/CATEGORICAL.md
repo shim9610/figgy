@@ -8,8 +8,8 @@ draws them. Positions and values are read from columns uploaded through
 document format of the releases up to 0.12, and `Config::from_categorical`
 reads such a document as a categorical bar chart
 ([Opening as a Cartesian chart](#opening-as-a-cartesian-chart)). The rules
-below apply to this document. `CategoricalChart` is kept only as a deprecated
-document reader in this release and is removed in the next milestone.
+below apply to this document. `CategoricalChart` is kept as the reader for
+documents written before 0.13.
 
 ```rust,no_run
 use renderer::{CategoricalChart, Category, BarSeries, Color, CategoryBarMode};
@@ -222,7 +222,7 @@ cargo test -p figgy-renderer --features serde --test category_bars_render -- --t
 위치와 값은 `ColumnSource`로 올린 컬럼에서 읽으며 스트리밍 소스는 거부한다.
 `CategoricalChart`는 0.12까지의 릴리스가 쓴 문서 형식이며, `Config::from_categorical`이 이 문서를
 범주형 막대 차트로 읽는다([직교 좌표 차트로 열기](#직교-좌표-차트로-열기)). 아래 규칙은 이 문서에 적용된다.
-`CategoricalChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
+`CategoricalChart`는 0.13 이전에 쓰인 문서를 읽는 리더로 남는다.
 
 ```rust,no_run
 use renderer::{CategoricalChart, Category, BarSeries, Color, CategoryBarMode};

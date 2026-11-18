@@ -59,23 +59,6 @@ pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = SCATTER_SHA
 
 /// Columnar SDF scatter pipeline.
 /// slot 0 (per-vertex): unit quad, slot 1 (per-instance): X, slot 2: Y.
-pub fn create_scatter_columnar_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::scatter(device, crate::shader_assembly::ShaderSet::Full);
-    create_scatter_columnar_pipeline_with_sample_count(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        1,
-    )
-}
-
 pub(crate) fn create_scatter_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -99,37 +82,12 @@ pub(crate) fn create_scatter_columnar_pipeline_with_sample_count(
 }
 
 /// Precise scatter pipeline variant that resolves per-point style slots.
-/// It keeps the common WGSL block untouched by using separate `vs_mapped` /
-/// `fs_mapped` entry points and a fourth per-instance f32 vertex slot for
-/// `point_style_index_column` when present. Sparse-only mappings bind the X
-/// column into that slot as inert filler.
-pub fn create_scatter_columnar_mapped_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    value_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::scatter(device, crate::shader_assembly::ShaderSet::Full);
-    create_scatter_columnar_mapped_pipeline_with_entries(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        style_map_bgl,
-        value_map_bgl,
-        target_format,
-        sample_count,
-        "vs_mapped",
-        "fs_mapped",
-        "figgy scatter mapped pipeline",
-    )
-}
-
-// Mapping adds index/table layouts to the shared scatter pipeline state, plus
-// the value-map group (3) and the two value-column vertex slots (4, 5).
+/// It keeps the common WGSL block untouched by using separate entry points
+/// (`vs_mapped` / `fs_mapped` and the picked ring's) and a fourth
+/// per-instance f32 vertex slot for `point_style_index_column` when present.
+/// Sparse-only mappings bind the X column into that slot as inert filler.
+/// Mapping adds index/table layouts to the shared scatter pipeline state,
+/// plus the value-map group (3) and the two value-column vertex slots (4, 5).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
     device: &wgpu::Device,

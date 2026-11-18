@@ -1015,14 +1015,6 @@ impl Config {
         }
         NudgeResult::Moved
     }
-
-    pub fn nudge_x(&mut self, element: Element, measure: &dyn MeasureText, dx: f32) -> NudgeResult {
-        self.nudge(element, measure, dx, 0.0)
-    }
-
-    pub fn nudge_y(&mut self, element: Element, measure: &dyn MeasureText, dy: f32) -> NudgeResult {
-        self.nudge(element, measure, 0.0, dy)
-    }
 }
 
 // Invariant tests.

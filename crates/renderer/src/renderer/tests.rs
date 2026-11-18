@@ -5142,10 +5142,10 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
     let mut items = empty_chart_items(&renderer, &chart, &mut view);
     renderer.prepare(&mut items).unwrap();
 
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_none());
-    assert!(renderer.errorbar_pipeline().is_none());
-    assert!(renderer.bar_pipeline().is_none());
+    assert!(renderer.pipelines.line.is_none());
+    assert!(renderer.pipelines.scatter.is_none());
+    assert!(renderer.pipelines.errorbar.is_none());
+    assert!(renderer.pipelines.bar.is_none());
     assert!(renderer.pipelines.scatter_mapped.is_none());
     assert!(renderer.pipelines.errorbar_mapped.is_none());
     assert!(renderer.pipelines.pick_ring_mapped.is_none());
@@ -5267,10 +5267,10 @@ fn histogram_prepare_compiles_only_the_bar_pipeline() {
     }];
     renderer.prepare(&mut items).unwrap();
 
-    assert!(renderer.bar_pipeline().is_some());
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_none());
-    assert!(renderer.errorbar_pipeline().is_none());
+    assert!(renderer.pipelines.bar.is_some());
+    assert!(renderer.pipelines.line.is_none());
+    assert!(renderer.pipelines.scatter.is_none());
+    assert!(renderer.pipelines.errorbar.is_none());
     assert!(renderer.pipelines.scatter_mapped.is_none());
     assert!(renderer.pipelines.errorbar_mapped.is_none());
     assert!(!renderer.errorbar_extent_engine_ready());
@@ -5428,10 +5428,10 @@ fn line_prepare_compiles_only_the_line_pipeline() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.line_pipeline().is_some());
-    assert!(renderer.scatter_pipeline().is_none());
-    assert!(renderer.errorbar_pipeline().is_none());
-    assert!(renderer.bar_pipeline().is_none());
+    assert!(renderer.pipelines.line.is_some());
+    assert!(renderer.pipelines.scatter.is_none());
+    assert!(renderer.pipelines.errorbar.is_none());
+    assert!(renderer.pipelines.bar.is_none());
     assert!(renderer.pipelines.scatter_mapped.is_none());
     assert!(renderer.pipelines.errorbar_mapped.is_none());
     assert!(renderer.pipelines.pick_ring_mapped.is_none());
@@ -5481,9 +5481,9 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_some());
-    assert!(renderer.errorbar_pipeline().is_none());
+    assert!(renderer.pipelines.line.is_none());
+    assert!(renderer.pipelines.scatter.is_some());
+    assert!(renderer.pipelines.errorbar.is_none());
     assert!(
         renderer.pipelines.scatter_mapped.is_none(),
         "unmapped scatter must not compile the mapped pipeline"
@@ -5542,9 +5542,9 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
-    assert!(renderer.line_pipeline().is_none());
-    assert!(renderer.scatter_pipeline().is_some());
-    assert!(renderer.errorbar_pipeline().is_some());
+    assert!(renderer.pipelines.line.is_none());
+    assert!(renderer.pipelines.scatter.is_some());
+    assert!(renderer.pipelines.errorbar.is_some());
     assert!(
         renderer.pipelines.scatter_mapped.is_none(),
         "errorbar without a style map must not compile mapped pipelines"
@@ -15391,8 +15391,6 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         "self.draw_prepared(",
         "self.first_frame_ready(",
         "self.first_frame_ready_blocking(",
-        "Renderer::for_window_async_observed(",
-        "Renderer::for_window_blocking_observed(",
         // `Renderer` calls that run the check themselves (#160).
         "self.inner.pick_chart(",
         "self.inner.pick_chart_data(",

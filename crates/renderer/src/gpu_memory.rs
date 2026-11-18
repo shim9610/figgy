@@ -264,8 +264,9 @@ pub fn texture_bytes(texture: &wgpu::Texture) -> u64 {
 ///
 /// Used where the charge has to be computed before the resource exists (a
 /// pre-allocation budget check) and where the descriptor is the only thing at
-/// hand.
-pub fn texture_desc_bytes(desc: &wgpu::TextureDescriptor<'_>) -> u64 {
+/// hand. Test support: the renderer charges created textures.
+#[cfg(test)]
+pub(crate) fn texture_desc_bytes(desc: &wgpu::TextureDescriptor<'_>) -> u64 {
     texture_extent_bytes(
         desc.size.width,
         desc.size.height,
@@ -498,8 +499,9 @@ impl GpuLedger {
     /// Compatibility helper for callers that have already observed GPU
     /// completion of every pending retirement (not merely queue submission).
     /// Does not credit batches already detached for asynchronous completion.
-    /// Renderer hosts should use `Renderer::end_gpu_frame` instead.
-    pub fn end_submission(&self) {
+    /// Renderer hosts use `Renderer::end_gpu_frame`; this is test support.
+    #[cfg(test)]
+    pub(crate) fn end_submission(&self) {
         self.complete_retirement(self.take_retirement());
     }
 
@@ -583,8 +585,10 @@ impl GpuLedger {
         self.peak_bytes.load(Ordering::Relaxed)
     }
 
-    /// Forget the recorded peak; the next charge starts a fresh high-water mark.
-    pub fn reset_peak(&self) {
+    /// Forget the recorded peak; the next charge starts a fresh high-water
+    /// mark. Test support.
+    #[cfg(test)]
+    pub(crate) fn reset_peak(&self) {
         self.peak_bytes.store(self.total_bytes(), Ordering::Relaxed);
     }
 
@@ -633,8 +637,9 @@ impl GpuMemoryUsage {
         self.bytes_of(GpuResourceKind::ColumnPool)
     }
 
-    /// Everything that is not the pool.
-    pub fn external_bytes(&self) -> u64 {
+    /// Everything that is not the pool. Test support.
+    #[cfg(test)]
+    pub(crate) fn external_bytes(&self) -> u64 {
         self.total_bytes().saturating_sub(self.pool_bytes())
     }
 
@@ -657,7 +662,10 @@ impl GpuMemoryUsage {
         self.creations[kind.index()]
     }
 
-    pub fn total_creations(&self) -> u64 {
+    /// How many GPU objects have been created since startup, all kinds.
+    /// Test support.
+    #[cfg(test)]
+    pub(crate) fn total_creations(&self) -> u64 {
         self.creations
             .iter()
             .fold(0u64, |a, b| a.saturating_add(*b))

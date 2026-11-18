@@ -64,28 +64,6 @@ impl Coordinates {
             _ => None,
         }
     }
-
-    /// The system named by the first of the four options that is set, or
-    /// the rectangular chart: the form documents are written in.
-    pub fn from_options(
-        polar: Option<PolarOptions>,
-        ternary: Option<TernaryOptions>,
-        view_3d: Option<View3d>,
-        parallel: Option<ParallelOptions>,
-    ) -> Self {
-        match (polar, ternary, view_3d, parallel) {
-            (Some(polar), ..) => Self::Polar(polar),
-            (_, Some(ternary), ..) => Self::Ternary(ternary),
-            (_, _, Some(view), _) => Self::View3d(view),
-            (_, _, _, Some(parallel)) => Self::Parallel(parallel),
-            _ => Self::Cartesian,
-        }
-    }
-
-    /// Whether this is the rectangular chart.
-    pub fn is_cartesian(&self) -> bool {
-        matches!(self, Self::Cartesian)
-    }
 }
 
 impl crate::config::Config {
@@ -115,14 +93,6 @@ impl crate::config::Config {
     /// The ternary options, on a ternary chart.
     pub fn ternary(&self) -> Option<&TernaryOptions> {
         self.coordinates.ternary()
-    }
-
-    /// The ternary options to edit, on a ternary chart.
-    pub fn ternary_mut(&mut self) -> Option<&mut TernaryOptions> {
-        match &mut self.coordinates {
-            Coordinates::Ternary(ternary) => Some(ternary),
-            _ => None,
-        }
     }
 
     /// Make this a ternary chart with `ternary`, or, with `None`, a

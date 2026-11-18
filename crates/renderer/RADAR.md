@@ -9,9 +9,8 @@ a marker at every vertex.
 The values are the host's and enter through `ColumnSource`, one column per
 series; streamed sources are rejected. `RadarChart` is the document format of
 the releases up to 0.12; `Config::from_radar` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
-deprecated document reader for this release and is removed in the next
-milestone.
+([Opening a legacy document](#opening-a-legacy-document)). It is kept as the
+reader for documents written before 0.13.
 
 ## Series and uploads
 
@@ -189,7 +188,6 @@ warning.
 ## Opening a legacy document
 
 ```rust,no_run
-# #![allow(deprecated)]
 use renderer::radar::RadarChart;
 use renderer::{Chart, LayerRef, Renderer, config::Config};
 # fn open(r: &mut Renderer, document: &RadarChart) -> Result<(), Box<dyn std::error::Error>> {
@@ -269,7 +267,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 `Renderer`가 시리즈마다 닫힌 외곽선, 중심까지의 채움, 꼭짓점 마커를 그린다.
 값은 호스트가 시리즈마다 열 하나로 `ColumnSource`를 거쳐 올린다. 스트리밍 소스는 거부한다.
 0.12까지의 문서 형식인 `RadarChart`는 `Config::from_radar`로 이 차트로 읽는다.
-`RadarChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
+`RadarChart`는 0.13 이전에 쓰인 문서를 읽는 리더로 남는다.
 
 `Radar` 시리즈의 `x_column`은 범주 번호 열(`0, 1, …, n - 1`), `y_column`은 범주별 반지름 축
 (`left_y`) 값이며 빠진 값은 NaN으로 둔다. 두 열 모두 범주 수만큼 값이 있어야 하고, 렌더러가

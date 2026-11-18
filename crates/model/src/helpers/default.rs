@@ -16,31 +16,7 @@
 //! `Chart::set_*_range` or `auto_fit_*`), and chart_area pixel size (set to
 //! match the host viewport).
 
-use crate::config::{
-    AxisOptions, AxisTitleOptions, ChartTitleOptions, ColorBarOptions, Config, GridOptions,
-    LabelStyle, Legend,
-};
-use crate::layout::ChartArea;
-
-/// Chart title style. Text starts empty and is filled in by a builder.
-pub fn default_chart_title_options() -> ChartTitleOptions {
-    crate::defaults::chart_title_options()
-}
-
-/// Axis title style. Text starts empty and is filled in by a builder.
-pub fn default_axis_title_options() -> AxisTitleOptions {
-    crate::defaults::axis_title_options()
-}
-
-/// Tick label style (X axis).
-pub fn default_label_style_x() -> LabelStyle {
-    crate::defaults::label_style_x()
-}
-
-/// Tick label style (Y axis). Currently identical to X.
-pub fn default_label_style_y() -> LabelStyle {
-    crate::defaults::label_style_y()
-}
+use crate::config::{AxisOptions, ColorBarOptions, Config, Legend};
 
 /// X axis options. Range is a 0..1 placeholder — replace with
 /// `Chart::set_x_range` or `auto_fit_x`.
@@ -54,17 +30,6 @@ pub fn default_axis_options_y() -> AxisOptions {
     crate::defaults::axis_options_y()
 }
 
-/// The colourbar's z axis. Range is a 0..1 placeholder — replace with the
-/// matrix's z statistics.
-///
-/// Differs from the chart axes in two places, both because the strip is not a
-/// data area: `line_visible` is off (the strip's own border draws that edge, and
-/// a second line on top of it is just a thicker border), and ticks point
-/// `Outside` so they sit in the label margin instead of over the colours.
-pub fn default_axis_options_colorbar() -> AxisOptions {
-    crate::defaults::axis_options_colorbar()
-}
-
 /// Colourbar defaults — visible, on the right, three quarters of the data
 /// area's height, Viridis. `nan_color` is fully transparent: a value the ramp
 /// cannot place reads as absent rather than as some particular colour.
@@ -76,20 +41,10 @@ pub fn default_colorbar_options() -> ColorBarOptions {
     crate::defaults::color_bar_options()
 }
 
-/// Major grid on, minor grid off. Light gray lines.
-pub fn default_grid_options() -> GridOptions {
-    crate::defaults::grid_options()
-}
-
 /// Legend defaults — hidden, top-right corner, standard padding. Content
 /// starts empty; its font/font_size are live and consumed at draw time.
 pub fn default_legend() -> Legend {
     crate::defaults::legend()
-}
-
-/// chart_area placeholder — caller resizes to match the host viewport.
-pub fn default_chart_area() -> ChartArea {
-    crate::defaults::chart_area()
 }
 
 /// Reasonable default Config.

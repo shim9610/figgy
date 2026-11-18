@@ -616,7 +616,7 @@ the subplot's bands to the drawn text), hit regions, drags and the PNG, SVG
 and PDF exports read the same sizes; `subplots[i].config` keeps the sizes it
 was written with through every drag, fit and save. The factor follows the
 cell when the cell or the parent chart is resized
-(`Config::set_subplot_area`, a frame drag, `resize_chart_area`) and is the
+(`Config::set_subplot_area`, a frame drag, a new `chart_area`) and is the
 same at every export scale, since `Config::scaled` multiplies both areas.
 `Fixed` (`Subplot::with_text_scale(SubplotTextScale::Fixed)`) keeps the
 stored sizes, for a subplot whose sizes the host chose for its cell.
@@ -716,9 +716,9 @@ Consequences:
   series without one.
 - There is therefore **one z scale per chart**; several heatmaps share it.
 - The band is `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`
-  on its own side. `fit_to_data_area` / `resize_chart_area_scaled` may reclaim
-  `axis.out_margin` (label space, like an axis') but never the strip itself, so
-  a colourbar does not get thinner with the window.
+  on its own side. `fit_to_data_area` keeps the whole band: the axis
+  `out_margin` beside it takes the change, and the strip itself never
+  shrinks, so a colourbar does not get thinner with the window.
 - Two defaults differ from a chart axis: `line_visible: false` (the strip's
   border is that edge) and `tick: Outside` (ticks sit in the label margin
   instead of over the colours).
@@ -1827,7 +1827,7 @@ pub struct Config {
 `Config::subplot_config(i)`가 배율을 곱한 크기로 서브플롯을 해석하므로 그리기, `auto_layout` /
 `fit_layout`(서브플롯의 띠를 그려지는 글자에 맞춘다), 히트 영역, 드래그, PNG·SVG·PDF 출력이 모두
 같은 크기를 읽는다. `subplots[i].config`의 크기는 드래그, 맞춤, 저장을 거쳐도 처음 쓴 값 그대로다.
-셀이나 부모 차트의 크기를 바꾸면(`Config::set_subplot_area`, 테두리 드래그, `resize_chart_area`)
+셀이나 부모 차트의 크기를 바꾸면(`Config::set_subplot_area`, 테두리 드래그, 새 `chart_area`)
 배율이 따라 바뀌고, `Config::scaled`가 두 영역에 같은 배율을 곱하므로 출력 배율이 달라도 배율은 같다.
 셀에 맞춰 글자 크기를 직접 정한 서브플롯은 `Fixed`
 (`Subplot::with_text_scale(SubplotTextScale::Fixed)`)로 저장된 크기를 유지한다.
@@ -1882,7 +1882,7 @@ pub struct Config {
 
 - `Heatmap` / `Contour` / `HeatmapContour` 시리즈와 `point_color_map` 또는 벡터 `color_map`을 쓰는 시리즈에는 색상 막대 설정이 반드시 필요하다. 이 설정에서 Z축 범위와 색상표를 읽으므로, 설정이 없으면 렌더러가 시리즈를 거부한다.
 - 차트 하나는 Z축 스케일 하나를 사용한다. 여러 히트맵을 넣어도 같은 스케일을 공유한다.
-- 색상 막대가 차지하는 여백은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 배치한 쪽에만 추가된다. `fit_to_data_area` / `resize_chart_area_scaled`는 라벨 공간인 `axis.out_margin`만 조절한다. 막대 자체의 두께는 창 크기에 따라 줄어들지 않는다.
+- 색상 막대가 차지하는 여백은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 배치한 쪽에만 추가된다. `fit_to_data_area`는 이 영역을 그대로 두고 옆 축의 `out_margin`만 조절한다. 막대 자체의 두께는 창 크기에 따라 줄어들지 않는다.
 - 일반 축과 다른 기본값은 `line_visible: false`와 `tick: Outside`다. 축선은 막대 테두리가 대신하고, 눈금은 색상 영역 바깥의 라벨 공간에 놓인다.
 - 색상 막대는 해당 방향의 여백 중 가장 바깥쪽에 배치한다. 차트 가장자리에서 안쪽으로 라벨 공간, 눈금, 색상 막대, `gap_px`, 차트 축 영역 순서다. 이렇게 배치해야 데이터 영역 바깥으로 그려지는 축 라벨을 색상 막대가 가리지 않는다.
 - 눈금·라벨·제목은 일반 축과 같은 규칙을 따르므로 로그 색상 막대에도 decade 눈금과 10ⁿ 라벨이 붙는다. `axis.tick`은 눈금의 안쪽·바깥쪽 표시를, `axis.inverted`는 화면상의 값 증가 방향을 정한다. 눈금 모양은 축선의 `line_color` / `line_width` / `line_style`을 따른다.

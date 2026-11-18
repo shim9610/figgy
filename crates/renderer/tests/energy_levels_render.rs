@@ -1280,7 +1280,7 @@ fn a_band_fills_its_run_and_answers_picks() {
 // and 2x; the parent's plot beside the inset stays the parent's.
 #[test]
 fn a_subplot_frame_selects_and_its_box_lies_inside_the_frame() {
-    use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection};
+    use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
     use renderer::layout::RectF;
     let r = renderer();
     let chart = chart_with_inset();
@@ -1331,13 +1331,18 @@ fn a_subplot_frame_selects_and_its_box_lies_inside_the_frame() {
         }
         // Rastered into the inset's own panel, the highlight is drawn.
         let panel = scaled.config().subplot_config(0).unwrap();
-        let plain =
-            try_raster_chart_layer_to_rgba_with_selection(&panel, AxisLayerKind::Decoration, &[])
-                .unwrap();
-        let selected = try_raster_chart_layer_to_rgba_with_selection(
+        let plain = try_raster_chart_layer_to_rgba_with_selection_at(
+            &panel,
+            AxisLayerKind::Decoration,
+            &[],
+            1.0,
+        )
+        .unwrap();
+        let selected = try_raster_chart_layer_to_rgba_with_selection_at(
             &panel,
             AxisLayerKind::Decoration,
             std::slice::from_ref(&sb),
+            1.0,
         )
         .unwrap();
         let changed = plain

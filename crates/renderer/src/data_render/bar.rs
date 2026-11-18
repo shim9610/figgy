@@ -56,26 +56,6 @@ pub const BAR_SELECTION_VERTICES: u32 = 24;
 /// 2 = value. The caller binds the edge column twice, the second time shifted
 /// by one logical value, and picks which pool column is edges vs values from
 /// the bar's orientation.
-pub fn create_bar_columnar_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::bar(device, crate::shader_assembly::ShaderSet::Full);
-    create_bar_columnar_pipeline_with_entry(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        None,
-        target_format,
-        1,
-        "vs_main",
-        "figgy bar columnar pipeline",
-    )
-}
-
 pub(crate) fn create_bar_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -94,27 +74,6 @@ pub(crate) fn create_bar_columnar_pipeline_with_sample_count(
         sample_count,
         "vs_envelope_bars",
         "figgy bar columnar pipeline",
-    )
-}
-
-pub fn create_bar_columnar_mapped_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    style_map_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::bar(device, crate::shader_assembly::ShaderSet::Full);
-    create_bar_columnar_pipeline_with_entry(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        Some(style_map_bgl),
-        target_format,
-        1,
-        "vs_mapped",
-        "figgy mapped bar columnar pipeline",
     )
 }
 

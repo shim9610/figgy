@@ -917,7 +917,7 @@ impl DataPickPipelineBundle {
             },
         );
         let empty_bar_style_map =
-            crate::data_render::create_bar_style_map(&device, bar_style_bgl, &[])
+            crate::data_render::create_bar_style_map_with_slots(&device, bar_style_bgl, &[], &[])
                 .map_err(crate::gpu_pick::GpuPickError::from_figgy)?
                 .bind_group;
         let stream_reduce_bgl = crate::gpu_compile::bind_group_layout(
