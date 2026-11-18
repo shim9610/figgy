@@ -2,6 +2,68 @@
 
 use super::*;
 
+/// The one branch of [`Renderer::pick_chart_data`] that answers for a
+/// series, by its effective primitives. The browser's compile ahead of a
+/// typed pick reads the kernels from the same route (#327).
+#[derive(Clone, Copy)]
+pub(super) enum DataPickRoute {
+    Histogram,
+    BoxPlot,
+    RangeBars,
+    CategoryBars,
+    Parallel,
+    Vector,
+    Mesh,
+    /// A field or contour; a series that draws neither (a line, a
+    /// scatter) answers through the point pick only.
+    Field,
+}
+
+impl DataPickRoute {
+    pub(super) fn of(primitives: EffectiveSeriesPrimitives) -> Self {
+        if primitives.bar {
+            Self::Histogram
+        } else if primitives.box_plot {
+            Self::BoxPlot
+        } else if primitives.range_bars {
+            Self::RangeBars
+        } else if primitives.category_bars {
+            Self::CategoryBars
+        } else if primitives.parallel {
+            Self::Parallel
+        } else if primitives.vector {
+            Self::Vector
+        } else if primitives.mesh || primitives.mesh_contour {
+            Self::Mesh
+        } else {
+            Self::Field
+        }
+    }
+
+    /// The kernels a series on this route can dispatch.
+    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+    pub(super) fn kernels(
+        self,
+        primitives: EffectiveSeriesPrimitives,
+    ) -> crate::gpu_data_pick::DataPickKernelSet {
+        use crate::gpu_data_pick::{DataPickKernel as K, DataPickKernelSet as Set};
+        match self {
+            Self::Histogram => Set::EMPTY.with(K::Histogram),
+            Self::BoxPlot if primitives.violin => Set::EMPTY.with(K::BoxPlot).with(K::Violin),
+            Self::BoxPlot => Set::EMPTY.with(K::BoxPlot),
+            Self::RangeBars => Set::EMPTY.with(K::RangeBar),
+            Self::CategoryBars => Set::EMPTY.with(K::CategoryBar),
+            Self::Parallel => Set::EMPTY.with(K::Parallel),
+            Self::Vector => Set::EMPTY.with(K::VectorCell),
+            Self::Mesh => Set::EMPTY.with(K::TriMesh),
+            Self::Field if primitives.field || primitives.contour => {
+                Set::EMPTY.with(K::FieldContour).with(K::FieldCell)
+            }
+            Self::Field => Set::EMPTY,
+        }
+    }
+}
+
 impl Renderer {
     /// The category bar group 3 series `cfg`'s value labels are placed over
     /// at the pick's display transform: the bar or box group's params and
@@ -130,6 +192,56 @@ impl Renderer {
                 .map(Some);
         }
         Ok(None)
+    }
+
+    /// The typed data pick kernels a pick of chart `id` at `request`
+    /// dispatches (#327): the chart routed and its layer's series read as
+    /// [`Self::pick_chart_data`] does, each by its [`DataPickRoute`], with
+    /// `pick_value_labels` for a series whose value labels are drawn over
+    /// bars, boxes or a radar polygon. A 3D chart picks by its ID render
+    /// and needs none.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    pub(in crate::renderer) fn data_pick_kernels_for(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> Result<crate::gpu_data_pick::DataPickKernelSet> {
+        use crate::gpu_data_pick::{DataPickKernel, DataPickKernelSet};
+        self.admit_chart_shaders(id);
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let mut displayed = place_document(
+            &state.config,
+            request.display_scale,
+            request.display_panel_px,
+        );
+        let routed = subplot_route(&state.config, &displayed, request.canvas_position_px);
+        if let Some(config) = &routed {
+            displayed.active_layer = config.active_layer;
+        }
+        let inputs =
+            active_layer_pick_inputs(routed.as_ref().unwrap_or(&state.config), &state.series)?;
+        let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
+        if display_config.view_3d().is_some() {
+            return Ok(DataPickKernelSet::EMPTY);
+        }
+        let mut needed = DataPickKernelSet::EMPTY;
+        for cfg in inputs.series.iter() {
+            let primitives =
+                effective_series_primitives(&inputs.panel.draw_style, &cfg.render_type);
+            needed = needed.union(DataPickRoute::of(primitives).kernels(primitives));
+            // The series `value_label_pick_group` places labels over.
+            let placed = primitives.category_bars
+                || primitives.box_plot
+                || primitives.range_bars
+                || (primitives.line && cfg.render_type.radar().is_some());
+            if placed && value_label_atlas_input(&display_config, cfg).is_some() {
+                needed = needed.with(DataPickKernel::ValueLabels);
+            }
+        }
+        Ok(needed)
     }
 
     /// Submit one typed data pick across points/lines, histogram bins, heatmap
@@ -283,13 +395,11 @@ impl Renderer {
             });
 
             let primitives = effective_series_primitives(&config.draw_style, &cfg.render_type);
-            if primitives.bar {
-                self.histogram_data_pick(request, cfg, paint_order, &mut data_series)?;
-                continue;
-            }
-
-            if primitives.box_plot {
-                self.box_plot_data_pick(
+            match DataPickRoute::of(primitives) {
+                DataPickRoute::Histogram => {
+                    self.histogram_data_pick(request, cfg, paint_order, &mut data_series)?;
+                }
+                DataPickRoute::BoxPlot => self.box_plot_data_pick(
                     &config,
                     &display_config,
                     &series,
@@ -298,12 +408,8 @@ impl Renderer {
                     paint_order,
                     primitives,
                     &mut data_series,
-                )?;
-                continue;
-            }
-
-            if primitives.range_bars {
-                self.range_bar_data_pick(
+                )?,
+                DataPickRoute::RangeBars => self.range_bar_data_pick(
                     &config,
                     &display_config,
                     &series,
@@ -311,12 +417,8 @@ impl Renderer {
                     cfg,
                     paint_order,
                     &mut data_series,
-                )?;
-                continue;
-            }
-
-            if primitives.category_bars {
-                self.category_bar_data_pick(
+                )?,
+                DataPickRoute::CategoryBars => self.category_bar_data_pick(
                     &config,
                     &display_config,
                     &series,
@@ -324,39 +426,31 @@ impl Renderer {
                     cfg,
                     paint_order,
                     &mut data_series,
-                )?;
-                continue;
-            }
-
-            if primitives.parallel {
-                self.parallel_data_pick(&display_config, cfg, paint_order, &mut data_series)?;
-                continue;
-            }
-
-            if primitives.vector {
-                self.vector_data_pick(&config, request, cfg, paint_order, &mut data_series)?;
-                continue;
-            }
-            if primitives.mesh || primitives.mesh_contour {
-                self.mesh_data_pick(
+                )?,
+                DataPickRoute::Parallel => {
+                    self.parallel_data_pick(&display_config, cfg, paint_order, &mut data_series)?;
+                }
+                DataPickRoute::Vector => {
+                    self.vector_data_pick(&config, request, cfg, paint_order, &mut data_series)?;
+                }
+                DataPickRoute::Mesh => self.mesh_data_pick(
                     &config,
                     request,
                     cfg,
                     paint_order,
                     primitives,
                     &mut data_series,
-                )?;
-                continue;
+                )?,
+                DataPickRoute::Field => self.field_data_pick(
+                    &config,
+                    &display_config,
+                    request,
+                    cfg,
+                    paint_order,
+                    primitives,
+                    &mut data_series,
+                )?,
             }
-            self.field_data_pick(
-                &config,
-                &display_config,
-                request,
-                cfg,
-                paint_order,
-                primitives,
-                &mut data_series,
-            )?;
         }
 
         // Value labels: drawn over every series of the panel, so they pick
@@ -431,6 +525,7 @@ impl Renderer {
             ]
         });
         let data_ticket = data_bundle.submit(
+            &mut self.picker.data_kernels,
             &self.pool,
             crate::gpu_data_pick::GpuDataPickQuery {
                 transform: data_render::scatter_transform_from_config(&display_config),

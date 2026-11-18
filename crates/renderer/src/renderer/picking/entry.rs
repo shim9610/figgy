@@ -197,6 +197,70 @@ impl Renderer {
         Ok(())
     }
 
+    /// Compile, through the browser's async API, the typed data pick
+    /// kernels a [`Self::pick_chart_data`] of chart `id` at `request`
+    /// dispatches and has not created yet (#327), then create each, as
+    /// [`Self::compile_pick_pipelines_async`] does for the exact point
+    /// pipelines (#299). Kernels other charts need are not compiled: each
+    /// waits for the first pick that dispatches it. A compile the browser
+    /// rejects is left to the creation, which reports its error the way a
+    /// pick does.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn compile_data_pick_pipelines_async(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self
+            .compile_data_pick_pipelines_async_unreported(id, request)
+            .await;
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) async fn compile_data_pick_pipelines_async_unreported(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.pick_health()?;
+        let needed = self
+            .data_pick_kernels_for(id, request)
+            .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
+        self.compile_data_pick_kernels_async(needed).await
+    }
+
+    /// Each of `needed` the picker has not created yet: compiled through
+    /// `createComputePipelineAsync`, so its creation then hits the
+    /// device's compilation cache instead of compiling on the page's
+    /// thread, and created (#327).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn compile_data_pick_kernels_async(
+        &mut self,
+        needed: crate::gpu_data_pick::DataPickKernelSet,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let bundle = self.picker.ready_data_bundle()?;
+        for kernel in needed.iter() {
+            if self.picker.data_kernels.get(kernel).is_some() {
+                continue;
+            }
+            let compiled = crate::browser_compile::compute_with_constants(
+                self.device(),
+                kernel.label(),
+                kernel.source(bundle.set),
+                kernel.entry(),
+                &[],
+            )
+            .await;
+            if compiled.is_err() {
+                // The creation below reports the same failure through the
+                // device's error scope.
+            }
+            self.picker.data_kernels.ensure(&bundle, kernel)?;
+        }
+        Ok(())
+    }
+
     /// The first exact pick variant a pick of chart `id` at `request`
     /// needs that is not created yet: the chart prepared and the layer
     /// routed as [`Self::pick_chart`] does.

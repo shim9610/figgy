@@ -49,6 +49,11 @@ pub(crate) fn counts() -> (usize, usize) {
     })
 }
 
+/// The pipelines recorded so far in the active session.
+pub(crate) fn snapshot_pipelines() -> Vec<Value> {
+    ACTIVE.with(|slot| slot.borrow().as_ref().unwrap().pipelines.clone())
+}
+
 fn web(value: impl std::fmt::Debug) -> String {
     let s = format!("{value:?}");
     let mut out = String::new();

@@ -808,3 +808,71 @@ async fn contour_labels_wait_for_their_anchor_scan() {
     )
     .await;
 }
+
+/// Every typed data pick kernel's pipeline label (#327).
+const DATA_PICK_KERNELS: [&str; 13] = [
+    "figgy histogram data pick pipeline",
+    "figgy field contour data pick pipeline",
+    "figgy field cell data pick pipeline",
+    "figgy vector grid data pick pipeline",
+    "figgy category bar data pick pipeline",
+    "figgy box plot data pick pipeline",
+    "figgy range bar data pick pipeline",
+    "figgy violin data pick pipeline",
+    "figgy parallel data pick pipeline",
+    "figgy triangle mesh data pick pipeline",
+    "figgy value label data pick pipeline",
+    "accumulate_data",
+    "accumulate_point",
+];
+
+/// Whether `label` was created synchronously at any point (`cold` or not).
+fn created_sync(label: &str) -> bool {
+    js_sys::eval(&format!(
+        "globalThis.__queue.cold.some(k => k.startsWith({label:?} + '|'))"
+    ))
+    .unwrap()
+    .as_bool()
+    .unwrap()
+}
+
+/// #327: a data pick compiles only the kernels its chart dispatches. A
+/// line chart's pick compiles no data pick kernel; a heatmap's compiles its
+/// two field kernels through the browser's async compiler, so neither is
+/// created cold, and none of the other eleven.
+#[wasm_bindgen_test(async)]
+async fn a_data_pick_compiles_only_its_charts_kernels() {
+    hook(Some(4));
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart.register_column_f32("lx", &[0.0, 1.0, 2.0]).unwrap();
+    chart.register_column_f32("ly", &[0.0, 1.0, 2.0]).unwrap();
+    chart
+        .add_line_series("line", "lx", "ly", 2.0, "line")
+        .unwrap();
+    chart.pick_data(160.0, 120.0, 4.0).await.unwrap();
+    for label in DATA_PICK_KERNELS {
+        assert!(
+            !issued_and_cold(label).0 && !created_sync(label),
+            "a line chart's data pick compiled {label}"
+        );
+    }
+
+    show_heatmap(&mut chart);
+    chart.pick_data(160.0, 120.0, 4.0).await.unwrap();
+    for label in DATA_PICK_KERNELS {
+        let field = matches!(
+            label,
+            "figgy field contour data pick pipeline" | "figgy field cell data pick pipeline"
+        );
+        let (issued, cold) = issued_and_cold(label);
+        if field {
+            assert!(issued, "the heatmap's pick compiled {label} asynchronously");
+            assert!(!cold, "{label} was created cold");
+        } else {
+            assert!(
+                !issued && !created_sync(label),
+                "a heatmap's data pick compiled {label}"
+            );
+        }
+    }
+}
