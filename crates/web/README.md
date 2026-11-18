@@ -40,7 +40,14 @@ errors with field paths), `normalize_config(configJson)` and
 `convert_categorical_document` / `convert_boxplot_document` /
 `convert_radar_document`, which return the converted config and series, the
 uploads without their values, the series of each column and notes on every
-field the document set that the chart does not carry. See the
+field the document set that the chart does not carry. Given
+`{"chart_area": [x, y, w, h]}` (the chart's chart area) as a second
+argument, the conversion is the one the setter installs on that chart, so
+a preview and the opened chart agree (#334). Each `set_*_document(json,
+options?)` returns the same report JSON from the conversion it installs,
+and `{"refuse": ["path", ...] | "any"}` makes it throw `code:
+"conversion_loss"` with the refused notes, before anything changes, when
+the conversion would drop or change a listed path (or any field). See the
 [model API for editors](../renderer/WASM.md#model-api).
 
 The three calls replace the chart atomically: a document that fails to

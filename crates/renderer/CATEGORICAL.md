@@ -202,8 +202,13 @@ one with `PickedDataRef::HistogramBin` in `Config.picked_data` draws an
 emphasis border inside the drawn shape. Selecting and moving the title,
 legend, axes, tick labels and axis titles, moving and resizing the plot area,
 the annotation layer, overlays and subplots, and PNG export work as on
-Cartesian charts. In the browser, `FiggyChart.set_categorical_document(json)`
-does the same.
+Cartesian charts. In the browser, `FiggyChart.set_categorical_document(json,
+options?)` does the same and returns the conversion report (`{ config,
+series, uploads, columns, notes }`); `convert_categorical_document(json,
+{chart_area})` previews that report without a chart, and the setter's
+`{ "refuse": [...] | "any" }` option refuses a lossy document with
+`code: "conversion_loss"` before anything changes (#334; see
+[WASM.md](WASM.md#model-api)).
 
 ```bash
 cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery

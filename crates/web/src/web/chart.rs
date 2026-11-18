@@ -539,45 +539,64 @@ pub fn normalize_config(config_json: &str) -> Result<String, JsValue> {
 }
 
 /// A legacy categorical bar document (`CategoricalChart` JSON) converted
-/// without a chart (`Config::from_categorical_with_report`): `{config,
+/// without a chart (`Config::from_categorical_with_report_in`): `{config,
 /// series, uploads, columns, notes}`. `uploads` describes each column to
 /// register (`{column, role, len}`, without the values); `columns` names
 /// the document series of each (`{series_id, role, column}`); `notes` lists
 /// every field the document set that the chart does not carry
-/// (`{path, kind: "dropped" | "changed", reason}`). An explicit
-/// `decorations.data_area` is the converted config's data area, fitted to
-/// the placeholder chart area (1000 x 800; #334): a host that sets another
-/// chart area fits it again, as the `set_*_document` calls do, and one the
-/// layout cannot hold is noted as dropped with the reason. Throws the JSON error,
-/// or the document rule (an `Error` with a `code`), as
-/// `set_categorical_document` does.
+/// (`{path, kind: "dropped" | "changed", reason}`).
 ///
-/// JS: `const { config, series, notes } = JSON.parse(convert_categorical_document(text));`
+/// `options` is an optional JSON object `{"chart_area"?: [x, y, width,
+/// height]}` (#334): the chart area in whole logical pixels, as the chart's
+/// `chart_area` (`get_config().chart_area`). The conversion places the
+/// config on it and fits an explicit `decorations.data_area` to it, so the
+/// result is the report `set_categorical_document` returns on a chart of
+/// that chart area: the same config, series and notes. Without it, the
+/// config keeps the placeholder chart area (1000 x 800) and the data area
+/// is fitted to that. A data area the layout cannot hold is noted as
+/// dropped with the reason. Options that are not such an object, or that
+/// name another field, throw an `Error` with `code` `"invalid_options"`.
+/// Throws the JSON error, or the document rule (an `Error` with a `code`),
+/// as `set_categorical_document` does.
+///
+/// JS: `const { config, series, notes } = JSON.parse(convert_categorical_document(text, JSON.stringify({ chart_area: chart_area_of_the_chart })));`
+// The legacy document is read through its deprecated reader type.
+#[allow(deprecated)]
 #[wasm_bindgen]
-pub fn convert_categorical_document(json: &str) -> Result<String, JsValue> {
-    crate::convert_categorical_document_json(json).map_err(js_err)
+pub fn convert_categorical_document(
+    json: &str,
+    options: Option<String>,
+) -> Result<String, JsValue> {
+    crate::convert_document_json::<renderer::CategoricalChart>(json, options.as_deref())
+        .map_err(document_error)
 }
 
 /// A legacy box plot document (`BoxPlotChart` JSON) converted without a
-/// chart (`Config::from_boxplot_with_report`), in the shape
-/// `convert_categorical_document` returns. A record upload is
+/// chart (`Config::from_boxplot_with_report_in`), in the shape and with the
+/// `options` `convert_categorical_document` takes. A record upload is
 /// `{column, role: "box_record", rows, fields}` and an outlier upload
 /// `{column, role: "box_outliers", len, groups}`.
 ///
 /// JS: `const converted = JSON.parse(convert_boxplot_document(text));`
+// The legacy document is read through its deprecated reader type.
+#[allow(deprecated)]
 #[wasm_bindgen]
-pub fn convert_boxplot_document(json: &str) -> Result<String, JsValue> {
-    crate::convert_boxplot_document_json(json).map_err(js_err)
+pub fn convert_boxplot_document(json: &str, options: Option<String>) -> Result<String, JsValue> {
+    crate::convert_document_json::<renderer::BoxPlotChart>(json, options.as_deref())
+        .map_err(document_error)
 }
 
 /// A legacy radar document (`RadarChart` JSON) converted without a chart
-/// (`Config::from_radar_with_report`), in the shape
-/// `convert_categorical_document` returns.
+/// (`Config::from_radar_with_report_in`), in the shape and with the
+/// `options` `convert_categorical_document` takes.
 ///
 /// JS: `const converted = JSON.parse(convert_radar_document(text));`
+// The legacy document is read through its deprecated reader type.
+#[allow(deprecated)]
 #[wasm_bindgen]
-pub fn convert_radar_document(json: &str) -> Result<String, JsValue> {
-    crate::convert_radar_document_json(json).map_err(js_err)
+pub fn convert_radar_document(json: &str, options: Option<String>) -> Result<String, JsValue> {
+    crate::convert_document_json::<renderer::RadarChart>(json, options.as_deref())
+        .map_err(document_error)
 }
 
 /// Every valid `draw_style` mode tag, as a JSON string array.
@@ -1558,35 +1577,22 @@ impl FiggyChart {
     /// [`Self::set_radar_document`]. The ids are the documented ones for
     /// every document opened.
     ///
-    /// JS: `chart.set_categorical_document(JSON.stringify(doc));`
+    /// Returns the conversion report and takes the loss policy described
+    /// in "Review and apply" on [`Self::set_radar_document`] (#334).
+    ///
+    /// JS: `const report = JSON.parse(chart.set_categorical_document(JSON.stringify(doc), JSON.stringify({ refuse: "any" })));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
-    pub fn set_categorical_document(&mut self, json: &str) -> Result<(), JsValue> {
+    pub fn set_categorical_document(
+        &mut self,
+        json: &str,
+        options: Option<String>,
+    ) -> Result<String, JsValue> {
         const FAMILY: &str = "categorical";
-        let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
-        let mut document: renderer::CategoricalChart =
-            serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
-        document.validate().map_err(|e| validate(js_err(e)))?;
-        // The explicit data area is fitted to this chart's area, on the
-        // automatic layout converted without it (#334).
-        let data_area = document.decorations.data_area.take();
-        let (mut config, series, uploads) = renderer::config::Config::from_categorical(&document);
-        config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
-        if let Some(area) = &data_area {
-            match config.fit_legacy_data_area(area) {
-                Ok(()) => {}
-                // A refusal changes nothing: the field is dropped and the
-                // automatic layout stays, as `convert_*_document` reports
-                // it.
-                Err(
-                    renderer::layout::LayoutError::TargetOutOfChartArea
-                    | renderer::layout::LayoutError::EmptyDataArea
-                    | renderer::layout::LayoutError::Infeasible
-                    | renderer::layout::LayoutError::OverflowHorizontal { .. }
-                    | renderer::layout::LayoutError::OverflowVertical { .. },
-                ) => {}
-            }
-        }
+        let (document, policy) =
+            read_document_call::<renderer::CategoricalChart>(FAMILY, json, options)?;
+        let (converted, report) = self.convert_document_call(FAMILY, &document, &policy)?;
+        let (config, series, uploads, _) = converted;
         let horizontal = config
             .bar_groups
             .as_ref()
@@ -1627,7 +1633,8 @@ impl FiggyChart {
                 twin.minor_count = fitted.minor_count;
             }
             Ok(config)
-        })
+        })?;
+        Ok(report)
     }
 
     /// Open a legacy box plot document (`BoxPlotChart` JSON, what
@@ -1656,35 +1663,22 @@ impl FiggyChart {
     /// [`Self::set_radar_document`]. The ids are the documented ones for
     /// every document opened.
     ///
-    /// JS: `chart.set_boxplot_document(JSON.stringify(doc));`
+    /// Returns the conversion report and takes the loss policy described
+    /// in "Review and apply" on [`Self::set_radar_document`] (#334).
+    ///
+    /// JS: `const report = JSON.parse(chart.set_boxplot_document(JSON.stringify(doc), JSON.stringify({ refuse: "any" })));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
-    pub fn set_boxplot_document(&mut self, json: &str) -> Result<(), JsValue> {
+    pub fn set_boxplot_document(
+        &mut self,
+        json: &str,
+        options: Option<String>,
+    ) -> Result<String, JsValue> {
         const FAMILY: &str = "boxplot";
-        let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
-        let mut document: renderer::BoxPlotChart =
-            serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
-        document.validate().map_err(|e| validate(js_err(e)))?;
-        // The explicit data area is fitted to this chart's area, on the
-        // automatic layout converted without it (#334).
-        let data_area = document.decorations.data_area.take();
-        let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&document);
-        config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
-        if let Some(area) = &data_area {
-            match config.fit_legacy_data_area(area) {
-                Ok(()) => {}
-                // A refusal changes nothing: the field is dropped and the
-                // automatic layout stays, as `convert_*_document` reports
-                // it.
-                Err(
-                    renderer::layout::LayoutError::TargetOutOfChartArea
-                    | renderer::layout::LayoutError::EmptyDataArea
-                    | renderer::layout::LayoutError::Infeasible
-                    | renderer::layout::LayoutError::OverflowHorizontal { .. }
-                    | renderer::layout::LayoutError::OverflowVertical { .. },
-                ) => {}
-            }
-        }
+        let (document, policy) =
+            read_document_call::<renderer::BoxPlotChart>(FAMILY, json, options)?;
+        let (converted, report) = self.convert_document_call(FAMILY, &document, &policy)?;
+        let (config, series, uploads, _) = converted;
         let horizontal = document.direction == renderer::BoxPlotDirection::Horizontal;
         let fit_range = document.value_range.is_none();
         self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
@@ -1723,7 +1717,8 @@ impl FiggyChart {
                 twin.minor_count = fitted.minor_count;
             }
             Ok(config)
-        })
+        })?;
+        Ok(report)
     }
 
     /// Open a legacy radar document (`RadarChart` JSON, what
@@ -1746,6 +1741,23 @@ impl FiggyChart {
     /// column stays. From here on the chart is edited through the Cartesian
     /// API (`get_config` / `set_config`, `get_series` / `set_series`, the
     /// column registry), and its vertices pick, select and step as points.
+    ///
+    /// # Review and apply
+    ///
+    /// The three document calls convert the document once, on this chart's
+    /// chart area (`Config::from_*_with_report_in`, #334), and install that
+    /// conversion. They return its report as JSON, `{config, series,
+    /// uploads, columns, notes}`, which is what `convert_*_document` returns
+    /// with `{"chart_area": [x, y, width, height]}` set to this chart's
+    /// chart area. The report's `config` is the converted one; the
+    /// installed config also has its value axis fitted (`get_config`).
+    /// `options` is an optional JSON object `{"refuse"?: ["path", ...] |
+    /// "any"}`: when a note's path is a listed path or lies under one
+    /// (followed by `.` or `[`), or with `"any"` when there is any note,
+    /// the call rejects at `"validate"` with `code` `"conversion_loss"` and
+    /// the refused notes as `notes`, before anything is installed. Other
+    /// option fields, or another `refuse`, reject at `"validate"` with
+    /// `code` `"invalid_options"`.
     ///
     /// # Document replace
     ///
@@ -1792,35 +1804,18 @@ impl FiggyChart {
     /// A memory budget that cannot hold the peak refuses the call at the
     /// upload stage with `code` `"budget_exceeded"`.
     ///
-    /// JS: `chart.set_radar_document(JSON.stringify(doc));`
+    /// JS: `const report = JSON.parse(chart.set_radar_document(JSON.stringify(doc), JSON.stringify({ refuse: "any" })));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
-    pub fn set_radar_document(&mut self, json: &str) -> Result<(), JsValue> {
+    pub fn set_radar_document(
+        &mut self,
+        json: &str,
+        options: Option<String>,
+    ) -> Result<String, JsValue> {
         const FAMILY: &str = "radar";
-        let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
-        let mut document: renderer::RadarChart =
-            serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
-        document.validate().map_err(|e| validate(js_err(e)))?;
-        // The explicit data area is fitted to this chart's area, on the
-        // automatic layout converted without it (#334).
-        let data_area = document.decorations.data_area.take();
-        let (mut config, series, uploads) = renderer::config::Config::from_radar(&document);
-        config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
-        if let Some(area) = &data_area {
-            match config.fit_legacy_data_area(area) {
-                Ok(()) => {}
-                // A refusal changes nothing: the field is dropped and the
-                // automatic layout stays, as `convert_*_document` reports
-                // it.
-                Err(
-                    renderer::layout::LayoutError::TargetOutOfChartArea
-                    | renderer::layout::LayoutError::EmptyDataArea
-                    | renderer::layout::LayoutError::Infeasible
-                    | renderer::layout::LayoutError::OverflowHorizontal { .. }
-                    | renderer::layout::LayoutError::OverflowVertical { .. },
-                ) => {}
-            }
-        }
+        let (document, policy) = read_document_call::<renderer::RadarChart>(FAMILY, json, options)?;
+        let (converted, report) = self.convert_document_call(FAMILY, &document, &policy)?;
+        let (config, series, uploads, _) = converted;
         let fit_range = document.value_range.is_none();
         let ring_spacing = document.ring_spacing;
         self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
@@ -1848,7 +1843,8 @@ impl FiggyChart {
                 radius.major_spacing = spacing;
             }
             Ok(config)
-        })
+        })?;
+        Ok(report)
     }
 
     // ---- frame / resize / export ----
@@ -2207,6 +2203,65 @@ pub(super) fn document_stage_error(family: &str, stage: &str, error: JsValue) ->
         Ok(true) => object.into(),
         // The message names the stage either way.
         Ok(false) | Err(_) => JsValue::from_str(&message),
+    }
+}
+
+/// The legacy document of a `set_*_document` call and its loss policy
+/// (#334), read before anything else: options that are not
+/// `{"refuse"?: [path, ...] | "any"}` reject at `"validate"` with `code`
+/// `"invalid_options"`, a document that does not parse or breaks its rules
+/// at `"validate"` as before.
+fn read_document_call<D: crate::LegacyDocument>(
+    family: &str,
+    json: &str,
+    options: Option<String>,
+) -> Result<(D, crate::LossPolicy), JsValue> {
+    let validate = |error| document_stage_error(family, "validate", document_error(error));
+    let policy = crate::LossPolicy::parse(options.as_deref()).map_err(validate)?;
+    let document = D::read(json).map_err(validate)?;
+    Ok((document, policy))
+}
+
+impl FiggyChart {
+    /// The one conversion a `set_*_document` call installs (#334):
+    /// `document` converted on this chart's chart area
+    /// (`Config::from_*_with_report_in`, as `convert_*_document` with that
+    /// `chart_area` converts it), with its report JSON, the call's return
+    /// value. When `policy` refuses a note, rejects at `"validate"` with
+    /// `code` `"conversion_loss"` and the refused notes as `notes` (an
+    /// array of `{path, kind, reason}`), before anything is installed.
+    fn convert_document_call<'d, D: crate::LegacyDocument>(
+        &self,
+        family: &str,
+        document: &'d D,
+        policy: &crate::LossPolicy,
+    ) -> Result<(renderer::ConvertedDocument<'d>, String), JsValue> {
+        let validate = |error| document_stage_error(family, "validate", error);
+        let chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
+        let converted = document.convert_in(Some(&chart_area));
+        match crate::document_apply(&converted, policy).map_err(|e| validate(document_error(e)))? {
+            crate::DocumentApply::Report(report) => Ok((converted, report)),
+            crate::DocumentApply::Refused(notes) => {
+                let notes = js_sys::JSON::parse(&notes).map_err(validate)?;
+                let paths = converted
+                    .3
+                    .notes
+                    .iter()
+                    .filter(|note| policy.refuses(note))
+                    .fold(String::new(), |mut paths, note| {
+                        if !paths.is_empty() {
+                            paths.push_str(", ");
+                        }
+                        paths.push_str(&note.path);
+                        paths
+                    });
+                Err(validate(coded_error(
+                    &format!("the conversion would drop or change refused fields: {paths}"),
+                    "conversion_loss",
+                    [("notes", notes)],
+                )))
+            }
+        }
     }
 }
 

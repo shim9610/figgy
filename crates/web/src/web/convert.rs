@@ -50,8 +50,18 @@ impl JsErrorSource for crate::DocumentError {
     fn rule(&self) -> Option<&renderer::RuleKind> {
         match self {
             crate::DocumentError::Rule(kind) => Some(kind),
-            crate::DocumentError::Json(_) => None,
+            crate::DocumentError::Json(_) | crate::DocumentError::Options(_) => None,
         }
+    }
+}
+
+/// A legacy document refusal as a JS error (#334): options a document call
+/// refuses throw an `Error` with `code` `"invalid_options"`; a rule refusal
+/// throws its rule's code and a JSON error its message ([`js_err`]).
+pub(crate) fn document_error(error: crate::DocumentError) -> JsValue {
+    match &error {
+        crate::DocumentError::Options(why) => coded_error(why, "invalid_options", []),
+        _ => js_err(error),
     }
 }
 
