@@ -1,5 +1,6 @@
 //! Editor fits on the browser chart (#312): a candidate config fitted
-//! without installing it (`fit_config`, `fit_y_axes_config`), one series'
+//! without installing it (`fit_config`, `fit_y_axes_config`, the scoped
+//! `fit_config_scoped` of #334), one series'
 //! style domain from its columns' statistics (`fit_point_size_domain`,
 //! `fit_vector_scale`), and the mapped radius `selection_details` reports
 //! for a size-mapped point.
@@ -159,6 +160,91 @@ async fn fit_y_axes_config_keeps_every_x_axis() {
     assert_eq!(fitted.overlays[0].x_axis, candidate.overlays[0].x_axis);
     assert_range(&fitted.left_y, -1.1, 1.1);
     assert_range(&fitted.overlays[0].y_axis, 95.0, 205.0);
+}
+
+// The scoped fit moves only the axes its scope JSON selects, holds the
+// kept ones, and refuses a scope it cannot read or a layer the candidate
+// does not have.
+#[wasm_bindgen_test(async)]
+async fn fit_config_scoped_moves_only_the_scope() {
+    let chart = layered_chart().await;
+    let installed = chart.get_config().unwrap();
+    let mut candidate = config_of(&chart);
+    candidate.left_y.min = 4.0;
+    candidate.left_y.max = 5.0;
+    let json = serde_json::to_string(&candidate).unwrap();
+    let fitted: Config = serde_json::from_str(
+        &chart
+            .fit_config_scoped(&json, r#"{"layer": "Base", "axes": ["x"]}"#, 0.05)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        chart.get_config().unwrap(),
+        installed,
+        "the chart is untouched"
+    );
+    assert_range(&fitted.bottom_x, -0.5, 10.5);
+    assert_eq!(fitted.left_y, candidate.left_y);
+    assert_eq!(fitted.overlays[0], candidate.overlays[0]);
+
+    let overlay: Config = serde_json::from_str(
+        &chart
+            .fit_config_scoped(
+                &json,
+                r#"{"layer": {"Overlay": 0}, "axes": ["x", "y"], "linked": "target"}"#,
+                0.05,
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_range(&overlay.overlays[0].x_axis, 19.5, 30.5);
+    assert_range(&overlay.overlays[0].y_axis, 95.0, 205.0);
+    assert_eq!(overlay.bottom_x, candidate.bottom_x);
+    assert_eq!(overlay.left_y, candidate.left_y);
+
+    let held = chart
+        .fit_config_scoped(
+            &json,
+            r#"{"layer": {"Overlay": 0}, "axes": ["y"],
+                "keep": [{"layer": {"Overlay": 0}, "axis": "y"}]}"#,
+            0.05,
+        )
+        .unwrap();
+    let held: Config = serde_json::from_str(&held).unwrap();
+    assert_eq!(held, candidate);
+
+    let error = chart
+        .fit_config_scoped(&json, r#"{"layer": {"Overlay": 4}, "axes": ["x"]}"#, 0.05)
+        .unwrap_err();
+    assert_eq!(code(&error), "FitScopeLayer");
+    let error = chart
+        .fit_config_scoped(
+            &json,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"layer": {"Subplot": 0}, "axis": "x"}]}"#,
+            0.05,
+        )
+        .unwrap_err();
+    assert_eq!(code(&error), "FitScopeLayer");
+    let error = chart
+        .fit_config_scoped(&json, r#"{"layer": "Base", "axes": ["x"]}"#, -1.0)
+        .unwrap_err();
+    assert_eq!(code(&error), "FitPadding");
+    assert!(
+        chart
+            .fit_config_scoped(&json, r#"{"layer": "Base", "axes": ["w"]}"#, 0.05)
+            .is_err()
+    );
+    assert!(
+        chart
+            .fit_config_scoped(
+                &json,
+                r#"{"layer": "Base", "axes": ["x"], "more": 1}"#,
+                0.05
+            )
+            .is_err()
+    );
+    assert_eq!(chart.get_config().unwrap(), installed);
 }
 
 // A candidate the chart cannot fit is refused, and nothing changes.

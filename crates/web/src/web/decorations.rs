@@ -318,6 +318,46 @@ impl FiggyChart {
         serde_json::to_string(&fitted).map_err(js_err)
     }
 
+    /// `fit_config` for one layer's chosen axes (#334,
+    /// `Renderer::fit_config_scoped`): the candidate comes back with only
+    /// the axes `scope_json` selects fitted, every other axis exactly as
+    /// given. `scope_json` is `{ "layer": <layer>, "axes": ["x", "y",
+    /// "z"], "linked": "group" | "target", "keep": [{ "layer": <layer>,
+    /// "axis": "x" | "y" | "z" }] }`, a layer written as for
+    /// `set_active_layer` (`"Base"`, `{"Overlay":0}`, `{"Subplot":1}`,
+    /// `{"SubplotOverlay":[1,0]}`). `"z"` is a 3D chart's z axis (its
+    /// `right_y`); on a parallel chart the parallel axes are `"y"`. A
+    /// moved axis that is linked moves its link group. `linked` (default
+    /// `"group"`) reads every series drawn against a linked axis' group,
+    /// or with `"target"` only those drawn in the target's panel (the
+    /// parent chart or one subplot, its overlays included; the group still
+    /// shares the range). `keep` (default none) names axes that hold their
+    /// range, and every axis linked to one holds too. Statistics only:
+    /// error bar ends, heatmap cell half-widths and arrow tips are not
+    /// included (`auto_fit_all` measures drawn extents). The installed
+    /// chart is untouched.
+    ///
+    /// Refused (an exception, nothing changes): the refusals of
+    /// `fit_config`, a scope that is not this JSON (an unknown field, axis
+    /// name or `linked` value), and a `layer` or `keep` layer naming an
+    /// overlay or subplot the candidate does not have (code
+    /// `FitScopeLayer`).
+    /// JS: `chart.fit_config_scoped(JSON.stringify(cfg), JSON.stringify({ layer: "Base", axes: ["x"], linked: "target" }), 0.05)`
+    pub fn fit_config_scoped(
+        &self,
+        config_json: &str,
+        scope_json: &str,
+        padding: f64,
+    ) -> Result<String, JsValue> {
+        let candidate: renderer::Config = serde_json::from_str(config_json).map_err(js_err)?;
+        let scope = crate::fit_scope_from_json(scope_json).map_err(js_err)?;
+        let fitted = self
+            .renderer
+            .fit_config_scoped(&candidate, self.chart_series()?, padding, &scope.scope())
+            .map_err(js_err)?;
+        serde_json::to_string(&fitted).map_err(js_err)
+    }
+
     /// Fit series `series_id`'s point size map domain to its size column's
     /// native extent, from the column's cached statistics
     /// (`PointSizeMap::fit_domain`, #312): only that series' `domain_min`

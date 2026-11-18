@@ -2427,10 +2427,14 @@ export class FiggyChartElement extends HTMLElement {
   // the active layer's drawn extents instead.
   fit_ranges() { return this.#mutateChart("fit_ranges"); }
   // A candidate config fitted without installing it (#312): JSON in, JSON
-  // out; the chart is untouched. The Y variant keeps every X axis.
+  // out; the chart is untouched. The Y variant keeps every X axis; the
+  // scoped one (#334) moves only the axes its scope JSON selects.
   fit_config(json, padding) { return this.#kernelForCall().fit_config(json, padding); }
   fit_y_axes_config(json, padding) {
     return this.#kernelForCall().fit_y_axes_config(json, padding);
+  }
+  fit_config_scoped(json, scope, padding) {
+    return this.#kernelForCall().fit_config_scoped(json, scope, padding);
   }
   // One series' style domain from its columns' statistics (#312).
   fit_point_size_domain(seriesId) { return this.#mutateChart("fit_point_size_domain", seriesId); }

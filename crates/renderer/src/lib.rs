@@ -121,7 +121,7 @@ pub use helpers::{ExportFormat, HeadlessOptions, SaveError};
 pub use annotation::{
     AnnotationMap, AnnotationPreview, BoundedAnnotationFrame, LayerHit, preview_annotation,
 };
-pub use chart::{Chart, FitExtent};
+pub use chart::{Chart, FitAxes, FitAxis, FitAxisRef, FitExtent, FitScope, LinkedFitData};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};

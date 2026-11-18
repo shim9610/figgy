@@ -1,5 +1,6 @@
 //! Candidate fits and style domain fits (#312): `Renderer::fit_config`,
-//! `Renderer::fit_y_axes_config`, `Renderer::fit_point_size_domain` and
+//! `Renderer::fit_y_axes_config`, the scoped `Renderer::fit_config_scoped`
+//! (#334), `Renderer::fit_point_size_domain` and
 //! `Renderer::fit_vector_scale`, all from the resident columns' cached
 //! statistics, with no chart installed or changed.
 #![cfg(not(target_arch = "wasm32"))]
@@ -7,7 +8,8 @@
 use renderer::config::{AxisOptions, Config};
 use renderer::data_config::{MatrixRef, VectorScale};
 use renderer::{
-    Chart, Color, DataRenderType, FIT_RANGES_PADDING, FiggyError, Renderer, RuleKind, SeriesConfig,
+    CellRef, Chart, Color, DataRenderType, FIT_RANGES_PADDING, FiggyError, FitAxes, FitAxis,
+    FitAxisRef, FitScope, LayerRef, LinkedFitData, Renderer, RuleKind, SeriesConfig,
 };
 
 /// A headless renderer with columns of eleven values: `t` 0..10, `a`
@@ -416,4 +418,329 @@ fn a_candidate_with_many_series_fits() {
     let fitted = renderer.fit_config(chart.config(), &series, 0.05).unwrap();
     assert_range(&fitted.left_y, 95.0, 205.0);
     assert_range(&fitted.overlays[0].y_axis, 95.0, 205.0);
+}
+
+/// A parent drawing `a` (x `t` 0..10, y `a` -1..1) with an overlay `o` that
+/// follows its X axis and has a Y axis of its own (x `t`, y `b` 100..200),
+/// and a subplot drawing `s` (x `u` 20..30, y `z` 5..10) whose X axis is
+/// linked to the parent's. Every axis starts at a hand-set range, the links
+/// in step.
+fn linked() -> (Config, Vec<SeriesConfig>) {
+    let series = vec![
+        SeriesConfig::line("a", "t", "a"),
+        SeriesConfig::line("o", "t", "b"),
+        SeriesConfig::line("s", "u", "z"),
+    ];
+    let inner = Chart::placed(320, 0, 320, 240).config().clone();
+    let mut config = Chart::sized(320, 240)
+        .with_overlay(AxisOptions::overlay_y("B", Color::BLACK), &["o"])
+        .with_subplot(renderer::Subplot::new(inner, &["s"]).with_link_x(CellRef::Parent))
+        .config()
+        .clone();
+    let set = |axis: &mut AxisOptions, min: f64, max: f64| {
+        axis.min = min;
+        axis.max = max;
+    };
+    set(&mut config.bottom_x, 2.0, 3.0);
+    set(&mut config.top_x, 2.0, 3.0);
+    set(&mut config.left_y, 4.0, 5.0);
+    set(&mut config.right_y, 4.0, 5.0);
+    set(&mut config.overlays[0].y_axis, 600.0, 700.0);
+    set(&mut config.subplots[0].config.left_y, 8.0, 9.0);
+    set(&mut config.subplots[0].config.right_y, 8.0, 9.0);
+    config.sync_subplot_links(None);
+    (config, series)
+}
+
+fn scope(layer: LayerRef, axes: FitAxes) -> FitScope<'static> {
+    FitScope {
+        layer,
+        axes,
+        linked: LinkedFitData::Group,
+        keep: &[],
+    }
+}
+
+const X: FitAxes = FitAxes {
+    x: true,
+    y: false,
+    z: false,
+};
+const Y: FitAxes = FitAxes {
+    x: false,
+    y: true,
+    z: false,
+};
+
+/// Every Y-side axis of `fitted` is `given`'s.
+#[track_caller]
+fn assert_y_axes_kept(fitted: &Config, given: &Config) {
+    assert_eq!(fitted.left_y, given.left_y);
+    assert_eq!(fitted.right_y, given.right_y);
+    assert_eq!(fitted.overlays[0].y_axis, given.overlays[0].y_axis);
+    let (cell, kept) = (&fitted.subplots[0].config, &given.subplots[0].config);
+    assert_eq!(cell.left_y, kept.left_y);
+    assert_eq!(cell.right_y, kept.right_y);
+}
+
+// An X-only fit moves the parent's X axis and its linked subplot with it,
+// and leaves every Y axis as given. The group reads every series drawn
+// against the link group; the target reads only its own panel's, and the
+// group still shares the range.
+#[test]
+fn fit_config_scoped_moves_only_the_selected_axes() {
+    let renderer = fit_renderer();
+    let (config, series) = linked();
+    let before = config.clone();
+
+    let group = renderer
+        .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Base, X))
+        .unwrap();
+    assert_eq!(config, before, "the candidate is not changed");
+    // `a` and `o` span 0..10 and the linked subplot's `s` 20..30.
+    assert_range(&group.bottom_x, -1.5, 31.5);
+    assert_range(&group.top_x, -1.5, 31.5);
+    assert_range(&group.subplots[0].config.bottom_x, -1.5, 31.5);
+    assert_y_axes_kept(&group, &config);
+
+    let target = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                linked: LinkedFitData::Target,
+                ..scope(LayerRef::Base, X)
+            },
+        )
+        .unwrap();
+    assert_range(&target.bottom_x, -0.5, 10.5);
+    assert_range(&target.subplots[0].config.bottom_x, -0.5, 10.5);
+    assert_y_axes_kept(&target, &config);
+
+    // From the subplot, the target is the subplot's panel: `s` alone sets
+    // the group's range.
+    let from_cell = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.0,
+            &FitScope {
+                linked: LinkedFitData::Target,
+                ..scope(LayerRef::Subplot(0), X)
+            },
+        )
+        .unwrap();
+    assert_range(&from_cell.bottom_x, 20.0, 30.0);
+    assert_range(&from_cell.subplots[0].config.bottom_x, 20.0, 30.0);
+    assert_y_axes_kept(&from_cell, &config);
+
+    // A Y-only fit of the overlay moves its own Y axis alone.
+    let overlay = renderer
+        .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Overlay(0), Y))
+        .unwrap();
+    assert_range(&overlay.overlays[0].y_axis, 95.0, 205.0);
+    let mut expected = config.clone();
+    expected.overlays[0].y_axis = overlay.overlays[0].y_axis.clone();
+    assert_eq!(overlay, expected);
+
+    // No axis selected: nothing moves.
+    let none = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &scope(LayerRef::Base, FitAxes::default()),
+        )
+        .unwrap();
+    assert_eq!(none, config);
+
+    // Every axis of a chart without links or overlays is `fit_config`'s.
+    let plain = Chart::sized(320, 240).config().clone();
+    let only = [SeriesConfig::line("a", "t", "a")];
+    assert_eq!(
+        renderer
+            .fit_config_scoped(&plain, &only, 0.05, &scope(LayerRef::Base, FitAxes::ALL))
+            .unwrap(),
+        renderer.fit_config(&plain, &only, 0.05).unwrap()
+    );
+}
+
+// A kept axis holds its range and every axis linked to it: the subplot's X
+// is the parent's, so keeping the parent X holds the subplot's fit too.
+#[test]
+fn fit_config_scoped_keeps_the_kept_link_groups() {
+    let renderer = fit_renderer();
+    let (config, series) = linked();
+    let subplot_x = scope(LayerRef::Subplot(0), X);
+    let moved = renderer
+        .fit_config_scoped(&config, &series, 0.05, &subplot_x)
+        .unwrap();
+    assert_range(&moved.subplots[0].config.bottom_x, -1.5, 31.5);
+    assert_range(&moved.bottom_x, -1.5, 31.5);
+
+    let keep = [FitAxisRef {
+        layer: LayerRef::Base,
+        axis: FitAxis::X,
+    }];
+    let held = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                keep: &keep,
+                ..subplot_x
+            },
+        )
+        .unwrap();
+    assert_eq!(held, config);
+
+    // Keeping the overlay's Y while fitting the overlay leaves it, and
+    // keeping the subplot's own Y does not hold the parent's.
+    let keep = [FitAxisRef {
+        layer: LayerRef::Overlay(0),
+        axis: FitAxis::Y,
+    }];
+    let held = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                keep: &keep,
+                ..scope(LayerRef::Overlay(0), Y)
+            },
+        )
+        .unwrap();
+    assert_eq!(held, config);
+    let keep = [FitAxisRef {
+        layer: LayerRef::Subplot(0),
+        axis: FitAxis::Y,
+    }];
+    let parent_y = renderer
+        .fit_config_scoped(
+            &config,
+            &series,
+            0.05,
+            &FitScope {
+                keep: &keep,
+                ..scope(LayerRef::Base, Y)
+            },
+        )
+        .unwrap();
+    assert_range(&parent_y.left_y, -1.1, 1.1);
+    assert_eq!(parent_y.subplots[0], config.subplots[0]);
+}
+
+// On a 3D chart a Y-only fit leaves the z axis (`right_y`) as given, and a
+// z-only fit moves it alone.
+#[test]
+fn fit_config_scoped_separates_y_and_z_in_3d() {
+    let renderer = fit_renderer();
+    let mut cube = Chart::sized(320, 240);
+    cube.config_mut()
+        .set_view_3d(Some(renderer::View3d::default()));
+    let mut config = cube.config().clone();
+    config.right_y.min = 40.0;
+    config.right_y.max = 50.0;
+    let points = [SeriesConfig::scatter("p", "t", "a").z("z")];
+    let y = renderer
+        .fit_config_scoped(&config, &points, 0.05, &scope(LayerRef::Base, Y))
+        .unwrap();
+    assert_range(&y.left_y, -1.1, 1.1);
+    assert_eq!(y.right_y, config.right_y);
+    assert_eq!(y.bottom_x, config.bottom_x);
+    let z = FitAxes {
+        z: true,
+        ..FitAxes::default()
+    };
+    let z = renderer
+        .fit_config_scoped(&config, &points, 0.05, &scope(LayerRef::Base, z))
+        .unwrap();
+    assert_range(&z.right_y, 4.75, 10.25);
+    assert_eq!(z.left_y, config.left_y);
+    assert_eq!(z.bottom_x, config.bottom_x);
+}
+
+// Every refusal is an error, the candidate is not changed and an installed
+// chart is untouched.
+#[test]
+fn fit_config_scoped_refuses_what_it_cannot_fit() {
+    let mut renderer = fit_renderer();
+    let (config, series) = linked();
+    let before = config.clone();
+    for layer in [
+        LayerRef::Overlay(1),
+        LayerRef::Subplot(1),
+        LayerRef::SubplotOverlay(0, 0),
+        LayerRef::SubplotOverlay(3, 0),
+    ] {
+        let error = renderer
+            .fit_config_scoped(&config, &series, 0.05, &scope(layer, X))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                FiggyError::InvalidConfig {
+                    field: "fit_scope",
+                    kind: RuleKind::FitScopeLayer
+                }
+            ),
+            "{layer:?}: {error}"
+        );
+        let keep = [FitAxisRef {
+            layer,
+            axis: FitAxis::Y,
+        }];
+        assert_rule(
+            renderer.fit_config_scoped(
+                &config,
+                &series,
+                0.05,
+                &FitScope {
+                    keep: &keep,
+                    ..scope(LayerRef::Base, X)
+                },
+            ),
+            RuleKind::FitScopeLayer,
+        );
+    }
+    for padding in [-0.1, f64::NAN] {
+        assert_rule(
+            renderer.fit_config_scoped(&config, &series, padding, &scope(LayerRef::Base, X)),
+            RuleKind::FitPadding,
+        );
+    }
+    let mut ghost = config.clone();
+    ghost.overlays[0].series.push("ghost".into());
+    assert_rule(
+        renderer.fit_config_scoped(&ghost, &series, 0.05, &scope(LayerRef::Base, X)),
+        RuleKind::LayerSeriesUnknown,
+    );
+    let streamed = [SeriesConfig::line("a", "t", "streamed")];
+    assert!(matches!(
+        renderer.fit_config_scoped(&Config::default(), &streamed, 0.05, &scope(LayerRef::Base, Y)),
+        Err(FiggyError::ColumnNotResident { id }) if id == "streamed"
+    ));
+    let monotonic = [SeriesConfig::monotonic_line("m", "daq", 0)];
+    assert_rule(
+        renderer.fit_config_scoped(
+            &Config::default(),
+            &monotonic,
+            0.05,
+            &scope(LayerRef::Base, X),
+        ),
+        RuleKind::MonotonicMappingEdit,
+    );
+    assert_eq!(config, before);
+
+    // A registered chart is untouched by a scoped candidate fit.
+    let id = renderer
+        .register_chart(config.clone(), series.clone())
+        .unwrap();
+    renderer
+        .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Base, FitAxes::ALL))
+        .unwrap();
+    assert_eq!(renderer.chart_config(id).unwrap(), &config);
 }
