@@ -139,8 +139,10 @@ fn a_categorical_document_converts_with_its_notes() {
         note_paths(&converted),
         [
             ("hovered".to_owned(), "dropped".to_owned()),
-            ("decorations.data_area".into(), "dropped".into()),
             ("decorations.offsets[0]".into(), "dropped".into()),
+            // Too tight for the title band, so the automatic layout stays
+            // (#334); fitted last, its note comes last.
+            ("decorations.data_area".into(), "dropped".into()),
         ]
     );
 

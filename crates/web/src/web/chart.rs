@@ -544,7 +544,11 @@ pub fn normalize_config(config_json: &str) -> Result<String, JsValue> {
 /// register (`{column, role, len}`, without the values); `columns` names
 /// the document series of each (`{series_id, role, column}`); `notes` lists
 /// every field the document set that the chart does not carry
-/// (`{path, kind: "dropped" | "changed", reason}`). Throws the JSON error,
+/// (`{path, kind: "dropped" | "changed", reason}`). An explicit
+/// `decorations.data_area` is the converted config's data area, fitted to
+/// the placeholder chart area (1000 x 800; #334): a host that sets another
+/// chart area fits it again, as the `set_*_document` calls do, and one the
+/// layout cannot hold is noted as dropped with the reason. Throws the JSON error,
 /// or the document rule (an `Error` with a `code`), as
 /// `set_categorical_document` does.
 ///
@@ -1541,7 +1545,10 @@ impl FiggyChart {
     /// (`categorical.positions`) and one value column per series
     /// (`categorical.values.<series id>`), registered as one batch. The
     /// value axis is fitted to the bars from the columns' statistics and
-    /// rounded to nice ticks. The chart keeps its chart area; the series,
+    /// rounded to nice ticks. The chart keeps its chart area, and an explicit
+    /// `decorations.data_area` (logical pixels, edges rounded to whole
+    /// pixels) is the data area in it (`Config::fit_legacy_data_area`, #334)
+    /// unless the layout cannot hold it, which keeps the automatic layout; the series,
     /// columns and config of a categorical document opened before
     /// are replaced, every other column stays. From here on the chart is
     /// edited through the Cartesian API (`get_config` / `set_config`,
@@ -1557,11 +1564,29 @@ impl FiggyChart {
     pub fn set_categorical_document(&mut self, json: &str) -> Result<(), JsValue> {
         const FAMILY: &str = "categorical";
         let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
-        let document: renderer::CategoricalChart =
+        let mut document: renderer::CategoricalChart =
             serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
         document.validate().map_err(|e| validate(js_err(e)))?;
+        // The explicit data area is fitted to this chart's area, on the
+        // automatic layout converted without it (#334).
+        let data_area = document.decorations.data_area.take();
         let (mut config, series, uploads) = renderer::config::Config::from_categorical(&document);
         config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
+        if let Some(area) = &data_area {
+            match config.fit_legacy_data_area(area) {
+                Ok(()) => {}
+                // A refusal changes nothing: the field is dropped and the
+                // automatic layout stays, as `convert_*_document` reports
+                // it.
+                Err(
+                    renderer::layout::LayoutError::TargetOutOfChartArea
+                    | renderer::layout::LayoutError::EmptyDataArea
+                    | renderer::layout::LayoutError::Infeasible
+                    | renderer::layout::LayoutError::OverflowHorizontal { .. }
+                    | renderer::layout::LayoutError::OverflowVertical { .. },
+                ) => {}
+            }
+        }
         let horizontal = config
             .bar_groups
             .as_ref()
@@ -1619,7 +1644,10 @@ impl FiggyChart {
     /// upload through borrowed adapters; nothing is copied. Without a
     /// document `value_range` the value axis is fitted to the records' and
     /// outliers' statistics with a tenth of the span as padding and rounded
-    /// to nice ticks. The chart keeps its chart area; the series, columns,
+    /// to nice ticks. The chart keeps its chart area, and an explicit
+    /// `decorations.data_area` (logical pixels, edges rounded to whole
+    /// pixels) is the data area in it (`Config::fit_legacy_data_area`, #334)
+    /// unless the layout cannot hold it, which keeps the automatic layout; the series, columns,
     /// records and config of a box plot document opened before are
     /// replaced, every other column stays. From here on the chart is edited
     /// through the Cartesian API.
@@ -1634,11 +1662,29 @@ impl FiggyChart {
     pub fn set_boxplot_document(&mut self, json: &str) -> Result<(), JsValue> {
         const FAMILY: &str = "boxplot";
         let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
-        let document: renderer::BoxPlotChart =
+        let mut document: renderer::BoxPlotChart =
             serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
         document.validate().map_err(|e| validate(js_err(e)))?;
+        // The explicit data area is fitted to this chart's area, on the
+        // automatic layout converted without it (#334).
+        let data_area = document.decorations.data_area.take();
         let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&document);
         config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
+        if let Some(area) = &data_area {
+            match config.fit_legacy_data_area(area) {
+                Ok(()) => {}
+                // A refusal changes nothing: the field is dropped and the
+                // automatic layout stays, as `convert_*_document` reports
+                // it.
+                Err(
+                    renderer::layout::LayoutError::TargetOutOfChartArea
+                    | renderer::layout::LayoutError::EmptyDataArea
+                    | renderer::layout::LayoutError::Infeasible
+                    | renderer::layout::LayoutError::OverflowHorizontal { .. }
+                    | renderer::layout::LayoutError::OverflowVertical { .. },
+                ) => {}
+            }
+        }
         let horizontal = document.direction == renderer::BoxPlotDirection::Horizontal;
         let fit_range = document.value_range.is_none();
         self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {
@@ -1692,7 +1738,10 @@ impl FiggyChart {
     /// radius axis is fitted to the value columns' statistics, from zero
     /// when no value is negative (as the former chart fitted it), and
     /// rounded to nice ticks; a document `ring_spacing` is the ring spacing
-    /// either way. The chart keeps its chart area; the series, columns and
+    /// either way. The chart keeps its chart area, and an explicit
+    /// `decorations.data_area` (logical pixels, edges rounded to whole
+    /// pixels) is the data area in it (`Config::fit_legacy_data_area`, #334)
+    /// unless the layout cannot hold it, which keeps the automatic layout; the series, columns and
     /// config of a radar document opened before are replaced, every other
     /// column stays. From here on the chart is edited through the Cartesian
     /// API (`get_config` / `set_config`, `get_series` / `set_series`, the
@@ -1749,11 +1798,29 @@ impl FiggyChart {
     pub fn set_radar_document(&mut self, json: &str) -> Result<(), JsValue> {
         const FAMILY: &str = "radar";
         let validate = |error: JsValue| document_stage_error(FAMILY, "validate", error);
-        let document: renderer::RadarChart =
+        let mut document: renderer::RadarChart =
             serde_json::from_str(json).map_err(|e| validate(js_err(e)))?;
         document.validate().map_err(|e| validate(js_err(e)))?;
+        // The explicit data area is fitted to this chart's area, on the
+        // automatic layout converted without it (#334).
+        let data_area = document.decorations.data_area.take();
         let (mut config, series, uploads) = renderer::config::Config::from_radar(&document);
         config.chart_area = self.chart_config().map_err(validate)?.chart_area.clone();
+        if let Some(area) = &data_area {
+            match config.fit_legacy_data_area(area) {
+                Ok(()) => {}
+                // A refusal changes nothing: the field is dropped and the
+                // automatic layout stays, as `convert_*_document` reports
+                // it.
+                Err(
+                    renderer::layout::LayoutError::TargetOutOfChartArea
+                    | renderer::layout::LayoutError::EmptyDataArea
+                    | renderer::layout::LayoutError::Infeasible
+                    | renderer::layout::LayoutError::OverflowHorizontal { .. }
+                    | renderer::layout::LayoutError::OverflowVertical { .. },
+                ) => {}
+            }
+        }
         let fit_range = document.value_range.is_none();
         let ring_spacing = document.ring_spacing;
         self.replace_document(FAMILY, config, series, &uploads, |pool, config, series| {

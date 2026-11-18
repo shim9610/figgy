@@ -13,12 +13,18 @@
 //!   a commit on another chart and a budget that cannot hold it, and
 //!   installs the column at once on commit;
 //! - `inspect_streaming_capabilities` checks a candidate without changing
-//!   the chart.
+//!   the chart;
+//! - an explicit `decorations.data_area` of a legacy document is the
+//!   converted chart's data area, on the canvas at DPR 1 and 2 and in PNG
+//!   export (#334).
 
-use figgy::FiggyChart;
+use figgy::{
+    FiggyChart, convert_boxplot_document, convert_categorical_document, convert_radar_document,
+};
 use renderer::config::{DataSelectionsConfig, PickedDataRef};
 use renderer::{Config, OverlayLayer, SeriesConfig};
 use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
@@ -762,4 +768,151 @@ async fn a_candidate_streaming_check_changes_nothing() {
     );
     assert_eq!(chart.get_config().unwrap(), config_json);
     assert_eq!(chart.get_series().unwrap(), series_json);
+}
+
+// ---- explicit data area (#334) ----
+
+/// The 640 x 480 logical document of the #334 reproduction.
+const LEGACY_DOC: (u32, u32) = (640, 480);
+
+/// The rectangle the #334 reproduction sets, `[x, y, w, h]`.
+const LEGACY_AREA: [f64; 4] = [80.0, 70.0, 420.0, 260.0];
+
+/// `document` with `decorations.data_area` set to `area`.
+fn with_data_area(document: &str, area: [f64; 4]) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(document).unwrap();
+    value["decorations"] = serde_json::json!({
+        "data_area": {"x": area[0], "y": area[1], "width": area[2], "height": area[3]},
+        "offsets": [],
+        "selected": null,
+    });
+    value.to_string()
+}
+
+fn rect(value: &serde_json::Value) -> [f64; 4] {
+    let n = |i: usize| value[i].as_f64().unwrap();
+    [n(0), n(1), n(2), n(3)]
+}
+
+/// The PNG's size and the bounding box `[x, y, w, h]`, in its pixels, of
+/// its blue-dominant pixels (the first fixture series' colour), decoded by
+/// the browser; `null` when there is none.
+async fn blue_bounds(png: &js_sys::Uint8Array) -> serde_json::Value {
+    let decode: js_sys::Function = js_sys::eval(
+        r#"(async (bytes) => {
+  const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }),
+    { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const g = canvas.getContext('2d');
+  g.drawImage(bitmap, 0, 0);
+  const d = g.getImageData(0, 0, bitmap.width, bitmap.height).data;
+  let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+  for (let y = 0; y < bitmap.height; y++) {
+    for (let x = 0; x < bitmap.width; x++) {
+      const i = (y * bitmap.width + x) * 4;
+      if (d[i + 3] > 200 && d[i + 2] > 150 && d[i + 2] - d[i] > 60) {
+        x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+        x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+      }
+    }
+  }
+  const bounds = x1 < 0 ? null : [x0, y0, x1 + 1 - x0, y1 + 1 - y0];
+  return JSON.stringify({ width: bitmap.width, height: bitmap.height, bounds });
+})"#,
+    )
+    .unwrap()
+    .dyn_into()
+    .unwrap();
+    let promise: js_sys::Promise = decode
+        .call1(&JsValue::NULL, png)
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let text = JsFuture::from(promise).await.unwrap().as_string().unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+/// Each legacy family with the #334 rectangle on a 640 x 480 logical
+/// document: `convert_*_document` notes nothing about it, and after
+/// `set_*_document` the data area is the rectangle in document pixels and
+/// that times the DPR on the canvas, at DPR 1 and 2. In PNG export at 1x
+/// and 2x the image is the document times the scale, and the bars of the
+/// categorical chart stand on the rectangle's bottom edge inside it. A
+/// rectangle the chart area cannot hold is noted as dropped with a reason,
+/// and its document opens with the automatic layout.
+#[wasm_bindgen_test(async)]
+async fn an_explicit_data_area_is_the_data_area_at_each_dpr_and_in_png() {
+    type Convert = fn(&str) -> Result<String, JsValue>;
+    let families: [(&str, &str, Convert); 3] = [
+        ("categorical", CATEGORICAL, convert_categorical_document),
+        ("boxplot", BOXPLOT, convert_boxplot_document),
+        ("radar", RADAR, convert_radar_document),
+    ];
+    let open = |chart: &mut FiggyChart, family: &str, document: &str| match family {
+        "categorical" => chart.set_categorical_document(document),
+        "boxplot" => chart.set_boxplot_document(document),
+        _ => chart.set_radar_document(document),
+    };
+    for (family, plain, convert) in families {
+        let document = with_data_area(plain, LEGACY_AREA);
+        let converted: serde_json::Value =
+            serde_json::from_str(&convert(&document).unwrap()).unwrap();
+        assert_eq!(converted["notes"], serde_json::json!([]), "{family}");
+
+        for dpr in [1u32, 2] {
+            let canvas = canvas();
+            canvas.set_width(LEGACY_DOC.0);
+            canvas.set_height(LEGACY_DOC.1);
+            let mut chart = FiggyChart::create(canvas).await.unwrap();
+            chart
+                .resize(LEGACY_DOC.0 * dpr, LEGACY_DOC.1 * dpr)
+                .unwrap();
+            open(&mut chart, family, &document).unwrap();
+            chart.frame().unwrap();
+            let area: serde_json::Value =
+                serde_json::from_str(&chart.data_area_rect().unwrap()).unwrap();
+            assert_eq!(
+                rect(&area["document"]),
+                LEGACY_AREA,
+                "{family} at DPR {dpr}"
+            );
+            assert_eq!(
+                rect(&area["canvas"]),
+                LEGACY_AREA.map(|v| v * f64::from(dpr)),
+                "{family} at DPR {dpr}"
+            );
+            for scale in [1u32, 2] {
+                let png = chart.export_png(scale as f32).await.unwrap();
+                let decoded = blue_bounds(&png).await;
+                assert_eq!(decoded["width"], LEGACY_DOC.0 * scale, "{family}");
+                assert_eq!(decoded["height"], LEGACY_DOC.1 * scale, "{family}");
+                if family != "categorical" {
+                    continue;
+                }
+                let [x, y, w, h] = rect(&decoded["bounds"]);
+                let [ax, ay, aw, ah] = LEGACY_AREA.map(|v| v * f64::from(scale));
+                let what = format!("bars {:?} in {:?} at {scale}x", [x, y, w, h], LEGACY_AREA);
+                assert!(x >= ax && y >= ay && x + w <= ax + aw, "{what}");
+                assert!((y + h - (ay + ah)).abs() <= f64::from(scale), "{what}");
+            }
+        }
+
+        // Outside the 640 x 480 chart area: dropped, automatic layout.
+        let canvas = canvas();
+        canvas.set_width(LEGACY_DOC.0);
+        canvas.set_height(LEGACY_DOC.1);
+        let mut chart = FiggyChart::create(canvas).await.unwrap();
+        open(&mut chart, family, plain).unwrap();
+        let automatic = chart.data_area_rect().unwrap();
+        let outside = with_data_area(plain, [600.0, 400.0, 300.0, 200.0]);
+        open(&mut chart, family, &outside).unwrap();
+        assert_eq!(chart.data_area_rect().unwrap(), automatic, "{family}");
+        // On the converter's placeholder (1000 x 800) the same rectangle
+        // fits; one past it is noted.
+        let past = with_data_area(plain, [900.0, 700.0, 300.0, 200.0]);
+        let converted: serde_json::Value = serde_json::from_str(&convert(&past).unwrap()).unwrap();
+        assert_eq!(converted["notes"][0]["path"], "decorations.data_area");
+        assert_eq!(converted["notes"][0]["kind"], "dropped");
+        assert!(!converted["notes"][0]["reason"].as_str().unwrap().is_empty());
+    }
 }

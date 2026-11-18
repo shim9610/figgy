@@ -363,9 +363,11 @@ colour, its style (or the chart's), the chart's label settings with the text
 written from the medians and counts, and its overrides. `value_range` becomes
 the fixed value axis range; the titles, grid, legend, font, text colour, chart
 title, annotations, active layer, selection and decoration offsets map onto
-their Cartesian options. The hover state, the background colour (the host's
-clear colour draws) and an explicit `decorations.data_area` are not carried;
-the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json)`
+their Cartesian options. An explicit `decorations.data_area` becomes the plot
+area through the margins (`Config::fit_legacy_data_area`, edges rounded to
+whole pixels; #334); one the layout cannot hold keeps the automatic layout and
+is reported as dropped with the reason. The hover state and the background
+colour (the host's clear colour draws) are not carried; the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json)`
 does the same.
 
 ### Document rules

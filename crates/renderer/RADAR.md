@@ -237,8 +237,13 @@ indices (`radar.positions`) first, then one value column per series
   `active_layer` and `annotations` carry over.
 - Not carried: `hovered` (transient), a selected whole series (a selection
   names a vertex), `style.emphasis_brightness` (a picked vertex is shown
-  with the picked ring instead), `background` (the host's clear colour), an explicit
-  `decorations.data_area` and the decoration selection. The data label offsets become the series' `labels.offsets`.
+  with the picked ring instead), `background` (the host's clear colour) and
+  the decoration selection. The data label offsets become the series'
+  `labels.offsets`.
+- An explicit `decorations.data_area` becomes the plot area through the
+  margins (`Config::fit_legacy_data_area`, edges rounded to whole pixels;
+  #334); one the layout cannot hold keeps the automatic layout and is
+  reported as dropped with the reason.
 
 `FiggyChart.set_radar_document(json)` opens a document in the browser. In
 this release, the `"radar"` family of `FiggyBoundedChart` returns an error
@@ -328,6 +333,6 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 빈 필드는 차트 스타일로 채우고(`RadarSeriesStyle::resolved_from`), 차트의 라벨 설정과 값에서
 적은 라벨 문자열을 모든 시리즈에 넣는다. 글꼴과 글자색은 범주·고리 라벨과 범례로, 선택한
 꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로, 스포크 라벨 하나의 이동량은 그 범주의 `label_offset`(스포크 기준 좌표, #309)으로 옮긴다. 호버, 시리즈 전체
-선택, 차트 스타일의 `emphasis_brightness`(고른 꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역은 옮기지 않는다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
+선택, 차트 스타일의 `emphasis_brightness`(고른 꼭짓점은 선택 고리로 강조한다), 배경은 옮기지 않는다. 명시한 그리기 영역(`decorations.data_area`)은 여백을 맞춰 그리기 영역이 되고(가장자리는 정수 픽셀로 반올림; #334), 레이아웃에 들어가지 않으면 자동 레이아웃을 유지하고 이유와 함께 dropped로 보고한다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
 `FiggyChart.set_radar_document(json)`로 문서를 연다. 이번 릴리스에서 `FiggyBoundedChart`의 `"radar"` 계열은
 이 메서드를 안내하는 오류를 돌려준다.
