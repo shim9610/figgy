@@ -189,9 +189,12 @@ chart title, the annotation layer, the active layer, the selection and the
 decoration positions also move to the Cartesian configuration. The category
 axis of a horizontal document is inverted (`inverted`) so that the first
 category is at the top as in the document, and `Y` axis annotations sit on
-the same categories. The hover state, the background color, an explicit
-`decorations.data_area` and value label positions are not moved. The
-category axis line sits at 0 on the value axis (`AxisOptions::cross_at`).
+the same categories. An explicit `decorations.data_area` becomes the plot
+area through the margins (`Config::fit_legacy_data_area`, edges rounded to
+whole pixels; #334); one the layout cannot hold keeps the automatic layout
+and is reported as dropped with the reason. The hover state, the background
+color and value label positions are not moved. The category axis line sits
+at 0 on the value axis (`AxisOptions::cross_at`).
 
 From then on it is a Cartesian chart. `pick_chart_data` picks bars as
 `PickedData::HistogramBin` (the category row is `bin_index`), and selecting
@@ -357,8 +360,10 @@ chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
 `left_y`)으로, `mode`·`direction`·`group_width`·`bar_gap`을 `Config.bar_groups`로, 시리즈를
 `CategoryBars` 시리즈로 옮긴다. 값 축·범주 축 제목, 격자, 범례, 글꼴, 글자 색, 차트 제목, 주석 층,
 활성 레이어, 선택, 장식 위치도 직교 좌표 설정으로 옮긴다. 가로 문서의 범주 축은 뒤집어
-(`inverted`) 문서에서처럼 첫 범주가 맨 위에 오고, `Y` 축 주석도 같은 범주에 놓인다. 호버 상태, 배경색,
-명시한 `decorations.data_area`, 값 라벨 위치는 옮기지 않는다. 범주 축의 축선은 값 축의 0에
+(`inverted`) 문서에서처럼 첫 범주가 맨 위에 오고, `Y` 축 주석도 같은 범주에 놓인다. 명시한
+`decorations.data_area`는 여백을 맞춰 그리기 영역이 된다(`Config::fit_legacy_data_area`, 가장자리는
+가장 가까운 정수 픽셀로 반올림; #334). 레이아웃에 들어가지 않는 영역은 자동 레이아웃을 유지하고 이유와 함께
+dropped로 보고한다. 호버 상태, 배경색, 값 라벨 위치는 옮기지 않는다. 범주 축의 축선은 값 축의 0에
 놓인다(`AxisOptions::cross_at`).
 
 그 뒤로는 직교 좌표 차트다. 막대는 `pick_chart_data`가 `PickedData::HistogramBin`(범주 행이

@@ -42,7 +42,7 @@ use crate::data_config::{
 };
 use crate::decoration::DecorationId;
 use crate::format::{LabelFormat, PlainNumberFormat};
-use crate::layout::{Side, axis_mut};
+use crate::layout::{DataArea, FitStrategy, LayoutError, Rect, RectF, Side, axis_mut};
 use crate::polar::{AngleUnit, GridShape, PolarInterpolation, PolarOptions};
 use crate::radar::{RadarChart, RadarGridShape};
 use crate::text::RichText;
@@ -386,7 +386,9 @@ pub struct ConversionReport {
     /// One entry per upload, in upload order.
     pub columns: Vec<ConvertedColumn>,
     /// The dropped and changed fields, in the order the conversion meets
-    /// them: the document-wide fields first.
+    /// them: the document-wide fields first, and an explicit data area the
+    /// converted layout cannot hold last, since it is fitted to the
+    /// finished layout.
     pub notes: Vec<ConversionNote>,
 }
 
@@ -441,8 +443,9 @@ struct LegacyDocument<'a> {
 }
 
 /// The notes on the document-wide fields no converter carries: the hover,
-/// the background, an explicit data area, the decoration selection, a
-/// legacy title the rich title hides, and an overlay or subplot layer.
+/// the background, the decoration selection, a legacy title the rich title
+/// hides, and an overlay or subplot layer. An explicit data area is carried
+/// ([`legacy_data_area`]).
 fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
     if document.hovered {
         notes.dropped(
@@ -454,12 +457,6 @@ fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
         notes.dropped(
             || "background".into(),
             "the background is the host's clear colour, not part of a Config",
-        );
-    }
-    if document.decorations.data_area.is_some() {
-        notes.dropped(
-            || "decorations.data_area".into(),
-            "the converted chart area is a placeholder the host sets; the data area follows the layout",
         );
     }
     if document.decorations.selected.is_some() {
@@ -479,6 +476,34 @@ fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
             || "active_layer".into(),
             ConversionNoteKind::Changed,
             "a legacy document has no overlays or subplots; the base layer is active instead",
+        );
+    }
+}
+
+/// Carry a legacy document's explicit data area into its converted
+/// `config` ([`Config::fit_legacy_data_area`]) once the rest of the layout
+/// is in place, or, when the layout cannot hold it, keep the automatic
+/// layout and note the field as dropped with the reason.
+fn legacy_data_area(notes: &mut Notes, config: &mut Config, decorations: &crate::DecorationLayout) {
+    let Some(area) = &decorations.data_area else {
+        return;
+    };
+    if let Err(error) = config.fit_legacy_data_area(area) {
+        notes.dropped(
+            || "decorations.data_area".into(),
+            match error {
+                LayoutError::TargetOutOfChartArea => {
+                    "the explicit data area does not lie inside the converted chart area"
+                }
+                LayoutError::EmptyDataArea => {
+                    "the explicit data area is empty once its edges are rounded to whole pixels"
+                }
+                LayoutError::Infeasible
+                | LayoutError::OverflowHorizontal { .. }
+                | LayoutError::OverflowVertical { .. } => {
+                    "the explicit data area leaves less room than the converted chart's titles, ticks and axis bands take"
+                }
+            },
         );
     }
 }
@@ -539,6 +564,70 @@ fn conversion_report<'a>(
     }
 }
 
+impl Config {
+    /// Place the data area at `area`, a legacy document's explicit
+    /// `decorations.data_area` in this chart's logical pixels (#334): the
+    /// margins are set with [`Config::fit_to_data_area`] and
+    /// [`FitStrategy::PreserveTitles`], so the chart title, the tick marks
+    /// and any colourbar keep their room and each side's axis band takes
+    /// the rest. The legacy rectangle is `f32` and the data area whole
+    /// pixels, so each edge is rounded to the nearest pixel (halves away
+    /// from zero): the left edge to `round(x)`, the right one to
+    /// `round(x + width)`, and the width is their difference; likewise
+    /// vertically. The data area then equals that rounded rectangle
+    /// exactly ([`Config::data_area`]).
+    ///
+    /// Refused, with the config unchanged, when a rounded edge is not
+    /// finite or is negative ([`LayoutError::TargetOutOfChartArea`]), the
+    /// rounded rectangle is empty ([`LayoutError::EmptyDataArea`]) or does
+    /// not lie inside the chart area (`TargetOutOfChartArea`), or a side
+    /// leaves less than its fixed parts take
+    /// ([`LayoutError::Infeasible`]). The converters (`Config::from_*`) call
+    /// it on their placeholder chart area and report a refusal as a dropped
+    /// `decorations.data_area`; a host that sets another chart area calls it
+    /// again on a config converted without the field.
+    pub fn fit_legacy_data_area(&mut self, area: &RectF) -> Result<(), LayoutError> {
+        let target = legacy_data_area_rect(area)?;
+        // Fitted on a copy of the configuration: a refusal, or a fit whose
+        // `f32` margins would not give back the target exactly, changes
+        // nothing.
+        let mut fitted = self.clone();
+        fitted.fit_to_data_area(DataArea(target), FitStrategy::PreserveTitles)?;
+        match fitted.data_area() {
+            Ok(DataArea(placed)) if placed == target => {
+                *self = fitted;
+                Ok(())
+            }
+            Ok(_) => Err(LayoutError::Infeasible),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// The whole-pixel rectangle of a legacy explicit data area: each edge
+/// rounded to the nearest pixel ([`Config::fit_legacy_data_area`]).
+fn legacy_data_area_rect(area: &RectF) -> Result<Rect, LayoutError> {
+    let edge = |v: f32| {
+        let v = v.round();
+        if v.is_finite() && v >= 0.0 && v <= u32::MAX as f32 {
+            Ok(v as u32)
+        } else {
+            Err(LayoutError::TargetOutOfChartArea)
+        }
+    };
+    let (left, top) = (edge(area.x)?, edge(area.y)?);
+    let (right, bottom) = (edge(area.x + area.width)?, edge(area.y + area.height)?);
+    if right <= left || bottom <= top {
+        return Err(LayoutError::EmptyDataArea);
+    }
+    Ok(Rect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
 /// The grid colour of a legacy bounded value axis.
 const LEGACY_GRID_COLOR: Color = Color::from_rgb8(224, 229, 235);
 
@@ -555,13 +644,14 @@ impl Config {
     /// [`Config::from_categorical`] with its [`ConversionReport`]: the
     /// series each upload belongs to, and a note for each field the
     /// document set that the chart does not carry as set: `hovered`,
-    /// `background`, `decorations.data_area`, `decorations.selected`, a
-    /// legacy `title` that `chart_title` hides, an overlay or subplot
+    /// `background`, `decorations.selected`, a legacy `title` that
+    /// `chart_title` hides, an overlay or subplot
     /// `active_layer` (changed to the base layer), a `selected` category the
     /// document does not hold, each `decorations.offsets[i]` the chart has
-    /// no counterpart for or whose value label offset is refused, and each
-    /// `overrides[i]` that names no series. The config, series and uploads
-    /// are the ones `from_categorical` returns.
+    /// no counterpart for or whose value label offset is refused, each
+    /// `overrides[i]` that names no series, and a `decorations.data_area`
+    /// the converted layout cannot hold, with the reason. The config,
+    /// series and uploads are the ones `from_categorical` returns.
     pub fn from_categorical_with_report(chart: &CategoricalChart) -> ConvertedDocument<'_> {
         let mut notes = Notes::on();
         let (config, series, uploads) = Self::categorical_conversion(chart, &mut notes);
@@ -596,13 +686,15 @@ impl Config {
     /// [`Config::from_radar`] with its [`ConversionReport`]: the series each
     /// upload belongs to, and a note for each field the document set that
     /// the chart does not carry as set: `hovered`, `background`,
-    /// `decorations.data_area`, `decorations.selected`, a legacy `title`
+    /// `decorations.selected`, a legacy `title`
     /// that `chart_title` hides, an overlay or subplot `active_layer`
     /// (changed to the base layer), `style.emphasis_brightness`, a selected
     /// whole series (`selected` without a category) or a `selected`
     /// category the document does not hold, and each
     /// `decorations.offsets[i]` the chart has no counterpart for (a spoke
-    /// label's, among others) or whose value label offset is refused.
+    /// label's, among others) or whose value label offset is refused, and a
+    /// `decorations.data_area` the converted layout cannot hold, with the
+    /// reason.
     pub fn from_radar_with_report(chart: &RadarChart) -> ConvertedDocument<'_> {
         let mut notes = Notes::on();
         let (config, series, uploads) = Self::radar_conversion(chart, &mut notes);
@@ -647,10 +739,13 @@ impl Config {
     /// legend are the matching offsets; the category axis line crosses the
     /// value axis at zero (`cross_at`); `selected` is the typed selection;
     /// `active_layer` and `annotations` carry over. Not carried: `hovered`
-    /// (transient), `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the decoration selection. The data label
-    /// offsets are the series' value label offsets (`labels.offsets`). The
-    /// chart area is the default placeholder; the host sets it.
+    /// (transient), `background` (the host's clear colour) and the
+    /// decoration selection. The data label offsets are the series' value
+    /// label offsets (`labels.offsets`). The chart area is the default
+    /// placeholder; the host sets it. An explicit
+    /// `decorations.data_area` is the data area
+    /// ([`Config::fit_legacy_data_area`] on the placeholder chart area; one
+    /// the layout cannot hold leaves the automatic layout).
     pub fn from_categorical(
         chart: &CategoricalChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
@@ -797,6 +892,7 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
+        legacy_data_area(notes, &mut config, &chart.decorations);
         (config, series, uploads)
     }
 }
@@ -1069,10 +1165,13 @@ impl Config {
     /// the axis lines, tick labels and titles and the legend are the
     /// matching offsets; `selected` is the typed selection; `active_layer`
     /// and `annotations` carry over. Not carried: `hovered` (transient),
-    /// `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the decoration selection. The data label
-    /// offsets are the series' value label offsets (`labels.offsets`). The
-    /// chart area is the default placeholder; the host sets it.
+    /// `background` (the host's clear colour) and the decoration selection.
+    /// The data label offsets are the series' value label offsets
+    /// (`labels.offsets`). The chart area is the default placeholder; the
+    /// host sets it. An explicit
+    /// `decorations.data_area` is the data area
+    /// ([`Config::fit_legacy_data_area`] on the placeholder chart area; one
+    /// the layout cannot hold leaves the automatic layout).
     pub fn from_boxplot(
         chart: &BoxPlotChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
@@ -1238,6 +1337,7 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
+        legacy_data_area(notes, &mut config, &chart.decorations);
         (config, series, uploads)
     }
 }
@@ -1284,10 +1384,13 @@ impl Config {
     /// `hovered` (transient), a selected whole series (a selection names a
     /// vertex), the style's `emphasis_brightness` (the former renderer
     /// brightened the hovered or selected series; a picked vertex takes the
-    /// picked ring instead), `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the decoration selection; the data label offsets
-    /// are the series' value label offsets (`labels.offsets`). The chart area is the default
-    /// placeholder; the host sets it.
+    /// picked ring instead), `background` (the host's clear colour) and the
+    /// decoration selection; the data label offsets are the series' value
+    /// label offsets (`labels.offsets`). The chart area is the default
+    /// placeholder; the host sets it. An explicit
+    /// `decorations.data_area` is the data area
+    /// ([`Config::fit_legacy_data_area`] on the placeholder chart area; one
+    /// the layout cannot hold leaves the automatic layout).
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
         Self::radar_conversion(chart, &mut Notes::off())
     }
@@ -1552,8 +1655,98 @@ impl Config {
             }
         }
         legacy_label_offsets(&mut series, notes, &chart.categories, &chart.decorations);
+        legacy_data_area(notes, &mut config, &chart.decorations);
         (config, series, uploads)
     }
+}
+
+/// Check that `convert` carries an explicit data area (#334): the issue's
+/// rectangle on the placeholder chart area and, refitted, on a 640 x 480
+/// host chart area; the edges rounded to whole pixels; an unset one keeps
+/// the automatic layout; and one the layout cannot hold is noted as
+/// dropped with its reason and keeps the automatic layout. `plain` is the
+/// converter without the report.
+#[cfg(test)]
+fn check_legacy_data_area<C>(
+    chart: &mut C,
+    decorations: fn(&mut C) -> &mut crate::DecorationLayout,
+    convert: for<'a> fn(&'a C) -> ConvertedDocument<'a>,
+    plain: for<'a> fn(&'a C) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>),
+) {
+    use crate::layout::ChartArea;
+    let rect = |x, y, width, height| RectF {
+        x,
+        y,
+        width,
+        height,
+    };
+    let whole = |x, y, width, height| Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let note = |report: &ConversionReport| {
+        report
+            .notes
+            .iter()
+            .find(|n| n.path == "decorations.data_area")
+            .cloned()
+    };
+    decorations(chart).data_area = None;
+    let (automatic, _, _, report) = convert(chart);
+    assert_eq!(note(&report), None);
+
+    // The issue's rectangle, on the placeholder chart area.
+    let issue = rect(80.0, 70.0, 420.0, 260.0);
+    decorations(chart).data_area = Some(issue);
+    let (config, _, _, report) = convert(chart);
+    assert_eq!(note(&report), None, "{:?}", report.notes);
+    assert_eq!(config.data_area().unwrap().0, whole(80, 70, 420, 260));
+    assert_eq!(config.chart_area, automatic.chart_area);
+    // The title keeps its room; only the axis bands move.
+    assert_eq!(config.chart_title, automatic.chart_title);
+    assert_eq!(config, plain(chart).0);
+
+    // On a host's 640 x 480 logical chart area, refitted on the config
+    // converted without the field (what `set_*_document` does).
+    let mut host = automatic.clone();
+    host.chart_area = ChartArea(whole(0, 0, 640, 480));
+    host.fit_legacy_data_area(&issue).unwrap();
+    assert_eq!(host.data_area().unwrap().0, whole(80, 70, 420, 260));
+
+    // Each edge is rounded to the nearest whole pixel.
+    decorations(chart).data_area = Some(rect(80.4, 69.6, 419.7, 260.2));
+    assert_eq!(
+        plain(chart).0.data_area().unwrap().0,
+        whole(80, 70, 420, 260)
+    );
+
+    // What the layout cannot hold is dropped with its reason, before any
+    // margin moves.
+    for (area, reason) in [
+        (rect(900.0, 700.0, 300.0, 200.0), "does not lie inside"),
+        (rect(-10.0, 70.0, 420.0, 260.0), "does not lie inside"),
+        (rect(f32::NAN, 70.0, 420.0, 260.0), "does not lie inside"),
+        (rect(80.0, 70.0, 0.2, 260.0), "empty"),
+        (rect(0.0, 0.0, 1000.0, 800.0), "less room"),
+    ] {
+        decorations(chart).data_area = Some(area);
+        let (config, _, _, report) = convert(chart);
+        let dropped = note(&report).unwrap_or_else(|| panic!("{area:?} is carried"));
+        assert_eq!(dropped.kind, ConversionNoteKind::Dropped);
+        assert!(
+            dropped.reason.contains(reason),
+            "{area:?}: {}",
+            dropped.reason
+        );
+        assert_eq!(config, automatic, "{area:?}");
+        let mut host = automatic.clone();
+        host.chart_area = ChartArea(whole(0, 0, 1000, 800));
+        assert!(host.fit_legacy_data_area(&area).is_err());
+        assert_eq!(host, automatic, "{area:?}: a refusal changes nothing");
+    }
+    decorations(chart).data_area = None;
 }
 
 #[cfg(test)]
@@ -1917,18 +2110,23 @@ mod tests {
     }
 
     #[test]
-    fn background_and_the_explicit_data_area_are_not_carried() {
+    fn the_background_is_not_carried() {
         let mut c = chart();
         let (before, _, _) = Config::from_categorical(&c);
         c.background = Color::BLACK;
-        c.decorations.data_area = Some(crate::layout::RectF {
-            x: 100.0,
-            y: 100.0,
-            width: 300.0,
-            height: 200.0,
-        });
         let (after, _, _) = Config::from_categorical(&c);
         assert_eq!(after, before);
+    }
+
+    /// An explicit data area is the converted chart's data area (#334).
+    #[test]
+    fn the_explicit_data_area_is_carried() {
+        super::check_legacy_data_area(
+            &mut chart(),
+            |c| &mut c.decorations,
+            Config::from_categorical_with_report,
+            Config::from_categorical,
+        );
     }
 }
 
@@ -2282,18 +2480,23 @@ mod box_tests {
     }
 
     #[test]
-    fn background_and_the_explicit_data_area_are_not_carried() {
+    fn the_background_is_not_carried() {
         let mut c = chart();
         let (before, _, _) = Config::from_boxplot(&c);
         c.background = Color::BLACK;
-        c.decorations.data_area = Some(crate::layout::RectF {
-            x: 100.0,
-            y: 100.0,
-            width: 300.0,
-            height: 200.0,
-        });
         let (after, _, _) = Config::from_boxplot(&c);
         assert_eq!(after, before);
+    }
+
+    /// An explicit data area is the converted chart's data area (#334).
+    #[test]
+    fn the_explicit_data_area_is_carried() {
+        super::check_legacy_data_area(
+            &mut chart(),
+            |c| &mut c.decorations,
+            Config::from_boxplot_with_report,
+            Config::from_boxplot,
+        );
     }
 }
 
@@ -2622,18 +2825,23 @@ mod radar_tests {
     }
 
     #[test]
-    fn background_and_the_explicit_data_area_are_not_carried() {
+    fn the_background_is_not_carried() {
         let mut c = chart();
         let (before, _, _) = Config::from_radar(&c);
         c.background = Color::BLACK;
-        c.decorations.data_area = Some(crate::layout::RectF {
-            x: 100.0,
-            y: 100.0,
-            width: 300.0,
-            height: 200.0,
-        });
         let (after, _, _) = Config::from_radar(&c);
         assert_eq!(after, before);
+    }
+
+    /// An explicit data area is the converted chart's data area (#334).
+    #[test]
+    fn the_explicit_data_area_is_carried() {
+        super::check_legacy_data_area(
+            &mut chart(),
+            |c| &mut c.decorations,
+            Config::from_radar_with_report,
+            Config::from_radar,
+        );
     }
 }
 
@@ -2675,7 +2883,8 @@ mod report_tests {
     }
 
     /// Set the decoration fields every converter drops: an explicit data
-    /// area and a decoration selection.
+    /// area too tight for the converted layout (#334) and a decoration
+    /// selection.
     fn decorate(decorations: &mut crate::DecorationLayout) {
         decorations.data_area = Some(RectF {
             x: 10.0,
@@ -2727,7 +2936,6 @@ mod report_tests {
             [
                 ("hovered", Dropped),
                 ("background", Dropped),
-                ("decorations.data_area", Dropped),
                 ("decorations.selected", Dropped),
                 ("title", Dropped),
                 ("active_layer", Changed),
@@ -2736,7 +2944,8 @@ mod report_tests {
                 ("decorations.offsets[2]", Dropped),
                 ("decorations.offsets[3]", Dropped),
                 ("decorations.offsets[4]", Dropped),
-                ("overrides[1]", Dropped),
+                ("overrides[1]", Dropped), // Too tight for the converted axis bands (#334).
+                ("decorations.data_area", Dropped),
             ]
         );
         assert!(report.notes.iter().all(|n| !n.reason.is_empty()));
@@ -2803,12 +3012,12 @@ mod report_tests {
             paths(&report),
             [
                 ("background", Dropped),
-                ("decorations.data_area", Dropped),
                 ("decorations.selected", Dropped),
                 ("selected.category_id", Dropped),
                 ("decorations.offsets[1]", Dropped),
                 ("decorations.offsets[2]", Dropped),
-                ("overrides[0]", Dropped),
+                ("overrides[0]", Dropped), // Too tight for the converted axis bands (#334).
+                ("decorations.data_area", Dropped),
             ]
         );
         assert_eq!((config, series, uploads), Config::from_boxplot(&c));
@@ -2877,14 +3086,14 @@ mod report_tests {
             paths(&report),
             [
                 ("hovered", Dropped),
-                ("decorations.data_area", Dropped),
                 ("decorations.selected", Dropped),
                 ("style.emphasis_brightness", Dropped),
                 ("selected", Dropped),
                 // offsets[1], the spoke label, is carried as category "a"'s
                 // own label offset (#309).
                 ("decorations.offsets[2]", Dropped),
-                ("decorations.offsets[3]", Dropped),
+                ("decorations.offsets[3]", Dropped), // Too tight for the converted axis bands (#334).
+                ("decorations.data_area", Dropped),
             ]
         );
         assert_ne!(

@@ -1121,8 +1121,10 @@ The converted shape:
   `"dropped"` (no counterpart) or `"changed"` (carried as another value, such
   as an overlay `active_layer` that falls back to the base layer). A field
   counts as set when it is present or differs from the documented default.
-  The notes cover `hovered`, `background`, `decorations.data_area`,
-  `decorations.selected`, a legacy `title` hidden by `chart_title`, the
+  The notes cover `hovered`, `background`, a `decorations.data_area` the
+  converted layout cannot hold (#334; one it holds is the config's data
+  area on the 1000 x 800 placeholder chart area, and `set_*_document`
+  fits it to the chart's own), `decorations.selected`, a legacy `title` hidden by `chart_title`, the
   `active_layer`, a selection the chart cannot hold, each decoration offset
   without a counterpart (a spoke label's, for one) or whose value label
   offset is refused, overrides naming no series and, for a radar document,

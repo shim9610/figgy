@@ -1793,6 +1793,61 @@ mod tests {
         }
     }
 
+    /// An explicit data area reaches the converted config of each family
+    /// (#334): the issue's rectangle is its data area with no note, and one
+    /// the converted layout cannot hold is noted as dropped with a reason.
+    #[test]
+    fn the_converters_carry_an_explicit_data_area() {
+        let color = r#"{"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}"#;
+        let categorical = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "values": [2], "color": {color}}}]}}"#
+        );
+        let boxplot = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "color": {color}, "values": [
+                    {{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5}}]}}]}}"#
+        );
+        let radar = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}, {{"id": "b", "label": "B"}},
+                               {{"id": "c", "label": "C"}}],
+                "series": [{{"id": "s", "label": "S", "values": [1, 2, 3], "color": {color}}}]}}"#
+        );
+        let families: [(&str, fn(&str) -> Result<String, super::DocumentError>); 3] = [
+            (&categorical, super::convert_categorical_document_json),
+            (&boxplot, super::convert_boxplot_document_json),
+            (&radar, super::convert_radar_document_json),
+        ];
+        let with_area = |document: &str, area: &str| {
+            let mut value: serde_json::Value = serde_json::from_str(document).unwrap();
+            value["decorations"] = serde_json::json!({
+                "data_area": serde_json::from_str::<serde_json::Value>(area).unwrap(),
+                "offsets": [],
+                "selected": null,
+            });
+            value.to_string()
+        };
+        for (document, convert) in families {
+            let issue = with_area(
+                document,
+                r#"{"x": 80, "y": 70, "width": 420, "height": 260}"#,
+            );
+            let out: serde_json::Value = serde_json::from_str(&convert(&issue).unwrap()).unwrap();
+            assert_eq!(out["notes"], serde_json::json!([]), "{document}");
+            let config: renderer::Config = serde_json::from_value(out["config"].clone()).unwrap();
+            assert_eq!(config.data_area().unwrap().0, area(80, 70, 420, 260).0);
+
+            let outside = with_area(
+                document,
+                r#"{"x": 900, "y": 700, "width": 300, "height": 200}"#,
+            );
+            let out: serde_json::Value = serde_json::from_str(&convert(&outside).unwrap()).unwrap();
+            assert_eq!(out["notes"][0]["path"], "decorations.data_area");
+            assert_eq!(out["notes"][0]["kind"], "dropped");
+            assert!(!out["notes"][0]["reason"].as_str().unwrap().is_empty());
+        }
+    }
+
     // The math fields reach JavaScript and come back unchanged through
     // `get_config`/`set_config` and `get_series`/`set_series`; a malformed
     // tree fails at parse, so `set_config` rejects it before it touches
