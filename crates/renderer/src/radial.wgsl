@@ -34,49 +34,53 @@ fn scene(pixel: vec2<f32>) -> vec4<f32> {
         shade=max(shade,(1.0-smoothstep(-blur,blur*2.0,d))*0.16);
     }
     color=vec4(color.rgb*(1.0-shade),shade+color.a*(1.0-shade));
-    var closest=10000.0;
+    // The nearest sector wins, the first of equals, as in the radial pick.
+    // Only the winner is shaded, once, after the loop (#349). `winner`
+    // counts sectors from 1, and 0 means none: Metal compiles a 0-based
+    // `winner=i` as a constant 0 (#63).
+    var closest=10000.0;var winner=0u;var h=Hit(10000.0,vec3(0.0),vec3(0.0));
     for(var i=0u;i<u32(globals.size.z);i++) {
-        let s=sectors[i];
+        let hit=hit_pixel(pixel,sectors[i]);
+        if hit.t<closest {closest=hit.t;winner=i+1u;h=hit;}
+    }
+    if winner!=0u {
+        let s=sectors[winner-1u];
         let cs=cos(s.arc.z);let sn=sin(s.arc.z);
         let rd=vec3(0.0,-sn,-cs);
-        let h=hit_pixel(pixel,s);
-        if h.t<closest {
-            closest=h.t;
-            // The brush of BrushedMetal and SatinMetal runs around the
-            // center: its tangent is circumferential in the turned texture
-            // frame, its coordinates are (radius, twice the turned angle).
-            let ca=cos(s.material.finish.z);let sa=sin(s.material.finish.z);
-            let turned=vec2(h.p.x*ca-h.p.y*sa,h.p.x*sa+h.p.y*ca)*s.material.params.w;
-            let direction=vec3(-h.p.y*ca-h.p.x*sa,-h.p.y*sa+h.p.x*ca,0.0);
-            let tangent=normalize(direction-h.n*dot(h.n,direction)+vec3(0.000001,0.0,0.0));
-            var rgb=material_surface(s.material,s.color.rgb,h.p,h.n,-rd,normalize(s.light.xyz),tangent,
-                vec2(length(h.p.xy),atan2(turned.y,turned.x)*2.0),s.geometry.z);
-            let d=edges(h.p.xy,s);
-            let rim_distance=min(abs(d.x),abs(d.y));
-            let separation=abs(d.z);
-            let width=s.outline.w/s.geometry.z;
-            let is_rim=rim_distance<=separation;
-            let enabled=select(s.outline.y,s.outline.x,is_rim);
-            if max(enabled,s.outline.z)>0.0 && width>0.0 {
-                let band=s.outline.w*select(0.5,1.0,is_rim);
-                let offsets=array<vec2<f32>,4>(vec2(band,0.0),vec2(-band,0.0),vec2(0.0,band),vec2(0.0,-band));
-                var border=false;
-                for(var j=0u;j<4u;j++) {
-                    let neighbor=hit_pixel(pixel+offsets[j],s);
-                    border=neighbor.t>=9999.0;
-                    if !border && crosses_top_wall(h,neighbor) {
-                        // A crease is inked on both faces, unlike the inward
-                        // silhouette band. Keep the total logical width equal.
-                        if is_rim {
-                            border=crosses_top_wall(h,hit_pixel(pixel+offsets[j]*0.5,s));
-                        } else { border=true; }
-                    }
-                    if border { break; }
+        // The brush of BrushedMetal and SatinMetal runs around the
+        // center: its tangent is circumferential in the turned texture
+        // frame, its coordinates are (radius, twice the turned angle).
+        let ca=cos(s.material.finish.z);let sa=sin(s.material.finish.z);
+        let turned=vec2(h.p.x*ca-h.p.y*sa,h.p.x*sa+h.p.y*ca)*s.material.params.w;
+        let direction=vec3(-h.p.y*ca-h.p.x*sa,-h.p.y*sa+h.p.x*ca,0.0);
+        let tangent=normalize(direction-h.n*dot(h.n,direction)+vec3(0.000001,0.0,0.0));
+        var rgb=material_surface(s.material,s.color.rgb,h.p,h.n,-rd,normalize(s.light.xyz),tangent,
+            vec2(length(h.p.xy),atan2(turned.y,turned.x)*2.0),s.geometry.z);
+        let d=edges(h.p.xy,s);
+        let rim_distance=min(abs(d.x),abs(d.y));
+        let separation=abs(d.z);
+        let width=s.outline.w/s.geometry.z;
+        let is_rim=rim_distance<=separation;
+        let enabled=select(s.outline.y,s.outline.x,is_rim);
+        if max(enabled,s.outline.z)>0.0 && width>0.0 {
+            let band=s.outline.w*select(0.5,1.0,is_rim);
+            let offsets=array<vec2<f32>,4>(vec2(band,0.0),vec2(-band,0.0),vec2(0.0,band),vec2(0.0,-band));
+            var border=false;
+            for(var j=0u;j<4u;j++) {
+                let neighbor=hit_pixel(pixel+offsets[j],s);
+                border=neighbor.t>=9999.0;
+                if !border && crosses_top_wall(h,neighbor) {
+                    // A crease is inked on both faces, unlike the inward
+                    // silhouette band. Keep the total logical width equal.
+                    if is_rim {
+                        border=crosses_top_wall(h,hit_pixel(pixel+offsets[j]*0.5,s));
+                    } else { border=true; }
                 }
-                if border { rgb=mix(rgb,s.outline_color.rgb,s.outline_color.a*max(enabled,s.outline.z)); }
+                if border { break; }
             }
-            color=vec4(rgb,1.0);
+            if border { rgb=mix(rgb,s.outline_color.rgb,s.outline_color.a*max(enabled,s.outline.z)); }
         }
+        color=vec4(rgb,1.0);
     }
     return color;
 }
