@@ -13,11 +13,12 @@ at the time. The first crates.io publication is recorded below.
 
 <a id="unreleased"></a>
 
-## 0.19.0-beta.1 — renderer 0.19.0-beta.1 / model 0.13.0-beta.1 / figgy 0.16.0-beta.1
+## 0.19.0-beta.2 — renderer 0.19.0-beta.2 / model 0.13.0-beta.2 / figgy 0.16.0-beta.2
 
-A beta of 0.19 on `master` for feedback, not published to crates.io (the
-latest crates.io release stays renderer 0.18.1 / model 0.12.1). The 0.19.0
-release entry replaces this section.
+The second beta of 0.19 on `master` for feedback, not published to crates.io
+(the latest crates.io release stays renderer 0.18.1 / model 0.12.1). It
+replaces 0.19.0-beta.1 (f18bdd5); the entries below cover both betas. The
+0.19.0 release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse, read back as the same value after a
 save and export the same image before and after it. A document that stored
