@@ -1102,7 +1102,7 @@ and need no canvas, no chart and no GPU.
 | `default_config()` | The default config (`default::default_config`), the document a new chart starts from. Its `chart_area` is a placeholder the host sets. |
 | `validate_config(configJson, seriesJson?)` | `{ valid, errors }`: the config held to `Config::validate_chart` and, when given, the series list to `Config::validate_series`. It does not throw for a refused document. An error is `{ stage, path, field, series_id, series_index, code, message }`: `stage` is `"parse"`, `"chart"` or `"series"`; `path` is the config field (`ConfigError::field`, such as `"bottom_x"` or `"colorbar.axis"`), `series[<index>]` for a series rule, or `"config"` / `"series"` for JSON that does not parse, which adds `line` and `column`; `code` is the rule's `RuleKind::code`, the `code` of the `Error`s `set_config` throws (`"json"` for a parse error). The rules stop at the first refusal, so `errors` holds at most one. What needs the column pool (registered columns, lengths, GPU limits) is checked by `set_config` / `set_series` only. |
 | `normalize_config(configJson)` | The config read and written back: an omitted optional field takes its documented default and a field at its default is written as the renderer writes it. A config that breaks a rule is returned as it is; JSON that is not a config throws its message. |
-| `convert_categorical_document(json)`, `convert_boxplot_document(json)`, `convert_radar_document(json)` | The legacy document converted as `set_categorical_document`, `set_boxplot_document` and `set_radar_document` convert it (`Config::from_*_with_report`), without opening it: `{ config, series, uploads, columns, notes }`. A document that does not parse throws its message; one that breaks its own rules throws an `Error` with the rule's `code`. |
+| `convert_categorical_document(json, options?)`, `convert_boxplot_document(json, options?)`, `convert_radar_document(json, options?)` | The legacy document converted as `set_categorical_document`, `set_boxplot_document` and `set_radar_document` convert it (`Config::from_*_with_report_in`), without opening it: `{ config, series, uploads, columns, notes }`. `options` is an optional JSON object `{ "chart_area"?: [x, y, width, height] }` in whole logical pixels, as the chart's `chart_area` (#334): the config is placed on that chart area and an explicit `decorations.data_area` is fitted to it, so the result is exactly the report `set_*_document` returns on a chart of that chart area. Without it the 1000 x 800 placeholder chart area is used. Options that are not such an object or name another field throw an `Error` with `code` `"invalid_options"`. A document that does not parse throws its message; one that breaks its own rules throws an `Error` with the rule's `code`. |
 
 The converted shape:
 
@@ -1135,6 +1135,40 @@ const { config, series, notes } = JSON.parse(convert_radar_document(text));
 for (const note of notes) console.warn(`${note.path}: ${note.reason}`);
 const { valid, errors } = JSON.parse(
   validate_config(JSON.stringify(config), JSON.stringify(series)));
+```
+
+**Review, then apply (#334).** One conversion serves both. A preview
+converted with the live chart's chart area reports the config, series and
+notes the setter installs, and `set_*_document(json, options?)` returns
+that report as JSON, `{ config, series, uploads, columns, notes }`, built
+from the same conversion it installs (before, it returned `undefined`).
+The returned `config` is the converted one; the installed config also has
+its value axis fitted from the columns, which `get_config()` reads. The
+setter's `options` is an optional JSON object
+`{ "refuse"?: ["path", ...] | "any" }`: when a note's path is a listed path
+or lies under one (`"decorations"` covers `decorations.data_area`,
+`"decorations.offsets"` covers `decorations.offsets[2]`), or with `"any"`
+when there is any note, the setter throws an `Error` with `stage`
+`"validate"`, `code` `"conversion_loss"` and the refused notes as `notes`
+(`{ path, kind, reason }` each) before anything is installed: the config,
+series, columns, selections and image stay as they were. Other option
+fields, or a `refuse` that is neither `"any"` nor an array of non-empty
+strings, throw `code` `"invalid_options"` at `"validate"`.
+
+```js
+const area = JSON.parse(chart.get_config()).chart_area;
+const preview = JSON.parse(convert_radar_document(text, JSON.stringify({
+  chart_area: [area.x, area.y, area.width, area.height],
+})));
+// The user reviews preview.notes and accepts the losses shown ...
+const accepted = new Set(preview.notes.map((n) => n.path));
+try {
+  const report = JSON.parse(chart.set_radar_document(text, JSON.stringify({
+    refuse: ["decorations.data_area"].filter((p) => !accepted.has(p)),
+  })));
+} catch (e) {
+  if (e.code === "conversion_loss") console.warn(e.notes);
+}
 ```
 
 **Numbers.** Every finite `f64` survives a JSON round trip bit for bit: the
@@ -1173,7 +1207,9 @@ the new document does not upload again; an id it uploads again is replaced
 in place. The ids are the documented ones for every document opened. A
 failure rejects with an `Error` whose `stage` is `"validate"` (parse,
 validation, styles, a documented id that holds another kind of source than
-the document uploads under it, or a streamed column), `"upload"` (with the `code` and byte fields of
+the document uploads under it, a streamed column, options it refuses
+(`code` `"invalid_options"`) or a loss its `refuse` option refuses (`code`
+`"conversion_loss"`, #334)), `"upload"` (with the `code` and byte fields of
 `register_column_f32`; `"budget_exceeded"` when the memory budget cannot
 hold the transaction's peak), `"fit"` or `"commit"`, and whose message names
 the stage and the cause; the chart's config, series, selections, picks,

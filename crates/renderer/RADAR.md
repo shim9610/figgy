@@ -245,7 +245,12 @@ indices (`radar.positions`) first, then one value column per series
   #334); one the layout cannot hold keeps the automatic layout and is
   reported as dropped with the reason.
 
-`FiggyChart.set_radar_document(json)` opens a document in the browser. In
+`FiggyChart.set_radar_document(json, options?)` opens a document in the
+browser and returns the conversion report (`{ config, series, uploads,
+columns, notes }`), which `convert_radar_document(json, {chart_area})`
+previews without a chart; its `{ "refuse": [...] | "any" }` option refuses
+a lossy document with `code: "conversion_loss"` before anything changes
+(#334; see [WASM.md](WASM.md#model-api)). In
 this release, the `"radar"` family of `FiggyBoundedChart` returns an error
 that names this method.
 

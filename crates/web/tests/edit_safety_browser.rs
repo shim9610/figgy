@@ -22,7 +22,11 @@
 //!   the chart;
 //! - an explicit `decorations.data_area` of a legacy document is the
 //!   converted chart's data area, on the canvas at DPR 1 and 2 and in PNG
-//!   export (#334).
+//!   export (#334);
+//! - a legacy document previewed with `convert_*_document` on the chart's
+//!   chart area reports what `set_*_document` installs and returns, and a
+//!   loss policy (`refuse`) that a note matches refuses the document before
+//!   anything changes (#334).
 
 use figgy::{
     FiggyChart, convert_boxplot_document, convert_categorical_document, convert_radar_document,
@@ -237,15 +241,18 @@ async fn clear_selection_ends_element_and_annotation_selection_and_keeps_the_dat
 #[wasm_bindgen_test(async)]
 async fn a_document_that_does_not_validate_changes_nothing_and_names_the_stage() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_radar_document(RADAR).unwrap();
+    chart.set_radar_document(RADAR, None).unwrap();
     let before = snapshot(&mut chart).await;
     for (call, error) in [
-        ("radar", chart.set_radar_document("{").unwrap_err()),
+        ("radar", chart.set_radar_document("{", None).unwrap_err()),
         (
             "categorical",
-            chart.set_categorical_document("{").unwrap_err(),
+            chart.set_categorical_document("{", None).unwrap_err(),
         ),
-        ("boxplot", chart.set_boxplot_document("[]").unwrap_err()),
+        (
+            "boxplot",
+            chart.set_boxplot_document("[]", None).unwrap_err(),
+        ),
     ] {
         assert_eq!(
             error_field(&error, "stage").as_deref(),
@@ -267,7 +274,7 @@ async fn a_document_that_does_not_validate_changes_nothing_and_names_the_stage()
         .register_column_f64("boxplot.record.a", &[0.0, 1.0])
         .unwrap();
     let before = snapshot(&mut fresh).await;
-    let error = fresh.set_boxplot_document(BOXPLOT).unwrap_err();
+    let error = fresh.set_boxplot_document(BOXPLOT, None).unwrap_err();
     assert_eq!(error_field(&error, "stage").as_deref(), Some("validate"));
     assert!(
         error_message(&error).contains("boxplot.record.a"),
@@ -281,7 +288,7 @@ async fn a_document_that_does_not_validate_changes_nothing_and_names_the_stage()
     let mut host = FiggyChart::create(canvas()).await.unwrap();
     host.register_column_f64("radar.positions", &[7.0, 8.0])
         .unwrap();
-    host.set_radar_document(RADAR).unwrap();
+    host.set_radar_document(RADAR, None).unwrap();
     assert_eq!(series(&host)[0].x_column, "radar.positions");
     assert_eq!(column_ids(&host), ["radar.positions", "radar.values.a"]);
 }
@@ -289,7 +296,7 @@ async fn a_document_that_does_not_validate_changes_nothing_and_names_the_stage()
 #[wasm_bindgen_test(async)]
 async fn a_document_whose_columns_do_not_fit_the_budget_changes_nothing() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_boxplot_document(BOXPLOT).unwrap();
+    chart.set_boxplot_document(BOXPLOT, None).unwrap();
     // A point highlight and an element selection the failure must keep.
     chart.on_press(240.0, 16.0).unwrap();
     let before = snapshot(&mut chart).await;
@@ -309,7 +316,7 @@ async fn a_document_whose_columns_do_not_fit_the_budget_changes_nothing() {
     chart
         .configure_auto_residency(total + margin, total + margin)
         .unwrap();
-    let error = chart.set_boxplot_document(&large).unwrap_err();
+    let error = chart.set_boxplot_document(&large, None).unwrap_err();
     assert_eq!(
         error_field(&error, "stage").as_deref(),
         Some("upload"),
@@ -329,13 +336,13 @@ async fn a_document_whose_columns_do_not_fit_the_budget_changes_nothing() {
 
     // With room again the same document opens.
     chart.configure_auto_residency(1e12, 1e12).unwrap();
-    chart.set_boxplot_document(&large).unwrap();
+    chart.set_boxplot_document(&large, None).unwrap();
 }
 
 #[wasm_bindgen_test(async)]
 async fn a_failed_fit_changes_nothing() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_categorical_document(CATEGORICAL).unwrap();
+    chart.set_categorical_document(CATEGORICAL, None).unwrap();
     let before = snapshot(&mut chart).await;
     // Every value missing: the value axis has nothing to fit. Whether the
     // fit refuses it or keeps a default range, a failure must change
@@ -343,8 +350,8 @@ async fn a_failed_fit_changes_nothing() {
     let empty = CATEGORICAL
         .replace("[12.0, 18.0]", "[null, null]")
         .replace("[18.0, 14.0]", "[null, null]");
-    match chart.set_categorical_document(&empty) {
-        Ok(()) => assert_eq!(series(&chart).len(), 2),
+    match chart.set_categorical_document(&empty, None) {
+        Ok(_) => assert_eq!(series(&chart).len(), 2),
         Err(error) => {
             assert!(
                 matches!(
@@ -364,7 +371,7 @@ async fn replaced_documents_keep_the_documented_ids_and_remove_the_stale_columns
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
     chart.register_column_f64("host", &[1.0, 2.0]).unwrap();
 
-    chart.set_radar_document(RADAR).unwrap();
+    chart.set_radar_document(RADAR, None).unwrap();
     assert_eq!(series(&chart)[0].x_column, "radar.positions");
     assert_eq!(series(&chart)[0].y_column, "radar.values.a");
     assert_eq!(
@@ -388,7 +395,7 @@ async fn replaced_documents_keep_the_documented_ids_and_remove_the_stale_columns
              "color": {"r": 0.82, "g": 0.36, "b": 0.25, "a": 1.0}}
         ]
     }"#;
-    chart.set_radar_document(wide).unwrap();
+    chart.set_radar_document(wide, None).unwrap();
     let radar = series(&chart);
     assert_eq!(radar.len(), 2);
     assert_eq!(radar[0].x_column, "radar.positions");
@@ -404,7 +411,7 @@ async fn replaced_documents_keep_the_documented_ids_and_remove_the_stale_columns
     );
 
     // A document of another family: the radar columns go with its series.
-    chart.set_categorical_document(CATEGORICAL).unwrap();
+    chart.set_categorical_document(CATEGORICAL, None).unwrap();
     let categorical = series(&chart);
     assert_eq!(categorical[0].x_column, "categorical.positions");
     assert_eq!(categorical[1].y_column, "categorical.values.south");
@@ -420,17 +427,17 @@ async fn replaced_documents_keep_the_documented_ids_and_remove_the_stale_columns
 
     // A box plot: its record and ragged outlier column take the documented
     // ids, and the categorical columns go.
-    chart.set_boxplot_document(BOXPLOT).unwrap();
+    chart.set_boxplot_document(BOXPLOT, None).unwrap();
     let boxes = series(&chart);
     assert_eq!(boxes[0].x_column, "boxplot.positions");
     assert_eq!(boxes[0].y_column, "boxplot.record.a");
     assert_eq!(column_ids(&chart), ["boxplot.positions", "host"]);
-    chart.set_boxplot_document(BOXPLOT).unwrap();
+    chart.set_boxplot_document(BOXPLOT, None).unwrap();
     assert_eq!(series(&chart)[0].y_column, "boxplot.record.a");
 
     // Back to a smaller radar: the box plot's record and outliers are gone,
     // so their ids take plain columns again.
-    chart.set_radar_document(RADAR).unwrap();
+    chart.set_radar_document(RADAR, None).unwrap();
     assert_eq!(
         column_ids(&chart),
         ["host", "radar.positions", "radar.values.a"]
@@ -465,7 +472,7 @@ async fn monotonic_chart() -> FiggyChart {
 #[wasm_bindgen_test(async)]
 async fn a_document_replaces_a_shown_monotonic_document_under_the_documented_ids() {
     let mut chart = monotonic_chart().await;
-    chart.set_categorical_document(CATEGORICAL).unwrap();
+    chart.set_categorical_document(CATEGORICAL, None).unwrap();
     // The monotonic chart ended with the commit; the document is shown.
     assert_eq!(chart.monotonic_groups().unwrap(), "[]");
     let shown = series(&chart);
@@ -500,14 +507,14 @@ async fn a_failed_document_replace_leaves_a_shown_monotonic_document_as_it_was()
 
     // Validate: a malformed document, and a documented id held by another
     // kind of source.
-    let error = chart.set_radar_document("{").unwrap_err();
+    let error = chart.set_radar_document("{", None).unwrap_err();
     assert_eq!(error_field(&error, "stage").as_deref(), Some("validate"));
     assert_eq!(state(&chart), before, "malformed document");
     chart
         .register_column_f64("boxplot.record.a", &[0.0, 1.0])
         .unwrap();
     let before = state(&chart);
-    let error = chart.set_boxplot_document(BOXPLOT).unwrap_err();
+    let error = chart.set_boxplot_document(BOXPLOT, None).unwrap_err();
     assert_eq!(error_field(&error, "stage").as_deref(), Some("validate"));
     assert_eq!(state(&chart), before, "held id");
 
@@ -529,7 +536,7 @@ async fn a_failed_document_replace_leaves_a_shown_monotonic_document_as_it_was()
             &format!("\"outliers\": [{outliers}]"),
         )
         .replace("\"id\": \"a\"", "\"id\": \"b\"");
-    let error = chart.set_boxplot_document(&large_boxes).unwrap_err();
+    let error = chart.set_boxplot_document(&large_boxes, None).unwrap_err();
     assert_eq!(
         error_field(&error, "stage").as_deref(),
         Some("upload"),
@@ -540,7 +547,7 @@ async fn a_failed_document_replace_leaves_a_shown_monotonic_document_as_it_was()
 
     // With room again a document replaces it.
     chart.configure_auto_residency(1e12, 1e12).unwrap();
-    chart.set_radar_document(RADAR).unwrap();
+    chart.set_radar_document(RADAR, None).unwrap();
     assert_eq!(chart.monotonic_groups().unwrap(), "[]");
     assert_eq!(series(&chart)[0].x_column, "radar.positions");
 }
@@ -1103,21 +1110,21 @@ async fn blue_bounds(png: &js_sys::Uint8Array) -> serde_json::Value {
 /// and its document opens with the automatic layout.
 #[wasm_bindgen_test(async)]
 async fn an_explicit_data_area_is_the_data_area_at_each_dpr_and_in_png() {
-    type Convert = fn(&str) -> Result<String, JsValue>;
+    type Convert = fn(&str, Option<String>) -> Result<String, JsValue>;
     let families: [(&str, &str, Convert); 3] = [
         ("categorical", CATEGORICAL, convert_categorical_document),
         ("boxplot", BOXPLOT, convert_boxplot_document),
         ("radar", RADAR, convert_radar_document),
     ];
     let open = |chart: &mut FiggyChart, family: &str, document: &str| match family {
-        "categorical" => chart.set_categorical_document(document),
-        "boxplot" => chart.set_boxplot_document(document),
-        _ => chart.set_radar_document(document),
+        "categorical" => chart.set_categorical_document(document, None),
+        "boxplot" => chart.set_boxplot_document(document, None),
+        _ => chart.set_radar_document(document, None),
     };
     for (family, plain, convert) in families {
         let document = with_data_area(plain, LEGACY_AREA);
         let converted: serde_json::Value =
-            serde_json::from_str(&convert(&document).unwrap()).unwrap();
+            serde_json::from_str(&convert(&document, None).unwrap()).unwrap();
         assert_eq!(converted["notes"], serde_json::json!([]), "{family}");
 
         for dpr in [1u32, 2] {
@@ -1171,9 +1178,182 @@ async fn an_explicit_data_area_is_the_data_area_at_each_dpr_and_in_png() {
         // On the converter's placeholder (1000 x 800) the same rectangle
         // fits; one past it is noted.
         let past = with_data_area(plain, [900.0, 700.0, 300.0, 200.0]);
-        let converted: serde_json::Value = serde_json::from_str(&convert(&past).unwrap()).unwrap();
+        let converted: serde_json::Value =
+            serde_json::from_str(&convert(&past, None).unwrap()).unwrap();
         assert_eq!(converted["notes"][0]["path"], "decorations.data_area");
         assert_eq!(converted["notes"][0]["kind"], "dropped");
         assert!(!converted["notes"][0]["reason"].as_str().unwrap().is_empty());
+    }
+}
+
+/// The JSON a refused document call carried as its `notes`.
+fn error_notes(error: &JsValue) -> serde_json::Value {
+    let notes = js_sys::Reflect::get(error, &JsValue::from_str("notes")).unwrap();
+    let text = js_sys::JSON::stringify(&notes)
+        .unwrap()
+        .as_string()
+        .unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+/// The paths of a list of conversion notes.
+fn note_paths(notes: &serde_json::Value) -> Vec<String> {
+    notes
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note["path"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// One conversion for review and apply (#334): a document whose
+/// conversion drops its background and an explicit data area the 640 x 480
+/// chart area cannot hold (the 1000 x 800 placeholder can), previewed with
+/// `convert_*_document` on the chart's chart area, reports exactly what
+/// `set_*_document` returns, notes included. Under a `refuse` policy that
+/// one of those notes matches (a listed path, or `"any"`) the setter
+/// throws `conversion_loss` with the refused notes and the chart's config,
+/// series, columns, selection and image are as they were; options it does
+/// not know are refused the same way; a path no note reports opens it.
+#[wasm_bindgen_test(async)]
+async fn a_previewed_loss_is_the_applied_loss_and_a_refused_one_changes_nothing() {
+    type Convert = fn(&str, Option<String>) -> Result<String, JsValue>;
+    type Set = fn(&mut FiggyChart, &str, Option<String>) -> Result<String, JsValue>;
+    let families: [(&str, &str, Convert, Set); 3] = [
+        (
+            "categorical",
+            CATEGORICAL,
+            convert_categorical_document,
+            FiggyChart::set_categorical_document,
+        ),
+        (
+            "boxplot",
+            BOXPLOT,
+            convert_boxplot_document,
+            FiggyChart::set_boxplot_document,
+        ),
+        (
+            "radar",
+            RADAR,
+            convert_radar_document,
+            FiggyChart::set_radar_document,
+        ),
+    ];
+    for (family, plain, convert, set) in families {
+        let canvas = canvas();
+        canvas.set_width(LEGACY_DOC.0);
+        canvas.set_height(LEGACY_DOC.1);
+        let mut chart = FiggyChart::create(canvas).await.unwrap();
+        // A shown document to keep: the plain one, opened without options.
+        let plain_report = set(&mut chart, plain, None).unwrap();
+        let chart_area = config(&chart).chart_area.0;
+        let options = serde_json::json!({
+            "chart_area": [
+                chart_area.x,
+                chart_area.y,
+                chart_area.width,
+                chart_area.height
+            ]
+        })
+        .to_string();
+        assert_eq!(
+            plain_report,
+            convert(plain, Some(options.clone())).unwrap(),
+            "{family}: plain"
+        );
+        chart.frame().unwrap();
+
+        let mut lossy: serde_json::Value =
+            serde_json::from_str(&with_data_area(plain, [600.0, 400.0, 300.0, 200.0])).unwrap();
+        lossy["background"] = serde_json::json!({"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0});
+        let lossy = lossy.to_string();
+        // On the placeholder only the background is lost; on the chart's
+        // chart area the data area is too.
+        let placeholder: serde_json::Value =
+            serde_json::from_str(&convert(&lossy, None).unwrap()).unwrap();
+        assert_eq!(
+            note_paths(&placeholder["notes"]),
+            ["background"],
+            "{family}"
+        );
+        let preview = convert(&lossy, Some(options.clone())).unwrap();
+        let previewed: serde_json::Value = serde_json::from_str(&preview).unwrap();
+        assert_eq!(
+            note_paths(&previewed["notes"]),
+            ["background", "decorations.data_area"],
+            "{family}"
+        );
+
+        let before = snapshot(&mut chart).await;
+        for (refuse, refused) in [
+            (
+                serde_json::json!(["decorations.data_area"]),
+                vec!["decorations.data_area"],
+            ),
+            (
+                serde_json::json!(["decorations"]),
+                vec!["decorations.data_area"],
+            ),
+            (
+                serde_json::json!("any"),
+                vec!["background", "decorations.data_area"],
+            ),
+        ] {
+            let what = format!("{family} refuse {refuse}");
+            let options = serde_json::json!({ "refuse": refuse }).to_string();
+            let error = set(&mut chart, &lossy, Some(options)).unwrap_err();
+            assert_eq!(
+                error_field(&error, "code").as_deref(),
+                Some("conversion_loss"),
+                "{what}: {}",
+                error_message(&error)
+            );
+            assert_eq!(
+                error_field(&error, "stage").as_deref(),
+                Some("validate"),
+                "{what}"
+            );
+            let notes = error_notes(&error);
+            assert_eq!(note_paths(&notes), refused, "{what}");
+            for note in notes.as_array().unwrap() {
+                let reported = previewed["notes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|n| n["path"] == note["path"]);
+                assert_eq!(reported, Some(note), "{what}: the previewed note");
+            }
+            assert_unchanged(&mut chart, &before, &what).await;
+        }
+        for options in [
+            r#"{"refuse": "all"}"#,
+            r#"{"refuse": ["background"], "chart_area": [0, 0, 640, 480]}"#,
+            "[]",
+        ] {
+            let error = set(&mut chart, &lossy, Some(options.into())).unwrap_err();
+            assert_eq!(
+                error_field(&error, "code").as_deref(),
+                Some("invalid_options"),
+                "{family} {options}: {}",
+                error_message(&error)
+            );
+            assert_eq!(error_field(&error, "stage").as_deref(), Some("validate"));
+            assert_unchanged(&mut chart, &before, options).await;
+        }
+        // Options `convert_*_document` does not know are refused too.
+        let error = convert(&lossy, Some(r#"{"refuse": "any"}"#.into())).unwrap_err();
+        assert_eq!(
+            error_field(&error, "code").as_deref(),
+            Some("invalid_options")
+        );
+
+        // A path no note reports: the document opens, and the setter
+        // returns the previewed report.
+        let options = serde_json::json!({ "refuse": ["title", "overrides"] }).to_string();
+        let report = set(&mut chart, &lossy, Some(options)).unwrap();
+        assert_eq!(report, preview, "{family}: the applied report");
+        chart.frame().unwrap();
+        // Without options, the same report.
+        assert_eq!(set(&mut chart, &lossy, None).unwrap(), preview, "{family}");
     }
 }

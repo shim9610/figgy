@@ -367,8 +367,12 @@ their Cartesian options. An explicit `decorations.data_area` becomes the plot
 area through the margins (`Config::fit_legacy_data_area`, edges rounded to
 whole pixels; #334); one the layout cannot hold keeps the automatic layout and
 is reported as dropped with the reason. The hover state and the background
-colour (the host's clear colour draws) are not carried; the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json)`
-does the same.
+colour (the host's clear colour draws) are not carried; the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json, options?)`
+does the same and returns the conversion report (`{ config, series,
+uploads, columns, notes }`), which `convert_boxplot_document(json,
+{chart_area})` previews without a chart; its `{ "refuse": [...] | "any" }`
+option refuses a lossy document with `code: "conversion_loss"` before
+anything changes (#334; see [WASM.md](WASM.md#model-api)).
 
 ### Document rules
 

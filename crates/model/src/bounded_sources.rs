@@ -42,7 +42,7 @@ use crate::data_config::{
 };
 use crate::decoration::DecorationId;
 use crate::format::{LabelFormat, PlainNumberFormat};
-use crate::layout::{DataArea, FitStrategy, LayoutError, Rect, RectF, Side, axis_mut};
+use crate::layout::{ChartArea, DataArea, FitStrategy, LayoutError, Rect, RectF, Side, axis_mut};
 use crate::polar::{AngleUnit, GridShape, PolarInterpolation, PolarOptions};
 use crate::radar::{RadarChart, RadarGridShape};
 use crate::text::RichText;
@@ -480,11 +480,20 @@ fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
     }
 }
 
-/// Carry a legacy document's explicit data area into its converted
-/// `config` ([`Config::fit_legacy_data_area`]) once the rest of the layout
-/// is in place, or, when the layout cannot hold it, keep the automatic
-/// layout and note the field as dropped with the reason.
-fn legacy_data_area(notes: &mut Notes, config: &mut Config, decorations: &crate::DecorationLayout) {
+/// Place a converted `config` on the host's `chart_area`, when one is
+/// given (`Config::from_*_with_report_in`), and carry a legacy document's
+/// explicit data area into it ([`Config::fit_legacy_data_area`]) once the
+/// rest of the layout is in place, or, when the layout cannot hold it, keep
+/// the automatic layout and note the field as dropped with the reason.
+fn legacy_data_area(
+    notes: &mut Notes,
+    config: &mut Config,
+    decorations: &crate::DecorationLayout,
+    chart_area: Option<&ChartArea>,
+) {
+    if let Some(chart_area) = chart_area {
+        config.chart_area = chart_area.clone();
+    }
     let Some(area) = &decorations.data_area else {
         return;
     };
@@ -653,8 +662,23 @@ impl Config {
     /// the converted layout cannot hold, with the reason. The config,
     /// series and uploads are the ones `from_categorical` returns.
     pub fn from_categorical_with_report(chart: &CategoricalChart) -> ConvertedDocument<'_> {
+        Self::from_categorical_with_report_in(chart, None)
+    }
+
+    /// [`Config::from_categorical_with_report`] on the host's `chart_area` (logical
+    /// pixels; `None` keeps the placeholder) (#334): the converted config
+    /// takes that chart area once the rest of the conversion is done, and
+    /// an explicit `decorations.data_area` is fitted to it
+    /// ([`Config::fit_legacy_data_area`]) and noted as dropped when it
+    /// cannot hold it. This is the conversion a host that opens the
+    /// document on a chart of that chart area installs, so a preview and
+    /// the opened chart get the same config, series and notes.
+    pub fn from_categorical_with_report_in<'a>(
+        chart: &'a CategoricalChart,
+        chart_area: Option<&ChartArea>,
+    ) -> ConvertedDocument<'a> {
         let mut notes = Notes::on();
-        let (config, series, uploads) = Self::categorical_conversion(chart, &mut notes);
+        let (config, series, uploads) = Self::categorical_conversion(chart, &mut notes, chart_area);
         let report = conversion_report(
             &uploads,
             chart.series.iter().map(|s| s.id.as_str()),
@@ -669,8 +693,23 @@ impl Config {
     /// each field the document set that the chart does not carry as set,
     /// the same fields [`Config::from_categorical_with_report`] reports.
     pub fn from_boxplot_with_report(chart: &BoxPlotChart) -> ConvertedDocument<'_> {
+        Self::from_boxplot_with_report_in(chart, None)
+    }
+
+    /// [`Config::from_boxplot_with_report`] on the host's `chart_area` (logical
+    /// pixels; `None` keeps the placeholder) (#334): the converted config
+    /// takes that chart area once the rest of the conversion is done, and
+    /// an explicit `decorations.data_area` is fitted to it
+    /// ([`Config::fit_legacy_data_area`]) and noted as dropped when it
+    /// cannot hold it. This is the conversion a host that opens the
+    /// document on a chart of that chart area installs, so a preview and
+    /// the opened chart get the same config, series and notes.
+    pub fn from_boxplot_with_report_in<'a>(
+        chart: &'a BoxPlotChart,
+        chart_area: Option<&ChartArea>,
+    ) -> ConvertedDocument<'a> {
         let mut notes = Notes::on();
-        let (config, series, uploads) = Self::boxplot_conversion(chart, &mut notes);
+        let (config, series, uploads) = Self::boxplot_conversion(chart, &mut notes, chart_area);
         let report = conversion_report(
             &uploads,
             chart.series.iter().map(|s| s.id.as_str()),
@@ -696,8 +735,23 @@ impl Config {
     /// `decorations.data_area` the converted layout cannot hold, with the
     /// reason.
     pub fn from_radar_with_report(chart: &RadarChart) -> ConvertedDocument<'_> {
+        Self::from_radar_with_report_in(chart, None)
+    }
+
+    /// [`Config::from_radar_with_report`] on the host's `chart_area` (logical
+    /// pixels; `None` keeps the placeholder) (#334): the converted config
+    /// takes that chart area once the rest of the conversion is done, and
+    /// an explicit `decorations.data_area` is fitted to it
+    /// ([`Config::fit_legacy_data_area`]) and noted as dropped when it
+    /// cannot hold it. This is the conversion a host that opens the
+    /// document on a chart of that chart area installs, so a preview and
+    /// the opened chart get the same config, series and notes.
+    pub fn from_radar_with_report_in<'a>(
+        chart: &'a RadarChart,
+        chart_area: Option<&ChartArea>,
+    ) -> ConvertedDocument<'a> {
         let mut notes = Notes::on();
-        let (config, series, uploads) = Self::radar_conversion(chart, &mut notes);
+        let (config, series, uploads) = Self::radar_conversion(chart, &mut notes, chart_area);
         let report = conversion_report(
             &uploads,
             chart.series.iter().map(|s| s.id.as_str()),
@@ -749,7 +803,7 @@ impl Config {
     pub fn from_categorical(
         chart: &CategoricalChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        Self::categorical_conversion(chart, &mut Notes::off())
+        Self::categorical_conversion(chart, &mut Notes::off(), None)
     }
 
     /// The conversion of [`Config::from_categorical`], writing its notes to
@@ -757,6 +811,7 @@ impl Config {
     fn categorical_conversion<'a>(
         chart: &'a CategoricalChart,
         notes: &mut Notes,
+        chart_area: Option<&ChartArea>,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         let horizontal = chart.direction == CategoryBarDirection::Horizontal;
         legacy_document_notes(
@@ -892,7 +947,7 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
-        legacy_data_area(notes, &mut config, &chart.decorations);
+        legacy_data_area(notes, &mut config, &chart.decorations, chart_area);
         (config, series, uploads)
     }
 }
@@ -1175,7 +1230,7 @@ impl Config {
     pub fn from_boxplot(
         chart: &BoxPlotChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        Self::boxplot_conversion(chart, &mut Notes::off())
+        Self::boxplot_conversion(chart, &mut Notes::off(), None)
     }
 
     /// The conversion of [`Config::from_boxplot`], writing its notes to
@@ -1183,6 +1238,7 @@ impl Config {
     fn boxplot_conversion<'a>(
         chart: &'a BoxPlotChart,
         notes: &mut Notes,
+        chart_area: Option<&ChartArea>,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         let horizontal = chart.direction == BoxPlotDirection::Horizontal;
         legacy_document_notes(
@@ -1337,7 +1393,7 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
-        legacy_data_area(notes, &mut config, &chart.decorations);
+        legacy_data_area(notes, &mut config, &chart.decorations, chart_area);
         (config, series, uploads)
     }
 }
@@ -1392,7 +1448,7 @@ impl Config {
     /// ([`Config::fit_legacy_data_area`] on the placeholder chart area; one
     /// the layout cannot hold leaves the automatic layout).
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        Self::radar_conversion(chart, &mut Notes::off())
+        Self::radar_conversion(chart, &mut Notes::off(), None)
     }
 
     /// The conversion of [`Config::from_radar`], writing its notes to
@@ -1400,6 +1456,7 @@ impl Config {
     fn radar_conversion<'a>(
         chart: &'a RadarChart,
         notes: &mut Notes,
+        chart_area: Option<&ChartArea>,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>) {
         legacy_document_notes(
             notes,
@@ -1655,7 +1712,7 @@ impl Config {
             }
         }
         legacy_label_offsets(&mut series, notes, &chart.categories, &chart.decorations);
-        legacy_data_area(notes, &mut config, &chart.decorations);
+        legacy_data_area(notes, &mut config, &chart.decorations, chart_area);
         (config, series, uploads)
     }
 }
@@ -1671,9 +1728,9 @@ fn check_legacy_data_area<C>(
     chart: &mut C,
     decorations: fn(&mut C) -> &mut crate::DecorationLayout,
     convert: for<'a> fn(&'a C) -> ConvertedDocument<'a>,
+    convert_in: for<'a> fn(&'a C, Option<&ChartArea>) -> ConvertedDocument<'a>,
     plain: for<'a> fn(&'a C) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'a>>),
 ) {
-    use crate::layout::ChartArea;
     let rect = |x, y, width, height| RectF {
         x,
         y,
@@ -1714,6 +1771,34 @@ fn check_legacy_data_area<C>(
     host.chart_area = ChartArea(whole(0, 0, 640, 480));
     host.fit_legacy_data_area(&issue).unwrap();
     assert_eq!(host.data_area().unwrap().0, whole(80, 70, 420, 260));
+    // Converted on that chart area: the same config, with no note.
+    let host_area = ChartArea(whole(0, 0, 640, 480));
+    let (config, series, _, report) = convert_in(chart, Some(&host_area));
+    assert_eq!(config, host);
+    assert_eq!(series, plain(chart).1);
+    assert_eq!(note(&report), None, "{:?}", report.notes);
+    // Without a chart area, the placeholder conversion.
+    let (config, series, _, report) = convert_in(chart, None);
+    let (placeholder, placeholder_series, _, placeholder_report) = convert(chart);
+    assert_eq!(
+        (config, series, report),
+        (placeholder, placeholder_series, placeholder_report)
+    );
+    // A rectangle the placeholder holds but the host's chart area does
+    // not: carried on the placeholder, dropped on the host's.
+    let wide = rect(500.0, 300.0, 400.0, 300.0);
+    decorations(chart).data_area = Some(wide);
+    assert_eq!(note(&convert(chart).3), None);
+    let (config, _, _, report) = convert_in(chart, Some(&host_area));
+    let dropped = note(&report).expect("dropped on the host's chart area");
+    assert!(
+        dropped.reason.contains("does not lie inside"),
+        "{dropped:?}"
+    );
+    let mut automatic_host = automatic.clone();
+    automatic_host.chart_area = host_area.clone();
+    assert_eq!(config, automatic_host);
+    decorations(chart).data_area = Some(issue);
 
     // Each edge is rounded to the nearest whole pixel.
     decorations(chart).data_area = Some(rect(80.4, 69.6, 419.7, 260.2));
@@ -2125,6 +2210,7 @@ mod tests {
             &mut chart(),
             |c| &mut c.decorations,
             Config::from_categorical_with_report,
+            Config::from_categorical_with_report_in,
             Config::from_categorical,
         );
     }
@@ -2495,6 +2581,7 @@ mod box_tests {
             &mut chart(),
             |c| &mut c.decorations,
             Config::from_boxplot_with_report,
+            Config::from_boxplot_with_report_in,
             Config::from_boxplot,
         );
     }
@@ -2840,6 +2927,7 @@ mod radar_tests {
             &mut chart(),
             |c| &mut c.decorations,
             Config::from_radar_with_report,
+            Config::from_radar_with_report_in,
             Config::from_radar,
         );
     }

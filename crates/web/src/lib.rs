@@ -274,13 +274,14 @@ fn validate_config_json(config: &str, series: Option<&str>) -> Result<String, St
     .map_err(|e| e.to_string())
 }
 
-/// Why a legacy document did not convert: its JSON, or a rule of the
-/// document's own `validate`.
+/// Why a legacy document did not convert: its JSON, a rule of the
+/// document's own `validate`, or the options passed with it (#334).
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(Debug)]
 enum DocumentError {
     Json(serde_json::Error),
     Rule(renderer::RuleKind),
+    Options(String),
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -289,6 +290,7 @@ impl std::fmt::Display for DocumentError {
         match self {
             Self::Json(e) => e.fmt(f),
             Self::Rule(kind) => kind.fmt(f),
+            Self::Options(why) => f.write_str(why),
         }
     }
 }
@@ -330,13 +332,14 @@ fn upload_descriptor_json(upload: &renderer::SeriesUpload<'_>) -> serde_json::Va
     }
 }
 
-/// The JSON a `convert_*_document` binding returns for a converted legacy
-/// document: `{config, series, uploads, columns, notes}`, the uploads as
-/// descriptors without their values ([`upload_descriptor_json`]), the
-/// columns and notes of its `ConversionReport`.
+/// The JSON a `convert_*_document` binding and a `set_*_document` call
+/// return for a converted legacy document: `{config, series, uploads,
+/// columns, notes}`, the uploads as descriptors without their values
+/// ([`upload_descriptor_json`]), the columns and notes of its
+/// `ConversionReport`. The one builder of both (#334).
 #[cfg(any(target_arch = "wasm32", test))]
 fn converted_document_json(
-    (config, series, uploads, report): renderer::ConvertedDocument<'_>,
+    (config, series, uploads, report): &renderer::ConvertedDocument<'_>,
 ) -> Result<String, DocumentError> {
     let uploads: Vec<_> = uploads.iter().map(upload_descriptor_json).collect();
     serde_json::to_string(&serde_json::json!({
@@ -349,36 +352,202 @@ fn converted_document_json(
     .map_err(DocumentError::Json)
 }
 
-/// What the `convert_categorical_document` binding returns for the legacy
-/// `CategoricalChart` JSON `json` (`Config::from_categorical_with_report`).
+/// A legacy document a `convert_*_document` binding and a
+/// `set_*_document` call read: parsed and held to its own `validate`, then
+/// converted by the one conversion both use (`Config::from_*_with_report_in`,
+/// #334).
 #[cfg(any(target_arch = "wasm32", test))]
-#[allow(deprecated)]
-fn convert_categorical_document_json(json: &str) -> Result<String, DocumentError> {
-    let document: renderer::CategoricalChart =
-        serde_json::from_str(json).map_err(DocumentError::Json)?;
-    document.validate().map_err(DocumentError::Rule)?;
-    converted_document_json(renderer::Config::from_categorical_with_report(&document))
+pub(crate) trait LegacyDocument: Sized {
+    /// The document of `json`, refused when it does not parse or breaks
+    /// one of its rules.
+    fn read(json: &str) -> Result<Self, DocumentError>;
+    /// The document converted on `chart_area` (`None`: the placeholder).
+    fn convert_in(
+        &self,
+        chart_area: Option<&renderer::layout::ChartArea>,
+    ) -> renderer::ConvertedDocument<'_>;
 }
 
-/// What the `convert_boxplot_document` binding returns for the legacy
-/// `BoxPlotChart` JSON `json` (`Config::from_boxplot_with_report`).
-#[cfg(any(target_arch = "wasm32", test))]
-#[allow(deprecated)]
-fn convert_boxplot_document_json(json: &str) -> Result<String, DocumentError> {
-    let document: renderer::BoxPlotChart =
-        serde_json::from_str(json).map_err(DocumentError::Json)?;
-    document.validate().map_err(DocumentError::Rule)?;
-    converted_document_json(renderer::Config::from_boxplot_with_report(&document))
+macro_rules! legacy_document {
+    ($document:ty, $convert:ident) => {
+        #[cfg(any(target_arch = "wasm32", test))]
+        #[allow(deprecated)]
+        impl LegacyDocument for $document {
+            fn read(json: &str) -> Result<Self, DocumentError> {
+                let document: Self = serde_json::from_str(json).map_err(DocumentError::Json)?;
+                document.validate().map_err(DocumentError::Rule)?;
+                Ok(document)
+            }
+
+            fn convert_in(
+                &self,
+                chart_area: Option<&renderer::layout::ChartArea>,
+            ) -> renderer::ConvertedDocument<'_> {
+                renderer::Config::$convert(self, chart_area)
+            }
+        }
+    };
 }
 
-/// What the `convert_radar_document` binding returns for the legacy
-/// `RadarChart` JSON `json` (`Config::from_radar_with_report`).
+legacy_document!(renderer::CategoricalChart, from_categorical_with_report_in);
+legacy_document!(renderer::BoxPlotChart, from_boxplot_with_report_in);
+legacy_document!(renderer::RadarChart, from_radar_with_report_in);
+
+/// The options JSON object of a document call (`None` or `null`: none),
+/// refused when it is not an object or names a field other than `allowed`.
 #[cfg(any(target_arch = "wasm32", test))]
-#[allow(deprecated)]
-fn convert_radar_document_json(json: &str) -> Result<String, DocumentError> {
-    let document: renderer::RadarChart = serde_json::from_str(json).map_err(DocumentError::Json)?;
-    document.validate().map_err(DocumentError::Rule)?;
-    converted_document_json(renderer::Config::from_radar_with_report(&document))
+fn document_options(
+    options: Option<&str>,
+    allowed: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, DocumentError> {
+    let invalid = |why: String| DocumentError::Options(format!("invalid options: {why}"));
+    let Some(text) = options else {
+        return Ok(serde_json::Map::new());
+    };
+    match serde_json::from_str::<serde_json::Value>(text).map_err(|e| invalid(e.to_string()))? {
+        serde_json::Value::Null => Ok(serde_json::Map::new()),
+        serde_json::Value::Object(fields) => match fields.keys().find(|k| *k != allowed) {
+            Some(unknown) => Err(invalid(format!(
+                "unknown field `{unknown}`; the only field is `{allowed}`"
+            ))),
+            None => Ok(fields),
+        },
+        _ => Err(invalid("the options are not a JSON object".into())),
+    }
+}
+
+/// The chart area of a `convert_*_document` options JSON
+/// (`{"chart_area"?: [x, y, width, height]}`, whole logical pixels, as the
+/// chart's `chart_area`); `None` when not given.
+#[cfg(any(target_arch = "wasm32", test))]
+fn convert_options_chart_area(
+    options: Option<&str>,
+) -> Result<Option<renderer::layout::ChartArea>, DocumentError> {
+    let fields = document_options(options, "chart_area")?;
+    let Some(value) = fields.get("chart_area") else {
+        return Ok(None);
+    };
+    let invalid = || {
+        DocumentError::Options(
+            "invalid options: `chart_area` is not `[x, y, width, height]` in whole logical pixels \
+             (each an integer from 0 to 4294967295)"
+                .into(),
+        )
+    };
+    let edges = value
+        .as_array()
+        .filter(|a| a.len() == 4)
+        .ok_or_else(invalid)?;
+    let edge = |i: usize| {
+        edges[i]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(invalid)
+    };
+    Ok(Some(renderer::layout::ChartArea(renderer::layout::Rect {
+        x: edge(0)?,
+        y: edge(1)?,
+        width: edge(2)?,
+        height: edge(3)?,
+    })))
+}
+
+/// What a `set_*_document` call refuses to lose (#334), from its options
+/// JSON `{"refuse"?: ["path", ...] | "any"}`.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LossPolicy {
+    /// No `refuse`: every note is accepted.
+    Accept,
+    /// `"any"`: any note refuses the document.
+    Any,
+    /// The listed document paths: a note on one of them, or under one
+    /// (`decorations.offsets` covers `decorations.offsets[2]`), refuses it.
+    Paths(Vec<String>),
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl LossPolicy {
+    /// The policy of a `set_*_document` options JSON (`None` or `null`:
+    /// [`LossPolicy::Accept`]). Refused when the options are not an
+    /// object, name another field, or `refuse` is neither `"any"` nor an
+    /// array of non-empty path strings.
+    pub(crate) fn parse(options: Option<&str>) -> Result<Self, DocumentError> {
+        let mut fields = document_options(options, "refuse")?;
+        let invalid = || {
+            DocumentError::Options(
+                "invalid options: `refuse` is neither \"any\" nor an array of document paths"
+                    .into(),
+            )
+        };
+        match fields.remove("refuse") {
+            None => Ok(Self::Accept),
+            Some(serde_json::Value::String(any)) if any == "any" => Ok(Self::Any),
+            Some(serde_json::Value::Array(paths)) => paths
+                .into_iter()
+                .map(|path| match path {
+                    serde_json::Value::String(path) if !path.is_empty() => Ok(path),
+                    _ => Err(invalid()),
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::Paths),
+            Some(_) => Err(invalid()),
+        }
+    }
+
+    /// Whether this policy refuses a conversion that reports `note`.
+    pub(crate) fn refuses(&self, note: &renderer::ConversionNote) -> bool {
+        match self {
+            Self::Accept => false,
+            Self::Any => true,
+            Self::Paths(paths) => paths.iter().any(|path| {
+                note.path.strip_prefix(path.as_str()).is_some_and(|rest| {
+                    rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')
+                })
+            }),
+        }
+    }
+}
+
+/// What a `set_*_document` call installs, checked against its loss
+/// policy before anything is installed (#334): the report JSON it returns
+/// ([`converted_document_json`] of the same conversion), or, when the
+/// policy refuses a note, the JSON array of the refused notes.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) enum DocumentApply {
+    Report(String),
+    Refused(String),
+}
+
+/// The report of `converted`, the conversion a `set_*_document` call is
+/// about to install, under `policy` ([`DocumentApply`]).
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn document_apply(
+    converted: &renderer::ConvertedDocument<'_>,
+    policy: &LossPolicy,
+) -> Result<DocumentApply, DocumentError> {
+    let notes = &converted.3.notes;
+    if notes.iter().any(|note| policy.refuses(note)) {
+        let refused: Vec<&renderer::ConversionNote> =
+            notes.iter().filter(|note| policy.refuses(note)).collect();
+        return serde_json::to_string(&refused)
+            .map(DocumentApply::Refused)
+            .map_err(DocumentError::Json);
+    }
+    converted_document_json(converted).map(DocumentApply::Report)
+}
+
+/// What a `convert_*_document` binding returns for the legacy document
+/// JSON `json` and its options JSON (`{"chart_area"?: [x, y, w, h]}`):
+/// the document converted on that chart area, or on the placeholder.
+#[cfg(any(target_arch = "wasm32", test))]
+fn convert_document_json<D: LegacyDocument>(
+    json: &str,
+    options: Option<&str>,
+) -> Result<String, DocumentError> {
+    let chart_area = convert_options_chart_area(options)?;
+    let document = D::read(json)?;
+    converted_document_json(&document.convert_in(chart_area.as_ref()))
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -1804,6 +1973,8 @@ mod tests {
     }
 
     #[test]
+    // The legacy documents are read through their deprecated reader types.
+    #[allow(deprecated)]
     fn a_radar_document_converts_with_its_report() {
         let document = r#"{
             "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}, {"id": "c", "label": "C"}],
@@ -1813,8 +1984,10 @@ mod tests {
             "decorations": {"data_area": {"x": 10, "y": 10, "width": 300, "height": 200},
                             "offsets": [], "selected": null}
         }"#;
-        let out: serde_json::Value =
-            serde_json::from_str(&super::convert_radar_document_json(document).unwrap()).unwrap();
+        let out: serde_json::Value = serde_json::from_str(
+            &super::convert_document_json::<renderer::RadarChart>(document, None).unwrap(),
+        )
+        .unwrap();
         let config: renderer::Config = serde_json::from_value(out["config"].clone()).unwrap();
         assert!(config.polar().is_some());
         let series: Vec<renderer::SeriesConfig> =
@@ -1849,12 +2022,14 @@ mod tests {
         );
 
         assert!(matches!(
-            super::convert_radar_document_json("{\"series\": 1}"),
+            super::convert_document_json::<renderer::RadarChart>("{\"series\": 1}", None),
             Err(super::DocumentError::Json(_))
         ));
     }
 
     #[test]
+    // The legacy documents are read through their deprecated reader types.
+    #[allow(deprecated)]
     fn a_box_plot_document_describes_its_record_and_outliers() {
         let document = r#"{
             "categories": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
@@ -1862,8 +2037,10 @@ mod tests {
                         "values": [{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5,
                                     "outliers": [9, 10]}, null]}]
         }"#;
-        let out: serde_json::Value =
-            serde_json::from_str(&super::convert_boxplot_document_json(document).unwrap()).unwrap();
+        let out: serde_json::Value = serde_json::from_str(
+            &super::convert_document_json::<renderer::BoxPlotChart>(document, None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(out["uploads"][1]["role"], "box_record");
         assert_eq!(out["uploads"][1]["rows"], 2);
         assert_eq!(out["uploads"][1]["fields"].as_array().unwrap().len(), 9);
@@ -1876,6 +2053,8 @@ mod tests {
     }
 
     #[test]
+    // The legacy documents are read through their deprecated reader types.
+    #[allow(deprecated)]
     fn a_categorical_document_reports_a_refused_rule_with_its_code() {
         let document = r#"{
             "categories": [{"id": "a", "label": "A"}],
@@ -1883,24 +2062,230 @@ mod tests {
                         "color": {"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}}],
             "hovered": {"category_id": "a", "series_id": "s"}
         }"#;
-        let out: serde_json::Value =
-            serde_json::from_str(&super::convert_categorical_document_json(document).unwrap())
-                .unwrap();
+        let out: serde_json::Value = serde_json::from_str(
+            &super::convert_document_json::<renderer::CategoricalChart>(document, None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(out["notes"][0]["path"], "hovered");
         assert_eq!(out["uploads"][1]["len"], 1);
 
         // A group width outside 0.1..0.95 breaks the document's own rule.
         let refused = document.replace("\"hovered\"", "\"group_width\": 2.0, \"hovered\"");
-        match super::convert_categorical_document_json(&refused) {
+        match super::convert_document_json::<renderer::CategoricalChart>(&refused, None) {
             Err(super::DocumentError::Rule(_)) => {}
             other => panic!("expected a rule refusal, got {other:?}"),
         }
+    }
+
+    /// The setter's conversion of a document on a chart area (#334): what
+    /// `set_*_document` runs before it installs anything.
+    // The legacy documents are read through their deprecated reader types.
+    #[allow(deprecated)]
+    fn setter_report<D: super::LegacyDocument>(
+        json: &str,
+        chart_area: &renderer::layout::ChartArea,
+        policy: &super::LossPolicy,
+    ) -> Result<super::DocumentApply, super::DocumentError> {
+        let document = D::read(json)?;
+        super::document_apply(&document.convert_in(Some(chart_area)), policy)
+    }
+
+    /// A preview converted with the live chart area (`convert_*_document`
+    /// with `{chart_area}`) is the report the setter returns, notes
+    /// included, for each family (#334); the loss policy refuses exactly
+    /// the listed paths (and the paths under them), or any note.
+    #[test]
+    // The legacy documents are read through their deprecated reader types.
+    #[allow(deprecated)]
+    fn a_preview_on_the_chart_area_is_the_setters_report() {
+        let color = r#"{"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}"#;
+        // A black background (dropped), and a data area the 1000 x 800
+        // placeholder holds but a 640 x 480 chart area does not.
+        let extra = r#""background": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0},
+            "decorations": {"data_area": {"x": 500, "y": 300, "width": 400, "height": 300},
+                            "offsets": [], "selected": null}"#;
+        let categorical = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "values": [2], "color": {color}}}], {extra}}}"#
+        );
+        let boxplot = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}],
+                "series": [{{"id": "s", "label": "S", "color": {color}, "values": [
+                    {{"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5}}]}}], {extra}}}"#
+        );
+        let radar = format!(
+            r#"{{"categories": [{{"id": "a", "label": "A"}}, {{"id": "b", "label": "B"}},
+                               {{"id": "c", "label": "C"}}],
+                "series": [{{"id": "s", "label": "S", "values": [1, 2, 3], "color": {color}}}], {extra}}}"#
+        );
+        type Convert = fn(&str, Option<&str>) -> Result<String, super::DocumentError>;
+        type Setter = fn(
+            &str,
+            &renderer::layout::ChartArea,
+            &super::LossPolicy,
+        ) -> Result<super::DocumentApply, super::DocumentError>;
+        let families: [(&str, Convert, Setter); 3] = [
+            (
+                &categorical,
+                super::convert_document_json::<renderer::CategoricalChart>,
+                setter_report::<renderer::CategoricalChart>,
+            ),
+            (
+                &boxplot,
+                super::convert_document_json::<renderer::BoxPlotChart>,
+                setter_report::<renderer::BoxPlotChart>,
+            ),
+            (
+                &radar,
+                super::convert_document_json::<renderer::RadarChart>,
+                setter_report::<renderer::RadarChart>,
+            ),
+        ];
+        let area = renderer::layout::ChartArea(renderer::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        });
+        let paths = |json: &str| -> Vec<String> {
+            let value: serde_json::Value = serde_json::from_str(json).unwrap();
+            let notes = if value.is_array() {
+                &value
+            } else {
+                &value["notes"]
+            };
+            notes
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["path"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        for (document, convert, setter) in families {
+            let placeholder = convert(document, None).unwrap();
+            assert_eq!(paths(&placeholder), ["background"]);
+            let preview = convert(document, Some(r#"{"chart_area": [0, 0, 640, 480]}"#)).unwrap();
+            assert_eq!(paths(&preview), ["background", "decorations.data_area"]);
+            match setter(document, &area, &super::LossPolicy::Accept).unwrap() {
+                super::DocumentApply::Report(report) => assert_eq!(report, preview),
+                super::DocumentApply::Refused(notes) => panic!("refused: {notes}"),
+            }
+            // `null` options are no options.
+            assert_eq!(convert(document, Some("null")).unwrap(), placeholder);
+
+            let policy = |options: &str| super::LossPolicy::parse(Some(options)).unwrap();
+            for (options, refused) in [
+                (r#"{"refuse": ["background"]}"#, vec!["background"]),
+                (
+                    r#"{"refuse": ["decorations"]}"#,
+                    vec!["decorations.data_area"],
+                ),
+                (
+                    r#"{"refuse": "any"}"#,
+                    vec!["background", "decorations.data_area"],
+                ),
+            ] {
+                match setter(document, &area, &policy(options)).unwrap() {
+                    super::DocumentApply::Refused(notes) => {
+                        assert_eq!(paths(&notes), refused, "{options}");
+                        let notes: serde_json::Value = serde_json::from_str(&notes).unwrap();
+                        assert_eq!(notes[0]["kind"], "dropped");
+                        assert!(notes[0]["reason"].is_string());
+                    }
+                    super::DocumentApply::Report(_) => panic!("{options} accepted"),
+                }
+            }
+            for options in [
+                r#"{"refuse": ["title", "background.r", "decorations.data"]}"#,
+                r#"{"refuse": []}"#,
+                "{}",
+            ] {
+                match setter(document, &area, &policy(options)).unwrap() {
+                    super::DocumentApply::Report(report) => assert_eq!(report, preview),
+                    super::DocumentApply::Refused(notes) => panic!("{options} refused {notes}"),
+                }
+            }
+        }
+    }
+
+    /// The options of `convert_*_document` and `set_*_document` (#334):
+    /// what each accepts, and every field or shape it refuses.
+    #[test]
+    // The legacy documents are read through their deprecated reader types.
+    #[allow(deprecated)]
+    fn document_options_are_parsed_strictly() {
+        use super::LossPolicy;
+        assert_eq!(LossPolicy::parse(None).unwrap(), LossPolicy::Accept);
+        assert_eq!(LossPolicy::parse(Some("null")).unwrap(), LossPolicy::Accept);
+        assert_eq!(LossPolicy::parse(Some("{}")).unwrap(), LossPolicy::Accept);
+        assert_eq!(
+            LossPolicy::parse(Some(r#"{"refuse": "any"}"#)).unwrap(),
+            LossPolicy::Any
+        );
+        assert_eq!(
+            LossPolicy::parse(Some(r#"{"refuse": ["background", "overrides[0]"]}"#)).unwrap(),
+            LossPolicy::Paths(vec!["background".into(), "overrides[0]".into()])
+        );
+        for options in [
+            "not json",
+            "[]",
+            r#""any""#,
+            r#"{"refuse": "all"}"#,
+            r#"{"refuse": [1]}"#,
+            r#"{"refuse": [""]}"#,
+            r#"{"refuse": null}"#,
+            r#"{"refuse": "any", "strict": true}"#,
+            r#"{"chart_area": [0, 0, 640, 480]}"#,
+        ] {
+            assert!(
+                matches!(
+                    LossPolicy::parse(Some(options)),
+                    Err(super::DocumentError::Options(_))
+                ),
+                "{options}"
+            );
+        }
+
+        let area = |options: &str| super::convert_options_chart_area(Some(options));
+        assert_eq!(super::convert_options_chart_area(None).unwrap(), None);
+        assert_eq!(area("{}").unwrap(), None);
+        assert_eq!(
+            area(r#"{"chart_area": [1, 2, 640, 480]}"#).unwrap(),
+            Some(renderer::layout::ChartArea(renderer::layout::Rect {
+                x: 1,
+                y: 2,
+                width: 640,
+                height: 480,
+            }))
+        );
+        for options in [
+            r#"{"chart_area": [0, 0, 640]}"#,
+            r#"{"chart_area": [0, 0, 640, 480, 1]}"#,
+            r#"{"chart_area": [-1, 0, 640, 480]}"#,
+            r#"{"chart_area": [0.5, 0, 640, 480]}"#,
+            r#"{"chart_area": [0, 0, 4294967296, 480]}"#,
+            r#"{"chart_area": {"x": 0, "y": 0, "width": 640, "height": 480}}"#,
+            r#"{"refuse": "any"}"#,
+            "true",
+        ] {
+            assert!(
+                matches!(area(options), Err(super::DocumentError::Options(_))),
+                "{options}"
+            );
+        }
+        // A bad option refuses the call before the document is read.
+        assert!(matches!(
+            super::convert_document_json::<renderer::RadarChart>("{", Some("[]")),
+            Err(super::DocumentError::Options(_))
+        ));
     }
 
     /// An explicit data area reaches the converted config of each family
     /// (#334): the issue's rectangle is its data area with no note, and one
     /// the converted layout cannot hold is noted as dropped with a reason.
     #[test]
+    // The legacy documents are read through their deprecated reader types.
+    #[allow(deprecated)]
     fn the_converters_carry_an_explicit_data_area() {
         let color = r#"{"r": 0.2, "g": 0.4, "b": 0.6, "a": 1.0}"#;
         let categorical = format!(
@@ -1918,9 +2303,15 @@ mod tests {
                 "series": [{{"id": "s", "label": "S", "values": [1, 2, 3], "color": {color}}}]}}"#
         );
         let families: [(&str, fn(&str) -> Result<String, super::DocumentError>); 3] = [
-            (&categorical, super::convert_categorical_document_json),
-            (&boxplot, super::convert_boxplot_document_json),
-            (&radar, super::convert_radar_document_json),
+            (&categorical, |j| {
+                super::convert_document_json::<renderer::CategoricalChart>(j, None)
+            }),
+            (&boxplot, |j| {
+                super::convert_document_json::<renderer::BoxPlotChart>(j, None)
+            }),
+            (&radar, |j| {
+                super::convert_document_json::<renderer::RadarChart>(j, None)
+            }),
         ];
         let with_area = |document: &str, area: &str| {
             let mut value: serde_json::Value = serde_json::from_str(document).unwrap();
@@ -3134,8 +3525,8 @@ mod web {
     pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};
     use convert::{
-        check_subplot, coded_error, column_registration_error, js_err, js_names, js_safe_u64,
-        theme_error, theme_from_js, theme_to_js,
+        check_subplot, coded_error, column_registration_error, document_error, js_err, js_names,
+        js_safe_u64, theme_error, theme_from_js, theme_to_js,
     };
     mod decorations;
     pub(crate) use decorations::vertex_handle_index;
@@ -4267,15 +4658,15 @@ mod web {
             }
 
             chart
-                .set_categorical_document(CATEGORICAL_DOCUMENT)
+                .set_categorical_document(CATEGORICAL_DOCUMENT, None)
                 .unwrap();
-            assert!(chart.set_categorical_document("{").is_err());
+            assert!(chart.set_categorical_document("{", None).is_err());
             remove_every_column(&mut chart, "categorical document");
-            chart.set_boxplot_document(BOXPLOT_DOCUMENT).unwrap();
-            assert!(chart.set_boxplot_document("{").is_err());
+            chart.set_boxplot_document(BOXPLOT_DOCUMENT, None).unwrap();
+            assert!(chart.set_boxplot_document("{", None).is_err());
             remove_every_column(&mut chart, "box plot document");
-            chart.set_radar_document(RADAR_DOCUMENT).unwrap();
-            assert!(chart.set_radar_document("{").is_err());
+            chart.set_radar_document(RADAR_DOCUMENT, None).unwrap();
+            assert!(chart.set_radar_document("{", None).is_err());
             remove_every_column(&mut chart, "radar document");
             assert!(!chart.remove_column("missing").unwrap());
 

@@ -68,7 +68,7 @@ async fn details(chart: &FiggyChart) -> serde_json::Value {
 #[wasm_bindgen_test(async)]
 async fn a_categorical_document_opens_as_category_bars() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_categorical_document(DOCUMENT).unwrap();
+    chart.set_categorical_document(DOCUMENT, None).unwrap();
 
     let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
@@ -108,7 +108,7 @@ async fn a_categorical_document_opens_as_category_bars() {
     assert!(png.length() > 0);
 
     // A second document replaces the first one's series and columns.
-    chart.set_categorical_document(DOCUMENT).unwrap();
+    chart.set_categorical_document(DOCUMENT, None).unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
     assert_eq!(series.len(), 2);
 }
@@ -121,7 +121,7 @@ async fn a_categorical_document_opens_as_category_bars() {
 #[wasm_bindgen_test(async)]
 async fn a_value_label_picks_selects_and_drags() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_categorical_document(DOCUMENT).unwrap();
+    chart.set_categorical_document(DOCUMENT, None).unwrap();
     chart.frame().unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
     // The reader wrote one string per category.
@@ -153,14 +153,14 @@ async fn a_value_label_picks_selects_and_drags() {
 #[wasm_bindgen_test(async)]
 async fn a_rejected_categorical_document_keeps_the_previous_one() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
-    chart.set_categorical_document(DOCUMENT).unwrap();
+    chart.set_categorical_document(DOCUMENT, None).unwrap();
     let config = chart.get_config().unwrap();
     let series = chart.get_series().unwrap();
     // A budget at the current usage leaves no room for the new styles.
     let status: serde_json::Value = serde_json::from_str(&chart.gpu_memory_status()).unwrap();
     let total = status["total_bytes"].as_f64().unwrap();
     chart.configure_auto_residency(total, total).unwrap();
-    assert!(chart.set_categorical_document(DOCUMENT).is_err());
+    assert!(chart.set_categorical_document(DOCUMENT, None).is_err());
     assert_eq!(chart.get_config().unwrap(), config);
     assert_eq!(chart.get_series().unwrap(), series);
 }
