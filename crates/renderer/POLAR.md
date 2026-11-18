@@ -372,7 +372,7 @@ draws an antenna-like pattern and a three-leaf rose interactively
 
 #### 로즈(극좌표 막대)
 
-범주형 각도 축을 가진 극좌표 차트의 [범주 막대 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)
+범주형 각도 축을 가진 극좌표 차트의 [범주 막대 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md#한국어-사용법)
 (`DataRenderType::CategoryBars`)는 로즈다. 막대 하나는 자기 범주의 각도 구간 안에서 누적
 시작 반지름과 끝 반지름 사이의 쐐기이며, 값은 반지름 축(`left_y`, 선형)에서 읽는다. 안쪽 고리(`inner_radius_fraction`)에서 바깥 고리까지 자라고, 반지름 축을 뒤집으면
 안쪽으로 자란다. `Config::bar_groups`의 뜻은 그대로다. `Grouped`는 각도 구간의 가운데 `group_width`

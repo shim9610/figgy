@@ -1,4 +1,672 @@
-# 원형 차트
+# Radial charts / 원형 차트
+
+`RadialChart` is a pie or donut chart for a small number of categories and
+their shares of a whole. `RadialRenderer` can use the same wgpu device and
+queue as the Cartesian `Renderer`. A radial chart uses no columns: it has no
+`ColumnSource` and no streaming, and a slice's value is a property of the
+slice written in the model, like its name, color and explode distance. It
+uses no axes and no auto-fit either. Pass a model that holds all category
+values and styles, and the renderer builds an immutable frame. In the
+browser, `FiggyBoundedChart` in `crates/web`, the browser product, draws
+radial charts with this renderer and exposes hit maps, selection, dragging
+and PNG output
+([WASM guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
+
+The radial chart API is in `figgy-renderer` on crates.io from 0.16.1. The
+async constructor was available as `RadialRenderer::new_async` from 0.17.0
+and was renamed `RadialRenderer::try_new_async` in 0.19.0. The
+[annotation layer](#annotation-layer) and the chart's `chart_title` and
+`active_layer` fields are available from 0.18.0.
+
+## API overview
+
+The model types are defined in `model::radial` and can also be imported from
+`renderer::radial` and from the renderer crate root. After editing the model,
+call `prepare` again. No separate color-change command or cache invalidation
+call is needed.
+
+| Type / method | Role |
+|---|---|
+| `RadialChart` | The model holding values, shape, shared style, labels and interaction state |
+| `RadialSlice`, `RadialSplit` | Slice data, and the detail circle that expands one slice |
+| `RadialStyle`, `RadialOutline` | Material, 3D shape, texture and outline settings |
+| `RadialLabels`, `RadialLabelFormat` | Label position and the content shown |
+| `RadialChart::format_labels()` | Writes each slice's label string to draw (`RadialSlice::text`) at edit time |
+| `RadialChart::regenerate_labels()` | Rewrites only the generated labels (`text_generated`) and the missing ones, and keeps labels the host wrote (#313) |
+| `RadialTarget`, `RadialInteraction` | Slice identity, and hover and selection state |
+| `RadialChart::validate()` | Checks values and options. `prepare` checks the actual label layout in addition |
+| `RadialRenderer::prepare()` | Reads the model and returns an immutable `Arc<RadialFrame>` |
+| `RadialFrame::draw()` | Draws into a render pass the host opened |
+| `RadialFrame::pick()` | A request to pick, on the GPU, the slice visible in that frame. `RadialPickTicket::resolve()` returns the result |
+| `export_rgba()` / `export_png()` / `export_svg()` / `export_pdf()` | Draws the current model and returns it. `ExportOptions` sets the scale and background |
+| `export_rgba_with_background()` / `export_png_with_background()` | Exports over transparency or another color instead of the document background (`RadialExportBackground`, #313) |
+| `clear_cache()` / `end_frame()` | Releases references to internal caches / schedules reclaiming resources whose submissions have finished |
+
+`RadialChart::default()` is an empty pie chart, so add slices with positive
+values before drawing.
+
+## Getting started
+
+```rust,no_run
+use renderer::{
+    Color, Material, RadialChart, RadialKind, RadialLabels,
+    RadialRenderer, RadialSlice, RendererDevice, encode_png,
+};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let instance = renderer::gpu::create_instance();
+# let adapter = renderer::gpu::request_adapter_blocking(&instance)?;
+# let (device, queue) = renderer::gpu::request_device_blocking(&adapter)?;
+let mut renderer = RadialRenderer::try_new(
+    RendererDevice::new(device, queue)?,
+    wgpu::TextureFormat::Rgba8Unorm,
+)?;
+let mut chart = RadialChart {
+    slices: vec![
+        RadialSlice::new("A", 30.0, Color::from_rgb8(28, 179, 155)),
+        RadialSlice::new("B", 70.0, Color::from_rgb8(251, 128, 74)),
+    ],
+    kind: RadialKind::Donut { inner_radius: 0.48 },
+    labels: RadialLabels::Outside,
+    ..Default::default()
+};
+// A plain-text title uses the current chart font, 1.5 times `font_size`, and `label_color`.
+chart.set_title_text("Regional share");
+chart.style = renderer::RadialStyle::three_dimensional();
+// The renderer only draws the label strings. Write them again after changing values or the format.
+chart.format_labels();
+
+// The logical size is 1000×600; the actual output is 2000×1200.
+// Text and shapes are drawn again at this resolution.
+let image = renderer.export_rgba_blocking(&chart, (1000, 600), renderer::ExportOptions::document(2.0))?;
+std::fs::write("donut.png", encode_png(&image)?)?;
+renderer.end_frame();
+# Ok(())
+# }
+```
+
+To draw on screen, get an `Arc<RadialFrame>` from
+`prepare(&chart, logical_size, scale)` and call `frame.draw(&mut pass)` inside
+the host's render pass. The target must have the RGBA8/BGRA8 format given to
+the constructor, the size `frame.size()` and sample count 1. The renderer
+does its own edge antialiasing. `scale` is at least 0.5, and the target's
+actual size follows it. There is no upper limit; if the actual size exceeds
+the device's texture size limit, an error is returned. The host decides the
+clear/load policy of its render pass. Transparent backgrounds are supported.
+The logical size is at least 160 pixels in each of width and height. The
+actual size is `round(logical size × scale)` and cannot exceed the device's
+texture size limit. `draw` sets the viewport and scissor to the whole target.
+To place the chart in part of a UI, draw it into a separate texture of this
+size and let the host lay it out.
+
+On WASM, create the renderer with `RadialRenderer::try_new_async(gpu, format).await`,
+which waits for the browser's pipeline compilation. Then use the same
+`prepare`/`draw`, and for output use `export_rgba(...).await` or
+`export_png(...).await`. On native targets you can await the async functions
+directly (with a device bundle made by `RendererDevice::new` they complete
+without the host polling the device), or wait on the calling thread with a
+`_blocking` function such as `export_rgba_blocking`.
+
+## Values and split circles
+
+- Each circle takes 1 to 64 items. Values must be finite and 0 or greater,
+  and the total must be positive.
+- Items of 0 stay in the model, but no shape or label is made for them. NaN,
+  infinity, negative values and an overflowing total are rejected.
+- Slice colors are opaque RGBA. The background and labels may use alpha.
+- Angles are 0 degrees to the right and increase clockwise. The default start
+  angle is -90 degrees.
+- `explode` is how far a slice moves, relative to the outer radius. 0 to
+  0.35 is supported.
+- `RadialSplit` expands one item into a small circle on the right. The child
+  values are in **the same unit** as the parent, and their sum must equal the
+  parent value (a relative error up to 1e-9 is allowed). The child circle's
+  labels show shares of the parent subtotal.
+
+For example, if "Other" is 13 out of a total of 100 and its breakdown is 16%,
+14% and 70%, the child values are `2.08`, `1.82` and `9.1`. Entering `16`,
+`14` and `70` as they are gives a sum that does not match, and is an error.
+`slice_index` is the index into the original array, counting items of 0. The
+connector lines join the two angular edges of the chosen parent slice to the
+detail circle. Placing the parent slice on the right, as in the example,
+shows the relation between the two circles clearly.
+
+### Sunbursts (nested rings)
+
+When slices have `children`, the chart is a sunburst. For a tree of depth
+`d`, the space between the hole (`kind.inner_radius()`; a pie has 0, so the
+center ring is a disc) and the outer radius is divided into `d` rings of
+equal thickness, and a node at depth `k` takes, on ring `k`, its own share of
+its parent's angular span (its value relative to the parent's value, in child
+order). The children's values must sum to at most the parent's value
+(relative error 1e-9), and the remaining span is left empty on the child
+ring. `children` is omitted from JSON when it is empty.
+
+- In `RadialTarget { group, index }`, `group` is the ring (0 is the center)
+  and `index` is the node's position on that ring counted in document order
+  (the children in the order of their parents), including nodes of value 0.
+  `slice()`, `slice_mut()`, `step_selection` (from the center ring outward,
+  only nodes with a value), and labels' `DecorationId::RadialLabel` and
+  `radial_label_{group}_{index}` names all follow this rule.
+  `group_count()`, `group_len(group)`, `node_count()` and
+  `node_span(target)` report the rings and spans.
+- A label's percentage is the node's share of its parent's value (on the
+  center ring, of the total). `format_labels()` writes the `text` of every
+  ring.
+- `Outside` labels are placed only on the outermost ring (stacked left and
+  right as on a pie, with the connector starting at 1.015 times the outer
+  radius). `Outside` on an inner ring is drawn as an inside label within its
+  own band. Inside labels sit at the band's middle radius and shrink to fit
+  the band's thickness and arc length.
+- Sunbursts are drawn flat only. A nonzero `tilt_degrees` or `depth` in the
+  chart style or a node style is rejected
+  (`"a sunburst draws flat: no tilt or depth"`). A sunburst cannot be used
+  with `split` (`"a sunburst has no detail circle"`).
+- Limits: at most 8 rings (`MAX_SUNBURST_DEPTH`) and at most 64 nodes on one
+  ring (`MAX_RADIAL_SLICES`). Other rejection reasons:
+  `"a node's children sum to at most its value"`,
+  `"a sunburst has at most 8 rings"`, `"a sunburst ring has at most 64 nodes"`.
+- Picking, emphasis, hover and materials (with a different grain per ring)
+  all work as for slices.
+
+```rust
+use renderer::radial::*;
+use renderer::Color;
+let mut chart = RadialChart::default();
+let mut ops = RadialSlice::new("Ops", 60.0, Color::from_rgb8(220, 60, 40));
+ops.children = vec![
+    RadialSlice::new("Fleet", 40.0, Color::from_rgb8(60, 120, 220)),
+    RadialSlice::new("Crew", 10.0, Color::from_rgb8(40, 170, 70)),
+]; // the remaining 10 is an empty span on the child ring
+chart.slices = vec![ops, RadialSlice::new("R&D", 40.0, Color::from_rgb8(80, 80, 80))];
+chart.format_labels();
+assert_eq!(chart.group_count(), 2);
+assert_eq!(chart.slice(RadialTarget { group: 1, index: 1 }).map(|s| s.label.as_str()), Some("Crew"));
+```
+
+## Materials and 3D shading
+
+The model default is a flat pie seen from straight above. Changing the
+material alone does not change the tilt or depth. Set the default 3D view
+with `RadialStyle::three_dimensional()`. It sets the Ceramic material, a 55°
+tilt, depth 0.16, bevel 0.025, a 1.4° gap, inner and outer corners of 0.045
+and a shadow; each field can be edited afterwards. The donut shape is set
+separately in `kind`.
+
+| Setting | Look |
+|---|---|
+| `Flat` | A flat look that uses the given color as is, with no lighting |
+| `Matte` | Diffuse light and a faint surface grain |
+| `Ceramic` | A smooth surface, bright highlights and a rounded-edge feel |
+| `SatinMetal` | Satin metal with a broad highlight and a faint grain |
+| `BrushedMetal` | Fine circumferential grain and directional reflection |
+| `Toon` | Three shading steps. The outline is turned on or off separately |
+| `Enamel` | A sharp coated gloss |
+| `Hatch` | Diagonal hatching |
+| `Pearl` | A faint pearl color shift at curved edges |
+| `Paper` | A fine matte paper grain continuing over the top and side faces |
+| `Wood` | Rough matte plywood with fine, irregular grain and no coarse pattern |
+
+### Materials
+
+`Material` is one enum for sectors (`RadialStyle::material`), bars
+(`CategoryBarStyle::material`) and boxes (`BoxPlotStyle::material`), and a
+name has the same look in every family.
+`RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial` are deprecated
+aliases of it. A bar or a box is shaded like a flat (zero depth, zero tilt)
+pie top under the default light. Its normal is constant, so its lighting
+and highlights are uniform over the body; textures (grain, brush, paper,
+wood, hatching) still vary across it.
+
+| Material | Sectors | Bars and boxes |
+|---|---|---|
+| `Flat` | yes | yes; the bar default |
+| `Matte` | yes | yes; the box default |
+| `Ceramic` | yes | yes; `gloss` lifts the whole body by at most 2.5/255 |
+| `SatinMetal`, `BrushedMetal` | yes | yes; a uniform sheen and a brush along the bar; at 1x a `texture_scale` above 0.13 has no visible effect |
+| `Enamel` | yes | yes; `gloss` has no visible effect |
+| `Paper`, `Wood`, `Hatch` | yes | yes |
+| `Toon`, `Pearl` | yes | rejected by `validate`: "material not supported by bars" / "material not supported by boxes" |
+
+`Material::supported_on_flat_body` tells the two apart. Bar and box styles
+have no `roughness`, `light` or `texture_angle_degrees`; they use the
+`RadialStyle` defaults (0.35, `[-0.5, -0.6, 1.0]` and 0°). One bar texture
+unit is 150 logical pixels: a bar's texture matches that of a sector of
+radius 150 px, and Matte grain cells are 1.67 px.
+
+The default and allowed range of each field are in the table under
+[Style option defaults and ranges](#style-option-defaults-and-ranges). The
+visible gap of a very small slice is limited to 20% of that slice's angle.
+
+A 3D slice draws its top, outer wall, inner wall and cut faces in orthographic
+projection. `inner_corner` and `outer_corner` set how rounded the slice ends
+are seen from above (0 to 0.25 of the outer radius). 0 is a sharp corner, and
+both apply in 2D and 3D. On small slices and thin rings the radius is limited
+automatically. `bevel` actually rounds the top and bottom edges of a 3D slice
+and is limited to less than half the depth. At depth 0 no 3D bevel is
+applied. The shadow is a soft shadow approximated per slice. Materials need
+no external images. With the 3D projection the original angles and
+percentage labels are kept, but the area of a slice projected on screen
+changes with the tilt.
+
+`gloss` (0 to 1) sets the highlight strength, `roughness` its spread, and
+`texture_angle_degrees` the direction of the surface pattern. Under the same
+light, each material applies them differently. This is not a full
+physically based renderer, but stylized shading that keeps the chart's
+category colors. `Paper` and `Wood` use texture coordinates that continue up
+the height, so no vertical stripes appear on the side faces. Fine patterns
+that the output size and the face slope cannot resolve are weakened to
+suppress flicker. `Flat` uses no gloss or texture, and `Toon` uses fixed
+shading steps instead of roughness. `Wood` draws no growth rings or regular
+stripes; it adds fine grain while keeping the slice's own color. For a rough
+plywood look, start from `texture_strength = 0.7`, `roughness = 0.9` and
+`gloss = 0.1`.
+
+### Style option defaults and ranges
+
+Lengths given as ratios are relative to the **outer radius**. Out-of-range
+input and non-finite numbers are rejected. Even within range, the corners
+and gaps of small slices can shrink so they do not overlap.
+
+| Field | Default | Allowed range / meaning |
+|---|---|---|
+| `material` | `Flat` | The material list above |
+| `tilt_degrees` | `0` | 0 to 65°. 0 looks straight down from above |
+| `depth` | `0` | 0 to 0.4 of the radius |
+| `bevel` | `0.015` | 0 to 0.1 of the radius. Applied at less than half the depth |
+| `inner_corner`, `outer_corner` | `0` each | 0 to 0.25 of the radius |
+| `gap_degrees` | `0` | 0 to 8°. At most 20% of the slice angle |
+| `roughness` | `0.35` | 0.05 to 1 |
+| `gloss` | `0.55` | 0 to 1 |
+| `texture_strength` | `0.2` | 0 to 1. 0 turns the pattern off |
+| `texture_scale` | `1` | 0.1 to 8. Higher values make the pattern finer |
+| `texture_angle_degrees` | `0` | A finite angle, repeating every 360° |
+| `light` | `[-0.5, -0.6, 1.0]` | A direction vector. Each component -100 to 100, vector length at least 0.01 |
+| `shadow` | `false` | Turns on the soft shadow |
+| `hover_lift` | `0.08` | 0 to 0.25 of the radius. Vertical lift on hover and selection |
+| `hover_brightness` | `0.04` | 0 to 0.5. Brightness increase on hover and selection |
+| `outline.rim`, `.separators`, `.emphasis` | all `false` | Turn on the rim, slice boundaries and emphasis line |
+| `outline.width` | `1` | 0 to 8 logical pixels |
+| `outline.color` | RGBA `(0.08, 0.12, 0.2, 1)` | Each component 0 to 1, alpha allowed |
+
+A donut's `inner_radius` is 0.1 to 0.85 of the outer radius. For a shape
+without a hole, use `RadialKind::Pie`. `font_size` is 8 to 64 logical pixels
+(default 16), the title follows the shared rich-text limits (at most 512
+characters, 8 lines), and `value_suffix` is one line of at most 24
+characters. Write any space before the suffix yourself (for example `" kg"`).
+
+## Plot area
+
+The radial layout area is selected, moved and resized as
+`DecorationId::DataArea` in the `frame.decorations()` hit map
+(`HitMap<RadialChart>`). The elements of this hit map compute their
+positions from the chart passed in, so pass the chart the frame was prepared
+from. `decorations.data_area = None` lays the chart out automatically, and a
+logical area that is set also applies to PNG output. The picture is not
+stretched: circles, connector lines and labels are computed again in the new
+area. See
+[the 8 handles, constraints and host call order](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#그리기-영역-선택과-크기-조정).
+
+## Labels and updates
+
+`None`, `Inside` and `Outside` are supported. Inside labels are placed on
+their slice; outside labels are split left and right and placed with
+connector lines. A connector line is part of the outside label. It runs from
+the slice to the label text, and when the label moves its start stays on the
+slice while the rest follows the text. Inside labels use white when the slice
+color is dark and the chart's `label_color` otherwise. A slice's
+`label_color`, when set, takes precedence over the automatic contrast color.
+An item name is one line of at most 80 characters.
+
+With the same model, logical size, scale and font registration state, frames
+and GPU resources are reused. Changing values or styles makes a new
+immutable frame. Changes that do not move labels, such as hover, selection,
+material and outline, share the label texture. Changing a slice's color
+under an outside label does not require regenerating labels either, but a
+change that can alter the automatic contrast color of an inside label
+updates the labels. A frame already handed out does not change, so the
+state of a screen being prepared and of a new screen are never mixed.
+Invalid input or an exceeded budget does not overwrite the existing frame
+either.
+
+Labels follow the same font registration and fallback order as the other
+charts. A character missing from the given font is looked up, per character,
+in the registered fonts, the bundled Liberation Sans and the installed system
+fonts (native only), in that order. The browser does not look up system
+fonts, so to show Korean text register a Korean font with
+`register_font_bytes`.
+
+## Editing the model and selection
+
+Change colors directly in `RadialSlice.color`. `slice.style:
+Option<RadialStyle>` replaces that slice's whole style; `None` inherits the
+chart style. Once a per-slice style exists, changes to the chart style no
+longer reach that slice. A per-slice style also overrides tilt, depth and
+light, so to change the camera angle together, update `tilt_degrees` in both
+the shared style and the per-slice styles. Set it back to `None` to inherit
+again. `labels`, `label_format` and `label_color` can also be overridden per
+slice. `slice.labels = None` inherits, and `Some(RadialLabels::None)` hides
+that slice's label.
+
+```rust,no_run
+use renderer::radial::*;
+use renderer::{Color, Material};
+let mut chart = RadialChart {
+    slices: vec![RadialSlice::new("Search", 40.0, Color::from_rgb8(51,132,245))],
+    ..Default::default()
+};
+chart.label_format = RadialLabelFormat::NamePercent;
+chart.label_decimals = 1; // 0..6; trailing zero decimals are removed
+chart.value_suffix = " units".into();
+let target = RadialTarget::main(0);
+let override_style = RadialStyle {
+    material: Material::SatinMetal,
+    inner_corner: 0.05,
+    outer_corner: 0.05,
+    ..chart.style.clone()
+};
+let slice = chart.slice_mut(target).unwrap();
+slice.color = Color::from_rgb8(195,80,210);
+slice.style = Some(override_style);
+slice.label_format = Some(RadialLabelFormat::NameValuePercent);
+chart.interaction.selected = Some(target);
+```
+
+`RadialLabelFormat` offers `Name`, `Value`, `Percent`, `NamePercent`,
+`NameValue`, `ValuePercent` and `NameValuePercent`. The content and the
+`None/Inside/Outside` position are set independently. Percentages use the
+total of each circle, and values use the original unit. Percentages in the
+detail circle are relative to the parent subtotal. Changing the format does
+not change the original values or slice angles.
+
+The renderer draws the string written in a slice's `text` (at most two
+lines, joined with `'\n'`) as it is. `format_labels()` formats the values and
+computes the percentages: it rewrites the `text` of every slice and detail
+circle slice from the format, decimals, suffix and per-circle totals. Call it
+after changing values, names, the format, the decimals or the suffix. The
+host may set `text` directly, but calling `format_labels()` again overwrites
+that string too. For older documents without `text`, `normalize_labels()`
+fills only the empty `text` fields, and the same strings as before are drawn.
+If a slice with a value and a visible label has no `text`, `prepare` rejects
+it. One line is at most 400 characters and cannot contain control
+characters.
+
+A slice's `text_generated` (#313) tells whether its `text` is a generated
+label. Strings written by `format_labels()`, `normalize_labels()` and
+`regenerate_labels()` are `true`; strings written by the host are `false`.
+`regenerate_labels()` rewrites only labels whose `text_generated` is `true`
+and missing labels, and leaves the host's labels alone. Changing one value
+changes its circle's total, so the percentages of generated labels change
+together on the other slices of the same ring, the children of a sunburst
+node and the detail slices of a split circle. `label_lines()` decides the
+percentages and rounding. When the host writes a string directly, it writes
+it with `RadialSlice::set_text(Some(..))` or leaves `text_generated` at
+`false`. `set_text(None)` clears the string so that the next call writes a
+generated label again. To rewrite the host's strings as well, call
+`format_labels()`. The browser wrapper runs `regenerate_labels()` when it
+reads a document (`create`, `set_document`), and
+`regenerate_labels(rewriteUserText)` requests the same work directly.
+Documents saved before `text_generated` existed read every stored string as
+the host's.
+
+`frame.pick([x, y])` takes **logical pixels** inside the chart, submits a
+request that picks on the GPU the slice actually visible at that position,
+and returns a `RadialPickTicket`. `ticket.resolve().await` returns that
+slice's `RadialTarget`; native hosts can use `resolve_blocking()`. It picks
+the slice visible on screen, accounting for tilt, rounded corners, gaps, lift
+and occlusion. `group=0` is the main circle and `group=1` the detail circle,
+and `index` is the original index, counting items of 0. Items of 0, the hole
+and the background are not picked. A host that reorders the array or deletes
+items must update the selection index too.
+
+Hover is `interaction.hovered` with `hover_progress` (0 to 1), and click
+selection is the separate `interaction.selected`.
+`animate_hover(target, dt_seconds, duration_seconds)` takes elapsed time and
+advances entering and leaving. When the pointer moves to another slice, the
+previous slice comes down before the new one rises. A duration of 0 switches
+immediately. Setting the style's `hover_lift` and `hover_brightness` to 0
+turns those effects off. Click selection keeps its emphasis after the pointer
+leaves, and the slice returns to normal when the selection is cleared. `pick_at_rest` looks up
+the position before the lift. A host can use this result as a secondary test
+only when it equals the previous hover, which keeps hover from toggling on
+and off at an edge.
+
+While hovering, outside labels stay in place, and inside labels rise with
+their slice: the same label texture is drawn shifted by the lift. Text is not
+enlarged, and earlier frames are not transformed again. Hover does not change
+the original proportions or the chart size. PNG output includes the
+selection and hover state of the model passed in. For a PNG without
+transient state, reset `interaction` to `Default::default()` on a copy of the
+model.
+
+The label selection `decorations.selected` is separate from the slice
+selection `interaction.selected`. Updating only the UI's selection list does
+not change the renderer's slice selection state.
+
+```rust,no_run
+# async fn export_selected(renderer: &mut renderer::RadialRenderer, chart: &renderer::RadialChart)
+# -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+// Take a snapshot that includes the current selection and hover progress.
+let snapshot = chart.clone();
+let image = renderer.export_rgba(&snapshot, (1000, 600), renderer::ExportOptions::document(2.0)).await?;
+let png = renderer::encode_png(&image)?;
+# Ok(png)
+# }
+```
+
+With hover alone, the lift can be released when the pointer moves to an
+export button. To keep a clicked slice raised, keep
+`interaction.selected = Some(target)`. To keep a shape from the middle of an
+animation, copy the model at the moment you want, and do not reset
+`interaction` or set `hover_progress` to 0 before exporting.
+
+`export_rgba_with_background(&chart, size, options, background)` and
+`export_png_with_background` (native synchronous version
+`export_rgba_with_background_blocking`) export with only the background
+changed (#313). `RadialExportBackground::Document` is the same as
+`export_rgba`; `Transparent` draws only the slices with their shadows, the
+labels and the annotations over transparent pixels; and `Color(c)` paints
+`c` (each component 0 to 1) where the document background would be. The
+choice applies to that one export only. It does not modify the model and
+leaves the frame used on screen and the renderer caches as they are. The
+frame's slice table and label texture are used as they are, and a separate
+112-byte uniform with only the background changed is made for the duration
+of the export. A color with a component outside 0 to 1 is rejected with
+`RadialError::Invalid`.
+
+`export_svg(&chart, size, scale)` and `export_pdf` (native synchronous
+versions `export_svg_blocking` / `export_pdf_blocking`) export the same
+snapshot as SVG and PDF documents. Size and scale are checked by the same
+rules as `prepare`. The slices and background go in as one raster image. The
+title, the labels and their leader lines, the lines joining the split circle,
+and the annotations go in as vectors, with text kept as glyph outlines. Two
+things differ from PNG. All inside labels are drawn at their lifted position
+above every slice (in a PNG, a lifted neighboring slice can cover a label).
+The selection box of a selected decoration is not drawn. The page size is the
+logical size converted at 1 px = 0.75 pt.
+
+`rim` (the outer and hole outline), `separators` (slice boundaries) and
+`emphasis` (the hover and selection emphasis) in `style.outline` can each be
+turned on or off. On a 3D chart, `rim` also includes the boundary between the
+visible top and the outer and inner walls. `separators` also apply to the
+slice boundaries between the cut faces and the top. Color, alpha and
+thickness in logical pixels are adjustable, and lines on hidden back faces
+are not drawn through. With a bevel, the lines follow the middle of the
+rounded edge. A shared boundary between adjacent slices is drawn half its
+width inside each slice. Labels and connector lines do not receive material
+shading.
+
+### Host update order
+
+Subtract the chart's on-screen origin from the pointer coordinates and
+convert by the DPR to get **logical coordinates inside the chart**. If the
+UI already provides logical coordinates, do not divide by the DPR again. Pick
+with the frame currently displayed, change the model's interaction state, and
+then prepare a new frame.
+
+```rust,no_run
+use renderer::{RadialChart, RadialError, RadialFrame, RadialRenderer};
+use std::sync::Arc;
+
+async fn update_hover(
+    renderer: &mut RadialRenderer,
+    chart: &mut RadialChart,
+    displayed: &Arc<RadialFrame>,
+    pointer: Option<[f32; 2]>, // logical coordinates inside the chart; None outside the area
+    elapsed_seconds: f32,
+    logical_size: (u32, u32),
+    scale: f32,
+) -> Result<Arc<RadialFrame>, RadialError> {
+    let target = match pointer {
+        Some(p) => match displayed.pick(p)?.resolve().await? {
+            Some(hit) => Some(hit),
+            None => displayed
+                .pick_at_rest(p)?
+                .resolve()
+                .await?
+                .filter(|t| Some(*t) == chart.interaction.hovered),
+        },
+        None => None,
+    };
+    chart.interaction.animate_hover(target, elapsed_seconds, 0.16);
+    renderer.prepare(chart, logical_size, scale)
+}
+```
+
+The host must request frames during an animation. Entering and leaving
+continue until they finish even when the pointer stops; the renderer runs no
+timer of its own. Set click selection with
+`chart.interaction.selected = displayed.pick(position)?.resolve().await?` and
+clear it with `None`. Submit the command buffer that drew the new frame,
+release the previous frame, and then call `end_frame()`. Size, DPR and
+content changes use the same `prepare` path. Calling `clear_cache()` on
+simple UI edits is not needed, because it also discards reusable labels.
+
+### Saving and compatibility
+
+With the `serde` feature of `figgy-renderer` (or of `figgy-model` when only
+the model is used), the model can be serialized. A slice's `style`,
+`labels`, `label_format` and `label_color`, and the chart's `decorations`,
+`label_format`, `label_decimals`, `value_suffix` and `interaction` are read
+as defaults when an older snapshot lacks them. The chart's `chart_title`,
+`active_layer` and `annotations`, and a slice's `text`, are also read as
+defaults when missing, and are not saved when they hold the default.
+`chart_title` is the shared chart title `ChartTitleOptions`, but it is saved
+as the same `{ "visible", "text" }` object as before. Its position lives in
+`decorations`, so `offset_x`, `offset_y` and `top_margin` must be 0. Missing
+fields of `RadialStyle` use their defaults too. Documents from before 0.19
+also have a plain string `title`. When `chart_title` is missing, this string
+is read as a `chart_title` with the document's `font_family`, 1.5 times
+`font_size`, and `label_color`; when `chart_title` is present, `title` is
+ignored. Saving writes only `chart_title`. Check both the saved model and the
+restored model with `validate`. To avoid saving transient hover and
+selection, reset `interaction` on the copy you save.
+
+A slice's `text_generated` (#313) is also read as `false` when missing, and
+is not saved when it is `false`.
+
+JSON compatibility for missing fields differs from Rust source
+compatibility. Older `RadialSlice` struct literals need the new fields, so
+prefer `RadialSlice::new`. For charts and styles, use `..Default::default()`
+or a copy of an existing value. `Material` is not `#[non_exhaustive]`, so
+when materials are added an exhaustive `match` no longer compiles. Add the
+new materials to the match when upgrading.
+
+## Native editor example
+
+```bash
+cargo run -p figgy-renderer --example radial_editor --features egui_demo
+```
+
+Click a slice or select it in the list on the left, then change its color,
+per-slice style and label content. `Whole chart` edits the shared settings
+and `Individual style` edits the selected slice's settings. The editor starts
+from `RadialStyle::three_dimensional()`, so the tilt is 55°, and the
+gallery's 3D scenes also use 55°. 0° looks straight down from above; higher
+values show more of the side faces. The still image and hover use the same
+view. `Inherit chart labels` clears the per-slice label settings. The editor
+draws frames directly into a texture sized to the window and DPR.
+
+## Resource lifetime and tests
+
+GPU memory accounting and the budget belong to the device bundle
+(`RendererDevice`) the renderer was created from, and every renderer made
+from the same bundle shares them. By default there is no budget; set one with
+`set_memory_budget(Some(bytes))`. Each frame uses a 112-byte uniform and a
+176-byte table entry per visible slice. Each slice pick (`pick`) creates a
+16-byte query and result buffer and a 16-byte readback buffer, and releases
+them after the result is read. When the label layout changes, an RGBA label
+texture of the actual output size is created; with the same layout it is
+shared. Export adds the output target and an aligned readback buffer. Total
+usage and the budget are checked before each GPU allocation.
+`gpu_memory_usage()` counts both live resources and resources waiting for
+GPU completion. It shares the accounting with any `Renderer` made from the
+same `RendererDevice` bundle, so reading it from any renderer gives the total
+for the whole bundle. To draw radial charts on the device of an existing
+Cartesian `Renderer`, get its bundle with `renderer.renderer_device()` (#313)
+and pass it to `RadialRenderer::try_new`. The two renderers share the device,
+the queue, the device-loss record, the accounting and the budget. Releasing
+one renderer or the bundle does not destroy the device; it lives as long as
+an owner remains. If the device is lost, the next wait or export of both
+renderers returns a loss error. In the browser,
+`FiggyBoundedChart.create_on(parent, ...)` creates a radial chart on this
+bundle.
+
+Each immutable frame can create a new small uniform and slice table, so
+release frames you are done with, submit or discard all related command
+buffers, and then call `end_frame()`. Hovering does not keep growing
+resources the size of the label resolution. Native hosts handle completion
+callbacks by polling the device; on the web the browser handles them.
+Release unneeded caches with `clear_cache()`. While an
+`Arc<RadialFrame>` is kept elsewhere, its resources stay alive.
+
+```bash
+cargo test -p figgy-model --features serde
+cargo test -p figgy-renderer --test radial_render -- --test-threads=1
+cargo test -p figgy-renderer --doc
+cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
+```
+
+If a native GPU cannot be requested, the pixel tests fail instead of
+passing.
+
+## Selecting and moving the title and labels
+
+Separately from slice picking (`pick`), `frame.decorations()` provides a
+`HitMap<RadialChart>` for the title, the plot area and the slice labels. Hit
+areas, selection borders, drag limits and on-screen emphasis all match the
+layout drawn on screen. Update `chart.decorations` with the same
+`Selectable` and `Draggable` contract as Cartesian charts, then `prepare`.
+Frame methods such as `frame.decoration_at(&chart, [x, y])` and
+`drag_decoration(&mut chart, hit, dx, dy)` wrap these calls. The title sits
+in the middle of the title band at the top of the chart; when it is wider
+than the canvas, it is clipped to the canvas, and its hit area, selection
+border and drag limits are then the part that overlaps the canvas. To return
+a moved decoration to its original place, call
+`chart.decorations.reset(&id)`. It clears the stored offset (for `DataArea`,
+it also clears the set plot area) and, unlike dragging it back, leaves no
+value behind. In the browser, `reset_decoration_position(id)` (#313) wraps
+this call. For coordinate units, per-element move rules, caching, save and
+restore, and the web bindings, see the
+[shared interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
+
+### Annotation layer
+
+The text boxes and arrows in `chart.annotations` are drawn over the frame in
+a separate pass. A radial chart has no value axis, so only `Anchor::Ratio`
+(a fraction of the plot area) can be placed; `Anchor::Data`, reference lines
+and bands are skipped. Each skipped item is recorded in
+`BoundedAnnotationFrame::render_warnings()` as
+`RenderWarning::AnnotationSkipped { index, reason: AnnotationSkip::NoValueAxis }`.
+The `BoundedAnnotationFrame` returned by
+`renderer.prepare_annotations(chart, size, scale)` is drawn with
+`draw_overlay` after `frame.draw`, and its hit map comes from
+`annotations()`. Bands are skipped, so there is no layer drawn below the
+slices. Editing annotations and selecting with
+`decorations.selected = Annotation(i)` do not rebuild the frame or the label
+raster. For the full contract, see the
+[shared interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
+
+## 한국어 사용법
 
 `RadialChart`는 소수의 범주와 구성 비율을 보여 주는 파이·도넛 차트다. `RadialRenderer`는
 직교 좌표 `Renderer`와 같은 wgpu 장치·큐를 사용할 수 있다. 원형 차트는 컬럼을 쓰지 않는다.
@@ -11,7 +679,7 @@
 `RadialRenderer::new_async`로 쓸 수 있었고, 0.19.0에서 이름이 `RadialRenderer::try_new_async`로 바뀌었다.
 [주석 층](#주석-층)과 차트의 `chart_title`·`active_layer` 필드는 0.18.0부터 쓸 수 있다.
 
-## API 구성
+### API 구성
 
 모델 타입은 `model::radial`에 정의하며 `renderer::radial`과 renderer crate 루트에서도
 가져올 수 있다. 모델을 편집한 뒤 `prepare`를 다시 호출하면 된다. 별도의 색 변경 명령이나
@@ -36,7 +704,7 @@
 
 `RadialChart::default()`는 빈 파이 차트이므로, 그리기 전에 양수 값을 가진 조각을 추가해야 한다.
 
-## 시작하기
+### 시작하기
 
 ```rust,no_run
 use renderer::{
@@ -89,7 +757,7 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
 `export_rgba(...).await`나 `export_png(...).await`를 사용한다.
 네이티브에서는 비동기 함수를 그대로 기다려도 되고(`RendererDevice::new`로 만든 장치 묶음이면 호스트가 장치를 poll하지 않아도 완료된다), `export_rgba_blocking` 같은 `_blocking` 함수로 호출한 스레드에서 기다려도 된다.
 
-## 값과 분할 원
+### 값과 분할 원
 
 - 원마다 1~64개 항목을 받는다. 값은 유한한 0 이상의 수여야 하고, 전체 합은 양수여야 한다.
 - 0인 항목은 모델에 남지만 도형과 라벨은 만들지 않는다. NaN·무한대·음수·합계 오버플로는 거절한다.
@@ -104,7 +772,7 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
 `slice_index`는 0인 항목까지 포함한 원본 배열 인덱스다. 연결선은 선택한 부모 조각의 두
 각도 경계와 상세 원을 잇는다. 예제처럼 부모 조각을 오른쪽에 두면 두 원의 관계가 잘 보인다.
 
-### 선버스트(중첩 고리)
+#### 선버스트(중첩 고리)
 
 조각에 `children`을 두면 차트는
 선버스트가 된다. 트리의 깊이 `d`만큼 구멍(`kind.inner_radius()`, 파이는 0이므로 가운데 고리는
@@ -147,7 +815,7 @@ assert_eq!(chart.group_count(), 2);
 assert_eq!(chart.slice(RadialTarget { group: 1, index: 1 }).map(|s| s.label.as_str()), Some("Crew"));
 ```
 
-## 재질과 입체 표현
+### 재질과 입체 표현
 
 모델 기본값은 정면에서 내려다본 평면 파이다. 재질을 바꾸는 것만으로 기울기나 깊이가
 바뀌지는 않는다. 입체 기본 뷰는 `RadialStyle::three_dimensional()`로 지정한다. 세라믹 재질, 기울기 55°, 깊이 0.16, 베벨 0.025, 간격 1.4°, 안쪽·바깥 모서리 0.045, 그림자를 함께 설정하며, 각 필드는 이후 개별 편집할 수 있다. 도넛 모양은 별도로 `kind`에서 지정한다.
@@ -166,9 +834,7 @@ assert_eq!(chart.slice(RadialTarget { group: 1, index: 1 }).map(|s| s.label.as_s
 | `Paper` | 윗면·옆면에 이어지는 미세한 무광 종이 결 |
 | `Wood` | 굵은 무늬 없이 미세하고 불규칙한 잔결을 가진 거친 무광 합판 |
 
-<a id="materials"></a>
-
-### Materials shared with bars and boxes
+#### Materials shared with bars and boxes
 
 `Material` is one enum for sectors (`RadialStyle::material`), bars
 (`CategoryBarStyle::material`) and boxes (`BoxPlotStyle::material`), and a
@@ -213,7 +879,7 @@ radius 150 px, and Matte grain cells are 1.67 px.
 그리지 않는다. 조각의 원래 색을 유지하면서 잔결을 더한다. 거친 합판 표현은
 `texture_strength = 0.7`, `roughness = 0.9`, `gloss = 0.1`부터 조정할 수 있다.
 
-### 스타일 옵션 기본값과 범위
+#### 스타일 옵션 기본값과 범위
 
 비율로 표기한 길이는 **바깥 반지름**을 기준으로 한다. 범위를 벗어난 입력과 유한하지 않은
 수는 거절한다. 범위 안에서도 작은 조각의 모서리·간격은 서로 겹치지 않도록 줄어들 수 있다.
@@ -243,7 +909,7 @@ radius 150 px, and Matte grain cells are 1.67 px.
 지정한다. `font_size`는 논리 픽셀 8~64(기본 16)이고, 제목은 공통 리치 텍스트 한도(최대 512자,
 8줄)를 따르며, `value_suffix`는 한 줄 24자 이내다. 접미사 앞의 공백도 직접 넣는다(예: `" kg"`).
 
-## 영역 조정
+### 영역 조정
 
 원형 배치 영역은 `frame.decorations()` 히트맵(`HitMap<RadialChart>`)의 `DecorationId::DataArea`로
 선택·이동·리사이즈한다. 이 히트맵의 요소는 넘긴 차트에서 위치를 계산하므로 프레임을 준비한 차트를 함께 넘긴다.
@@ -251,7 +917,7 @@ radius 150 px, and Matte grain cells are 1.67 px.
 그림을 늘이지 않고 새 영역에서 원·연결선·라벨을 다시 계산한다.
 [8개 핸들, 제약과 호스트 호출 순서](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#그리기-영역-선택과-크기-조정)를 참고한다.
 
-## 라벨과 갱신
+### 라벨과 갱신
 
 `None`, `Inside`, `Outside`를 지원한다. 내부 라벨은 조각의 위치에, 외부 라벨은 좌우로
 나누어 연결선과 함께 배치한다. 연결선은 외부 라벨의 일부다. 조각에서 시작해 라벨 글자까지
@@ -271,7 +937,7 @@ radius 150 px, and Matte grain cells are 1.67 px.
 시스템 글꼴을 찾지 않으므로 한글을 표시하려면 `register_font_bytes`로 한글 글꼴을 등록해야 한다.
 
 
-## 모델 편집과 선택
+### 모델 편집과 선택
 
 색은 `RadialSlice.color`에서 직접 바꾼다. `slice.style: Option<RadialStyle>`은 해당 조각의
 스타일 전체를 덮어쓰며, `None`이면 차트 스타일을 상속한다. 개별 스타일을 만든 뒤에는 차트의
@@ -391,7 +1057,7 @@ let png = renderer::encode_png(&image)?;
 숨은 뒷면의 선을 투과해 그리지 않는다. 베벨이 있으면 둥근 모서리의 중간을 따른다.
 조각이 맞붙은 공유 경계는 각 조각 안쪽에 반 폭씩 그린다. 라벨과 연결선은 재질 셰이딩을 받지 않는다.
 
-### 호스트의 갱신 순서
+#### 호스트의 갱신 순서
 
 포인터 좌표에서 차트의 화면상 원점을 빼고 DPR로 변환해 **차트 내부 논리 좌표**를 구한다.
 UI가 이미 논리 좌표를 제공하면 DPR로 다시 나누지 않는다. 현재 표시 중인 프레임으로 선택을
@@ -434,7 +1100,7 @@ async fn update_hover(
 크기·DPR·내용 변경도 같은 `prepare` 경로를 사용하며, 단순 UI 편집 때 `clear_cache()`를
 호출하면 재사용 가능한 라벨까지 버리므로 필요하지 않다.
 
-### 저장과 호환성
+#### 저장과 호환성
 
 `figgy-renderer`의 `serde` 기능(모델만 쓸 때는 `figgy-model`의 `serde` 기능)을 켜면 모델을
 직렬화할 수 있다. 조각의 `style`·`labels`·`label_format`·`label_color`와 차트의
@@ -454,7 +1120,7 @@ JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialS
 기존 값의 복사본을 사용한다. `Material`은 `#[non_exhaustive]`가 아니므로 재질이 늘어나면
 빠짐없이 분기하는 `match`는 컴파일되지 않는다. 버전을 올릴 때 새 재질을 분기에 추가한다.
 
-## 네이티브 편집 예제
+### 네이티브 편집 예제
 
 ```bash
 cargo run -p figgy-renderer --example radial_editor --features egui_demo
@@ -468,7 +1134,7 @@ cargo run -p figgy-renderer --example radial_editor --features egui_demo
 `Inherit chart labels`는 개별 라벨 설정을 지운다. 편집기는 창 크기와 DPR에 맞춘 텍스처에 프레임을
 직접 그린다.
 
-## 자원 수명과 검증
+### 자원 수명과 검증
 
 GPU 메모리 집계와 예산은 렌더러를 만든 장치 묶음(`RendererDevice`)에 속하며, 같은 묶음에서 만든 모든 렌더러가 함께 쓴다. 기본값은 예산 없음이고 `set_memory_budget(Some(bytes))`로 정한다. 프레임마다 112바이트 uniform,
 보이는 조각당 176바이트 표를 사용한다. 조각 선택(`pick`)마다 16바이트 질의·결과 버퍼와 16바이트
@@ -497,7 +1163,7 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 
 네이티브 GPU를 요청하지 못하면 픽셀 테스트는 통과로 처리하지 않고 실패한다.
 
-## 제목·라벨 선택과 이동
+### 제목·라벨 선택과 이동
 
 조각 선택(`pick`)과 별도로 `frame.decorations()`가 제목·그리기 영역·조각 라벨의
 `HitMap<RadialChart>`를 제공한다. 히트 영역·선택 테두리·드래그 제한·화면의 강조는 모두 화면에 그린
@@ -511,7 +1177,7 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
 
 
-### 주석 층
+#### 주석 층
 
 `chart.annotations`의 텍스트 상자와 화살표는 프레임 위에 별도 패스로 그린다. 원형 차트에는 값 축이
 없으므로 `Anchor::Ratio`(플롯 영역 비율)만 배치할 수 있고, `Anchor::Data`와 기준선·구간은

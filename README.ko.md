@@ -81,7 +81,7 @@ Rust 렌더러는 `wasm32-unknown-unknown`으로도 컴파일되며 브라우저
 | 축·글자·범례·시리즈·색상표 | [설정 명세](crates/renderer/CONFIG.md) |
 | 브라우저 문서 형식 | [JSON 스키마](crates/web/SCHEMA.md) |
 | 선택·이동·영역 크기 조정 | [상호작용](crates/renderer/INTERACTION.md) |
-| 차트별 안내 | [원형](crates/renderer/RADIAL.md) · [막대](crates/renderer/CATEGORICAL.md) · [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) · [레이더](crates/renderer/RADAR.md#한국어-사용법) · [극좌표](crates/renderer/POLAR.md#한국어-사용법) · [히스토그램](crates/renderer/HISTOGRAM.md#한국어-사용법) |
+| 차트별 안내 | [원형](crates/renderer/RADIAL.md#한국어-사용법) · [막대](crates/renderer/CATEGORICAL.md#한국어-사용법) · [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) · [레이더](crates/renderer/RADAR.md#한국어-사용법) · [극좌표](crates/renderer/POLAR.md#한국어-사용법) · [히스토그램](crates/renderer/HISTOGRAM.md#한국어-사용법) |
 | 소유권·프레임 유효성·API 호환성 | [API 계약](crates/renderer/API.md) |
 | 메모리·캐시·스트리밍·셰이더 구조 | [기술 문서](crates/renderer/ARCHITECTURE.md) |
 | 버전별 변경과 마이그레이션 | [변경 이력](CHANGELOG.md) |

@@ -78,7 +78,7 @@ Local Linux/Mesa lavapipe checks pass, and the
 used Chromium 151/SwiftShader; standard CI does not execute browser tests. To export
 the hover and selection shown on screen, a host passes the same
 `RadialChart.interaction` it used for display; see
-[the export workflow](../crates/renderer/RADIAL.md#모델-편집과-선택).
+[the export workflow](../crates/renderer/RADIAL.md#editing-the-model-and-selection).
 
 ## Renderer 0.15.0 bounded chart interaction (2026-10-11)
 

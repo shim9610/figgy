@@ -733,7 +733,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ---
 
-아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단을 다룬다. 범주형 막대([CATEGORICAL.md](CATEGORICAL.md)), 박스플롯([BOXPLOT.md](BOXPLOT.md)), 레이더 차트(극좌표 레이더 시리즈, [RADAR.md](RADAR.md))도 직교 좌표 `Renderer`가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 이 리더는 다음 마일스톤에서 제거할 예정이다. DataLess 차트인 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 렌더러는 모두 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓰므로, 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 원형 렌더러는 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 쓰지 않는다. 자세한 내용은 [RADIAL.md](RADIAL.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
+아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단을 다룬다. 범주형 막대([CATEGORICAL.md](CATEGORICAL.md#한국어-사용법)), 박스플롯([BOXPLOT.md](BOXPLOT.md)), 레이더 차트(극좌표 레이더 시리즈, [RADAR.md](RADAR.md))도 직교 좌표 `Renderer`가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 이 리더는 다음 마일스톤에서 제거할 예정이다. DataLess 차트인 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 렌더러는 모두 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓰므로, 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 원형 렌더러는 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 쓰지 않는다. 자세한 내용은 [RADIAL.md](RADIAL.md#한국어-사용법)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
 | 구성 요소 | 역할 |
 |---|---|
