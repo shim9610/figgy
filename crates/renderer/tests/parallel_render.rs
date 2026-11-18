@@ -454,6 +454,61 @@ fn a_non_finite_value_breaks_the_row_at_its_axis() {
     }
 }
 
+/// A registered chart whose root is Cartesian and whose subplot is a
+/// parallel chart (#325): the series is held to the subplot's axes, not
+/// the root's, and the registered chart draws and picks its rows there.
+#[test]
+fn a_registered_parallel_subplot_beside_a_cartesian_root_draws_and_picks() {
+    let mut r = renderer();
+    let columns = upload(&mut r, "rows", &ROWS);
+    let mut root = renderer::default::default_config();
+    root.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    root.legend.visible = false;
+    root.colorbar = None;
+    let mut cell = bare_config();
+    cell.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT / 2,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    root.subplots.push(renderer::Subplot {
+        config: cell.clone(),
+        series: vec!["rows".into()],
+        ..renderer::Subplot::default()
+    });
+    assert!(root.parallel().is_none(), "the root stays rectangular");
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(root, vec![series("rows", &columns, RED, None)])
+        .expect("validated against the parallel subplot");
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    for (k, row) in ROWS.iter().enumerate() {
+        let mid = midpoint_px(&cell, row, 0, 1.0);
+        assert!(mid.1 > f64::from(HEIGHT / 2), "in the lower cell");
+        assert_colour_at(&img, mid, RED, &format!("row {k}"));
+        assert_eq!(
+            row_of(
+                test_gpu::block_on(r.pick_chart_data(id, request(mid)).unwrap().resolve()).unwrap()
+            ),
+            Some(("rows".to_owned(), k)),
+            "row {k}"
+        );
+    }
+    r.remove_chart(id).unwrap();
+}
+
 /// The GPU pick answers the row whose segment is under the cursor, within
 /// the distance, and nothing between rows; the picked row is redrawn in the
 /// highlight colour along every segment, the other rows as they were.

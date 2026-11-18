@@ -152,6 +152,20 @@ impl Config {
         }
     }
 
+    /// The chart `series_id` is drawn on: its subplot's own config when a
+    /// subplot (or one of its overlays) draws it, else this chart. The
+    /// rules that depend on a series' coordinate system (categorical X,
+    /// ternary, parallel) hold it to this chart, not to the root (#325).
+    pub fn series_chart(&self, series_id: &str) -> &Config {
+        match self.layer_of_series(series_id) {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => self
+                .subplots
+                .get(index)
+                .map_or(self, |subplot| &subplot.config),
+            LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => self,
+        }
+    }
+
     /// Whether series `series_id` takes part in fitting `layer`'s X and Y
     /// axes, as `(x, y)`. `Annotations` fits the base axes.
     ///
