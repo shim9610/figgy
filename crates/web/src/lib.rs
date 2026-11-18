@@ -1169,26 +1169,17 @@ fn fitted_layout_json(logical: &renderer::Config, surface: (u32, u32)) -> serde_
 /// `inspect_config_layout` without a chart (#334): the candidate `json`
 /// laid out on a `width` x `height` physical surface, as
 /// `FiggyChart.inspect_document_layout` reports it on a canvas of that
-/// size. `scale`, the canvas's device pixel ratio, is checked (finite and
-/// positive, code `invalid_size`) and does not move anything: a canvas
-/// places its document by its surface size alone.
+/// size: a canvas places its document by its surface size alone.
 #[cfg(any(target_arch = "wasm32", test))]
 fn config_layout_json(
     json: &str,
     width: f64,
     height: f64,
-    scale: f64,
 ) -> Result<serde_json::Value, LayoutQueryError> {
     let surface = (
         layout_dimension("surface width", width)?,
         layout_dimension("surface height", height)?,
     );
-    if !(scale.is_finite() && scale > 0.0) {
-        return Err(LayoutQueryError {
-            code: "invalid_size",
-            message: format!("scale must be finite and positive, got {scale}"),
-        });
-    }
     let candidate = layout_candidate(json)?;
     Ok(fitted_layout_json(&candidate, surface))
 }
@@ -2762,12 +2753,12 @@ mod tests {
 
     /// The chart-less layout query is the canvas's layout for the same
     /// candidate and surface: the same JSON a `ShownDocument` of the placed
-    /// document reports, whatever the scale argument (#334).
+    /// document reports (#334).
     #[test]
     fn config_layout_is_the_canvas_layout_at_that_surface() {
         let logical = layered_document();
         let json = serde_json::to_string(&logical).unwrap();
-        for (surface, dpr) in [((600, 300), 1.0), ((1200, 600), 2.0), ((900, 450), 1.5)] {
+        for surface in [(600, 300), (1200, 600), (900, 450)] {
             let (placed, _, scale) = renderer::display_config_for_surface(&logical, surface);
             let shown = ShownDocument {
                 logical: &logical,
@@ -2776,13 +2767,9 @@ mod tests {
             };
             let expected = shown.layout_json(surface);
             let free =
-                config_layout_json(&json, f64::from(surface.0), f64::from(surface.1), dpr).unwrap();
+                config_layout_json(&json, f64::from(surface.0), f64::from(surface.1)).unwrap();
             assert_eq!(free, expected);
             assert_eq!(fitted_layout_json(&logical, surface), expected);
-            assert_eq!(
-                config_layout_json(&json, f64::from(surface.0), f64::from(surface.1), 3.0).unwrap(),
-                expected
-            );
         }
     }
 
@@ -2792,7 +2779,7 @@ mod tests {
     #[test]
     fn config_layout_follows_the_surface_dimensions() {
         let json = serde_json::to_string(&layered_document()).unwrap();
-        let at = |w: f64, h: f64| config_layout_json(&json, w, h, 1.0).unwrap();
+        let at = |w: f64, h: f64| config_layout_json(&json, w, h).unwrap();
         let (one, two) = (at(600.0, 300.0), at(1200.0, 600.0));
         assert_eq!(one["scale"], serde_json::json!(1.0));
         assert_eq!(two["scale"], serde_json::json!(2.0));
@@ -2844,8 +2831,8 @@ mod tests {
     }
 
     /// Layout queries refuse a size that is not a whole number of pixels
-    /// from 1, a lone dimension and a scale that is not finite and
-    /// positive with `invalid_size`, and a candidate as before (#334).
+    /// from 1 and a lone dimension with `invalid_size`, and a candidate as
+    /// before (#334).
     #[test]
     fn layout_queries_refuse_bad_sizes_and_candidates() {
         let json = serde_json::to_string(&layered_document()).unwrap();
@@ -2860,22 +2847,10 @@ mod tests {
             f64::INFINITY,
             f64::from(u32::MAX) + 1.0,
         ] {
-            assert_eq!(
-                code(config_layout_json(&json, bad, 300.0, 1.0)),
-                "invalid_size"
-            );
-            assert_eq!(
-                code(config_layout_json(&json, 600.0, bad, 1.0)),
-                "invalid_size"
-            );
+            assert_eq!(code(config_layout_json(&json, bad, 300.0)), "invalid_size");
+            assert_eq!(code(config_layout_json(&json, 600.0, bad)), "invalid_size");
             assert_eq!(
                 layout_surface(Some(bad), Some(300.0)).unwrap_err().code,
-                "invalid_size"
-            );
-        }
-        for bad in [0.0, -2.0, f64::NAN, f64::INFINITY] {
-            assert_eq!(
-                code(config_layout_json(&json, 600.0, 300.0, bad)),
                 "invalid_size"
             );
         }
@@ -2892,17 +2867,14 @@ mod tests {
             layout_surface(None, Some(480.0)).unwrap_err().code,
             "invalid_size"
         );
-        assert_eq!(
-            code(config_layout_json("{", 600.0, 300.0, 1.0)),
-            "config_json"
-        );
+        assert_eq!(code(config_layout_json("{", 600.0, 300.0)), "config_json");
         assert_eq!(layout_candidate("{").unwrap_err().code, "config_json");
         let mut infeasible = layered_document();
         infeasible.overlays[0].series = vec!["a".into()];
         infeasible.overlays.push(infeasible.overlays[0].clone());
         let infeasible = serde_json::to_string(&infeasible).unwrap();
         assert_eq!(
-            code(config_layout_json(&infeasible, 600.0, 300.0, 1.0)),
+            code(config_layout_json(&infeasible, 600.0, 300.0)),
             "layout"
         );
         assert_eq!(layout_candidate(&infeasible).unwrap_err().code, "layout");

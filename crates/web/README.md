@@ -215,7 +215,7 @@ surface size given without resizing anything), `panel_at(x, y)` (the panel on to
 (the active layer's exact data area), `legend_entry(series_id)` (one legend row
 as the auto legend writes it) and `render_warnings()` (every warning of the
 last frame). The free function
-`inspect_config_layout(config_json, surface_width, surface_height, scale)`
+`inspect_config_layout(config_json, surface_width, surface_height)`
 returns that layout for a candidate without a chart, and equals what a chart
 with that surface reports ([#334](https://github.com/shim9610/figgy/issues/334)).
 The radial `FiggyBoundedChart` has `annotation_preview(json)` too,
@@ -313,7 +313,7 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
 경고를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
 좌표는 그 차트의 문서 논리 픽셀이다([#334](https://github.com/shim9610/figgy/issues/334)).
-차트 없이 쓰는 `inspect_config_layout(config_json, surface_width, surface_height, scale)`은 그 표면 크기의 차트와 같은 레이아웃을 돌려준다(#334).
+차트 없이 쓰는 `inspect_config_layout(config_json, surface_width, surface_height)`은 그 표면 크기의 차트와 같은 레이아웃을 돌려준다(#334).
 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
 
 `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 차트를 한 번에 바꾼다.

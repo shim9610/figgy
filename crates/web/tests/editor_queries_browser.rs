@@ -415,14 +415,12 @@ async fn layout_at_a_surface_size_is_the_resized_canvas_layout() {
         let before = chart.get_config().unwrap();
         let size = (canvas.width(), canvas.height());
         let surface = (DOC.0 * scale, DOC.1 * scale);
-        let dpr = f64::from(scale);
 
         // The live canvas, the candidate on it and the chart-less call agree.
         let live = json(&chart.inspect_document_layout(None, None, None).unwrap());
         assert_eq!(live["surface"], serde_json::json!([surface.0, surface.1]));
         let free = json(
-            &inspect_config_layout(&before, f64::from(surface.0), f64::from(surface.1), dpr)
-                .unwrap(),
+            &inspect_config_layout(&before, f64::from(surface.0), f64::from(surface.1)).unwrap(),
         );
         assert_eq!(free, live);
         let candidate = json(
@@ -455,7 +453,7 @@ async fn layout_at_a_surface_size_is_the_resized_canvas_layout() {
                 .inspect_document_layout(Some(before.clone()), Some(w2), Some(h2))
                 .unwrap(),
         );
-        let free_at_other = json(&inspect_config_layout(&before, w2, h2, dpr).unwrap());
+        let free_at_other = json(&inspect_config_layout(&before, w2, h2).unwrap());
         assert_eq!(candidate_at_other, at_other);
         assert_eq!(free_at_other, at_other);
         assert_eq!(at_other["surface"], serde_json::json!([other.0, other.1]));
@@ -491,22 +489,22 @@ async fn layout_at_a_surface_size_is_the_resized_canvas_layout() {
                 .unwrap_err();
             assert_eq!(code(&error).as_deref(), Some("invalid_size"));
         }
-        for (w, h, s) in [
-            (0.0, 480.0, 1.0),
-            (640.0, 1.25, 1.0),
-            (640.0, 480.0, 0.0),
-            (640.0, 480.0, f64::NAN),
+        for (w, h) in [
+            (0.0, 480.0),
+            (640.0, 1.25),
+            (f64::NAN, 480.0),
+            (640.0, f64::INFINITY),
         ] {
-            let error = inspect_config_layout(&before, w, h, s).unwrap_err();
-            assert_eq!(code(&error).as_deref(), Some("invalid_size"), "{w} {h} {s}");
+            let error = inspect_config_layout(&before, w, h).unwrap_err();
+            assert_eq!(code(&error).as_deref(), Some("invalid_size"), "{w} {h}");
         }
-        let error = inspect_config_layout("{", 640.0, 480.0, 1.0).unwrap_err();
+        let error = inspect_config_layout("{", 640.0, 480.0).unwrap_err();
         assert_eq!(code(&error).as_deref(), Some("config_json"));
         let mut infeasible = config_of(&chart);
         infeasible.overlays[0].series = vec!["a".into()];
         infeasible.overlays.push(infeasible.overlays[0].clone());
         let infeasible = serde_json::to_string(&infeasible).unwrap();
-        let error = inspect_config_layout(&infeasible, 640.0, 480.0, 1.0).unwrap_err();
+        let error = inspect_config_layout(&infeasible, 640.0, 480.0).unwrap_err();
         assert_eq!(code(&error).as_deref(), Some("layout"));
         let error = chart
             .inspect_document_layout(Some(infeasible), Some(640.0), Some(480.0))

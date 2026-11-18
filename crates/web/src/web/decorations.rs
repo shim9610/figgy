@@ -1629,23 +1629,20 @@ fn layout_query_error(error: crate::LayoutQueryError) -> JsValue {
 /// a candidate `Config` JSON on a canvas whose surface is `surface_width` x
 /// `surface_height` physical pixels, without a chart (#334): no renderer,
 /// GPU device or surface is created, and the result is the JSON a chart
-/// of that surface size reports for the same candidate. `scale` is that
-/// canvas's device pixel ratio; it must be finite and positive, and it
-/// does not move anything, since a canvas places its document by its
-/// surface size alone (the result's `scale` is that fit). Refused with
-/// code `config_json` or `layout` as `inspect_document_layout` refuses a
-/// candidate, and with `invalid_size` for a dimension that is not a whole
-/// number of pixels from 1 or a scale that is not finite and positive.
+/// of that surface size reports for the same candidate: a canvas places
+/// its document by its surface size alone, and the result's `scale` is
+/// that fit. Refused with code `config_json` or `layout` as
+/// `inspect_document_layout` refuses a candidate, and with `invalid_size`
+/// for a dimension that is not a whole number of pixels from 1.
 ///
-/// JS: `const layout = JSON.parse(inspect_config_layout(cfg, canvas.width, canvas.height, devicePixelRatio));`
+/// JS: `const layout = JSON.parse(inspect_config_layout(cfg, canvas.width, canvas.height));`
 #[wasm_bindgen]
 pub fn inspect_config_layout(
     config_json: &str,
     surface_width: f64,
     surface_height: f64,
-    scale: f64,
 ) -> Result<String, JsValue> {
-    let value = crate::config_layout_json(config_json, surface_width, surface_height, scale)
+    let value = crate::config_layout_json(config_json, surface_width, surface_height)
         .map_err(layout_query_error)?;
     serde_json::to_string(&value).map_err(js_err)
 }
