@@ -1,15 +1,10 @@
 //! Energy-level and Feynman diagrams.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
-use super::*;
 use crate::energy_levels::*;
 use crate::feynman::*;
-use crate::format::*;
-use crate::layout::*;
-use crate::line::*;
 use crate::text::*;
 use crate::*;
 

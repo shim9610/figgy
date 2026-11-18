@@ -716,7 +716,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 - `Heatmap` / `Contour` / `HeatmapContour`, `point_color_map`이 있는 산점도 계열 시리즈, `color_map`이 있는 `Vector`와 `Streamlines`에는 이 설정이 반드시 필요하다. Z축 범위와 색상표를 여기에서 읽으므로 없으면 시리즈를 거부한다.
 - 차트당 Z축 스케일은 하나이며 색상 막대를 쓰는 모든 시리즈(행렬, 색상 매핑 산점도, 색상 매핑 벡터)가 같은 범위와 색상표를 공유한다. 웹의 `auto_fit_colorbar(pad)`는 이 시리즈들이 매핑하는 모든 컬럼(행렬 값 컬럼, `point_color_map` 컬럼, 점 벡터 `color_map`의 컬럼, 격자 벡터 `color_map`의 모든 컬럼) 통계의 합집합으로 Z축을 맞춘다.
-- 색상 막대의 영역은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 그 방향의 여백에 더해진다. Rust 모델의 `Config::fit_to_data_area`(`FitStrategy::ProportionalScale`)와 `Config::resize_chart_area_scaled`는 이 가운데 라벨 여백인 `axis.out_margin`만 비율에 맞춰 조절하고 `thickness_px`, `gap_px`, 눈금 길이는 유지한다.
+- 색상 막대의 영역은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 그 방향의 여백에 더해진다. Rust 모델의 `Config::fit_to_data_area`는 이 영역을 그대로 두고 옆 축의 `out_margin`만 조절하므로 `thickness_px`, `gap_px`, 눈금 길이는 유지된다.
 - 일반 축과 다른 기본값은 `line_visible: false`, `tick: "Outside"`, `title_option.visible: false`, `out_margin: 60.0`이다. 막대 테두리가 축선 역할을 하고 눈금은 라벨 공간에 놓이며, 기본 여백에는 제목 없이 눈금 라벨만 들어간다. `tick`은 `None` / `Outside` / `Inside` / `Both`로 눈금 방향을, `inverted`는 화면상의 값 증가 방향을 정한다. 눈금 모양은 축선의 `line_color` / `line_width` / `line_style`을 따른다.
 - 색상 막대는 선택·이동·크기 조절을 지원한다. 히트테스트 ID는 `"colorbar"`다. 선택하면 데이터 영역과 마찬가지로 파란 상자와 조절점 8개를 표시한다. 이동량은 `offset_{x,y}`에 누적한다. 크기 조절은 막대 방향에 따라 짧은 쪽의 `thickness_px` 또는 긴 쪽의 `length_frac`을 바꾼다.
 - 축·눈금 라벨·제목은 `"colorbar_axis"`, `"colorbar_tick_labels"`, `"colorbar_title"`로 각각 선택한다. 드래그하면 `axis.line_offset`, `axis.label_style.label_offset_{x,y}`, `axis.title_option.offset_{x,y}`가 바뀐다. 위치와 선택 영역은 실제 막대 사각형을 기준으로 계산하므로 길이·정렬·위치·크기 변경을 함께 반영한다.

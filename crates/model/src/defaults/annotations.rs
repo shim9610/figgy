@@ -1,17 +1,13 @@
 //! Annotations, layers, decorations and selections.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
 use super::*;
 use crate::annotation::*;
 use crate::decoration::*;
-use crate::format::*;
 use crate::layer::*;
-use crate::layout::*;
 use crate::line::*;
-use crate::text::*;
 use crate::*;
 
 /// The documented default of [`AnnotationLayer`]: the value a document that

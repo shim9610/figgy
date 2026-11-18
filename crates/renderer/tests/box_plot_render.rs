@@ -13,8 +13,6 @@
 //! outliers orange, all flat with no outline, so a colour predicate
 //! attributes every pixel to one part. Expected extents come from the same
 //! data area and axis ranges the renderer draws with.
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 use test_gpu::BlockOn as _;
 
 #[path = "support/gpu.rs"]

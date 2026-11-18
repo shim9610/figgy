@@ -111,7 +111,7 @@ A chart's per-element data enters in one of three ways.
 
 The categorical bar, box plot and radar documents of releases up to 0.12
 (`CategoricalChart`, `BoxPlotChart`, `RadarChart`) are kept as readers for
-this release and are deprecated; they are removed in the next milestone.
+documents written before 0.13.
 They parse, validate and turn into a `Config` with columns to upload:
 `Config::from_categorical`, `Config::from_boxplot` and `Config::from_radar`
 (in `bounded_sources`) return the `Config`, its series and the

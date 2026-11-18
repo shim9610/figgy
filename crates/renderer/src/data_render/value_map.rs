@@ -99,22 +99,6 @@ pub struct PointValueMapBuffers {
     pub stops: wgpu::Buffer,
 }
 
-/// Upload one series' value-map params and ramp into the layout above.
-///
-/// The stops are written straight into the mapped stop buffer, one `vec4` per
-/// control point; an empty ramp still gets one zero entry so the storage
-/// binding is valid, with `params.stop_count` carrying the truth.
-pub fn create_point_value_map_bind_group(
-    device: &wgpu::Device,
-    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
-    layout: &wgpu::BindGroupLayout,
-    params: &PointValueMapParamsGpu,
-    stops: &[Color],
-) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
-    let (buffers, charge) = create_point_value_map_buffers(device, ledger, params, stops)?;
-    Ok((bind_point_value_map(device, layout, &buffers), charge))
-}
-
 /// The value-map group over existing buffers (`create_point_value_map_buffers`).
 pub fn bind_point_value_map(
     device: &wgpu::Device,
@@ -137,8 +121,11 @@ pub fn bind_point_value_map(
     })
 }
 
-/// Upload one series' value-map params and ramp (see
-/// [`create_point_value_map_bind_group`]).
+/// Upload one series' value-map params and ramp into the layout above.
+///
+/// The stops are written straight into the mapped stop buffer, one `vec4` per
+/// control point; an empty ramp still gets one zero entry so the storage
+/// binding is valid, with `params.stop_count` carrying the truth.
 pub fn create_point_value_map_buffers(
     device: &wgpu::Device,
     ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,

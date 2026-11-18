@@ -536,7 +536,6 @@ mod tests {
     }
     #[cfg(feature = "serde")]
     #[test]
-    #[allow(deprecated)]
     fn old_documents_default_positions_and_all_models_preserve_edits() {
         for mut value in [
             serde_json::to_value(crate::defaults::radial_chart()).unwrap(),

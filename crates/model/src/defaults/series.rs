@@ -1,15 +1,10 @@
 //! Series styles: lines, markers, bars, box plots, fields, vectors, ranges.
 
-#![allow(unused_imports)]
 // Some sources are read only by `Default` (`crate::helpers`).
 #![cfg_attr(not(feature = "helpers"), allow(dead_code))]
 
-use super::*;
 use crate::data_config::*;
-use crate::format::*;
-use crate::layout::*;
 use crate::line::*;
-use crate::text::*;
 use crate::*;
 
 /// The documented default of [`BarGroups`]: the value a document that

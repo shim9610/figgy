@@ -57,7 +57,7 @@
 //! scene is a polar one; they sweep as such.
 //!
 //! The Cartesian decoration ink needs no GPU: the CPU raster of each
-//! expanded panel (`try_raster_chart_layer_to_rgba` with
+//! expanded panel (`try_raster_chart_layer_to_rgba_with_selection_at` with
 //! `AxisLayerKind::Decoration`) runs the placement pass the renderer
 //! uploads, and a 2x display or export is `Config::scaled(2.0)`. The GPU
 //! builds the scenes (column uploads, `auto_fit_*`) and renders the radial

@@ -244,20 +244,8 @@ pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
 /// The label of every arc scan compute pipeline.
 pub(crate) const ARC_SCAN_LABEL: &str = "figgy arc scan pipeline";
 
-pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
-    let mut noop = |_| {};
-    create_arc_scan_pipelines_observed(device, &mut noop)
-}
-
-pub fn create_arc_scan_pipelines_observed(
-    device: &wgpu::Device,
-    observer: &mut dyn FnMut(InitEvent),
-) -> ArcScanPipelines {
-    create_arc_scan_pipelines_by_set(device, ShaderSet::Full, observer)
-}
-
-/// [`create_arc_scan_pipelines_observed`] from the module assembled for
-/// `cuts` (#299): the renderer's own scan follows its shader set.
+/// The arc scan compute pipelines from the module assembled for `set`
+/// (#299): the renderer's own scan follows its shader set.
 pub(crate) fn create_arc_scan_pipelines_by_set(
     device: &wgpu::Device,
     set: ShaderSet,
@@ -484,15 +472,8 @@ pub(crate) fn create_arc_scan_pipelines_by_set(
     }
 }
 
-pub async fn create_arc_scan_pipelines_observed_async(
-    device: &wgpu::Device,
-    observer: &mut dyn FnMut(InitEvent),
-) -> Result<ArcScanPipelines, String> {
-    create_arc_scan_pipelines_by_set_async(device, ShaderSet::Full, observer).await
-}
-
-/// [`create_arc_scan_pipelines_observed_async`] from the module assembled
-/// for `cuts` (#299).
+/// [`create_arc_scan_pipelines_by_set`] after the browser's asynchronous
+/// compute prewarm (#299).
 pub(crate) async fn create_arc_scan_pipelines_by_set_async(
     device: &wgpu::Device,
     set: ShaderSet,
@@ -1590,7 +1571,7 @@ mod replay_product_tests {
         let max_workgroups = adapter.limits().max_compute_workgroups_per_dimension;
         assert!(adapter.limits().max_compute_workgroup_size_x >= WG);
         assert!(adapter.limits().max_compute_invocations_per_workgroup >= WG);
-        let pipelines = create_arc_scan_pipelines(&device);
+        let pipelines = create_arc_scan_pipelines_by_set(&device, ShaderSet::Full, &mut |_| {});
         let transform = ScatterTransform {
             data_min: [0.0, 0.0],
             data_max: [100.0, 100.0],

@@ -17,8 +17,6 @@
 //! - `05-selection.png`: a selected vertex, highlighted by the picked ring.
 //!
 //! cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;

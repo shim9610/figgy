@@ -324,16 +324,6 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
     ) -> Result<()> {
-        let result = self.refresh_axis_unreported(view, chart, panel_rect);
-        self.reported(result)
-    }
-
-    pub(super) fn refresh_axis_unreported(
-        &mut self,
-        view: &mut ChartView,
-        chart: &Chart,
-        panel_rect: Rect,
-    ) -> Result<()> {
         self.refresh_axis_with_selection(view, chart, panel_rect, None)
     }
 

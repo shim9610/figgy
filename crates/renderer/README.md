@@ -78,8 +78,8 @@ The renderer re-exports model types: most applications do not need a separate
 sources or streamed data. Categorical bars and box plots are `Renderer`
 series over a categorical axis, and radar series over the categorical angle
 axis of a polar chart; the legacy `CategoricalChart`, `BoxPlotChart` and
-`RadarChart` documents are deprecated readers for this release, removed in the
-next milestone. Both renderers can share a
+`RadarChart` documents are kept as readers for documents written before 0.13.
+Both renderers can share a
 `RendererDevice`; each maintains its own resource budget. Vector fields, point
 colour and size maps, area fills, step lines, overlay axes and subplots are
 `Renderer` features declared in `SeriesConfig` and `Config`; see the

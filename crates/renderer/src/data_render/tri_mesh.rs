@@ -42,10 +42,6 @@ pub const TRI_MESH_VERTICES: u32 = 3;
 pub const MESH_TABLE_VALUES: usize = 0;
 /// The grid table entry of a mesh's triangle index column (`MESH_INDICES`).
 pub const MESH_TABLE_INDICES: usize = 1;
-/// The grid table entry of a mesh's height column on a 3D chart
-/// (`MESH_HEIGHTS`, the series' `z_column`); a flat mesh's table has two
-/// entries.
-pub const MESH_TABLE_HEIGHTS: usize = 2;
 
 /// Which triangle mesh pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

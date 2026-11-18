@@ -35,7 +35,7 @@
 // carries one 4-vertex quad per piece with two duplicated vertices between
 // pieces (degenerate triangles), so the pipeline and the instance count stay
 // the same and only the per-instance vertex count changes — see
-// `strip_slot` and the CPU twin `line_strip_vertex_count` in data_render/line.rs. The
+// `strip_slot` and the CPU twin `strip_vertex_count` in line_step.rs. The
 // arc-length scan (line_arc.wgsl) and the GPU/CPU pickers walk the same
 // pieces, so dash phase and picking stay on the stepped path.
 //
@@ -100,7 +100,7 @@ fn step_prefix_px(t: Transform, in: VsIn, mode: u32, k: u32) -> f32 {
 // joint: the last vertex of the piece and the first of the next, which fold
 // the connecting triangles to zero area. Total = pieces · per_piece +
 // 2 · (pieces − 1); a one-piece instance is exactly the plain strip. CPU
-// twin: `line_strip_vertex_count` in data_render/line.rs.
+// twin: `strip_vertex_count` in line_step.rs.
 struct StripSlot {
     piece: u32,
     local: u32,

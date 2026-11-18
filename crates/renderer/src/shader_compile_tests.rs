@@ -2,56 +2,29 @@ use super::*;
 use crate::gpu_compile::capture;
 use std::collections::HashSet;
 
+/// The annotation layer's fullscreen pipeline builder loads only its own
+/// shader module.
 #[test]
-fn single_pipeline_builders_compile_only_the_requested_shader() {
+fn fullscreen_textured_builder_compiles_only_its_shader() {
     let (device, _) = crate::data_render::shared_device().expect("required GPU adapter");
-    for which in 0..9 {
-        let session = capture::Session::begin();
-        let texture = data_render::create_texture_bind_group_layout(&device);
-        let transform = data_render::create_scatter_transform_bind_group_layout(&device);
-        let style = data_render::create_style_bind_group_layout(&device);
-        let mapping = data_render::create_per_point_style_map_bind_group_layout(&device);
-        let value_map = data_render::create_point_value_map_bind_group_layout(&device);
-        let field = data_render::create_field_data_bind_group_layout(&device);
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let _pipeline = match which {
-            0 => data_render::create_fullscreen_textured_pipeline(&device, &texture, format),
-            1 => data_render::create_line_columnar_pipeline(&device, &transform, &style, format),
-            2 => data_render::create_scatter_columnar_pipeline(&device, &transform, &style, format),
-            3 => data_render::create_scatter_columnar_mapped_pipeline(
-                &device, &transform, &style, &mapping, &value_map, format, 1,
-            ),
-            4 => {
-                data_render::create_errorbar_columnar_pipeline(&device, &transform, &style, format)
-            }
-            5 => data_render::create_errorbar_columnar_mapped_pipeline(
-                &device, &transform, &style, &mapping, format, 1,
-            ),
-            6 => data_render::create_bar_columnar_pipeline(&device, &transform, &style, format),
-            7 => data_render::create_bar_columnar_mapped_pipeline(
-                &device, &transform, &style, &mapping, format,
-            ),
-            8 => data_render::create_field_columnar_pipeline(
-                &device, &transform, &style, &field, format,
-            ),
-            _ => unreachable!(),
-        };
-        let captured = session.finish();
-        assert_eq!(
-            captured.sources.len(),
-            1,
-            "builder {which} loaded unrelated shaders"
-        );
-        assert_eq!(
-            captured
-                .timings
-                .iter()
-                .filter(|r| r["kind"] == "module")
-                .count(),
-            1
-        );
-        assert_eq!(captured.pipelines.len(), 1);
-    }
+    let session = capture::Session::begin();
+    let texture = data_render::create_texture_bind_group_layout(&device);
+    let _pipeline = data_render::create_fullscreen_textured_pipeline(
+        &device,
+        &texture,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
+    let captured = session.finish();
+    assert_eq!(captured.sources.len(), 1, "loaded unrelated shaders");
+    assert_eq!(
+        captured
+            .timings
+            .iter()
+            .filter(|r| r["kind"] == "module")
+            .count(),
+        1
+    );
+    assert_eq!(captured.pipelines.len(), 1);
 }
 
 /// Exercise real constructors rather than a second, approximate list of GPU
@@ -102,21 +75,6 @@ fn all_shader_compilation_times_and_entry_coverage() {
             for kernel in crate::gpu_data_pick::DataPickKernel::ALL {
                 renderer.picker.data_kernels.ensure(&data, kernel).unwrap();
             }
-        }
-        if samples == 1 {
-            data_render::create_bar_columnar_pipeline(
-                &device,
-                &renderer.transform_bgl,
-                &renderer.style_bgl,
-                wgpu::TextureFormat::Rgba8Unorm,
-            );
-            data_render::create_bar_columnar_mapped_pipeline(
-                &device,
-                &renderer.transform_bgl,
-                &renderer.style_bgl,
-                &renderer.per_point_style_map_bgl,
-                wgpu::TextureFormat::Rgba8Unorm,
-            );
         }
         data_render::stream_field::Pipelines::new(
             &device,
@@ -214,18 +172,7 @@ fn all_shader_compilation_times_and_entry_coverage() {
     let mut missing = Vec::new();
     for (index, source) in capture.sources.iter().enumerate() {
         let module = wgpu::naga::front::wgsl::parse_str(source["code"].as_str().unwrap()).unwrap();
-        // The public single-pipeline bar builders
-        // (`create_bar_columnar_pipeline`, `..._mapped_pipeline`) are the
-        // only users of these two entries, and they compile the module with
-        // every feature for any host transform (#299): the basic module's
-        // copies are never compiled.
-        let host_only =
-            source["code"].as_str() == Some(data_render::BAR_SHADER_BY_SET.basic.source);
         for entry in module.entry_points {
-            if host_only && matches!(entry.name.as_str(), "vs_main" | "vs_mapped") {
-                assert!(!used.contains(&(index, entry.name.clone())));
-                continue;
-            }
             if !used.contains(&(index, entry.name.clone())) {
                 missing.push(format!("{} in {}", entry.name, source["label"]));
             }

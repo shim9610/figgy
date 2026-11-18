@@ -262,24 +262,6 @@ impl PickedData {
             },
         }
     }
-
-    pub fn into_point(self) -> Option<PickedPoint> {
-        let Self::Point {
-            source_id,
-            series_id,
-            point_index,
-            distance_px,
-        } = self
-        else {
-            return None;
-        };
-        Some(PickedPoint {
-            source_id,
-            series_id,
-            point_index,
-            distance_px,
-        })
-    }
 }
 
 impl From<PickedPoint> for PickedData {

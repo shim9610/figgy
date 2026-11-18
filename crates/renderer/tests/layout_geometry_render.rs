@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use renderer::axis_render::try_raster_chart_to_rgba;
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{AxisScale, LegendCorner};
 use renderer::format::{LabelFormat, TimestampLabelFormat};
 use renderer::layout::{ChartArea, Rect};
@@ -91,7 +91,9 @@ fn output_dir() -> PathBuf {
 }
 
 fn raster(config: &renderer::Config) -> Vec<u8> {
-    let rgba = try_raster_chart_to_rgba(config).expect("layout raster");
+    let rgba =
+        try_raster_chart_layer_to_rgba_with_selection_at(config, AxisLayerKind::All, &[], 1.0)
+            .expect("layout raster");
     assert_eq!(rgba.len(), (WIDTH * HEIGHT * 4) as usize);
     rgba
 }

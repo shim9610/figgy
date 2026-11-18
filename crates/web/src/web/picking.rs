@@ -1904,55 +1904,6 @@ impl FiggyChart {
     pub fn has_selection(&self) -> Result<bool, JsValue> {
         Ok(self.chart_selection()?.is_some() || self.selected_annotation.is_some())
     }
-
-    /// Compatibility entry point. Nonresident picking is disabled because
-    /// exact source replay can take as long as the original render.
-    pub async fn begin_stream_pick_point(
-        &mut self,
-        _x: f32,
-        _y: f32,
-        _max_distance_px: f32,
-        _max_primitives_per_chunk: f64,
-    ) -> Result<StreamingOperationHandle, JsValue> {
-        Err(JsValue::from_str(
-            "stream picking is disabled; no source replay is started",
-        ))
-    }
-
-    /// Compatibility entry point; always rejects without requesting ranges.
-    pub async fn begin_stream_pick_data(
-        &mut self,
-        _x: f32,
-        _y: f32,
-        _max_distance_px: f32,
-        _max_primitives_per_chunk: f64,
-    ) -> Result<StreamingOperationHandle, JsValue> {
-        Err(JsValue::from_str(
-            "stream picking is disabled; no source replay is started",
-        ))
-    }
-
-    /// Compatibility entry point; no streamed pick operation can start.
-    ///
-    /// Always rejects.
-    #[wasm_bindgen(unchecked_return_type = "never")]
-    pub async fn finish_stream_pick_point(
-        &mut self,
-        _handle: &StreamingOperationHandle,
-    ) -> Result<JsValue, JsValue> {
-        Err(JsValue::from_str("stream picking is disabled"))
-    }
-
-    /// Compatibility entry point; no streamed pick operation can start.
-    ///
-    /// Always rejects.
-    #[wasm_bindgen(unchecked_return_type = "never")]
-    pub async fn finish_stream_pick_data(
-        &mut self,
-        _handle: &StreamingOperationHandle,
-    ) -> Result<JsValue, JsValue> {
-        Err(JsValue::from_str("stream picking is disabled"))
-    }
 }
 
 /// Whether a drag or handle target moves a subplot's frame (#205).

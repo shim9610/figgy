@@ -8,10 +8,8 @@
 //! column pool. A [`RadarChart`] document still parses and validates here,
 //! and `Config::from_radar` turns it into that chart and the uploads of its
 //! values. Values are the host's; the renderer never normalizes a spoke to
-//! its own range. The type is deprecated and is removed in the next
-//! milestone.
-// The module defines the deprecated reader type and its tests use it.
-#![allow(deprecated)]
+//! its own range. The type is the reader for documents written before 0.13.
+
 use crate::{Color, categorical::Category};
 use std::collections::HashSet;
 
@@ -25,10 +23,7 @@ pub const MIN_RADAR_CATEGORIES: usize = 3;
 
 /// One vertex of one series (`category_id` set) or a whole series polygon
 /// (`category_id` absent): what hover, selection and hit testing address.
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the RadarChart document reader; removed with it in the next milestone"
-)]
+/// Part of the [`RadarChart`] reader for documents written before 0.13.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadarTarget {
@@ -60,10 +55,7 @@ impl RadarTarget {
 
 /// The grid behind the series: rings as regular polygons through the spokes
 /// (the classic spider web) or as circles.
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the RadarChart document reader; removed with it in the next milestone"
-)]
+/// Part of the [`RadarChart`] reader for documents written before 0.13.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarGridShape {
@@ -75,10 +67,7 @@ pub enum RadarGridShape {
 
 /// The chart-wide appearance: spoke layout, grid, and the series defaults a
 /// `RadarSeriesStyle` can override.
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the RadarChart document reader; removed with it in the next milestone"
-)]
+/// Part of the [`RadarChart`] reader for documents written before 0.13.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -112,10 +101,7 @@ pub struct RadarStyle {
 }
 
 /// One series: a closed polygon with one value per category.
-#[deprecated(
-    since = "0.13.0",
-    note = "part of the RadarChart document reader; removed with it in the next milestone"
-)]
+/// Part of the [`RadarChart`] reader for documents written before 0.13.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadarSeries {
@@ -154,12 +140,9 @@ impl RadarSeries {
     }
 }
 
-/// A legacy radar chart document. [`Self::validate`] checks it, and
+/// The reader for radar chart documents written before 0.13.
+/// [`Self::validate`] checks it, and
 /// `Config::from_radar` opens it as a polar chart of radar series.
-#[deprecated(
-    since = "0.13.0",
-    note = "a document reader only: open it with Config::from_radar; removed in the next milestone"
-)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",

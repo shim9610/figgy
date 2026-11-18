@@ -26,23 +26,6 @@ pub(crate) const LINE_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = cr
 pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = LINE_SHADER_BY_SET.full;
 
 /// Columnar line pipeline. slots: 0=x_a, 1=y_a, 2=x_b, 3=y_b (per-instance).
-pub fn create_line_columnar_pipeline(
-    device: &wgpu::Device,
-    transform_bgl: &wgpu::BindGroupLayout,
-    style_bgl: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = ShaderModules::line(device, crate::shader_assembly::ShaderSet::Full);
-    create_line_columnar_pipeline_with_sample_count(
-        device,
-        &shader,
-        transform_bgl,
-        style_bgl,
-        target_format,
-        1,
-    )
-}
-
 pub(crate) fn create_line_columnar_pipeline_with_sample_count(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -75,19 +58,6 @@ pub const LINE_PRECISE_VERTICES_PER_INSTANCE: u32 = 4;
 /// `2 * (S + 1)` with the subdivision constant `S = 8` — must match
 /// `SKETCH_SUBDIV` in `line_columnar.wgsl`.
 pub const LINE_SKETCH_VERTICES_PER_INSTANCE: u32 = 18;
-
-/// Strip vertices one line instance draws under `interpolation` in a
-/// rectangular chart: every step piece is one strip of `per_piece` vertices
-/// and consecutive pieces are joined by two duplicated vertices. Twin of
-/// `strip_slot` in `line_columnar.wgsl`. A polar chart's arc pieces go
-/// through the crate-private `line_step::strip_vertex_count` with its mode
-/// word.
-pub fn line_strip_vertex_count(
-    per_piece: u32,
-    interpolation: crate::data_config::LineInterpolation,
-) -> u32 {
-    crate::line_step::strip_vertex_count(per_piece, crate::line_step::mode_word(interpolation, 0))
-}
 
 /// The area-fill pipeline: `vs_area` / `fs_area` of the line shader, one
 /// trapezoid per segment (per step piece) between the line and its baseline
@@ -450,7 +420,7 @@ pub struct ColumnLineLayer<'a> {
     /// 4 for the precise `vs_main`, [`LINE_SKETCH_VERTICES_PER_INSTANCE`]
     /// for the sketch `vs_sketch`, [`MILKYWAY_RIBBON_VERTICES`] for
     /// the milkyway ribbon — each per step piece, joined per
-    /// [`line_strip_vertex_count`].
+    /// `line_step::strip_vertex_count`.
     pub verts_per_instance: u32,
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the milkyway/constellation PSF/LUT bind group. `None` for precise/sketch.
@@ -501,7 +471,7 @@ pub struct ColumnAreaLayer<'a> {
     /// a baseline fill, bound as inert filler.
     pub base: ColumnHandle,
     /// Strip vertices per instance: [`LINE_PRECISE_VERTICES_PER_INSTANCE`] per
-    /// step piece through [`line_strip_vertex_count`].
+    /// step piece through `line_step::strip_vertex_count`.
     pub verts_per_instance: u32,
     /// Whether the fill closes its polygon (a radar series on a full
     /// circle): one more trapezoid under the segment from the last point
@@ -569,7 +539,7 @@ pub(crate) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
     }
     // Per-instance vertex count decided where the pipeline variant was
     // picked: 4 (precise) / 18 (sketch, constellation ribbon) per step piece,
-    // through `line_strip_vertex_count`.
+    // through `line_step::strip_vertex_count`.
     pass.draw(0..l.verts_per_instance, 0..(count - 1));
     if l.closed {
         // The closing segment: the same instance with A at the last point

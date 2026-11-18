@@ -209,11 +209,6 @@ impl RadialKind {
     }
 }
 
-/// The former sector material enum, now the shared [`Material`]. Sectors
-/// accept every variant.
-#[deprecated(since = "0.13.0", note = "use Material")]
-pub type RadialMaterial = crate::Material;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadialLabels {

@@ -465,7 +465,6 @@ mod tests {
     // The legacy documents carry their layer for the readers, reading an
     // overlay as `Base`.
     #[test]
-    #[allow(deprecated)]
     fn legacy_documents_read_their_active_layer() {
         macro_rules! check {
             ($new:expr) => {{

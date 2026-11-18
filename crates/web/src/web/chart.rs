@@ -560,8 +560,6 @@ pub fn normalize_config(config_json: &str) -> Result<String, JsValue> {
 /// as `set_categorical_document` does.
 ///
 /// JS: `const { config, series, notes } = JSON.parse(convert_categorical_document(text, JSON.stringify({ chart_area: chart_area_of_the_chart })));`
-// The legacy document is read through its deprecated reader type.
-#[allow(deprecated)]
 #[wasm_bindgen]
 pub fn convert_categorical_document(
     json: &str,
@@ -578,8 +576,6 @@ pub fn convert_categorical_document(
 /// `{column, role: "box_outliers", len, groups}`.
 ///
 /// JS: `const converted = JSON.parse(convert_boxplot_document(text));`
-// The legacy document is read through its deprecated reader type.
-#[allow(deprecated)]
 #[wasm_bindgen]
 pub fn convert_boxplot_document(json: &str, options: Option<String>) -> Result<String, JsValue> {
     crate::convert_document_json::<renderer::BoxPlotChart>(json, options.as_deref())
@@ -591,8 +587,6 @@ pub fn convert_boxplot_document(json: &str, options: Option<String>) -> Result<S
 /// `options` `convert_categorical_document` takes.
 ///
 /// JS: `const converted = JSON.parse(convert_radar_document(text));`
-// The legacy document is read through its deprecated reader type.
-#[allow(deprecated)]
 #[wasm_bindgen]
 pub fn convert_radar_document(json: &str, options: Option<String>) -> Result<String, JsValue> {
     crate::convert_document_json::<renderer::RadarChart>(json, options.as_deref())
@@ -936,39 +930,10 @@ impl FiggyChart {
         })
     }
 
-    /// Explicit reset: rebuild every auto legend row from the series'
-    /// `SeriesConfig::label`; a series without one gets no row.
-    pub(super) fn rebuild_legend_from_series_labels(&mut self) -> Result<(), JsValue> {
-        let series = self.chart_series()?;
-        let mut entries: Vec<(SeriesConfig, RichText)> = Vec::new();
-        entries.try_reserve(series.len()).map_err(js_err)?;
-        for cfg in series {
-            if let Some(label) = &cfg.label {
-                entries.push((cfg.clone(), label.clone()));
-            }
-        }
-
-        let mut config = self.chart_config()?.clone();
-        config.legend.content.segments.clear();
-        for (cfg, label) in entries {
-            renderer::config::append_legend_entry_rich(
-                &mut config.legend.content,
-                renderer::config::series_symbol_segments(
-                    &cfg,
-                    config.colorbar.as_ref().map(|bar| &bar.colormap),
-                ),
-                label.segments,
-            );
-        }
-        config.legend.visible = !config.legend.content.segments.is_empty();
-        self.replace_chart_config(config)?;
-        self.legend_auto_managed = true;
-        Ok(())
-    }
-
     pub(super) fn request_host_redraw(&mut self) {
         self.redraw_pending = true;
     }
+
     /// Whether `id` is a registered column or triangle index column: a
     /// triangle mesh names its triangles among its columns (#210).
     pub(super) fn column_registered(&self, id: &str) -> bool {
@@ -1602,8 +1567,6 @@ impl FiggyChart {
     /// in "Review and apply" on [`Self::set_radar_document`] (#334).
     ///
     /// JS: `const report = JSON.parse(chart.set_categorical_document(JSON.stringify(doc), JSON.stringify({ refuse: "any" })));`
-    // The legacy document is read through its deprecated reader type.
-    #[allow(deprecated)]
     pub fn set_categorical_document(
         &mut self,
         json: &str,
@@ -1688,8 +1651,6 @@ impl FiggyChart {
     /// in "Review and apply" on [`Self::set_radar_document`] (#334).
     ///
     /// JS: `const report = JSON.parse(chart.set_boxplot_document(JSON.stringify(doc), JSON.stringify({ refuse: "any" })));`
-    // The legacy document is read through its deprecated reader type.
-    #[allow(deprecated)]
     pub fn set_boxplot_document(
         &mut self,
         json: &str,
@@ -1826,8 +1787,6 @@ impl FiggyChart {
     /// upload stage with `code` `"budget_exceeded"`.
     ///
     /// JS: `const report = JSON.parse(chart.set_radar_document(JSON.stringify(doc), JSON.stringify({ refuse: "any" })));`
-    // The legacy document is read through its deprecated reader type.
-    #[allow(deprecated)]
     pub fn set_radar_document(
         &mut self,
         json: &str,
@@ -2013,11 +1972,6 @@ impl FiggyChart {
         FiggyReadiness {
             readiness: self.renderer.pipeline_readiness(),
         }
-    }
-
-    /// Alias for [`Self::first_frame_ready`].
-    pub async fn warm_up(&mut self) -> Result<(), JsValue> {
-        self.first_frame_ready().await
     }
 
     /// Prepare the resident Cartesian pipeline groups while reporting the

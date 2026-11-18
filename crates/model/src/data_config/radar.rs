@@ -93,7 +93,6 @@ impl RadarSeriesStyle {
     /// `emphasis_brightness` has no counterpart: the picked ring
     /// (`Config.picked_data`) is the highlight of a picked vertex, as on
     /// every polar line or marker, and no series is brightened.
-    #[allow(deprecated)] // reads the legacy radar document's style
     pub fn resolved_from(&self, chart: &crate::radar::RadarStyle) -> RadarSeriesStyle {
         RadarSeriesStyle {
             line_width_px: Some(self.line_width_px.unwrap_or(chart.line_width_px)),

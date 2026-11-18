@@ -4,8 +4,6 @@
 //! at 1x and 2x, and the two images must be identical. `released_documents.rs`
 //! checks the model values; this checks what the user sees.
 #![cfg(feature = "serde")]
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 
 use test_gpu::BlockOn as _;
 

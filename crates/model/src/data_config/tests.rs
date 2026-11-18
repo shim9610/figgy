@@ -2600,7 +2600,6 @@ mod radar_tests {
     }
 
     #[test]
-    #[allow(deprecated)] // reads the legacy radar document's style
     fn unset_style_fields_take_the_defaults() {
         let style = crate::defaults::radar_series_style();
         let color = Color::from_rgba(0.2, 0.4, 0.6, 0.8);

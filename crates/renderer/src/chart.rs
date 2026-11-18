@@ -820,12 +820,6 @@ impl Chart {
         was
     }
 
-    /// Manually flag the data as dirty — used when column data is mutated
-    /// outside this chart and there's no automatic detection path.
-    pub fn invalidate(&mut self) {
-        self.data_dirty = true;
-    }
-
     // Text builders (raster only). Each takes its text as a label, the way
     // matplotlib does: `$…$`, `\(…\)` and `$$…$$` spans are TeX, `\$` is a
     // dollar sign, and text whose TeX does not parse is shown as written

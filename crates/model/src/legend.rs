@@ -262,10 +262,6 @@ fn scatter_symbol(shape: &ScatterShape, color: Color) -> Vec<RichSegment> {
 /// Line + point sample: rule — glyph — rule, the three fields summing to
 /// exactly [`SYMBOL_FIELD_EM`] so the combined mark is as long as a lone
 /// line mark.
-fn line_scatter_symbol(shape: &ScatterShape, color: Color) -> Vec<RichSegment> {
-    line_scatter_symbol_with_style(shape, color, LineStylePreset::Solid, None)
-}
-
 fn line_scatter_symbol_with_style(
     shape: &ScatterShape,
     color: Color,
@@ -309,7 +305,12 @@ pub fn symbol_segments(kind: &LegendEntryKind, color: Color) -> Vec<RichSegment>
     match kind {
         LegendEntryKind::Line => line_symbol(color, LineStylePreset::Solid, None),
         LegendEntryKind::Scatter => scatter_symbol(&ScatterShape::CircleFilled, color),
-        LegendEntryKind::LineScatter => line_scatter_symbol(&ScatterShape::CircleFilled, color),
+        LegendEntryKind::LineScatter => line_scatter_symbol_with_style(
+            &ScatterShape::CircleFilled,
+            color,
+            LineStylePreset::Solid,
+            None,
+        ),
     }
 }
 

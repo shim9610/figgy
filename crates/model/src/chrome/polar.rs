@@ -1123,7 +1123,6 @@ mod tests {
     /// antenna pattern (ray up through the 90° label), a compass rose (ray
     /// at 45° under its label), a sector in radians, a clockwise heatmap
     /// with a hole, and a radar document with value labels.
-    #[allow(deprecated)]
     fn example_charts() -> Vec<(&'static str, Config)> {
         use std::f64::consts::PI;
         let degrees = || LabelFormat::Degrees;

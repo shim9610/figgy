@@ -98,19 +98,13 @@ pub use text::{MeasureText, TextAlign, TextExtents};
 pub mod material;
 pub use material::Material;
 
+pub use categorical::*;
 pub use radial::{
     RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialOutline,
     RadialSlice, RadialSplit, RadialStyle, RadialTarget,
 };
-// The deprecated name stays importable from the crate root.
-#[allow(deprecated)]
-pub use radial::RadialMaterial;
-
-#[allow(deprecated)]
-pub use categorical::*;
 
 pub mod boxplot;
-#[allow(deprecated)]
 pub use boxplot::*;
 pub mod energy_levels;
 pub mod feynman;
@@ -136,7 +130,6 @@ pub use polar::{
 };
 pub use tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 pub mod radar;
-#[allow(deprecated)]
 pub use radar::*;
 
 pub mod bounded_title;
