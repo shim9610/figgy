@@ -28,12 +28,12 @@ bound to X and counts bound to Y. Change the bindings, direction and axis option
 together. Nothing needs to be uploaded again.
 
 ```rust,ignore
-use renderer::data_config::{BarOrientation, DataRenderType};
+use renderer::data_config::{BarOrientation, DataRenderType, HistogramSeries};
 
 let mut config = renderer.chart_config(chart_id)?.clone();
 let mut series = renderer.chart_series(chart_id)?.to_vec();
 for s in &mut series {
-    let DataRenderType::Histogram { bar } = &mut s.render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &mut s.render_type else {
         return Err("this example expects a histogram-only chart".into());
     };
     if bar.orientation == BarOrientation::Vertical {

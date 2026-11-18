@@ -191,7 +191,7 @@ impl PrepareContext<'_> {
         }
         // Histograms are refused (#284): their columns are the host's bins,
         // one row per bin, which never need streaming.
-        if matches!(series.render_type, DataRenderType::Histogram { .. }) {
+        if matches!(series.render_type, DataRenderType::Histogram(_)) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 kind: streaming_runtime::STREAMED_HISTOGRAM_REASON.into(),

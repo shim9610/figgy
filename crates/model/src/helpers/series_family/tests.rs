@@ -2,8 +2,8 @@ use super::*;
 use crate::Config;
 use crate::config::Category;
 use crate::data_config::{
-    BoxPlotTarget, DataLineStyleConfig, MatrixRef, PointColorMap, Shading, SizeScale,
-    VectorColorMap, ViolinBody, ViolinHalf, XySeries,
+    BoxPlotOverride, BoxPlotTarget, BoxPoints, DataLineStyleConfig, MatrixRef, PointColorMap,
+    RangeProgress, Shading, SizeScale, VectorColorMap, ViolinBody, ViolinHalf, XySeries,
 };
 use crate::tri_mesh::{MeshValueLocation, MeshValues};
 
@@ -57,12 +57,12 @@ fn marker_and_region_modifiers() {
         .with_line(2.0)
         .no_markers()
         .region(fill, 0.75);
-    let DataRenderType::Ternary {
+    let DataRenderType::Ternary(TernarySeries {
         scatter,
         line,
         region: style,
         ..
-    } = &region.render_type
+    }) = &region.render_type
     else {
         panic!("a ternary series");
     };
@@ -113,13 +113,13 @@ fn range_bar_modifiers() {
         .connector(grey, 1.5)
         .bar_labels(CategoryBarLabels::Outside, text.clone())
         .style_range_bars(|parts| {
-            *parts.progress = Some(RangeProgress {
+            parts.progress = Some(RangeProgress {
                 column: "done".into(),
                 remaining_opacity: 0.35,
             });
             parts.style.corner_radius = 2.0;
         });
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         style,
         whiskers,
         color_by,
@@ -128,7 +128,7 @@ fn range_bar_modifiers() {
         slot_width,
         labels,
         ..
-    } = &bars.render_type
+    }) = &bars.render_type
     else {
         panic!("range bars");
     };
@@ -163,8 +163,8 @@ fn range_bar_modifiers() {
     // A numeric position axis takes a slot width.
     let candles = SeriesConfig::range_bars("c", "t", "open", "close")
         .color(up)
-        .style_range_bars(|parts| *parts.slot_width = Some(86_400.0));
-    let DataRenderType::RangeBars { slot_width, .. } = &candles.render_type else {
+        .style_range_bars(|parts| parts.slot_width = Some(86_400.0));
+    let DataRenderType::RangeBars(RangeBarSeries { slot_width, .. }) = &candles.render_type else {
         panic!("range bars");
     };
     assert_eq!(*slot_width, Some(86_400.0));
@@ -173,7 +173,8 @@ fn range_bar_modifiers() {
     let category = SeriesConfig::category_bars("b", "i", "v")
         .color(up)
         .bar_labels(CategoryBarLabels::Inside, text.clone());
-    let DataRenderType::CategoryBars { labels, .. } = &category.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) = &category.render_type
+    else {
         panic!("category bars");
     };
     assert_eq!(
@@ -189,7 +190,7 @@ fn range_bar_modifiers() {
         .whiskers("low", "high", 1.5)
         .connector(grey, 1.5)
         .bar_labels(CategoryBarLabels::Outside, text)
-        .style_range_bars(|parts| *parts.slot_width = Some(1.0));
+        .style_range_bars(|parts| parts.slot_width = Some(1.0));
     assert_eq!(same, boxes);
 }
 
@@ -220,18 +221,18 @@ fn box_plot_modifiers() {
         .violin(violin.clone())
         .outliers("out")
         .style_box_plot(|parts| {
-            *parts.points = Some(points.clone());
-            *parts.overrides = Some(overrides);
+            parts.points = Some(points.clone());
+            parts.overrides = Some(overrides);
             parts.style.notched = true;
         });
-    let DataRenderType::BoxPlot {
+    let DataRenderType::BoxPlot(BoxSeries {
         style,
         outliers,
         overrides,
         violin: v,
         points: p,
         ..
-    } = &boxes.render_type
+    }) = &boxes.render_type
     else {
         panic!("a box plot");
     };
@@ -250,8 +251,8 @@ fn box_plot_modifiers() {
         .violin(violin)
         .outliers("out")
         .style_box_plot(|parts| {
-            *parts.points = Some(points);
-            *parts.overrides = Some(Vec::new());
+            parts.points = Some(points);
+            parts.overrides = Some(Vec::new());
         });
     assert_eq!(same, bars);
 }
@@ -335,7 +336,7 @@ fn vector_modifiers() {
         .vector_scale(VectorScale::Data { factor: 0.35 })
         .style_vectors(|style| style.min_length_px = 2.0)
         .color_by("speed");
-    let DataRenderType::Vector { style, .. } = &arrows.render_type else {
+    let DataRenderType::Vector(VectorSeries { style, .. }) = &arrows.render_type else {
         panic!("a vector series");
     };
     assert_eq!(

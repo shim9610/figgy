@@ -23,8 +23,8 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    Chart, Color, DataRenderType, DataSelectionsConfig, PickedDataRef, RasterImage, Renderer,
-    RendererDevice, SeriesConfig, encode_png,
+    Chart, Color, DataRenderType, DataSelectionsConfig, HistogramSeries, PickedDataRef,
+    RasterImage, Renderer, RendererDevice, SeriesConfig, encode_png,
 };
 
 const WIDTH: u32 = 480;
@@ -130,7 +130,7 @@ fn histogram(
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: FILL,
                 border_color: BORDER,
@@ -141,7 +141,7 @@ fn histogram(
                 orientation,
                 bar_style_overrides: None,
             },
-        },
+        }),
     }
 }
 
@@ -348,7 +348,7 @@ fn bars_draw_their_border_in_the_border_colour() {
     // A zero-width border leaves the fill and removes the border ink, so the
     // colour above is the border and not some incidental blue.
     let mut no_border = series.clone();
-    no_border[0].render_type = DataRenderType::Histogram {
+    no_border[0].render_type = DataRenderType::Histogram(HistogramSeries {
         bar: DataBarStyleConfig {
             fill_color: FILL,
             border_color: BORDER,
@@ -359,7 +359,7 @@ fn bars_draw_their_border_in_the_border_colour() {
             orientation: BarOrientation::Vertical,
             bar_style_overrides: None,
         },
-    };
+    });
     let plain = renderer
         .export_rgba(
             renderer::ExportSource::chart(&chart, &no_border),
@@ -566,7 +566,8 @@ fn subpixel_envelope_keeps_maxima_without_repeated_alpha_blending() {
                 } else {
                     histogram(edges, counts, orientation, gap, 0.0)
                 };
-                let DataRenderType::Histogram { bar } = &mut series.render_type else {
+                let DataRenderType::Histogram(HistogramSeries { bar }) = &mut series.render_type
+                else {
                     unreachable!()
                 };
                 bar.fill_color.a = 0.35;
@@ -637,7 +638,7 @@ fn envelope_uses_winner_style_bar_baseline_and_keeps_tiny_edges() {
         1.0,
         1.0,
     );
-    let DataRenderType::Histogram { bar } = &mut series.render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &mut series.render_type else {
         unreachable!()
     };
     // The subpixel envelope fills from the bar baseline, like a full bar,
@@ -684,7 +685,7 @@ fn width_ratio_centres_a_narrower_bar_inside_each_bin() {
         return;
     };
     let (chart, mut series) = vertical_fixture(&mut renderer);
-    let DataRenderType::Histogram { bar } = &mut series[0].render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &mut series[0].render_type else {
         unreachable!()
     };
     bar.gap_px = 0.0;
@@ -725,7 +726,7 @@ fn one_bin_override_controls_fill_outline_width_and_selection_geometry() {
         return;
     };
     let (mut chart, mut series) = vertical_fixture(&mut renderer);
-    let DataRenderType::Histogram { bar } = &mut series[0].render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &mut series[0].render_type else {
         unreachable!()
     };
     bar.width_ratio = 0.9;
@@ -874,7 +875,7 @@ fn selected_override_bin_outline_is_exactly_its_painted_bar() {
                     histogram(counts, edges, orientation.clone(), 1.0, 0.0)
                 }
             };
-            let DataRenderType::Histogram { bar } = &mut s.render_type else {
+            let DataRenderType::Histogram(HistogramSeries { bar }) = &mut s.render_type else {
                 unreachable!()
             };
             bar.width_ratio = 0.95;
@@ -1076,7 +1077,7 @@ fn horizontal_signed_bars_keep_bin_override_and_selected_width() {
     chart.set_x_range(-3.0, 5.0);
     chart.set_y_range(0.0, 4.0);
     let mut s = histogram("counts", "edges", BarOrientation::Horizontal, 0.0, 0.0);
-    let DataRenderType::Histogram { bar } = &mut s.render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &mut s.render_type else {
         unreachable!()
     };
     bar.width_ratio = 0.8;

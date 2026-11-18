@@ -51,7 +51,7 @@ impl PrepareContext<'_> {
             // the mapped line pipeline with the value map
             // `ensure_value_map_scratch` resolved (precise only, never
             // streamed).
-            let value_map = match rt.streamlines().and_then(|s| s.color_map) {
+            let value_map = match rt.streamlines().and_then(|s| s.color_map.as_ref()) {
                 Some(map) if styled.is_none() && phase.is_none() => {
                     let scratch = self.value_map_cache.get(cfg.series_id.as_str()).ok_or(
                         FiggyError::internal(

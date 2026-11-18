@@ -20,7 +20,7 @@ use renderer::theme::ThemeFamily;
 use renderer::{
     Anchor, Annotation, AnnotationKind, CpuTextMeasure, MeasureText, Renderer, SeriesConfig,
     TextAlign,
-    data_config::{DataLineStyleConfig, DataRenderType, SizeScale},
+    data_config::{DataLineStyleConfig, DataRenderType, SizeScale, TernarySeries},
     ternary::{TernaryOptions, TernaryRegionStyle},
     text::RichText,
     theme::ChartKind,
@@ -220,12 +220,12 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             *name,
             format!("class-{k}-sand"),
             format!("class-{k}-clay"),
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: format!("class-{k}-silt").into(),
                 scatter: None,
                 line: Some(DataLineStyleConfig::default()),
                 region: Some(TernaryRegionStyle::default()),
-            },
+            }),
         ));
     }
 

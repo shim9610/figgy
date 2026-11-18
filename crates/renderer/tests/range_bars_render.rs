@@ -26,8 +26,8 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    Chart, Color, DataRenderType, DataSelectionsConfig, Material, PickedDataRef, RasterImage,
-    Renderer, RendererDevice, SeriesConfig,
+    Chart, Color, DataRenderType, DataSelectionsConfig, Material, PickedDataRef, RangeBarSeries,
+    RasterImage, Renderer, RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -98,7 +98,7 @@ fn ranges(id: &str, color: Color) -> SeriesConfig {
         x_column: "pos".into(),
         y_column: "end".into(),
         z_column: None,
-        render_type: DataRenderType::RangeBars {
+        render_type: DataRenderType::RangeBars(RangeBarSeries {
             color,
             style: flat_style(),
             start: "start".into(),
@@ -108,7 +108,7 @@ fn ranges(id: &str, color: Color) -> SeriesConfig {
             connector: None,
             slot_width: None,
             labels: CategoryBarSeriesLabels::default(),
-        },
+        }),
     }
 }
 
@@ -123,14 +123,14 @@ fn fields(
     &mut Option<RangeConnector>,
     &mut CategoryBarSeriesLabels,
 ) {
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         whiskers,
         color_by,
         progress,
         connector,
         labels,
         ..
-    } = &mut series.render_type
+    }) = &mut series.render_type
     else {
         unreachable!()
     };
@@ -595,9 +595,9 @@ fn missing_rows_and_equal_ends_draw_nothing() {
     let chart = chart(direction);
     let mut series = decorated(ranges("one", RED));
     series.y_column = "gappy.end".into();
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         start, color_by, ..
-    } = &mut series.render_type
+    }) = &mut series.render_type
     else {
         unreachable!()
     };
@@ -628,7 +628,7 @@ fn the_highlight_traces_the_body_and_every_part_picks_its_bar() {
     let direction = CategoryBarDirection::Vertical;
     let mut chart = chart(direction);
     let mut series = decorated(ranges("one", RED));
-    if let DataRenderType::RangeBars { style, .. } = &mut series.render_type {
+    if let DataRenderType::RangeBars(RangeBarSeries { style, .. }) = &mut series.render_type {
         style.corner_radius = 3.0;
     }
     let series = [series];
@@ -777,7 +777,7 @@ fn time_axes_keep_their_precision_and_fit_their_slots() {
     let mut gantt_chart = chart(direction);
     let mut gantt = ranges("one", RED);
     gantt.y_column = "t.end".into();
-    if let DataRenderType::RangeBars { start, .. } = &mut gantt.render_type {
+    if let DataRenderType::RangeBars(RangeBarSeries { start, .. }) = &mut gantt.render_type {
         *start = "t.start".into();
     }
     gantt_chart
@@ -816,7 +816,7 @@ fn time_axes_keep_their_precision_and_fit_their_slots() {
         .unwrap();
     let mut bars = ranges("one", RED);
     bars.x_column = "t.pos".into();
-    if let DataRenderType::RangeBars { slot_width, .. } = &mut bars.render_type {
+    if let DataRenderType::RangeBars(RangeBarSeries { slot_width, .. }) = &mut bars.render_type {
         *slot_width = Some(DAY);
     }
     candles
@@ -928,7 +928,7 @@ fn a_replaced_column_redraws_and_mismatched_columns_are_errors() {
     );
     r.add_column("short", &col(vec![1.0, 2.0])).unwrap();
     let mut short = ranges("one", RED);
-    if let DataRenderType::RangeBars { start, .. } = &mut short.render_type {
+    if let DataRenderType::RangeBars(RangeBarSeries { start, .. }) = &mut short.render_type {
         *start = "short".into();
     }
     let error = r
@@ -941,7 +941,7 @@ fn a_replaced_column_redraws_and_mismatched_columns_are_errors() {
         .expect("an error");
     assert!(error.to_string().contains("\"short\""), "{error}");
     let mut missing = ranges("one", RED);
-    if let DataRenderType::RangeBars { start, .. } = &mut missing.render_type {
+    if let DataRenderType::RangeBars(RangeBarSeries { start, .. }) = &mut missing.render_type {
         *start = "nowhere".into();
     }
     let error = r
@@ -1128,9 +1128,9 @@ fn three_thousand_rows_draw_pick_and_highlight() {
     let mut bars = ranges("one", RED);
     bars.x_column = "n.pos".into();
     bars.y_column = "n.end".into();
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         start, slot_width, ..
-    } = &mut bars.render_type
+    }) = &mut bars.render_type
     {
         *start = "n.start".into();
         *slot_width = Some(1.0);

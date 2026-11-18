@@ -34,9 +34,9 @@ use crate::config::{
 };
 use crate::data::ColumnId;
 use crate::data_config::{
-    BarGroups, BoxPlotSeriesLabels, CategoryBarDirection, CategoryBarMode, CategoryBarSeriesLabels,
-    DataRenderType, RadarSeriesLabels, SeriesConfig, format_box_plot_labels, format_labels,
-    format_radar_labels,
+    BarGroups, BoxPlotSeriesLabels, BoxSeries, CategoryBarDirection, CategoryBarMode,
+    CategoryBarSeries, CategoryBarSeriesLabels, DataRenderType, RadarPolygonSeries,
+    RadarSeriesLabels, SeriesConfig, format_box_plot_labels, format_labels, format_radar_labels,
 };
 use crate::decoration::DecorationId;
 use crate::format::{LabelFormat, PlainNumberFormat};
@@ -874,7 +874,7 @@ impl Config {
                 x_column: ColumnId::new(),
                 y_column: ColumnId::new(),
                 z_column: None,
-                render_type: DataRenderType::CategoryBars {
+                render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                     color: s.color,
                     style: s.style.clone().unwrap_or_else(|| chart.style.clone()),
                     labels: CategoryBarSeriesLabels {
@@ -886,7 +886,7 @@ impl Config {
                     },
                     label_format: chart.label_format,
                     overrides: (!overrides.is_empty()).then_some(overrides),
-                },
+                }),
             };
             let column = category_values_column(&s.id);
             // The direction decides the roles, like a histogram's orientation.
@@ -1321,7 +1321,7 @@ impl Config {
                 x_column: BOX_PLOT_POSITIONS_COLUMN.into(),
                 y_column: record.clone(),
                 z_column: None,
-                render_type: DataRenderType::BoxPlot {
+                render_type: DataRenderType::BoxPlot(BoxSeries {
                     color: s.color,
                     style: s.style.clone().unwrap_or_else(|| chart.style.clone()),
                     labels: BoxPlotSeriesLabels {
@@ -1335,7 +1335,7 @@ impl Config {
                     overrides: (!overrides.is_empty()).then_some(overrides),
                     violin: None,
                     points: None,
-                },
+                }),
             });
             uploads.push(SeriesUpload {
                 column: record,
@@ -1583,7 +1583,7 @@ impl Config {
                 x_column: RADAR_POSITIONS_COLUMN.into(),
                 y_column: column.clone(),
                 z_column: None,
-                render_type: DataRenderType::Radar {
+                render_type: DataRenderType::Radar(RadarPolygonSeries {
                     color: s.color,
                     style: s
                         .style
@@ -1597,7 +1597,7 @@ impl Config {
                         text: Vec::new(),
                         offsets: Vec::new(),
                     },
-                },
+                }),
             });
             uploads.push(SeriesUpload {
                 column,
@@ -1856,7 +1856,7 @@ mod tests {
         }
     }
 
-    fn bars(series: &SeriesConfig) -> crate::data_config::CategoryBarsRef<'_> {
+    fn bars(series: &SeriesConfig) -> &crate::data_config::CategoryBarSeries {
         series.render_type.category_bars().expect("category bars")
     }
 
@@ -1925,8 +1925,8 @@ mod tests {
         });
         let (_, series, _) = Config::from_categorical(&c);
         assert_eq!(bars(&series[0]).color, c.series[0].color);
-        assert_eq!(bars(&series[0]).style, &c.style);
-        assert_eq!(bars(&series[1]).style, c.series[1].style.as_ref().unwrap());
+        assert_eq!(&bars(&series[0]).style, &c.style);
+        assert_eq!(&bars(&series[1]).style, c.series[1].style.as_ref().unwrap());
         let label = series[0].label.as_ref().unwrap();
         assert_eq!(
             label.segments.iter().map(|s| s.text).collect::<String>(),
@@ -1984,8 +1984,8 @@ mod tests {
         o.label_format = Some(CategoryBarLabelFormat::Percent);
         c.overrides.push(o.clone());
         let (_, series, _) = Config::from_categorical(&c);
-        assert!(bars(&series[0]).overrides.is_empty());
-        assert_eq!(bars(&series[1]).overrides, [o]);
+        assert!(bars(&series[0]).overrides.is_none());
+        assert_eq!(bars(&series[1]).overrides, Some(vec![o]));
         assert_eq!(bars(&series[1]).labels.text[1], "100%");
     }
 
@@ -2205,7 +2205,7 @@ mod box_tests {
     use crate::config::Category;
     use crate::decoration::DecorationOffset;
     use crate::layer::LayerRef;
-    use crate::{BoxPlotRef, Material};
+    use crate::{BoxSeries, Material};
 
     fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64) -> BoxSummary {
         BoxSummary::new(low, q1, med, q3, high)
@@ -2247,7 +2247,7 @@ mod box_tests {
         }
     }
 
-    fn boxes(series: &SeriesConfig) -> BoxPlotRef<'_> {
+    fn boxes(series: &SeriesConfig) -> &BoxSeries {
         series.render_type.box_plot().expect("box plot")
     }
 
@@ -2331,7 +2331,10 @@ mod box_tests {
             matches!(uploads[2].values, UploadValues::BoxOutliers(v) if std::ptr::eq(v, &c.series[0].values[..]))
         );
         // A series without outliers names no outlier column.
-        assert_eq!(boxes(&series[0]).outliers, Some("boxplot.outliers.s"));
+        assert_eq!(
+            boxes(&series[0]).outliers.as_deref(),
+            Some("boxplot.outliers.s")
+        );
         assert_eq!(boxes(&series[1]).outliers, None);
         // A record or a ragged upload is not one column.
         assert_eq!(uploads[1].values.len(), 0);
@@ -2407,10 +2410,13 @@ mod box_tests {
         c.overrides.push(o.clone());
         let (_, series, _) = Config::from_boxplot(&c);
         assert_eq!(boxes(&series[0]).color, c.series[0].color);
-        assert_eq!(boxes(&series[0]).style, &c.style);
-        assert_eq!(boxes(&series[1]).style, c.series[1].style.as_ref().unwrap());
-        assert_eq!(boxes(&series[0]).overrides, [o]);
-        assert!(boxes(&series[1]).overrides.is_empty());
+        assert_eq!(&boxes(&series[0]).style, &c.style);
+        assert_eq!(
+            &boxes(&series[1]).style,
+            c.series[1].style.as_ref().unwrap()
+        );
+        assert_eq!(boxes(&series[0]).overrides, Some(vec![o]));
+        assert!(boxes(&series[1]).overrides.is_none());
         let label = series[1].label.as_ref().unwrap();
         assert_eq!(
             label.segments.iter().map(|s| s.text).collect::<String>(),
@@ -2428,7 +2434,7 @@ mod box_tests {
         o.labels = Some(BoxPlotLabels::Median);
         c.overrides.push(o);
         let (_, series, _) = Config::from_boxplot(&c);
-        let labels = boxes(&series[0]).labels;
+        let labels = &boxes(&series[0]).labels;
         assert_eq!(labels.placement, BoxPlotLabels::MedianAndCount);
         assert_eq!((labels.decimals, labels.value_suffix.as_str()), (2, " ms"));
         assert_eq!(labels.text, ["3.00 ms (n=42)", "", "4.00 ms (n=—)"]);
@@ -2570,7 +2576,7 @@ mod box_tests {
 mod radar_tests {
     use super::*;
     use crate::config::Category;
-    use crate::data_config::{RadarLabels, RadarMarker, RadarRef, RadarSeriesStyle};
+    use crate::data_config::{RadarLabels, RadarMarker, RadarPolygonSeries, RadarSeriesStyle};
     use crate::decoration::DecorationOffset;
     use crate::layer::LayerRef;
     use crate::radar::{RadarSeries, RadarTarget};
@@ -2601,7 +2607,7 @@ mod radar_tests {
         }
     }
 
-    fn radar(series: &SeriesConfig) -> RadarRef<'_> {
+    fn radar(series: &SeriesConfig) -> &RadarPolygonSeries {
         series.render_type.radar().expect("radar")
     }
 
@@ -2721,7 +2727,7 @@ mod radar_tests {
         assert_eq!(a.color, c.series[0].color);
         assert_eq!(
             a.style,
-            &RadarSeriesStyle {
+            RadarSeriesStyle {
                 line_width_px: Some(3.0),
                 fill: None,
                 marker: Some(RadarMarker::Square),
@@ -2755,7 +2761,7 @@ mod radar_tests {
         c.label_decimals = 2;
         c.value_suffix = " pt".into();
         let (_, series, _) = Config::from_radar(&c);
-        let labels = radar(&series[0]).labels;
+        let labels = &radar(&series[0]).labels;
         assert_eq!(labels.placement, RadarLabels::Values);
         assert_eq!((labels.decimals, labels.value_suffix.as_str()), (2, " pt"));
         // A non-finite value has no label.

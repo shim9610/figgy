@@ -488,6 +488,7 @@ impl PrepareContext<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_config::CategoryBarSeries;
     use crate::data_config::{CategoryBarLabels, CategoryBarSeriesLabels, CategoryBarStyle};
 
     fn chart() -> Config {
@@ -507,7 +508,7 @@ mod tests {
             x_column: "pos".into(),
             y_column: "v".into(),
             z_column: None,
-            render_type: DataRenderType::CategoryBars {
+            render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                 color,
                 style: CategoryBarStyle::default(),
                 labels: CategoryBarSeriesLabels {
@@ -517,12 +518,14 @@ mod tests {
                 },
                 label_format: Default::default(),
                 overrides: None,
-            },
+            }),
         }
     }
 
     fn text_mut(series: &mut SeriesConfig) -> &mut Vec<String> {
-        let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type else {
+        let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) =
+            &mut series.render_type
+        else {
             unreachable!()
         };
         &mut labels.text

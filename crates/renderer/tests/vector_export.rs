@@ -570,7 +570,9 @@ fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
     with_level.push(mid_level());
     let mut unlabelled = scene.series.clone();
     for series in &mut unlabelled {
-        if let renderer::DataRenderType::BoxPlot { labels, .. } = &mut series.render_type {
+        if let renderer::DataRenderType::BoxPlot(renderer::BoxSeries { labels, .. }) =
+            &mut series.render_type
+        {
             labels.placement = renderer::BoxPlotLabels::None;
         }
     }

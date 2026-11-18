@@ -28,9 +28,9 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, LayerRef,
-    Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer, RendererDevice,
-    SeriesConfig,
+    BOX_PLOT_RECORD, BoxSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
+    LayerRef, Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer,
+    RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -176,7 +176,7 @@ fn boxes(id: &str, color: Color) -> SeriesConfig {
         x_column: "pos".into(),
         y_column: format!("{id}.record"),
         z_column: None,
-        render_type: DataRenderType::BoxPlot {
+        render_type: DataRenderType::BoxPlot(BoxSeries {
             color,
             style: flat_style(),
             labels: BoxPlotSeriesLabels::default(),
@@ -184,19 +184,19 @@ fn boxes(id: &str, color: Color) -> SeriesConfig {
             overrides: None,
             violin: None,
             points: None,
-        },
+        }),
     }
 }
 
 fn style(series: &mut SeriesConfig) -> &mut BoxPlotStyle {
-    let DataRenderType::BoxPlot { style, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { style, .. }) = &mut series.render_type else {
         unreachable!()
     };
     style
 }
 
 fn overrides(series: &mut SeriesConfig) -> &mut Vec<BoxPlotOverride> {
-    let DataRenderType::BoxPlot { overrides, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = &mut series.render_type else {
         unreachable!()
     };
     overrides.get_or_insert_with(Vec::new)
@@ -880,7 +880,7 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     // Two rows for three categories.
     upload_record(&mut r, "short.record", &ONE[..2]);
     let mut short = boxes("short", RED);
-    let DataRenderType::BoxPlot { outliers, .. } = &mut short.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { outliers, .. }) = &mut short.render_type else {
         unreachable!()
     };
     *outliers = None;

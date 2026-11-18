@@ -123,13 +123,13 @@ impl Renderer {
                     && effective_series_primitives(&config.draw_style, &cfg.render_type).vector
                     && matches!(
                         &cfg.render_type,
-                        DataRenderType::Vector {
+                        DataRenderType::Vector(VectorSeries {
                             components: crate::data_config::VectorComponents::Points {
                                 w: Some(_),
                                 ..
                             },
                             ..
-                        }
+                        })
                     )
             })
         };

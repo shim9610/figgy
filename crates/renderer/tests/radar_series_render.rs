@@ -26,8 +26,9 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::polar::{GridShape, PolarInterpolation, PolarOptions};
 use renderer::{
     Anchor, Annotation, AnnotationKind, Chart, Color, Config, DataRenderType, DataSelectionsConfig,
-    FiggyError, LayerRef, PickedDataRef, RadarLabels, RadarMarker, RadarSeriesLabels,
-    RadarSeriesStyle, RasterImage, Renderer, RendererDevice, SeriesConfig, Subplot,
+    FiggyError, LayerRef, PickedDataRef, RadarLabels, RadarMarker, RadarPolygonSeries,
+    RadarSeriesLabels, RadarSeriesStyle, RasterImage, Renderer, RendererDevice, SeriesConfig,
+    Subplot,
 };
 
 const WIDTH: u32 = 400;
@@ -140,11 +141,11 @@ fn radar(id: &str, values: &str, color: Color, style: RadarSeriesStyle) -> Serie
         x_column: "cat".into(),
         y_column: values.into(),
         z_column: None,
-        render_type: DataRenderType::Radar {
+        render_type: DataRenderType::Radar(RadarPolygonSeries {
             color,
             style,
             labels: RadarSeriesLabels::default(),
-        },
+        }),
     }
 }
 
@@ -697,7 +698,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     );
     // A label text per category or none.
     let mut labelled = radar("one", "one", RED, outline_and_fill());
-    if let DataRenderType::Radar { labels, .. } = &mut labelled.render_type {
+    if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut labelled.render_type {
         labels.placement = RadarLabels::Values;
         labels.text = vec!["1".into(); 4];
     }
@@ -927,7 +928,9 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
         }
         for (name, edit) in series_edits {
             let mut edited = series.clone();
-            if let DataRenderType::Radar { style, color, .. } = &mut edited[0].render_type {
+            if let DataRenderType::Radar(RadarPolygonSeries { style, color, .. }) =
+                &mut edited[0].render_type
+            {
                 edit(style, color);
             }
             let after = export(&mut r, &grid, &edited, scale);
@@ -942,12 +945,16 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
         // strings, a drag offset) like a fresh renderer: the label atlas is
         // keyed by its strings and the offsets are read on every draw.
         let mut labelled = series.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut labelled[0].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) =
+            &mut labelled[0].render_type
+        {
             labels.placement = RadarLabels::Values;
             labels.text = vec!["a".into(); 5];
         }
         let mut retexted = labelled.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut retexted[0].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) =
+            &mut retexted[0].render_type
+        {
             labels.text[2] = "bb".into();
         }
         let mut dragged = labelled.clone();
@@ -971,12 +978,14 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
         // second's at their spokes (#272) and follow every edit of the
         // second series' labels and values like a fresh renderer.
         let mut both = labelled.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut both[1].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut both[1].render_type {
             labels.placement = RadarLabels::Values;
             labels.text = vec!["b".into(); 5];
         }
         let mut other_text = both.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut other_text[1].render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) =
+            &mut other_text[1].render_type
+        {
             labels.text[1] = "bbbb".into();
         }
         for (name, edited) in [
@@ -1110,7 +1119,7 @@ fn radar_value_labels_meet_no_other_label() {
         let labelled = |only: Option<usize>| {
             let mut out = series.clone();
             for (k, s) in out.iter_mut().enumerate() {
-                if let DataRenderType::Radar { labels, .. } = &mut s.render_type
+                if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut s.render_type
                     && only != Some(k)
                 {
                     labels.offsets = vec![[4000.0, 4000.0]; labels.text.len()];
@@ -1158,7 +1167,9 @@ fn radar_value_labels_meet_no_other_label() {
             let scaled = chart.config().scaled(scale);
             let face = &scaled.left_y.label_style;
             for (k, mask) in inks.iter().enumerate() {
-                let DataRenderType::Radar { labels, style, .. } = &series[k].render_type else {
+                let DataRenderType::Radar(RadarPolygonSeries { labels, style, .. }) =
+                    &series[k].render_type
+                else {
                     unreachable!("a radar document opens as radar series")
                 };
                 let extent = labels
@@ -1270,7 +1281,7 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
             ..outline_and_fill()
         },
     );
-    if let DataRenderType::Radar { labels, .. } = &mut series.render_type {
+    if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut series.render_type {
         labels.text = (0..N).map(|i| format!("{i}")).collect();
     }
     let series = [series];

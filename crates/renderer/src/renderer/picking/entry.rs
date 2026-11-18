@@ -442,9 +442,9 @@ impl Renderer {
                         &series.x_column,
                         &series.y_column,
                         match &series.render_type {
-                            crate::data_config::DataRenderType::Ternary { c_column, .. } => {
-                                Some(super::prepare::ArcThird::Ternary(c_column.as_str()))
-                            }
+                            crate::data_config::DataRenderType::Ternary(
+                                crate::data_config::TernarySeries { c_column, .. },
+                            ) => Some(super::prepare::ArcThird::Ternary(c_column.as_str())),
                             _ => None,
                         },
                         series_transform,

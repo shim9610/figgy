@@ -387,26 +387,61 @@ pub struct BoxPlotSeriesLabels {
     pub offsets: Vec<[f32; 2]>,
 }
 
-/// The fields of a [`DataRenderType::BoxPlot`] series, borrowed.
-#[derive(Clone, Copy, Debug)]
-pub struct BoxPlotRef<'a> {
+/// The fields of a [`DataRenderType::BoxPlot`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BoxSeries {
+    /// The fill colour of the series' boxes, opaque.
     pub color: Color,
-    pub style: &'a BoxPlotStyle,
-    pub labels: &'a BoxPlotSeriesLabels,
-    pub outliers: Option<&'a str>,
-    pub overrides: &'a [BoxPlotOverride],
-    pub violin: Option<&'a Violin>,
-    pub points: Option<&'a BoxPoints>,
+    /// The look of the boxes and their parts.
+    #[cfg_attr(feature = "serde", serde(default = "crate::defaults::box_plot_style"))]
+    pub style: BoxPlotStyle,
+    /// Which labels the boxes show, how a median is written and the
+    /// drawn text of each box.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::box_plot_series_labels")
+    )]
+    pub labels: BoxPlotSeriesLabels,
+    /// The ragged column of the outliers, one group per category.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub outliers: Option<ColumnId>,
+    /// Sparse per-box overrides, keyed by category id and this series'
+    /// id. At most one per box; an override's `style` replaces the
+    /// series' style whole.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub overrides: Option<Vec<BoxPlotOverride>>,
+    /// The violin drawn behind each box: a host density curve per
+    /// category, mirrored or one per side ([`Violin`]). With a violin,
+    /// an empty `y_column` draws no box.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub violin: Option<Violin>,
+    /// The raw points drawn beside each box, jittered across the slot
+    /// ([`BoxPoints`]): a raincloud with a one-sided violin.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub points: Option<BoxPoints>,
 }
 
-impl<'a> BoxPlotRef<'a> {
+impl BoxSeries {
     /// The ragged columns the series reads besides its record: the outliers
     /// and each violin half's curve (a symmetric curve once per half it
     /// names).
-    pub fn ragged_columns(self) -> impl Iterator<Item = &'a str> + 'a {
-        self.outliers.into_iter().chain(
+    pub fn ragged_columns(&self) -> impl Iterator<Item = &str> + '_ {
+        self.outliers.as_deref().into_iter().chain(
             self.violin
-                .into_iter()
+                .iter()
                 .flat_map(Violin::halves)
                 .map(|(_, half)| half.curve.as_str()),
         )
@@ -414,22 +449,22 @@ impl<'a> BoxPlotRef<'a> {
 
     /// The plain columns the series reads besides its positions: each
     /// violin half's density and the points' positions and values.
-    pub fn plain_columns(self) -> impl Iterator<Item = &'a str> + 'a {
+    pub fn plain_columns(&self) -> impl Iterator<Item = &str> + '_ {
         self.violin
-            .into_iter()
+            .iter()
             .flat_map(Violin::halves)
             .map(|(_, half)| half.density.as_str())
             .chain(
                 self.points
-                    .into_iter()
+                    .iter()
                     .flat_map(|p| [p.positions.as_str(), p.values.as_str()]),
             )
     }
 
     /// Whether the series draws boxes: always without a violin, and with
     /// one only when it names a record and gives the box a width.
-    pub fn draws_boxes(self, record: &str) -> bool {
-        !record.is_empty() && self.violin.is_none_or(|v| v.box_width > 0.0)
+    pub fn draws_boxes(&self, record: &str) -> bool {
+        !record.is_empty() && self.violin.as_ref().is_none_or(|v| v.box_width > 0.0)
     }
 }
 
@@ -451,24 +486,16 @@ impl DataRenderType {
 
     pub fn ternary_c_column(&self) -> Option<&str> {
         match self {
-            DataRenderType::Ternary { c_column, .. } => Some(c_column),
+            DataRenderType::Ternary(TernarySeries { c_column, .. }) => Some(c_column),
             _ => None,
         }
     }
 
     /// A parallel series' columns, line and colour column (#141), or
     /// `None` for every other kind.
-    pub fn parallel(&self) -> Option<ParallelRef<'_>> {
+    pub fn parallel(&self) -> Option<&ParallelSeries> {
         match self {
-            DataRenderType::Parallel {
-                columns,
-                line,
-                color_column,
-            } => Some(ParallelRef {
-                columns,
-                line,
-                color_column: color_column.as_deref(),
-            }),
+            DataRenderType::Parallel(parallel) => Some(parallel),
             _ => None,
         }
     }
@@ -477,9 +504,9 @@ impl DataRenderType {
     /// series, red first, or `None` for every other kind.
     pub fn rgb_image(&self) -> Option<[&MatrixRef; 3]> {
         match self {
-            DataRenderType::RgbImage {
+            DataRenderType::RgbImage(RgbImageSeries {
                 red, green, blue, ..
-            } => Some([red, green, blue]),
+            }) => Some([red, green, blue]),
             _ => None,
         }
     }
@@ -487,31 +514,15 @@ impl DataRenderType {
     /// A ternary series' region fill, when it has one.
     pub fn ternary_region(&self) -> Option<&crate::ternary::TernaryRegionStyle> {
         match self {
-            DataRenderType::Ternary { region, .. } => region.as_ref(),
+            DataRenderType::Ternary(TernarySeries { region, .. }) => region.as_ref(),
             _ => None,
         }
     }
 
     /// The fields of a box plot series, or `None` for every other kind.
-    pub fn box_plot(&self) -> Option<BoxPlotRef<'_>> {
+    pub fn box_plot(&self) -> Option<&BoxSeries> {
         match self {
-            DataRenderType::BoxPlot {
-                color,
-                style,
-                labels,
-                outliers,
-                overrides,
-                violin,
-                points,
-            } => Some(BoxPlotRef {
-                color: *color,
-                style,
-                labels,
-                outliers: outliers.as_deref(),
-                overrides: overrides.as_deref().unwrap_or(&[]),
-                violin: violin.as_ref(),
-                points: points.as_ref(),
-            }),
+            DataRenderType::BoxPlot(boxes) => Some(boxes),
             _ => None,
         }
     }
@@ -562,11 +573,11 @@ pub fn validate_box_plot_series(
     let (positions, record) = series.box_plot_columns();
     if positions.is_empty()
         || (record.is_empty() && boxes.violin.is_none())
-        || boxes.outliers.is_some_and(str::is_empty)
+        || boxes.outliers.as_deref().is_some_and(str::is_empty)
     {
         return Err(crate::RuleKind::BoxPlotColumns);
     }
-    if let Some(violin) = boxes.violin {
+    if let Some(violin) = &boxes.violin {
         if !finite_in(violin.box_width, 0.0, 1.0) {
             return Err(crate::RuleKind::ViolinBoxWidth);
         }
@@ -589,7 +600,7 @@ pub fn validate_box_plot_series(
             }
         }
     }
-    if let Some(points) = boxes.points {
+    if let Some(points) = &boxes.points {
         let style = &points.style;
         if points.positions.is_empty()
             || points.values.is_empty()
@@ -605,12 +616,11 @@ pub fn validate_box_plot_series(
             return Err(crate::RuleKind::BoxPointsStyle);
         }
     }
-    for (index, o) in boxes.overrides.iter().enumerate() {
+    let overrides = boxes.overrides.as_deref().unwrap_or_default();
+    for (index, o) in overrides.iter().enumerate() {
         if o.target.series_id != series.series_id
             || !categories.iter().any(|c| c.id == o.target.category_id)
-            || boxes.overrides[..index]
-                .iter()
-                .any(|e| e.target == o.target)
+            || overrides[..index].iter().any(|e| e.target == o.target)
         {
             return Err(crate::RuleKind::BoxOverride);
         }
@@ -722,9 +732,9 @@ pub fn format_box_plot_labels(
     let mut k = 0;
     for item in series.iter_mut() {
         let series_id = item.series_id.clone();
-        let DataRenderType::BoxPlot {
+        let DataRenderType::BoxPlot(BoxSeries {
             labels, overrides, ..
-        } = &mut item.render_type
+        }) = &mut item.render_type
         else {
             continue;
         };

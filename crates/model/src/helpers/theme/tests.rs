@@ -1,7 +1,7 @@
 use super::*;
 use crate::annotation::{Annotation, AnnotationAxis, AnnotationKind};
 use crate::config::{AxisScale, Category, PickedDataRef, ProbabilityScale, TickVisibility};
-use crate::data_config::MatrixRef;
+use crate::data_config::{MatrixRef, ParallelSeries};
 use crate::layer::{OverlayLayer, Subplot};
 use crate::layout::{ChartArea, Rect};
 use crate::legend::{append_legend_entry_rich, series_symbol_segments};
@@ -652,7 +652,7 @@ fn the_bar_family_takes_borders_corners_and_materials() {
     let theme = named(ChartKind::Histogram, "gallery");
     let mut series = SeriesConfig::histogram("a", "edges", "counts");
     theme.style_series(&mut series, 0);
-    let DataRenderType::Histogram { bar } = &series.render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &series.render_type else {
         panic!("a histogram");
     };
     let bars = &theme.series.bars;
@@ -664,7 +664,8 @@ fn the_bar_family_takes_borders_corners_and_materials() {
     let theme = named(ChartKind::CategoryBars, "cool-slate");
     let mut series = SeriesConfig::category_bars("a", "i", "v");
     theme.style_series(&mut series, 1);
-    let DataRenderType::CategoryBars { color, style, .. } = &series.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { color, style, .. }) = &series.render_type
+    else {
         panic!("category bars");
     };
     assert_eq!(*color, palette_color(&theme, 1));
@@ -698,7 +699,7 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
                 box_width: 0.1,
             })
             .style_box_plot(|parts| {
-                *parts.points = Some(BoxPoints {
+                parts.points = Some(BoxPoints {
                     positions: "cat".into(),
                     values: "value".into(),
                     style: BoxPointsStyle::default(),
@@ -706,10 +707,10 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
             })
     };
     let fills = |series: &SeriesConfig| {
-        let DataRenderType::BoxPlot {
+        let DataRenderType::BoxPlot(BoxSeries {
             violin: Some(violin),
             ..
-        } = &series.render_type
+        }) = &series.render_type
         else {
             panic!("a violin");
         };
@@ -729,7 +730,7 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
     let (low, high) = fills(&series);
     assert_eq!((low.fill, high.fill), (None, None));
     assert!(!low.outline && !high.outline);
-    let DataRenderType::BoxPlot { style, points, .. } = &series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { style, points, .. }) = &series.render_type else {
         panic!("a box plot");
     };
     let boxes = &theme.series.boxes;
@@ -761,7 +762,7 @@ fn the_box_family_takes_its_parts_and_colours_own_violin_fills() {
     theme.series.boxes.outline = false;
     let mut series = SeriesConfig::box_plot("a", "i", "records");
     theme.style_series(&mut series, 0);
-    let DataRenderType::BoxPlot { style, .. } = &series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { style, .. }) = &series.render_type else {
         panic!("a box plot");
     };
     assert_eq!(style.gloss, 0.6);
@@ -782,7 +783,7 @@ fn the_range_bar_family_recolours_directions_and_states() {
         SeriesConfig::range_bars("a", "i", "start", "end")
             .color(ink)
             .style_range_bars(|parts| {
-                *parts.color_by = RangeColor::Direction {
+                parts.color_by = RangeColor::Direction {
                     up: ink,
                     down: ink,
                     total: Some(RangeTotal {
@@ -790,11 +791,11 @@ fn the_range_bar_family_recolours_directions_and_states() {
                         color: ink,
                     }),
                 };
-                *parts.connector = Some(RangeConnector {
+                parts.connector = Some(RangeConnector {
                     color: ink,
                     width: 1.0,
                 });
-                *parts.whiskers = Some(RangeWhiskers {
+                parts.whiskers = Some(RangeWhiskers {
                     low: "low".into(),
                     high: "high".into(),
                     width: 1.0,
@@ -806,13 +807,13 @@ fn the_range_bar_family_recolours_directions_and_states() {
     let range = &theme.series.range_bars;
     let mut series = directed();
     theme.style_series(&mut series, 0);
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         style,
         color_by,
         connector,
         whiskers,
         ..
-    } = &series.render_type
+    }) = &series.render_type
     else {
         panic!("range bars");
     };
@@ -832,7 +833,7 @@ fn the_range_bar_family_recolours_directions_and_states() {
     // The default theme names no direction colour.
     let mut series = directed();
     named(ChartKind::RangeBars, "default").style_series(&mut series, 0);
-    let DataRenderType::RangeBars { color_by, .. } = &series.render_type else {
+    let DataRenderType::RangeBars(RangeBarSeries { color_by, .. }) = &series.render_type else {
         panic!("range bars");
     };
     assert!(matches!(
@@ -846,21 +847,21 @@ fn the_range_bar_family_recolours_directions_and_states() {
     let mut series = SeriesConfig::range_bars("a", "i", "start", "end")
         .color(ink)
         .style_range_bars(|parts| {
-            *parts.color_by = RangeColor::State {
+            parts.color_by = RangeColor::State {
                 column: "state".into(),
                 styles: vec![RangeStateStyle { color: ink }; states.len() + 1],
             };
-            *parts.progress = Some(RangeProgress {
+            parts.progress = Some(RangeProgress {
                 column: "progress".into(),
                 remaining_opacity: 1.0,
             });
         });
     theme.style_series(&mut series, 0);
-    let DataRenderType::RangeBars {
+    let DataRenderType::RangeBars(RangeBarSeries {
         color_by: RangeColor::State { styles, .. },
         progress,
         ..
-    } = &series.render_type
+    }) = &series.render_type
     else {
         panic!("range bars by state");
     };
@@ -1096,7 +1097,7 @@ fn the_vector_family_takes_widths_and_heads() {
         .pivot(VectorPivot::Middle)
         .vector_scale(VectorScale::Pixels { px_per_unit: 16.0 });
     theme.style_series(&mut series, 0);
-    let DataRenderType::Vector { style, .. } = &series.render_type else {
+    let DataRenderType::Vector(VectorSeries { style, .. }) = &series.render_type else {
         panic!("vectors");
     };
     assert_eq!(style.color, palette_color(&theme, 0));
@@ -1115,7 +1116,7 @@ fn the_vector_family_takes_widths_and_heads() {
 fn the_radar_part_keeps_what_it_does_not_name() {
     let own = || {
         let mut series = SeriesConfig::radar("a", "i", "v");
-        if let DataRenderType::Radar { style, .. } = &mut series.render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { style, .. }) = &mut series.render_type {
             style.line_width_px = Some(1.5);
             style.fill_opacity = Some(0.1);
         }
@@ -1131,7 +1132,7 @@ fn the_radar_part_keeps_what_it_does_not_name() {
     let theme = named(ChartKind::Radar, "gallery");
     let mut series = own();
     theme.style_series(&mut series, 3);
-    let DataRenderType::Radar { color, style, .. } = &series.render_type else {
+    let DataRenderType::Radar(RadarPolygonSeries { color, style, .. }) = &series.render_type else {
         panic!("a radar series");
     };
     assert_eq!(*color, palette_color(&theme, 3));
@@ -1166,17 +1167,17 @@ fn the_ternary_part_colours_regions_and_frames_the_third_axis() {
             "a",
             "p",
             "q",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "r".into(),
                 scatter: None,
                 line: Some(Default::default()),
                 region: Some(TernaryRegionStyle::default()),
-            },
+            }),
         )
     };
     let mut series = region();
     theme.style_series(&mut series, 13);
-    let DataRenderType::Ternary { line, region, .. } = &series.render_type else {
+    let DataRenderType::Ternary(TernarySeries { line, region, .. }) = &series.render_type else {
         panic!("a ternary series");
     };
     let region = region.as_ref().unwrap();
@@ -1187,7 +1188,7 @@ fn the_ternary_part_colours_regions_and_frames_the_third_axis() {
 
     let mut series = SeriesConfig::ternary("a", "p", "q", "r").with_line(1.0);
     theme.style_series(&mut series, 1);
-    let DataRenderType::Ternary { line, scatter, .. } = &series.render_type else {
+    let DataRenderType::Ternary(TernarySeries { line, scatter, .. }) = &series.render_type else {
         panic!("a ternary series");
     };
     let line = line.as_ref().unwrap();
@@ -1248,7 +1249,7 @@ fn a_parallel_chart_frames_its_axes_and_sizes_their_names() {
     assert_eq!(config.bottom_x.tick, TickVisibility::None);
     assert!(config.bottom_x.label_style.label_visible);
     assert_eq!(config.bottom_x.label_style.font_size, 20.0);
-    let DataRenderType::Parallel { line, .. } = &series[0].render_type else {
+    let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series[0].render_type else {
         panic!("a parallel series");
     };
     assert_eq!(line.line_color, palette_color(&theme, 0));
@@ -1291,12 +1292,14 @@ fn a_colourbar_takes_the_field_part_s_map() {
 
 fn override_colors(series: &SeriesConfig) -> Vec<(String, Option<Color>)> {
     match &series.render_type {
-        DataRenderType::BoxPlot { overrides, .. } => (overrides.iter().flatten())
+        DataRenderType::BoxPlot(BoxSeries { overrides, .. }) => (overrides.iter().flatten())
             .map(|o| (o.target.category_id.clone(), o.color))
             .collect(),
-        DataRenderType::CategoryBars { overrides, .. } => (overrides.iter().flatten())
-            .map(|o| (o.target.category_id.clone(), o.color))
-            .collect(),
+        DataRenderType::CategoryBars(CategoryBarSeries { overrides, .. }) => {
+            (overrides.iter().flatten())
+                .map(|o| (o.target.category_id.clone(), o.color))
+                .collect()
+        }
         _ => panic!("boxes or category bars"),
     }
 }
@@ -1983,7 +1986,7 @@ fn a_family_themes_subplots_of_mixed_kinds_each_in_its_kind_s_member() {
             "{family}"
         );
         let histogram = family.theme(ChartKind::Histogram);
-        let DataRenderType::Histogram { bar } = &series[3].render_type else {
+        let DataRenderType::Histogram(HistogramSeries { bar }) = &series[3].render_type else {
             panic!("a histogram");
         };
         assert_eq!(

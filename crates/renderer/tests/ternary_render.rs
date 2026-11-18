@@ -21,7 +21,7 @@ use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
     DataScatterStyleConfig, FitExtent, HitMap, LayerRef, RasterImage, Renderer, RendererDevice,
-    ScatterShape, SeriesConfig, Subplot, TernaryOptions,
+    ScatterShape, SeriesConfig, Subplot, TernaryOptions, TernarySeries,
 };
 
 const WIDTH: u32 = 480;
@@ -156,12 +156,12 @@ fn ternary(
         x_column: "a".into(),
         y_column: "b".into(),
         z_column: None,
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter,
             line,
             region: None,
-        },
+        }),
     }
 }
 
@@ -676,12 +676,12 @@ fn registration_rejects_what_ternary_does_not_draw() {
         drawn.map(|_| ())
     );
     let missing = SeriesConfig {
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "missing".into(),
             scatter: Some(marker_style(4.0)),
             line: None,
             region: None,
-        },
+        }),
         ..ok
     };
     assert!(err(bare_config(), vec![missing]).contains("missing"));
@@ -989,12 +989,12 @@ fn region(color: Color, opacity: f32) -> renderer::TernaryRegionStyle {
 /// markers and no line.
 fn region_series(id: &str, style: renderer::TernaryRegionStyle) -> SeriesConfig {
     SeriesConfig {
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter: None,
             line: None,
             region: Some(style),
-        },
+        }),
         ..ternary(id, None, None)
     }
 }
@@ -1175,12 +1175,12 @@ fn a_region_picks_inside_and_loses_ties_to_marks() {
     let mark = SeriesConfig {
         x_column: "ma".into(),
         y_column: "mb".into(),
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "mc".into(),
             scatter: Some(marker_style(8.0)),
             line: None,
             region: None,
-        },
+        }),
         ..ternary("mark", None, None)
     };
     for (id, k) in [("ma", 0), ("mb", 1), ("mc", 2)] {
@@ -1248,12 +1248,12 @@ fn overlapping_polygons_cancel_within_a_series_and_stack_across_series() {
     let second = SeriesConfig {
         x_column: "ra".into(),
         y_column: "rb".into(),
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "rc".into(),
             scatter: None,
             line: None,
             region: Some(region(RED, 1.0)),
-        },
+        }),
         ..ternary("right", None, None)
     };
     let two = [single[0].clone(), second];
@@ -1350,12 +1350,12 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
     upload(&mut r, &rows);
     let config = bare_config();
     let dressed = SeriesConfig {
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter: Some(marker_style(6.0)),
             line: Some(line_style(2.0, LineStylePreset::Solid)),
             region: Some(region(MAGENTA, 1.0)),
-        },
+        }),
         ..ternary("field", None, None)
     };
     let series = [dressed];

@@ -12,7 +12,11 @@
 
 use crate::color::Color;
 use crate::config::{AxisBreakStyle, AxisOptions, Config, PieceSizing, TickVisibility};
-use crate::data_config::{DataRenderType, SeriesConfig};
+use crate::data_config::{
+    BoxSeries, CategoryBarSeries, DataRenderType, HistogramSeries, ParallelSeries,
+    RadarPolygonSeries, RangeBarSeries, SeriesConfig, StreamlineSeries, TernarySeries,
+    VectorSeries,
+};
 
 const fn rgb8(r: u8, g: u8, b: u8) -> Color {
     Color::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
@@ -352,7 +356,7 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
                 stem.color = c;
             }
         }
-        DataRenderType::Histogram { bar } => {
+        DataRenderType::Histogram(HistogramSeries { bar }) => {
             bar.fill_color = c;
         }
         // The level strokes take the cycle colour; the arrows keep theirs
@@ -383,31 +387,31 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
         }
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
         | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. })
-        | DataRenderType::RgbImage { .. } => {}
+        | DataRenderType::RgbImage(_) => {}
         // The arrow colour joins the cycle; a colour map, when set, still
         // draws from the colourbar.
-        DataRenderType::Vector { style, .. } => {
+        DataRenderType::Vector(VectorSeries { style, .. }) => {
             style.color = c;
         }
         // The bar fill joins the cycle; per-bar override colours stay.
-        DataRenderType::CategoryBars { color, .. } => {
+        DataRenderType::CategoryBars(CategoryBarSeries { color, .. }) => {
             *color = c;
         }
         // The box fill joins the cycle; per-box override colours stay.
-        DataRenderType::BoxPlot { color, .. } => {
+        DataRenderType::BoxPlot(BoxSeries { color, .. }) => {
             *color = c;
         }
         // The series fill joins the cycle; direction and state colours
         // stay, since they carry the bars' meaning.
-        DataRenderType::RangeBars { color, .. } => {
+        DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
             *color = c;
         }
         // The outline and markers join the cycle, and the fill follows
         // them unless the style names its own.
-        DataRenderType::Radar { color, .. } => {
+        DataRenderType::Radar(RadarPolygonSeries { color, .. }) => {
             *color = c;
         }
-        DataRenderType::Ternary { scatter, line, .. } => {
+        DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
             if let Some(scatter) = scatter {
                 scatter.point_color = c;
             }
@@ -417,12 +421,12 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
         }
         // The line and its arrowheads join the cycle; a colour map, when
         // set, still draws from the colourbar.
-        DataRenderType::Streamlines { line, .. } => {
+        DataRenderType::Streamlines(StreamlineSeries { line, .. }) => {
             line.line_color = c;
         }
         // The rows join the cycle; a colour column, when set, still
         // draws from the colourbar.
-        DataRenderType::Parallel { line, .. } => {
+        DataRenderType::Parallel(ParallelSeries { line, .. }) => {
             line.line_color = c;
         }
         // Each channel of a monotonic group joins the cycle (#271).
@@ -743,7 +747,7 @@ mod tests {
         };
         let expected = ColorCycle::Classic.color(2);
 
-        let mut histogram = series(DataRenderType::Histogram {
+        let mut histogram = series(DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -754,9 +758,9 @@ mod tests {
                 orientation: BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        });
+        }));
         ColorCycle::Classic.apply_to_series(&mut histogram, 2);
-        let DataRenderType::Histogram { bar } = &histogram.render_type else {
+        let DataRenderType::Histogram(HistogramSeries { bar }) = &histogram.render_type else {
             unreachable!()
         };
         assert_eq!(bar.fill_color, expected);

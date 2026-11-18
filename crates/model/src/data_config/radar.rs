@@ -158,15 +158,30 @@ pub const MAX_RADAR_LABEL_CHARS: usize = 160;
 /// pair, so the fill's sample check keeps it.
 pub const RADAR_FILL_BASELINE: f64 = -(f32::MAX as f64);
 
-/// The fields of a [`DataRenderType::Radar`] series, borrowed.
-#[derive(Clone, Copy, Debug)]
-pub struct RadarRef<'a> {
+/// The fields of a [`DataRenderType::Radar`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RadarPolygonSeries {
+    /// The outline and marker colour; the fill uses it at the style's
+    /// fill opacity unless the style names a fill.
     pub color: Color,
-    pub style: &'a RadarSeriesStyle,
-    pub labels: &'a RadarSeriesLabels,
+    /// Outline width, fill and marker; unset fields take
+    /// their defaults.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radar_series_style")
+    )]
+    pub style: RadarSeriesStyle,
+    /// Which vertices carry value labels, how a value is written and
+    /// the drawn text of each vertex.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radar_series_labels")
+    )]
+    pub labels: RadarSeriesLabels,
 }
 
-impl RadarRef<'_> {
+impl RadarPolygonSeries {
     /// The polar line a radar series' outline and fill are drawn as: a
     /// solid, linearly interpolated line in the series colour at the
     /// outline width (transparent at width zero) whose fill reaches the
@@ -224,17 +239,9 @@ pub(super) const SQUARE_HALF_SIDE: f32 = 0.886_226_95;
 
 impl DataRenderType {
     /// The fields of a radar series, or `None` for every other kind.
-    pub fn radar(&self) -> Option<RadarRef<'_>> {
+    pub fn radar(&self) -> Option<&RadarPolygonSeries> {
         match self {
-            DataRenderType::Radar {
-                color,
-                style,
-                labels,
-            } => Some(RadarRef {
-                color: *color,
-                style,
-                labels,
-            }),
+            DataRenderType::Radar(radar) => Some(radar),
             _ => None,
         }
     }
@@ -310,16 +317,18 @@ impl crate::config::Config {
                     surface: _,
                 }) => (matrix, Some(&fill.shading)),
                 // An image's three grids share one layout (its own rule).
-                DataRenderType::RgbImage { red, shading, .. } => (red, Some(shading)),
+                DataRenderType::RgbImage(RgbImageSeries { red, shading, .. }) => {
+                    (red, Some(shading))
+                }
                 DataRenderType::Field(crate::data_config::FieldSeries {
                     matrix,
                     contour: Some(_),
                     ..
                 }) => (matrix, None),
-                DataRenderType::Vector {
+                DataRenderType::Vector(VectorSeries {
                     components: VectorComponents::Grid { u, v },
                     style,
-                } => {
+                }) => {
                     let color = match &style.color_map {
                         Some(VectorColorMap::Grid(color)) => Some(color),
                         _ => None,
@@ -377,14 +386,14 @@ impl crate::config::Config {
         series: &[SeriesConfig],
     ) -> Result<(), crate::RuleKind> {
         for item in series {
-            let DataRenderType::RgbImage {
+            let DataRenderType::RgbImage(RgbImageSeries {
                 red,
                 green,
                 blue,
                 range,
                 opacity,
                 ..
-            } = &item.render_type
+            }) = &item.render_type
             else {
                 continue;
             };
@@ -464,7 +473,7 @@ pub fn format_radar_labels(
 ) {
     let mut k = 0;
     for item in series.iter_mut() {
-        let DataRenderType::Radar { labels, .. } = &mut item.render_type else {
+        let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut item.render_type else {
             continue;
         };
         let number = crate::format::PlainNumberFormat::fixed(labels.decimals, false);

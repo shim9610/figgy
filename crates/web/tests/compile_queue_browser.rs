@@ -7,7 +7,7 @@ use figgy::FiggyChart;
 use renderer::data_config::{
     FieldFillConfig, FieldSeries, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
 };
-use renderer::{DataRenderType, SeriesConfig};
+use renderer::{DataRenderType, HistogramSeries, SeriesConfig, TernarySeries, VectorSeries};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
@@ -450,7 +450,7 @@ async fn a_vector_series_waits_for_its_module() {
         "arrows",
         "vx",
         "vy",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "vu".into(),
                 v: "vv".into(),
@@ -466,7 +466,7 @@ async fn a_vector_series_waits_for_its_module() {
                 min_length_px: 0.0,
                 color_map: None,
             },
-        },
+        }),
     );
     chart
         .set_series(&serde_json::to_string(&vec![arrows]).unwrap())
@@ -513,7 +513,7 @@ async fn a_ternary_region_waits_for_its_module() {
         "region",
         "ta",
         "tb",
-        DataRenderType::Ternary {
+        DataRenderType::Ternary(TernarySeries {
             c_column: "tc".into(),
             scatter: None,
             line: None,
@@ -521,7 +521,7 @@ async fn a_ternary_region_waits_for_its_module() {
                 color: renderer::Color::BLACK,
                 opacity: 0.5,
             }),
-        },
+        }),
     );
     chart
         .set_series(&serde_json::to_string(&vec![region]).unwrap())
@@ -724,7 +724,7 @@ async fn a_histogram_waits_for_its_envelope_scan() {
         "bars",
         "edges",
         "heights",
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: renderer::Color::BLACK,
                 border_color: renderer::Color::BLACK,
@@ -735,7 +735,7 @@ async fn a_histogram_waits_for_its_envelope_scan() {
                 orientation: BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
     );
     chart
         .set_series(&serde_json::to_string(&vec![bars]).unwrap())

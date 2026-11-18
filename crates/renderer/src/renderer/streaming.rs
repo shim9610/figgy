@@ -159,18 +159,18 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
         && (!series.iter().any(|s| match &s.render_type {
             DataRenderType::Field(crate::data_config::FieldSeries { fill: Some(_), .. }) => true,
             // A colour-mapped vector draws through the colourbar too.
-            DataRenderType::Vector { style, .. } => style.color_map.is_some(),
+            DataRenderType::Vector(VectorSeries { style, .. }) => style.color_map.is_some(),
             DataRenderType::Xy(_)
-            | DataRenderType::Histogram { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. }
-            | DataRenderType::RangeBars { .. }
-            | DataRenderType::Radar { .. }
+            | DataRenderType::Histogram(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::BoxPlot(_)
+            | DataRenderType::RangeBars(_)
+            | DataRenderType::Radar(_)
             // Never streamed: a streamed streamline or ternary series is
             // rejected.
-            | DataRenderType::Streamlines { .. }
-            | DataRenderType::Ternary { .. }
-            | DataRenderType::Parallel { .. }
+            | DataRenderType::Streamlines(_)
+            | DataRenderType::Ternary(_)
+            | DataRenderType::Parallel(_)
             | DataRenderType::EnergyLevels(_)
             // Never streamed: a streamed mesh is rejected (#210).
             | DataRenderType::TriMesh(_)
@@ -178,7 +178,7 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             // Never streamed: its own calls feed it (#271).
             | DataRenderType::MonotonicLine(_)
             // Never streamed either; its colours are its data.
-            | DataRenderType::RgbImage { .. }
+            | DataRenderType::RgbImage(_)
             | DataRenderType::Field(crate::data_config::FieldSeries { fill: None, .. }) => false,
         })
             || match (&left.colorbar, &right.colorbar) {

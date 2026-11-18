@@ -75,25 +75,25 @@ pub(super) fn has_stem(rt: &DataRenderType) -> bool {
 
 /// The line a render type draws through `(x_column, y_column)`, borrowed
 /// from its config or, for a radar series, the polar line its outline and
-/// fill are drawn as ([`crate::data_config::RadarRef::line_style`]): a
+/// fill are drawn as ([`crate::data_config::RadarPolygonSeries::line_style`]): a
 /// display mapping of the series' style, never of its data.
 pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleConfig>> {
     match rt {
         DataRenderType::Xy(crate::data_config::XySeries { line: Some(line), .. }) => Some(Cow::Borrowed(line)),
-        DataRenderType::Radar { .. } => rt.radar().map(|radar| Cow::Owned(radar.line_style())),
+        DataRenderType::Radar(_) => rt.radar().map(|radar| Cow::Owned(radar.line_style())),
         // Streamlines are drawn by the line path: their polylines, NaN rows
         // breaking them, are this line.
-        DataRenderType::Streamlines { line, .. } => Some(Cow::Borrowed(line)),
+        DataRenderType::Streamlines(StreamlineSeries { line, .. }) => Some(Cow::Borrowed(line)),
         // A ternary line, placed by its three components.
-        DataRenderType::Ternary { line, .. } => line.as_ref().map(Cow::Borrowed),
+        DataRenderType::Ternary(TernarySeries { line, .. }) => line.as_ref().map(Cow::Borrowed),
         // A monotonic channel's envelope is drawn as this line through its
         // envelope columns (#271).
         DataRenderType::MonotonicLine(series) => Some(Cow::Borrowed(&series.line)),
         // A parallel series' line is not this line: its rows are drawn by
         // the parallel entries through every axis column, never as the
         // polyline through `(x_column, y_column)`. Its style is read
-        // through `ParallelRef::line` where the parallel layer is built.
-        DataRenderType::Parallel { .. }
+        // through `ParallelSeries::line` where the parallel layer is built.
+        DataRenderType::Parallel(_)
 
         | DataRenderType::EnergyLevels(_)
 
@@ -104,31 +104,31 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         // through `(x_column, y_column)`; a contour is an implicit level set
         // drawn directly from the matrix. Returning its style here would make `has_line`
         // true and draw a polyline through the grid's coordinate columns.
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. } => None,
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_) => None,
     }
 }
 
 /// The markers a render type draws at `(x_column, y_column)`, borrowed from
 /// its config or, for a radar series with a marker, its vertex markers
-/// ([`crate::data_config::RadarRef::scatter_style`]).
+/// ([`crate::data_config::RadarPolygonSeries::scatter_style`]).
 pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatterStyleConfig>> {
     match rt {
         DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(scatter), .. }) => Some(Cow::Borrowed(scatter)),
-        DataRenderType::Radar { .. } => rt
+        DataRenderType::Radar(_) => rt
             .radar()
             .and_then(|radar| radar.scatter_style())
             .map(Cow::Owned),
         // Ternary markers, placed by their three components.
-        DataRenderType::Ternary { scatter, .. } => scatter.as_ref().map(Cow::Borrowed),
+        DataRenderType::Ternary(TernarySeries { scatter, .. }) => scatter.as_ref().map(Cow::Borrowed),
         // A parallel series draws no markers; nor does a monotonic one,
         // whose kept points are not every sample (#271).
-        DataRenderType::Parallel { .. }
+        DataRenderType::Parallel(_)
         | DataRenderType::MonotonicLine(_)
 
         | DataRenderType::EnergyLevels(_)
@@ -139,18 +139,18 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         // derived from, so answering otherwise is what put black 4 px dots at
         // every data point — see the note above.
         DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
+        | DataRenderType::RgbImage(_)
         // Arrows are not markers: they have their own pipeline, pick radius
         // and legend mark (`extract_vector`).
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
         // Arrowheads are not markers either; they are drawn along the line
         // by the vector glyph (`DataRenderType::streamlines`).
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines(_) => None,
     }
 }
 
@@ -186,18 +186,18 @@ pub struct SeriesDrawInfo {
 /// disagree, following `has_line` / `has_scatter`.
 pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::DataBarStyleConfig> {
     match rt {
-        DataRenderType::Histogram { bar } => Some(bar),
+        DataRenderType::Histogram(HistogramSeries { bar }) => Some(bar),
         DataRenderType::Xy(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -226,18 +226,18 @@ pub(super) fn extract_field_fill(
         }) => Some(fill),
         // An image paints cells but has no fill config: `has_field` names
         // it beside this match.
-        DataRenderType::RgbImage { .. }
+        DataRenderType::RgbImage(_)
         | DataRenderType::Field(crate::data_config::FieldSeries { fill: None, .. })
         | DataRenderType::Xy(_)
-        | DataRenderType::Histogram { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::Histogram(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -264,17 +264,17 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
             ..
         }) => Some(contour),
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
-        | DataRenderType::RgbImage { .. }
+        | DataRenderType::RgbImage(_)
         | DataRenderType::Xy(_)
-        | DataRenderType::Histogram { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::Histogram(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -293,18 +293,18 @@ pub(super) fn extract_vector(
     &crate::data_config::VectorStyle,
 )> {
     match rt {
-        DataRenderType::Vector { components, style } => Some((components, style)),
+        DataRenderType::Vector(VectorSeries { components, style }) => Some((components, style)),
         DataRenderType::Xy(_)
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -414,7 +414,7 @@ pub(super) fn series_draw_info_from_pool(
         }
         // Streamlines are a polyline too, NaN separators included; a colour
         // column is index-aligned with the coordinates and bounds them.
-        DataRenderType::Streamlines { color_map, .. } => {
+        DataRenderType::Streamlines(StreamlineSeries { color_map, .. }) => {
             let mut lengths = [x, y, 0];
             let used = match color_map {
                 Some(map) => {
@@ -445,7 +445,7 @@ pub(super) fn series_draw_info_from_pool(
             }
         }
         // One sample per row where all three components have a value.
-        DataRenderType::Ternary { c_column, .. } => {
+        DataRenderType::Ternary(TernarySeries { c_column, .. }) => {
             let (count, truncated) = paired(&[x, y, len(c_column)]);
             SeriesDrawInfo {
                 drawn_count: count,
@@ -458,11 +458,11 @@ pub(super) fn series_draw_info_from_pool(
         // column) has a value: `axes - 1` segments each, the shortest column
         // deciding, so the row count is folded over the columns rather than
         // gathered (rule 3).
-        DataRenderType::Parallel {
+        DataRenderType::Parallel(ParallelSeries {
             columns,
             color_column,
             ..
-        } => {
+        }) => {
             let lengths = columns
                 .iter()
                 .map(|id| len(id))
@@ -522,7 +522,7 @@ pub(super) fn series_draw_info_from_pool(
         }
         // `n` bars need `n + 1` edges. Orientation decides which column is
         // which — never the lengths.
-        DataRenderType::Histogram { bar } => {
+        DataRenderType::Histogram(HistogramSeries { bar }) => {
             let (edges, values) = match bar.orientation {
                 crate::data_config::BarOrientation::Vertical => (x, y),
                 crate::data_config::BarOrientation::Horizontal => (y, x),
@@ -539,7 +539,7 @@ pub(super) fn series_draw_info_from_pool(
         // grid the declaration and the data agreed on, which is the only way a
         // host can tell a 10x10 grid drawn as 10x9 from one drawn whole.
         DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. })
-        | DataRenderType::RgbImage { red: matrix, .. } => {
+        | DataRenderType::RgbImage(RgbImageSeries { red: matrix, .. }) => {
             let extent = matrix_extent(matrix, x as usize, y as usize, |id| len(id) as usize);
             SeriesDrawInfo {
                 drawn_count: (extent.cols as u64).saturating_mul(extent.rows as u64),
@@ -550,7 +550,7 @@ pub(super) fn series_draw_info_from_pool(
         }
         // One box per row of the position column; the record holds one row
         // per category (checked when the boxes are prepared).
-        DataRenderType::BoxPlot { .. } => {
+        DataRenderType::BoxPlot(_) => {
             let (count, truncated) = paired(&[x]);
             SeriesDrawInfo {
                 drawn_count: count,
@@ -562,7 +562,7 @@ pub(super) fn series_draw_info_from_pool(
         // One bar per row where every column of the series has a value:
         // the positions, the ends and the referenced columns are
         // index-aligned, so the shortest decides.
-        DataRenderType::RangeBars { .. } => {
+        DataRenderType::RangeBars(_) => {
             let bars = series.render_type.range_bars();
             let lengths = || {
                 [x, y]
@@ -581,7 +581,7 @@ pub(super) fn series_draw_info_from_pool(
         // A radar polygon: one closed segment and one marker per vertex of
         // the category index and value columns, which hold one value per
         // category (checked when the polygon is prepared).
-        DataRenderType::Radar { .. } => {
+        DataRenderType::Radar(_) => {
             let (count, truncated) = paired(&[x, y]);
             SeriesDrawInfo {
                 drawn_count: count,
@@ -592,7 +592,7 @@ pub(super) fn series_draw_info_from_pool(
         }
         // One bar per row of the position and value columns; both hold one
         // value per category (checked when the bars are prepared).
-        DataRenderType::CategoryBars { .. } => {
+        DataRenderType::CategoryBars(_) => {
             let (count, truncated) = paired(&[x, y]);
             SeriesDrawInfo {
                 drawn_count: count,
@@ -605,7 +605,7 @@ pub(super) fn series_draw_info_from_pool(
         // 3D panel z and w, and the colour column. Grid vectors: one arrow
         // per cell of the smallest common extent of the u, v and colour
         // grids.
-        DataRenderType::Vector { components, style } => {
+        DataRenderType::Vector(VectorSeries { components, style }) => {
             let color_column = match style.color_map.as_ref() {
                 Some(crate::data_config::VectorColorMap::Column(column)) => Some(len(column)),
                 _ => None,
@@ -659,19 +659,19 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
     match rt {
         DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. })
         // An image's lattice is its red grid's; the others match it.
-        | DataRenderType::RgbImage { red: matrix, .. } => Some(matrix),
+        | DataRenderType::RgbImage(RgbImageSeries { red: matrix, .. }) => Some(matrix),
         DataRenderType::Xy(_)
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         // A vector's grids are not "the matrix": they are components, not z.
         // `fit_matrix` reaches the `u` grid for the coordinate lattice.
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
 
         | DataRenderType::EnergyLevels(_)
 
@@ -694,17 +694,17 @@ pub(super) fn requires_colorbar(rt: &DataRenderType) -> bool {
 pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBarStyleConfig> {
     match rt {
         DataRenderType::Xy(xy) => xy.errors.as_ref().map(|errors| &errors.style),
-        DataRenderType::Histogram { .. }
+        DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -715,17 +715,17 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
 pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
     match rt {
         DataRenderType::Xy(xy) => xy.errors.as_ref().and_then(|errors| errors.y.as_ref()),
-        DataRenderType::Histogram { .. }
+        DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -736,17 +736,17 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
 pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
     match rt {
         DataRenderType::Xy(xy) => xy.errors.as_ref().and_then(|errors| errors.x.as_ref()),
-        DataRenderType::Histogram { .. }
+        DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -924,10 +924,10 @@ pub(super) fn build_parallel_data(
             .map_err(|_| invalid(crate::RuleKind::ParallelColumnLaneOverflow))
     };
     let mut rows = usize::MAX;
-    for column in parallel.columns {
+    for column in &parallel.columns {
         rows = rows.min(lookup(column)?.len_values);
     }
-    let (color_lane, flags) = match parallel.color_column {
+    let (color_lane, flags) = match parallel.color_column.as_deref() {
         Some(column) => {
             let handle = lookup(column)?;
             rows = rows.min(handle.len_values);
@@ -1157,7 +1157,7 @@ pub(super) fn box_plot_params<'c>(
     }
     // A violin narrows the box to its share of the slot and its curves
     // lift the value label past them.
-    let width = boxes.violin.map_or(1.0, |violin| violin.box_width);
+    let width = boxes.violin.as_ref().map_or(1.0, |violin| violin.box_width);
     set(&mut lanes, data_render::BOX_LANE_BOX_WIDTH, width.to_bits());
     for k in 0..4 {
         set(
@@ -1166,12 +1166,7 @@ pub(super) fn box_plot_params<'c>(
             BOX_LANE_ABSENT,
         );
     }
-    for (h, (_, half)) in boxes
-        .violin
-        .into_iter()
-        .flat_map(|v| v.halves())
-        .enumerate()
-    {
+    for (h, (_, half)) in boxes.violin.iter().flat_map(|v| v.halves()).enumerate() {
         let ragged = violin_curve(series, pool, &half.curve, n)?;
         let base = data_render::BOX_LANE_VIOLIN_CURVES + 2 * h as u32;
         set(&mut lanes, base, lane(&lookup(&ragged.slot().values)?)?);
@@ -1182,7 +1177,7 @@ pub(super) fn box_plot_params<'c>(
         );
     }
     let mut max_group = 0u32;
-    match boxes.outliers {
+    match boxes.outliers.as_deref() {
         Some(id) => {
             let ragged = pool.ragged(id).ok_or_else(|| {
                 invalid(crate::RuleKind::BoxPlotOutliersNotResident { id: id.to_string() })
@@ -1318,6 +1313,7 @@ pub(super) fn violin_params<'c>(
         .ok_or_else(|| invalid(crate::RuleKind::NotBoxPlot))?;
     let violin = boxes
         .violin
+        .as_ref()
         .ok_or_else(|| invalid(crate::RuleKind::NoViolin))?;
     let (mut params, _, _) =
         box_plot_params(config, group, series, display_scale, pool, &mut lookup)?;
@@ -1388,7 +1384,7 @@ pub(super) fn box_points_params<'c>(
     let points = series
         .render_type
         .box_plot()
-        .and_then(|b| b.points)
+        .and_then(|b| b.points.as_ref())
         .ok_or_else(|| invalid(crate::RuleKind::NoBoxPoints))?;
     let (mut params, _, _) =
         box_plot_params(config, group, series, display_scale, pool, &mut lookup)?;
@@ -1458,6 +1454,7 @@ pub(super) fn box_extras_data<'c>(
             box_points_params(config, group, series, display_scale, pool, lookup)?;
         let style = boxes
             .points
+            .as_ref()
             .ok_or(FiggyError::internal("checked by box_points_params"))?;
         let style_map = crate::renderer::style::box_points_style_map(
             device,
@@ -1471,6 +1468,7 @@ pub(super) fn box_extras_data<'c>(
             violin_params(config, group, series, display_scale, pool, lookup)?;
         let violin = boxes
             .violin
+            .as_ref()
             .ok_or(FiggyError::internal("checked by violin_params"))?;
         let style_map = crate::renderer::style::violin_style_map(
             device,
@@ -1547,12 +1545,12 @@ pub(super) fn range_bar_params<'c>(
     };
     let mut lanes = [BOX_LANE_ABSENT; RANGE_BAR_LANES];
     lanes[RANGE_LANE_END as usize] = lane(&series.y_column)?;
-    lanes[RANGE_LANE_START as usize] = lane(bars.start)?;
-    if let Some(w) = bars.whiskers {
+    lanes[RANGE_LANE_START as usize] = lane(&bars.start)?;
+    if let Some(w) = &bars.whiskers {
         lanes[RANGE_LANE_LOW as usize] = lane(&w.low)?;
         lanes[RANGE_LANE_HIGH as usize] = lane(&w.high)?;
     }
-    let (mode, colour, states) = match bars.color_by {
+    let (mode, colour, states) = match &bars.color_by {
         RangeColor::Single => (RANGE_COLOR_SINGLE, None, 0),
         RangeColor::Direction { total, .. } => (
             RANGE_COLOR_DIRECTION,
@@ -1566,7 +1564,7 @@ pub(super) fn range_bar_params<'c>(
     if let Some(id) = colour {
         lanes[RANGE_LANE_COLOR as usize] = lane(id)?;
     }
-    if let Some(p) = bars.progress {
+    if let Some(p) = &bars.progress {
         lanes[RANGE_LANE_PROGRESS as usize] = lane(&p.column)?;
     }
     lanes[RANGE_LANE_COLOR_MODE as usize] = mode;

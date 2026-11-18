@@ -847,7 +847,11 @@ fn prepare_demo_declarations(
     color_seq: usize,
 ) -> Result<PreparedDemoDeclarations, String> {
     use renderer::line::LineStylePreset;
-    use renderer::{DataLineStyleConfig, DataRenderType, SeriesConfig};
+    use renderer::{
+        BoxSeries, CategoryBarSeries, DataLineStyleConfig, DataRenderType, HistogramSeries,
+        ParallelSeries, RadarPolygonSeries, RangeBarSeries, SeriesConfig, StreamlineSeries,
+        TernarySeries, VectorSeries,
+    };
 
     let mut config = current_config.clone();
     let mut series = Vec::new();
@@ -873,11 +877,11 @@ fn prepare_demo_declarations(
                     ..
                 }) => line.line_color,
                 DataRenderType::Xy(_) => cycle.color(index),
-                DataRenderType::Histogram { bar } => bar.fill_color,
-                DataRenderType::CategoryBars { color, .. } => *color,
-                DataRenderType::BoxPlot { color, .. } => *color,
-                DataRenderType::RangeBars { color, .. } => *color,
-                DataRenderType::Radar { color, .. } => *color,
+                DataRenderType::Histogram(HistogramSeries { bar }) => bar.fill_color,
+                DataRenderType::CategoryBars(CategoryBarSeries { color, .. }) => *color,
+                DataRenderType::BoxPlot(BoxSeries { color, .. }) => *color,
+                DataRenderType::RangeBars(RangeBarSeries { color, .. }) => *color,
+                DataRenderType::Radar(RadarPolygonSeries { color, .. }) => *color,
                 DataRenderType::Field(renderer::data_config::FieldSeries {
                     contour: Some(contour),
                     ..
@@ -895,14 +899,14 @@ fn prepare_demo_declarations(
                     contour: None,
                     ..
                 })
-                | DataRenderType::RgbImage { .. } => cycle.color(index),
-                DataRenderType::Vector { style, .. } => style.color,
+                | DataRenderType::RgbImage(_) => cycle.color(index),
+                DataRenderType::Vector(VectorSeries { style, .. }) => style.color,
                 DataRenderType::EnergyLevels(levels) => levels.style.level.color,
                 DataRenderType::Feynman(diagram) => diagram.style.color,
-                DataRenderType::Streamlines { line, .. }
-                | DataRenderType::Parallel { line, .. } => line.line_color,
+                DataRenderType::Streamlines(StreamlineSeries { line, .. })
+                | DataRenderType::Parallel(ParallelSeries { line, .. }) => line.line_color,
                 DataRenderType::MonotonicLine(series) => series.line.line_color,
-                DataRenderType::Ternary { scatter, line, .. } => scatter
+                DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => scatter
                     .as_ref()
                     .map(|s| s.point_color)
                     .or(line.as_ref().map(|l| l.line_color))
@@ -3477,10 +3481,11 @@ mod web {
     use renderer::{
         Chart, ChartId, ChartRenderStamp, ChartView, Color, ColumnSource, CpuTextMeasure,
         DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HiLoColumnSource, HitId,
-        HitMap, LayerHit, RegisteredChartDrawItem, Renderer, ResizeHandle as ModelResizeHandle,
-        SeriesConfig, StreamColumn, StreamEncoding, StreamRangeSourceBinding, StreamReplay,
-        StreamSourceBinding, StreamStatistics, StreamingChartOptions, StreamingLimits,
-        WindowedRenderer,
+        HitMap, LayerHit, ParallelSeries, RegisteredChartDrawItem, Renderer,
+        ResizeHandle as ModelResizeHandle, RgbImageSeries, SeriesConfig, StreamColumn,
+        StreamEncoding, StreamRangeSourceBinding, StreamReplay, StreamSourceBinding,
+        StreamStatistics, StreamingChartOptions, StreamingLimits, StreamlineSeries, TernarySeries,
+        VectorSeries, WindowedRenderer,
     };
 
     use renderer::data_render::{AllocError, GrowthPolicy};
@@ -3790,7 +3795,11 @@ mod web {
                 RangeWhiskers, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot,
                 VectorScale, VectorStyle, Violin, ViolinBody, ViolinHalf, ViolinStyle,
             };
-            use renderer::{Color, DataRenderType, SeriesConfig};
+            use renderer::{
+                BoxSeries, CategoryBarSeries, Color, DataRenderType, HistogramSeries,
+                ParallelSeries, RangeBarSeries, RgbImageSeries, SeriesConfig, TernarySeries,
+                VectorSeries,
+            };
 
             const AXES: usize = 20;
             let column = |id: &str, data: &[f64]| (id.to_string(), data.to_vec());
@@ -3859,14 +3868,16 @@ mod web {
                 })
             };
             let bar_style = || CategoryBarStyle::default();
-            let box_plot = |violin| DataRenderType::BoxPlot {
-                color: Color::from_rgb8(40, 120, 200),
-                style: BoxPlotStyle::default(),
-                labels: BoxPlotSeriesLabels::default(),
-                outliers: None,
-                overrides: None,
-                violin,
-                points: None,
+            let box_plot = |violin| {
+                DataRenderType::BoxPlot(BoxSeries {
+                    color: Color::from_rgb8(40, 120, 200),
+                    style: BoxPlotStyle::default(),
+                    labels: BoxPlotSeriesLabels::default(),
+                    outliers: None,
+                    overrides: None,
+                    violin,
+                    points: None,
+                })
             };
             fn colorbar(config: &mut renderer::Config) {
                 config.colorbar = Some(renderer::default::default_colorbar_options());
@@ -3990,14 +4001,14 @@ mod web {
                         "arrows",
                         "vx",
                         "vy",
-                        DataRenderType::Vector {
+                        DataRenderType::Vector(VectorSeries {
                             components: VectorComponents::Points {
                                 u: "vu".into(),
                                 v: "vv".into(),
                                 w: None,
                             },
                             style: vector_style(Some(VectorColorMap::Column("vc".into()))),
-                        },
+                        }),
                     ),
                     pick: point("arrows", 1),
                     keys: keys(&["x", "y", "u", "v", "color_value"]),
@@ -4023,14 +4034,14 @@ mod web {
                             "arrows3d",
                             "ax",
                             "ay",
-                            DataRenderType::Vector {
+                            DataRenderType::Vector(VectorSeries {
                                 components: VectorComponents::Points {
                                     u: "au".into(),
                                     v: "av".into(),
                                     w: Some("aw".into()),
                                 },
                                 style: vector_style(None),
-                            },
+                            }),
                         )
                     },
                     pick: point("arrows3d", 1),
@@ -4046,11 +4057,11 @@ mod web {
                         "rows",
                         &parallel_columns[0],
                         &parallel_columns[1],
-                        DataRenderType::Parallel {
+                        DataRenderType::Parallel(ParallelSeries {
                             columns: parallel_columns.clone(),
                             line: parallel_line,
                             color_column: Some("pcol".into()),
-                        },
+                        }),
                     ),
                     pick: point("rows", 1),
                     keys: keys(&["x", "y", "values", "color_value"]),
@@ -4068,7 +4079,7 @@ mod web {
                         "hist",
                         "edges",
                         "heights",
-                        DataRenderType::Histogram {
+                        DataRenderType::Histogram(HistogramSeries {
                             bar: DataBarStyleConfig {
                                 fill_color: Color::BLACK,
                                 border_color: Color::BLACK,
@@ -4079,7 +4090,7 @@ mod web {
                                 orientation: BarOrientation::Vertical,
                                 bar_style_overrides: None,
                             },
-                        },
+                        }),
                     ),
                     pick: bin("hist", 1),
                     keys: keys(&["bin_start", "bin_end", "value", "orientation"]),
@@ -4097,13 +4108,13 @@ mod web {
                         "bars",
                         "cpos",
                         "cval",
-                        DataRenderType::CategoryBars {
+                        DataRenderType::CategoryBars(CategoryBarSeries {
                             color: Color::from_rgb8(40, 120, 200),
                             style: bar_style(),
                             labels: CategoryBarSeriesLabels::default(),
                             label_format: CategoryBarLabelFormat::Value,
                             overrides: None,
-                        },
+                        }),
                     ),
                     pick: bin("bars", 1),
                     keys: keys(&["category_id", "value", "direction", "mode"]),
@@ -4126,7 +4137,7 @@ mod web {
                         "ranges",
                         "rpos",
                         "rend",
-                        DataRenderType::RangeBars {
+                        DataRenderType::RangeBars(RangeBarSeries {
                             color: Color::from_rgb8(40, 120, 200),
                             style: bar_style(),
                             start: "rstart".into(),
@@ -4154,7 +4165,7 @@ mod web {
                             connector: None,
                             slot_width: None,
                             labels: CategoryBarSeriesLabels::default(),
-                        },
+                        }),
                     ),
                     pick: bin("ranges", 1),
                     keys: keys(&[
@@ -4280,7 +4291,7 @@ mod web {
                         "grid",
                         "gx",
                         "gy",
-                        DataRenderType::Vector {
+                        DataRenderType::Vector(VectorSeries {
                             components: VectorComponents::Grid {
                                 u: matrix(&["gu0", "gu1"], GridLayout::Centers),
                                 v: matrix(&["gv0", "gv1"], GridLayout::Centers),
@@ -4289,7 +4300,7 @@ mod web {
                                 &["gc0", "gc1"],
                                 GridLayout::Centers,
                             )))),
-                        },
+                        }),
                     ),
                     pick: cell("grid", 1, 2),
                     keys: keys(&["x", "y", "u", "v", "color_value"]),
@@ -4308,12 +4319,12 @@ mod web {
                         "mix",
                         "ta",
                         "tb",
-                        DataRenderType::Ternary {
+                        DataRenderType::Ternary(TernarySeries {
                             c_column: "tc".into(),
                             scatter: Some(scatter(None, None)),
                             line: None,
                             region: None,
-                        },
+                        }),
                     ),
                     pick: point("mix", 2),
                     keys: keys(&["x", "y", "c"]),
@@ -4337,14 +4348,14 @@ mod web {
                         "image",
                         "ix",
                         "iy",
-                        DataRenderType::RgbImage {
+                        DataRenderType::RgbImage(RgbImageSeries {
                             red: matrix(&["r0", "r1"], GridLayout::Centers),
                             green: matrix(&["g0", "g1"], GridLayout::Centers),
                             blue: matrix(&["b0", "b1"], GridLayout::Centers),
                             range: [0.0, 1.0],
                             shading: Shading::Flat,
                             opacity: 1.0,
-                        },
+                        }),
                     ),
                     pick: cell("image", 1, 2),
                     keys: keys(&["x", "y", "red", "green", "blue"]),

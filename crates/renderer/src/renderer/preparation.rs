@@ -114,28 +114,28 @@ impl PreparationFeature {
         }
         for item in series {
             let group = match item.render_type {
-                DataRenderType::Histogram { .. }
-                | DataRenderType::CategoryBars { .. }
-                | DataRenderType::BoxPlot { .. }
-                | DataRenderType::RangeBars { .. } => Self::Bars,
+                DataRenderType::Histogram(_)
+                | DataRenderType::CategoryBars(_)
+                | DataRenderType::BoxPlot(_)
+                | DataRenderType::RangeBars(_) => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Field(_)
-                | DataRenderType::RgbImage { .. }
-                | DataRenderType::Vector { .. }
+                | DataRenderType::RgbImage(_)
+                | DataRenderType::Vector(_)
                 // Streamline lines draw through the line pipelines (always
                 // prepared) and their arrowheads through a vector pipeline.
-                | DataRenderType::Streamlines { .. }
+                | DataRenderType::Streamlines(_)
                 // A triangle mesh reads the field's group 2 (#210).
                 | DataRenderType::TriMesh(_) => Self::Fields,
                 DataRenderType::Xy(_)
                 // A radar series draws through the line and scatter pipelines.
-                | DataRenderType::Radar { .. }
+                | DataRenderType::Radar(_)
                 // So does a ternary series, through its ternary entries, and
                 // a parallel series through the line module's parallel
                 // entries.
-                | DataRenderType::Ternary { .. }
-                | DataRenderType::Parallel { .. }
+                | DataRenderType::Ternary(_)
+                | DataRenderType::Parallel(_)
                 // A monotonic envelope draws through the line pipeline
                 // (#271).
                 | DataRenderType::MonotonicLine(_) => Self::Basic,

@@ -25,7 +25,7 @@ use renderer::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 use renderer::view3d::{SurfaceStyle, SurfaceWireframe, View3d};
 use renderer::{
     Chart, Color, ColorMap, Config, DataRenderType, DataSelectionsConfig, PickedDataRef,
-    RasterImage, Renderer, RendererDevice, SeriesConfig, TriangleSource,
+    RasterImage, Renderer, RendererDevice, SeriesConfig, TriangleSource, VectorSeries,
 };
 
 const WIDTH: u32 = 520;
@@ -1541,7 +1541,7 @@ fn arrows_3d(
         "vx",
         "vy",
         "vz",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: renderer::data_config::VectorComponents::Points {
                 u: "vu".into(),
                 v: "vv".into(),
@@ -1557,7 +1557,7 @@ fn arrows_3d(
                 min_length_px: 0.0,
                 color_map: None,
             },
-        },
+        }),
     )
 }
 
@@ -2151,10 +2151,10 @@ fn a_3d_arrow_reads_its_height_and_z_component() {
     r.add_column("vw_short", &col(vec![1.0; 12])).unwrap();
     let with_w = |w: &str| {
         let mut series = arrows_3d(VectorScale::Data { factor: 0.1 }, VectorPivot::Tail);
-        if let DataRenderType::Vector {
+        if let DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points { w: slot, .. },
             ..
-        } = &mut series.render_type
+        }) = &mut series.render_type
         {
             *slot = Some(w.into());
         }

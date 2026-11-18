@@ -22,8 +22,8 @@ use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::parallel::{ParallelAxis, ParallelOptions};
 use renderer::{
     Chart, Color, ColorMap, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
-    FiggyError, GpuPickRequest, HitMap, PickedData, RasterImage, Renderer, RendererDevice,
-    SeriesConfig,
+    FiggyError, GpuPickRequest, HitMap, ParallelSeries, PickedData, RasterImage, Renderer,
+    RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -129,11 +129,11 @@ fn series(id: &str, columns: &[String], color: Color, color_column: Option<&str>
         label: None,
         x_column: columns[0].clone(),
         y_column: columns[1].clone(),
-        render_type: DataRenderType::Parallel {
+        render_type: DataRenderType::Parallel(ParallelSeries {
             columns: columns.to_vec(),
             line: line(color, 2.0),
             color_column: color_column.map(str::to_owned),
-        },
+        }),
     }
 }
 
@@ -865,7 +865,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         }
     };
     let mut short = series("rows", &columns, RED, None);
-    if let DataRenderType::Parallel { columns, .. } = &mut short.render_type {
+    if let DataRenderType::Parallel(ParallelSeries { columns, .. }) = &mut short.render_type {
         columns.pop();
     }
     assert_eq!(
@@ -900,7 +900,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         renderer::RuleKind::ParallelSeriesColorbar
     ));
     let mut dashed = series("rows", &columns, RED, None);
-    if let DataRenderType::Parallel { line, .. } = &mut dashed.render_type {
+    if let DataRenderType::Parallel(ParallelSeries { line, .. }) = &mut dashed.render_type {
         line.line_style = renderer::line::LineStylePreset::Dash;
     }
     assert_eq!(
@@ -969,7 +969,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     let mut over_stream = series("rows", &columns, RED, None);
     over_stream.x_column = "st_0".into();
     over_stream.y_column = "st_1".into();
-    if let DataRenderType::Parallel { columns, .. } = &mut over_stream.render_type {
+    if let DataRenderType::Parallel(ParallelSeries { columns, .. }) = &mut over_stream.render_type {
         columns[0] = "st_0".into();
         columns[1] = "st_1".into();
     }
@@ -1014,7 +1014,7 @@ fn a_chart_with_fewer_than_two_axes_is_refused_when_it_is_set() {
         let mut short = bare_config();
         short.parallel_mut().unwrap().axes.truncate(count);
         let mut item = series("rows", &columns, RED, None);
-        if let DataRenderType::Parallel { columns, .. } = &mut item.render_type {
+        if let DataRenderType::Parallel(ParallelSeries { columns, .. }) = &mut item.render_type {
             columns.truncate(count);
         }
         let refused = |result: renderer::Result<()>, what: &str| match result {
@@ -1084,11 +1084,11 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
         label: None,
         x_column: columns[0].clone(),
         y_column: columns[1].clone(),
-        render_type: DataRenderType::Parallel {
+        render_type: DataRenderType::Parallel(ParallelSeries {
             columns: columns.clone(),
             line: line(RED, 1.0),
             color_column: None,
-        },
+        }),
     };
     let chart = Chart::new(config.clone());
     let started = std::time::Instant::now();

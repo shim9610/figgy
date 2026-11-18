@@ -23,7 +23,7 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::view3d::View3d;
 use renderer::{
     Chart, Color, DataRenderType, DataSelectionsConfig, FiggyError, GpuPickRequest, PickedData,
-    PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig,
+    PickedDataRef, RasterImage, Renderer, RendererDevice, RgbImageSeries, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -166,14 +166,14 @@ fn image(
         label: None,
         x_column: format!("{prefix}_x"),
         y_column: format!("{prefix}_y"),
-        render_type: DataRenderType::RgbImage {
+        render_type: DataRenderType::RgbImage(RgbImageSeries {
             red: matrix(&ids[0], orientation.clone()),
             green: matrix(&ids[1], orientation.clone()),
             blue: matrix(&ids[2], orientation),
             range,
             shading,
             opacity: 1.0,
-        },
+        }),
     }
 }
 
@@ -589,9 +589,9 @@ fn a_hexagonal_lattice_paints_its_centres() {
     let ids = upload(&mut r, "img", &MatrixOrientation::ColumnsAreX, 1.0);
     let chart = chart();
     let mut series = flat("img", &ids);
-    if let DataRenderType::RgbImage {
+    if let DataRenderType::RgbImage(RgbImageSeries {
         red, green, blue, ..
-    } = &mut series.render_type
+    }) = &mut series.render_type
     {
         for channel in [red, green, blue] {
             channel.grid_layout = GridLayout::Hexagonal;
@@ -814,7 +814,7 @@ fn registration_names_what_an_image_cannot_read() {
         }
     };
     let mut short = flat("img", &ids);
-    if let DataRenderType::RgbImage { green, .. } = &mut short.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { green, .. }) = &mut short.render_type {
         green.columns.truncate(COLS - 1);
     }
     assert_eq!(
@@ -822,7 +822,7 @@ fn registration_names_what_an_image_cannot_read() {
         renderer::RuleKind::ImageChannelColumns
     );
     let mut turned = flat("img", &ids);
-    if let DataRenderType::RgbImage { blue, .. } = &mut turned.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { blue, .. }) = &mut turned.render_type {
         blue.orientation = MatrixOrientation::ColumnsAreY;
     }
     assert_eq!(
@@ -830,7 +830,7 @@ fn registration_names_what_an_image_cannot_read() {
         renderer::RuleKind::ImageChannelLattice
     );
     let mut hexagonal = flat("img", &ids);
-    if let DataRenderType::RgbImage { red, .. } = &mut hexagonal.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { red, .. }) = &mut hexagonal.render_type {
         red.grid_layout = GridLayout::Hexagonal;
     }
     assert_eq!(
@@ -857,7 +857,7 @@ fn registration_names_what_an_image_cannot_read() {
         );
     }
     let mut opaque = flat("img", &ids);
-    if let DataRenderType::RgbImage { opacity, .. } = &mut opaque.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { opacity, .. }) = &mut opaque.render_type {
         *opacity = 1.5;
     }
     assert_eq!(
@@ -877,7 +877,7 @@ fn registration_names_what_an_image_cannot_read() {
         renderer::RuleKind::PolarImage
     );
     let mut unregistered = flat("img", &ids);
-    if let DataRenderType::RgbImage { blue, .. } = &mut unregistered.render_type {
+    if let DataRenderType::RgbImage(RgbImageSeries { blue, .. }) = &mut unregistered.render_type {
         blue.columns[0] = "nowhere".into();
     }
     assert!(
