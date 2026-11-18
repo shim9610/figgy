@@ -1029,14 +1029,15 @@ impl crate::config::Config {
             if levels.source.as_deref() == Some(item.series_id.as_str()) {
                 return Err(crate::RuleKind::EnergyLevelsSelfSource);
             }
-            if self.polar().is_some()
-                || self.ternary().is_some()
-                || self.parallel().is_some()
-                || self.view_3d().is_some()
+            let chart = self.series_chart(&item.series_id);
+            if chart.polar().is_some()
+                || chart.ternary().is_some()
+                || chart.parallel().is_some()
+                || chart.view_3d().is_some()
             {
                 return Err(crate::RuleKind::EnergyLevelsChart);
             }
-            if self.bottom_x.categories.is_none() {
+            if chart.bottom_x.categories.is_none() {
                 return Err(crate::RuleKind::EnergyLevelsCategoricalX);
             }
         }
@@ -1671,6 +1672,27 @@ mod tests {
                 .collect(),
         );
         config
+    }
+
+    #[test]
+    fn a_subplot_draws_energy_levels_on_its_own_categorical_axis() {
+        // A Cartesian root with a numeric X axis, a categorical subplot
+        // drawing the series (#325).
+        let mut root = crate::defaults::config();
+        let mut cell = chart();
+        cell.chart_area = root.chart_area.clone();
+        root.subplots.push(crate::layer::Subplot {
+            config: cell,
+            series: vec!["he".into()],
+            ..crate::defaults::subplot()
+        });
+        assert!(root.bottom_x.categories.is_none());
+        assert_eq!(root.validate_series(&[series("he", helium())]), Ok(()));
+        // A series the root draws is still held to the root's axis.
+        assert_eq!(
+            root.validate_energy_levels(&[series("other", helium())]),
+            Err(crate::RuleKind::EnergyLevelsCategoricalX)
+        );
     }
 
     #[test]

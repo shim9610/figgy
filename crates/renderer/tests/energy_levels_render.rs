@@ -243,6 +243,54 @@ fn levels_limits_and_transitions_draw_where_their_values_place_them() {
     }
 }
 
+/// A registered chart whose root has a numeric X axis and whose subplot
+/// is categorical (#325): the series is held to the subplot's axis, and
+/// the registered chart draws it there.
+#[test]
+fn a_registered_categorical_subplot_beside_a_numeric_root_draws_its_levels() {
+    let mut r = renderer();
+    let mut root = renderer::default::default_config();
+    root.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    assert!(root.bottom_x.categories.is_none(), "the root stays numeric");
+    let mut cell = chart().config().clone();
+    cell.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    let placed = Chart::new(cell.clone());
+    root.subplots.push(renderer::Subplot {
+        config: cell,
+        series: vec!["he".into()],
+        ..renderer::Subplot::default()
+    });
+    let list = vec![series("he", records())];
+    let id = r
+        .register_chart(root, list)
+        .expect("validated against the categorical subplot");
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let s = (2.0 * scale).ceil() as u32;
+        for (x, y) in [(0.0, 20.0), (1.0, 40.0)] {
+            let left = at(&placed, x - 0.25, y, scale);
+            assert!(near(&img, left, s, is_red), "{scale}x level at ({x}, {y})");
+        }
+    }
+    r.remove_chart(id).unwrap();
+}
+
 #[test]
 fn the_picked_level_is_drawn_wider() {
     let mut r = renderer();
