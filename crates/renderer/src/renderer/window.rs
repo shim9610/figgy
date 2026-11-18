@@ -126,6 +126,38 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.compile_pick_pipelines_async(id, request).await
     }
 
+    /// Compile, through the browser's async API, the typed data pick
+    /// kernels a [`Self::pick_chart_data_at`] of chart `id` at
+    /// `canvas_position_px` dispatches, before it submits (#327): see
+    /// [`Renderer::compile_data_pick_pipelines_async`].
+    #[cfg(target_arch = "wasm32")]
+    pub async fn compile_data_pick_pipelines_at(
+        &mut self,
+        id: ChartId,
+        canvas_position_px: [f32; 2],
+        max_distance_px: f32,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let config = self
+            .inner
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        let logical = config.config.document_area();
+        let (display_scale, display_panel_px) = fit_display_panel(
+            (logical.width, logical.height),
+            (self.surface_config.width, self.surface_config.height),
+        );
+        let request = GpuPickRequest {
+            canvas_position_px,
+            display_panel_px,
+            display_scale,
+            max_distance_px,
+        };
+        self.inner
+            .compile_data_pick_pipelines_async(id, request)
+            .await
+    }
+
     /// Typed data pick using this window's current physical surface size.
     pub fn pick_chart_data_at(
         &mut self,

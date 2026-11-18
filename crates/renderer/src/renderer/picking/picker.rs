@@ -63,6 +63,9 @@ pub(in crate::renderer) struct RendererPicker {
     /// The exact pipelines created so far, by module and variant: compiled on
     /// the first pick that needs each (`PickExactPipelines`).
     pub(in crate::renderer) exact: crate::gpu_pick::PickExactPipelines,
+    /// The typed data pick kernels created so far: compiled on the first
+    /// pick that dispatches each (`DataPickKernels`, #327).
+    pub(in crate::renderer) data_kernels: crate::gpu_data_pick::DataPickKernels,
     #[cfg(test)]
     pub(in crate::renderer) injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -73,6 +76,7 @@ impl RendererPicker {
             pipeline_state: PickerPipelineState::Disabled,
             active: None,
             exact: crate::gpu_pick::PickExactPipelines::default(),
+            data_kernels: crate::gpu_data_pick::DataPickKernels::default(),
             #[cfg(test)]
             injected_activation_failure: None,
         }
@@ -183,7 +187,8 @@ impl RendererPicker {
         .await
         {
             Ok(point) => {
-                match crate::gpu_data_pick::DataPickPipelineBundle::new_observed_async(
+                // The data bundle creates no kernel (#327): nothing to await.
+                match crate::gpu_data_pick::DataPickPipelineBundle::new_observed(
                     device,
                     queue,
                     gpu_ledger,
@@ -196,9 +201,7 @@ impl RendererPicker {
                     category_bgl,
                     parallel_bgl,
                     observer,
-                )
-                .await
-                {
+                ) {
                     Ok(data) => {
                         self.pipeline_state = PickerPipelineState::Ready { point, data };
                         Ok(())

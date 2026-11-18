@@ -885,10 +885,10 @@ fn pool_capacity_clamps_to_storage_and_buffer_limits() {
 }
 
 #[test]
-/// Enabling picking creates the gate and reduction pipelines and the
-/// typed data pipelines once; the exact point pipelines wait for the first
-/// pick that needs each (`PickExactPipelines`).
-fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
+/// Enabling picking creates the gate and reduction pipelines once; the
+/// exact point pipelines and the typed data kernels wait for the first pick
+/// that needs each (`PickExactPipelines`, `DataPickKernels`, #327).
+fn renderer_gpu_picker_activation_creates_three_pipelines_once() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
@@ -927,13 +927,7 @@ fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
         .filter(|event| {
             event.scope == "renderer.gpu_data_pick"
                 && event.phase == crate::init::InitPhase::Started
-                && matches!(
-                    event.stage,
-                    "pick_histogram_bin"
-                        | "pick_field_contour"
-                        | "pick_field_cell"
-                        | "pick_vector_cell"
-                )
+                && event.stage != "setup"
         })
         .count();
     let data_setup_starts = events
@@ -946,9 +940,172 @@ fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
         .count();
     assert_eq!(pipeline_starts, 3);
     assert_eq!(setup_starts, 1);
-    assert_eq!(data_pipeline_starts, 4);
+    assert_eq!(data_pipeline_starts, 0);
     assert_eq!(data_setup_starts, 1);
     assert!(renderer.picker.active.is_none());
+}
+
+/// The compute pipelines created so far in `capture` whose label is a
+/// typed data pick kernel's (#327), by kernel.
+fn created_data_kernels(
+    capture: &[serde_json::Value],
+) -> Vec<crate::gpu_data_pick::DataPickKernel> {
+    crate::gpu_data_pick::DataPickKernel::ALL
+        .into_iter()
+        .flat_map(|kernel| {
+            capture
+                .iter()
+                .filter(move |pipeline| {
+                    pipeline["kind"] == "compute"
+                        && pipeline["descriptor"]["label"] == kernel.label()
+                        && pipeline["descriptor"]["compute"]["entryPoint"] == kernel.entry()
+                })
+                .map(move |_| kernel)
+        })
+        .collect()
+}
+
+/// #327: a typed data pick compiles only the kernels its chart
+/// dispatches. Enabling picking and picking a radar chart and an XY line
+/// chart create no data pick kernel at all; a histogram pick then creates
+/// its own kernel once and nothing else, and a second pick creates none.
+#[test]
+fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
+    use crate::gpu_compile::capture;
+    use crate::gpu_data_pick::{DataPickKernel, DataPickKernelSet};
+    // Begun before the renderer, so every module it compiles is captured.
+    let session = capture::Session::begin();
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer
+        .add_column("cat", &col_f64(vec![0.0, 1.0, 2.0, 3.0, 4.0]))
+        .unwrap();
+    renderer
+        .add_column("radius", &col_f64(vec![0.5, 0.8, 0.3, 0.9, 0.6]))
+        .unwrap();
+    renderer
+        .add_column("edges", &col_f64(vec![0.0, 1.0, 2.0]))
+        .unwrap();
+    renderer
+        .add_column("counts", &col_f64(vec![5.0, 8.0]))
+        .unwrap();
+
+    // A radar chart: five categories on a polar chart.
+    let mut radar_config = typed_pick_config((0.0, 4.0), (0.0, 1.0));
+    radar_config.bottom_x.categories = Some(
+        (0..5)
+            .map(|i| crate::config::Category::new(format!("c{i}"), format!("C{i}")))
+            .collect(),
+    );
+    radar_config.set_polar(Some(crate::polar::PolarOptions::default()));
+    let radar = renderer
+        .register_chart(
+            radar_config.clone(),
+            vec![SeriesConfig {
+                series_id: "radar".into(),
+                source_id: None,
+                label: None,
+                x_column: "cat".into(),
+                y_column: "radius".into(),
+                z_column: None,
+                render_type: DataRenderType::Radar {
+                    color: Color::BLACK,
+                    style: Default::default(),
+                    labels: Default::default(),
+                },
+            }],
+        )
+        .unwrap();
+    // An XY line chart.
+    let xy_config = typed_pick_config((0.0, 4.0), (0.0, 1.0));
+    let xy = renderer
+        .register_chart(
+            xy_config.clone(),
+            vec![state_test_line("xy", "cat", "radius")],
+        )
+        .unwrap();
+
+    renderer.enable_gpu_picking().unwrap();
+    assert!(
+        created_data_kernels(&capture::snapshot_pipelines()).is_empty(),
+        "enabling picking creates no data pick kernel"
+    );
+    for (chart, config) in [(radar, &radar_config), (xy, &xy_config)] {
+        let center = config.data_area().unwrap().0;
+        let request = typed_pick_request(
+            config,
+            [
+                center.x as f32 + center.width as f32 * 0.5,
+                center.y as f32 + center.height as f32 * 0.3,
+            ],
+        );
+        assert_eq!(
+            renderer.data_pick_kernels_for(chart, request).unwrap(),
+            DataPickKernelSet::EMPTY
+        );
+        crate::test_gpu::block_on(renderer.pick_chart_data(chart, request).unwrap().resolve())
+            .unwrap();
+    }
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [],
+        "a radar or XY pick creates no data pick kernel"
+    );
+    assert!(
+        DataPickKernel::ALL.into_iter().all(|kernel| renderer
+            .picker
+            .data_kernels
+            .get(kernel)
+            .is_none())
+    );
+
+    // A histogram compiles its own kernel on its first pick, once.
+    let hist_config = typed_pick_config((0.0, 2.0), (0.0, 10.0));
+    let hist = renderer
+        .register_chart(
+            hist_config.clone(),
+            vec![SeriesConfig {
+                series_id: "hist".into(),
+                source_id: None,
+                label: None,
+                x_column: "edges".into(),
+                y_column: "counts".into(),
+                z_column: None,
+                render_type: DataRenderType::Histogram {
+                    bar: crate::data_config::DataBarStyleConfig {
+                        fill_color: Color::BLACK,
+                        border_color: Color::BLACK,
+                        border_width: 1.0,
+                        baseline: 0.0,
+                        gap_px: 2.0,
+                        width_ratio: 1.0,
+                        orientation: crate::data_config::BarOrientation::Vertical,
+                        bar_style_overrides: None,
+                    },
+                },
+            }],
+        )
+        .unwrap();
+    let request = typed_pick_request(&hist_config, typed_pick_position(&hist_config, 1.5, 4.0));
+    assert_eq!(
+        renderer.data_pick_kernels_for(hist, request).unwrap(),
+        DataPickKernelSet::EMPTY.with(DataPickKernel::Histogram)
+    );
+    for _ in 0..2 {
+        let picked =
+            crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve())
+                .unwrap();
+        assert!(matches!(
+            picked,
+            Some(crate::pick::PickedData::HistogramBin { bin_index: 1, .. })
+        ));
+    }
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [DataPickKernel::Histogram]
+    );
+    drop(session);
 }
 
 fn typed_pick_config(x: (f64, f64), y: (f64, f64)) -> Config {

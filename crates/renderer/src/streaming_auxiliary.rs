@@ -555,7 +555,17 @@ impl Renderer {
             identities(),
         )?;
         let data = if typed {
+            // Its two reduction kernels are created by the first streamed
+            // typed pick, through the browser's async API there (#327).
+            #[cfg(target_arch = "wasm32")]
+            self.compile_data_pick_kernels_async(
+                crate::gpu_data_pick::DataPickKernelSet::EMPTY
+                    .with(crate::gpu_data_pick::DataPickKernel::StreamReduceData)
+                    .with(crate::gpu_data_pick::DataPickKernel::StreamReducePoint),
+            )
+            .await?;
             Some(self.picker.ready_data_bundle()?.begin_stream(
+                &mut self.picker.data_kernels,
                 crate::gpu_data_pick::GpuDataPickQuery {
                     transform,
                     chart_rect_px,

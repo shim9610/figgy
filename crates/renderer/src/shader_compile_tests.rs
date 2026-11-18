@@ -97,6 +97,11 @@ fn all_shader_compilation_times_and_entry_coverage() {
                 };
                 renderer.picker.exact.ensure(&bundle, key).unwrap();
             }
+            // So do the typed data pick kernels (#327).
+            let data = renderer.picker.ready_data_bundle().unwrap();
+            for kernel in crate::gpu_data_pick::DataPickKernel::ALL {
+                renderer.picker.data_kernels.ensure(&data, kernel).unwrap();
+            }
         }
         if samples == 1 {
             data_render::create_bar_columnar_pipeline(

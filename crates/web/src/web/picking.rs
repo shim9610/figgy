@@ -1084,6 +1084,24 @@ impl FiggyChart {
             .map_err(js_err)
     }
 
+    /// Compile the typed data pick kernels a data pick at `at` dispatches
+    /// through the browser's async API before it submits (#327); kernels
+    /// other charts need wait for their own first pick. A monotonic chart
+    /// draws a line, which the point query answers, and needs none.
+    async fn compile_data_pick_pipelines(
+        &mut self,
+        at: [f32; 2],
+        max_distance_px: f32,
+    ) -> Result<(), JsValue> {
+        if self.monotonic.is_some() {
+            return Ok(());
+        }
+        self.renderer
+            .compile_data_pick_pipelines_at(self.chart_id, at, max_distance_px)
+            .await
+            .map_err(js_err)
+    }
+
     fn shows_stream(&self) -> bool {
         self.monotonic.is_none() && self.renderer.is_streaming_chart(self.chart_id)
     }
@@ -1190,6 +1208,8 @@ impl FiggyChart {
                     .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
         });
         if labelled {
+            self.compile_data_pick_pipelines([x, y], max_distance_px)
+                .await?;
             let ticket = self.data_pick_ticket([x, y], max_distance_px)?;
             match ticket.resolve().await.map_err(js_err)? {
                 Some(renderer::PickedData::ValueLabel {
@@ -1590,6 +1610,8 @@ impl FiggyChart {
         }
         self.prepare_gpu_picking().await?;
         self.compile_pick_pipelines([x, y], max_distance_px).await?;
+        self.compile_data_pick_pipelines([x, y], max_distance_px)
+            .await?;
         let ticket = self.data_pick_ticket([x, y], max_distance_px)?;
         let Some(picked) = ticket.resolve().await.map_err(js_err)? else {
             return Ok(JsValue::UNDEFINED);
