@@ -863,10 +863,10 @@ styles, and label content are fields of that model. It shares the host wgpu devi
 and does not use the column pool or column streams.
 Try the [native editor](examples/radial_editor.rs) with
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`.
-The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
-[option defaults and ranges](RADIAL.md#스타일-옵션-기본값과-범위),
-[per-slice editing](RADIAL.md#모델-편집과-선택), and
-[host update order](RADIAL.md#호스트의-갱신-순서), including frame ownership and export.
+The [radial chart guide](RADIAL.md) covers the API with an example,
+[option defaults and ranges](RADIAL.md#style-option-defaults-and-ranges),
+[per-slice editing](RADIAL.md#editing-the-model-and-selection), and
+[host update order](RADIAL.md#host-update-order), including frame ownership and export.
 
 ### Headless renderer and saving by format
 
@@ -1862,7 +1862,7 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 컬럼에서 읽으며, 스트리밍 소스는 거부한다. 막대별 색·재질·둥근 모서리·외곽선은 시리즈에 막대별로
 덮어쓰는 값이고, 막대 하나는 히스토그램 구간처럼 선택한다. 예전 `CategoricalChart` 문서는
 `Config::from_categorical`로 연다.
-[API 사용법](CATEGORICAL.md)을 참고하거나
+[API 사용법](CATEGORICAL.md#한국어-사용법)을 참고하거나
 `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`로 예제 PNG를 만든다.
 
 ### 원형 차트
@@ -1873,7 +1873,7 @@ x에서 픽셀로의 매핑(x 범위, 장치 픽셀 단위 플롯 너비, x 방�
 컬럼 풀이나 컬럼 스트림은 쓰지 않는다.
 [네이티브 편집기](examples/radial_editor.rs)는
 `cargo run -p figgy-renderer --example radial_editor --features egui_demo`로 실행한다.
-[사용법과 예제](RADIAL.md)에서 [옵션 기본값과 범위](RADIAL.md#스타일-옵션-기본값과-범위),
+[사용법과 예제](RADIAL.md#한국어-사용법)에서 [옵션 기본값과 범위](RADIAL.md#스타일-옵션-기본값과-범위),
 [조각별 편집과 상속](RADIAL.md#모델-편집과-선택), 프레임 수명과 내보내기를 포함한
 [호스트 갱신 순서](RADIAL.md#호스트의-갱신-순서)를 확인할 수 있다.
 
