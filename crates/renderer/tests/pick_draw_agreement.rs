@@ -26,8 +26,9 @@ use edge_band::edge_band;
 use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    Chart, ChartId, Color, DataRenderType, DataScatterStyleConfig, GpuPickRequest, PickedPoint,
-    RasterImage, Renderer, RendererDevice, ScatterShape, SeriesConfig,
+    BoxSeries, CategoryBarSeries, Chart, ChartId, Color, DataRenderType, DataScatterStyleConfig,
+    GpuPickRequest, HistogramSeries, PickedPoint, RadarPolygonSeries, RangeBarSeries, RasterImage,
+    Renderer, RendererDevice, ScatterShape, SeriesConfig, StreamlineSeries, VectorSeries,
 };
 
 pub const WIDTH: u32 = 200;
@@ -1536,7 +1537,7 @@ fn arrows(
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
@@ -1552,7 +1553,7 @@ fn arrows(
                 min_length_px: 6.0,
                 color_map: None,
             },
-        },
+        }),
     }
 }
 
@@ -1707,7 +1708,7 @@ fn grid_vectors_pick_the_arrow_they_draw() {
             x_column: "gx".into(),
             y_column: "gy".into(),
             z_column: None,
-            render_type: DataRenderType::Vector {
+            render_type: DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Grid {
                     u: matrix("u"),
                     v: matrix("v"),
@@ -1722,7 +1723,7 @@ fn grid_vectors_pick_the_arrow_they_draw() {
                     min_length_px: 0.0,
                     color_map: None,
                 },
-            },
+            }),
         }];
         for scale in [1.0, 2.0] {
             let what = format!("{scale_mode:?} at {scale}x");
@@ -1814,7 +1815,7 @@ fn arrows_ringed() -> SeriesConfig {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "ring_u".into(),
                 v: "ring_v".into(),
@@ -1830,7 +1831,7 @@ fn arrows_ringed() -> SeriesConfig {
                 min_length_px: 0.0,
                 color_map: None,
             },
-        },
+        }),
     }
 }
 
@@ -2107,7 +2108,7 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             x_column: x.into(),
             y_column: y.into(),
             z_column: None,
-            render_type: DataRenderType::Histogram {
+            render_type: DataRenderType::Histogram(HistogramSeries {
                 bar: DataBarStyleConfig {
                     fill_color: RED,
                     border_color: BLUE,
@@ -2118,7 +2119,7 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
                     orientation: orientation.clone(),
                     bar_style_overrides: None,
                 },
-            },
+            }),
         }];
         for scale in [1.0, 2.0] {
             let what = format!("{orientation:?} at {scale}x");
@@ -4251,13 +4252,13 @@ fn category_bars_pick_the_bar_they_paint() {
             x_column: "pos".into(),
             y_column: id.into(),
             z_column: None,
-            render_type: DataRenderType::CategoryBars {
+            render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                 color,
                 style,
                 labels: Default::default(),
                 label_format: Default::default(),
                 overrides: None,
-            },
+            }),
         }
     };
     for mode in [CategoryBarMode::Grouped, CategoryBarMode::Stacked] {
@@ -4474,7 +4475,7 @@ fn box_plots_pick_the_box_they_paint() {
                 x_column: "pos".into(),
                 y_column: "record".into(),
                 z_column: None,
-                render_type: DataRenderType::BoxPlot {
+                render_type: DataRenderType::BoxPlot(BoxSeries {
                     color: RED,
                     style: BoxPlotStyle {
                         material: renderer::Material::Flat,
@@ -4488,7 +4489,7 @@ fn box_plots_pick_the_box_they_paint() {
                     overrides: None,
                     violin: None,
                     points: None,
-                },
+                }),
             }];
             for scale in [1.0, 2.0] {
                 let what = format!("notched {notched} {direction:?} at {scale}x");
@@ -4660,7 +4661,7 @@ fn range_bars_pick_the_bar_they_paint() {
             x_column: "pos".into(),
             y_column: "end".into(),
             z_column: None,
-            render_type: DataRenderType::RangeBars {
+            render_type: DataRenderType::RangeBars(RangeBarSeries {
                 color: RED,
                 style: CategoryBarStyle {
                     material: renderer::Material::Flat,
@@ -4681,7 +4682,7 @@ fn range_bars_pick_the_bar_they_paint() {
                 }),
                 slot_width: None,
                 labels: Default::default(),
-            },
+            }),
         }];
         for scale in [1.0, 2.0] {
             let what = format!("{direction:?} at {scale}x");
@@ -4857,7 +4858,7 @@ fn violins_and_raincloud_points_pick_what_they_paint() {
             x_column: "pos".into(),
             y_column: String::new(),
             z_column: None,
-            render_type: DataRenderType::BoxPlot {
+            render_type: DataRenderType::BoxPlot(BoxSeries {
                 color: RED,
                 style: BoxPlotStyle::default(),
                 labels: Default::default(),
@@ -4891,7 +4892,7 @@ fn violins_and_raincloud_points_pick_what_they_paint() {
                         ..BoxPointsStyle::default()
                     },
                 }),
-            },
+            }),
         }];
         for scale in [1.0, 2.0] {
             let what = format!("{direction:?} at {scale}x");
@@ -4985,11 +4986,11 @@ fn radar(id: &str, style: renderer::RadarSeriesStyle) -> SeriesConfig {
         x_column: "cat".into(),
         y_column: "val".into(),
         z_column: None,
-        render_type: DataRenderType::Radar {
+        render_type: DataRenderType::Radar(RadarPolygonSeries {
             color: RED,
             style,
             labels: Default::default(),
-        },
+        }),
     }
 }
 
@@ -5176,7 +5177,7 @@ fn value_labels_pick_where_they_paint() {
             x_column: "pos".into(),
             y_column: id.into(),
             z_column: None,
-            render_type: DataRenderType::CategoryBars {
+            render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                 color,
                 style,
                 labels: CategoryBarSeriesLabels {
@@ -5186,7 +5187,7 @@ fn value_labels_pick_where_they_paint() {
                 },
                 label_format: Default::default(),
                 overrides: None,
-            },
+            }),
         }
     };
     let hidden = |series: &[SeriesConfig]| -> Vec<SeriesConfig> {
@@ -5195,10 +5196,10 @@ fn value_labels_pick_where_they_paint() {
             .cloned()
             .map(|mut s| {
                 match &mut s.render_type {
-                    DataRenderType::CategoryBars { labels, .. } => {
+                    DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) => {
                         labels.placement = CategoryBarLabels::None
                     }
-                    DataRenderType::Radar { labels, .. } => {
+                    DataRenderType::Radar(RadarPolygonSeries { labels, .. }) => {
                         labels.placement = renderer::RadarLabels::None
                     }
                     _ => {}
@@ -5253,7 +5254,7 @@ fn value_labels_pick_where_they_paint() {
             x_column: "cat".into(),
             y_column: "radar".into(),
             z_column: None,
-            render_type: DataRenderType::Radar {
+            render_type: DataRenderType::Radar(RadarPolygonSeries {
                 color: RED,
                 style: renderer::RadarSeriesStyle {
                     marker: Some(renderer::RadarMarker::Circle),
@@ -5264,7 +5265,7 @@ fn value_labels_pick_where_they_paint() {
                     text: vec!["0.6".into(), "0.5".into(), "0.7".into(), "0.4".into()],
                     ..renderer::RadarSeriesLabels::default()
                 },
-            },
+            }),
         }],
     ));
     for (name, chart, series) in &cases {
@@ -5357,7 +5358,7 @@ fn streamline(
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Streamlines {
+        render_type: DataRenderType::Streamlines(StreamlineSeries {
             line: renderer::DataLineStyleConfig {
                 line_style: style,
                 line_color: RED,
@@ -5374,7 +5375,7 @@ fn streamline(
             color_map: color_map.map(|column| renderer::data_config::PointColorMap {
                 column: column.into(),
             }),
-        },
+        }),
     }
 }
 

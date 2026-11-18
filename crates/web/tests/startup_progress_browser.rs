@@ -6,7 +6,7 @@ use renderer::data_config::{
     BarOrientation, DataBarStyleConfig, FieldFillConfig, FieldSeries, FillMode, GridLayout,
     MatrixOrientation, MatrixRef, Shading,
 };
-use renderer::{Color, DataRenderType, SeriesConfig};
+use renderer::{Color, DataRenderType, HistogramSeries, SeriesConfig};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
@@ -181,7 +181,7 @@ fn show(chart: &mut figgy::FiggyChart, kind: &str) {
                 "bars",
                 "edges",
                 "heights",
-                DataRenderType::Histogram {
+                DataRenderType::Histogram(HistogramSeries {
                     bar: DataBarStyleConfig {
                         fill_color: Color::BLACK,
                         border_color: Color::BLACK,
@@ -192,7 +192,7 @@ fn show(chart: &mut figgy::FiggyChart, kind: &str) {
                         orientation: BarOrientation::Vertical,
                         bar_style_overrides: None,
                     },
-                },
+                }),
             );
             chart
                 .set_series(&serde_json::to_string(&vec![bars]).unwrap())

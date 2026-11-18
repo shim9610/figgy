@@ -180,7 +180,7 @@ impl PrepareContext<'_> {
         // picked row (a point selection of this series) is redrawn in
         // the selection's style over every body.
         let parallel = if primitives.parallel && phase.is_none() {
-            let value_map = match rt.parallel().and_then(|p| p.color_column) {
+            let value_map = match rt.parallel().and_then(|p| p.color_column.as_deref()) {
                 Some(_) => {
                     &self
                         .value_map_cache

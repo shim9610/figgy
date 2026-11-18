@@ -84,26 +84,26 @@ impl DataRenderType {
     pub fn takes_line_offset(&self) -> bool {
         match self {
             DataRenderType::Xy(xy) => xy.line.is_some(),
-            DataRenderType::Histogram { .. }
+            DataRenderType::Histogram(_)
             | DataRenderType::Field(_)
-            | DataRenderType::RgbImage { .. }
-            | DataRenderType::Vector { .. }
-            | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. }
-            | DataRenderType::RangeBars { .. }
+            | DataRenderType::RgbImage(_)
+            | DataRenderType::Vector(_)
+            | DataRenderType::CategoryBars(_)
+            | DataRenderType::BoxPlot(_)
+            | DataRenderType::RangeBars(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)
             // A monotonic group's channels share its x grid, not offsets
             // (#271).
             | DataRenderType::MonotonicLine(_)
-            | DataRenderType::Radar { .. }
+            | DataRenderType::Radar(_)
             // A field's streamlines share its axes; they are not a member.
-            | DataRenderType::Streamlines { .. }
+            | DataRenderType::Streamlines(_)
             // A ternary chart has no line offsets.
-            | DataRenderType::Ternary { .. }
+            | DataRenderType::Ternary(_)
             // Nor has a parallel chart.
-            | DataRenderType::Parallel { .. } => false,
+            | DataRenderType::Parallel(_) => false,
         }
     }
 

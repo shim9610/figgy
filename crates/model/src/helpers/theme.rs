@@ -38,9 +38,10 @@ use crate::config::{
     AxisOptions, Config, DataSelectionsConfig, DrawStyle, GridOptions, TickVisibility,
 };
 use crate::data_config::{
-    BoxPlotOverride, BoxPlotTarget, BoxPoints, CategoryBarDirection, CategoryBarOverride,
-    CategoryBarTarget, DataRenderType, FieldSeries, RangeColor, SeriesConfig, Violin, ViolinBody,
-    ViolinHalf,
+    BoxPlotOverride, BoxPlotTarget, BoxPoints, BoxSeries, CategoryBarDirection,
+    CategoryBarOverride, CategoryBarSeries, CategoryBarTarget, DataRenderType, FieldSeries,
+    HistogramSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, SeriesConfig, TernarySeries,
+    VectorSeries, Violin, ViolinBody, ViolinHalf,
 };
 use crate::feynman::{ParticleLine, Wiggle};
 use crate::layer::LayerRef;
@@ -1145,8 +1146,8 @@ impl Theme {
         if palette.is_empty() {
             return;
         }
-        let boxes = |rt: &DataRenderType| matches!(rt, DataRenderType::BoxPlot { .. });
-        let bars = |rt: &DataRenderType| matches!(rt, DataRenderType::CategoryBars { .. });
+        let boxes = |rt: &DataRenderType| matches!(rt, DataRenderType::BoxPlot(_));
+        let bars = |rt: &DataRenderType| matches!(rt, DataRenderType::CategoryBars(_));
         let families: [(bool, &dyn Fn(&DataRenderType) -> bool); 2] = [
             (self.series.boxes.color_by_category, &boxes),
             (self.series.bars.color_by_category, &bars),
@@ -1183,7 +1184,7 @@ impl Theme {
                     };
                     let color = Some(palette[place % palette.len()]);
                     match &mut item.render_type {
-                        DataRenderType::BoxPlot { overrides, .. } => {
+                        DataRenderType::BoxPlot(BoxSeries { overrides, .. }) => {
                             let overrides = overrides.get_or_insert_with(Vec::new);
                             match overrides
                                 .iter_mut()
@@ -1199,7 +1200,7 @@ impl Theme {
                                 }),
                             }
                         }
-                        DataRenderType::CategoryBars { overrides, .. } => {
+                        DataRenderType::CategoryBars(CategoryBarSeries { overrides, .. }) => {
                             let overrides = overrides.get_or_insert_with(Vec::new);
                             match overrides
                                 .iter_mut()
@@ -1351,12 +1352,12 @@ impl Theme {
                     errors.style.error_bar_cap_size = lines.error_cap_size;
                 }
             }
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 scatter,
                 line,
                 region,
                 ..
-            } => {
+            }) => {
                 if let Some(scatter) = scatter {
                     style_markers(scatter, lines);
                 }
@@ -1372,13 +1373,13 @@ impl Theme {
                     }
                 }
             }
-            DataRenderType::Histogram { bar } => {
+            DataRenderType::Histogram(HistogramSeries { bar }) => {
                 bar.border_color = theme.bars.border_color;
                 bar.border_width = theme.bars.border_width;
                 bar.gap_px = theme.bars.gap;
             }
-            DataRenderType::CategoryBars { style, .. }
-            | DataRenderType::RangeBars { style, .. } => {
+            DataRenderType::CategoryBars(CategoryBarSeries { style, .. })
+            | DataRenderType::RangeBars(RangeBarSeries { style, .. }) => {
                 style.material = theme.bars.material;
                 style.corner_radius = theme.bars.corner_radius;
                 style.texture_strength = theme.bars.texture_strength;
@@ -1387,12 +1388,12 @@ impl Theme {
                 style.outline_width = theme.bars.outline_width;
                 style.outline_color = theme.bars.outline_color;
             }
-            DataRenderType::BoxPlot {
+            DataRenderType::BoxPlot(BoxSeries {
                 style,
                 violin,
                 points,
                 ..
-            } => {
+            }) => {
                 let boxes = &theme.boxes;
                 style.material = boxes.material;
                 style.gloss = boxes.gloss;
@@ -1457,12 +1458,12 @@ impl Theme {
             DataRenderType::TriMesh(mesh) => {
                 self.style_field(mesh.fill.as_mut(), mesh.contour.as_mut(), &mut mesh.surface);
             }
-            DataRenderType::Vector { style, .. } => {
+            DataRenderType::Vector(VectorSeries { style, .. }) => {
                 style.width_px = theme.vectors.width_px;
                 style.head_length_px = theme.vectors.head_length_px;
                 style.head_width_px = theme.vectors.head_width_px;
             }
-            DataRenderType::Radar { style, .. } => {
+            DataRenderType::Radar(RadarPolygonSeries { style, .. }) => {
                 let radar = &theme.radar;
                 if radar.line_width_px.is_some() {
                     style.line_width_px = radar.line_width_px;
@@ -1552,18 +1553,18 @@ impl Theme {
             }
             // The line width is set above; a streamline's arrowheads keep
             // their size, which follows its spacing.
-            DataRenderType::Streamlines { .. }
+            DataRenderType::Streamlines(_)
             | DataRenderType::MonotonicLine(_)
-            | DataRenderType::Parallel { .. }
-            | DataRenderType::RgbImage { .. } => {}
+            | DataRenderType::Parallel(_)
+            | DataRenderType::RgbImage(_) => {}
         }
-        if let DataRenderType::RangeBars {
+        if let DataRenderType::RangeBars(RangeBarSeries {
             whiskers,
             color_by,
             progress,
             connector,
             ..
-        } = &mut series.render_type
+        }) = &mut series.render_type
         {
             let range = &theme.range_bars;
             match color_by {

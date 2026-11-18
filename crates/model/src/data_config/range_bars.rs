@@ -100,65 +100,92 @@ pub struct RangeConnector {
     pub width: f32,
 }
 
-/// The fields of a [`DataRenderType::RangeBars`] series, borrowed.
-#[derive(Clone, Copy, Debug)]
-pub struct RangeBarsRef<'a> {
+/// The fields of a [`DataRenderType::RangeBars`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeBarSeries {
+    /// The fill colour of the series' bars under [`RangeColor::Single`],
+    /// opaque; the legend swatch and the whisker colour by default.
     pub color: Color,
-    pub style: &'a CategoryBarStyle,
-    pub start: &'a str,
-    pub whiskers: Option<&'a RangeWhiskers>,
-    pub color_by: &'a RangeColor,
-    pub progress: Option<&'a RangeProgress>,
-    pub connector: Option<&'a RangeConnector>,
+    /// The look of the bars: material, corner radius, outline, texture,
+    /// gloss and the brightness of a picked bar.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::category_bar_style")
+    )]
+    pub style: CategoryBarStyle,
+    /// The column of the start values.
+    pub start: ColumnId,
+    /// The whiskers from a low to a high value (a candle's wick).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub whiskers: Option<RangeWhiskers>,
+    /// How each bar's fill is chosen.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::range_color",
+            skip_serializing_if = "RangeColor::is_single"
+        )
+    )]
+    pub color_by: RangeColor,
+    /// The finished share of each bar (a Gantt task's progress).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub progress: Option<RangeProgress>,
+    /// The line from each bar's end to the next bar (a waterfall).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub connector: Option<RangeConnector>,
+    /// The slot of one row along a numeric position axis, in data units;
+    /// `None` on a categorical axis, where the slot is one category.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub slot_width: Option<f64>,
-    pub labels: &'a CategoryBarSeriesLabels,
+    /// Where the value labels go and the drawn text of each bar. The
+    /// renderer never writes the text; `decimals` and `value_suffix` are
+    /// not read.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::category_bar_series_labels")
+    )]
+    pub labels: CategoryBarSeriesLabels,
 }
 
 impl DataRenderType {
     /// The fields of a range bar series, or `None` for every other kind.
-    pub fn range_bars(&self) -> Option<RangeBarsRef<'_>> {
+    pub fn range_bars(&self) -> Option<&RangeBarSeries> {
         match self {
-            DataRenderType::RangeBars {
-                color,
-                style,
-                start,
-                whiskers,
-                color_by,
-                progress,
-                connector,
-                slot_width,
-                labels,
-            } => Some(RangeBarsRef {
-                color: *color,
-                style,
-                start,
-                whiskers: whiskers.as_ref(),
-                color_by,
-                progress: progress.as_ref(),
-                connector: connector.as_ref(),
-                slot_width: *slot_width,
-                labels,
-            }),
+            DataRenderType::RangeBars(bars) => Some(bars),
             _ => None,
         }
     }
 }
 
-impl<'a> RangeBarsRef<'a> {
+impl RangeBarSeries {
     /// Every column the series reads besides its positions and end values
     /// (`x_column`, `y_column`): the start, the whiskers' low and high, the
     /// total flag or the state index, and the progress, in that order.
-    pub fn extra_columns(self) -> impl Iterator<Item = &'a str> + 'a {
-        let colour = match self.color_by {
+    pub fn extra_columns(&self) -> impl Iterator<Item = &str> + '_ {
+        let colour = match &self.color_by {
             RangeColor::Single => None,
             RangeColor::Direction { total, .. } => total.as_ref().map(|t| t.column.as_str()),
             RangeColor::State { column, .. } => Some(column.as_str()),
         };
-        std::iter::once(self.start)
-            .chain(self.whiskers.map(|w| w.low.as_str()))
-            .chain(self.whiskers.map(|w| w.high.as_str()))
+        let whiskers = self.whiskers.as_ref();
+        std::iter::once(self.start.as_str())
+            .chain(whiskers.map(|w| w.low.as_str()))
+            .chain(whiskers.map(|w| w.high.as_str()))
             .chain(colour)
-            .chain(self.progress.map(|p| p.column.as_str()))
+            .chain(self.progress.as_ref().map(|p| p.column.as_str()))
     }
 }
 
@@ -195,18 +222,18 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
     {
         return Err(crate::RuleKind::RangeBarColumnsDistinct);
     }
-    if bars.whiskers.is_some_and(|w| {
+    if bars.whiskers.as_ref().is_some_and(|w| {
         !finite_in(w.width, 0.0, MAX_RANGE_STROKE_WIDTH)
             || w.color.is_some_and(|c| !valid_bar_color(c, true))
     }) {
         return Err(crate::RuleKind::RangeBarWhiskers);
     }
-    if bars.connector.is_some_and(|c| {
+    if bars.connector.as_ref().is_some_and(|c| {
         !finite_in(c.width, 0.0, MAX_RANGE_STROKE_WIDTH) || !valid_bar_color(c.color, false)
     }) {
         return Err(crate::RuleKind::RangeBarConnector);
     }
-    let opaque = match bars.color_by {
+    let opaque = match &bars.color_by {
         RangeColor::Single => true,
         RangeColor::Direction { up, down, total } => {
             valid_bar_color(*up, true)
@@ -222,6 +249,7 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
     }
     if bars
         .progress
+        .as_ref()
         .is_some_and(|p| !finite_in(p.remaining_opacity, 0.0, 1.0))
     {
         return Err(crate::RuleKind::RangeBarRemainingOpacity);
@@ -229,7 +257,7 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
     if bars.slot_width.is_some_and(|w| !(w.is_finite() && w > 0.0)) {
         return Err(crate::RuleKind::RangeBarSlotWidth);
     }
-    let labels = bars.labels;
+    let labels = &bars.labels;
     if labels.decimals > 6 || !single_line_within(&labels.value_suffix, 24) {
         return Err(crate::RuleKind::RangeBarLabelFormat);
     }

@@ -12,10 +12,11 @@
 //! two frames differ only in the bodies, so any difference is a key gap.
 use super::*;
 use crate::data_config::{
-    BarOrientation, ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
-    DataLineStyleConfig, ErrorRef, FieldFillConfig, FillMode, GridLayout, LineFill,
-    MatrixOrientation, MatrixRef, PointColorMap, PointSizeMap, Shading, SizeScale, VectorColorMap,
-    VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    BarOrientation, BoxSeries, CategoryBarSeries, ContourConfig, ContourLabelConfig,
+    DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, ErrorRef, FieldFillConfig,
+    FillMode, GridLayout, LineFill, MatrixOrientation, MatrixRef, PointColorMap, PointSizeMap,
+    RadarPolygonSeries, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot,
+    VectorScale, VectorStyle,
 };
 use crate::renderer::config_mutation::{Outcome, Tally, run};
 
@@ -259,13 +260,13 @@ fn category_series() -> Vec<SeriesConfig> {
             id,
             "cpos",
             values,
-            DataRenderType::CategoryBars {
+            DataRenderType::CategoryBars(CategoryBarSeries {
                 color,
                 style,
                 labels: Default::default(),
                 label_format: Default::default(),
                 overrides: None,
-            },
+            }),
         )
     };
     let mut first = bars(
@@ -287,7 +288,8 @@ fn category_series() -> Vec<SeriesConfig> {
         Color::new(0.9, 0.5, 0.1, 1.0),
         CategoryBarStyle::default(),
     );
-    let DataRenderType::CategoryBars { overrides, .. } = &mut second.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { overrides, .. }) = &mut second.render_type
+    else {
         unreachable!()
     };
     *overrides = Some(vec![CategoryBarOverride {
@@ -301,7 +303,8 @@ fn category_series() -> Vec<SeriesConfig> {
         labels: None,
         label_format: None,
     }]);
-    let DataRenderType::CategoryBars { labels, .. } = &mut first.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) = &mut first.render_type
+    else {
         unreachable!()
     };
     labels.text = vec!["0.6".into(), "-0.4".into(), "0.9".into()];
@@ -332,7 +335,7 @@ fn box_series() -> Vec<SeriesConfig> {
             id,
             "cpos",
             record,
-            DataRenderType::BoxPlot {
+            DataRenderType::BoxPlot(BoxSeries {
                 color,
                 style,
                 labels: Default::default(),
@@ -340,7 +343,7 @@ fn box_series() -> Vec<SeriesConfig> {
                 overrides: None,
                 violin: None,
                 points: None,
-            },
+            }),
         )
     };
     let mut first = boxes(
@@ -356,9 +359,9 @@ fn box_series() -> Vec<SeriesConfig> {
             ..BoxPlotStyle::default()
         },
     );
-    let DataRenderType::BoxPlot {
+    let DataRenderType::BoxPlot(BoxSeries {
         outliers, labels, ..
-    } = &mut first.render_type
+    }) = &mut first.render_type
     else {
         unreachable!()
     };
@@ -373,7 +376,7 @@ fn box_series() -> Vec<SeriesConfig> {
             ..BoxPlotStyle::default()
         },
     );
-    let DataRenderType::BoxPlot { overrides, .. } = &mut second.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = &mut second.render_type else {
         unreachable!()
     };
     *overrides = Some(vec![BoxPlotOverride {
@@ -418,7 +421,7 @@ fn radar_series() -> Vec<SeriesConfig> {
         "radar",
         "rcat",
         "rva",
-        DataRenderType::Radar {
+        DataRenderType::Radar(RadarPolygonSeries {
             color: Color::new(0.8, 0.2, 0.1, 1.0),
             style: RadarSeriesStyle {
                 line_width_px: Some(2.0),
@@ -434,13 +437,13 @@ fn radar_series() -> Vec<SeriesConfig> {
                 text: vec!["0.9".into(), "0.5".into(), "0.7".into(), "0.4".into()],
                 offsets: vec![[1.0, -2.0]; 4],
             },
-        },
+        }),
     );
     let second = declared(
         "more",
         "rcat",
         "rvb",
-        DataRenderType::Radar {
+        DataRenderType::Radar(RadarPolygonSeries {
             color: Color::new(0.1, 0.3, 0.9, 1.0),
             style: RadarSeriesStyle {
                 fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
@@ -448,7 +451,7 @@ fn radar_series() -> Vec<SeriesConfig> {
                 ..RadarSeriesStyle::default()
             },
             labels: RadarSeriesLabels::default(),
-        },
+        }),
     );
     vec![first, second]
 }
@@ -668,7 +671,7 @@ fn chart_series() -> Vec<SeriesConfig> {
             "hist",
             "he",
             "hc",
-            DataRenderType::Histogram {
+            DataRenderType::Histogram(HistogramSeries {
                 bar: DataBarStyleConfig {
                     fill_color: Color::new(0.5, 0.5, 0.9, 0.4),
                     border_color: Color::BLACK,
@@ -679,7 +682,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                     orientation: BarOrientation::Vertical,
                     bar_style_overrides: None,
                 },
-            },
+            }),
         ),
         declared(
             "field",
@@ -700,7 +703,7 @@ fn chart_series() -> Vec<SeriesConfig> {
             "vec",
             "x",
             "b",
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
@@ -716,7 +719,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                     min_length_px: 0.0,
                     color_map: Some(VectorColorMap::Column("m".into())),
                 },
-            },
+            }),
         ),
     ]
 }

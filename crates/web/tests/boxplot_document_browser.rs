@@ -86,7 +86,7 @@ async fn a_box_plot_document_opens_as_box_plot_series() {
     assert!(
         series
             .iter()
-            .all(|s| matches!(s.render_type, DataRenderType::BoxPlot { .. }))
+            .all(|s| matches!(s.render_type, DataRenderType::BoxPlot(_)))
     );
     assert_eq!(config.bottom_x.category_count(), Some(3));
     // The value axis covers the whiskers and the outlier.

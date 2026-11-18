@@ -76,7 +76,7 @@ async fn a_categorical_document_opens_as_category_bars() {
     assert!(
         series
             .iter()
-            .all(|s| matches!(s.render_type, DataRenderType::CategoryBars { .. }))
+            .all(|s| matches!(s.render_type, DataRenderType::CategoryBars(_)))
     );
     assert_eq!(config.bottom_x.category_count(), Some(3));
     assert_eq!(

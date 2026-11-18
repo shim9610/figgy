@@ -12,7 +12,7 @@
 
 use crate::config::Config;
 use crate::data_config::{
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, SeriesConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, SeriesConfig, VectorSeries,
 };
 use crate::data_render::{
     self, ColumnId, MARKER_QUAD_MARGIN_PX, MARKER_STROKE_HALF_PX, ScatterTransform,
@@ -129,10 +129,10 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
         // precise mode, so it is picked only there.
         if let Some(style) = extract_vector_points(&cfg.render_type)
             && use_scatter_style_mapping
-            && let DataRenderType::Vector {
+            && let DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { u, v, .. },
                 ..
-            } = &cfg.render_type
+            }) = &cfg.render_type
         {
             let us = columns.get_f32_column(u).unwrap_or(&[]);
             let vs = columns.get_f32_column(v).unwrap_or(&[]);
@@ -533,10 +533,10 @@ fn vector_arrow_distance(
 /// A grid vector's cells are a separate query, like a heatmap's.
 fn extract_vector_points(rt: &DataRenderType) -> Option<&crate::data_config::VectorStyle> {
     match rt {
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: crate::data_config::VectorComponents::Points { .. },
             style,
-        } => Some(style),
+        }) => Some(style),
         _ => None,
     }
 }
@@ -552,26 +552,26 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         // coordinates, so a "nearest point" would be a grid intersection the
         // user never plotted. Picking a cell or a level is a separate query.
         DataRenderType::Xy(crate::data_config::XySeries { line: None, .. })
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
+        | DataRenderType::RgbImage(_)
         // A category bar is picked per (category, series) bar by the typed
         // data pick, never as a point; so are a box and a range bar.
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
         // A vector series is picked at its anchors through `extract_vector`.
-        | DataRenderType::Vector { .. }
+        | DataRenderType::Vector(_)
         // The twin does not model the closed radar outline; its GPU pick is
         // held to the painted pixels by `pick_draw_agreement`. Nor the
         // arrowheads along streamlines, held to the paint the same way.
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
         // The twin does not model the ternary placement either; its GPU
         // pick is held to the paint by `pick_draw_agreement`. A parallel
         // row is a typed data pick (`pick_parallel`), never a point.
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
 
         | DataRenderType::EnergyLevels(_)
 
@@ -587,18 +587,18 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
     match rt {
         DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(scatter), .. }) => Some(scatter),
         DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Vector { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Vector(_)
         // Radar vertex markers and ternary markers: see `extract_line`.
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
 
         | DataRenderType::EnergyLevels(_)
 
@@ -1441,7 +1441,7 @@ mod tests {
     use crate::config::AxisScale;
     use crate::data_config::{
         DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-        DataScatterStyleConfig, ErrorRef, ScatterShape,
+        DataScatterStyleConfig, ErrorRef, ScatterShape, VectorSeries,
     };
     use crate::layout::{ChartArea, Rect};
     use crate::line::LineStylePreset;
@@ -1913,7 +1913,7 @@ mod tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Vector {
+            render_type: DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points {
                     u: u.into(),
                     v: v.into(),
@@ -1929,7 +1929,7 @@ mod tests {
                     min_length_px: 0.0,
                     color_map: None,
                 },
-            },
+            }),
         }
     }
 

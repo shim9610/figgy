@@ -104,7 +104,7 @@ impl PrepareContext<'_> {
             "a box plot selection has a box plot config",
         ))?;
         let mut highlight =
-            PrimitiveStyle::from_box_plot(boxes.color, boxes.style, series.style.display_scale);
+            PrimitiveStyle::from_box_plot(boxes.color, &boxes.style, series.style.display_scale);
         highlight.color_premul =
             PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
         highlight.line_width_px = selection_cfg.outline_width_px;
@@ -188,7 +188,7 @@ impl PrepareContext<'_> {
             "a box point selection has a box plot config",
         ))?;
         let mut highlight =
-            PrimitiveStyle::from_box_plot(boxes.color, boxes.style, series.style.display_scale);
+            PrimitiveStyle::from_box_plot(boxes.color, &boxes.style, series.style.display_scale);
         highlight.color_premul =
             PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
         highlight.line_width_px = selection_cfg.outline_width_px;
@@ -240,7 +240,7 @@ impl PrepareContext<'_> {
         ))?;
         let mut highlight = PrimitiveStyle::from_category_bars(
             ranges.color,
-            ranges.style,
+            &ranges.style,
             series.style.display_scale,
         );
         highlight.color_premul =
@@ -295,7 +295,7 @@ impl PrepareContext<'_> {
             "a category bar selection has a category bar config",
         ))?;
         let mut highlight =
-            PrimitiveStyle::from_category_bars(bars.color, bars.style, series.style.display_scale);
+            PrimitiveStyle::from_category_bars(bars.color, &bars.style, series.style.display_scale);
         highlight.color_premul =
             PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
         highlight.line_width_px = selection_cfg.outline_width_px;

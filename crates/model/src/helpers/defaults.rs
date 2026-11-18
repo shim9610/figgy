@@ -786,8 +786,8 @@ mod tests {
     use crate::data_config::{
         ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
         DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef,
-        FieldFillConfig, FieldSeries, GridLayout, MatrixOrientation, MatrixRef, SeriesConfig, Stem,
-        VectorStyle, XySeries,
+        FieldFillConfig, FieldSeries, GridLayout, HistogramSeries, MatrixOrientation, MatrixRef,
+        SeriesConfig, Stem, VectorStyle, XySeries,
     };
 
     fn series(render_type: DataRenderType) -> SeriesConfig {
@@ -819,9 +819,9 @@ mod tests {
             }),
             stem: Some(Stem::default()),
         }));
-        let histogram = series(DataRenderType::Histogram {
+        let histogram = series(DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig::default(),
-        });
+        }));
         let field = series(DataRenderType::Field(FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["z0".into(), "z1".into()],

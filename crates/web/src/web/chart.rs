@@ -2343,7 +2343,10 @@ impl FiggyChart {
             .chart_series(self.chart_id)
             .map_err(|e| validate(js_err(e)))?
         {
-            let outliers = item.render_type.box_plot().and_then(|b| b.outliers);
+            let outliers = item
+                .render_type
+                .box_plot()
+                .and_then(|b| b.outliers.as_deref());
             for id in [
                 Some(item.x_column.as_str()),
                 Some(item.y_column.as_str()),

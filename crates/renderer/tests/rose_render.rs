@@ -29,8 +29,8 @@ use renderer::data_config::{
 use renderer::layout::{ChartArea, Rect};
 use renderer::polar::PolarOptions;
 use renderer::{
-    Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, Material, PickedDataRef,
-    RasterImage, Renderer, RendererDevice, SeriesConfig, Subplot,
+    CategoryBarSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, Material,
+    PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 480;
@@ -112,13 +112,13 @@ fn bars(id: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: "pos".into(),
         y_column: id.into(),
-        render_type: DataRenderType::CategoryBars {
+        render_type: DataRenderType::CategoryBars(CategoryBarSeries {
             color,
             style: flat_style(),
             labels: Default::default(),
             label_format: Default::default(),
             overrides: None,
-        },
+        }),
     }
 }
 
@@ -742,7 +742,9 @@ fn value_labels_sit_past_the_arc_or_at_the_middle_radius() {
     let labelled = |placement: CategoryBarLabels| {
         let mut s = [bars("one", RED), bars("two", BLUE)];
         for series in &mut s {
-            let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type else {
+            let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) =
+                &mut series.render_type
+            else {
                 unreachable!()
             };
             labels.placement = placement;

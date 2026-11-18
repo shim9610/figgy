@@ -28,9 +28,9 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, LayerRef,
-    Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer, RendererDevice,
-    SeriesConfig,
+    BOX_PLOT_RECORD, BoxSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
+    LayerRef, Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer,
+    RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -184,7 +184,7 @@ fn violin_series(id: &str, body: ViolinBody, box_width: f32) -> SeriesConfig {
         x_column: "pos".into(),
         y_column: "box.record".into(),
         z_column: None,
-        render_type: DataRenderType::BoxPlot {
+        render_type: DataRenderType::BoxPlot(BoxSeries {
             color: CYAN,
             style: flat_style(),
             labels: BoxPlotSeriesLabels::default(),
@@ -192,12 +192,12 @@ fn violin_series(id: &str, body: ViolinBody, box_width: f32) -> SeriesConfig {
             overrides: None,
             violin: Some(Violin { body, box_width }),
             points: None,
-        },
+        }),
     }
 }
 
 fn with_points(mut series: SeriesConfig, offset: f32, jitter: f32) -> SeriesConfig {
-    let DataRenderType::BoxPlot { points, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { points, .. }) = &mut series.render_type else {
         unreachable!()
     };
     *points = Some(BoxPoints {
@@ -716,7 +716,7 @@ fn a_box_override_restyles_its_categorys_violin() {
     let direction = CategoryBarDirection::Vertical;
     let chart = chart(direction);
     let mut series = violin_series("v", ViolinBody::Symmetric(half("sym", RED)), 0.0);
-    let DataRenderType::BoxPlot { overrides, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = &mut series.render_type else {
         unreachable!()
     };
     let mut o = BoxPlotOverride::new(BoxPlotTarget::new("b", "v"));
@@ -885,7 +885,7 @@ fn value_labels_clear_the_curve() {
     chart.set_y_range(0.0, 150.0);
     let mut series = violin_series("v", ViolinBody::Symmetric(half("sym", RED)), 0.25);
     series.y_column.clear();
-    let DataRenderType::BoxPlot { labels, .. } = &mut series.render_type else {
+    let DataRenderType::BoxPlot(BoxSeries { labels, .. }) = &mut series.render_type else {
         unreachable!()
     };
     labels.placement = renderer::data_config::BoxPlotLabels::Median;
@@ -1177,7 +1177,7 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         )
         .unwrap();
         let mut series = violin_series("v", ViolinBody::Symmetric(half("sym", RED)), 0.0);
-        let DataRenderType::BoxPlot { points, .. } = &mut series.render_type else {
+        let DataRenderType::BoxPlot(BoxSeries { points, .. }) = &mut series.render_type else {
             unreachable!()
         };
         *points = Some(BoxPoints {

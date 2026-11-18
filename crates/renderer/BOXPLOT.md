@@ -29,7 +29,7 @@ the direction: the series names its record in `y_column` either way.
 
 ```rust,no_run
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
+    BOX_PLOT_RECORD, BoxSeries, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
     RaggedSource, RecordSource, Renderer, SeriesConfig,
 };
 /// A host column (NaN is a missing value); the renderer measures its range.
@@ -70,13 +70,13 @@ r.upsert_ragged(
 let series = [SeriesConfig {
     x_column: "positions".into(),
     y_column: "response.record".into(),
-    render_type: DataRenderType::BoxPlot {
+    render_type: DataRenderType::BoxPlot(BoxSeries {
         color: Color::from_rgb8(65, 144, 208),
         style: Default::default(),
         labels: Default::default(),
         outliers: Some("response.outliers".into()),
         overrides: None,
-    },
+    }),
     ..template
 }];
 let mut chart = Chart::new(config);

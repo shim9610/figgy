@@ -25,7 +25,8 @@ A `Radar` series reads two columns, each with one value per category:
 use renderer::config::Category;
 use renderer::polar::{GridShape, PolarOptions};
 use renderer::{
-    Chart, Color, Column, DataRenderType, LayerRef, RadarSeriesStyle, Renderer, SeriesConfig,
+    Chart, Color, Column, DataRenderType, LayerRef, RadarPolygonSeries, RadarSeriesStyle, Renderer,
+    SeriesConfig,
 };
 /// A host column (NaN is a missing value); the renderer measures its range.
 fn column(data: Vec<f64>) -> Column<f64> {
@@ -56,11 +57,11 @@ let series = vec![SeriesConfig {
     x_column: "categories".into(),
     y_column: "release1".into(),
     z_column: None,
-    render_type: DataRenderType::Radar {
+    render_type: DataRenderType::Radar(RadarPolygonSeries {
         color: Color::from_rgb8(60, 110, 200),
         style: RadarSeriesStyle::default(),
         labels: Default::default(),
-    },
+    }),
 }];
 // Fit the radius axis to the values; the angle axis keeps its categories.
 let mut chart = Chart::new(config);

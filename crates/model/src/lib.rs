@@ -73,14 +73,16 @@ pub use config::{
 };
 pub use data::{Column, ColumnId};
 pub use data_config::{
-    BarGroups, BoxPlotRef, BoxPlotSeriesLabels, CategoryBarSeriesLabels, CategoryBarsRef,
+    BarGroups, BoxPlotSeriesLabels, BoxSeries, CategoryBarSeries, CategoryBarSeriesLabels,
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorBars,
-    ErrorRef, FieldSeries, LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LABEL_ANCHORS,
-    MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, RadarRef, RadarSeriesLabels, ScatterShape,
-    SeriesConfig, SeriesRef, SizeScale, StreamlineArrows, StreamlinesRef, VectorColorMap,
-    VectorComponents, VectorPivot, VectorScale, VectorStyle, XySeries,
+    ErrorRef, FieldSeries, HistogramSeries, LineFill, LineInterpolation, LineOffsets,
+    MAX_CONTOUR_LABEL_ANCHORS, MAX_CONTOUR_LEVELS, ParallelSeries, PointColorMap, PointSizeMap,
+    RadarPolygonSeries, RadarSeriesLabels, RangeBarSeries, RgbImageSeries, ScatterShape,
+    SeriesConfig, SeriesRef, SizeScale, StreamlineArrows, StreamlineSeries, TernarySeries,
+    VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorSeries, VectorStyle,
+    XySeries,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

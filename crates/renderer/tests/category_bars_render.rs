@@ -23,8 +23,8 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, LayerRef, Material,
-    PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig,
+    CategoryBarSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, LayerRef,
+    Material, PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -111,13 +111,13 @@ fn bars(id: &str, color: Color, direction: CategoryBarDirection) -> SeriesConfig
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::CategoryBars {
+        render_type: DataRenderType::CategoryBars(CategoryBarSeries {
             color,
             style: flat_style(),
             labels: Default::default(),
             label_format: Default::default(),
             overrides: None,
-        },
+        }),
     }
 }
 
@@ -397,7 +397,8 @@ fn signed_stacks_and_missing_values_follow_the_stack_rules() {
 }
 
 fn with_overrides(mut s: SeriesConfig, overrides: Vec<CategoryBarOverride>) -> SeriesConfig {
-    let DataRenderType::CategoryBars { overrides: o, .. } = &mut s.render_type else {
+    let DataRenderType::CategoryBars(CategoryBarSeries { overrides: o, .. }) = &mut s.render_type
+    else {
         unreachable!()
     };
     *o = Some(overrides);
@@ -478,7 +479,8 @@ fn overrides_and_materials_restyle_only_their_bars() {
     // A grained material shades the bar's inside; the extents stay.
     let mut matte = plain.clone();
     for s in &mut matte {
-        let DataRenderType::CategoryBars { style, .. } = &mut s.render_type else {
+        let DataRenderType::CategoryBars(CategoryBarSeries { style, .. }) = &mut s.render_type
+        else {
             unreachable!()
         };
         style.material = Material::Matte;
@@ -1315,7 +1317,8 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
         config.bar_groups.as_mut().unwrap().bar_gap = 0.0;
     }
     let mut series = bars("one", RED, direction);
-    if let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type {
+    if let DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) = &mut series.render_type
+    {
         labels.text = (0..N).map(|k| format!("{k}")).collect();
     }
     let series = [series, bars("two", BLUE, direction)];

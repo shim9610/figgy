@@ -496,16 +496,16 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
-                DataRenderType::Ternary {
+                DataRenderType::Ternary(TernarySeries {
                     scatter: Some(scatter),
                     ..
-                } => {
+                }) => {
                     if let Some(map) = &scatter.point_color_map {
                         union(&map.column)?;
                     }
                 }
                 // A vector's colour map: a column or a grid's columns.
-                DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {
+                DataRenderType::Vector(_) => match vector_columns(&cfg.render_type) {
                     Some(VectorColumns::Points { color, .. }) => {
                         if let Some(color) = color {
                             union(color)?;
@@ -520,7 +520,7 @@ impl FiggyChart {
                     }
                     None => {}
                 },
-                DataRenderType::Streamlines { color_map, .. } => {
+                DataRenderType::Streamlines(StreamlineSeries { color_map, .. }) => {
                     if let Some(map) = color_map {
                         union(&map.column)?;
                     }
@@ -544,21 +544,21 @@ impl FiggyChart {
                     }
                 }
                 // A parallel series' colour column maps through the colourbar.
-                DataRenderType::Parallel { color_column, .. } => {
+                DataRenderType::Parallel(ParallelSeries { color_column, .. }) => {
                     if let Some(column) = color_column {
                         union(column)?;
                     }
                 }
                 // An image's colours are its data: the colourbar maps none
                 // of its channels.
-                DataRenderType::RgbImage { .. }
+                DataRenderType::RgbImage(_)
                 | DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, .. })
-                | DataRenderType::Histogram { .. }
-                | DataRenderType::CategoryBars { .. }
-                | DataRenderType::BoxPlot { .. }
-                | DataRenderType::RangeBars { .. }
-                | DataRenderType::Radar { .. }
-                | DataRenderType::Ternary { scatter: None, .. } => {}
+                | DataRenderType::Histogram(_)
+                | DataRenderType::CategoryBars(_)
+                | DataRenderType::BoxPlot(_)
+                | DataRenderType::RangeBars(_)
+                | DataRenderType::Radar(_)
+                | DataRenderType::Ternary(TernarySeries { scatter: None, .. }) => {}
             }
         }
         let mut chart = Chart::new(self.chart_config()?.clone());

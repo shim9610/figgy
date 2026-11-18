@@ -506,9 +506,9 @@ Everything else goes through a closure on the family's sub-style:
 `style_line`, `style_markers` (including a size map's `scale`),
 `style_stem` (a stem's own colour, width or dash), `style_bars` (category
 and range bars), `style_vectors` (minimum length, colour grid),
-`style_contours`, `style_surface` (3D look), and two that hand over every
-field of their family as `&mut` parts (`renderer::helpers::RangeBarsParts`,
-`BoxPlotParts`):
+`style_contours`, `style_surface` (3D look), and two that hand over the
+whole family series as `&mut` (`renderer::data_config::RangeBarSeries`,
+`BoxSeries`):
 
 ```rust
 use renderer::SeriesConfig;
@@ -519,15 +519,15 @@ let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end")
     .color(Color::from_rgb8(70, 110, 170))
     .bar_labels(CategoryBarLabels::Outside, owners)     // one string per bar
     .style_range_bars(|parts| {
-        *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
-        *parts.slot_width = Some(1.0);                   // a numeric (day) position axis
+        parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
+        parts.slot_width = Some(1.0);                   // a numeric (day) position axis
     });
 let commute = SeriesConfig::box_plot("commute", "pos", "record")
     .color(Color::from_rgb8(60, 120, 110))
     .outliers("commute.outliers")
     .style_box_plot(|parts| {
         parts.style.notched = true;
-        *parts.points = Some(BoxPoints {                 // a raincloud
+        parts.points = Some(BoxPoints {                 // a raincloud
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle::default(),
@@ -1576,8 +1576,8 @@ let series = [
 나머지 필드는 하위 스타일을 받는 클로저로 바꾼다. `style_line`, `style_markers`(크기 매핑의
 `scale` 포함), `style_stem`(줄기만의 색, 두께, 점선), `style_bars`(범주형·범위 막대),
 `style_vectors`(최소 길이, 색 격자), `style_contours`, `style_surface`(3D 모양)가 있다. 범위 막대와
-박스플롯은 그 종류의 필드를 모두 `&mut`로 묶어 넘기는 클로저를 쓴다(`renderer::helpers::RangeBarsParts`,
-`BoxPlotParts`).
+박스플롯은 그 종류의 시리즈 전체를 `&mut`로 넘기는 클로저를 쓴다(`renderer::data_config::RangeBarSeries`,
+`BoxSeries`).
 
 ```rust
 use renderer::SeriesConfig;
@@ -1588,15 +1588,15 @@ let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end")
     .color(Color::from_rgb8(70, 110, 170))
     .bar_labels(CategoryBarLabels::Outside, owners)     // 막대마다 문자열 하나
     .style_range_bars(|parts| {
-        *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
-        *parts.slot_width = Some(1.0);                   // 숫자(날짜) 위치 축
+        parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
+        parts.slot_width = Some(1.0);                   // 숫자(날짜) 위치 축
     });
 let commute = SeriesConfig::box_plot("commute", "pos", "record")
     .color(Color::from_rgb8(60, 120, 110))
     .outliers("commute.outliers")
     .style_box_plot(|parts| {
         parts.style.notched = true;
-        *parts.points = Some(BoxPoints {                 // 레인클라우드
+        parts.points = Some(BoxPoints {                 // 레인클라우드
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle::default(),

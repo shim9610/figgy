@@ -23,11 +23,13 @@ mod nist_csv;
 use renderer::config::{Config, append_legend_entry, series_symbol_segments};
 use renderer::data::Column;
 use renderer::data_config::{
-    BarOrientation, ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, FieldFillConfig,
-    FillMode, GridLayout, LineFill, LineInterpolation, MatrixOrientation, MatrixRef, PointColorMap,
-    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale, StreamlineArrows, VectorColorMap,
-    VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    BarOrientation, BoxSeries, CategoryBarSeries, ContourConfig, ContourLabelConfig,
+    DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
+    DataScatterStyleConfig, ErrorRef, FieldFillConfig, FillMode, GridLayout, HistogramSeries,
+    LineFill, LineInterpolation, MatrixOrientation, MatrixRef, ParallelSeries, PointColorMap,
+    PointSizeMap, RangeBarSeries, RgbImageSeries, ScatterShape, SeriesConfig, Shading, SizeScale,
+    StreamlineArrows, StreamlineSeries, TernarySeries, VectorColorMap, VectorComponents,
+    VectorPivot, VectorScale, VectorSeries, VectorStyle,
 };
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -1482,7 +1484,7 @@ fn histogram(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "samples",
         "hist_edges",
         "hist_counts",
-        DataRenderType::Histogram { bar },
+        DataRenderType::Histogram(HistogramSeries { bar }),
     )];
     let mut chart = Chart::new(base_config("Histogram of 5000 samples", "value", "count"));
     chart.set_x_range(-3.0, 3.0);
@@ -1736,7 +1738,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "quiver",
         "vf_x",
         "vf_y",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Grid {
                 u: grid(&u_ids),
                 v: grid(&v_ids),
@@ -1751,7 +1753,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 min_length_px: 2.0,
                 color_map: Some(VectorColorMap::Grid(grid(&s_ids))),
             },
-        },
+        }),
     );
     // Probe arrows: pixel-scaled, so they keep their size under zoom.
     let mut probe_style = VectorStyle {
@@ -1769,14 +1771,14 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "probes",
         "vf_px",
         "vf_py",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "vf_pu".into(),
                 v: "vf_pv".into(),
                 w: None,
             },
             style: probe_style,
-        },
+        }),
     );
     let series = vec![speed, quiver, probes];
     let mut config = base_config("Vector field: vortex flow", "x", "y");
@@ -1856,7 +1858,7 @@ fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "field lines",
         "sl_x",
         "sl_y",
-        DataRenderType::Streamlines {
+        DataRenderType::Streamlines(StreamlineSeries {
             line: line_style(Color::from_rgb8(40, 40, 40), 1.4),
             arrows: Some(StreamlineArrows {
                 spacing_px: 70.0,
@@ -1866,7 +1868,7 @@ fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             color_map: Some(PointColorMap {
                 column: "sl_speed".into(),
             }),
-        },
+        }),
     );
     let series = vec![field_lines];
     let mut config = base_config("Electric dipole: field lines", "x", "y");
@@ -3315,7 +3317,7 @@ fn violin_box(
         id,
         "vl_pos",
         &format!("{id}.record"),
-        DataRenderType::BoxPlot {
+        DataRenderType::BoxPlot(BoxSeries {
             color,
             style: BoxPlotStyle {
                 caps: false,
@@ -3330,7 +3332,7 @@ fn violin_box(
                 box_width: 0.18,
             }),
             points: None,
-        },
+        }),
     );
     // The legend names a series by its id.
     item.series_id = label.into();
@@ -3406,7 +3408,7 @@ fn violins(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         },
     );
     control_series.y_column.clear();
-    if let DataRenderType::BoxPlot { overrides, .. } = &mut control_series.render_type {
+    if let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = &mut control_series.render_type {
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new("10mg", "Control / treated"));
         o.color = Some(Color::from_rgb8(170, 140, 210));
         *overrides = Some(vec![o]);
@@ -3463,7 +3465,7 @@ fn raincloud(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         },
     );
     cloud.x_column = "vl_pos".into();
-    if let DataRenderType::BoxPlot { points, violin, .. } = &mut cloud.render_type {
+    if let DataRenderType::BoxPlot(BoxSeries { points, violin, .. }) = &mut cloud.render_type {
         if let Some(violin) = violin {
             violin.box_width = 0.12;
         }
@@ -3552,7 +3554,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "Cr-rich field",
             "tn_field_fe",
             "tn_field_ni",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "tn_field_cr".into(),
                 scatter: None,
                 line: Some(line_style(Color::from_rgb8(214, 96, 40), 1.2)),
@@ -3560,24 +3562,24 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     color: Color::from_rgb8(244, 160, 90),
                     opacity: 0.3,
                 }),
-            },
+            }),
         ),
         series(
             "alloys",
             "tn_fe",
             "tn_ni",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "tn_cr".into(),
                 scatter: Some(markers),
                 line: None,
                 region: None,
-            },
+            }),
         ),
         series(
             "tie-line",
             "tn_tie_fe",
             "tn_tie_ni",
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: "tn_tie_cr".into(),
                 scatter: Some(scatter_style(
                     Color::from_rgb8(60, 60, 60),
@@ -3586,7 +3588,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 )),
                 line: Some(tie),
                 region: None,
-            },
+            }),
         ),
     ];
     let mut config = base_config("Alloy compositions", "Fe %", "Ni %");
@@ -3989,14 +3991,14 @@ fn quiver_3d(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "flow",
         "q3_x",
         "q3_y",
-        DataRenderType::Vector {
+        DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "q3_u".into(),
                 v: "q3_v".into(),
                 w: Some("q3_w".into()),
             },
             style,
-        },
+        }),
     );
     arrows.z_column = Some("q3_z".into());
     let series = vec![arrows];
@@ -4036,7 +4038,7 @@ fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color)
         id,
         positions,
         end,
-        DataRenderType::RangeBars {
+        DataRenderType::RangeBars(RangeBarSeries {
             color,
             style: CategoryBarStyle {
                 corner_radius: 2.0,
@@ -4049,7 +4051,7 @@ fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color)
             connector: None,
             slot_width: None,
             labels: CategoryBarSeriesLabels::default(),
-        },
+        }),
     )
 }
 
@@ -4111,12 +4113,12 @@ fn waterfall(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "wf_end",
         Color::from_rgb8(90, 110, 130),
     );
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         color_by,
         connector,
         labels,
         ..
-    } = &mut bars.render_type
+    }) = &mut bars.render_type
     {
         *color_by = RangeColor::Direction {
             up: Color::from_rgb8(44, 160, 90),
@@ -4185,13 +4187,13 @@ fn candles(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "cd_close",
         Color::from_rgb8(90, 110, 130),
     );
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         style,
         whiskers,
         color_by,
         slot_width,
         ..
-    } = &mut candles.render_type
+    }) = &mut candles.render_type
     {
         style.corner_radius = 0.0;
         *whiskers = Some(RangeWhiskers {
@@ -4281,12 +4283,12 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "gt_end",
         Color::from_rgb8(90, 110, 130),
     );
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         color_by,
         progress,
         labels,
         ..
-    } = &mut actual.render_type
+    }) = &mut actual.render_type
     {
         *color_by = RangeColor::State {
             column: "gt_state".into(),
@@ -4367,7 +4369,7 @@ fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 id,
                 "rose_pos",
                 id,
-                DataRenderType::CategoryBars {
+                DataRenderType::CategoryBars(CategoryBarSeries {
                     color,
                     style: CategoryBarStyle {
                         corner_radius: 0.0,
@@ -4376,7 +4378,7 @@ fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     labels: Default::default(),
                     label_format: Default::default(),
                     overrides: None,
-                },
+                }),
             );
             s.label = Some(RichText::plain(label, Color::BLACK, 12.0, ""));
             s
@@ -4686,11 +4688,11 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "flowers",
         names[0],
         names[1],
-        DataRenderType::Parallel {
+        DataRenderType::Parallel(ParallelSeries {
             columns: names.iter().map(|n| (*n).to_owned()).collect(),
             line: line_style(Color::from_rgb8(31, 119, 180), 1.2),
             color_column: Some("pc_species".into()),
-        },
+        }),
     )];
     let mut config = base_config("Iris measurements", "", "");
     config.bottom_x.categories = Some(
@@ -4838,14 +4840,14 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "image",
             "img_x",
             "img_y",
-            DataRenderType::RgbImage {
+            DataRenderType::RgbImage(RgbImageSeries {
                 red: lattice(&ids[0]),
                 green: lattice(&ids[1]),
                 blue: lattice(&ids[2]),
                 range: [0.0, 255.0],
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
         ),
         series(
             "marks",

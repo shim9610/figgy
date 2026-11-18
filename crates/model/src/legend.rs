@@ -22,7 +22,10 @@
 
 use crate::color::Color;
 use crate::colormap::ColorMap;
-use crate::data_config::{DataRenderType, ScatterShape, SeriesConfig};
+use crate::data_config::{
+    BoxSeries, CategoryBarSeries, DataRenderType, HistogramSeries, ParallelSeries, RangeBarSeries,
+    ScatterShape, SeriesConfig, StreamlineSeries, TernarySeries, VectorSeries,
+};
 use crate::line::LineStylePreset;
 use crate::text::{CharSet, RichSegment, RichText, rich_segments_from_text};
 use std::ops::Range;
@@ -379,7 +382,7 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         }) => blank_symbol(),
         // A bar reads as a filled swatch; the glyph is already in the shape
         // table, so no new symbol machinery.
-        DataRenderType::Histogram { bar } => {
+        DataRenderType::Histogram(HistogramSeries { bar }) => {
             scatter_symbol(&ScatterShape::SquareFilled, bar.fill_color)
         }
         // Contour lines are lines. When a fill is under them the line is still
@@ -401,7 +404,7 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
             colormap.map_or_else(blank_symbol, colormap_symbol)
         }
         // An image's colours are its data: no mark stands for them.
-        DataRenderType::RgbImage { .. } => blank_symbol(),
+        DataRenderType::RgbImage(_) => blank_symbol(),
         // A level reads as its stroke (#203).
         DataRenderType::EnergyLevels(levels) => {
             line_symbol(levels.style.level.color, LineStylePreset::Solid, None)
@@ -416,43 +419,34 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         }
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
-        DataRenderType::Vector { style, .. } => vector_symbol(style.color),
+        DataRenderType::Vector(VectorSeries { style, .. }) => vector_symbol(style.color),
         // Streamlines read as their line; with arrowheads, as an arrow in
         // the line colour. A colour map's colours belong to the colourbar.
-        DataRenderType::Streamlines { line, arrows, .. } => match arrows {
+        DataRenderType::Streamlines(StreamlineSeries { line, arrows, .. }) => match arrows {
             Some(_) => vector_symbol(line.line_color),
             None => line_symbol(line.line_color, line.line_style, None),
         },
         // A parallel series reads as its rows' line; a colour column's
         // colours belong to the colourbar.
-        DataRenderType::Parallel { line, .. } => {
+        DataRenderType::Parallel(ParallelSeries { line, .. }) => {
             line_symbol(line.line_color, line.line_style, None)
         }
         // A category bar is a filled swatch like a histogram bar.
-        DataRenderType::CategoryBars { color, .. } => {
+        DataRenderType::CategoryBars(CategoryBarSeries { color, .. }) => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
         // A box is a filled swatch in the box colour, like a bar.
-        DataRenderType::BoxPlot { color, .. } => {
+        DataRenderType::BoxPlot(BoxSeries { color, .. }) => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
         // A range bar is a filled swatch in the series colour, like a bar;
         // direction and state colours are read from the bars.
-        DataRenderType::RangeBars { color, .. } => {
+        DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
         // A radar series reads as the line it is drawn with: its outline
         // over its fill band, with its vertex marker when it has one.
-        DataRenderType::Radar {
-            color,
-            style,
-            labels,
-        } => {
-            let radar = crate::data_config::RadarRef {
-                color: *color,
-                style,
-                labels,
-            };
+        DataRenderType::Radar(radar) => {
             let line = radar.line_style();
             let band = line_fill_band(&line);
             match radar.scatter_style() {
@@ -483,12 +477,12 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         // A ternary series reads as what it draws: markers, a line, or both,
         // over its region fill's band when it has one; a fill alone is a
         // band under an invisible rule.
-        DataRenderType::Ternary {
+        DataRenderType::Ternary(TernarySeries {
             scatter,
             line,
             region,
             ..
-        } => {
+        }) => {
             let band = region.as_ref().map(|region| {
                 let [r, g, b, a] = region.color_premul();
                 if a > 0.0 {
@@ -1086,7 +1080,7 @@ mod tests {
     }
 
     fn bar(color: Color) -> DataRenderType {
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: color,
                 border_color: Color::BLACK,
@@ -1097,7 +1091,7 @@ mod tests {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        }
+        })
     }
 
     fn contour(color: Color) -> crate::data_config::ContourConfig {

@@ -24,7 +24,10 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig};
+use renderer::{
+    CategoryBarSeries, Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice,
+    SeriesConfig,
+};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
@@ -1256,7 +1259,7 @@ fn category_bars_cross_a_value_axis_cut() {
                 x_column: x.into(),
                 y_column: y.into(),
                 z_column: None,
-                render_type: DataRenderType::CategoryBars {
+                render_type: DataRenderType::CategoryBars(CategoryBarSeries {
                     color: RED,
                     style: CategoryBarStyle {
                         material: renderer::Material::Flat,
@@ -1267,7 +1270,7 @@ fn category_bars_cross_a_value_axis_cut() {
                     labels: Default::default(),
                     label_format: Default::default(),
                     overrides: None,
-                },
+                }),
             }];
             for scale in [1.0f32, 2.0] {
                 let img = export(&mut r, &config, &series, scale);

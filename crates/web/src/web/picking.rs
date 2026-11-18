@@ -8,18 +8,18 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
     match rt {
         DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), .. }) => Some(scatter),
         // A ternary series' markers, when it draws them.
-        DataRenderType::Ternary { scatter, .. } => scatter.as_ref(),
+        DataRenderType::Ternary(TernarySeries { scatter, .. }) => scatter.as_ref(),
         DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, .. })
-        | DataRenderType::Histogram { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
+        | DataRenderType::Histogram(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
         // A radar vertex maps no value to its marker.
-        | DataRenderType::Radar { .. }
+        | DataRenderType::Radar(_)
         // A streamline has no markers; its colour column colours the line.
-        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Streamlines(_)
         // Nor has a parallel series; its colour column colours the rows.
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::Parallel(_)
         // An energy level is a stroke, never a marker (#203).
         | DataRenderType::EnergyLevels(_)
         // A mesh is a field over triangles (#210): no markers.
@@ -28,8 +28,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         // A monotonic series draws a line, no markers (#271).
         | DataRenderType::MonotonicLine(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::Vector(_) => None,
     }
 }
 
@@ -291,7 +291,11 @@ impl FiggyChart {
                     .box_plot()
                     .is_some_and(|b| b.points.is_some()) =>
             {
-                let Some(points) = series.render_type.box_plot().and_then(|b| b.points) else {
+                let Some(points) = series
+                    .render_type
+                    .box_plot()
+                    .and_then(|b| b.points.as_ref())
+                else {
                     return Err(js_err("internal: the guard matched a box plot with points"));
                 };
                 let samples = [
@@ -459,7 +463,7 @@ impl FiggyChart {
                         .iter()
                         .map(|column| (column.clone(), *point_index))
                         .collect();
-                    if let Some(column) = parallel.color_column {
+                    if let Some(column) = &parallel.color_column {
                         samples.push((column.to_owned(), *point_index));
                     }
                     let read = self.read_selection_samples(&samples).await?;
@@ -551,7 +555,7 @@ impl FiggyChart {
                 let Some(bars) = series.render_type.range_bars() else {
                     return Err(js_err("internal: the guard matched a range bar series"));
                 };
-                let colour = match bars.color_by {
+                let colour = match &bars.color_by {
                     RangeColor::Single => None,
                     RangeColor::Direction { total, .. } => {
                         total.as_ref().map(|t| ("total", t.column.as_str()))
@@ -561,11 +565,13 @@ impl FiggyChart {
                 let roles = [
                     Some(("position", series.x_column.as_str())),
                     Some(("end", series.y_column.as_str())),
-                    Some(("start", bars.start)),
-                    bars.whiskers.map(|w| ("low", w.low.as_str())),
-                    bars.whiskers.map(|w| ("high", w.high.as_str())),
+                    Some(("start", bars.start.as_str())),
+                    bars.whiskers.as_ref().map(|w| ("low", w.low.as_str())),
+                    bars.whiskers.as_ref().map(|w| ("high", w.high.as_str())),
                     colour,
-                    bars.progress.map(|p| ("progress", p.column.as_str())),
+                    bars.progress
+                        .as_ref()
+                        .map(|p| ("progress", p.column.as_str())),
                 ];
                 let mut names = [""; 7];
                 let mut samples: [(String, usize); 7] = Default::default();
@@ -663,7 +669,9 @@ impl FiggyChart {
                 result["mode"] = serde_json::json!(groups.mode);
             }
             PickedDataRef::HistogramBin { bin_index, .. } => {
-                let renderer::DataRenderType::Histogram { bar } = &series.render_type else {
+                let renderer::DataRenderType::Histogram(renderer::HistogramSeries { bar }) =
+                    &series.render_type
+                else {
                     return Err(js_err("selected series is not a histogram"));
                 };
                 let (edges, heights) = match bar.orientation {
@@ -700,7 +708,7 @@ impl FiggyChart {
                     }) => (matrix, None),
                     // An image's lattice is its red grid's; the green and
                     // blue values are read beside it (#139).
-                    DataRenderType::RgbImage { red, .. } => (red, None),
+                    DataRenderType::RgbImage(RgbImageSeries { red, .. }) => (red, None),
                     rt => match vector_columns(rt) {
                         Some(VectorColumns::Grid { u, v, color }) => (u, Some((v, color))),
                         _ => return Err(js_err("selected series is not a grid")),

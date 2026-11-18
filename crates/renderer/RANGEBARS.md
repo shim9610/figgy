@@ -67,7 +67,7 @@ use renderer::data_config::{
     BarGroups, CategoryBarSeriesLabels, CategoryBarStyle, RangeColor, RangeTotal,
     RangeConnector,
 };
-use renderer::{Color, DataRenderType, SeriesConfig};
+use renderer::{Color, DataRenderType, RangeBarSeries, SeriesConfig};
 
 // A waterfall: the host's running totals before (`start`) and after
 // (`end`) each step, a total flag column, connectors.
@@ -78,7 +78,7 @@ let waterfall = SeriesConfig {
     x_column: "positions".into(),
     y_column: "end".into(),
     z_column: None,
-    render_type: DataRenderType::RangeBars {
+    render_type: DataRenderType::RangeBars(RangeBarSeries {
         color: Color::from_rgb8(90, 110, 130),
         style: CategoryBarStyle::default(),
         start: "start".into(),
@@ -98,7 +98,7 @@ let waterfall = SeriesConfig {
         }),
         slot_width: None,
         labels: CategoryBarSeriesLabels::default(),
-    },
+    }),
 };
 ```
 

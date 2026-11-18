@@ -558,9 +558,9 @@ impl PrepareContext<'_> {
             (Some(fill), _) => fill,
             (
                 None,
-                DataRenderType::RgbImage {
+                DataRenderType::RgbImage(RgbImageSeries {
                     shading, opacity, ..
-                },
+                }),
             ) => {
                 image_fill = crate::data_config::FieldFillConfig {
                     mode: crate::data_config::FillMode::Continuous,
@@ -674,7 +674,7 @@ impl PrepareContext<'_> {
                     bar.nan_color,
                 )
             }
-            (None, DataRenderType::RgbImage { range, .. }) => {
+            (None, DataRenderType::RgbImage(RgbImageSeries { range, .. })) => {
                 flags |= data_render::FIELD_FLAG_RGB;
                 let pair = |v: f64| {
                     let (hi, lo) = crate::data::split_f64_to_f32_pair(v);

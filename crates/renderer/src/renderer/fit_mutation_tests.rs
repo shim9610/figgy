@@ -30,7 +30,7 @@ fn fit_extent(extent: &crate::gpu_extent::GpuErrorbarExtent) -> FitExtent {
 
 /// One series' fit extent the way the web host computes it.
 fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
-    if let DataRenderType::Histogram { bar } = &series.render_type {
+    if let DataRenderType::Histogram(HistogramSeries { bar }) = &series.render_type {
         let vertical = matches!(bar.orientation, BarOrientation::Vertical);
         let (edges, counts) = if vertical {
             (&series.x_column, &series.y_column)

@@ -6,7 +6,7 @@ use super::*;
 /// and whether it is the grid form.
 pub(super) fn vector_columns(rt: &DataRenderType) -> Option<VectorColumns<'_>> {
     use renderer::data_config::{VectorColorMap, VectorComponents};
-    let DataRenderType::Vector { components, style } = rt else {
+    let DataRenderType::Vector(VectorSeries { components, style }) = rt else {
         return None;
     };
     Some(match components {

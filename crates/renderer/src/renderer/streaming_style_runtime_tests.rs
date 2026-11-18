@@ -156,21 +156,21 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
             (scatter, Some(err_style))
         }
         DataRenderType::Xy(_)
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
         | DataRenderType::MonotonicLine(_)
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Vector { .. } => unreachable!(),
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Vector(_) => unreachable!(),
     };
     scatter.point_style_index_column = (!remove_maps).then(|| "rindex".into());
     if remove_maps {
@@ -1428,26 +1428,26 @@ fn styled_stream_suppressed_fields_are_exact_noops() {
                         contour: None,
                         ..
                     })
-                    | DataRenderType::RgbImage { red: matrix, .. }
+                    | DataRenderType::RgbImage(RgbImageSeries { red: matrix, .. })
                     | DataRenderType::Field(crate::data_config::FieldSeries {
                         matrix,
                         contour: Some(_),
                         ..
                     }) => matrix.columns = vec!["rz".into()],
                     DataRenderType::Xy(_)
-                    | DataRenderType::Histogram { .. }
-                    | DataRenderType::CategoryBars { .. }
-                    | DataRenderType::BoxPlot { .. }
-                    | DataRenderType::RangeBars { .. }
-                    | DataRenderType::Radar { .. }
-                    | DataRenderType::Ternary { .. }
-                    | DataRenderType::Parallel { .. }
+                    | DataRenderType::Histogram(_)
+                    | DataRenderType::CategoryBars(_)
+                    | DataRenderType::BoxPlot(_)
+                    | DataRenderType::RangeBars(_)
+                    | DataRenderType::Radar(_)
+                    | DataRenderType::Ternary(_)
+                    | DataRenderType::Parallel(_)
                     | DataRenderType::EnergyLevels(_)
                     | DataRenderType::TriMesh(_)
                     | DataRenderType::Feynman(_)
                     | DataRenderType::MonotonicLine(_)
-                    | DataRenderType::Streamlines { .. }
-                    | DataRenderType::Vector { .. } => {}
+                    | DataRenderType::Streamlines(_)
+                    | DataRenderType::Vector(_) => {}
                 }
                 let resident_id = r.register_chart(config.clone(), vec![resident]).unwrap();
                 let stream_id = r.register_chart(config.clone(), vec![stream]).unwrap();

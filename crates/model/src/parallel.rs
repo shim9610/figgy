@@ -25,7 +25,7 @@
 //! [`Element::ParallelAxisLabel`]: crate::layout::Element::ParallelAxisLabel
 
 use crate::config::{AxisOptions, AxisScale, Config};
-use crate::data_config::{DataRenderType, LineInterpolation, SeriesConfig};
+use crate::data_config::{DataRenderType, LineInterpolation, ParallelSeries, SeriesConfig};
 use crate::line::LineStylePreset;
 
 /// One axis of a parallel chart: its own range and scale, the direction
@@ -234,15 +234,15 @@ impl Config {
         for item in series {
             let chart = self.series_chart(&item.series_id);
             match (&item.render_type, chart.parallel()) {
-                (DataRenderType::Parallel { .. }, None) => {
+                (DataRenderType::Parallel(_), None) => {
                     return Err(crate::RuleKind::ParallelSeriesNotParallel);
                 }
                 (
-                    DataRenderType::Parallel {
+                    DataRenderType::Parallel(ParallelSeries {
                         columns,
                         line,
                         color_column,
-                    },
+                    }),
                     Some(parallel),
                 ) => {
                     if columns.len() != parallel.axes.len() {
@@ -309,11 +309,11 @@ mod tests {
             x_column: columns[0].into(),
             y_column: columns[1].into(),
             z_column: None,
-            render_type: DataRenderType::Parallel {
+            render_type: DataRenderType::Parallel(ParallelSeries {
                 columns: columns.iter().map(|c| c.to_string()).collect(),
                 line: line(),
                 color_column: None,
-            },
+            }),
         }
     }
 
@@ -369,7 +369,7 @@ mod tests {
         coloured_cell.colorbar = Some(crate::defaults::color_bar_options());
         let coloured = root_with_subplot(coloured_cell, &["rows"]);
         let mut s = series(&["a", "b", "c"]);
-        if let DataRenderType::Parallel { color_column, .. } = &mut s.render_type {
+        if let DataRenderType::Parallel(ParallelSeries { color_column, .. }) = &mut s.render_type {
             *color_column = Some("class".into());
         }
         assert_eq!(coloured.validate_parallel_series(&[s]), Ok(()));
@@ -464,7 +464,8 @@ mod tests {
         };
         assert_eq!(
             reject_series(&|s| {
-                if let DataRenderType::Parallel { columns, .. } = &mut s.render_type {
+                if let DataRenderType::Parallel(ParallelSeries { columns, .. }) = &mut s.render_type
+                {
                     columns.pop();
                 }
             }),
@@ -476,7 +477,7 @@ mod tests {
         );
         assert_eq!(
             reject_series(&|s| {
-                if let DataRenderType::Parallel { line, .. } = &mut s.render_type {
+                if let DataRenderType::Parallel(ParallelSeries { line, .. }) = &mut s.render_type {
                     line.line_style = LineStylePreset::Dash;
                 }
             }),
@@ -484,7 +485,9 @@ mod tests {
         );
         assert_eq!(
             reject_series(&|s| {
-                if let DataRenderType::Parallel { color_column, .. } = &mut s.render_type {
+                if let DataRenderType::Parallel(ParallelSeries { color_column, .. }) =
+                    &mut s.render_type
+                {
                     *color_column = Some("class".into());
                 }
             }),
@@ -493,7 +496,7 @@ mod tests {
         let mut coloured = chart();
         coloured.colorbar = Some(crate::defaults::color_bar_options());
         let mut s = series(&["a", "b", "c"]);
-        if let DataRenderType::Parallel { color_column, .. } = &mut s.render_type {
+        if let DataRenderType::Parallel(ParallelSeries { color_column, .. }) = &mut s.render_type {
             *color_column = Some("class".into());
         }
         assert_eq!(coloured.validate_parallel_series(&[s]), Ok(()));
@@ -538,11 +541,11 @@ mod tests {
                 x_column: "a".into(),
                 y_column: "b".into(),
                 z_column: None,
-                render_type: DataRenderType::Parallel {
+                render_type: DataRenderType::Parallel(ParallelSeries {
                     columns,
                     line: line(),
                     color_column: None,
-                },
+                }),
             };
             assert_eq!(
                 config.validate_parallel_series(&[item]),

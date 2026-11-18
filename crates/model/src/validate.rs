@@ -358,12 +358,12 @@ impl Config {
                 return Err(crate::RuleKind::PolarStems);
             }
             DataRenderType::Xy(xy) => xy.line.as_ref().map(|line| line.interpolation.is_linear()),
-            DataRenderType::CategoryBars { .. } => None,
-            DataRenderType::Radar { .. } => item
+            DataRenderType::CategoryBars(_) => None,
+            DataRenderType::Radar(_) => item
                 .render_type
                 .radar()
                 .map(|radar| radar.line_style().interpolation.is_linear()),
-            DataRenderType::Histogram { .. } => {
+            DataRenderType::Histogram(_) => {
                 return Err(crate::RuleKind::PolarHistogram);
             }
             // A polar heatmap (#208): cells are annular sectors between angle
@@ -378,22 +378,22 @@ impl Config {
                 }
                 None
             }
-            DataRenderType::RgbImage { .. } => {
+            DataRenderType::RgbImage(_) => {
                 return Err(crate::RuleKind::PolarImage);
             }
-            DataRenderType::Vector { .. } => {
+            DataRenderType::Vector(_) => {
                 return Err(crate::RuleKind::PolarVector);
             }
-            DataRenderType::BoxPlot { .. } => {
+            DataRenderType::BoxPlot(_) => {
                 return Err(crate::RuleKind::PolarBoxPlot);
             }
-            DataRenderType::RangeBars { .. } => {
+            DataRenderType::RangeBars(_) => {
                 return Err(crate::RuleKind::PolarRangeBars);
             }
-            DataRenderType::Streamlines { .. } => {
+            DataRenderType::Streamlines(_) => {
                 return Err(crate::RuleKind::PolarStreamlines);
             }
-            DataRenderType::Parallel { .. } => {
+            DataRenderType::Parallel(_) => {
                 return Err(crate::RuleKind::PolarParallel);
             }
             DataRenderType::EnergyLevels(_) => {
@@ -408,7 +408,7 @@ impl Config {
             DataRenderType::MonotonicLine(_) => {
                 return Err(crate::RuleKind::PolarMonotonic);
             }
-            DataRenderType::Ternary { .. } => {
+            DataRenderType::Ternary(_) => {
                 return Err(crate::RuleKind::PolarTernary);
             }
         };
@@ -428,7 +428,7 @@ impl Config {
 mod tests {
     use super::*;
     use crate::color::Color;
-    use crate::data_config::{DataScatterStyleConfig, ScatterShape};
+    use crate::data_config::{DataScatterStyleConfig, ScatterShape, StreamlineSeries};
     #[cfg(feature = "serde")]
     use crate::polar::PolarOptions;
 
@@ -599,11 +599,11 @@ mod tests {
         config.bottom_x.max = 360.0;
         config.set_polar(Some(crate::defaults::polar_options()));
         let mut vector = scatter("v");
-        vector.render_type = DataRenderType::Streamlines {
+        vector.render_type = DataRenderType::Streamlines(StreamlineSeries {
             line: crate::defaults::data_line_style_config(),
             arrows: None,
             color_map: None,
-        };
+        });
         let error = config.validate_series(&[scatter("a"), vector]);
         let error = error.unwrap_err();
         assert_eq!(error.series_id.as_deref(), Some("v"));

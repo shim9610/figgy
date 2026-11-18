@@ -164,7 +164,7 @@ impl PickChartPlan {
             if let Some(points) = series
                 .render_type
                 .box_plot()
-                .and_then(|b| b.points)
+                .and_then(|b| b.points.as_ref())
                 .filter(|_| primitives.box_points)
             {
                 descriptors.push(box_points_pick_descriptor(
@@ -351,7 +351,7 @@ impl PickChartPlan {
                         series
                             .render_type
                             .streamlines()
-                            .and_then(|streamlines| streamlines.arrows.copied())
+                            .and_then(|streamlines| streamlines.arrows)
                     }),
                     category_jitter: None,
                     // A ternary series' markers and line are placed by

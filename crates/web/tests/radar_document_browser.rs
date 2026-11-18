@@ -76,7 +76,7 @@ async fn a_radar_document_opens_as_radar_series_on_a_polar_chart() {
     assert!(
         series
             .iter()
-            .all(|s| matches!(s.render_type, DataRenderType::Radar { .. }))
+            .all(|s| matches!(s.render_type, DataRenderType::Radar(_)))
     );
     assert_eq!(config.bottom_x.category_count(), Some(4));
     let polar = config.polar().unwrap();

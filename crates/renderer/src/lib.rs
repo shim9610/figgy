@@ -130,11 +130,13 @@ pub use data::{
     StreamColumnSource,
 };
 pub use data_config::{
-    DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
-    DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorBars, ErrorRef, FieldSeries, LineFill, LineInterpolation,
-    MAX_CONTOUR_LEVELS, MonotonicLineSeries, RadarRef, RadarSeriesLabels, ScatterShape,
-    SeriesConfig, SeriesRef, StreamlineArrows, XySeries,
+    BoxSeries, CategoryBarSeries, DataBarBinStyleConfig, DataBarStyleOverride,
+    DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef, FieldSeries,
+    HistogramSeries, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, MonotonicLineSeries,
+    ParallelSeries, RadarPolygonSeries, RadarSeriesLabels, RangeBarSeries, RgbImageSeries,
+    ScatterShape, SeriesConfig, SeriesRef, StreamlineArrows, StreamlineSeries, TernarySeries,
+    VectorSeries, XySeries,
 };
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, BatchSource, ColumnHandle, ColumnId, ColumnPool, ColumnStaging,
