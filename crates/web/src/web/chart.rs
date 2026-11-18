@@ -752,14 +752,7 @@ impl FiggyChart {
         config: renderer::Config,
         mut series: Vec<SeriesConfig>,
     ) -> Result<(), JsValue> {
-        // A Feynman diagram is fixed where it is first drawn (#234): the
-        // wrapper commits the layout of every unplaced vertex as the series
-        // is registered, so `get_series` returns placed coordinates.
-        for item in &mut series {
-            if let Some(diagram) = item.render_type.feynman_mut() {
-                diagram.place_vertices().map_err(js_err)?;
-            }
-        }
+        place_feynman_vertices(&mut series)?;
         match self.monotonic {
             // The series first; a document the editor refuses puts them back.
             Some(id) => {
@@ -961,6 +954,30 @@ impl FiggyChart {
     /// triangle mesh names its triangles among its columns (#210).
     pub(super) fn column_registered(&self, id: &str) -> bool {
         self.renderer.logical_column(id).is_some() || self.renderer.pool().triangles(id).is_some()
+    }
+
+    /// Keep an auto-managed legend on `new_cfg` as `set_config` does: a
+    /// heatmap's legend mark shows the colour map, so an auto-managed legend
+    /// follows a new map while a host-written one stays as written.
+    /// Returns whether `new_cfg` writes its own legend content, which ends
+    /// the auto-management once it is installed.
+    pub(super) fn follow_config_legend(
+        &self,
+        new_cfg: &mut renderer::Config,
+        series: &[SeriesConfig],
+    ) -> Result<bool, JsValue> {
+        let old_config = self.chart_config()?;
+        let legend_content_changed = old_config.legend.content != new_cfg.legend.content;
+        let colormap_changed = old_config.colorbar.as_ref().map(|bar| &bar.colormap)
+            != new_cfg.colorbar.as_ref().map(|bar| &bar.colormap);
+        if colormap_changed && !legend_content_changed && self.legend_auto_managed {
+            renderer::config::update_legend_symbols_preserving_text(
+                &mut new_cfg.legend.content,
+                series,
+                new_cfg.colorbar.as_ref().map(|bar| &bar.colormap),
+            );
+        }
+        Ok(legend_content_changed)
     }
 
     pub(super) fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
@@ -1440,20 +1457,8 @@ impl FiggyChart {
     /// JS: `chart.set_config(JSON.stringify(cfg));`
     pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
         let mut new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
-        let old_config = self.chart_config()?;
-        let legend_content_changed = old_config.legend.content != new_cfg.legend.content;
-        let colormap_changed = old_config.colorbar.as_ref().map(|bar| &bar.colormap)
-            != new_cfg.colorbar.as_ref().map(|bar| &bar.colormap);
         let series = self.chart_series()?.to_vec();
-        // A heatmap's legend mark shows the colour map: an auto-managed
-        // legend follows a new map, a host-written one stays as written.
-        if colormap_changed && !legend_content_changed && self.legend_auto_managed {
-            renderer::config::update_legend_symbols_preserving_text(
-                &mut new_cfg.legend.content,
-                &series,
-                new_cfg.colorbar.as_ref().map(|bar| &bar.colormap),
-            );
-        }
+        let legend_content_changed = self.follow_config_legend(&mut new_cfg, &series)?;
         self.renderer
             .preflight_chart_styles(&series)
             .map_err(js_err)?;
@@ -1495,46 +1500,62 @@ impl FiggyChart {
             .map_err(js_err)?;
         let mut config = self.chart_config()?.clone();
         if self.legend_auto_managed {
-            let colormap = config.colorbar.as_ref().map(|bar| &bar.colormap);
-            let content = &mut config.legend.content;
-            // Entries pair with series by the series their symbol names
-            // (a symbol that names none pairs by position): drop the
-            // entries whose series is gone, restyle the rest, and add one
-            // for each labeled series without an entry.
-            for index in (0..renderer::config::legend_entry_count(content)).rev() {
-                let kept = match renderer::config::legend_entry_series_id(content, index) {
-                    Some(series_id) => new_series.iter().any(|cfg| cfg.series_id == series_id),
-                    None => index < new_series.len(),
-                };
-                if !kept {
-                    renderer::config::remove_legend_entry(content, index);
-                }
-            }
-            renderer::config::update_legend_symbols_preserving_text(content, &new_series, colormap);
-            for cfg in &new_series {
-                if let Some(label) = &cfg.label
-                    && renderer::config::legend_entry_of_series(
-                        content,
-                        &new_series,
-                        &cfg.series_id,
-                    )
-                    .is_none()
-                {
-                    renderer::config::append_legend_entry_rich(
-                        content,
-                        renderer::config::series_symbol_segments(cfg, colormap),
-                        label.segments.clone(),
-                    );
-                }
-            }
-            config.legend.visible = !config.legend.content.segments.is_empty();
+            follow_series_legend(&mut config, &new_series);
         }
         let new_len = new_series.len();
         self.replace_chart_state(config, new_series)?;
         self.color_seq = new_len.max(self.color_seq);
         Ok(())
     }
+}
 
+/// A Feynman diagram is fixed where it is first drawn (#234): the wrapper
+/// commits the layout of every unplaced vertex as the series is
+/// registered, so `get_series` returns placed coordinates.
+pub(super) fn place_feynman_vertices(series: &mut [SeriesConfig]) -> Result<(), JsValue> {
+    for item in series {
+        if let Some(diagram) = item.render_type.feynman_mut() {
+            diagram.place_vertices().map_err(js_err)?;
+        }
+    }
+    Ok(())
+}
+
+/// An auto-managed legend after the series become `new_series`, as
+/// `set_series` keeps it: entries pair with series by the series their
+/// symbol names (a symbol that names none pairs by position); the entries
+/// whose series is gone drop, the rest are restyled, and each labeled
+/// series without an entry gets one.
+pub(super) fn follow_series_legend(config: &mut renderer::Config, new_series: &[SeriesConfig]) {
+    let colormap = config.colorbar.as_ref().map(|bar| &bar.colormap);
+    let content = &mut config.legend.content;
+    for index in (0..renderer::config::legend_entry_count(content)).rev() {
+        let kept = match renderer::config::legend_entry_series_id(content, index) {
+            Some(series_id) => new_series.iter().any(|cfg| cfg.series_id == series_id),
+            None => index < new_series.len(),
+        };
+        if !kept {
+            renderer::config::remove_legend_entry(content, index);
+        }
+    }
+    renderer::config::update_legend_symbols_preserving_text(content, new_series, colormap);
+    for cfg in new_series {
+        if let Some(label) = &cfg.label
+            && renderer::config::legend_entry_of_series(content, new_series, &cfg.series_id)
+                .is_none()
+        {
+            renderer::config::append_legend_entry_rich(
+                content,
+                renderer::config::series_symbol_segments(cfg, colormap),
+                label.segments.clone(),
+            );
+        }
+    }
+    config.legend.visible = !config.legend.content.segments.is_empty();
+}
+
+#[wasm_bindgen]
+impl FiggyChart {
     /// Open a legacy categorical bar chart document (`CategoricalChart` JSON,
     /// what `FiggyBoundedChart` took as the `"categorical"` family) as this
     /// Cartesian chart.

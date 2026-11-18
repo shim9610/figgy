@@ -179,7 +179,14 @@ overlapping, gapped, empty, past-the-end or mistyped chunk is
 `expected_revision` is the `column_revision(id)` the upload replaces
 (`None` for a new id); a different one, at begin or at commit, and an upload
 begun on another renderer are `FiggyError::StaleStateToken`. Dropping the
-upload cancels it. `Renderer::inspect_streaming_candidate(&config, &series)`
+upload cancels it. Several uploads and a chart's next config and series
+install together with `commit_column_uploads(chart, uploads, state)` (#334):
+each upload is a `BatchSource::Staged(&ColumnUpload)` source of the
+`begin_replace_chart_sources` transaction, checked at commit as
+`commit_column_upload` checks one (`check_column_upload`, revision
+included), so one stale or incomplete upload refuses all of them and
+nothing changes. Without a state the chart keeps its config and series,
+validated against the new columns. `Renderer::inspect_streaming_candidate(&config, &series)`
 applies the rules of `inspect_streaming_capability(chart)` to a candidate
 that no chart holds.
 

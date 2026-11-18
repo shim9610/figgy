@@ -48,7 +48,9 @@ validate, upload, fit or commit rejects with an `Error` whose `stage` names
 the step, and the chart stays as it was. `clear_selection()` ends the
 element and annotation selections and any drag, `begin_column_upload(...)`
 uploads one column in chunks into a GPU staging buffer and installs it on
-`commit(chart)`, and `inspect_streaming_capabilities(config, series)` checks
+`commit(chart)`, `begin_columns_transaction(...)` stages several chunked
+columns and the next Config and Series and installs them together or not at
+all (#334), and `inspect_streaming_capabilities(config, series)` checks
 a candidate document without changing the chart
 ([edit safety](../renderer/WASM.md#edit-safety)).
 

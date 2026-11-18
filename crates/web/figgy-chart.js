@@ -2466,6 +2466,29 @@ export class FiggyChartElement extends HTMLElement {
       is_open: () => handle.is_open(),
     };
   }
+  // Several chunked columns and the next config and series in one commit
+  // (#334). The transaction's `stage()` and `commit()` use this element's
+  // chart.
+  begin_columns_transaction(maxChunkBytes) {
+    const tx = this.#kernelForCall().begin_columns_transaction(maxChunkBytes);
+    return {
+      stage: (id, length, encoding, sourceRevision) =>
+        tx.stage(this.#kernelForCall(), id, length, encoding, sourceRevision ?? null),
+      push: (id, offset, chunk) => tx.push(id, offset, chunk),
+      set_state: (configJson, seriesJson) => tx.set_state(configJson, seriesJson ?? null),
+      commit: () => {
+        const result = tx.commit(this.#kernelForCall());
+        this.#notifyStreamingMutation();
+        return result;
+      },
+      cancel: () => tx.cancel(),
+      is_open: () => tx.is_open(),
+      written: (id) => tx.written(id),
+      length: (id) => tx.length(id),
+      staged_count: () => tx.staged_count(),
+      has_state: () => tx.has_state(),
+    };
+  }
   // Editor queries (#312): JSON text, as the kernel returns it; nothing on
   // the chart changes.
   annotation_preview(json) { return this.#kernelForCall().annotation_preview(json); }

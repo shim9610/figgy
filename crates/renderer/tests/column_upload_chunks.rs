@@ -13,6 +13,12 @@
 //! the commit installs everything, a failure in a late upload or a budget
 //! below the peak rolls everything back, removed ids stay until the commit,
 //! and the batch has no count limit.
+//!
+//! `commit_column_uploads` (#334) installs several chunked uploads and the
+//! chart's config and series in that transaction: a stale revision on any
+//! column, a budget below the peak or a state that does not hold refuses
+//! all of it, a dropped transaction changes nothing, and the number of
+//! staged columns is not limited.
 #![cfg(feature = "helpers")]
 
 use renderer::{
@@ -561,5 +567,340 @@ fn a_transaction_carries_any_number_of_uploads() {
     }
     assert_eq!(renderer.chart_series(chart).unwrap().len(), count);
     let last = format!("sc{}", count - 1);
+    assert!(!renderer.series_draw_info(chart, &last).unwrap().truncated);
+}
+
+// ---- several chunked uploads and the chart state in one commit (#334) ----
+
+/// A chunked upload of `values` replacing the column at `revision`.
+fn staged(
+    renderer: &Renderer,
+    id: &str,
+    values: &[f64],
+    revision: Option<u64>,
+) -> renderer::ColumnUpload {
+    let mut upload = renderer
+        .begin_column_upload(id, values.len(), StreamEncoding::HiLoF32, revision)
+        .expect("begin upload");
+    write_all(&mut upload, values, 7);
+    upload
+}
+
+/// What a refused transaction must leave as it was, beyond the pool.
+#[derive(Debug, PartialEq)]
+struct ChartState {
+    pool: PoolState,
+    revisions: [Option<u64>; 2],
+    config: Config,
+    maxima: [f64; 2],
+}
+
+fn chart_state(renderer: &Renderer, chart: ChartId) -> ChartState {
+    let pool = renderer.pool();
+    ChartState {
+        pool: pool_state(renderer, chart),
+        revisions: [renderer.column_revision("x"), renderer.column_revision("y")],
+        config: renderer.chart_config(chart).unwrap().clone(),
+        maxima: [pool.slot("x").unwrap().max, pool.slot("y").unwrap().max],
+    }
+}
+
+#[test]
+fn staged_columns_and_the_chart_state_commit_together() {
+    let (mut renderer, chart, config) = previous_document();
+    let before = [renderer.column_revision("x"), renderer.column_revision("y")];
+    let n = 100;
+    let x: Vec<f64> = (0..n).map(|i| i as f64 * 2.0).collect();
+    let y: Vec<f64> = (0..n).map(|i| 50.0 - i as f64).collect();
+    let uploads = vec![
+        staged(&renderer, "x", &x, before[0]),
+        staged(&renderer, "y", &y, before[1]),
+    ];
+    let mut next = Chart::new(config);
+    next.set_x_range(0.0, 200.0);
+    next.set_y_range(-60.0, 60.0);
+    let series = vec![SeriesConfig::line("next", "x", "y")];
+    renderer
+        .commit_column_uploads(
+            chart,
+            uploads,
+            Some((next.config().clone(), series.clone())),
+        )
+        .expect("commit");
+
+    let after = [renderer.column_revision("x"), renderer.column_revision("y")];
+    assert!(after[0] != before[0] && after[1] != before[1], "{after:?}");
+    let pool = renderer.pool();
+    assert_eq!(pool.slot("x").unwrap().len_values, n);
+    assert_eq!(pool.slot("x").unwrap().max, 198.0);
+    assert_eq!(pool.slot("y").unwrap().min, -49.0);
+    assert_eq!(renderer.chart_series(chart).unwrap(), series.as_slice());
+    assert_eq!(renderer.chart_config(chart).unwrap().bottom_x.max, 200.0);
+    assert!(!renderer.series_draw_info(chart, "next").unwrap().truncated);
+
+    // Without a state the chart keeps its own: only the columns move.
+    let kept = renderer.chart_config(chart).unwrap().clone();
+    let again = vec![staged(&renderer, "y", &[1.0, 2.0, 3.0], after[1])];
+    renderer
+        .commit_column_uploads(chart, again, None)
+        .expect("commit without a state");
+    assert_ne!(renderer.column_revision("y"), after[1]);
+    assert_eq!(renderer.column_revision("x"), after[0]);
+    assert_eq!(renderer.chart_config(chart).unwrap(), &kept);
+    assert_eq!(renderer.chart_series(chart).unwrap(), series.as_slice());
+    assert_eq!(renderer.pool().slot("y").unwrap().len_values, 3);
+}
+
+#[test]
+fn a_stale_revision_on_one_column_refuses_every_column() {
+    let (mut renderer, chart, config) = previous_document();
+    let x_revision = renderer.column_revision("x");
+    let y_revision = renderer.column_revision("y");
+    let uploads = vec![
+        staged(&renderer, "x", &[9.0, 10.0], x_revision),
+        staged(&renderer, "y", &[11.0, 12.0], y_revision),
+    ];
+    // y changes while the transaction is open.
+    renderer.upsert_column("y", &vec![5.0f64, 6.0]).unwrap();
+    let before = chart_state(&renderer, chart);
+    let result = renderer.commit_column_uploads(
+        chart,
+        uploads,
+        Some((config, vec![SeriesConfig::line("next", "x", "y")])),
+    );
+    assert!(
+        matches!(result, Err(FiggyError::StaleStateToken { ref reason }) if reason.contains("y")),
+        "{result:?}"
+    );
+    assert_eq!(chart_state(&renderer, chart), before);
+    assert_eq!(renderer.column_revision("x"), x_revision);
+}
+
+#[test]
+fn a_budget_below_the_peak_refuses_the_staged_columns_at_commit() {
+    let (mut renderer, chart, config) = previous_document();
+    // Live bytes: a released buffer is retired until the queue is done.
+    let idle = renderer.gpu_memory_usage().live_bytes();
+    let (x, y) = wave(1_000);
+    let uploads = vec![
+        staged(&renderer, "x", &x, renderer.column_revision("x")),
+        staged(&renderer, "y", &y, renderer.column_revision("y")),
+    ];
+    let held = renderer.gpu_memory_usage().total_bytes();
+    assert!(
+        renderer.gpu_memory_usage().live_bytes() > idle,
+        "the staging is charged while open"
+    );
+    // The staging fits; the candidate slab on top of it does not.
+    assert!(renderer.set_memory_budget(Some(held)).is_none());
+    let before = chart_state(&renderer, chart);
+    let result = renderer.commit_column_uploads(
+        chart,
+        uploads,
+        Some((config, vec![SeriesConfig::line("wave", "x", "y")])),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(FiggyError::Pool(AllocError::BudgetExceeded { .. }))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(chart_state(&renderer, chart), before);
+    // The refused uploads were consumed and their staging released.
+    assert_eq!(renderer.gpu_memory_usage().live_bytes(), idle);
+}
+
+#[test]
+fn a_dropped_transaction_changes_nothing_and_leaves_its_uploads_usable() {
+    let (mut renderer, chart, config) = previous_document();
+    // Live bytes: a released buffer is retired until the queue is done.
+    let idle = renderer.gpu_memory_usage().live_bytes();
+    let before = chart_state(&renderer, chart);
+    let revision = renderer.column_revision("y");
+
+    // Cancelled before the commit: the uploads are dropped.
+    let uploads = vec![
+        staged(&renderer, "x", &[1.0, 2.0], renderer.column_revision("x")),
+        staged(&renderer, "y", &[3.0, 4.0], revision),
+    ];
+    drop(uploads);
+    assert_eq!(chart_state(&renderer, chart), before);
+    assert_eq!(renderer.gpu_memory_usage().live_bytes(), idle);
+
+    // A batch that holds an upload, dropped before its commit, rolls back;
+    // the upload, already copied from, still installs on its own.
+    let upload = staged(&renderer, "y", &[3.0, 4.0, 5.0], revision);
+    {
+        let guard = renderer
+            .begin_replace_chart_sources(chart, &[("y", BatchSource::Staged(&upload))], &[], |_| {
+                Ok((config.clone(), vec![SeriesConfig::line("wave", "x", "y")]))
+            })
+            .expect("begin");
+        assert_eq!(guard.pool().slot("y").unwrap().len_values, 3);
+    }
+    assert_eq!(chart_state(&renderer, chart), before);
+    renderer
+        .commit_column_upload(upload)
+        .expect("the upload installs after the rollback");
+    assert_eq!(renderer.pool().slot("y").unwrap().max, 5.0);
+
+    // An upload under another id than its own is refused.
+    let upload = staged(&renderer, "x", &[1.0], renderer.column_revision("x"));
+    let state = chart_state(&renderer, chart);
+    assert!(matches!(
+        renderer.begin_replace_chart_sources(
+            chart,
+            &[("y", BatchSource::Staged(&upload))],
+            &[],
+            |_| Ok((config.clone(), vec![SeriesConfig::line("wave", "x", "y")])),
+        ),
+        Err(FiggyError::InvalidColumnUpload { .. })
+    ));
+    assert_eq!(chart_state(&renderer, chart), state);
+}
+
+#[test]
+fn a_state_that_does_not_hold_against_the_staged_columns_changes_nothing() {
+    let (mut renderer, chart, config) = previous_document();
+    let before = chart_state(&renderer, chart);
+
+    // A series that reads a column nothing registers.
+    let uploads = vec![staged(
+        &renderer,
+        "x",
+        &[1.0, 2.0],
+        renderer.column_revision("x"),
+    )];
+    let result = renderer.commit_column_uploads(
+        chart,
+        uploads,
+        Some((
+            config.clone(),
+            vec![SeriesConfig::line("next", "x", "nope")],
+        )),
+    );
+    assert!(
+        matches!(result, Err(FiggyError::UnknownColumn { ref id }) if id == "nope"),
+        "{result:?}"
+    );
+    assert_eq!(chart_state(&renderer, chart), before);
+
+    // An incomplete upload refuses the transaction, naming its column.
+    let mut short = renderer
+        .begin_column_upload(
+            "x",
+            4,
+            StreamEncoding::HiLoF32,
+            renderer.column_revision("x"),
+        )
+        .unwrap();
+    put(&mut short, 0, &[1.0, 2.0]).unwrap();
+    let result = renderer.commit_column_uploads(chart, vec![short], None);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidColumnUpload { ref id, .. }) if id == "x"),
+        "{result:?}"
+    );
+    assert_eq!(chart_state(&renderer, chart), before);
+
+    // The same id twice is refused.
+    let twice = vec![
+        staged(&renderer, "x", &[1.0], renderer.column_revision("x")),
+        staged(&renderer, "x", &[2.0], renderer.column_revision("x")),
+    ];
+    assert!(renderer.commit_column_uploads(chart, twice, None).is_err());
+    assert_eq!(chart_state(&renderer, chart), before);
+}
+
+#[test]
+fn without_a_state_the_kept_series_must_hold_against_the_new_columns() {
+    use renderer::data_config::{
+        FieldFillConfig, FieldSeries, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
+    };
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    renderer
+        .upsert_column("hx", &vec![1.0f64, 2.0, 3.0])
+        .unwrap();
+    renderer.upsert_column("hy", &vec![1.0f64, 2.0]).unwrap();
+    let mut ids = Vec::new();
+    for k in 0..3 {
+        let id = format!("z{k}");
+        renderer
+            .upsert_column(id.as_str(), &vec![k as f64, 1.0])
+            .unwrap();
+        ids.push(id);
+    }
+    let mut config = renderer::default::default_config();
+    config.colorbar = Some(renderer::default::default_colorbar_options());
+    let hex = SeriesConfig {
+        series_id: "hex".into(),
+        source_id: None,
+        z_column: None,
+        label: None,
+        x_column: "hx".into(),
+        y_column: "hy".into(),
+        render_type: renderer::DataRenderType::Field(FieldSeries {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Hexagonal,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    };
+    let chart = renderer.register_chart(config, vec![hex]).unwrap();
+    let revision = renderer.column_revision("hx");
+    let series = renderer.chart_series(chart).unwrap().to_vec();
+
+    // A hexagonal lattice needs uniform coordinates: the kept series
+    // refuses the new hx, and nothing changes.
+    let uploads = vec![staged(&renderer, "hx", &[1.0, 2.0, 4.0], revision)];
+    let result = renderer.commit_column_uploads(chart, uploads, None);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidSeriesConfig { ref series_id, .. }) if series_id == "hex"),
+        "{result:?}"
+    );
+    assert_eq!(renderer.column_revision("hx"), revision);
+    assert_eq!(renderer.pool().slot("hx").unwrap().max, 3.0);
+    assert_eq!(renderer.chart_series(chart).unwrap(), series.as_slice());
+
+    // A uniform one holds.
+    let uploads = vec![staged(&renderer, "hx", &[2.0, 4.0, 6.0], revision)];
+    renderer
+        .commit_column_uploads(chart, uploads, None)
+        .expect("a uniform lattice");
+    assert_eq!(renderer.pool().slot("hx").unwrap().max, 6.0);
+}
+
+#[test]
+fn a_column_transaction_stages_any_number_of_columns() {
+    let (mut renderer, chart, config) = previous_document();
+    // Past any small fixed count of staged columns.
+    let count = 300;
+    let ids: Vec<String> = (0..count).map(|k| format!("t{k}")).collect();
+    let uploads: Vec<renderer::ColumnUpload> = ids
+        .iter()
+        .enumerate()
+        .map(|(k, id)| staged(&renderer, id, &[k as f64, k as f64 + 0.5, 1.0], None))
+        .collect();
+    let series: Vec<SeriesConfig> = ids
+        .iter()
+        .map(|id| SeriesConfig::line(format!("s{id}"), "t0", id.as_str()))
+        .collect();
+    renderer
+        .commit_column_uploads(chart, uploads, Some((config, series)))
+        .expect("commit");
+    let pool = renderer.pool();
+    for (k, id) in ids.iter().enumerate() {
+        assert_eq!(pool.slot(id).unwrap().max, (k as f64 + 0.5).max(1.0));
+    }
+    assert_eq!(renderer.chart_series(chart).unwrap().len(), count);
+    let last = format!("st{}", count - 1);
     assert!(!renderer.series_draw_info(chart, &last).unwrap().truncated);
 }

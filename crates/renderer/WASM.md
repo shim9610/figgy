@@ -1214,12 +1214,53 @@ reports it, or `null` for an id that is not registered. The returned
 A closed handle throws `"upload_closed"`. `begin_column_upload` itself
 throws `"stale"` for a wrong `source_revision`, and the registration codes
 when the budget or the device cannot hold the staging buffer. A streamed or
-reserved id is refused. One column per transaction.
+reserved id is refused. One column per handle; a column transaction (below)
+installs several together.
 
 ```js
 const up = chart.begin_column_upload("y", n, "f64", chart.column_revision("y") ?? null, 1 << 20);
 for (let at = 0; at < n; at += 65536) up.push(at, values.subarray(at, at + 65536));
 up.commit(chart);
+```
+
+**Column transaction** (#334).
+`chart.begin_columns_transaction(max_chunk_bytes)` returns a
+`ColumnTransaction`: several columns uploaded in chunks and, optionally, the
+chart's next Config and Series, installed by one commit together or not at
+all. Each staged column owns its own mapped GPU staging buffer, as a
+`ColumnUploadHandle` does; nothing is registered before the commit, and the
+number of staged columns is not limited.
+
+| Transaction call | Contract |
+| --- | --- |
+| `stage(chart, id, length, encoding, source_revision)` | Begins one column's upload on the chart that began the transaction, with the arguments and codes of `begin_column_upload` (`"stale"`, `"budget_exceeded"`, `"device_limit"`, ...). An id already staged throws `"registration_failed"`; a streamed or reserved id is refused. |
+| `push(id, offset, typedArray)` | Writes one chunk of column `id`, with the checks of `ColumnUploadHandle.push` (`"invalid_chunk"`); an id that is not staged is `"invalid_chunk"` too. A refused chunk changes nothing; the transaction stays open. |
+| `set_state(config_json, series_json?)` | Stages the next Config and, when given, the next Series, which may read the staged columns. Without `series_json` the chart keeps its series. The commit installs them as `set_config` followed by `set_series` would, legend included. JSON that does not parse throws here. |
+| `commit(chart)` | Installs every staged column, the state and the picker in one renderer transaction (`Renderer::commit_column_uploads`). Every column's revision is checked: one that changed since it was staged throws `"stale"` naming it, an incomplete column `"invalid_chunk"`, a budget or device that cannot hold the commit the registration codes. A state, or without one the chart's own Config and Series, that does not hold against the staged columns throws at `stage` `"state"` with the code the setters give. A monotonic chart takes no state (`"monotonic_chart"`). Closes the transaction either way. |
+| `cancel()` | Releases every staging buffer; nothing was registered. |
+| `is_open()`, `written(id)`, `length(id)`, `staged_count()`, `has_state()` | Whether it is open, a staged column's next offset and length (`undefined` for an id not staged), how many columns are staged, whether a state is staged. |
+
+Every error is an `Error` with `stage` (`"stage"`, `"push"`, `"state"` or
+`"commit"`), `column` (the id it concerns, or `null`) and the refusal's
+`code`; a memory refusal adds `requested` and `limit` bytes. A refusal at
+any step leaves the columns' values and revisions, the Config and Series,
+the selection and the drawn pixels as they were. After a commit, a cancel or
+a commit that failed, every call but `cancel` throws `"upload_closed"`. Peak
+memory at the commit: the live pool slab, every staged column's staging and
+a candidate slab of the pool's capacity, as for a document replace.
+`<figgy-chart>` passes its own chart, so there `stage(id, length, encoding,
+source_revision)` and `commit()` take no chart.
+
+```js
+const tx = chart.begin_columns_transaction(1 << 20);
+tx.stage(chart, "x", n, "f64", chart.column_revision("x") ?? null);
+tx.stage(chart, "y", n, "f64", chart.column_revision("y") ?? null);
+for (let at = 0; at < n; at += 65536) {
+  tx.push("x", at, xs.subarray(at, at + 65536));
+  tx.push("y", at, ys.subarray(at, at + 65536));
+}
+tx.set_state(JSON.stringify(config), JSON.stringify(series));
+tx.commit(chart);
 ```
 
 **`chart.inspect_streaming_capabilities(config_json, series_json)`**
