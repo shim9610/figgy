@@ -3,55 +3,23 @@
 //! Run: `cargo run -p figgy-renderer --example sketch_demo`
 //! Output: `target/sketch_demo/{precise,sketch,sketch_tour}.png`
 
-use std::sync::Arc;
-
 use renderer::color::Color;
 use renderer::config::{DrawStyle, LegendEntryKind, SketchOptions};
-use renderer::data::Column;
-use renderer::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
-    ScatterShape, SeriesConfig,
-};
-use renderer::data_render::{create_instance, request_adapter, request_device};
-use renderer::default;
-use renderer::layout::{ChartArea, Rect};
+use renderer::data_config::{ScatterShape, SeriesConfig};
 use renderer::line::LineStylePreset;
-use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
+use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 
-fn col(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
-}
-
-/// Export clears to transparent; composite over white for viewing.
-fn over_white(img: &mut RasterImage) {
-    for px in img.rgba.chunks_exact_mut(4) {
-        let a = px[3] as f32 / 255.0;
-        for c in &mut px[..3] {
-            *c = (*c as f32 * a + 255.0 * (1.0 - a)).round() as u8;
-        }
-        px[3] = 255;
-    }
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
-    let mut img = r.export_panel_rgba(chart, series, 1.0).expect("export");
-    over_white(&mut img);
-    std::fs::write(path, encode_png(&img).expect("png")).expect("write");
+fn export(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: &str) {
+    chart.fit_layout();
+    // Exported over white for viewing.
+    let options = ExportOptions::panel(1.0).with_clear(Color::WHITE);
+    r.save_blocking(ExportSource::chart(chart, series), options, path)
+        .expect("export");
     println!("wrote {path}");
 }
 
 fn main() {
-    let inst = create_instance();
-    let adapter = request_adapter(&inst).expect("adapter");
-    let (device, queue) = request_device(&adapter).expect("device");
-    let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
-        wgpu::TextureFormat::Bgra8Unorm,
-        8 * 1024 * 1024,
-    )
-    .expect("renderer");
+    let mut r = Renderer::headless_blocking().expect("renderer");
 
     std::fs::create_dir_all("target/sketch_demo").expect("mkdir");
 
@@ -65,52 +33,24 @@ fn main() {
                 + 34.0 / (1.0 + (-8.5 * (x - 0.62)).exp())
         })
         .collect();
-    r.add_column("x", &col(xs.clone())).unwrap();
-    r.add_column("stars", &col(stars)).unwrap();
+    r.add_column("x", &xs).unwrap();
+    r.add_column("stars", &stars).unwrap();
 
     let accent = Color::from_rgb8(214, 86, 54);
-    let star_series = [SeriesConfig {
-        series_id: "stars".into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "stars".into(),
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
-                point_color: accent,
-                point_shape: ScatterShape::CircleFilled,
-                point_size: 6.5,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            },
-            line: DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: accent,
-                line_width: 3.0,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
-    }];
+    let star_series = [SeriesConfig::scatter_line("stars", "x", "stars")
+        .label("figgy/sketch")
+        .color(accent)
+        .width(3.0)
+        .marker(ScatterShape::CircleFilled, 6.5)];
 
     let star_chart = |style: DrawStyle| {
-        let mut config = default::default_config();
-        config.chart_area = ChartArea(Rect {
-            x: 0,
-            y: 0,
-            width: 920,
-            height: 600,
-        });
-        config.draw_style = style;
-        let mut chart = Chart::new(config)
+        let mut chart = Chart::sized(920, 600);
+        chart.config_mut().draw_style = style;
+        let mut chart = chart
             .with_title("Star history")
             .with_x_title("Date")
             .with_y_title("GitHub Stars")
-            .with_legend_entry("figgy/sketch", accent, 3.0, LegendEntryKind::LineScatter);
+            .with_legend_from(&star_series);
         chart.set_x_range(-0.02, 1.02);
         chart.set_y_range(0.0, 85.0);
         chart
@@ -118,13 +58,13 @@ fn main() {
 
     export(
         &mut r,
-        &star_chart(DrawStyle::Precise),
+        &mut star_chart(DrawStyle::Precise),
         &star_series,
         "target/sketch_demo/precise.png",
     );
     export(
         &mut r,
-        &star_chart(DrawStyle::Sketch(SketchOptions {
+        &mut star_chart(DrawStyle::Sketch(SketchOptions {
             amplitude_px: 2.2,
             wavelength_px: 55.0,
             seed: 1,
@@ -149,99 +89,33 @@ fn main() {
         .iter()
         .map(|&x| 2.2 + 1.3 * (x * 7.0).cos().abs())
         .collect();
-    r.add_column("t", &col(txs)).unwrap();
-    r.add_column("ya", &col(ya)).unwrap();
-    r.add_column("yb", &col(yb)).unwrap();
-    r.add_column("yc", &col(yc)).unwrap();
-    r.add_column("err", &col(err)).unwrap();
+    r.add_column("t", &txs).unwrap();
+    r.add_column("ya", &ya).unwrap();
+    r.add_column("yb", &yb).unwrap();
+    r.add_column("yc", &yc).unwrap();
+    r.add_column("err", &err).unwrap();
 
     let blue = Color::from_rgb8(38, 104, 214);
     let green = Color::from_rgb8(44, 140, 80);
     let tour_series = [
-        SeriesConfig {
-            series_id: "wave".into(),
-            source_id: None,
-            label: None,
-            x_column: "t".into(),
-            y_column: "ya".into(),
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
-                    point_color: accent,
-                    point_shape: ScatterShape::CircleFilled,
-                    point_size: 5.5,
-                    point_style_table: None,
-                    point_style_index_column: None,
-                    point_style_overrides: None,
-                    point_color_map: None,
-                    point_size_map: None,
-                },
-                line: DataLineStyleConfig {
-                    line_style: LineStylePreset::Solid,
-                    line_color: accent,
-                    line_width: 2.5,
-                    fill: None,
-                    fill_color: None,
-                    interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
-        },
-        SeriesConfig {
-            series_id: "trend".into(),
-            source_id: None,
-            label: None,
-            x_column: "t".into(),
-            y_column: "yb".into(),
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
-                    line_style: LineStylePreset::Dash,
-                    line_color: blue,
-                    line_width: 2.5,
-                    fill: None,
-                    fill_color: None,
-                    interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
-        },
-        SeriesConfig {
-            series_id: "meas".into(),
-            source_id: None,
-            label: None,
-            x_column: "t".into(),
-            y_column: "yc".into(),
-            render_type: DataRenderType::ScatterErrorbarY {
-                scatter: DataScatterStyleConfig {
-                    point_color: green,
-                    point_shape: ScatterShape::Diamond,
-                    point_size: 5.0,
-                    point_style_table: None,
-                    point_style_index_column: None,
-                    point_style_overrides: None,
-                    point_color_map: None,
-                    point_size_map: None,
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: "err".into(),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: green,
-                    error_bar_width: 1.6,
-                    error_bar_cap_size: 6.0,
-                    cap_width: 1.6,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
-        },
+        SeriesConfig::scatter_line("wave", "t", "ya")
+            .color(accent)
+            .width(2.5)
+            .marker(ScatterShape::CircleFilled, 5.5),
+        SeriesConfig::line("trend", "t", "yb")
+            .color(blue)
+            .width(2.5)
+            .dash(LineStylePreset::Dash),
+        SeriesConfig::scatter("meas", "t", "yc")
+            .color(green)
+            .marker(ScatterShape::Diamond, 5.0)
+            .y_errors("err")
+            // The default 6 px caps.
+            .error_bars(1.6, 6.0),
     ];
 
-    let mut config = default::default_config();
-    config.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: 920,
-        height: 600,
-    });
+    let mut chart = Chart::sized(920, 600);
+    let config = chart.config_mut();
     config.grid.show_major_x = true;
     config.grid.show_major_y = true;
     config.grid.show_minor_x = true;
@@ -253,7 +127,9 @@ fn main() {
         wavelength_px: 45.0,
         seed: 3,
     });
-    let mut chart = Chart::new(config)
+    // The legend marks are hand-picked: a solid rule for the dashed trend
+    // and a circle for the diamond markers, unlike the series' own marks.
+    let mut chart = chart
         .with_title("figgy draw_style tour — sketch")
         .with_x_title("t")
         .with_y_title("value")
@@ -265,7 +141,7 @@ fn main() {
 
     export(
         &mut r,
-        &chart,
+        &mut chart,
         &tour_series,
         "target/sketch_demo/sketch_tour.png",
     );

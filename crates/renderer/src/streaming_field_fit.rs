@@ -1,7 +1,7 @@
 //! Compact endpoint replay for the existing GPU field-lattice fit reducer.
 //! Only GPU-derived bounds return to the CPU; original coordinates never do.
 use super::*;
-use crate::gpu_errorbar::{
+use crate::gpu_extent::{
     GpuFieldExtentColumns, GpuFieldExtentMode, GpuSeriesExtentTicket, GpuSeriesFitMode,
 };
 
@@ -15,10 +15,18 @@ pub(super) struct StreamFieldFit {
     readback: Option<GpuSeriesExtentTicket>,
 }
 
+impl StreamFieldFit {
+    /// The endpoint reads submitted so far and the endpoints per axis.
+    #[cfg(test)]
+    pub(super) fn progress_for_test(&self) -> (u32, u32) {
+        (self.ordinal, self.count)
+    }
+}
+
 pub(super) fn all_fit_inputs_ready(
     snapshot: &AutoStreamExecutionSnapshot,
     statistics: &HashMap<ColumnId, StreamStatisticsCache>,
-    fields: &HashMap<usize, Option<crate::gpu_errorbar::GpuSeriesExtent>>,
+    fields: &HashMap<usize, Option<crate::gpu_extent::GpuSeriesExtent>>,
 ) -> bool {
     snapshot.series.iter().enumerate().all(|(index, series)| {
         if is_stream_heatmap(&series.render_type) {
@@ -51,7 +59,7 @@ fn compact_indices(mode: GpuFieldExtentMode, cells: u32) -> ([u32; 4], u32, u32)
     }
 }
 
-fn extent_error(error: crate::gpu_errorbar::GpuErrorbarError) -> StreamRequestError {
+fn extent_error(error: crate::gpu_extent::GpuExtentError) -> StreamRequestError {
     FiggyError::GpuResourceAllocationFailed {
         resource: "stream field fit",
         reason: error.to_string(),
@@ -62,10 +70,7 @@ fn extent_error(error: crate::gpu_errorbar::GpuErrorbarError) -> StreamRequestEr
 impl Renderer {
     fn new_stream_field_fit(&self, job: StreamJob) -> StreamResult<StreamFieldFit> {
         let snapshot = self.auto_stream_snapshot(job);
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -98,7 +103,7 @@ impl Renderer {
             .total_bytes()
             .checked_add(64 + 16 + GpuSeriesExtentTicket::FIELD_BYTES)
             .ok_or(StreamError::Overflow)?
-            > self.memory_budget.unwrap_or(u64::MAX)
+            > self.gpu_ledger.budget_limit()
         {
             return Err(StreamError::TooLarge.into());
         }
@@ -124,34 +129,22 @@ impl Renderer {
         &mut self,
         job: StreamJob,
     ) -> StreamResult<StreamDrawRequestStatus> {
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
             .ok_or(StreamError::WrongState)?;
         if draw.field_fit.is_none() {
             let fit = self.new_stream_field_fit(job)?;
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .field_fit = Some(fit);
         }
-        let draw = self
-            .stream_runtime
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
+        let fit = draw
+            .field_fit
             .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
-        let fit = draw.field_fit.as_ref().unwrap();
+            .ok_or(FiggyError::internal("a field fit was created above"))?;
         if fit.ordinal == fit.count * 2 {
             if fit.readback.is_none() {
                 if self
@@ -159,27 +152,24 @@ impl Renderer {
                     .total_bytes()
                     .checked_add(GpuSeriesExtentTicket::FIELD_BYTES)
                     .ok_or(StreamError::Overflow)?
-                    > self.memory_budget.unwrap_or(u64::MAX)
+                    > self.gpu_ledger.budget_limit()
                 {
                     return Err(StreamError::TooLarge.into());
                 }
-                if self.errorbar_extent_engine.is_none() {
-                    self.errorbar_extent_engine =
-                        Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
-                            &self.device,
-                            Arc::clone(&self.gpu_ledger),
-                        ));
-                }
+                let engine = self.errorbar_extent_engine.get_or_insert_with(|| {
+                    crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
+                        &self.device,
+                        Arc::clone(&self.gpu_ledger),
+                    )
+                    .with_health(self.health.clone())
+                });
                 let handle = |offset| data_render::ColumnHandle {
                     generation: 0,
                     offset,
                     byte_size: u64::from(fit.count) * 8,
                     len_values: fit.count as usize,
                 };
-                let ticket = self
-                    .errorbar_extent_engine
-                    .as_ref()
-                    .unwrap()
+                let ticket = engine
                     .begin_field(
                         &self.device,
                         &self.queue,
@@ -193,38 +183,26 @@ impl Renderer {
                         },
                     )
                     .map_err(extent_error)?;
-                self.stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                live_runtime_mut(&mut self.stream_runtime)?
+                    .live_draw_mut(job)?
                     .field_fit
                     .as_mut()
-                    .unwrap()
+                    .ok_or(FiggyError::internal("a field fit was created above"))?
                     .readback = Some(ticket);
             }
-            let draw = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap();
-            let resolved = draw
+            let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
+            let fit = draw
                 .field_fit
                 .as_mut()
-                .unwrap()
+                .ok_or(FiggyError::internal("a field fit was created above"))?;
+            let readback = fit
                 .readback
                 .as_mut()
-                .unwrap()
-                .try_resolve();
-            let resolved = match resolved {
+                .ok_or(FiggyError::internal("a field fit readback was begun above"))?;
+            let resolved = match readback.try_resolve_unpolled() {
                 Ok(resolved) => resolved,
                 Err(error) => {
-                    draw.field_fit.as_mut().unwrap().readback = None;
+                    fit.readback = None;
                     return Err(extent_error(error));
                 }
             };
@@ -264,13 +242,8 @@ impl Renderer {
         )? {
             StreamRequestStatus::Backpressure => Ok(StreamDrawRequestStatus::Backpressure),
             StreamRequestStatus::Ready(ticket) => {
-                self.stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                live_runtime_mut(&mut self.stream_runtime)?
+                    .live_draw_mut(job)?
                     .pending = Some(ticket);
                 Ok(StreamDrawRequestStatus::Ready(ticket))
             }
@@ -290,10 +263,7 @@ impl Renderer {
             .map(|s| &s.view)
             .or(explicit_view)
             .ok_or(StreamError::WrongState)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -327,17 +297,14 @@ impl Renderer {
             }
         };
         let handle = chunk.column_handle(range)?;
-        let fit = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let fit = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
-            .unwrap()
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
             .field_fit
             .as_ref()
-            .unwrap();
+            .ok_or(FiggyError::internal("a field fit ticket keeps its fit"))?;
         let axis = fit.ordinal / fit.count;
         let dest = u64::from(axis) * 32 + u64::from(fit.ordinal % fit.count) * 8;
         encoder.copy_buffer_to_buffer(&chunk.work, handle.offset, &fit.buffer, dest, 8);
@@ -345,15 +312,15 @@ impl Renderer {
         drop(chunk);
         match result {
             Ok(submission) => {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let draw = live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap();
-                draw.field_fit.as_mut().unwrap().ordinal += 1;
+                    .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
+                draw.field_fit
+                    .as_mut()
+                    .ok_or(FiggyError::internal("a field fit ticket keeps its fit"))?
+                    .ordinal += 1;
                 draw.pending = None;
                 self.end_gpu_frame();
                 Ok(submission)

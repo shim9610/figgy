@@ -1,0 +1,18 @@
+# Product code has no panic path (#152). `ci/verify.py static` runs clippy
+# on the libraries with the panic and dropped-error lints denied; this list
+# adds the assert family, which no built-in lint covers. Tests and examples
+# are not linted by that step and keep their asserts.
+disallowed-macros = [
+    { path = "std::assert", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "std::assert_eq", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "std::assert_ne", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "std::debug_assert", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "std::debug_assert_eq", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "std::debug_assert_ne", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "core::assert", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "core::assert_eq", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "core::assert_ne", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "core::debug_assert", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "core::debug_assert_eq", reason = "product code returns an error instead of panicking (#152)" },
+    { path = "core::debug_assert_ne", reason = "product code returns an error instead of panicking (#152)" },
+]

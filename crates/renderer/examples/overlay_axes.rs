@@ -4,6 +4,12 @@
 //!   cell voltage on the left axis (filled to its baseline) and the current on
 //!   the overlay's right axis, one merged legend, exported as a document.
 //!
+//! The same example draws the shape annotations of the annotation layer:
+//! - `shapes` writes `gallery-shapes.png`: a flow cytometry scatter of 4000
+//!   events with three gates over the data, an ellipse, a rectangle and a
+//!   polygon, plus an outline-only dashed rectangle around the debris. The
+//!   host assigns each event to a gate and computes the percentages.
+//!
 //! cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -11,39 +17,34 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
-    Chart, Color, HitMap, LayerRef, OverlayLayer, Renderer,
-    config::{LegendCorner, LegendEntryKind, TickVisibility},
-    data_config::{DataRenderType, LineFill},
+    Anchor, Annotation, AnnotationKind, AnnotationLineStyle, BoxStyle, Color, HitMap, LayerRef,
+    Renderer, SeriesConfig, ShapeStyle,
+    config::{AxisOptions, LegendCorner},
+    line::LineStylePreset,
     text::RichText,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{cartesian, rgb, save};
+use styled::{background, export, save, scene_chart, themed};
 
 // Twin axes: a battery discharge with the voltage on the left axis and the
 // current on an overlay layer's right axis.
 fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(18, 20, 34);
-    let ink = rgb(190, 196, 224);
-    let mint = rgb(80, 220, 190);
-    let lavender = rgb(150, 160, 255);
-    let mut chart = cartesian(
+    let theme = ThemeFamily::Midnight.theme(ChartKind::Line);
+    let bg = background(&theme);
+    // The voltage in the first colour, the current in the second; each axis
+    // reads in its series' colour.
+    let [mint, lavender, ..] = theme.series.palette[..] else {
+        return Err("the midnight theme has two colours".into());
+    };
+    let mut chart = scene_chart(
         "Battery discharge / one cycle",
         "Minutes",
         "Cell voltage (V)",
-        bg,
-        ink,
-        rgb(38, 42, 66),
     );
-    chart.set_x_range(0., 90.);
-    chart.set_y_range(3.0, 4.3);
-    chart.config_mut().bottom_x.major_spacing = 15.;
-    chart.config_mut().left_y.major_spacing = 0.25;
-    chart.config_mut().right_y.line_visible = false;
-    chart.config_mut().right_y.tick = TickVisibility::None;
-    chart.config_mut().left_y.title_option.text.color = mint;
-    chart.config_mut().left_y.label_style.color = mint;
     let minutes: Vec<f64> = (0..=360).map(|i| f64::from(i) / 4.).collect();
     let current: Vec<f64> = minutes
         .iter()
@@ -68,26 +69,14 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
             open - 0.08 * i
         })
         .collect();
-    r.add_column("minutes", &column(minutes))?;
-    r.add_column("voltage", &column(voltage))?;
-    r.add_column("current", &column(current))?;
-    let mut overlay = OverlayLayer::default();
-    overlay.series = vec!["current".into()];
-    overlay.y_axis.out_margin = 110.;
-    overlay.y_axis.line_visible = false;
-    overlay.y_axis.tick = TickVisibility::None;
-    overlay.y_axis.min = 0.;
-    overlay.y_axis.max = 3.5;
-    overlay.y_axis.major_spacing = 0.5;
-    overlay.y_axis.label_style.color = lavender;
-    overlay.y_axis.label_style.font_size = 21.;
-    overlay.y_axis.title_option.visible = true;
-    overlay.y_axis.title_option.text = RichText::plain("Current (A)", lavender, 23., "");
-    // Layers are expanded when the chart is built, so the overlay joins the
-    // config before the chart that draws it exists.
-    let mut config = chart.config().clone();
-    config.overlays.push(overlay);
-    let mut chart = Chart::new(config);
+    r.add_column("minutes", &minutes)?;
+    r.add_column("voltage", &voltage)?;
+    r.add_column("current", &current)?;
+    let mut current_axis = AxisOptions::overlay_y("Current (A)", lavender);
+    current_axis.min = 0.;
+    current_axis.max = 3.5;
+    current_axis.major_spacing = 0.5;
+    chart = chart.with_overlay(current_axis, &["current"]);
     chart.set_x_range(0., 90.);
     chart.set_y_range(3.0, 4.3);
     // Fixed ranges keep round ticks; `auto_fit_y` and
@@ -98,28 +87,20 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
         config.left_y.major_spacing = 0.25;
         config.overlays[0].y_axis.major_spacing = 0.5;
     });
-    let mut filled = line(mint, 3.5);
-    filled.fill = Some(LineFill::ToBaseline(3.0));
-    filled.fill_color = Some(Color::from_rgba(mint.r, mint.g, mint.b, 0.12));
-    let specs = [
-        series(
-            "voltage",
-            "minutes",
-            "voltage",
-            DataRenderType::Line { line: filled },
-        ),
-        series(
-            "current",
-            "minutes",
-            "current",
-            DataRenderType::Line {
-                line: line(lavender, 2.5),
-            },
-        ),
+    let mut specs = [
+        SeriesConfig::line("voltage", "minutes", "voltage")
+            .label("Voltage")
+            .fill_to(3.0),
+        SeriesConfig::line("current", "minutes", "current").label("Current"),
     ];
-    chart = chart
-        .with_legend_entry("Voltage", mint, 3.5, LegendEntryKind::Line)
-        .with_legend_entry("Current", lavender, 2.5, LegendEntryKind::Line);
+    themed(&mut chart, &theme, &mut specs)?;
+    let config = chart.config_mut();
+    config.left_y.title_option.text.color = mint;
+    config.left_y.label_style.color = mint;
+    let current_axis = &mut config.overlays[0].y_axis;
+    current_axis.title_option.text.color = lavender;
+    current_axis.label_style.color = lavender;
+    chart = chart.with_legend_from(&specs);
     chart.config_mut().legend.corner = LegendCorner::TopRight;
     // The base layer and the overlay are two panels of one data area.
     let expansion = chart
@@ -143,12 +124,208 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
             .is_some()
     );
     // Overlay layers are part of the document, not the base panel.
-    let image =
-        pollster::block_on(r.export_document_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    chart.fit_layout();
+    let image = r.export_rgba_blocking(
+        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportOptions::document(1.).with_clear(bg),
+    )?;
     save(&image, bg, &out.join("gallery-twin-axes.png"))
+}
+
+/// A deterministic value in [0, 1) for sample `i` of stream `seed`.
+fn uniform(seed: u32, i: u32) -> f64 {
+    ((f64::from(i) * 12.9898 + f64::from(seed) * 78.233).sin() * 43758.5453)
+        .fract()
+        .abs()
+}
+
+/// A deterministic standard normal pair for sample `i` (Box-Muller).
+fn normal_pair(seed: u32, i: u32) -> (f64, f64) {
+    let u = uniform(seed, i).max(1e-9);
+    let v = uniform(seed + 1, i);
+    let radius = (-2. * u.ln()).sqrt();
+    let angle = std::f64::consts::TAU * v;
+    (radius * angle.cos(), radius * angle.sin())
+}
+
+/// Whether `(x, y)` lies inside the closed polygon `vertices` (ray casting).
+fn inside_polygon(vertices: &[(f64, f64)], x: f64, y: f64) -> bool {
+    let mut inside = false;
+    let mut j = vertices.len() - 1;
+    for (i, (xi, yi)) in vertices.iter().enumerate() {
+        let (xj, yj) = vertices[j];
+        if (*yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+// Shape annotations: gates drawn over a flow cytometry scatter. Each gate is
+// an annotation (an ellipse, a rectangle, a polygon); the host decides which
+// events fall in which gate and colours them by uploading one series per gate.
+fn shapes(r: &mut Renderer, out: &Path) -> Result {
+    let theme = ThemeFamily::CoolSlate.theme(ChartKind::Scatter);
+    let bg = background(&theme);
+    // The series take the palette in order: the debris in grey, each gate's
+    // events in that gate's colour, and the ungated events, the fifth
+    // series, back in grey. The gates and their labels read the same
+    // colours.
+    let [grey, teal, amber, violet] = theme.series.palette[..] else {
+        return Err("the cool-slate scatter theme has four colours".into());
+    };
+    let mut chart = scene_chart(
+        "Blood cell gates / 4000 events",
+        "Forward scatter (FSC-A, thousands)",
+        "Side scatter (SSC-A, thousands)",
+    );
+    chart.config_mut().legend.visible = false;
+    // The gates, in data units: an ellipse by its bounding box, a rectangle
+    // by two corners and a polygon by its vertices.
+    let lymph_box = ((44., 9.), (94., 57.));
+    let mono_box = ((92., 56.), (140., 108.));
+    let gran_polygon = [
+        (116., 106.),
+        (150., 96.),
+        (196., 128.),
+        (214., 206.),
+        (184., 246.),
+        (136., 222.),
+        (112., 160.),
+    ];
+    let debris_box = ((0., 0.), (36., 32.));
+    let in_ellipse = |((x0, y0), (x1, y1)): ((f64, f64), (f64, f64)), x: f64, y: f64| {
+        let (cx, cy, rx, ry) = (
+            (x0 + x1) / 2.,
+            (y0 + y1) / 2.,
+            (x1 - x0) / 2.,
+            (y1 - y0) / 2.,
+        );
+        ((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2) <= 1.
+    };
+    let in_rect = |((x0, y0), (x1, y1)): ((f64, f64), (f64, f64)), x: f64, y: f64| {
+        x >= x0 && x <= x1 && y >= y0 && y <= y1
+    };
+    // Four populations: debris near the origin, then lymphocytes, monocytes
+    // and granulocytes (count, centre, spread, tilt of y along x).
+    let populations = [
+        (500u32, (14., 12.), (8., 7.), 0.),
+        (1300, (69., 33.), (7., 6.5), 0.15),
+        (500, (116., 81.), (8.5, 8.5), 0.2),
+        (1550, (158., 168.), (15., 20.), 0.75),
+    ];
+    // Members of each gate, then the events outside every gate.
+    let mut groups: [(Vec<f64>, Vec<f64>); 5] = Default::default();
+    let mut events = 0u32;
+    for (k, (count, (cx, cy), (sx, sy), tilt)) in populations.into_iter().enumerate() {
+        for i in 0..count {
+            let (zx, zy) = normal_pair(17 + 2 * k as u32, i);
+            let x: f64 = (cx + sx * zx).max(1.);
+            let y: f64 = (cy + sy * zy + tilt * (x - cx)).max(1.);
+            let group = if in_rect(debris_box, x, y) {
+                0
+            } else if in_ellipse(lymph_box, x, y) {
+                1
+            } else if in_rect(mono_box, x, y) {
+                2
+            } else if inside_polygon(&gran_polygon, x, y) {
+                3
+            } else {
+                4
+            };
+            groups[group].0.push(x);
+            groups[group].1.push(y);
+            events += 1;
+        }
+    }
+    let percent = |group: usize| 100. * groups[group].0.len() as f64 / f64::from(events);
+    let labels = [
+        format!("Lymphocytes  {:.1} %", percent(1)),
+        format!("Monocytes  {:.1} %", percent(2)),
+        format!("Granulocytes  {:.1} %", percent(3)),
+    ];
+    let mut specs = Vec::new();
+    for (k, id) in [
+        "debris",
+        "lymphocytes",
+        "monocytes",
+        "granulocytes",
+        "ungated",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (x, y) = std::mem::take(&mut groups[k]);
+        r.add_column(format!("{id}-fsc"), &x)?;
+        r.add_column(format!("{id}-ssc"), &y)?;
+        specs.push(SeriesConfig::scatter(
+            id,
+            format!("{id}-fsc"),
+            format!("{id}-ssc"),
+        ));
+    }
+    themed(&mut chart, &theme, &mut specs)?;
+    let data = |(x, y): (f64, f64)| Anchor::Data { x, y };
+    let gate = |color: Color, style: LineStylePreset, fill: bool| ShapeStyle {
+        fill: fill.then(|| Color::from_rgba(color.r, color.g, color.b, 0.08)),
+        border: AnnotationLineStyle {
+            color,
+            width: 2.5,
+            style,
+        },
+        below: false,
+    };
+    let label = |at: (f64, f64), text: &str, color: Color| {
+        Annotation::new(AnnotationKind::Text {
+            anchor: data(at),
+            text: RichText::plain(text, color, 20., ""),
+            box_style: Some(BoxStyle {
+                fill: Color::from_rgba(bg.r, bg.g, bg.b, 0.9),
+                border_color: Color::from_rgba(color.r, color.g, color.b, 0.6),
+                border_width: 1.5,
+                padding: 7.,
+            }),
+            align: Default::default(),
+        })
+    };
+    chart.config_mut().annotations.items = vec![
+        Annotation::new(AnnotationKind::Rect {
+            from: data(debris_box.0),
+            to: data(debris_box.1),
+            style: gate(grey, LineStylePreset::Dash, false),
+        }),
+        Annotation::new(AnnotationKind::Ellipse {
+            from: data(lymph_box.0),
+            to: data(lymph_box.1),
+            style: gate(teal, LineStylePreset::Solid, true),
+        }),
+        Annotation::new(AnnotationKind::Rect {
+            from: data(mono_box.0),
+            to: data(mono_box.1),
+            style: gate(amber, LineStylePreset::Solid, true),
+        }),
+        Annotation::new(AnnotationKind::Polygon {
+            vertices: gran_polygon.iter().copied().map(data).collect(),
+            style: gate(violet, LineStylePreset::Solid, true),
+        }),
+        label((6., 58.), "Debris", grey),
+        label((99., 40.), &labels[0], teal),
+        label((146., 90.), &labels[1], amber),
+        label((46., 196.), &labels[2], violet),
+    ];
+    chart.set_x_range(0., 250.);
+    chart.set_y_range(0., 250.);
+    chart.config_mut().bottom_x.major_spacing = 50.;
+    chart.config_mut().left_y.major_spacing = 50.;
+    let image = export(r, &mut chart, &specs, bg)?;
+    save(&image, bg, &out.join("gallery-shapes.png"))
 }
 
 fn main() -> Result {
     let out = gallery::output_directory("target/overlay-axes")?;
-    gallery::with_renderer(|r| twin_axes(r, &out))
+    gallery::with_renderer(|r| {
+        twin_axes(r, &out)?;
+        shapes(r, &out)
+    })
 }

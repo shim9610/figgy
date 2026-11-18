@@ -1,35 +1,33 @@
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::{
-    Column, GpuErrorbarError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode,
+    Column, GpuExtentError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode,
     Renderer, RendererDevice,
 };
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
-fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-    static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let (device, queue) = test_gpu::device();
-            Some((Arc::new(device), Arc::new(queue)))
+            Some((device, queue))
         })
         .as_ref()
-        .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+        .map(|(device, queue)| (device.clone(), queue.clone()))
 }
 
 fn try_renderer() -> Option<Renderer> {
     let (device, queue) = shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
         )
@@ -62,15 +60,15 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
         .unwrap();
 
     assert!(!renderer.errorbar_extent_engine_ready());
-    renderer.prepare(&[]).unwrap();
+    renderer.prepare(&mut []).unwrap();
     assert!(!renderer.errorbar_extent_engine_ready());
     assert!(matches!(
         renderer.begin_errorbar_extent("x", "x", "x"),
-        Err(GpuErrorbarError::EngineNotReady)
+        Err(GpuExtentError::EngineNotReady)
     ));
     assert!(matches!(
         renderer.begin_series_extent(GpuSeriesExtentMode::Points, point_columns()),
-        Err(GpuErrorbarError::EngineNotReady)
+        Err(GpuExtentError::EngineNotReady)
     ));
 
     {
@@ -79,14 +77,14 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
             .unwrap();
         assert!(matches!(
             provisional.begin_series_extent(GpuSeriesExtentMode::Points, point_columns()),
-            Err(GpuErrorbarError::EngineNotReady)
+            Err(GpuExtentError::EngineNotReady)
         ));
     }
     assert!(!renderer.errorbar_extent_engine_ready());
 
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
     assert!(renderer.errorbar_extent_engine_ready());
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     let shared_renderer = &renderer;
     // A live ticket owns reduction scratch and a MAP_READ buffer; both are
@@ -104,7 +102,7 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
         pending.report()
     );
 
-    let extent = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+    let extent = test_gpu::block_on(ticket.resolve()).unwrap().unwrap();
     assert_eq!((extent.x.min, extent.x.max), (1.0, 2.0));
     assert_eq!((extent.y.min, extent.y.max), (10.0, 20.0));
 
@@ -131,7 +129,7 @@ fn prepared_engine_reads_provisional_upsert_without_publishing_rollback() {
     renderer
         .add_hilo_column("y", &col_f64(vec![10.0, 20.0]))
         .unwrap();
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     let provisional_ticket = {
         let provisional = renderer
@@ -141,12 +139,12 @@ fn prepared_engine_reads_provisional_upsert_without_publishing_rollback() {
             .begin_series_extent(GpuSeriesExtentMode::Points, point_columns())
             .unwrap()
     };
-    let provisional = pollster::block_on(provisional_ticket.resolve())
+    let provisional = test_gpu::block_on(provisional_ticket.resolve())
         .unwrap()
         .unwrap();
     assert_eq!((provisional.x.min, provisional.x.max), (100.0, 200.0));
 
-    let rolled_back = pollster::block_on(
+    let rolled_back = test_gpu::block_on(
         renderer
             .begin_series_extent(GpuSeriesExtentMode::Points, point_columns())
             .unwrap()

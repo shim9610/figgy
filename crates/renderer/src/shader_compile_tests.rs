@@ -59,9 +59,18 @@ fn single_pipeline_builders_compile_only_the_requested_shader() {
 #[test]
 fn all_shader_compilation_times_and_entry_coverage() {
     let (device, queue) = crate::data_render::shared_device().expect("required GPU adapter");
-    let gpu = RendererDevice::new(device.clone(), queue.clone());
+    let gpu = RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread");
     let session = capture::Session::begin();
-    for samples in [1, 4] {
+    // Both shader sets (#299): a new renderer's basic modules, and
+    // the full modules of one that has been handed a chart that needs them. The
+    // same constructors run for each, so every entry of every module is
+    // measured in both.
+    for (set, samples) in [
+        (ShaderSet::Basic, 1),
+        (ShaderSet::Basic, 4),
+        (ShaderSet::Full, 1),
+        (ShaderSet::Full, 4),
+    ] {
         let mut renderer = Renderer::try_new_with_sample_count(
             gpu.clone(),
             wgpu::TextureFormat::Rgba8Unorm,
@@ -69,10 +78,13 @@ fn all_shader_compilation_times_and_entry_coverage() {
             samples,
         )
         .unwrap();
-        pollster::block_on(renderer.prewarm_all()).unwrap();
+        assert_eq!(renderer.shader_set(), ShaderSet::Basic);
+        renderer.admit_full_shaders(set == ShaderSet::Full);
+        assert_eq!(renderer.shader_set(), set);
+        crate::test_gpu::block_on(renderer.prewarm_all()).unwrap();
         // No shader or pipeline creation at all, even a compiler-cache hit.
         let before = capture::counts();
-        pollster::block_on(renderer.prewarm_all()).unwrap();
+        crate::test_gpu::block_on(renderer.prewarm_all()).unwrap();
         assert_eq!(before, capture::counts());
         // The exact pick modules compile on the first pick that needs each;
         // measure every module (with every path) here.
@@ -120,11 +132,10 @@ fn all_shader_compilation_times_and_entry_coverage() {
             },
         );
     }
-    crate::radial::RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    crate::categorical::CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
-        .unwrap();
-    crate::boxplot::BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    crate::radar::RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    crate::radial::RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    // The pool's compact upload expansion (#317), created on the first
+    // single-lane upload.
+    crate::data_render::column_pool::ColumnExpand::new(&device).unwrap();
     let capture = session.finish();
     if let Some(path) = std::env::var_os("FIGGY_SHADER_COMPILE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&capture.json()).unwrap()).unwrap();
@@ -169,6 +180,11 @@ fn all_shader_compilation_times_and_entry_coverage() {
                     | "pick_exact_candidates"
                     | "pick_reduce_candidates"
                     | "pick_histogram_bin"
+                    | "pick_category_bar"
+                    | "pick_box_plot"
+                    | "pick_range_bar"
+                    | "pick_violin"
+                    | "pick_value_labels"
                     | "scan_block"
             )
         ) {
@@ -193,17 +209,58 @@ fn all_shader_compilation_times_and_entry_coverage() {
     let mut missing = Vec::new();
     for (index, source) in capture.sources.iter().enumerate() {
         let module = wgpu::naga::front::wgsl::parse_str(source["code"].as_str().unwrap()).unwrap();
+        // The public single-pipeline bar builders
+        // (`create_bar_columnar_pipeline`, `..._mapped_pipeline`) are the
+        // only users of these two entries, and they compile the module with
+        // every feature for any host transform (#299): the basic module's
+        // copies are never compiled.
+        let host_only =
+            source["code"].as_str() == Some(data_render::BAR_SHADER_BY_SET.basic.source);
         for entry in module.entry_points {
+            if host_only && matches!(entry.name.as_str(), "vs_main" | "vs_mapped") {
+                assert!(!used.contains(&(index, entry.name.clone())));
+                continue;
+            }
             if !used.contains(&(index, entry.name.clone())) {
                 missing.push(format!("{} in {}", entry.name, source["label"]));
             }
         }
     }
     assert!(missing.is_empty(), "Unmeasured entries: {missing:?}");
+    // Both assemblies of every module by cuts were compiled.
+    for (name, by_set) in crate::shader_assembly::MODULES_BY_SET {
+        for (which, assembled) in [("basic", by_set.basic), ("full", by_set.full)] {
+            assert!(
+                capture
+                    .sources
+                    .iter()
+                    .any(|s| s["code"].as_str().unwrap() == assembled.source),
+                "{name} ({which}) was not compiled"
+            );
+        }
+    }
     // This generated metadata is also the browser prewarm descriptor source.
     // No shader code is duplicated there. A changed shader/layout cannot ship
     // with an obsolete prewarm definition unnoticed.
     let contract = capture.browser_contract();
+    // A full module compiles to the same pipeline descriptors as its basic
+    // twin, so the contract stores each once,
+    // under the basic source (#299): no entry is keyed by a full source,
+    // and every basic source that has pipelines is there.
+    for (name, by_set) in crate::shader_assembly::MODULES_BY_SET {
+        let full_key = crate::gpu_compile::source_key(by_set.full.source);
+        let basic_key = crate::gpu_compile::source_key(by_set.basic.source);
+        let keyed = |key: &str| {
+            contract["pipelines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|p| p["source"].as_str() == Some(key))
+                .count()
+        };
+        assert_eq!(keyed(&full_key), 0, "{name}");
+        assert!(keyed(&basic_key) > 0, "{name}");
+    }
     let contract_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shader_pipeline_contract.json");
     if std::env::var_os("FIGGY_UPDATE_SHADER_CONTRACT").as_deref()

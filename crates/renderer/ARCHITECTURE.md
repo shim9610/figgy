@@ -1,40 +1,47 @@
 # Rendering architecture / 렌더링 구조
 
 Native rendering, data ownership, GPU memory and frame invalidation of the
-Cartesian `Renderer`. The bounded chart families (`RadialRenderer`,
-`CategoricalRenderer`, `BoxPlotRenderer`, `RadarRenderer`) are separate
-renderers: each returns immutable prepared frames, keeps its own GPU ledger
-(`gpu_memory_usage()`) and budget (`set_memory_budget(bytes)`), and uses no
-column pool, auto-fit jobs or streaming. A host that reports total GPU memory
-adds every renderer's `gpu_memory_usage()`. See [RADIAL.md](RADIAL.md),
-[CATEGORICAL.md](CATEGORICAL.md), [BOXPLOT.md](BOXPLOT.md) and
-[RADAR.md](RADAR.md).
+Cartesian `Renderer`, which also draws categorical bars
+([CATEGORICAL.md](CATEGORICAL.md)), box plots ([BOXPLOT.md](BOXPLOT.md)) and
+radar charts as polar radar series ([RADAR.md](RADAR.md)); the legacy
+categorical, box plot and radar documents of releases up to 0.12 are read into
+those charts by the deprecated readers `Config::from_categorical`,
+`Config::from_boxplot` and `Config::from_radar`, which are removed in the next
+milestone. The radial chart (`RadialRenderer`), the DataLess chart, is a
+separate renderer: it
+returns immutable prepared frames, charges the GPU ledger of the
+`RendererDevice` it is built from and spends that bundle's budget, as every
+renderer built from the bundle does (`gpu_memory_usage()`,
+`set_memory_budget(Option<u64>)`), and uses no column pool, auto-fit jobs or
+streaming. Any renderer on the bundle reports the bundle's total. See [RADIAL.md](RADIAL.md).
 For runnable examples, start with the [README](https://github.com/shim9610/figgy/blob/master/README.md).
 
 | Component | Role |
 |---|---|
 | `figgy-model` | Chart settings, data contracts and interaction policies; optional serde |
 | `figgy-renderer` | GPU data drawing, CPU text/axes, picking, caching, resource ownership and export |
-| `crates/web` | Example application adapter: wasm-bindgen, canvas events and frame scheduling |
+| `crates/web` | Browser product (`figgy`): wasm-bindgen wrapper and `<figgy-chart>` element, canvas events and frame scheduling |
 
-The browser lifecycle descriptions below describe that example adapter, not a
-JavaScript API for every renderer. [Browser example scope](https://github.com/shim9610/figgy/blob/master/crates/web/README.md).
+The browser lifecycle descriptions below describe that browser wrapper, not a
+JavaScript API for every renderer. [Browser product scope](https://github.com/shim9610/figgy/blob/master/crates/web/README.md).
 
-- **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit allocation. A removal schedules a ping-pong defragmentation that runs when the host calls `process_pending_maintenance()` (or `defragment()`); under `DefragPolicy::OnAllocFailure` an upload that hits `OutOfSpace` also defragments once and retries. The default policy is `Manual`. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`).
-- **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the [web streaming contract](WASM.md#exact-streaming-en).
-- **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
+- **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit allocation. A removal schedules a ping-pong defragmentation that runs when the host calls `process_pending_maintenance()` (or `defragment()`); under `DefragPolicy::OnAllocFailure` an upload that hits `OutOfSpace` also defragments once and retries. The default policy is `Manual`. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`). Per-point data enters the pool in four kinds, all through `ColumnSource`: columns, records (a box plot's fields), ragged columns (variable-length groups with `u32` offsets) and triangle index columns (#210: three `u32` vertex indices per triangle, checked and summarised in the upload's write observer). Records, ragged and triangle columns own internal member columns and are resident only.
+- **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, histograms (`RuleKind::StreamedHistogram`, #284), line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the [web streaming contract](WASM.md#exact-streaming-en).
+- **Monotonic-x lines (opt-in)**: a `MonotonicLine` series in a monotonic chart (`register_monotonic_chart`) draws evenly spaced samples the host lends through a `MonotonicSource` on each call, reduced on the CPU to an M4 envelope per pixel column and drawn by the line pipeline; see [Monotonic-x lines](#monotonic-x-lines-m4-envelope) and [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md).
+- **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. A layered document draws the grid and data of every panel before the decoration of any panel, so on every layer the decoration is above the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
-- **Headless PNG export**: GPU offscreen raster at `scale` 0.25–8.0 (about 24–768 DPI; `clamp_export_scale` clamps other values, and the scaled target must fit the device texture limit) → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
+- **Headless PNG export**: GPU offscreen raster at `scale` 0.25 and up (24 DPI and up; `clamp_export_scale` raises smaller values, and the scaled target must fit the device texture limit, else `GpuResourceLimit`) → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
+- **SVG and PDF export**: the same document with its decorations as vector content (glyphs as outlines) and each panel group's data as an image of the PNG export's pixels; a hand-written PDF writer over `flate2`.
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
-- **Data picking (opt-in)**: `pick_point` retains the point/line compatibility contract, while `pick_data` additionally returns tagged histogram-bin, canonical matrix-cell, and contour-level identities. Resident picking evaluates bar rectangles and field/contour geometry on the GPU from the same transform, pool, style, lattice, and level tables used to draw them. A completed chart-local packed view supports GPU point/line picking with original row indices and no source replay; other nonresident streams return `null`. Low-level WASM stream-pick replay entry points reject immediately. Hosts may still feed known stable refs through `Config.picked_data` or `Config.picked_points` for bounded selection highlighting.
+- **Data picking (opt-in)**: `pick_point` retains the point/line compatibility contract, while `pick_data` additionally returns tagged histogram-bin, canonical matrix-cell, and contour-level identities. Resident picking evaluates bar rectangles and field/contour geometry on the GPU from the same transform, pool, style, lattice, and level tables used to draw them. A completed chart-local packed view supports GPU point/line picking with original row indices and no source replay; other nonresident streams return `null`. Low-level WASM stream-pick replay entry points reject immediately. Hosts may still feed known stable refs through `Config.picked_data` for bounded selection highlighting.
 - **Per-point style mapping (opt-in)**: precise scatter can bind `point_style_table` / `point_style_index_column` / `point_style_overrides`; precise errorbars can independently bind `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`. Styled modes keep their own visual shaders and ignore these mappings.
 - **Rich-text everywhere**: titles, tick labels, and the legend share one engine — per-segment bold/italic/underline/sub/superscript/greek, per-segment color & size overrides, `'\n'` line breaks, `'\t'` table columns, fixed-width legend symbol fields.
-- **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, line wobble/dash phase uses arc-length-scan-driven GPU variants, markers/errorbars use dedicated GPU variants, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks: the configured family, then registered fonts, the bundled Liberation Sans and (native only) installed system fonts, so CJK keeps your registered font. Deterministic (seeded), composes with dashes, and the field's absence means the precise path runs completely untouched. The mode draws line, scatter and errorbar series only: histogram, heatmap, contour and vector series are skipped without an error, and `draw_style_supports(style, render_type)` reports which combinations draw.
+- **Hand-drawn sketch mode (opt-in)**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }` renders the chart xkcd-style — axes/ticks/grid/legend wobble on the CPU raster, line wobble/dash phase uses arc-length-scan-driven GPU variants, markers/errorbars use dedicated GPU variants, and chart text automatically switches to the bundled handwritten face (Comic Neue, OFL) with per-character fallback for glyphs it lacks: the configured family, then registered fonts, the bundled Liberation Sans and (native only) installed system fonts, so CJK keeps your registered font. Deterministic (seeded) and composes with dashes; without the field the chart draws in the precise mode. The mode draws line, scatter and errorbar series only: histogram, heatmap, contour and vector series have no sketch primitive and are skipped without an error, and `draw_style_supports(style, render_type)` reports which combinations draw.
 - **Milkyway mode (opt-in)**: `draw_style: { mode: "milkyway", ... }` renders the chart as an astrophotograph — lines become star chains over a series-colored nebula ribbon; scatter markers become ringed planets; errorbars become bipolar jets over a deep-space backdrop. Like sketch mode, it skips histogram, heatmap, contour and vector series without an error.
 - **Constellation mode (opt-in)**: `draw_style: { mode: "constellation", ... }` supports `ScatterLine` series only: PSF-rendered stars sit at scatter data positions and a translucent line connects them. Parameter ranges ship as machine-readable metadata (`draw_style_param_specs`).
 - **Single wgpu major (30)**: the renderer and active egui integration use wgpu 30. The retained iced integration source is not a build target because iced 0.14 still exposes wgpu 27 types.
-- **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`text_render::register_font_bytes` in Rust, `register_font` on the browser example's `FiggyChart`) for CJK and custom families.
-- **Example browser startup**: in a wasm browser, `create` / `create_with_progress` compile every render WGSL entry and await the first empty-chart frame; optional render, style and compute caches stay lazy until first use or `prewarm_all` / `prewarm_all_with_progress`. The web cold-start contract under [Memory accounting and release](#memory-accounting-and-release) gives the details.
+- **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`text_render::register_font_bytes` in Rust, `register_font` on the browser wrapper's `FiggyChart`) for CJK and custom families.
+- **Browser startup**: in a wasm browser, `create` / `create_with_progress` / `create_with_options` await no pipeline compile (#299). They create the fullscreen textured pipeline directly, start the asynchronous compile of every resident render pipeline of the starting shader set (`"basic"` by default, `"full"` through `create_with_options({ shaders: "full" })`) without waiting for it, and await the first empty-chart frame. A frame leaves out a series whose pipelines are still compiling and draws again when they finish. The vector, 3D surface and ternary region modules and the compute scans compile on demand; style and compute caches stay lazy until first use or `prewarm_all` / `prewarm_all_with_progress`. The web cold-start contract under [Memory accounting and release](#memory-accounting-and-release) gives the details.
 
 ## Internal memory data flow
 
@@ -49,8 +56,24 @@ Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
 ### Rendering contracts
 
 The overview separates the column-based `Renderer` path from the chart-specific
-radial, categorical, boxplot and radar renderers. Their immutable frames do not
-share the `PreparedFrame` or column-pool/streaming contract. Screen display and
+radial renderer. The radial renderer's immutable frames do not
+share the `PreparedFrame` or column-pool/streaming contract. The radial chart is
+the DataLess chart: it is defined by its SSOT alone, with no `ColumnSource`,
+pool or streaming; its decorations place their parts from the chart into the
+shared sinks, and its slices are picked on the GPU by the draw's own sector
+ray-march from the frame's sector buffer. Inside the column-based
+`Renderer`, the energy-level series (#203) is a DataLess series kind: its SSOT
+records are placed by the model, rastered on the CPU through the canvas sink at
+prepare, cached in the scratch map and composited in the data slot after the GPU
+data (unlike the GPU series, whose appearance the shader computes); it is
+picked on the CPU over the same placement. The Feynman series (#234) is
+another: its topology is SSOT, its unplaced vertices are placed by a
+deterministic layout at raster time and committed into the SSOT only by an
+explicit `place_feynman_vertices` or a first drag (the auto-fit pattern), and its arcs,
+waves and coils reach every sink as cubic paths (`Sink::path`). The vector
+export writes both DataLess kinds as vector parts between the GPU steps
+around them. A subplot nested in its parent's data area (an inset) is
+composited after every other panel. Screen display and
 image export are separate output paths; export renders at the requested size.
 The table summarizes contracts by topic, rather than numbered areas in the image.
 
@@ -62,8 +85,8 @@ The table summarizes contracts by topic, rather than numbered areas in the image
 | **Frame invalidation** | A persistent host compares renderer-issued desired/raster revisions with its last successfully presented stamp. Raster or viewport changes require a raster refresh; host-only redraw state can require drawing without changing chart state. The browser's clean rAF skips surface acquisition and drawing, while required maintenance/completion processing can continue. Failed presentation must not advance the last-presented stamp. |
 | **Prepare and record** | `prepare(&mut self)` resolves draw inputs and captures GPU handles, shared charges and validation stamps in `PreparedFrame`. `paint_prepared(&self)` validates that token before recording. It rejects changed views, captured columns, layouts, target pipelines or registered chart revisions. Once commands are recorded, the host must submit them before conflicting mutations; a token cannot inspect an external command buffer's later submission order. |
 | **GPU-derived data** | Arc-prefix scans, picking and exact primitive extents use GPU columns. Arc scan splits long series into bounded chunks linked by a carry chain, so dispatch limits do not cap series length. Picking and fitting return compact results instead of a CPU copy of all points. Immutable derived GPU results can be shared by cache entries and prepared tokens; cache eviction alone need not release the last owner. |
-| **Screen and export** | Compose grid → annotation underlay → data → decoration → annotation overlay. Export prepares a scaled chart/view/style and offscreen target, then reads back padded row chunks and converts premultiplied RGBA to straight alpha. Row chunking bounds the readback buffer; the target, final RGBA image and PNG output still need their own memory. Resident export uses GPU columns, while streamed export replays original ranges. |
-| **Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation. Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
+| **Screen and export** | Compose grid → annotation underlay → data → decoration → annotation overlay. Export prepares a scaled chart/view/style and an offscreen half-float target (`EXPORT_FORMAT`, `Rgba16Float`), then reads back padded row chunks and quantizes the premultiplied half floats once to straight-alpha RGBA8. Row chunking bounds the readback buffer; the target, final RGBA image and PNG output still need their own memory. Resident export uses GPU columns, while streamed export replays original ranges. |
+| **Fidelity and caches** | Resident redraw reads original GPU columns without a data image cache. Nonresident streaming retains an accumulation surface and may admit a chart-local cache of exact source rows for supported views. Neither path introduces LOD, sampling or decimation; the monotonic-x line is a separate source with its own contract (below). Clipping, invalid/log-domain samples and antialiasing remain rendering rules; different backends need not produce byte-identical pixels. |
 | **Accounting and retirement** | A GPU resource's shared charge survives as long as a Figgy owner retains it. After the last owner drops, retired bytes remain counted until an appropriate submission boundary and queue completion. `end_gpu_frame()` follows submission/discard of earlier commands; native hosts must service completions. The ledger describes tracked requested bytes, with the style-texture exceptions described below, rather than physical VRAM usage. |
 
 ### Resident column upload
@@ -74,13 +97,29 @@ Zero-copy here means writing directly into mapped staging without a separate
 CPU point array. The GPU copy still occurs; CPU axis/text image buffers are
 outside this column-upload guarantee.
 
+The pool stores every value as an 8-byte `(hi, lo)` pair. A pair column (an
+f64 or `HiLoColumnSource` source) is staged in that layout and copied into the
+pool. A single-lane column, whose source returns `ColumnLanes::Single` from
+`ColumnSource::lanes` (the built-in f32 sources) or which holds index lanes
+(ragged offsets, triangle indices), is staged compact at 4 bytes per value
+(#317). The upload copies the compact bytes into one transient storage buffer
+and a compute pass (`column_expand.wgsl`) writes `(value, 0)` into the
+column's region, so the pool holds the same bytes as a pair upload and no
+shader changes. Staging and the host-to-GPU transfer halve for such a column;
+the transient buffer is GPU-local and charged to the ledger like staging. A
+single-lane source that writes a non-zero second lane fails its upload. A
+device without the needed compute, or a column wider than one storage binding,
+is staged as pairs. Streamed sources always stage pairs. An upload's compact
+columns are placed as one contiguous run of the pool, so one dispatch expands
+them all and a batch's host cost does not grow with their count.
+
 ### Exact streaming and residency
 
 ![Column-based screen update loop: conditional CPU rasterization, resident GPU data, chunked streaming and composition](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/streaming-architecture-en.png)
 
 The loop shows initial resident upload outside screen updates, conditional CPU
 raster updates and reuse inside them, and chunked data drawing before composition.
-Streaming is a Cartesian `Renderer` contract, not a bounded-chart renderer path.
+Streaming is a Cartesian `Renderer` contract, not a radial renderer path.
 Optional GPU caches and export replay are described below; the export inset
 shows the separate output path. The native host
 owns replayable original data and supplies requested ranges. Browser hosts use
@@ -108,7 +147,7 @@ work and releases job-owned resources after submitted GPU work settles. GPU poin
 available and returns original row indices without source replay. Other streamed
 charts do not support immediate picking. Scaled PNG export uses replayable
 original ranges in a separate GPU path, so the source must remain available.
-Dashed lines, histograms, heatmaps and supported styled streams can also reuse
+Dashed lines, heatmaps and supported styled streams can also reuse
 an original-source GPU cache. This cache preserves ordering and adjacency, and
 is admitted only when all referenced columns fit the per-chart working-set cap,
 the device buffer limit and the total GPU budget. It copies uploaded pairs on
@@ -145,7 +184,7 @@ render-pass boundaries.
 logical-source metadata, render/compute pipelines,
 the shared picker pipeline bundle, at most one derived active-chart picker cache,
 pending pool maintenance, renderer-level bind groups, and the shared
-`Arc<wgpu::Device>` / `Arc<wgpu::Queue>`. It creates `ChartView` and `ChartStyle`
+`wgpu::Device` / `wgpu::Queue` (both reference-counted handles). It creates `ChartView` and `ChartStyle`
 values and returns them to the host, which keeps them in its panel state (see
 [the egui host](examples/egui_embed.rs)). A `PreparedFrame` holds
 its own GPU handles and shared charges, so dropping a host view/style does not
@@ -195,19 +234,22 @@ recording with `FiggyError::StalePreparedFrame`; the host prepares again on the
 next frame. Arc/star scratch and automatic contour placement are immutable
 exact-key results: equal compute inputs share one result, while changed
 geometry, data generation, or placement inputs allocate a new result and never
-overwrite the old one. Their shared GPU charges live as long as the cache or a
+overwrite the old one. Explicit contour placement is immutable too. Their
+shared GPU charges live as long as the cache or a
 prepared token owns the corresponding handles; after the last Figgy owner
 drops, the charge becomes retired. After the host submits or discards all
 previously recorded commands, `end_gpu_frame()` attaches a queue-completion
-callback; the retired charge remains until that callback runs. Explicit contour placement is immutable too. This
-guarantee does not replace host frame ordering: rewriting the same `ChartView`,
+callback; the retired charge remains until that callback runs. This
+immutability does not replace host frame ordering: rewriting the same `ChartView`,
 replacing a captured column, defragmenting the pool, or rebuilding target
 pipelines deliberately makes the old token stale. Commands recorded from that
 token must be submitted before one of those mutations.
 
 For resident `add_column`, `ColumnSource` data is borrowed only during upload.
 The long-lived records are the GPU-pool column and the scalar stats cached for
-auto-fit (min / max / smallest-positive); source references and CPU-side
+auto-fit (min / max / smallest-positive), which the upload's `ColumnPairWriter`
+records from the values as they are written (the source supplies no
+statistics; a streamed source is measured per chunk); source references and CPU-side
 per-point geometry are not kept. Per-point geometry such as the arc prefixes of
 dashed, sketch and Milkyway lines is derived from the GPU pool by compute scans.
 Nonresident registration instead retains logical source metadata and bounded
@@ -242,6 +284,23 @@ identity mapping captured at submission. Later chart or pool mutations, and
 even dropping the renderer, cannot remap that ticket's eventual
 `source_id` / `series_id` result.
 
+**GPU waits** (#160). wgpu runs a map or submitted-work callback only inside a
+device poll or a submit. Every wait goes through `gpu_readback.rs`, except
+the streaming readbacks (`streaming_auxiliary.rs`), which are frozen under
+rule 8: a
+`Completion` pairs the callback with its result, and a ticket or export is
+split into its submit, its wait and a synchronous finish, so the awaited,
+blocking and checked (`try_resolve`) waits share every step but the wait.
+On native, `RendererDevice::new` starts one poll thread per bundle
+(`gpu_poller.rs`): it holds two counters and its park token, no lock, polls
+while a wait is registered and parks otherwise. Its owners are the bundle's
+health record, held by every clone, renderer and engine of the bundle, and
+the mark of every wait not yet settled; it exits once none is left and
+nothing is pending, and nobody joins it. The thread reads only whether the
+device is lost, never the uncaptured-error count, which stays the host
+call's to report. `tools/loom-poller` model-checks the protocol with loom;
+`RendererDevice::blocking` builds a bundle without the thread.
+
 The browser public surface follows the same boundary. The `<figgy-chart>`
 facade owns the shadow canvas, ready promise, rAF loop, ResizeObserver/DPR
 handling, pointer mapping, async-operation busy gate, and id register/unregister
@@ -257,12 +316,12 @@ rejects creation/readiness; it cannot publish a successful first-frame event.
 
 | Surface | Contract |
 |---|---|
-| Raw `FiggyChart` | In a wasm browser, `create` / `create_with_progress` warm every render WGSL entry on the same `GPUDevice` through Promise-based `createRenderPipelineAsync`, discard the temporary JS pipelines, then submit and await the first empty-chart frame. Production renderer-owned optional render/style and arc/fit/picker/contour compute caches remain lazy. `prewarm_all_with_progress(callback)` publishes those actual wgpu caches with `{ scope, stage, phase }` progress; `prewarm_all()` performs the same work without a callback. `warm_up()` is a first-frame compatibility alias, not full prewarm. Creation does not enable the production picker: `prewarm_gpu_picking()` explicitly enables it and prepares the current chart, while retries and `pick_point` / `pick_data` reuse the same renderer-owned path and sticky activation error. |
+| Raw `FiggyChart` | In a wasm browser, `create` / `create_with_progress` / `create_with_options` await no pipeline compile (#299). They create the fullscreen textured pipeline directly and start the asynchronous compile of every resident render pipeline of the starting shader set (`"basic"` by default, `"full"` through `create_with_options({ shaders: "full" })`) through the renderer's `CompileQueue`: `createRenderPipelineAsync` on the same `GPUDevice`, at most `navigator.hardwareConcurrency` compiles in flight (4 if it reports none), what the screen needs first. The results stay in the browser's cache, where the synchronous creation of the same pipeline finds them. Creation then submits and awaits the first empty-chart frame. A frame leaves out a series whose pipelines are still compiling and draws again when they finish; `first_frame_ready`, `series_ready` and `pipelines_ready` wait on those compiles. The vector, 3D surface and ternary region modules and the compute scans compile on demand. Production renderer-owned optional render/style and arc/fit/picker/contour compute caches remain lazy. `prewarm_all_with_progress(callback)` publishes those actual wgpu caches with `{ scope, stage, phase }` progress; `prewarm_all()` performs the same work without a callback. `warm_up()` is a first-frame compatibility alias, not full prewarm. Creation does not enable the production picker: `prewarm_gpu_picking()` explicitly enables it and prepares the current chart, while retries and `pick_point` / `pick_data` reuse the same renderer-owned path and sticky activation error. |
 | `<figgy-chart>` startup | The `web.create / first frame / finished` progress event and `figgy-ready` are published before background picker prewarm begins. A prewarm failure emits `figgy-error` with `operation: "prewarm_gpu_picking"` and `recoverable: true`; the fulfilled `ready` promise and rendering loop remain valid. |
-| Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready` / `warm_up`, extent preparation, resident async fit, and pick. The facade's two full-prewarm methods pass through this generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. Streaming `auto_fit_all()` instead requests renderer-owned fitting and awaits its stream job without holding this token: the fit itself does not set `busy`, so the scheduler can keep calling the kernel and reconcile the latest chart state. An independent operation may still set `busy`. |
+| Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready` / `warm_up`, `series_ready` / `pipelines_ready`, stream cancellation, extent preparation, resident async fit, and pick. The facade's two full-prewarm methods pass through this generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. Streaming `auto_fit_all()` instead requests renderer-owned fitting and awaits its stream job without holding this token: the fit itself does not set `busy`, so the scheduler can keep calling the kernel and reconcile the latest chart state. An independent operation may still set `busy`. |
 | Disconnect/reconnect | Disconnect invalidates the generation and cancels its rAF/observer. A kernel borrowed by an active operation is freed only after that operation settles. Its stale settlement cannot clear, resize, release, or free the new generation's kernel. |
 
-The example facade enforces that gate; wasm-bindgen itself checks borrows and
+The `<figgy-chart>` facade enforces that gate; wasm-bindgen itself checks borrows and
 does not serialize or queue calls. Competing application calls to the facade
 are rejected while busy, rather than queued. Raw kernel users must prevent
 same-object access until an async mutable borrow settles, including on failure;
@@ -273,13 +332,12 @@ Web mutation API contracts:
 
 | API | Contract |
 |---|---|
-| `auto_fit_colorbar(padding)` | Fits the shared colorbar z axis to the upload-metadata union of every matrix value column, scatter `point_color_map` column and vector colour column. A chart without a colorbar is unchanged. |
+| `auto_fit_colorbar(padding)` | Fits the shared colorbar z axis to the upload-metadata union of every matrix and triangle-mesh value column, xy and ternary scatter `point_color_map` column, vector and streamline colour column and parallel colour column, together with the finite transition values of a `color_by_value` energy-level series. A chart without a colorbar is unchanged. |
 | `set_colorbar_axis(json)` | Replaces the existing colorbar's complete `AxisOptions` SSoT, covering tick style/direction/length, inversion, tick-label style/offsets, and title options. |
 | `set_colorbar_title(text)` | Sets the colorbar title and shows it; an empty string hides it. Fails when `Config.colorbar` is absent. |
 | `set_contour_nice_levels(series_id, target_count, use_colormap_colors)` | Uses the colorbar axis tick rules to replace one contour series' explicit levels, optionally assigns color-map colors, records the result in series SSoT, and returns the resulting level count. |
 | `series_draw_info(series_id)` | Reports `{ drawn_count, cols, rows, truncated }`. The raw wasm `FiggyChart` returns a JSON string; the `<figgy-chart>` facade parses it and returns the object. |
 | `pick_data(x, y, max_distance_px)` | Asynchronously returns a tagged point/bin/cell/contour identity or `null`; raw wasm returns its JSON string or `undefined`, and the facade parses it. |
-| `set_picked_points(json)` | Accepts a JSON string encoding `PickedPointsConfig` or `null`. It replaces only renderer-owned `Config.picked_points`; `null` clears the overlay. References retain `series_id`, optional `source_id`, and `point_index`, not copied point coordinates. |
 | `set_picked_data(json)` | Accepts `DataSelectionsConfig` or `null` and replaces only `Config.picked_data`. Refs retain stable indices and provenance; current geometry stays in the GPU-backed chart SSoT. |
 | `set_clear_color(r, g, b, a)` | Accepts linear RGBA components, clamps each to `0..1`, and schedules a surface redraw. Clear color is host/surface state and does not modify Config JSON or force an axis-raster refresh. |
 
@@ -290,9 +348,9 @@ depends on the live data→pixel transform. It is produced entirely on the GPU
 for each distinct compute key; an exact key hit reuses the immutable result:
 
 ```
-pool columns (x, y) ──┐                       Transform uniform (144 B write)
+pool columns (x, y) ──┐                       Transform uniform (304 B write)
                       ▼                                   │
-   seg_init           dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
+   seg_init           dst[i] = |px(pᵢ) − px(pᵢ₋₁)| in 1/65536 px ◄┘
    scan_block         256-block inclusive scans (Hillis–Steele, shared mem)
    scan_block/add     block-sum levels (dst → sums0 → sums1 → sums2)
    carry chain        chunks of min(dispatch limit × 256, 256³) points run
@@ -303,16 +361,24 @@ pool columns (x, y) ──┐                       Transform uniform (144 B wri
    arc prefix buffer ──► line pipeline vertex slots 4/5 (dash phase)
 ```
 
+Every arc value is a 64-bit fixed-point integer, two `u32` words per point
+(SHADER_COMMON.md §5.6 arc pairs): integer sums are exact and associative,
+so the prefix keeps 1/65536 px resolution up to 2^48 px of arc in any
+order the scan adds.
+
 The compute encoder is submitted before the host's render pass, so queue
 order sequences it under every supported embedding (winit / egui / web) without
 API changes. The exact key includes pool layout generation, x/y offsets and
-allocation epochs, length, the first 64 bytes of the transform (axis bounds,
-log flags, pixel and panel mapping), the line's step or polar-arc mode word, and
-optional star pitch. Each series retains its eight most recent
+allocation epochs (and those of a ternary or 3D line's third column), length,
+the transform words the scan reads (the first 64 bytes: axis bounds, log
+flags, pixel and panel mapping; and the polar, ternary, axis-break and
+probability words), a 3D line's camera, the line's step or polar-arc mode
+word, and optional star pitch. Each series retains its eight most recent
 immutable results; a miss dispatches into new buffers and never rewrites an old
 result. The current arc-prefix scan is u32-addressable (`u32::MAX =
-4,294,967,295`); if a series length or pool element offset cannot fit in
-`u32`, the dashed arc prefix is skipped. As a runaway-churn backstop, adding a
+4,294,967,295`); a scan whose series length or pool element offset cannot fit
+in `u32` fails with `FiggyError::GpuResourceLimit`. A non-resident column or a
+line shorter than two points has no arc prefix. As a runaway-churn backstop, adding a
 new series id clears the arc cache when it already holds 256 series ids.
 
 ### Renderer-owned state and frame invalidation
@@ -324,20 +390,23 @@ the sole issuer of its checked revisions:
 | State | Current trigger/handling |
 |---|---|
 | renderer `desired` revision | Any accepted visible chart edit, a referenced column replacement, or synchronized font registration requires a draw |
-| renderer `raster` revision | A config edit that changes the axis chrome (chart area, axes, title, grid, legend, colourbar, draw style, `polar`, any `overlays` or `subplots` field), a series change, or a font registration requires `refresh_axis` before drawing. Selection (`picked_*`), `active_layer` and `annotations` edits and identical replacements do not touch it, except that a layer change which clears an element selection advances it; the classification is `raster_config_equal`, tested field by field in [`src/renderer/ssot_invalidation_tests.rs`](src/renderer/ssot_invalidation_tests.rs). `refresh_axis` also redoes the annotation rasters, because the anchor space follows the axes and the data area. A layered view refreshes only the panels whose internal config changed |
-| renderer `annotation` revision | An edit of `annotations.items` requires `refresh_annotations` before drawing: it rewrites the annotation underlay and overlay textures and the annotation hit map only, never the grid or decoration texture (`ChartView::layer_stamps` counts each layer's writes). Toggling `annotations.visible` bumps neither this nor `raster`: the draw skips the two composites. Classification `annotation_config_revision`, tested by `annotation_edits` in the same test file |
+| renderer `raster` revision | A config edit that changes the axis chrome (chart area, axes, title, grid, legend, colourbar, draw style, `coordinates`, any `overlays` or `subplots` field, `line_offsets`, `plot_background`, `background`), a series change, or a font registration requires `refresh_axis` before drawing. Selection (`picked_*`), `active_layer`, `annotations` and `bar_groups` edits and identical replacements do not touch it, except that a layer change which clears an element selection advances it; the classification is `raster_config_equal`, tested field by field in [`src/renderer/ssot_invalidation_tests.rs`](src/renderer/ssot_invalidation_tests.rs). `refresh_axis` also redoes the annotation rasters, because the anchor space follows the axes and the data area. A layered view refreshes only the panels whose internal config changed |
+| renderer `annotation` revision | An edit of `annotations.items` or a font registration requires `refresh_annotations` before drawing: it rewrites the annotation underlay and overlay textures and the annotation hit map only, never the grid or decoration texture (`ChartView::layer_stamps` counts each layer's writes). Toggling `annotations.visible` bumps neither this nor `raster`: the draw skips the two composites. Classification `annotation_config_revision`, tested by `annotation_edits` in the same test file |
 | host `view_dirty` | Surface/DPR preview geometry changed; refresh raster and draw |
 | host `redraw_pending` | Host-only surface state such as clear color changed; draw without duplicating chart state |
 
 Browser frame flow, simplified from `FiggyChart::frame` in
-[`crates/web/src/lib.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/lib.rs):
+[`crates/web/src/web/chart.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart.rs):
 
 ```rust
 renderer.sync_external_invalidations()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
 let draw = stamp.needs_draw_since(last_presented_stamp.as_ref());
 let raster = stamp.needs_raster_since(last_presented_stamp.as_ref());
-let annotations = stamp.needs_annotation_raster_since(last_presented_stamp.as_ref());
+let annotations = stamp.needs_annotation_raster_since(last_presented_stamp.as_ref())
+    || annotation_selection_dirty;
+// A pipeline a left-out series waited for has compiled (#299).
+redraw_pending |= renderer.compile_redraw_due();
 
 if !draw && !raster && !view_dirty && !redraw_pending {
     if renderer.has_pending_maintenance() {
@@ -347,32 +416,38 @@ if !draw && !raster && !view_dirty && !redraw_pending {
 }
 renderer.process_pending_maintenance()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
-if raster || view_dirty {
-    // Also redoes the annotation rasters.
-    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, &boxes)?;
-} else if annotations {
+// `draw_registered` redraws the text and axis raster itself when the
+// stored chart, its selection or its display placement changed (#265).
+if annotations && !raster {
     renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
 }
-if renderer.is_streaming_chart(chart_id) {
-    renderer.draw_registered(clear, &[RegisteredChartDrawItem { chart_id, view: &view }])?;
-} else {
-    renderer.draw(clear, &items)?;
+match monotonic {
+    Some(chart) => renderer.draw_monotonic(clear, &mut [MonotonicChartDrawItem { chart, view: &mut view }])?,
+    None => renderer.draw_registered(clear, &mut [RegisteredChartDrawItem { chart_id, view: &mut view }])?,
 }
 last_presented_stamp = Some(stamp);
 view_dirty = false;
 redraw_pending = false;
+annotation_selection_dirty = false;
 ```
 
 The last-presented stamp and host flags advance only after a successful draw, so
 a failed visual frame is retried. A clean web rAF skips the entire GPU surface
 path. A resident Precise panel keeps its series bodies (fills, lines, markers,
 bars, fields, contours, vectors) in a panel-sized cached texture, and `prepare`
-draws them again only when their inputs change: the data-to-pixel transform,
-the data area, the draw style, `polar` and `colorbar`, the series
+draws them again only when their inputs change: the panel size, the
+data-to-pixel transform, the data area, the draw style, `polar`, `parallel`,
+`colorbar` and `bar_groups`, the category axes when the panel draws a
+category bar or box plot series, the tick-label font, a 3D panel's camera
+(`view_3d`), whether the composite carries a stencil (a ternary region fill),
+the series
 configurations and the scale their styles were built at, the font generation,
 the allocation epochs of exactly the columns the panel reads, or the pool layout
-or pipeline generation. Replacing a column another panel reads draws nothing
-here. The grid, decoration and annotation layers
+or pipeline generation. A composite with a 3D camera or a stencil also holds
+a `Depth24PlusStencil8` attachment at the target's sample count, which the
+surfaces, the 3D marks and the 3D arrows are depth tested against and the
+ternary region fill uses as its stencil. Replacing a column another panel
+reads draws nothing here. The grid, decoration and annotation layers
 keep their own textures, and the picked and selected highlights draw live above
 the cached bodies, so editing or selecting titles, legend, axes, grid,
 annotations or points never draws the bodies again. Each panel of a layered
@@ -398,9 +473,50 @@ full-pool buffer.
 
 The standalone `Chart::{data_dirty,raster_dirty}` booleans remain a compatibility
 mechanism for low-level callers that own an external `Chart`. `prepare` does not
-read or consume those booleans; it writes the transform whenever the caller has
-decided to draw. External-`Chart` hosts remain responsible for consuming
-`raster_dirty` and calling `refresh_axis`.
+read or consume those booleans. It compares the chart's raster stamp, an issued
+number moved by every raster-affecting edit and by `Chart::select`, with the one
+the view was drawn from, and redraws the view's raster when they differ (#265);
+it writes the transform whenever the caller has decided to draw.
+
+### Identity and staleness checks
+
+The renderer tells objects apart, and decides whether a token is stale, in a
+small fixed set of ways. New code reuses one of them. Adding another needs the
+maintainer's approval in the issue first.
+
+| Question | Pattern | Used by |
+|---|---|---|
+| Which renderer issued this? | **Issued number.** A process-wide counter issues a `u64` with a checked increment and fails with `FiggyError::CounterExhausted` instead of wrapping, so a value is never reused. | `issue_renderer_identity` (`src/renderer/device.rs`) issues `renderer_identity`. `ChartId` and `RenderRevision` pair it with a per-renderer sequence, so an id from one renderer never matches another renderer's. `issue_raster_stamp` (`src/chart.rs`) issues a `Chart`'s raster stamp on every raster-affecting change, so a `ChartView` never mistakes another chart for the one it was drawn from (#265); an edit cannot fail, so once the counter is exhausted the stamp is `None` and `prepare` fails with `CounterExhausted`. |
+| Is this the same live instance? | **Allocation identity.** The address of an `Arc` names the instance; compare with `Arc::ptr_eq` or `Weak::as_ptr`. Whoever compares later keeps a clone or a `Weak`, so the allocation cannot be freed and its address reused while the comparison can still be made. A `Weak` also tells when the instance is gone. | `PoolIdentity`: a column pool, checked by the picker before it reuses its bindings. `ChartView::content_revision`: a panel; the resident display cache holds a `Weak` of it and retires the entry once `strong_count()` is 0. `ChartView::stream_revision` and `content_revision` in the streamed draw tokens. The owning tile of a stream-field `RecordedStep`. A `PipelineReadiness` (#315): it holds the renderer's compile queue as a `Weak` and reports the renderer gone once the queue is dropped. |
+| Is this the same stored content? | **Shared storage.** `Arc::ptr_eq` on shared GPU storage: equal means a cheap edit reused it. A shortcut, not an identity. | `RadialFrame::shares_annotations_with`, `BoundedAnnotationFrame::shares_rasters_with`. |
+| Did the content change? | **Generation.** A counter that moves on every change. A token records it and compares it before use. It never names an object. | A column's allocation epoch (one per upload), the pool's `layout_generation`, `target_pipeline_generation`, `font_generation`, the value of a `ChartView` content revision, `RenderRevision`. |
+| Is this the same GPU device? | wgpu's own `Device` equality. | Preparation jobs (`src/renderer/preparation.rs`). |
+
+Rules for new code:
+
+- Choose the row by the question being asked:
+  - A value that outlives its object, is hashed, is handed to a host or is compared across renderers is an issued number.
+  - A cache entry that must retire with its object uses allocation identity and holds a `Weak`.
+  - A staleness check is a generation, never an identity.
+- Never keep a bare address (`Arc::as_ptr(..) as usize`) without the clone or `Weak` that pins it. Never replace an `Arc` that serves as an identity in place: that silently makes a new instance.
+- A new counter follows the issued-number rules: checked increment, `CounterExhausted` on overflow, no wrapping.
+- Reuse an existing identity before adding one. The panel identity, for example, is the content-revision cell the prepared tokens already share, not a second `Arc`.
+
+### Document defaults
+
+Each serialized model type with a default spells it once, in the model's
+crate-private `defaults/` folder, one file per area (frame, series,
+annotations, chart families, science, text): the value a field takes when a
+document omits it. Serde reads it through
+`#[serde(default = "crate::defaults::name")]`, and the model calls the same
+function where it builds a document. Host conveniences live apart, in the
+`helpers/` folder behind the `helpers` feature, which hosts get by default:
+`Default` on those types, each returning its `defaults/` source, and the
+public `default` module. The model and the renderer, unit tests included,
+build without the feature (`ci/verify.py static`), so neither product code
+nor its tests can fall back on a default. Where it needs a value, the model names it: `AnnotationLayer::empty()`,
+`DataSelectionsConfig::empty()`, `Config::effective_bar_groups()`,
+`SurfaceStyle::resolved()` and the radial `label_raster_key` functions (#266).
 
 ### Log scale on the GPU
 
@@ -410,19 +526,98 @@ When `AxisOptions.scale = Logarithmic`:
 - CPU: `scatter_transform_from_config` pre-converts the guarded range to log10 and sets the relevant `scale_log` axis flag.
 - GPU line/scatter paths check finite coordinates and the positive log domain before drawing or picking. Invalid markers and line segments touching an invalid endpoint are omitted, leaving a gap; valid data is not rejected or connected across that gap. The same rule covers precise, sketch, ribbon/arc and star line paths. Histogram zero baselines remain clipped to the visible positive range; color-mapped non-positive z values use `nan_color`.
 
+### Probability scales on the GPU
+
+When `AxisOptions.scale = Probability(_)` ([#209](https://github.com/shim9610/figgy/issues/209)):
+- CPU: `scatter_transform_from_config` writes `F⁻¹` of the guarded range (`guarded_probability_range`, f64) into `data_min` / `data_max` and the scale's code into `scale_prob`; `scale_log` stays 0.
+- GPU: `common/probability.wgsl` places each sample at `F⁻¹(p)` in f32 from its `(hi, lo)` pair (SHADER_COMMON §5.24). Values at or past 0 or 1 have no position: markers and line segments touching them are omitted, as non-positive samples on a log axis; an area or stem baseline there is clamped to the axis end on its side.
+- Auto-fit keeps both ends inside `(0, 1)`: an end at 0 or 1 takes the mirror of the other, and the padding is in `F⁻¹` units.
+- Streamed series are refused with an explicit error.
+
+### Shader sets
+
+Every module that places data is assembled twice from one fragment list (`assembled_by_set!` in `shader_assembly.rs`, [#299](https://github.com/shim9610/figgy/issues/299)): full, with the fragments that hold the cut remap of a broken axis ([#200](https://github.com/shim9610/figgy/issues/200)), the probability scale ([#209](https://github.com/shim9610/figgy/issues/209)) and polar coordinates, and basic, with their twins, which declare the same functions with none of that code (`shader_assembly::SET_FRAGMENTS`, SHADER_COMMON §4). Those three are most of what such a pipeline costs to compile in a browser, and a chart that uses none of them never runs them.
+- A renderer holds one set at a time, `Renderer::shader_set()`: `Basic` when it is built, `Full` from the first chart with an axis break, a probability axis or polar coordinates on any layer (the base chart, an overlay, a subplot or a subplot's overlay; polar coordinates belong to a base chart or a subplot). It does not go back when the feature is removed. With no cut, no probability code and no polar flag in a transform the full modules compute what the basic ones do, so a chart with none of the three draws the same picture through either set, and charts with and without them that take turns never make the renderer compile a pipeline again. The two sets are two shader programs, and a compiler may round an edge's coverage differently in each: DX12 and Metal measure up to one level, and more only in partly covered edge pixels (`tests/shader_set_scenes.rs`).
+- Nothing else selects the full set. Logarithmic axes, ternary and 3D charts, step lines, value maps, draw styles, selection highlights and value labels are in both: ternary and 3D placement have entry points of their own, and the rest is chosen per series or per style, which the renderer does not know when it picks a set.
+- `Renderer::admit_full_shaders` makes the move. Registration, `set_chart_config` and `set_chart_state`, frame preparation (`prepare`, `prepare_registered`), export and the picks call it with their charts (`config_needs_full_shaders`) before they compile or use a pipeline. The move replaces the target's pipeline set with an empty one of the full set, drops the contour label and arc scan pipelines, and rebuilds the picker's bundles if picking was enabled. Each pipeline is then compiled by the draw or pick that first needs it, as on a new renderer.
+- Nothing a host holds is invalidated. The target pipeline generation is unchanged: a `PreparedFrame` owns its pipelines and was prepared for charts that need none of the three. A detached preparation begun before the move holds basic pipelines and is refused at installation with `StaleStateToken`.
+- The rule is enforced where a pipeline is used, not only where a chart arrives: resolving a frame's items (frame and export), the arc scan, the contour label anchors and the two pick entries refuse such a chart on basic shaders with an internal error, so an entry that did not admit its chart fails instead of drawing it without the feature. The basic twins also draw nothing for a transform with a probability code or the polar flag (`prob_in_domain`, `polar_sample_valid` and `polar_fragment_visible` are false there).
+- Streaming is not extended to broken axes, probability axes or polar charts (rule 8), so a streamed chart is placed the same by either set. A break added to a streaming chart is a view change that ends the stream, and its restart is refused with `StreamedBreak`; a probability axis and polar coordinates are refused the same way by their own rules.
+- In a browser the startup warm-up schedules the render pipelines of the renderer's starting set (basic by default) in the background; the vector, 3D surface and ternary region modules and the compute scans compile on demand. The prewarm contract (`shader_pipeline_contract.json`) stores each pipeline once, under the basic source, and a full module finds its descriptors through its twin (`shader_assembly::contract_source`).
+- The public single-pipeline builders (`create_line_columnar_pipeline`, `create_vector_pipeline`, `create_arc_scan_pipelines`, `ContourLabelPipelines::new` and the others) and the `*_SHADER` constants keep the full module: a host may draw any transform through them.
+- Besides the two assemblies, a draw function reads the whole `transform` uniform once (`let tf = transform;`) and passes that to the shared functions: each read of the whole uniform is compiled as its own copy of the struct (SHADER_COMMON §4).
+- A host can choose. `Renderer::require_shader_set(ShaderSet::Full)` makes the move early, before such a chart arrives; it only moves up and is idempotent. To start on the full set, the host gives the device bundle `RendererDevice::with_shader_set(ShaderSet::Full)` (for `Renderer::try_new` and its siblings) or builds a window or canvas renderer with `Renderer::for_window_with_shader_set_async_observed`; such a renderer creates and compiles no module of the basic set.
+- In a browser, a renderer that started the asynchronous compile of its render pipelines when it was built (`for_window_minimal_async_observed` or `for_window_with_shader_set_async_observed`) schedules the full set's render pipelines on its `CompileQueue` at the move; the basic compiles not issued yet end as superseded. At most as many compiles as the browser reports cores are in flight, what the screen needs first. Until a series' pipelines have compiled, a frame leaves that series out (`frame_complete`, `series_ready`) and the chart fills in as they finish.
+
+### Triangle meshes on the GPU
+
+A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide](TRIMESH.md)) reads four pool columns: x, y, the values and a triangle index column (three `u32` vertex indices per triangle, SHADER_COMMON §5.14).
+- Group 2 is the field's layout reinterpreted under `FIELD_FLAG_MESH` (SHADER_COMMON §5.25): the grid table holds the value column, the index column and, on a 3D chart, the height column; the cache, the signature and the eviction are the field's.
+- Draw: one instance per triangle, three vertices, no vertex buffer (`TRI_MESH_SHADER_BY_SET` for the renderer's current set; `TRI_MESH_SHADER` is its full assembly). The vertex stage reads the triangle's indices and vertices, drops a triangle with an index past the drawn count or an unplaceable vertex, and the fragment blends the values barycentrically; contour lines are the level set of each triangle's linear interpolant. On a 3D chart `TRI_SURFACE_SHADER` places the vertices through the camera, and the floor contours are the mesh module's floor entries.
+- Pick: on a flat chart a one-workgroup compute scan over every triangle (`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) answers the triangle under the cursor, or a contour over it; on a 3D chart the 1×1 ID pass writes kind 2 for the surface and the floor-contour word for its levels. Both read the draw's own group 2 snapshot.
+- The CPU keeps only the pool's scalar statistics of the index column (count, smallest and largest index); registration checks the largest index against the vertex count. Streamed sources are refused with an explicit error.
+
+### Monotonic-x lines (M4 envelope)
+
+A `MonotonicLine` series ([#271](https://github.com/shim9610/figgy/issues/271),
+[guide](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md)) draws one channel of a group of evenly
+spaced samples, `x = start + i × interval`. It has its own input and its own
+contract (M1 to M7 in the guide); every other series keeps the column
+contract above.
+- Input: the host lends a `MonotonicSource` (`MonotonicSlices`,
+  `MonotonicInterleaved` or its own implementation: the values, `start` and
+  `interval`) to each call that reads it. No call retains it, and the
+  samples never enter the column pool through `ColumnSource`.
+- Reduction: the CPU reduces the visible window to an M4 envelope per pixel
+  column, the first, lowest, highest and last sample
+  (`model::monotonic::MonotonicEnvelope`, `crates/model/src/monotonic/`).
+  The envelope also keeps a fixed margin of 64 pixel columns beyond each
+  edge of the plot (`MARGIN_PX`), so strokes up to about 120 device pixels
+  wide draw their edges as a full draw does; a stroke width stays a style
+  edit. The envelope is sized by the plot width and the channel count,
+  never by the sample count. The renderer keeps one per group and per
+  x-to-pixel mapping its series are drawn at (`src/renderer/monotonic.rs`).
+- Draw: each series' envelope is uploaded to two renderer-owned pool
+  columns (`<id>.monotonic.x`, `<id>.monotonic.y`, which a host cannot write)
+  and drawn by the line pipeline. Each envelope slot takes 8 rows: each of
+  its 4 kept points followed by a join row that repeats the point or is NaN.
+  A repeated point is a piece `common/line_step.wgsl`
+  marks `STEP_AXIS_POINT`, so it collapses on every backend
+  (SHADER_COMMON §5.6).
+- Handle: `Renderer::register_monotonic_chart` returns a `MonotonicChartId`,
+  and `Renderer::monotonic_chart` lends its `MonotonicChart`. The general
+  chart calls take a `ChartId`, which a monotonic chart never hands out, so
+  none can reach it. Four calls move the x-to-pixel mapping, and each takes
+  the source: `set_monotonic` (the full call, and the only call that sets
+  the x range or autoscales), `append_monotonic` (only the new samples; a sliding append
+  drops columns from the front), `resize` (chart area, plot area and
+  display, atomically) and `fit_layout`. The document editor
+  (`MonotonicConfig`) refuses an edit that would move the mapping.
+- Frames and picks never need the source; a pick reports the logical sample
+  index of a kept point. An export at another mapping takes the sources
+  (`ExportSource::Monotonic`) and reduces each group into columns that live
+  for that export only. A streamed display refuses the series.
+
 ### Export pipeline
 
 ![Requested-resolution offscreen export, resident or replayed streaming input, row readback and PNG encoding](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/png-export-en.png)
 
 ```
-export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
-    scale ← clamp_export_scale(scale)         // [MIN_EXPORT_SCALE, MAX_EXPORT_SCALE]
-    chart.config().scaled(scale)               // every pixel dim scaled proportionally
+export_rgba(ExportSource, ExportOptions { scope, scale, clear }).await:
+    scale ← clamp_export_scale(scale)         // ≥ MIN_EXPORT_SCALE; the device texture limit bounds the target
+    export_placed_config(config, scale, scope) // every pixel dim scaled proportionally;
+                                               // place_document for Document, scaled
+                                               // and translated to the origin for Panel
         ↓
     temp ChartView (scaled axis textures)
-    temp ChartStyles ← create_style_for_series_scaled(cfg, scale) per cfg
+    temp ChartStyle ← create_style_for_series_scaled_inner(cfg, scale) per cfg
+                      (the public twin is create_style_for_series_scaled)
         ↓
-    offscreen wgpu::Texture (fixed Rgba8Unorm, COPY_SRC, transparent clear)
+    offscreen wgpu::Texture (EXPORT_FORMAT = Rgba16Float, COPY_SRC,
+                             cleared to options.clear, transparent by
+                             default; drawn through an MSAA target resolved
+                             into it when the device supports one; the
+                             resident and the streamed export alike)
     paint(items) — same compositing order (grid → annotation underlay → data
                    → decoration → annotation overlay)
         ↓
@@ -430,10 +625,12 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     height adapts to the device's max buffer size, so readback never needs a
     whole-image buffer; the target must still fit the device texture limit)
         ↓
-    map_async (+ inline Wait poll on native, browser-yielding await on wasm)
+    map_async; the caller chooses the wait: awaited (the bundle's poll
+    thread on native, the browser on wasm) or blocking (the caller polls)
         ↓
-    premul→straight α conversion, padding rows removed (no channel swap —
-    the target is RGBA already)
+    straight_rgba8 per texel: premultiplied half floats divided by their
+    alpha and quantized to straight-alpha RGBA8 once; padding rows removed
+    (no channel swap — the target is RGBA already)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API return
         ↓
@@ -442,41 +639,129 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     Caller decides: std::fs::write / clipboard / network / ...
 ```
 
-`export_document_rgba_async` follows the same pipeline for a layered document:
+The export target is `EXPORT_FORMAT`, premultiplied `Rgba16Float`
+(`src/renderer/export.rs`, #271), on the resident and the streamed export
+path alike, so a streamed export blends and rounds as the resident export
+of the same document. Every primitive blends at half precision, and the
+image is quantized to 8 bits once, at readback (`straight_rgba8`: divided by
+the texel's alpha, then rounded). With an 8-bit target each blend would
+round against whatever lies under it, and 8-bit premultiplied blending is not
+associative: the PNG export (grid, then each data primitive, then the
+decoration) and a vector file's data image (the data alone on a transparent
+image, placed over the grid) would drift apart where many antialiased strokes
+stack. In half floats the two orders agree within the final quantization.
+The on-screen path draws into the host's surface format.
+
+`export_rgba` follows the same pipeline for a layered document:
 the one temporary `ChartView` holds a panel per layer, `Config::expand()` turns
-the scaled document into one draw item per panel, and the panels composite in
-layer order into the same offscreen texture. `export_panel_*` keeps only the
-base panel of that expansion; for a document without overlays the two images
-are byte-identical. A document with subplots exports the union of every chart
+the scaled document into one draw item per panel, and the panels composite
+into the same offscreen texture as on screen: the grid and data of every
+panel in layer order, then the decoration of every panel in layer order, so
+no layer's data covers another layer's axes and labels. The panel export (`ExportScope::Panel`) keeps only the
+base panel of that expansion; for a document without overlays or subplots the
+two images are byte-identical. A document with subplots exports the union of every chart
 area (`Config::document_area`): the document is placed at the target's
 origin (`place_document`) and each subplot's panels are drawn at its own
-area, while `export_panel_*` keeps the parent's area.
+area, while the panel export (`ExportScope::Panel`) keeps the parent's area.
+An inset subplot is drawn after every other panel, all its slots at once,
+in inset tree order.
+
+The pipeline is two functions: `prepare_export` (the checks, the scaled and
+placed document, its view, styles, pipelines and resolved panel draws, once
+per export) and `paint_export(frame, panels, chrome, clear, steps)` (one
+render of a range of panels into the target, then the row-chunked readback).
+`steps` picks the steps of each panel's data slot (`DataSteps`): the GPU
+fills, bodies and picked highlights, the CPU rasters of the DataLess series,
+then the GPU value labels. The PNG export paints every panel with the chrome
+and every step.
+
+In a browser, `export_rgba` first moves the renderer to the full set if the
+chart needs it, then compiles the render pipelines the last screen frame
+needed through the renderer's export queue (a second `CompileQueue` for
+`EXPORT_FORMAT` and the export's sample count), and waits for them and for
+the compute pipelines on the screen queue, so the synchronous
+`prepare_export` finds them in the browser's cache (#299). A pipeline not
+compiled there is created by `prepare_export` as before. The SVG and PDF
+export and the streamed export do not take this step.
+
+The SVG and PDF export ([#48](https://github.com/shim9610/figgy/issues/48),
+`vector_export.rs`) prepare the same frame and write the decorations as
+vector content from the same emit, over a raster data layer. The DataLess
+series (the energy levels) are vector content too
+([#234](https://github.com/shim9610/figgy/issues/234)): their emit writes
+them between images of the GPU steps around them, so the file stacks as the
+PNG does:
+
+```
+export_svg / export_pdf(ExportSource, ExportOptions):
+    require_resident_series(each)              // streamed sources rejected
+    frame ← prepare_export(chart, series, scale, Document)
+        ↓
+    for each pass, in the compositor's order (Passes):
+      panel group (a panel + the following panels whose Below pass places nothing):
+        Below(i)    emit_chart_chrome(panel i) → SlotFilter(Below) → VectorSink
+                    (Milkyway: the backdrop, painted by draw_space_background, as an image)
+        Underlay    emit_annotation_layer → SlotFilter(Below) → VectorSink
+                    (first group only, when the annotation layer is visible)
+        Data(group) paint_export(frame, group, chrome = false) → crop to the
+                    group's data areas (+1 px) → image
+                    with a DataLess series, one image per run of GPU steps
+                    between two panels' CPU steps (DataRun), and after each
+                    run the panel's DataLess emit → VectorSink, clipped to
+                    each data piece; a run with no GPU series writes no image
+      Above(i)      emit_chart_chrome(panel i) → SlotFilter(Above) → VectorSink
+      Overlay       after the topmost panel of the parent's area, when the
+                    annotation layer is visible
+        ↓
+    VectorSink: the canvas sink's mapping, widths, dashes and sketch curves
+                (smooth_cubics); text through place_rich_text / place_plain_text
+                with glyph_outline at exact pens; the colourbar ramp painted by
+                draw_colorbar_strip into an image
+        ↓
+    VectorOut: SvgOut (viewBox in pixels, <defs> + <use> per glyph, PNG data URIs)
+               PdfOut (one page, deflated content, ExtGState per alpha byte,
+                       RGB XObjects with soft masks, inline glyph outlines)
+```
+
+The page is the logical size at 1 px = 0.75 pt. Each pass is clipped to the
+raster it stands for (the panel, or the parent's area for the annotation
+layer). The Milkyway glow is raster-only and omitted; no selection box is
+drawn. The radial chart writes its frame without labels as one image
+(`layout(.., Labels::None)`, built uncached) and its title, labels, leader
+lines, split connectors and annotation overlay through the same sink
+(`layout(.., Labels::Into(sink))`).
 
 ---
 
----
+아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단을 다룬다. 범주형 막대([CATEGORICAL.md](CATEGORICAL.md)), 박스플롯([BOXPLOT.md](BOXPLOT.md)), 레이더 차트(극좌표 레이더 시리즈, [RADAR.md](RADAR.md))도 직교 좌표 `Renderer`가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 이 리더는 다음 마일스톤에서 제거할 예정이다. DataLess 차트인 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 렌더러는 모두 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓰므로, 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 원형 렌더러는 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 쓰지 않는다. 자세한 내용은 [RADIAL.md](RADIAL.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
-아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 원형·범주형 막대·박스플롯·레이더 차트는 별도 렌더러(`RadialRenderer`, `CategoricalRenderer`, `BoxPlotRenderer`, `RadarRenderer`)가 그린다. 각 렌더러는 변경할 수 없는 준비 프레임을 반환하고 자체 GPU 집계(`gpu_memory_usage()`)와 예산(`set_memory_budget(bytes)`)을 관리하며, 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 사용하지 않는다. 전체 GPU 메모리를 보고하는 호스트는 모든 렌더러의 `gpu_memory_usage()`를 더한다. 자세한 내용은 [RADIAL.md](RADIAL.md), [CATEGORICAL.md](CATEGORICAL.md), [BOXPLOT.md](BOXPLOT.md), [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
+| 구성 요소 | 역할 |
+|---|---|
+| `figgy-model` | 차트 설정, 데이터 계약, 상호작용 정책. serde는 선택 기능이다 |
+| `figgy-renderer` | GPU 데이터 그리기, CPU 텍스트·축, 피킹, 캐시, 자원 소유, 이미지 출력 |
+| `crates/web` | 브라우저용 제품(`figgy`). wasm-bindgen 래퍼와 `<figgy-chart>` 요소, 캔버스 이벤트, 프레임 실행 시점 관리 |
 
-아래의 브라우저 수명 주기 설명은 `crates/web` 예제 어댑터의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저 예제 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
+아래의 브라우저 수명 주기 설명은 브라우저용 제품인 `crates/web` 래퍼의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저용 제품 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
 
 주요 기능은 다음과 같다. 선택 기능은 해당 API나 옵션을 사용할 때만 동작한다.
 
-- **상주 GPU 컬럼 풀**: 여러 컬럼이 하나의 GPU 버퍼를 공유하며, 충분한 크기의 첫 빈 공간에 할당한다. 컬럼을 제거하면 두 버퍼를 번갈아 쓰는 재배치를 예약하고, 호스트가 `process_pending_maintenance()`나 `defragment()`를 호출할 때 실행한다. `DefragPolicy::OnAllocFailure`를 지정하면 공간이 부족한 업로드도 한 번 재배치한 뒤 다시 시도한다. 기본 정책은 `Manual`이다. `HiLoColumnSource`로 올린 값은 두 f32의 hi/lo 쌍으로 저장하므로 큰 타임스탬프에서도 작은 값 차이를 보존한다. 업로드할 때 최소·최대·최소 양수 값을 저장해 자동 범위 맞춤에 사용한다. 점선의 누적 경로 길이처럼 점마다 필요한 값은 GPU 스캔 연산(`line_arc.wgsl`)으로 계산한다.
-- **비상주 렌더링**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 등고선, 은하수 모드의 선, 극좌표 차트, 선 채우기와 계단 보간, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어나 서브플롯이 있는 문서는 스트리밍 원본을 명시적인 오류로 거부한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다.
-- **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 축 이미지는 기본적으로 `Grid`와 `Decoration` 레이어로 나눈다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
+- **상주 GPU 컬럼 풀**: 여러 컬럼이 하나의 GPU 버퍼를 공유하며, 충분한 크기의 첫 빈 공간에 할당한다. 컬럼을 제거하면 두 버퍼를 번갈아 쓰는 재배치를 예약하고, 호스트가 `process_pending_maintenance()`나 `defragment()`를 호출할 때 실행한다. `DefragPolicy::OnAllocFailure`를 지정하면 공간이 부족한 업로드도 한 번 재배치한 뒤 다시 시도한다. 기본 정책은 `Manual`이다. `HiLoColumnSource`로 올린 값은 두 f32의 hi/lo 쌍으로 저장하므로 큰 타임스탬프에서도 작은 값 차이를 보존한다. 업로드할 때 최소·최대·최소 양수 값을 저장해 자동 범위 맞춤에 사용한다. 점선의 누적 경로 길이처럼 점마다 필요한 값은 GPU 스캔 연산(`line_arc.wgsl`)으로 계산한다. 점별 데이터는 컬럼, 레코드(박스플롯의 필드), 가변 길이 컬럼(`u32` 오프셋으로 나눈 가변 길이 묶음), 삼각형 인덱스 컬럼(#210: 삼각형마다 `u32` 꼭짓점 인덱스 세 개이며, 업로드의 쓰기 관찰자가 검사하고 요약한다) 네 종류로 나뉘며 모두 `ColumnSource`로 풀에 들어온다. 레코드·가변 길이·삼각형 컬럼은 내부 멤버 컬럼을 가지며 상주 경로만 지원한다.
+- **비상주 렌더링**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 등고선, 은하수 모드의 선, 극좌표 차트, 히스토그램(`RuleKind::StreamedHistogram`, #284), 선 채우기와 계단 보간, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어나 서브플롯이 있는 문서는 스트리밍 원본을 명시적인 오류로 거부한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다.
+- **단조 x 선(선택)**: 단조 차트(`register_monotonic_chart`)의 `MonotonicLine` 시리즈는 호스트가 호출마다 `MonotonicSource`로 빌려주는 간격이 일정한 샘플을 CPU에서 픽셀 열마다 M4 엔벌로프로 줄여 선 파이프라인으로 그린다. [단조 x 선](#단조-x-선m4-엔벌로프)과 [MONOTONIC.md](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md)를 참고한다.
+- **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 레이어가 있는 문서는 모든 패널의 격자와 데이터를 먼저 그리고 그다음 모든 패널의 장식을 그리므로, 어느 레이어에서든 장식이 데이터 위에 놓인다. 축 이미지는 `Grid`와 `Decoration` 레이어로 나눠 만들 수 있다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
 - **원본 데이터 보존**: 렌더러와 웹 래퍼는 모델의 설정을 따르며 원본 좌표, 데이터 출처, 축과 데이터의 대응 관계를 임의로 바꾸지 않는다. 화면 밖 자르기, 로그축에서 0 이하 값 제외, NaN 제외, 안티앨리어싱은 표시 과정에만 적용한다.
-- **창 없이 PNG 출력**: 배율 0.25~8.0(약 24~768 DPI)으로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 범위를 벗어난 배율은 `clamp_export_scale`이 범위 안으로 제한하며, 배율을 적용한 렌더 타깃은 장치의 텍스처 크기 한도 안에 들어와야 한다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
+- **창 없이 PNG 출력**: 배율 0.25 이상(24 DPI 이상)으로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 0.25보다 작은 배율은 `clamp_export_scale`이 0.25로 올린다. 배율을 적용한 렌더 타깃은 장치의 텍스처 크기 한도 안에 들어와야 하며, 넘으면 `GpuResourceLimit` 오류가 난다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
+- **SVG·PDF 출력**: 같은 문서를 장식 요소는 벡터(글자는 글리프 윤곽선)로, 패널 묶음의 데이터는 PNG 출력과 같은 픽셀의 이미지로 기록한다. PDF는 `flate2` 위에 직접 작성한 기록기로 만든다.
 - **선택·드래그·크기 조절**: 마우스 위치 판정, 선택 상자, 축에 수직인 방향으로 드래그, `line_offset`을 이용한 축 이동, 데이터 영역의 8개 조절점을 지원한다. 정책은 `model`에 정의돼 있으며 호스트가 포인터 이벤트를 전달할 때만 동작한다.
-- **데이터 피킹**: `pick_point`는 점·선 선택을, `pick_data`는 여기에 히스토그램 구간·행렬 셀·등고선 레벨 선택을 더한다. 상주 데이터는 그리기와 같은 좌표 변환·풀·스타일·격자·레벨 표를 GPU에서 읽어 판정한다. 완료된 차트별 패킹 캐시는 원본을 다시 읽지 않고 점·선을 선택하며 원본 행 인덱스를 반환한다. 그 밖의 비상주 스트림은 `null`을 반환하고 저수준 WASM 스트림 피킹 호출은 즉시 거부한다. 이미 알고 있는 데이터 참조를 `Config.picked_data` 또는 `Config.picked_points`에 지정하면 필요한 행만 읽어 강조할 수 있다.
+- **데이터 피킹**: `pick_point`는 점·선 선택을, `pick_data`는 여기에 히스토그램 구간·행렬 셀·등고선 레벨 선택을 더한다. 상주 데이터는 막대 사각형과 필드·등고선 도형을 그리기와 같은 좌표 변환·풀·스타일·격자·레벨 표로 GPU에서 판정한다. 완료된 차트별 패킹 캐시는 원본을 다시 읽지 않고 점·선을 선택하며 원본 행 인덱스를 반환한다. 그 밖의 비상주 스트림은 `null`을 반환하고 저수준 WASM 스트림 피킹 호출은 즉시 거부한다. 호스트는 이미 알고 있는 안정적인 데이터 참조를 `Config.picked_data`로 넘겨, 개수가 정해진 선택 항목을 강조할 수 있다.
 - **점별 스타일**: 정밀 모드의 산점도는 `point_style_table` / `point_style_index_column` / `point_style_overrides`로, 오차 막대는 별도의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`로 스타일을 지정한다. 스케치·은하수·별자리 모드는 전용 셰이더를 사용하므로 이 매핑을 적용하지 않는다.
 - **리치 텍스트**: 제목·눈금 라벨·범례가 같은 텍스트 엔진을 사용한다. 구간별 굵게·기울임·밑줄·위아래 첨자·그리스 문자, 색·크기 지정, `\n` 줄바꿈, `\t` 열 정렬, 고정 너비 범례 기호를 지원한다.
-- **스케치 모드**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }`로 축·장식과 선·산점도·오차 막대 시리즈를 손그림처럼 표현한다. 축·눈금·격자·범례는 CPU에서, 선의 흔들림과 점선 간격은 경로 길이를 계산한 GPU에서 처리한다. 점과 오차 막대도 전용 GPU 셰이더를 쓴다. 텍스트에는 내장 손글씨 폰트 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 글자는 글자마다 지정한 글꼴, 등록된 폰트, 내장 Liberation Sans, 설치된 시스템 폰트(네이티브 전용) 순으로 찾아 그린다. 같은 시드와 입력은 같은 결과를 내며 점선과도 함께 사용할 수 있다. 이 옵션을 생략하면 기본 정밀 모드로 그린다. 히스토그램·히트맵·등고선·벡터 시리즈는 스케치용 셰이더가 없어 오류 없이 생략되므로, 그릴 수 있는 조합인지는 `draw_style_supports(style, render_type)`로 확인한다.
-- **은하수 모드**: `draw_style: { mode: "milkyway", ... }`로 선·산점도·오차 막대 시리즈에 천체사진 같은 효과를 낸다. 선은 시리즈 색의 성운 띠와 별 무리로, 산점도 기호는 고리가 있는 행성으로, 오차 막대는 양방향으로 뻗는 제트로 표현한다. 스케치 모드와 마찬가지로 히스토그램·히트맵·등고선·벡터 시리즈는 오류 없이 생략한다.
+- **스케치 모드**: `draw_style: { mode: "sketch", amplitude_px, wavelength_px, seed }`로 축·장식과 선·산점도·오차 막대 시리즈를 손그림처럼 표현한다. 축·눈금·격자·범례는 CPU에서, 선의 흔들림과 점선 간격은 경로 길이를 계산한 GPU에서 처리한다. 점과 오차 막대도 전용 GPU 셰이더를 쓴다. 텍스트에는 내장 손글씨 폰트 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 글자는 글자 단위로 설정한 글꼴, 등록된 폰트, 내장 Liberation Sans, 설치된 시스템 폰트(네이티브 전용) 순으로 찾아 그리므로, 한중일 문자는 등록한 폰트로 그린다. 같은 시드와 입력은 같은 결과를 내며 점선과도 함께 사용할 수 있다. 이 옵션을 생략하면 기본 정밀 모드로 그린다. 히스토그램·히트맵·등고선·벡터 시리즈는 스케치용 셰이더가 없어 오류 없이 생략되므로, 그릴 수 있는 조합인지는 `draw_style_supports(style, render_type)`로 확인한다.
+- **은하수 모드**: `draw_style: { mode: "milkyway", ... }`로 선·산점도·오차 막대 시리즈에 천체사진 같은 효과를 낸다. 선은 시리즈 색의 성운 띠와 별 무리로, 산점도 기호는 고리가 있는 행성으로, 오차 막대는 양방향으로 뻗는 제트로 표현하며, 모두 깊은 우주 배경 위에 그린다. 스케치 모드와 마찬가지로 히스토그램·히트맵·등고선·벡터 시리즈는 오류 없이 생략한다.
 - **별자리 모드**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` 시리즈만 지원한다. 데이터 점 위치에 점광원 분포 함수(PSF)로 별을 그리고 반투명 선으로 잇는다. 프로그램에서 옵션 범위를 조회할 수 있도록 `draw_style_param_specs` 메타데이터를 제공한다.
 - **wgpu 30 통합**: 렌더러와 egui 통합이 같은 wgpu 주 버전을 사용한다. iced 0.14는 wgpu 27을 사용하므로 보관 중인 iced 통합 예제는 빌드 대상에서 제외한다.
-- **WebAssembly**: 순수 Rust로 구현된 tiny-skia·fontdb·swash와 비동기 초기화·출력 API를 사용한다. Rust의 `text_render::register_font_bytes`나 브라우저 예제 `FiggyChart`의 `register_font`로 실행 중에 폰트를 등록하면 한중일 문자와 사용자 지정 글꼴을 사용할 수 있다.
-- **웹 예제의 초기화**: 브라우저의 wasm에서 `create` / `create_with_progress`는 모든 렌더링용 WGSL 진입점을 미리 컴파일하고 빈 차트의 첫 프레임을 기다린다. 선택적인 렌더링·스타일·컴퓨트 캐시는 처음 사용하거나 `prewarm_all` / `prewarm_all_with_progress`를 호출할 때 만든다. 자세한 규칙은 [메모리 계상과 회수](#메모리-계상과-회수)의 웹 초기화 표를 참고한다.
+- **WebAssembly**: 순수 Rust로 구현된 tiny-skia·fontdb·swash와 비동기 초기화·출력 API를 사용한다. Rust의 `text_render::register_font_bytes`나 브라우저 래퍼 `FiggyChart`의 `register_font`로 실행 중에 폰트를 등록하면 한중일 문자와 사용자 지정 글꼴을 사용할 수 있다.
+- **브라우저 래퍼의 초기화**: 브라우저의 wasm에서 `create` / `create_with_progress` / `create_with_options`는 파이프라인 컴파일을 기다리지 않는다(#299). 전체 화면 텍스처 파이프라인은 바로 만들고, 시작 셰이더 세트(기본값 `"basic"`, `create_with_options({ shaders: "full" })`이면 `"full"`)의 상주 렌더링 파이프라인 전체는 비동기 컴파일을 시작만 해 둔 채 빈 차트의 첫 프레임을 기다린다. 파이프라인이 아직 컴파일 중인 시리즈는 프레임에서 빠지고, 컴파일이 끝나면 다시 그린다. 벡터·3D 곡면·삼각 좌표 영역 모듈과 컴퓨트 스캔은 필요할 때 컴파일한다. 스타일·컴퓨트 캐시는 처음 사용하거나 `prewarm_all` / `prewarm_all_with_progress`를 호출할 때 만든다. 자세한 규칙은 [메모리 계상과 회수](#메모리-계상과-회수)의 웹 초기화 표를 참고한다.
 
 <a id="3-내부-메모리-데이터-흐름"></a>
 
@@ -486,7 +771,7 @@ area, while `export_panel_*` keeps the parent's area.
 
 ### 렌더링 계약
 
-전체 구조도는 컬럼 기반 `Renderer`와 도넛·범주형·박스플롯·레이더의 전용 렌더러 경로를 구분한다. 전용 차트의 불변 프레임은 일반 `PreparedFrame`이나 컬럼풀·스트리밍 계약을 공유하지 않는다. 화면 표시와 이미지 출력은 별도 경로이며, 이미지는 요청한 크기로 다시 렌더링한다. 아래 표는 그림의 번호 대신 주제별 계약을 요약한다.
+전체 구조도는 컬럼 기반 `Renderer` 경로와 원형 차트 전용 렌더러 경로를 구분한다. 원형 렌더러의 불변 프레임은 `PreparedFrame`이나 컬럼 풀·스트리밍 계약을 공유하지 않는다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·풀·스트리밍이 없다. 장식 요소는 차트에서 부품을 배치해 공통 싱크로 보내고, 조각은 프레임의 조각 버퍼를 읽는 그리기 자체의 조각 광선 추적으로 GPU에서 고른다. 직교 좌표 `Renderer` 안에서는 에너지 준위 시리즈(#203)가 DataLess 시리즈 종류다. 모델이 SSOT 레코드를 배치하고, prepare 단계에서 캔버스 싱크로 CPU 래스터를 만들어 스크래치 캐시에 두며, 데이터 슬롯에서 GPU 데이터 위에 합성한다(셰이더가 겉모양을 계산하는 GPU 시리즈와 다르다). 픽도 같은 배치로 CPU에서 한다. 파인만 시리즈(#234)도 DataLess 시리즈다. 위상은 SSOT에 있고, 위치가 없는 꼭짓점은 래스터할 때 결정적인 자동 배치로 놓는다. 그 위치는 명시적인 `place_feynman_vertices` 호출이나 첫 드래그 때만 SSOT에 기록한다(자동 맞춤과 같은 방식). 호·물결선·코일은 3차 곡선 경로(`Sink::path`)로 모든 싱크에 전달된다. 벡터 출력은 두 DataLess 종류를 앞뒤 GPU 단계 사이에 벡터로 기록한다. 부모 데이터 영역 안에 놓인 서브플롯(인셋)은 다른 모든 패널 다음에 합성한다. 화면 표시와 이미지 출력은 별도 경로이며, 이미지는 요청한 크기로 다시 렌더링한다. 아래 표는 그림의 번호 대신 주제별 계약을 요약한다.
 
 | 주제 | 데이터 흐름과 소유권 |
 |---|---|
@@ -496,8 +781,8 @@ area, while `export_panel_*` keeps the parent's area.
 | **프레임 갱신 판단** | 렌더러가 발급한 desired/raster 리비전과 마지막 표시 성공 기록을 비교한다. 래스터 설정이나 표시 영역이 바뀌면 축 이미지를 갱신한다. 배경색 같은 호스트 상태는 차트 설정을 바꾸지 않고 다시 그릴 수 있다. 웹에서는 변경이 없는 프레임의 surface 획득과 그리기를 생략하되 필요한 정리·완료 처리는 계속한다. 표시가 실패하면 마지막 성공 기록을 갱신하지 않는다. |
 | **준비와 명령 기록** | `prepare(&mut self)`가 입력을 확정하고 GPU 핸들·공유 할당 정보·검증용 상태를 `PreparedFrame`에 담는다. `paint_prepared(&self)`는 기록 전에 이를 검증한다. 뷰, 참조 컬럼, 풀 배치, 출력 파이프라인 또는 등록 차트 리비전이 바뀌면 거부한다. 호스트는 이 변경 전에 기존 명령을 제출해야 한다. 토큰은 외부 명령 버퍼의 제출 순서까지 검사하지 않는다. |
 | **GPU 파생 데이터** | 누적 경로 길이, 피킹, 실제 도형의 범위는 GPU 컬럼에서 계산한다. 경로 길이 스캔은 긴 시리즈를 제한된 크기의 청크로 나누고 누계를 다음 청크로 넘기므로 디스패치 한도가 시리즈 길이를 제한하지 않는다. 피킹과 범위 계산은 전체 점을 CPU로 복사하지 않고 작은 결과만 반환한다. 캐시와 프레임 토큰이 같은 계산 결과를 공유할 수 있으므로 캐시에서 지워도 자원이 바로 해제되지는 않을 수 있다. |
-| **화면 표시와 이미지 출력** | 격자·주석 아래층·데이터·장식·주석 위층 순서로 합성한다. 출력할 때는 배율을 적용한 차트·뷰·스타일과 화면 밖 렌더 타깃을 준비한다. 정렬용 여백이 있는 행을 청크 단위로 읽어 오고, 알파가 미리 곱해진 RGBA를 일반 RGBA로 바꾼다. 청크 처리는 읽기 버퍼의 크기를 제한하지만 렌더 타깃·최종 RGBA·PNG의 메모리까지 없애지는 않는다. 상주 출력은 GPU 컬럼을, 스트리밍 출력은 다시 공급받은 원본 구간을 사용한다. |
-| **원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
+| **화면 표시와 이미지 출력** | 격자·주석 아래층·데이터·장식·주석 위층 순서로 합성한다. 출력할 때는 배율을 적용한 차트·뷰·스타일과 화면 밖 half float 렌더 타깃(`EXPORT_FORMAT`, `Rgba16Float`)을 준비한다. 정렬용 여백이 있는 행을 청크 단위로 읽어 오고, 알파가 미리 곱해진 half float를 한 번만 양자화해 straight 알파 RGBA8로 바꾼다. 청크 처리는 읽기 버퍼의 크기를 제한하지만 렌더 타깃·최종 RGBA·PNG의 메모리까지 없애지는 않는다. 상주 출력은 GPU 컬럼을, 스트리밍 출력은 다시 공급받은 원본 구간을 사용한다. |
+| **원본 보존과 캐시** | 상주 경로는 데이터 이미지 캐시 없이 GPU 컬럼에서 다시 그린다. 비상주 경로는 누적 이미지를 유지하고, 지원되는 차트에서는 현재 화면에 필요한 원본 행만 모은 GPU 패킹 캐시를 사용할 수 있다. 두 경로 모두 LOD·샘플링·데시메이션으로 데이터를 줄이지 않는다. 단조 x 선은 자체 계약을 따르는 별도 소스다(아래). 화면 밖 자르기, 잘못된 값·로그 범위 밖 값 제외, 안티앨리어싱은 표시 규칙이며 GPU 백엔드 간 픽셀값 일치를 보장하지 않는다. |
 | **메모리 집계와 회수** | figgy에서 자원을 참조하는 동안 공유 할당 정보도 유지한다. 마지막 참조가 해제돼도 회수 대기 바이트는 제출 경계를 알리고 GPU 큐의 작업이 끝날 때까지 집계한다. 호스트는 기존 명령을 제출하거나 폐기한 뒤 `end_gpu_frame()`을 호출해야 하며, 네이티브에서는 완료 콜백도 처리해야 한다. 아래에 설명한 스타일 텍스처 등은 집계에서 제외되며 보고값은 실제 VRAM 측정값이 아니다. |
 
 ### 상주 컬럼 업로드
@@ -506,21 +791,23 @@ area, while `export_panel_*` keeps the parent's area.
 
 여기서 제로카피는 별도 CPU 점 배열 없이 매핑된 스테이징에 직접 기록한다는 뜻이다. GPU 복사는 존재하며, 축·문자용 CPU 이미지 버퍼는 컬럼 업로드의 보장 범위와 별개다.
 
+풀은 모든 값을 8바이트 `(hi, lo)` 쌍으로 저장한다. 쌍 컬럼(f64 소스나 `HiLoColumnSource`)은 이 형식 그대로 스테이징에 쓰고 풀로 복사한다. 단일 레인 컬럼은 값마다 4바이트만 스테이징에 쓴다(#317). `ColumnSource::lanes`가 `ColumnLanes::Single`을 반환하는 소스(내장 f32 소스)와 인덱스 레인(ragged 오프셋, 삼각형 인덱스)이 여기에 해당한다. 업로드는 이 바이트를 임시 스토리지 버퍼 하나로 복사한 뒤, 컴퓨트 패스(`column_expand.wgsl`)로 컬럼 영역에 `(값, 0)`을 기록한다. 그래서 풀에는 쌍 업로드와 같은 바이트가 들어가고 셰이더는 바뀌지 않는다. 이런 컬럼은 스테이징과 호스트→GPU 전송량이 절반으로 줄어든다. 임시 버퍼는 GPU 안에만 있으며 스테이징처럼 메모리 집계에 포함한다. 단일 레인이라고 선언한 소스가 두 번째 레인에 0이 아닌 값을 쓰면 업로드가 실패한다. 필요한 컴퓨트를 지원하지 않는 장치나 스토리지 바인딩 하나에 들어가지 않는 컬럼은 쌍으로 스테이징한다. 스트리밍 소스는 항상 쌍으로 스테이징한다. 한 업로드의 단일 레인 컬럼은 풀에 연속으로 배치하므로 디스패치 한 번으로 모두 확장하며, 배치의 호스트 비용이 컬럼 수에 따라 늘지 않는다.
+
 ### 원본 데이터 스트리밍과 상주 전환
 
 ![컬럼 기반 화면 갱신 루프: 조건부 CPU 래스터화, 상주 GPU 데이터와 청크 스트리밍·합성](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/streaming-architecture-kr.png)
 
-루프 그림은 최초 상주 업로드를 화면 갱신 밖에 두고, 필요한 CPU 래스터 갱신과 재사용, 청크별 데이터 그리기와 합성을 갱신 루프 안에 표시한다. 스트리밍은 직교좌표 `Renderer`의 계약이며 전용 차트 렌더러의 경로가 아니다. 선택적인 GPU 캐시와 원본 재공급은 아래 본문에서, 별도 출력 경로는 내보내기 삽화에서 설명한다. 네이티브 호스트는 재공급할 수 있는 원본을 보관하고 요청된 구간을 전달한다. 브라우저에서는 TypedArray나 `readRange` 공급자를 사용한다. 웹 래퍼는 실행 순서와 구간 요청을 관리하며, 차트 설정·시리즈 순서·소스 리비전·처리 위치·범위 통계·캐시 사용 여부는 렌더러가 관리한다.
+루프 그림은 최초 상주 업로드를 화면 갱신 밖에 두고, 필요한 CPU 래스터 갱신과 재사용, 청크별 데이터 그리기와 합성을 갱신 루프 안에 표시한다. 스트리밍은 직교좌표 `Renderer`의 계약이며 전용 차트 렌더러의 경로가 아니다. 선택적인 GPU 캐시와 원본 재공급은 아래 본문에서, 별도 출력 경로는 내보내기 삽화에서 설명한다. 네이티브 호스트는 재공급할 수 있는 원본을 보관하고 요청된 구간을 전달한다. 브라우저에서는 내용이 바뀌지 않는 TypedArray나 `readRange` 공급자를 사용한다. 웹 래퍼는 실행 순서와 구간 요청을 관리하며, 차트 설정·시리즈 순서·소스 리비전·처리 위치·범위 통계·캐시 사용 여부는 렌더러가 관리한다.
 
-자동 스트리밍은 연결된 컬럼 전체를 `ColumnPool`에 넣지 않는다. 호스트가 상주로 옮기려면 `resident_admission_for_streamed_columns`로 상태를 바꾸지 않고 가능 여부를 확인한 뒤, `promote_streamed_columns_to_resident`로 한 번에 반영한다. 이 반영이 실패하면 기존 상태가 그대로 남는다. 원본을 제한된 청크로 GPU에 올려 화면 밖 렌더 타깃에 누적한다. 지원되는 차트에서는 예산이 허용할 때 현재 화면에 필요한 원본 행만 GPU 캐시에 남긴다. 두 경로 모두 원본 도형을 그리며 LOD·샘플링·데시메이션을 적용하지 않는다. 한 페이지에서 상주 차트와 스트리밍 차트를 함께 사용할 수 있다.
+자동 스트리밍은 연결된 컬럼 전체를 `ColumnPool`에 넣지 않는다. 호스트가 상주로 옮기려면 `resident_admission_for_streamed_columns`로 상태를 바꾸지 않고 가능 여부를 확인한 뒤, `promote_streamed_columns_to_resident`로 한 번에 반영한다. 이 반영이 실패하면 기존 상태가 그대로 남는다. 원본을 제한된 청크로 GPU에 올려 화면 밖 렌더 타깃에 누적한다. 지원되는 차트에서는 설정한 작업 집합 예산과 전체 GPU 예산 안에서 현재 화면에 필요한 원본 행만 GPU 캐시에 남긴다. 두 경로 모두 원본 도형을 그리며 LOD·샘플링·데시메이션을 적용하지 않는다. 한 페이지에서 상주 차트와 스트리밍 차트를 함께 사용할 수 있다.
 
 스트리밍은 완료된 부분부터 화면에 표시한다. 입력이 바뀌지 않은 완료 결과는 재사용하고, 제목·축·범례 같은 장식만 바뀌면 데이터 처리 위치와 누적 이미지를 유지한다. 표시 범위나 물리 해상도가 바뀌면 새 좌표 변환으로 다시 그린다. 필요한 원본이 GPU 캐시에 있으면 재사용하고, 빠진 구간만 호스트에 다시 요청한다.
 
 `job.cancel()`은 새 작업을 멈추고 이미 제출된 GPU 작업이 끝난 뒤 자원을 정리한다. 완료된 패킹 캐시에서는 GPU의 점·선을 선택하고 원본 행 인덱스를 반환할 수 있다. 그 밖의 비상주 스트림은 즉시 피킹을 지원하지 않는다. 배율을 지정한 PNG 출력은 화면 이미지를 늘리는 대신 원본을 다시 읽어 그린다. 따라서 호스트는 다시 그리기와 출력을 위해 원본을 유지해야 한다.
 
-스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 앞서 그린 데이터 이미지를 새 범위로 리스케일하고 새 청크를 이어 그린다. 중간 화면의 선 두께·선명도는 잠시 달라질 수 있다. 전체 범위가 확정되면 원본을 한 번 더 읽어 정밀하게 그리며, 새 청크가 반영된 화면 구역부터 정밀 결과로 교체한다. 나머지 구역은 미리보기를 유지하고, 두 데이터 이미지를 겹쳐 합성하지 않는다. 같은 구역에 겹친 미처리 도형의 중간 모습은 잠시 달라질 수 있지만, 완료 시에는 정밀 결과만 사용한다. 화면 크기에 비례하는 임시 자원이 GPU 예산에 들어오지 않으면 미리보기를 유지했다가 완료 후 한꺼번에 교체한다. 축 범위와 눈금 설정은 완료 때 함께 확정한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](WASM.md#streaming-fit)을 참고한다.
+스트리밍 자체는 자동 맞춤을 켜지 않는다. 범위를 모르는 새 차트는 첫 청크 전에 맞춤을 요청한다. 앞서 그린 데이터 이미지를 새 범위로 리스케일하고 새 청크를 이어 그린다. 중간 화면의 선 두께·선명도는 잠시 달라질 수 있다. 전체 범위가 확정되면 원본을 한 번 더 읽어 정밀하게 그리며, 새 청크가 반영된 화면 구역부터 정밀 결과로 교체한다. 나머지 구역은 미리보기를 유지하고, 두 데이터 이미지를 겹쳐 합성하지 않는다. 장식은 한 번만 그린다. 같은 구역에 겹친 미처리 도형의 중간 모습은 잠시 달라질 수 있지만, 완료 시에는 정밀 결과만 사용한다. 화면 크기에 비례하는 임시 자원이 GPU 예산에 들어오지 않으면 미리보기를 유지했다가 완료 후 한꺼번에 교체한다. 축 범위와 눈금 설정은 완료 때 함께 확정한다. 이후 일반 재그리기는 확대·이동한 범위나 저장한 범위를 유지한다. 전체 데이터를 다시 보려면 자동 맞춤을 재요청하고, 과거의 특정 범위로 돌아가려면 저장한 축 범위를 복원한다. 웹 래퍼·저수준 WASM·네이티브의 호출 순서는 [범위 맞춤 사용법](WASM.md#streaming-fit)을 참고한다.
 
-점선·히스토그램·히트맵과 지원되는 스타일 스트림은 원본 순서와 인접 관계를 보존하는 GPU 캐시도 사용할 수 있다. 참조 컬럼 전체의 hi/lo 인코딩 크기가 차트별 상주 한도·장치의 단일 버퍼 한도·전체 GPU 예산에 들어올 때만 사용한다. 청크를 올리면서 GPU 안에서 복사하며 CPU 데이터 복사본은 남기지 않는다. 크기·DPR·축·그리드·히트맵 색상 매핑이 바뀌면 새 설정으로 다시 계산한다. 데이터 리비전이 바뀌면 이전 캐시를 사용하지 않고, 빠진 구간이나 한도보다 큰 원본은 일반 스트리밍으로 처리한다. 이 캐시는 즉시 피킹을 추가하지 않으며 `view_residency`는 기존의 패킹된 뷰 상태를 나타낸다. 출력과 캐시 미적중에 대비해 원본 공급자는 계속 보관해야 한다.
+점선·히트맵과 지원되는 스타일 스트림은 원본 순서와 인접 관계를 보존하는 GPU 캐시도 사용할 수 있다. 참조 컬럼 전체의 hi/lo 인코딩 크기가 차트별 상주 한도·장치의 단일 버퍼 한도·전체 GPU 예산에 들어올 때만 사용한다. 청크를 올리면서 GPU 안에서 복사하며 CPU 데이터 복사본은 남기지 않는다. 크기·DPR·축·그리드·히트맵 색상 매핑이 바뀌면 새 설정으로 다시 계산한다. 데이터 리비전이 바뀌면 이전 캐시를 사용하지 않고, 빠진 구간이나 한도보다 큰 원본은 일반 스트리밍으로 처리한다. 이 캐시는 즉시 피킹을 추가하지 않으며 `view_residency`는 기존의 패킹된 뷰 상태를 나타낸다. 출력과 캐시 미적중에 대비해 원본 공급자는 계속 보관해야 한다.
 
 지원 범위와 웹 API는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다. 원본을 빠짐없이 처리하더라도 GPU 백엔드나 렌더 패스 경계에 따라 안티앨리어싱 픽셀값은 달라질 수 있다.
 
@@ -528,13 +815,13 @@ area, while `export_panel_*` keeps the parent's area.
 
 ### 소유권과 수명 경계
 
-`Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터, 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `Arc<wgpu::Device>`와 `Arc<wgpu::Queue>`도 관리한다.
+`Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터, 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `wgpu::Device`와 `wgpu::Queue` 핸들(둘 다 참조 카운트 핸들)도 관리한다.
 
 생성해서 반환한 `ChartView`와 `ChartStyle`은 호스트가 패널 상태에 보관한다([egui 예제](examples/egui_embed.rs)). `PreparedFrame` 역시 GPU 핸들과 공유 할당 정보를 유지하므로 호스트가 뷰·스타일을 해제해도 자원이 즉시 사라지지는 않을 수 있다. `WindowedRenderer`는 추가로 surface·instance·adapter와 선택적인 MSAA 렌더 타깃을 보관한다. `ChartId`는 발급한 렌더러에서만 유효하다. 설정과 시리즈를 함께 편집하려면 `set_chart_state`로 둘을 검증한 뒤 한꺼번에 교체한다.
 
 컬럼 교체·제거·재배치는 풀, 차트, 리비전, 피킹 캐시를 먼저 준비하고 성공했을 때만 반영한다. 동기 준비 과정에서 오류가 나면 기존 상태를 유지하며, 마지막 반영 단계에서는 새 메모리를 할당하지 않는다. `remove_column`은 해당 컬럼을 참조하는 모든 등록 시리즈를 함께 제거하지만 `Config::legend`는 바꾸지 않는다. 범례까지 함께 바꾸려면 `remove_column_with_chart_config`를 사용한다. 이 호출은 풀, 영향을 받는 모든 시리즈, 해당 차트의 새 `Config`를 하나의 트랜잭션으로 반영한다. 웹 래퍼는 자동 범례와 직접 편집한 범례를 구분해 이 API를 사용한다.
 
-GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 피킹은 GPU 컬럼 풀을 직접 읽는다. 점·막대·셀·등고선을 구분하는 결과가 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
+GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을 한 번 호출하고, 필요하면 첫 선택 전에 `prepare_gpu_picking_for_chart(chart_id)`로 준비한다. 이후 `pick_chart(chart_id, GpuPickRequest)` 또는 `WindowedRenderer::pick_chart_at`을 호출한다. 축 변환과 데이터 영역 자르기는 렌더러가 `Config`에서 계산한다. 피킹은 GPU 컬럼 풀을 직접 읽는다. 점·히스토그램 구간·행렬 셀·등고선 레벨을 구분하는 결과가 필요하면 `pick_chart_data` / `WindowedRenderer::pick_chart_data_at`을 사용한다.
 
 ![Renderer의 프레임 준비, 참조 상태 검증, 오래된 프레임의 재준비와 명령 제출 순서](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/prepared-frame-kr.png)
 
@@ -546,17 +833,30 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 
 직접 지정한 라벨 배치도 불변 자원이다. 같은 `ChartView`를 다시 작성하거나 참조 컬럼을 교체하거나 풀·출력 파이프라인을 재구성하면 기존 토큰은 무효가 된다. 호스트는 이 변경 전에 토큰으로 기록한 명령 버퍼를 제출해야 한다.
 
-상주 `add_column`은 업로드할 때만 `ColumnSource`를 빌린다. 이후에는 GPU 컬럼과 자동 범위 맞춤용 최소·최대·최소 양수 값만 보관한다. 원본 참조나 점별 CPU 도형 정보는 유지하지 않는다. 점선·스케치·은하수 선에 필요한 누적 경로 길이도 GPU 풀을 스캔해 계산한다. 비상주 경로에서는 소스 메타데이터와 제한된 GPU 작업 상태만 유지하며, 호스트가 원본을 다시 공급할 수 있어야 한다. 렌더러는 원본 전체의 CPU 복사본을 보관하지 않는다.
+상주 `add_column`은 업로드할 때만 `ColumnSource`를 빌린다. 이후에는 GPU 컬럼과 자동 범위 맞춤용 최소·최대·최소 양수 값만 보관한다. 이 통계는 업로드의 `ColumnPairWriter`가 값을 쓰면서 함께 기록한다. 원본은 통계를 따로 주지 않으며, 스트리밍 원본은 청크마다 잰다. 원본 참조나 점별 CPU 도형 정보는 유지하지 않는다. 점선·스케치·은하수 선에 필요한 누적 경로 길이도 GPU 풀을 스캔해 계산한다. 비상주 경로에서는 소스 메타데이터와 제한된 GPU 작업 상태만 유지하며, 호스트가 원본을 다시 공급할 수 있어야 한다. 렌더러는 원본 전체의 CPU 복사본을 보관하지 않는다.
+
+**GPU 결과 대기**(#160). wgpu는 map이나 제출 작업 완료 콜백을 장치 poll이나 submit 안에서만
+실행한다. 모든 대기는 `gpu_readback.rs`를 거친다. 스트리밍의 결과 읽기(`streaming_auxiliary.rs`)만
+예외인데, 스트리밍 파일은 규칙 8에 따라 고정돼 있기 때문이다. `Completion`이 콜백과 결과를 묶고,
+티켓과 내보내기는 제출, 대기, 동기 마무리로 나뉜다. 그래서 비동기, 동기, 확인
+(`try_resolve`) 대기가 대기 단계만 빼고 모든 단계를 함께 쓴다. 네이티브에서
+`RendererDevice::new`는 장치 묶음마다 poll 스레드를 하나 띄운다(`gpu_poller.rs`). 이
+스레드는 잠금 없이 카운터 두 개와 park 토큰만 쓰고, 등록된 대기가 있으면 poll하고 없으면
+잠든다. 소유자는 묶음의 health 기록(묶음의 복제본, 렌더러, 엔진이 모두 가진다)과 아직
+끝나지 않은 대기의 표식이다. 소유자가 모두 사라지고 기다리는 작업도 없으면 스스로
+끝나며, 아무도 join하지 않는다. 스레드는 장치 유실 여부만 읽고 처리되지 않은 오류
+개수는 읽지 않는다. 그 오류는 호스트 호출이 보고한다. `tools/loom-poller`가 loom으로
+프로토콜을 검증한다. `RendererDevice::blocking`은 스레드 없는 묶음을 만든다.
 
 ### 메모리 계상과 회수
 
 ![공유 GPU 자원의 참조, 마지막 참조 해제 후 회수 대기와 GPU 완료 후 집계 해제](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/gpu-resource-lifetime-kr.png)
 
-`gpu_memory_usage()`는 figgy가 추적하는 GPU 자원의 요청 할당량을 바이트로 반환한다. 실제 VRAM 사용량을 측정한 값은 아니다. 은하수·별자리 스타일이 필요할 때 생성하는 PSF·흑체 색상표(LUT)·행성 아틀라스·고리 띠 텍스처는 일반 집계에서 제외된다. 다만 스트리밍 출력의 실행 가능 여부를 검사할 때는 알려진 텍스처 크기를 별도로 고려한다. 이 예외 자원을 집계된 자원으로 간주하면 안 된다.
+`gpu_memory_usage()`는 figgy가 추적하는 GPU 자원의 요청 할당량을 바이트로 반환한다. 실제 VRAM 사용량을 측정한 값은 아니다. 은하수·별자리 스타일이 필요할 때 생성하는 PSF·흑체 색상표(LUT)·행성 아틀라스·고리 띠 텍스처는 일반 집계에서 빠진다. 다만 스트리밍 출력의 실행 가능 여부를 검사할 때는 알려진 텍스처 크기를 별도로 고려한다. 이 예외 자원을 집계된 자원으로 간주하면 안 된다.
 
 `set_memory_budget`은 이를 따르는 할당·실행 가능 검사 경로가 쓰는 정책이며, 모든 장치 할당의 절대 상한이 아니다. 생성자가 만든 초기 풀에는 소급해 적용하지 않고 기존 자원을 내보내지도 않는다. 실행 가능 판정은 자원을 예약하지 않는다. 반환값, 제외 항목, 장치를 공유하는 호스트의 책임은 [예산 계약](API.md#gpu-memory-accounting-and-budget-scope)을 참고한다.
 
-사용 중인 자원(`live`)과 회수 대기 자원(`retired`)은 모두 합계에 포함한다. Rust 핸들을 해제해도 제출된 GPU 작업은 계속 실행될 수 있으며, `end_gpu_frame()` 호출만으로 장치 메모리가 반환되지는 않는다. 네이티브 호스트는 새 프레임을 그리지 않을 때도 완료 콜백을 처리해야 한다. CPU 할당, 최종 RGBA·PNG 버퍼, 드라이버 내부 메모리는 이 집계에 포함하지 않는다. 네이티브 업로드 규칙은 브라우저의 JS·WASM 경계에서 생기는 복사에는 적용되지 않는다.
+사용 중인 자원(`live`)과 회수 대기 자원(`retired`)은 모두 합계에 포함한다. Rust 핸들을 해제해도 제출된 GPU 작업은 계속 실행될 수 있으며, `end_gpu_frame()` 호출만으로 장치 메모리가 반환되지는 않는다. 네이티브 호스트는 새 프레임을 그리지 않을 때도 완료 콜백을 처리해야 한다. 네이티브 호스트 할당, 최종 RGBA·PNG 버퍼, 드라이버 내부 메모리는 이 집계에 포함하지 않는다. 네이티브 업로드 규칙은 브라우저의 JS·WASM 경계에서 생기는 복사에는 적용되지 않는다.
 
 진행 중인 `GpuPickTicket`은 결과 읽기용 자원과 제출 당시의 `Arc` 기반 식별자 매핑을 직접 보관한다. 차트·풀이 바뀌거나 렌더러가 해제돼도 해당 요청의 `source_id` / `series_id`가 다른 대상을 가리키게 되지는 않는다.
 
@@ -566,24 +866,23 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 
 | API·상태 | 동작 규칙 |
 |---|---|
-| 저수준 `FiggyChart` | `create` / `create_with_progress`는 같은 `GPUDevice`에서 모든 렌더링용 WGSL 진입점을 `createRenderPipelineAsync`로 미리 컴파일한다. 임시 JS 파이프라인을 해제하고 빈 차트의 첫 프레임을 제출한 뒤 완료를 기다린다. 선택적인 렌더링·스타일 자원과 경로 길이·범위·피킹·등고선 컴퓨트 캐시는 필요할 때 만든다. `prewarm_all_with_progress(callback)`은 이를 실제 wgpu 캐시에 생성하며 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. `warm_up()`은 첫 프레임 대기용 호환 메서드다. 생성 시 피킹을 켜지는 않으며, `prewarm_gpu_picking()`으로 활성화하고 현재 차트를 준비한다. 재시도와 `pick_point` / `pick_data`도 저장된 활성화 오류를 포함한 같은 렌더러 상태를 사용한다. |
+| 저수준 `FiggyChart` | 브라우저의 wasm에서 `create` / `create_with_progress` / `create_with_options`는 파이프라인 컴파일을 기다리지 않는다(#299). 전체 화면 텍스처 파이프라인은 바로 만들고, 시작 셰이더 세트(기본값 `"basic"`, `create_with_options({ shaders: "full" })`이면 `"full"`)의 상주 렌더링 파이프라인 전체는 렌더러의 `CompileQueue`로 비동기 컴파일을 시작한다. 같은 `GPUDevice`에서 `createRenderPipelineAsync`를 쓰고, 동시에 진행하는 컴파일은 `navigator.hardwareConcurrency`개까지(값이 없으면 4개)이며, 화면에 필요한 것부터 보낸다. 결과는 브라우저 캐시에 남아 같은 파이프라인을 동기로 만들 때 그대로 쓰인다. 그 뒤 빈 차트의 첫 프레임을 제출하고 완료를 기다린다. 파이프라인이 아직 컴파일 중인 시리즈는 프레임에서 빠지고, 컴파일이 끝나면 다시 그린다. `first_frame_ready`, `series_ready`, `pipelines_ready`는 이 컴파일을 기다린다. 벡터·3D 곡면·삼각 좌표 영역 모듈과 컴퓨트 스캔은 필요할 때 컴파일한다. 선택적인 렌더링·스타일 자원과 경로 길이·범위·피킹·등고선 컴퓨트 캐시는 필요할 때 만든다. `prewarm_all_with_progress(callback)`은 이를 실제 wgpu 캐시에 생성하며 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. `warm_up()`은 첫 프레임 대기용 호환 메서드이며 전체 사전 준비가 아니다. 생성 시 피킹을 켜지는 않으며, `prewarm_gpu_picking()`으로 활성화하고 현재 차트를 준비한다. 재시도와 `pick_point` / `pick_data`도 저장된 활성화 오류를 포함한 같은 렌더러 상태를 사용한다. |
 | `<figgy-chart>` 시작 | `web.create / first frame / finished`와 `figgy-ready`를 알린 뒤 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보낸다. 이미 완료된 `ready`와 렌더링 루프는 유지한다. |
-| 비동기 호출 직렬화 | 연결 세대와 커널을 확인하는 작업 토큰으로 생성, 전체 사전 준비, 피킹 준비, 출력, 첫 프레임 대기, 범위 엔진 준비, 상주 자동 범위 맞춤과 피킹을 직렬화한다. 작업 중에는 rAF·포인터·대리 호출이 WASM에 접근하지 않으며 마지막 크기 변경과 포인터 해제만 보관했다가 종료 후 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰 없이 렌더러에 범위 계산을 요청하고 스트림 완료를 기다린다. 스트리밍 실행기가 커널 호출을 계속하고 최신 차트 상태 요청을 반영한다. 범위 계산 자체는 busy를 켜지 않지만 별도 작업이 실행 중이면 busy일 수 있다. |
+| 비동기 호출 직렬화 | 연결 세대와 커널을 확인하는 작업 토큰으로 생성, 전체 사전 준비, 피킹 준비, 출력, 첫 프레임 대기, `series_ready` / `pipelines_ready`, 스트림 취소, 범위 엔진 준비, 상주 자동 범위 맞춤과 피킹을 직렬화한다. 작업 중에는 rAF·포인터·대리 호출이 WASM에 접근하지 않으며 마지막 크기 변경과 포인터 해제만 보관했다가 종료 후 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰 없이 렌더러에 범위 계산을 요청하고 스트림 완료를 기다린다. 스트리밍 실행기가 커널 호출을 계속하고 최신 차트 상태 요청을 반영한다. 범위 계산 자체는 busy를 켜지 않지만 별도 작업이 실행 중이면 busy일 수 있다. |
 | 연결 해제·재연결 | 연결 해제 시 이전 세대를 무효화하고 rAF와 관찰자를 정리한다. 작업 중인 커널은 작업 종료 후 해제한다. 이전 세대의 완료 처리는 새 토큰·커널에 영향을 주거나 새 세대의 크기 변경·포인터 해제·객체 해제를 수행하지 않는다. |
 
-이 직렬화는 예제 래퍼가 수행한다. wasm-bindgen은 대여 상태만 검사하며 호출을 직렬화하거나 대기열에 넣지 않는다. 래퍼가 작업 중일 때 애플리케이션의 경쟁 호출은 대기하지 않고 거부된다. 저수준 커널을 직접 쓰는 호스트는 비동기 가변 대여가 끝날 때까지(실패한 경우 포함) 같은 객체에 접근하지 않아야 한다. 자세한 내용은 [저수준 커널 호출 소유권](WASM.md#raw-kernel-call-ownership)을 참고한다.
+이 직렬화는 `<figgy-chart>` 래퍼가 수행한다. wasm-bindgen은 대여 상태만 검사하며 호출을 직렬화하거나 대기열에 넣지 않는다. 래퍼가 작업 중일 때 애플리케이션의 경쟁 호출은 대기하지 않고 거부된다. 저수준 커널을 직접 쓰는 호스트는 비동기 가변 대여가 끝날 때까지(실패한 경우 포함) 같은 객체에 접근하지 않아야 한다. 자세한 내용은 [저수준 커널 호출 소유권](WASM.md#raw-kernel-call-ownership)을 참고한다.
 
 웹 상태 변경 API는 다음과 같다.
 
 | API | 동작 |
 |---|---|
-| `auto_fit_colorbar(padding)` | 행렬 값 컬럼, 산점도 `point_color_map` 컬럼, 벡터 색상 컬럼의 업로드 통계를 합쳐 공유 Z축 범위를 맞춘다. 색상 막대가 없으면 차트를 바꾸지 않는다. |
+| `auto_fit_colorbar(padding)` | 행렬과 삼각 메시의 값 컬럼, xy·삼각 좌표 산점도의 `point_color_map` 컬럼, 벡터와 유선의 색상 컬럼, 평행 좌표의 색상 컬럼의 업로드 통계와 `color_by_value`인 에너지 준위 시리즈의 유한한 전이 값을 합쳐 공유 Z축 범위를 맞춘다. 색상 막대가 없으면 차트를 바꾸지 않는다. |
 | `set_colorbar_axis(json)` | 기존 색상 막대의 전체 `AxisOptions`를 교체한다. 눈금 모양·방향·길이, 축 반전, 라벨 스타일·위치, 제목 옵션을 함께 설정한다. |
 | `set_colorbar_title(text)` | 제목을 지정하고 표시한다. 빈 문자열이면 숨기며 `Config.colorbar`가 없으면 실패한다. |
 | `set_contour_nice_levels(series_id, target_count, use_colormap_colors)` | 색상 막대 눈금 규칙으로 한 시리즈의 등고선 값을 만들고 필요하면 색상표의 색을 지정한다. 시리즈 설정에 반영한 뒤 레벨 수를 반환한다. |
 | `series_draw_info(series_id)` | `{ drawn_count, cols, rows, truncated }`를 반환한다. 저수준 WASM은 JSON 문자열, 웹 래퍼는 객체를 반환한다. |
 | `pick_data(x, y, max_distance_px)` | 점·구간·셀·등고선 레벨을 구분하는 식별자를 비동기로 반환한다. 저수준 WASM은 JSON 문자열 또는 `undefined`, 래퍼는 객체 또는 `null`이다. |
-| `set_picked_points(json)` | `PickedPointsConfig` 또는 `null`을 담은 JSON 문자열로 `Config.picked_points`만 교체한다. `null`은 선택 표시를 지운다. 참조에는 좌표 대신 `series_id`, 선택적인 `source_id`, `point_index`를 저장한다. |
 | `set_picked_data(json)` | `DataSelectionsConfig` 또는 `null`로 `Config.picked_data`만 교체한다. 참조는 출처와 인덱스만 보관하며 현재 도형은 차트의 GPU 자원에서 계산한다. |
 | `set_clear_color(r, g, b, a)` | 선형 RGBA 각 성분을 0~1로 제한하고 다시 그리기를 요청한다. 화면 배경 상태이므로 Config JSON을 바꾸거나 축 이미지를 갱신하지 않는다. |
 
@@ -596,9 +895,9 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 점선의 시작 위치와 간격을 맞추려면 각 점까지의 누적 경로 길이가 필요하다. 이 길이는 현재 데이터→픽셀 변환에 따라 달라진다. 계산 키가 달라지면 GPU에서 새로 계산하고, 키가 정확히 같으면 이전의 불변 결과를 재사용한다.
 
 ```
-pool 컬럼 (x, y) ──┐                       Transform uniform (144 B write)
+pool 컬럼 (x, y) ──┐                       Transform uniform (304 B write)
                    ▼                                   │
-   seg_init        dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
+   seg_init        dst[i] = |px(pᵢ) − px(pᵢ₋₁)| (1/65536 px 단위) ◄┘
    scan_block      256-블록 inclusive 스캔 (Hillis–Steele, 공유 메모리)
    scan_block/add  블록 합 레벨 (dst → sums0 → sums1 → sums2)
    carry 체인      min(디스패치 한계 × 256, 256³) 점 단위 청크를 순차 실행;
@@ -608,9 +907,11 @@ pool 컬럼 (x, y) ──┐                       Transform uniform (144 B writ
    누적 경로 길이 버퍼 ──► 라인 파이프라인 정점 슬롯 4/5 (dash 위상)
 ```
 
+경로 길이 값은 모두 점마다 `u32` 두 개로 저장하는 64비트 고정소수점 정수다(SHADER_COMMON.md §5.6 arc pairs). 정수 덧셈은 오차가 없고 더하는 순서와 무관하므로, 스캔이 어떤 순서로 더해도 누적 길이 2^48 px까지 1/65536 px 해상도를 유지한다.
+
 컴퓨트 명령은 호스트의 렌더 패스보다 먼저 GPU 큐에 제출한다. 따라서 지원하는 모든 통합 환경(winit·egui·웹)에서 API를 바꾸지 않아도 큐의 실행 순서에 따라 계산 결과가 준비된 뒤 그리게 된다.
-계산 키에는 풀 배치 세대, X·Y 오프셋과 할당 세대, 길이, 좌표 변환의 앞 64바이트(축 범위·로그 플래그·픽셀과 패널 매핑), 선의 계단·극좌표 호 모드 값, 선택적인 별 배치 간격이 포함된다. 시리즈마다 최근 결과 8개를 보관하며, 없는 키는 새 버퍼에서 계산한다. 기존 결과는 덮어쓰지 않는다.
-현재 누적 경로 길이 스캔은 `u32::MAX = 4,294,967,295`로 주소를 표현할 수 있는 범위에서 동작한다. 시리즈 길이나 풀 원소 오프셋이 `u32` 범위를 넘으면 점선용 누적 경로 계산을 생략한다. 새 시리즈 ID를 추가할 때 이미 256개 ID가 캐시에 있으면 무제한 증가를 막기 위해 경로 길이 캐시 전체를 비운다.
+계산 키에는 풀 배치 세대, X·Y 오프셋과 할당 세대(삼각·3D 선이면 세 번째 컬럼의 것도), 길이, 스캔이 읽는 좌표 변환 값(앞 64바이트의 축 범위·로그 플래그·픽셀과 패널 매핑, 그리고 극좌표·삼각·축 끊기·확률 축 값), 3D 선의 카메라, 선의 계단·극좌표 호 모드 값, 선택적인 별 배치 간격이 들어간다. 시리즈마다 최근 결과 8개를 보관하며, 없는 키는 새 버퍼에서 계산한다. 기존 결과는 덮어쓰지 않는다.
+현재 누적 경로 길이 스캔은 `u32::MAX = 4,294,967,295`로 주소를 표현할 수 있는 범위에서 동작한다. 시리즈 길이나 풀 원소 오프셋이 `u32` 범위를 넘으면 스캔은 `FiggyError::GpuResourceLimit`으로 실패한다. 상주하지 않는 컬럼이나 두 점보다 짧은 선에는 누적 경로 길이가 없다. 새 시리즈 ID를 추가할 때 이미 256개 ID가 캐시에 있으면 무제한 증가를 막기 위해 경로 길이 캐시 전체를 비운다.
 
 <a id="renderer-owned-상태와-frame-invalidation"></a>
 
@@ -621,19 +922,22 @@ pool 컬럼 (x, y) ──┐                       Transform uniform (144 B writ
 | 상태 | 다시 그리는 조건과 처리 |
 |---|---|
 | 렌더러의 `desired` 리비전 | 표시 상태 변경, 참조 컬럼 교체, 동기화된 폰트 등록 시 다시 그린다. |
-| 렌더러의 `raster` 리비전 | 축 장식에 영향을 주는 설정 편집(차트 영역, 축, 제목, 그리드, 범례, 색상 막대, 그리기 스타일, `polar`, `overlays`·`subplots`의 모든 필드), 시리즈 변경, 폰트 등록이 있으면 그리기 전에 `refresh_axis`를 호출한다. 선택(`picked_*`), `active_layer`, `annotations` 편집과 동일한 설정 교체는 이 리비전을 바꾸지 않는다. 단, 레이어 변경이 요소 선택을 지우면 올린다. 분류는 `raster_config_equal`이며 [`src/renderer/ssot_invalidation_tests.rs`](src/renderer/ssot_invalidation_tests.rs)가 필드별로 검사한다. 앵커 공간이 축과 데이터 영역을 따르므로 `refresh_axis`는 주석 래스터도 함께 다시 만든다. 레이어가 있는 뷰는 내부 설정이 바뀐 패널만 다시 래스터한다. |
-| 렌더러의 `annotation` 리비전 | `annotations.items` 편집이 있으면 그리기 전에 `refresh_annotations`를 호출한다. 주석 underlay·overlay 텍스처와 주석 히트 맵만 다시 쓰고 그리드·장식 텍스처는 건드리지 않는다(`ChartView::layer_stamps`가 층별 쓰기 횟수를 센다). `annotations.visible`을 바꾸면 이 리비전과 `raster` 리비전은 그대로이고, 그리기 단계에서 주석 텍스처 두 장의 합성만 생략한다. 분류는 `annotation_config_revision`이며 같은 테스트 파일의 `annotation_edits`가 검사한다. |
+| 렌더러의 `raster` 리비전 | 축 장식에 영향을 주는 설정 편집(차트 영역, 축, 제목, 그리드, 범례, 색상 막대, 그리기 스타일, `coordinates`, `overlays`·`subplots`의 모든 필드, `line_offsets`, `plot_background`, `background`), 시리즈 변경, 폰트 등록이 있으면 그리기 전에 `refresh_axis`를 호출한다. 선택(`picked_*`), `active_layer`, `annotations`, `bar_groups` 편집과 동일한 설정 교체는 이 리비전을 바꾸지 않는다. 단, 레이어 변경이 요소 선택을 지우면 올린다. 분류는 `raster_config_equal`이며 [`src/renderer/ssot_invalidation_tests.rs`](src/renderer/ssot_invalidation_tests.rs)가 필드별로 검사한다. 앵커 공간이 축과 데이터 영역을 따르므로 `refresh_axis`는 주석 래스터도 함께 다시 만든다. 레이어가 있는 뷰는 내부 설정이 바뀐 패널만 다시 래스터한다. |
+| 렌더러의 `annotation` 리비전 | `annotations.items` 편집이나 폰트 등록이 있으면 그리기 전에 `refresh_annotations`를 호출한다. 주석 underlay·overlay 텍스처와 주석 히트 맵만 다시 쓰고 그리드·장식 텍스처는 건드리지 않는다(`ChartView::layer_stamps`가 층별 쓰기 횟수를 센다). `annotations.visible`을 바꾸면 이 리비전과 `raster` 리비전은 그대로이고, 그리기 단계에서 주석 텍스처 두 장의 합성만 생략한다. 분류는 `annotation_config_revision`이며 같은 테스트 파일의 `annotation_edits`가 검사한다. |
 | 호스트의 `view_dirty` | 화면 크기·DPR로 미리보기 배치가 바뀌면 축 이미지를 갱신하고 다시 그린다. |
 | 호스트의 `redraw_pending` | 배경색 등 화면 상태가 바뀌면 차트 설정을 복제하지 않고 다시 그린다. |
 
-브라우저의 프레임 처리 순서는 다음과 같다. [`crates/web/src/lib.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/lib.rs)의 `FiggyChart::frame`을 줄인 예시다.
+브라우저의 프레임 처리 순서는 다음과 같다. [`crates/web/src/web/chart.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart.rs)의 `FiggyChart::frame`을 줄인 예시다.
 
 ```rust
 renderer.sync_external_invalidations()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
 let draw = stamp.needs_draw_since(last_presented_stamp.as_ref());
 let raster = stamp.needs_raster_since(last_presented_stamp.as_ref());
-let annotations = stamp.needs_annotation_raster_since(last_presented_stamp.as_ref());
+let annotations = stamp.needs_annotation_raster_since(last_presented_stamp.as_ref())
+    || annotation_selection_dirty;
+// 빠졌던 시리즈가 기다리던 파이프라인의 컴파일이 끝났다(#299).
+redraw_pending |= renderer.compile_redraw_due();
 
 if !draw && !raster && !view_dirty && !redraw_pending {
     if renderer.has_pending_maintenance() {
@@ -643,25 +947,62 @@ if !draw && !raster && !view_dirty && !redraw_pending {
 }
 renderer.process_pending_maintenance()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
-if raster || view_dirty {
-    // 주석 래스터도 함께 다시 만든다.
-    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, &boxes)?;
-} else if annotations {
+// 저장된 차트, 그 선택 상태, 표시 위치가 바뀌었으면 `draw_registered`가
+// 텍스트·축 래스터를 직접 다시 그린다(#265).
+if annotations && !raster {
     renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
 }
-if renderer.is_streaming_chart(chart_id) {
-    renderer.draw_registered(clear, &[RegisteredChartDrawItem { chart_id, view: &view }])?;
-} else {
-    renderer.draw(clear, &items)?;
+match monotonic {
+    Some(chart) => renderer.draw_monotonic(clear, &mut [MonotonicChartDrawItem { chart, view: &mut view }])?,
+    None => renderer.draw_registered(clear, &mut [RegisteredChartDrawItem { chart_id, view: &mut view }])?,
 }
 last_presented_stamp = Some(stamp);
 view_dirty = false;
 redraw_pending = false;
+annotation_selection_dirty = false;
 ```
 
-마지막 표시 기록과 호스트 플래그는 그리기가 성공한 뒤에만 갱신한다. 실패하면 다음 프레임에서 다시 시도한다. 변경이 없는 웹 rAF에서는 GPU 화면 출력 경로 전체를 생략한다. 상주 경로의 Precise 패널은 시리즈 본체(채움, 선, 마커, 막대, 행렬, 등고선, 벡터)를 패널 크기의 캐시 텍스처에 보관한다. `prepare`는 본체의 입력이 바뀔 때만 다시 그린다. 입력은 데이터-픽셀 변환, 데이터 영역, 그리기 스타일, `polar`·`colorbar`, 시리즈 설정과 스타일을 만든 배율, 폰트 세대, 그 패널이 읽는 컬럼의 할당 epoch, 풀 배치·파이프라인 세대다. 다른 패널이 읽는 컬럼을 교체해도 이 패널은 다시 그리지 않는다. 그리드·장식·주석 레이어는 각자의 텍스처를 쓰고 픽·선택 강조는 캐시된 본체 위에 매번 그리므로, 제목·범례·축·그리드·주석·점을 편집하거나 선택해도 본체를 다시 그리지 않는다. 레이어가 있는 문서는 패널마다 캐시가 따로 있어 한 레이어를 편집하면 그 레이어의 본체만 다시 그린다. 출력 대상에 잘리는 패널과 스타일 패널(아래 내용에 따라 블렌드 결과가 달라진다)은 본체를 직접 그린다. 합성 텍스처는 premultiplied UNORM이라 일부만 덮인 픽셀에서 직접 그린 결과와 UNORM 반올림만큼 다를 수 있다. 무효화 규칙과 이 오차 범위는 [`src/renderer/resident_display_tests.rs`](src/renderer/resident_display_tests.rs)가 검사하며, 무작위 편집 시퀀스의 결과를 최종 상태를 처음부터 그린 렌더러와 비트 단위로 비교한다. 비상주 경로는 부분 표시를 위한 GPU 누적 이미지를 유지하고, 입력이 바뀌지 않은 완료 결과를 재사용한다.
+마지막 표시 기록과 호스트 플래그는 그리기가 성공한 뒤에만 갱신한다. 실패하면 다음 프레임에서 다시 시도한다. 변경이 없는 웹 rAF에서는 GPU 화면 출력 경로 전체를 생략한다. 상주 경로의 Precise 패널은 시리즈 본체(채움, 선, 마커, 막대, 행렬, 등고선, 벡터)를 패널 크기의 캐시 텍스처에 보관한다. `prepare`는 본체의 입력이 바뀔 때만 다시 그린다. 입력은 패널 크기, 데이터-픽셀 변환, 데이터 영역, 그리기 스타일, `polar`·`parallel`·`colorbar`·`bar_groups`, 범주형 막대나 박스플롯 시리즈를 그리는 패널의 범주 축, 눈금 라벨 글꼴, 3D 패널의 카메라(`view_3d`), 합성 텍스처의 스텐실 사용 여부(삼각 좌표 영역 채우기), 시리즈 설정과 스타일을 만든 배율, 폰트 세대, 그 패널이 읽는 컬럼의 할당 epoch, 풀 배치·파이프라인 세대다. 3D 카메라나 스텐실이 있는 패널의 합성 텍스처는 대상 샘플 수의 `Depth24PlusStencil8` 첨부도 가진다. 곡면, 3D 표식, 3D 화살표는 이 첨부로 깊이 테스트를 하고, 삼각 좌표 영역 채우기는 이 첨부를 스텐실로 쓴다. 다른 패널이 읽는 컬럼을 교체해도 이 패널은 다시 그리지 않는다. 그리드·장식·주석 레이어는 각자의 텍스처를 쓰고 픽·선택 강조는 캐시된 본체 위에 매번 그리므로, 제목·범례·축·그리드·주석·점을 편집하거나 선택해도 본체를 다시 그리지 않는다. 레이어가 있는 문서는 패널마다 캐시가 따로 있어 한 레이어를 편집하면 그 레이어의 본체만 다시 그린다. 출력 대상에 잘리는 패널과 스타일 패널(아래에 그려진 내용에 따라 블렌드 결과가 달라진다)은 본체를 직접 그린다. 합성 텍스처는 premultiplied UNORM이라 일부만 덮인 픽셀에서 직접 그린 결과와 UNORM 반올림만큼 다를 수 있다. 무효화 규칙과 이 오차 범위는 [`src/renderer/resident_display_tests.rs`](src/renderer/resident_display_tests.rs)가 검사하며, 무작위 편집 시퀀스의 결과를 최종 상태를 처음부터 그린 렌더러와 비트 단위로 비교한다. 비상주 경로는 부분 표시를 위한, 크기가 제한된 GPU 누적 이미지를 유지하고, 입력이 바뀌지 않은 완료 결과를 재사용한다.
 
-`Chart::{data_dirty,raster_dirty}`는 `Chart`를 직접 소유하는 저수준 호스트와의 호환성을 위해 남겨 둔 플래그다. `prepare`는 이 값을 읽거나 초기화하지 않고, 호출될 때 좌표 변환을 기록한다. 외부에서 `Chart`를 관리한다면 호스트가 `raster_dirty`를 확인·해제하고 `refresh_axis`를 호출해야 한다.
+`Chart::{data_dirty,raster_dirty}`는 `Chart`를 직접 소유하는 저수준 호스트와의 호환성을 위해 남겨 둔 플래그다. `prepare`는 이 값을 읽거나 초기화하지 않는다. 대신 차트의 래스터 스탬프를 뷰를 그릴 때의 값과 비교해, 다르면 뷰의 래스터를 다시 그린다(#265). 래스터 스탬프는 래스터에 영향을 주는 편집과 `Chart::select`마다 새로 발급하는 번호다. 좌표 변환은 호출될 때마다 기록한다.
+
+### 신원 확인과 오래된 토큰 판단
+
+렌더러가 객체를 서로 구분하거나 토큰이 오래되었는지 판단하는 방식은 아래 몇 가지로 정해져 있다. 새 코드는 이 중 하나를 다시 쓴다. 다른 방식을 추가하려면 먼저 이슈에서 관리자 승인을 받아야 한다.
+
+| 질문 | 방식 | 쓰는 곳 |
+|---|---|---|
+| 어느 렌더러가 발급했는가? | **발급 번호.** 프로세스 전체에서 하나인 카운터가 `u64`를 발급한다. 증가는 overflow를 검사하고, 넘치면 값을 되돌리지 않고 `FiggyError::CounterExhausted`로 실패하므로 같은 값이 다시 나오지 않는다. | `issue_renderer_identity`(`src/renderer/device.rs`)가 `renderer_identity`를 발급한다. `ChartId`와 `RenderRevision`은 이 값을 렌더러별 순번과 묶으므로, 한 렌더러의 id가 다른 렌더러의 id와 같아지지 않는다. `issue_raster_stamp`(`src/chart.rs`)는 래스터에 영향을 주는 변경마다 `Chart`의 래스터 스탬프를 발급하므로, `ChartView`가 다른 차트를 자신을 그린 차트로 착각하지 않는다(#265). 편집은 실패할 수 없으므로 카운터가 소진되면 스탬프는 `None`이 되고 `prepare`가 `CounterExhausted`로 실패한다. |
+| 살아 있는 같은 인스턴스인가? | **할당 신원.** `Arc`의 주소가 인스턴스를 가리키며 `Arc::ptr_eq`나 `Weak::as_ptr`로 비교한다. 나중에 비교할 쪽은 그 `Arc`의 복제나 `Weak`를 들고 있어야 한다. 그래야 비교할 수 있는 동안 할당이 해제되지 않아 같은 주소가 다시 쓰이지 않는다. `Weak`는 인스턴스가 사라졌는지도 알려 준다. | `PoolIdentity`: 컬럼 풀. 픽커가 바인딩을 다시 쓰기 전에 확인한다. `ChartView::content_revision`: 패널. 상주 표시 캐시가 이 셀의 `Weak`를 들고 있다가 `strong_count()`가 0이 되면 항목을 지운다. 스트리밍 그리기 토큰의 `ChartView::stream_revision`·`content_revision`. 스트림 필드 `RecordedStep`의 소유 타일. `PipelineReadiness`(#315): 렌더러의 컴파일 대기열을 `Weak`로 들고 있다가 대기열이 해제되면 렌더러가 사라졌다고 알린다. |
+| 저장된 내용이 같은가? | **공유 저장소.** 공유 GPU 저장소에 `Arc::ptr_eq`를 쓴다. 같으면 가벼운 편집이 저장소를 그대로 재사용했다는 뜻이다. 빠른 판단용이며 신원이 아니다. | `RadialFrame::shares_annotations_with`, `BoundedAnnotationFrame::shares_rasters_with` |
+| 내용이 바뀌었는가? | **세대.** 바뀔 때마다 올라가는 카운터다. 토큰이 값을 기록해 두었다가 쓰기 전에 비교한다. 객체를 가리키지 않는다. | 컬럼의 할당 epoch(업로드마다 하나), 풀의 `layout_generation`, `target_pipeline_generation`, `font_generation`, `ChartView` content revision의 값, `RenderRevision` |
+| 같은 GPU 장치인가? | wgpu `Device` 자체의 동등 비교 | 준비 작업(`src/renderer/preparation.rs`) |
+
+새 코드의 규칙은 다음과 같다.
+
+- 묻는 질문에 따라 행을 고른다.
+  - 객체보다 오래 남거나, 해시하거나, 호스트에 건네거나, 렌더러 사이에서 비교하는 값은 발급 번호를 쓴다.
+  - 객체와 함께 사라져야 하는 캐시 항목은 할당 신원을 쓰고 `Weak`를 들고 있는다.
+  - 오래된 토큰 판단에는 세대를 쓰며, 신원을 쓰지 않는다.
+- 주소를 고정해 주는 복제나 `Weak` 없이 주소(`Arc::as_ptr(..) as usize`)만 보관하지 않는다. 신원으로 쓰는 `Arc`를 제자리에서 새 `Arc`로 바꾸지 않는다. 그러면 모르는 사이에 다른 인스턴스가 된다.
+- 새 카운터도 발급 번호 규칙을 따른다. 증가할 때 overflow를 검사하고, 넘치면 `CounterExhausted`로 실패하며, 값을 되돌리지 않는다.
+- 새 신원을 만들기 전에 있는 신원을 다시 쓴다. 예를 들어 패널 신원은 준비된 토큰들이 이미 공유하는 content revision 셀이며, 따로 `Arc`를 두지 않는다.
+
+### 문서 기본값
+
+기본값이 있는 직렬화 모델 타입은 그 값을 모델의 크레이트 내부 폴더
+`defaults/`에 한 번만 적는다. 파일은 영역별로 나뉜다(프레임, 계열, 주석,
+차트 종류, 과학 도표, 글자). 문서에서 필드가 빠졌을 때 쓰는 값이다. serde는
+`#[serde(default = "crate::defaults::name")]`로 이 함수를 읽고, 모델이
+문서를 만들 때도 같은 함수를 부른다. 호스트용 편의 기능은 따로
+`helpers/` 폴더에 있고 `helpers` 기능이 켜졌을 때만 있다. 호스트에서는
+기본으로 켜진다. 이 타입들의 `Default`(각각 `defaults/`의 값을 돌려준다)와
+공개 `default` 모듈이 여기에 있다. 모델과 렌더러는 단위 테스트까지 이
+기능 없이 빌드되므로(`ci/verify.py static`) 제품 코드도 테스트도 기본값에
+기댈 수 없다. 값이 필요한
+곳은 모델이 이름을 붙여 준다. `AnnotationLayer::empty()`,
+`DataSelectionsConfig::empty()`, `Config::effective_bar_groups()`,
+`SurfaceStyle::resolved()`, 원형 차트의 `label_raster_key` 함수다(#266).
 
 <a id="log-scale-gpu-처리"></a>
 
@@ -674,6 +1015,69 @@ redraw_pending = false;
 - CPU의 `scatter_transform_from_config`가 보정된 범위를 log10으로 변환하고 해당 축의 `scale_log`를 설정한다.
 - GPU의 선·산점도 경로는 그리기와 피킹 전에 좌표가 유한하고 로그축에서 양수인지 확인한다. 유효하지 않은 점과 그 점에 닿는 선분은 생략해 빈 구간으로 남기며, 나머지 데이터를 거부하거나 빈 구간을 선으로 잇지 않는다. 정밀·스케치·리본/호·별 선 경로에도 같은 규칙을 적용한다. 히스토그램의 0 기준선은 양수 표시 범위로 잘라 그리며, 로그 색상표의 0 이하 Z값은 `nan_color`를 사용한다.
 
+### GPU의 확률 축 처리
+
+`AxisOptions.scale = Probability(_)`이면([#209](https://github.com/shim9610/figgy/issues/209)) 다음 규칙을 적용한다.
+
+- CPU의 `scatter_transform_from_config`가 보정된 범위(`guarded_probability_range`, f64)의 `F⁻¹`를 `data_min`·`data_max`에 쓰고 척도 코드를 `scale_prob`에 쓴다. `scale_log`는 0이다.
+- GPU에서는 `common/probability.wgsl`이 각 표본을 `(hi, lo)` 쌍에서 f32로 `F⁻¹(p)`에 놓는다(SHADER_COMMON §5.24). 0이나 1, 또는 그 바깥의 값은 위치가 없다. 그런 점과 그 점에 닿는 선분은 로그축의 0 이하 표본처럼 생략하고, 면적이나 줄기의 기준선은 그쪽 축 끝에 고정한다.
+- 자동 범위 맞춤은 두 끝을 `(0, 1)` 안에 둔다. 0이나 1인 끝은 다른 끝의 대칭을 쓰고, 여백은 `F⁻¹` 단위로 둔다.
+- 스트리밍 계열은 명시적인 오류로 거부한다.
+
+### 셰이더 세트
+
+데이터를 배치하는 모듈은 모두 조각 목록 하나로 두 번 조립한다(`shader_assembly.rs`의 `assembled_by_set!`, [#299](https://github.com/shim9610/figgy/issues/299)). 전체 세트(`ShaderSet::Full`)에는 끊긴 축([#200](https://github.com/shim9610/figgy/issues/200))의 재배치, 확률 눈금([#209](https://github.com/shim9610/figgy/issues/209)), 극좌표 코드를 담은 조각을 넣고, 기본 세트(`ShaderSet::Basic`)에는 같은 함수를 선언하되 그 코드가 없는 짝 조각을 넣는다(`shader_assembly::SET_FRAGMENTS`, SHADER_COMMON §4). 브라우저에서 이런 파이프라인의 컴파일 시간 대부분을 이 세 가지가 차지하는데, 셋 중 어느 것도 쓰지 않는 차트는 이 코드를 실행하지 않는다.
+- 렌더러는 한 번에 한 가지 세트만 쓴다(`Renderer::shader_set()`). 만들 때는 `Basic`이고, 어느 층에든(기본 차트, 오버레이, 서브플롯, 서브플롯의 오버레이. 극좌표는 기본 차트나 서브플롯에만 있다) 끊긴 축, 확률 축, 극좌표 중 하나가 있는 차트를 처음 받으면 `Full`로 바꾼다. 그 기능을 없애도 되돌아가지 않는다. 변환에 잘린 구간도 확률 눈금 코드도 극좌표 표시도 없으면 전체 세트는 기본 세트와 같은 값을 계산하므로, 셋 중 어느 것도 쓰지 않는 차트는 어느 세트로 그려도 같은 그림이 나오고, 두 종류의 차트를 번갈아 그려도 파이프라인을 다시 컴파일하지 않는다. 다만 두 세트는 서로 다른 셰이더 프로그램이라 컴파일러가 가장자리 덮임 정도를 다르게 반올림할 수 있다. DX12와 Metal에서 잰 차이는 1단계 이하이고, 그보다 큰 차이는 반투명한 가장자리 픽셀에서만 나왔다(`tests/shader_set_scenes.rs`).
+- 이 세 가지 말고는 전체 세트로 바꾸는 것이 없다. 로그 축, 삼각 좌표와 3D 차트, 계단선, 값에 따른 색과 크기, 그리기 스타일, 선택 강조, 값 라벨은 두 세트에 모두 들어 있다. 삼각 좌표와 3D 배치는 진입점이 따로 있고, 나머지는 시리즈나 스타일마다 정해지는데 렌더러는 세트를 고를 때 그 정보를 모르기 때문이다.
+- 전환은 `Renderer::admit_full_shaders`가 한다. 차트 등록, `set_chart_config`와 `set_chart_state`, 프레임 준비(`prepare`, `prepare_registered`), 이미지 출력, 피킹이 파이프라인을 컴파일하거나 쓰기 전에 자기 차트로(`config_needs_full_shaders`) 이 함수를 부른다. 전환하면 대상의 파이프라인 집합을 `Full` 세트의 빈 집합으로 바꾸고, 등고선 라벨과 경로 길이 계산 파이프라인을 버리며, 피킹이 켜져 있었다면 픽커의 파이프라인 묶음을 다시 만든다. 그 뒤 각 파이프라인은 새 렌더러에서처럼 처음 필요한 그리기나 피킹이 컴파일한다.
+- 호스트가 들고 있는 것은 무효가 되지 않는다. 대상 파이프라인 세대는 그대로다. `PreparedFrame`은 자기 파이프라인을 소유하며 세 기능이 없는 차트로 준비한 것이기 때문이다. 전환 전에 시작한 분리 준비 작업은 `Basic` 파이프라인을 담고 있으므로 설치할 때 `StaleStateToken`으로 거부한다.
+- 이 규칙은 차트가 들어오는 곳뿐 아니라 파이프라인을 쓰는 곳에서도 확인한다. 프레임 항목을 확정하는 단계(프레임과 이미지 출력), 경로 길이 계산, 등고선 라벨 위치 계산, 두 피킹 진입점은 `Basic` 셰이더에서 이런 차트를 내부 오류로 거부한다. 그래서 차트를 알리지 않은 진입점은 그 기능 없이 그리는 대신 실패한다. 기본 세트의 짝 조각도 확률 눈금 코드나 극좌표 표시가 있는 변환에는 아무것도 그리지 않는다(`prob_in_domain`, `polar_sample_valid`, `polar_fragment_visible`이 거짓이다).
+- 스트리밍은 끊긴 축, 확률 축, 극좌표 차트를 지원하지 않으므로(규칙 8) 스트리밍 차트는 어느 세트로도 같은 자리에 그린다. 스트리밍 중인 차트에 끊김을 넣으면 데이터를 놓는 자리가 바뀌므로 스트림이 끝나고, 다시 시작하려 하면 `StreamedBreak`로 거부한다. 확률 축과 극좌표도 각자의 규칙으로 똑같이 거부한다.
+- 브라우저에서 시작할 때 하는 사전 준비는 렌더러의 시작 세트(기본값은 `Basic`)의 렌더링 파이프라인을 백그라운드 컴파일 일정에 올린다. 벡터·3D 곡면·삼각 좌표 영역 모듈과 컴퓨트 스캔은 필요할 때 컴파일한다. 사전 준비 계약(`shader_pipeline_contract.json`)은 파이프라인마다 `Basic` 소스 아래에 한 번만 저장하고, `Full` 모듈은 짝이 되는 모듈을 통해 디스크립터를 찾는다(`shader_assembly::contract_source`).
+- 공개된 단일 파이프라인 생성 함수(`create_line_columnar_pipeline`, `create_vector_pipeline`, `create_arc_scan_pipelines`, `ContourLabelPipelines::new` 등)와 `*_SHADER` 상수는 `Full` 모듈을 그대로 쓴다. 호스트가 이 함수들로 어떤 변환이든 그릴 수 있기 때문이다.
+- 두 세트와 별개로, 그리기 함수는 `transform` 유니폼 전체를 한 번만 읽어(`let tf = transform;`) 공통 함수에 넘긴다. 유니폼 전체를 읽을 때마다 컴파일러가 구조체 사본을 따로 만들기 때문이다(SHADER_COMMON §4).
+- 호스트가 직접 고를 수도 있다. `Renderer::require_shader_set(ShaderSet::Full)`은 그런 차트가 오기 전에 미리 올린다. 올리기만 하고 여러 번 불러도 결과가 같다. 처음부터 전체 세트로 만들려면 장치 묶음에 `RendererDevice::with_shader_set(ShaderSet::Full)`을 주거나(`Renderer::try_new` 계열), 창과 캔버스에는 `Renderer::for_window_with_shader_set_async_observed`를 쓴다. 이렇게 만든 렌더러는 기본 세트의 모듈을 만들지도 컴파일하지도 않는다.
+- 브라우저에서 만들 때 렌더링 파이프라인의 비동기 컴파일을 시작해 둔 렌더러(`for_window_minimal_async_observed`나 `for_window_with_shader_set_async_observed`)는 전체 세트로 올라갈 때 전체 세트의 렌더링 파이프라인을 자신의 `CompileQueue`에 올린다. 아직 보내지 않은 `Basic` 컴파일은 대체됨(superseded)으로 끝난다. 동시에 진행하는 컴파일은 브라우저가 알려 주는 코어 수까지이며, 화면에 필요한 것부터 보낸다. 시리즈의 파이프라인이 컴파일되기 전까지 프레임은 그 시리즈를 빼고 그리며(`frame_complete`, `series_ready`), 컴파일이 끝나는 대로 차트가 채워진다.
+
+### GPU의 삼각 메시 처리
+
+`TriMesh` 시리즈([#210](https://github.com/shim9610/figgy/issues/210), [가이드](TRIMESH.md))는 풀의 컬럼 네 개를 읽는다. x, y, 값, 그리고 삼각형 인덱스 컬럼이다(삼각형마다 `u32` 꼭짓점 인덱스 세 개, SHADER_COMMON §5.14).
+- 그룹 2는 필드의 레이아웃을 `FIELD_FLAG_MESH`로 다시 해석한다(SHADER_COMMON §5.25). 격자 표에는 값 컬럼, 인덱스 컬럼, 3D 차트에서는 높이 컬럼이 들어간다. 캐시와 서명, 축출은 필드의 것을 그대로 쓴다.
+- 그리기: 삼각형마다 인스턴스 하나, 정점 셋이며 정점 버퍼는 없다(렌더러의 현재 세트에 맞는 `TRI_MESH_SHADER_BY_SET`. `TRI_MESH_SHADER`는 그 전체 세트 조립본이다). 정점 단계가 삼각형의 인덱스와 정점을 읽고, 그리는 개수를 넘는 인덱스나 놓을 수 없는 정점이 있는 삼각형은 버린다. 조각 단계는 값을 무게중심 좌표로 섞고, 등고선은 삼각형마다 선형 보간의 등위선이다. 3D 차트에서는 `TRI_SURFACE_SHADER`가 정점을 카메라로 놓고, 바닥 등고선은 메시 모듈의 바닥 진입점이 그린다.
+- 피킹: 평면 차트에서는 워크그룹 하나짜리 계산 셰이더가 모든 삼각형을 훑어(`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) 커서 아래의 삼각형이나 그 위의 등고선을 답한다. 3D 차트에서는 1×1 ID 패스가 표면에 종류 2를, 바닥 등고선에 등고선 단어를 쓴다. 둘 다 그리기와 같은 그룹 2 스냅샷을 읽는다.
+- CPU는 인덱스 컬럼의 스칼라 통계(개수, 가장 작은 인덱스와 가장 큰 인덱스)만 갖는다. 등록할 때 가장 큰 인덱스를 정점 개수와 비교한다. 스트리밍 계열은 명시적인 오류로 거부한다.
+
+### 단조 x 선(M4 엔벌로프)
+
+`MonotonicLine` 시리즈([#271](https://github.com/shim9610/figgy/issues/271),
+[가이드](https://github.com/shim9610/figgy/blob/master/crates/model/MONOTONIC.md))는 간격이 일정한 샘플 묶음(`x = start + i × interval`)의 채널
+하나를 그린다. 입력과 계약이 따로 있으며(가이드의 M1~M7), 다른 시리즈는 모두 위의
+컬럼 계약을 그대로 따른다.
+- 입력: 호스트는 `MonotonicSource`(`MonotonicSlices`, `MonotonicInterleaved` 또는 직접 만든
+  구현. 값, `start`, `interval`을 담는다)를 그 소스를 읽는 호출마다 빌려준다. 어떤 호출도 소스를
+  보관하지 않으며, 샘플은 `ColumnSource`로 컬럼 풀에 들어가지 않는다.
+- 축소: CPU가 보이는 구간을 픽셀 열마다 M4 엔벌로프(첫 샘플, 가장 낮은 샘플, 가장 높은 샘플,
+  마지막 샘플)로 줄인다(`model::monotonic::MonotonicEnvelope`, `crates/model/src/monotonic/`).
+  엔벌로프는 플롯 양쪽 바깥으로 64픽셀 열의 고정 여백(`MARGIN_PX`)도 함께 두므로, 장치 픽셀로
+  약 120픽셀 굵기까지의 선은 전체를 그릴 때와 같은 가장자리를 그리고 선 굵기 변경은 스타일
+  편집으로 남는다. 엔벌로프 크기는 플롯 너비와 채널 수로 정해지며 샘플 수와 무관하다. 렌더러는
+  묶음마다, 그리고 그 시리즈를 그리는 x-픽셀 매핑마다 엔벌로프를 하나씩 둔다
+  (`src/renderer/monotonic.rs`).
+- 그리기: 시리즈마다 엔벌로프를 렌더러가 소유한 풀 컬럼 두 개(`<id>.monotonic.x`,
+  `<id>.monotonic.y`, 호스트는 쓸 수 없다)에 올리고 선 파이프라인으로 그린다. 엔벌로프 슬롯마다 8행을 쓴다. 남긴 점
+  4개마다 뒤에 그 점을 반복하거나 NaN인 이음 행이 붙는다. 반복한 점은 `common/line_step.wgsl`이 `STEP_AXIS_POINT`로 표시하는 조각이므로
+  모든 백엔드에서 사라진다(SHADER_COMMON §5.6).
+- 핸들: `Renderer::register_monotonic_chart`가 `MonotonicChartId`를 돌려주고,
+  `Renderer::monotonic_chart`가 그 차트의 `MonotonicChart`를 빌려준다. 일반 차트 호출은
+  `ChartId`를 받는데 단조 차트는 `ChartId`를 내주지 않으므로 어떤 일반 호출도 닿지 못한다.
+  x-픽셀 매핑을 옮기는 호출은 넷이며 모두 소스를 받는다. `set_monotonic`(전체 호출이며 x 범위나
+  자동 맞춤을 정하는 유일한 호출), `append_monotonic`(새 샘플만 받는다. 밀어내기 추가는 앞쪽
+  열을 버린다), `resize`(차트 영역, 플롯 영역, 표시를 한꺼번에), `fit_layout`이다. 문서
+  편집기(`MonotonicConfig`)는 매핑을 옮기는 편집을 거부한다.
+- 프레임과 피킹에는 소스가 필요 없고, 피킹은 남긴 점의 논리 샘플 번호를 돌려준다. 다른 매핑으로
+  출력할 때는 소스를 받아(`ExportSource::Monotonic`) 묶음마다 그 출력에만 쓰는 컬럼으로 다시
+  줄인다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
+
 <a id="export-파이프라인"></a>
 
 ### 이미지 출력 과정
@@ -681,14 +1085,20 @@ redraw_pending = false;
 ![출력 해상도의 오프스크린 렌더링, 상주 또는 스트리밍 원본 입력, 행 청크 읽기와 PNG 인코딩](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/png-export-kr.png)
 
 ```
-export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
-    scale ← clamp_export_scale(scale)         // [MIN_EXPORT_SCALE, MAX_EXPORT_SCALE]
-    chart.config().scaled(scale)               // 모든 픽셀 치수를 같은 비율로 확대
+export_rgba(ExportSource, ExportOptions { scope, scale, clear }).await:
+    scale ← clamp_export_scale(scale)         // MIN_EXPORT_SCALE 이상. 렌더 타깃은 장치의 텍스처 한도 안이어야 한다
+    export_placed_config(config, scale, scope) // 모든 픽셀 치수를 같은 비율로 확대.
+                                               // Document는 place_document, Panel은 확대한 뒤
+                                               // 원점으로 옮긴다
         ↓
     임시 ChartView (확대한 축 텍스처)
-    임시 ChartStyle ← cfg마다 create_style_for_series_scaled(cfg, scale)
+    임시 ChartStyle ← cfg마다 create_style_for_series_scaled_inner(cfg, scale)
+                      (공개된 짝은 create_style_for_series_scaled)
         ↓
-    화면 밖 wgpu::Texture (고정 Rgba8Unorm, COPY_SRC, 투명 배경으로 초기화)
+    화면 밖 wgpu::Texture (EXPORT_FORMAT = Rgba16Float, COPY_SRC, options.clear로
+                          초기화하며 기본값은 투명. 장치가 지원하면 MSAA 타깃에
+                          그린 뒤 이 텍스처로 resolve한다. 상주 출력과 스트리밍
+                          출력이 같다)
     paint(items) — 화면과 같은 합성 순서 (grid → 주석 underlay → data
                    → decoration → 주석 overlay)
         ↓
@@ -696,19 +1106,67 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     높이는 장치의 최대 버퍼 크기에 맞춰 조절하므로 읽기 버퍼가 이미지 전체
     크기일 필요가 없다. 렌더 타깃은 장치의 텍스처 크기 한도 안이어야 한다)
         ↓
-    map_async (네이티브는 Wait로 바로 폴링, wasm은 브라우저에 양보하며 await)
+    map_async. 기다리는 방식은 호출자가 고른다: await(네이티브는 번들의 폴링
+    스레드, wasm은 브라우저가 진행) 또는 블로킹(호출자가 폴링)
         ↓
-    premul→straight α 변환, 패딩 행 제거 (대상이 이미 RGBA이므로 채널 순서는
-    바꾸지 않음)
+    텍셀마다 straight_rgba8: 알파를 미리 곱한 half float를 알파로 나눈 뒤
+    straight 알파 RGBA8로 한 번만 양자화, 패딩 행 제거 (대상이 이미 RGBA이므로
+    채널 순서는 바꾸지 않음)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API 반환
-    (export_document_rgba_async: 레이어마다 한 패널을 같은 텍스처에 순서대로 합성.
-     export_panel_*는 기본 패널만 그리며, 오버레이가 없으면 두 결과는 바이트 단위로 같다.
-     서브플롯이 있으면 문서 출력은 모든 차트 영역의 합집합 크기다)
         ↓
     encode_png(&img) → Vec<u8>                      ← PNG 바이트
         ↓
     호출자가 std::fs::write / clipboard / 네트워크 등 자유 처리
 ```
+
+출력 렌더 타깃은 알파를 미리 곱한 `Rgba16Float`인 `EXPORT_FORMAT`이다
+(`src/renderer/export.rs`, #271). 상주 출력과 스트리밍 출력이 같은 형식을 쓰므로, 스트리밍
+출력도 같은 문서의 상주 출력과 똑같이 블렌딩하고 반올림한다. 모든 도형을 half 정밀도로
+블렌딩하고, 이미지는 읽어 올 때 한 번만 8비트로 양자화한다(`straight_rgba8`: 텍셀의 알파로
+나눈 뒤 반올림). 8비트 타깃이라면 블렌딩할 때마다 아래 픽셀과 함께 8비트로 반올림하는데,
+8비트 premultiplied 블렌딩은 결합 법칙이 성립하지 않는다. 그래서 안티앨리어싱된 선이 많이
+겹치는 곳에서 PNG 출력(격자, 데이터 도형 하나하나, 장식 순서)과 벡터 파일의 데이터
+이미지(투명 이미지에 데이터만 그려 격자 위에 놓는다)가 서로 어긋난다. half float에서는 두
+순서의 결과가 마지막 양자화 범위 안에서 일치한다. 화면 표시 경로는 호스트 surface 형식에
+그린다.
+
+레이어가 있는 문서도 `export_rgba`는 같은 과정을 따른다. 임시 `ChartView` 하나가 레이어마다 패널을 하나씩 갖고, `Config::expand()`가 확대한 문서를 패널마다 그리기 항목 하나로 펼친다. 패널은 화면과 같은 방식으로 같은 화면 밖 텍스처에 합성된다. 모든 패널의 격자와 데이터를 레이어 순서로 먼저 그리고, 그다음 모든 패널의 장식을 레이어 순서로 그리므로 어느 레이어의 데이터도 다른 레이어의 축과 라벨을 가리지 않는다. 패널 출력(`ExportScope::Panel`)은 펼친 결과 중 기본 패널만 남긴다. 오버레이도 서브플롯도 없는 문서라면 두 이미지는 바이트 단위로 같다. 서브플롯이 있는 문서는 모든 차트 영역의 합집합(`Config::document_area`)을 출력한다. 문서를 렌더 타깃의 원점에 놓고(`place_document`) 서브플롯마다 자기 영역에 패널을 그린다. 패널 출력(`ExportScope::Panel`)은 부모의 영역만 남긴다. 인셋 서브플롯은 다른 모든 패널 다음에, 인셋 트리 순서대로, 슬롯 전부를 한 번에 그린다.
+
+이 과정은 두 함수로 나뉜다. `prepare_export`는 출력 한 번에 한 번 실행되며 검사, 배율을 적용해 배치한 문서, 뷰·스타일·파이프라인, 패널별 그리기 준비를 만든다. `paint_export(frame, panels, chrome, clear, steps)`는 패널 구간 하나를 렌더 타깃에 그리고 행 청크 단위로 읽어 온다. `steps`(`DataSteps`)는 패널마다 데이터 슬롯의 어느 단계를 그릴지 고른다. 단계는 GPU 채움·본체·선택 강조, DataLess 시리즈의 CPU 래스터, GPU 값 라벨 순서다. PNG 출력은 모든 패널을 장식과 함께 모든 단계로 그린다.
+
+브라우저에서 `export_rgba`는 차트에 전체 세트가 필요하면 먼저 렌더러를 전체 세트로 올린다. 그다음 마지막 화면 프레임에 필요했던 렌더링 파이프라인을 렌더러의 출력용 큐(`EXPORT_FORMAT`과 출력 샘플 수에 맞춘 두 번째 `CompileQueue`)로 컴파일하고, 이 컴파일과 화면 큐의 컴퓨트 파이프라인 컴파일이 끝나기를 기다린다. 그래서 동기 함수인 `prepare_export`가 브라우저 캐시에서 파이프라인을 찾는다(#299). 여기서 컴파일되지 않은 파이프라인은 전처럼 `prepare_export`가 만든다. SVG·PDF 출력과 스트리밍 출력은 이 단계를 거치지 않는다.
+
+SVG와 PDF 출력([#48](https://github.com/shim9610/figgy/issues/48), `vector_export.rs`)은 같은 프레임을 준비하고, 장식 요소는 같은 배치 함수에서 벡터로 기록하며, 데이터 층은 이미지로 넣는다. DataLess 시리즈(에너지 준위)도 벡터로 기록한다([#234](https://github.com/shim9610/figgy/issues/234)). 같은 배치 함수의 결과를 앞뒤 GPU 단계 이미지 사이에 넣으므로, 파일의 쌓임 순서가 PNG와 같다.
+
+```
+export_svg / export_pdf(ExportSource, ExportOptions):
+    시리즈마다 require_resident_series      // 스트리밍 원본은 거부
+    frame ← prepare_export(chart, series, scale, Document)
+        ↓
+    합성 순서대로 각 단계 실행 (Passes):
+      패널 묶음 (패널 하나 + Below 단계에 아무것도 놓지 않는 뒤따르는 패널):
+        Below(i)    패널 i의 emit_chart_chrome → SlotFilter(Below) → VectorSink
+                    (Milkyway: draw_space_background로 그린 배경을 이미지로)
+        Underlay    emit_annotation_layer → SlotFilter(Below) → VectorSink
+                    (첫 묶음에서만, 주석 층이 보일 때)
+        Data(묶음)  paint_export(frame, 묶음, chrome = false) → 묶음의 데이터 영역(+1 px)으로
+                    잘라 이미지로
+                    DataLess 시리즈가 있으면 두 패널의 CPU 단계 사이 GPU 단계마다
+                    이미지 한 장(DataRun), 그 뒤에 패널의 DataLess 배치 → VectorSink
+                    (데이터 조각마다 잘라 기록), GPU 시리즈가 없는 구간은 이미지 생략
+      Above(i)      패널 i의 emit_chart_chrome → SlotFilter(Above) → VectorSink
+      Overlay       부모 영역의 맨 위 패널 다음, 주석 층이 보일 때
+        ↓
+    VectorSink: 캔버스 싱크와 같은 좌표 변환·선 두께·점선·스케치 곡선(smooth_cubics).
+                글자는 place_rich_text / place_plain_text와 glyph_outline으로 정확한 펜 위치에 기록.
+                색상 막대의 색 띠는 draw_colorbar_strip으로 그려 이미지로
+        ↓
+    VectorOut: SvgOut (픽셀 단위 viewBox, 글리프마다 <defs> + <use>, PNG data URI)
+               PdfOut (페이지 하나, 압축한 콘텐츠, 알파 바이트마다 ExtGState,
+                       소프트 마스크가 있는 RGB XObject, 본문에 넣는 글리프 윤곽선)
+```
+
+페이지 크기는 논리 크기를 1 px = 0.75 pt로 환산한 값이다. 각 단계는 PNG에서 대응하는 래스터의 범위(패널, 주석 층은 부모 영역)로 잘라 그린다. Milkyway의 발광 효과는 래스터 전용이므로 생략하며, 선택 상자는 그리지 않는다. 원형 차트는 라벨 없이 배치한 프레임(`layout(.., Labels::None)`, 캐시 없이 생성)을 이미지 한 장으로 넣고, 제목·라벨과 지시선·분할 원을 잇는 선·주석 오버레이를 같은 싱크로 기록한다(`layout(.., Labels::Into(sink))`).
 
 ---

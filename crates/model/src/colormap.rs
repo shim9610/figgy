@@ -31,12 +31,11 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// they cross the wasm boundary as plain integers, following
 /// [`crate::preset::ColorCycle`]. `Custom` carries its own stops for hosts that
 /// need a ramp figgy does not ship.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColorMap {
     /// Perceptually uniform blue→green→yellow. The safe default for unsigned
     /// magnitudes.
-    #[default]
     Viridis,
     /// Perceptually uniform black→purple→orange→white.
     Magma,

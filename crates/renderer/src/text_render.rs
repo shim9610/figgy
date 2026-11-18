@@ -8,15 +8,17 @@
 //! that can (registered faces, the bundled face, then system faces on native),
 //! so it does not render as a `.notdef` box.
 //!
-//! Layering: the segment layout policy (super/subscript scaling and shifts,
-//! kerning gaps, underline bars, greek mapping, the measure envelope) lives
-//! here and is backend-independent. The glyph layer below it — metrics and
+//! Layering: the segment layout policy (the script layout of
+//! `script_placement`, underline bars, character-set mapping, the measure
+//! envelope) lives here and is backend-independent. The glyph layer below it — metrics and
 //! alpha-mask rasterization — is fontdb (font lookup) + swash (scaling), all
 //! pure Rust, so the whole stack compiles for wasm32-unknown-unknown.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+
+use arc_swap::ArcSwap;
 
 #[cfg(test)]
 pub(crate) static FONT_REGISTRATION_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -27,9 +29,11 @@ use swash::scale::{Render, ScaleContext, Source};
 use crate::color::Color;
 use crate::layout::RectF;
 use crate::raster::Canvas;
-use crate::text::{RichSegment, RichText, greek_char};
+use crate::text::{RichSegment, RichText};
 
-type FontLookupKey = (String, bool, bool);
+mod math_font;
+mod math_layout;
+
 /// Per-character fallback decisions depend only on the character and the
 /// requested style: the chain after the primary face is the same whichever
 /// family missed.
@@ -38,11 +42,11 @@ type FallbackKey = (char, bool, bool);
 /// parsed `FontRef` keeps one swash `CacheKey` per face, so every character
 /// and thread that resolves to the face shares its scaler and glyph caches.
 type FaceBacking = FontRef<'static>;
-type FaceBackingCache = HashMap<fontdb::ID, FaceBacking>;
 
 struct ResolvedFontCache {
     generation: u64,
-    fonts: HashMap<FontLookupKey, FontRef<'static>>,
+    /// Resolved face per family name, one slot per (bold, italic) style.
+    fonts: HashMap<String, [Option<FontRef<'static>>; 4]>,
     /// Face drawing each character its primary face cannot draw; `None`
     /// records that no face can, so the chain is not walked again.
     fallbacks: HashMap<FallbackKey, Option<FontRef<'static>>>,
@@ -90,128 +94,227 @@ fn embedded_bytes(bold: bool, italic: bool) -> &'static [u8] {
     }
 }
 
-/// System font database (native targets only — on wasm there is no system to
-/// scan; hosts register fonts at runtime via [`register_font_bytes`]).
+/// The scanned system fonts (native targets only — on wasm there is no system
+/// to scan; hosts register fonts at runtime via [`register_font_bytes`]).
+///
+/// The database never changes after its scan. A face's bytes are copied once
+/// per font file, on the first face of that file that resolves, so the faces
+/// of one collection (`.ttc`) share one copy; each face is parsed once, so it
+/// keeps one swash `CacheKey`. Both happen in `OnceLock` slots, without a lock
+/// shared across faces.
 #[cfg(not(target_arch = "wasm32"))]
-fn font_db() -> &'static fontdb::Database {
-    static DB: OnceLock<fontdb::Database> = OnceLock::new();
-    DB.get_or_init(|| {
+struct SystemFonts {
+    db: fontdb::Database,
+    /// Face id to (face slot, file slot).
+    slots: HashMap<fontdb::ID, (usize, usize)>,
+    faces: Vec<OnceLock<Option<FaceBacking>>>,
+    files: Vec<OnceLock<Option<&'static [u8]>>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SystemFonts {
+    fn scan() -> Self {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        db
-    })
+        let mut file_slot: HashMap<std::path::PathBuf, usize> = HashMap::new();
+        let mut slots = HashMap::new();
+        let (mut face_count, mut file_count) = (0, 0);
+        for face in db.faces() {
+            let mut next_file = || {
+                file_count += 1;
+                file_count - 1
+            };
+            let file = match &face.source {
+                fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
+                    *file_slot.entry(path.clone()).or_insert_with(next_file)
+                }
+                // A scan reads files only; any other source is its own file.
+                fontdb::Source::Binary(_) => next_file(),
+            };
+            slots.insert(face.id, (face_count, file));
+            face_count += 1;
+        }
+        Self {
+            db,
+            slots,
+            faces: (0..face_count).map(|_| OnceLock::new()).collect(),
+            files: (0..file_count).map(|_| OnceLock::new()).collect(),
+        }
+    }
+
+    /// The parsed face for `id`, copying its file's bytes on first use.
+    fn backing(&self, id: fontdb::ID) -> Option<FaceBacking> {
+        let &(face, file) = self.slots.get(&id)?;
+        *self.faces.get(face)?.get_or_init(|| {
+            let index = self.db.face(id)?.index;
+            let bytes = (*self.files.get(file)?.get_or_init(|| {
+                self.db.with_face_data(id, |data, index| {
+                    // Parse before copying, so a file swash cannot read is
+                    // never leaked.
+                    FontRef::from_index(data, index as usize)?;
+                    Some(&*Box::leak(data.to_vec().into_boxed_slice()))
+                })?
+            }))?;
+            FontRef::from_index(bytes, index as usize)
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn system_fonts() -> &'static SystemFonts {
+    static FONTS: OnceLock<SystemFonts> = OnceLock::new();
+    FONTS.get_or_init(SystemFonts::scan)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn font_db() -> &'static fontdb::Database {
+    &system_fonts().db
 }
 
 /// Runtime-registered fonts — works on every target (fontdb itself compiles
 /// on wasm; only the system *scan* is native-only). Registered families win
 /// over system fonts so native and wasm resolve identically once a host has
 /// registered its fonts.
+///
+/// One immutable snapshot. Lookups read the current one through
+/// [`FontRegistry::fonts`] without a lock; a registration builds a successor
+/// and publishes it, and a reader still holding the older snapshot keeps it
+/// until it lets go.
+#[derive(Clone, Default)]
 struct RegisteredFonts {
     db: fontdb::Database,
-    /// Exact font bytes to the families reported by their first registration.
-    ///
-    /// `HashMap` hashes for lookup but still compares the complete `Vec<u8>`
-    /// on collisions, so this is not a hash-only identity check. The `Arc`
-    /// allocation is shared with fontdb's binary source instead of retaining
-    /// a second copy solely for deduplication.
-    families_by_bytes: HashMap<Arc<Vec<u8>>, Vec<String>>,
-    /// Stable swash backing bytes per fontdb face.
-    ///
-    /// A runtime registration invalidates the thread-local family lookup, but
-    /// it must not copy and leak an already-resolved face again afterward.
-    /// Family lookups and per-character fallback share it.
-    resolved_faces: FaceBackingCache,
+    /// Each registered face parsed once over its file's bytes, which are
+    /// leaked once at registration: every lookup of the face returns the same
+    /// `FontRef`, so it keeps one swash `CacheKey`.
+    faces: HashMap<fontdb::ID, FaceBacking>,
+    /// The first family name of every face, first registered first: the
+    /// per-character fallback order.
+    fallback_families: Vec<String>,
 }
 
 impl RegisteredFonts {
-    fn new() -> Self {
-        Self {
-            db: fontdb::Database::new(),
-            families_by_bytes: HashMap::new(),
-            resolved_faces: HashMap::new(),
-        }
-    }
-
-    fn register(
-        &mut self,
-        bytes: Vec<u8>,
-        generation: u64,
-    ) -> Result<(Vec<String>, Option<u64>), String> {
-        if let Some(families) = self.families_by_bytes.get(&bytes) {
-            return Ok((families.clone(), None));
-        }
-
-        let bytes = Arc::new(bytes);
-        let (families, successor) =
-            load_registered_font(&mut self.db, Arc::clone(&bytes), generation)?;
-        self.families_by_bytes.insert(bytes, families.clone());
-        Ok((families, Some(successor)))
-    }
-
-    fn lookup(&mut self, family: &str, bold: bool, italic: bool) -> Option<FaceBacking> {
+    fn lookup(&self, family: &str, bold: bool, italic: bool) -> Option<FaceBacking> {
         let id = query_font(&self.db, family, bold, italic)?;
-        stable_face_backing(&self.db, &mut self.resolved_faces, id)
+        self.faces.get(&id).copied()
     }
 
     /// Registered face that draws `ch`: registered families in registration
-    /// order (the first family name each face reports, first seen first),
-    /// each through the same style matching as a family lookup.
-    fn fallback(&mut self, ch: char, bold: bool, italic: bool) -> Option<FaceBacking> {
-        // Faces are never removed, so fontdb iterates them in insertion
-        // (registration) order.
-        let mut families: Vec<&str> = Vec::new();
-        for face in self.db.faces() {
-            if let Some((name, _)) = face.families.first()
-                && !families.contains(&name.as_str())
-            {
-                families.push(name);
+    /// order, each through the same style matching as a family lookup.
+    fn fallback(&self, ch: char, bold: bool, italic: bool) -> Option<FaceBacking> {
+        let families = self.fallback_families.iter().map(String::as_str);
+        let id = first_face_drawing(&self.db, families, ch, bold, italic)?;
+        self.faces.get(&id).copied()
+    }
+
+    /// This snapshot with `bytes` added, and the families the file declares.
+    /// The bytes are leaked only when the file has a usable face.
+    fn with_font(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<(Self, Vec<String>, &'static [u8]), crate::FiggyError> {
+        // Probe on a scratch database first, so a file without a usable face
+        // is dropped rather than leaked.
+        let bytes = Arc::new(bytes);
+        let mut probe = fontdb::Database::new();
+        let ids = probe.load_font_source(fontdb::Source::Binary(bytes.clone()));
+        if !ids
+            .iter()
+            .filter_map(|id| probe.face(*id))
+            .any(|face| !face.families.is_empty())
+        {
+            return Err(crate::FiggyError::InvalidFont {
+                reason: "the data contains no usable face",
+            });
+        }
+        drop(probe);
+        let bytes = Arc::try_unwrap(bytes)
+            .map_err(|_| crate::FiggyError::internal("font bytes are not shared after probing"))?;
+        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+
+        let mut next = self.clone();
+        let source: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(leaked);
+        let ids = next.db.load_font_source(fontdb::Source::Binary(source));
+        let mut families: Vec<String> = Vec::new();
+        for id in ids {
+            let Some(face) = next.db.face(id) else {
+                continue;
+            };
+            let Some((name, _)) = face.families.first() else {
+                continue;
+            };
+            if !families.contains(name) {
+                families.push(name.clone());
+            }
+            if !next.fallback_families.contains(name) {
+                next.fallback_families.push(name.clone());
+            }
+            if let Some(parsed) = FontRef::from_index(leaked, face.index as usize) {
+                next.faces.insert(id, parsed);
             }
         }
-        let id = first_face_drawing(&self.db, families, ch, bold, italic)?;
-        stable_face_backing(&self.db, &mut self.resolved_faces, id)
+        Ok((next, families, leaked))
     }
 }
 
-fn registered_fonts() -> &'static Mutex<RegisteredFonts> {
-    static FONTS: OnceLock<Mutex<RegisteredFonts>> = OnceLock::new();
-    FONTS.get_or_init(|| Mutex::new(RegisteredFonts::new()))
+/// The registered fonts and their registration state.
+struct FontRegistry {
+    /// The current snapshot; read without a lock.
+    fonts: ArcSwap<RegisteredFonts>,
+    /// Exact font bytes to the families their first registration reported.
+    /// Held only while registering, which also serializes registrations.
+    registered: Mutex<HashMap<&'static [u8], Vec<String>>>,
 }
 
-fn load_registered_font(
-    db: &mut fontdb::Database,
-    bytes: Arc<Vec<u8>>,
-    generation: u64,
-) -> Result<(Vec<String>, u64), String> {
-    let successor = generation
-        .checked_add(1)
-        .ok_or_else(|| "font generation counter exhausted".to_string())?;
-    let source: Arc<dyn AsRef<[u8]> + Send + Sync> = bytes;
-    let ids = db.load_font_source(fontdb::Source::Binary(source));
-    let mut families: Vec<String> = ids
-        .iter()
-        .filter_map(|id| db.face(*id))
-        .filter_map(|f| f.families.first().map(|(name, _)| name.clone()))
-        .collect();
-    families.dedup();
-    if families.is_empty() {
-        return Err("font data contains no usable face".to_string());
+impl FontRegistry {
+    fn new() -> Self {
+        Self {
+            fonts: ArcSwap::from_pointee(RegisteredFonts::default()),
+            registered: Mutex::new(HashMap::new()),
+        }
     }
-    Ok((families, successor))
+
+    /// Register `bytes` and return its families, plus the generation to
+    /// publish when the bytes were new (`None` for a repeat).
+    fn register(
+        &self,
+        bytes: Vec<u8>,
+        generation: u64,
+    ) -> Result<(Vec<String>, Option<u64>), crate::FiggyError> {
+        let mut registered = self
+            .registered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(families) = registered.get(bytes.as_slice()) {
+            return Ok((families.clone(), None));
+        }
+        let successor = generation
+            .checked_add(1)
+            .ok_or(crate::FiggyError::CounterExhausted {
+                counter: "font generation",
+            })?;
+        let (next, families, leaked) = self.fonts.load().with_font(bytes)?;
+        self.fonts.store(Arc::new(next));
+        registered.insert(leaked, families.clone());
+        Ok((families, Some(successor)))
+    }
+}
+
+fn font_registry() -> &'static FontRegistry {
+    static REGISTRY: OnceLock<FontRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(FontRegistry::new)
 }
 
 /// Register a font (TTF/OTF/TTC bytes) for `RichText.font` family lookup.
-/// Returns the family names the file declares, or an error when the bytes
+/// Returns the family names the file declares, or
+/// [`FiggyError::InvalidFont`](crate::FiggyError::InvalidFont) when the bytes
 /// parse to no usable face. Registering the exact same bytes again is
 /// idempotent; different font files declaring the same family still coexist.
 /// A registered face also supplies characters the configured family cannot
 /// draw (per-character fallback), so registering a font can change text
 /// whose `font` names another family.
-pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
-    let mut fonts = registered_fonts()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+pub fn register_font_bytes(bytes: Vec<u8>) -> crate::Result<Vec<String>> {
     let generation = font_generation();
-    let (families, successor) = fonts.register(bytes, generation)?;
+    let (families, successor) = font_registry().register(bytes, generation)?;
     let Some(successor) = successor else {
         return Ok(families);
     };
@@ -244,20 +347,13 @@ const BUNDLED_FAMILY: &str = "Liberation Sans";
 /// database. Generic CSS names such as `"sans-serif"` are not
 /// family names and report `false`, because resolution falls back for them.
 ///
-/// Reads registered fonts under the registry mutex resolution already takes,
-/// and the system database through its immutable `OnceLock`; no new lock.
+/// Reads the registered-font snapshot and the system database without a lock.
 pub fn font_family_available(family: &str) -> bool {
     if family.is_empty() || family == BUNDLED_FAMILY {
         return true;
     }
-    let registered = registered_fonts()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if query_font(&registered.db, family, false, false).is_some() {
-        return true;
-    }
-    drop(registered);
-    system_family_available(family)
+    query_font(&font_registry().fonts.load().db, family, false, false).is_some()
+        || system_family_available(family)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -271,39 +367,11 @@ fn system_family_available(_family: &str) -> bool {
 }
 
 fn lookup_registered_font(family: &str, bold: bool, italic: bool) -> Option<FaceBacking> {
-    registered_fonts()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .lookup(family, bold, italic)
+    font_registry().fonts.load().lookup(family, bold, italic)
 }
 
 fn lookup_registered_fallback(ch: char, bold: bool, italic: bool) -> Option<FaceBacking> {
-    registered_fonts()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .fallback(ch, bold, italic)
-}
-
-/// Stable backing for fontdb face `id`: from `faces`, or by copying and
-/// leaking the face's bytes once. Registered and system lookups — family
-/// resolution and per-character fallback alike — all go through here, so a
-/// face is leaked at most once per face id.
-fn stable_face_backing(
-    db: &fontdb::Database,
-    faces: &mut FaceBackingCache,
-    id: fontdb::ID,
-) -> Option<FaceBacking> {
-    if let Some(face) = faces.get(&id) {
-        return Some(*face);
-    }
-    let face = db.with_face_data(id, |data, index| {
-        // Parse before copying, so a face swash cannot read is never leaked.
-        FontRef::from_index(data, index as usize)?;
-        let bytes: &'static [u8] = Box::leak(data.to_vec().into_boxed_slice());
-        FontRef::from_index(bytes, index as usize)
-    })??;
-    faces.insert(id, face);
-    Some(face)
+    font_registry().fonts.load().fallback(ch, bold, italic)
 }
 
 /// Whether `face` can draw `ch`: its charmap maps `ch` to a real glyph
@@ -398,7 +466,7 @@ fn handwritten_font(bold: bool) -> FontRef<'static> {
     } else {
         (&REGULAR, HANDWRITTEN_REGULAR)
     };
-    *cell.get_or_init(|| FontRef::from_index(bytes, 0).expect("corrupted bundled font"))
+    *cell.get_or_init(|| bundled_face(bytes))
 }
 
 /// Resolve the font for ONE glyph under `policy`. The handwritten policy
@@ -455,6 +523,18 @@ fn find_fallback(ch: char, bold: bool, italic: bool) -> Option<FontRef<'static>>
         .or_else(|| lookup_system_fallback(ch, bold, italic))
 }
 
+/// A bundled font file as a face. Every bundled file is a single face whose
+/// table directory is at offset 0 (`bundled_fonts_are_single_faces` checks
+/// it), so the reference is built without a fallible parse; a corrupted
+/// bundle would draw nothing instead of panicking.
+pub(crate) fn bundled_face(data: &'static [u8]) -> FontRef<'static> {
+    FontRef {
+        data,
+        offset: 0,
+        key: swash::CacheKey::new(),
+    }
+}
+
 /// Bundled fonts parsed exactly once — `FontRef::from_index` mints a fresh
 /// `CacheKey` per call, and a stable key is what makes the glyph caches below
 /// actually hit.
@@ -469,9 +549,7 @@ fn embedded_font(bold: bool, italic: bool) -> FontRef<'static> {
         (false, true) => &ITALIC,
         (true, true) => &BOLD_ITALIC,
     };
-    *cell.get_or_init(|| {
-        FontRef::from_index(embedded_bytes(bold, italic), 0).expect("corrupted bundled font")
-    })
+    *cell.get_or_init(|| bundled_face(embedded_bytes(bold, italic)))
 }
 
 /// Bumped when `register_font_bytes` accepts previously unseen file contents.
@@ -496,17 +574,12 @@ thread_local! {
     static RESOLVED: RefCell<ResolvedFontCache> = RefCell::new(ResolvedFontCache::new());
 }
 
-/// Stable backing for a system face id. Family lookups and fallback
-/// decisions share this cache, so a system face's bytes are copied at most
-/// once however many families, characters or threads resolve to it.
+/// The parsed face for a system face id. Family lookups and fallback
+/// decisions share it, so a system file's bytes are copied at most once
+/// however many faces, families, characters or threads resolve to it.
 #[cfg(not(target_arch = "wasm32"))]
 fn system_face_backing(id: fontdb::ID) -> Option<FaceBacking> {
-    static RESOLVED_SYSTEM_FACES: OnceLock<Mutex<FaceBackingCache>> = OnceLock::new();
-    let mut resolved = RESOLVED_SYSTEM_FACES
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    stable_face_backing(font_db(), &mut resolved, id)
+    system_fonts().backing(id)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -563,14 +636,14 @@ fn resolve_font(family: &str, bold: bool, italic: bool) -> FontRef<'static> {
     RESOLVED.with(|cell| {
         let mut cache = cell.borrow_mut();
         cache.revalidate();
-        let key = (family.to_string(), bold, italic);
-        if let Some(hit) = cache.fonts.get(&key) {
-            return *hit;
+        let style = usize::from(bold) | usize::from(italic) << 1;
+        if let Some(hit) = cache.fonts.get(family).and_then(|styles| styles[style]) {
+            return hit;
         }
         let resolved = lookup_registered_font(family, bold, italic)
             .or_else(|| lookup_system_font(family, bold, italic))
             .unwrap_or_else(|| embedded_font(bold, italic));
-        cache.fonts.insert(key, resolved);
+        cache.fonts.entry(family.to_string()).or_default()[style] = Some(resolved);
         resolved
     })
 }
@@ -588,6 +661,10 @@ struct GlyphExtents {
     advance: f32,
     ink_top: f32,
     ink_bottom: f32,
+    /// Horizontal ink extent from the pen (the math layout keeps every
+    /// glyph's ink inside the measured box); both 0 for a glyph without ink.
+    ink_left: f32,
+    ink_right: f32,
 }
 
 /// Rendered glyph alpha mask. `left`/`top` are the pen-relative placement
@@ -600,16 +677,51 @@ struct GlyphMask {
     data: Box<[u8]>,
 }
 
-type MetricsKey = (swash::CacheKey, u32, char);
+/// Metrics key: the face, the size's bits and the glyph id. Keyed by glyph
+/// id rather than character, so a glyph no character maps to (a size
+/// variant, a stretchy piece, a script alternate) shares the caches; the
+/// character entry points map through the face's charmap first.
+type MetricsKey = (swash::CacheKey, u32, u16);
 /// Mask key: metrics key + horizontal subpixel bin (quarter-pixel phases).
-type MaskKey = (swash::CacheKey, u32, char, u8);
+type MaskKey = (swash::CacheKey, u32, u16, u8);
+
+/// The largest glyph size in pixels the raster draws. A glyph mask holds
+/// about `size²` bytes, so this bounds one mask at about 16 MiB; a larger
+/// glyph is rejected with an error instead of allocating gigabytes (#152).
+pub(crate) const MAX_GLYPH_PX: f32 = 4096.0;
+
+/// Mask bytes one thread's glyph mask cache holds before it is cleared. The
+/// caches are keyed by exact pixel size, so a canvas redrawn at a changing
+/// display scale would otherwise add a full set of masks per scale (#152).
+const MASK_CACHE_BUDGET_BYTES: usize = 64 << 20;
+
+/// Entries one thread's glyph metrics cache holds before it is cleared.
+const METRICS_CACHE_MAX_ENTRIES: usize = 65_536;
 
 thread_local! {
     static SCALE_CTX: RefCell<ScaleContext> = RefCell::new(ScaleContext::new());
     static METRICS_CACHE: RefCell<HashMap<MetricsKey, GlyphExtents>> =
         RefCell::new(HashMap::new());
-    static MASK_CACHE: RefCell<HashMap<MaskKey, Option<GlyphMask>>> =
-        RefCell::new(HashMap::new());
+    static MASK_CACHE: RefCell<MaskCache> = RefCell::new(MaskCache::default());
+}
+
+/// The glyph masks of one thread and the bytes they hold. Thread-local, so
+/// it needs no lock; past [`MASK_CACHE_BUDGET_BYTES`] it is cleared.
+#[derive(Default)]
+struct MaskCache {
+    masks: HashMap<MaskKey, Option<GlyphMask>>,
+    bytes: usize,
+}
+
+impl MaskCache {
+    /// Room for a mask of `bytes`: the cache is cleared when it would pass
+    /// its budget.
+    fn make_room(&mut self, bytes: usize) {
+        if self.bytes.saturating_add(bytes) > MASK_CACHE_BUDGET_BYTES {
+            self.masks.clear();
+            self.bytes = 0;
+        }
+    }
 }
 
 /// True for the bundled handwritten face (either weight). It rasterizes with
@@ -649,13 +761,17 @@ fn font_embolden(font: FontRef<'static>, size: f32) -> f32 {
 }
 
 fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
-    let key = (font.key, size.to_bits(), ch);
+    glyph_extents_id(font, size, font.charmap().map(ch))
+}
+
+/// [`glyph_extents`] of glyph id `glyph` of `font`.
+fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExtents {
+    let key = (font.key, size.to_bits(), glyph);
     if let Some(hit) = METRICS_CACHE.with(|c| c.borrow().get(&key).copied()) {
         return hit;
     }
-    let glyph = font.charmap().map(ch);
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
-    let (ink_top, ink_bottom) = SCALE_CTX.with(|cx| {
+    let (ink_top, ink_bottom, ink_left, ink_right) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
         let mut scaler = cx
             .builder(font)
@@ -666,37 +782,51 @@ fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
                 let b = outline.bounds();
-                (-b.max.y, -b.min.y)
+                (-b.max.y, -b.min.y, b.min.x, b.max.x)
             }
-            None => (0.0, 0.0),
+            None => (0.0, 0.0, 0.0, 0.0),
         }
     });
     let extents = GlyphExtents {
         advance,
         ink_top,
         ink_bottom,
+        ink_left,
+        ink_right,
     };
-    METRICS_CACHE.with(|c| c.borrow_mut().insert(key, extents));
+    METRICS_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        if cache.len() >= METRICS_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(key, extents);
+    });
     extents
 }
 
 /// Rasterize (or fetch) the glyph mask for a quarter-pixel horizontal phase
 /// and hand it to `use_mask`. AA happens exactly once, here in swash — the
 /// subpixel offset is baked into the rasterization instead of resampling the
-/// finished mask, which is what kept text crisp under skia.
-fn with_glyph_mask(
+/// finished mask, which is what kept text crisp under skia. A size above
+/// [`MAX_GLYPH_PX`] (or not a number) is an error, nothing is rasterized.
+fn with_glyph_mask_id(
     font: FontRef<'static>,
     size: f32,
-    ch: char,
+    glyph: u16,
     xbin: u8,
     use_mask: impl FnOnce(&GlyphMask),
-) {
-    let key = (font.key, size.to_bits(), ch, xbin);
+) -> crate::Result<()> {
+    if !(size <= MAX_GLYPH_PX) {
+        return Err(crate::FiggyError::InvalidConfig {
+            field: "font size",
+            kind: crate::RuleKind::GlyphTooLarge,
+        });
+    }
+    let key = (font.key, size.to_bits(), glyph, xbin);
     MASK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let entry = cache.entry(key).or_insert_with(|| {
-            let glyph = font.charmap().map(ch);
-            SCALE_CTX.with(|cx| {
+        if !cache.masks.contains_key(&key) {
+            let mask = SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
                 let mut scaler = cx
                     .builder(font)
@@ -722,27 +852,105 @@ fn with_glyph_mask(
                         data: image.data.into_boxed_slice(),
                     })
                 })
-            })
-        });
-        if let Some(mask) = entry {
+            });
+            let bytes = mask.as_ref().map_or(0, |mask| mask.data.len());
+            cache.make_room(bytes);
+            cache.bytes = cache.bytes.saturating_add(bytes);
+            cache.masks.insert(key, mask);
+        }
+        if let Some(Some(mask)) = cache.masks.get(&key) {
             use_mask(mask);
+        }
+    });
+    Ok(())
+}
+
+/// The outline of glyph id `glyph` of `font` at `size`, in pixels relative
+/// to its pen, y down, handed to `out` segment by segment: what the mask of
+/// [`with_glyph_mask_id`] covers, from the same scaler with the same hinting
+/// and synthetic embolden, without the mask's subpixel phase. Quadratic
+/// segments come out as the equal cubics. A glyph without an outline hands
+/// out nothing.
+pub(crate) fn glyph_outline(
+    font: FontRef<'static>,
+    glyph: u16,
+    size: f32,
+    out: &mut dyn FnMut(crate::sketch::PathSegment),
+) {
+    use crate::sketch::PathSegment;
+    use swash::zeno::Verb;
+    SCALE_CTX.with(|cx| {
+        let mut cx = cx.borrow_mut();
+        let mut scaler = cx
+            .builder(font)
+            .size(size)
+            .hint(font_hinting(font, size))
+            .build();
+        let Some(mut outline) = scaler.scale_outline(glyph) else {
+            return;
+        };
+        let embolden = font_embolden(font, size);
+        if embolden > 0.0 {
+            outline.embolden(embolden, embolden);
+        }
+        // zeno outlines are y-up; flip into the y-down pixel convention.
+        let flip = |p: &swash::zeno::Point| (p.x, -p.y);
+        let points = outline.points();
+        let mut next = 0;
+        let mut current = (0.0f32, 0.0f32);
+        for verb in outline.verbs() {
+            match verb {
+                Verb::MoveTo => {
+                    current = flip(&points[next]);
+                    next += 1;
+                    out(PathSegment::Move(current));
+                }
+                Verb::LineTo => {
+                    current = flip(&points[next]);
+                    next += 1;
+                    out(PathSegment::Line(current));
+                }
+                Verb::CurveTo => {
+                    let (c1, c2, p) = (
+                        flip(&points[next]),
+                        flip(&points[next + 1]),
+                        flip(&points[next + 2]),
+                    );
+                    next += 3;
+                    current = p;
+                    out(PathSegment::Cubic(c1, c2, p));
+                }
+                Verb::QuadTo => {
+                    let (q, p) = (flip(&points[next]), flip(&points[next + 1]));
+                    next += 2;
+                    let c1 = (
+                        current.0 + (q.0 - current.0) * (2.0 / 3.0),
+                        current.1 + (q.1 - current.1) * (2.0 / 3.0),
+                    );
+                    let c2 = (
+                        p.0 + (q.0 - p.0) * (2.0 / 3.0),
+                        p.1 + (q.1 - p.1) * (2.0 / 3.0),
+                    );
+                    current = p;
+                    out(PathSegment::Cubic(c1, c2, p));
+                }
+                Verb::Close => out(PathSegment::Close),
+            }
         }
     });
 }
 
-/// Rasterize one glyph and blit it with `color` at (`pen_x`, `baseline`).
-/// Returns the advance.
-fn draw_char(
+/// Rasterize glyph id `glyph` of `font` and blit it with `color` at
+/// (`pen_x`, `baseline`).
+fn draw_glyph(
     canvas: &mut Canvas,
     font: FontRef<'static>,
     size: f32,
-    ch: char,
+    glyph: u16,
     pen_x: f32,
     baseline: f32,
     color: &Color,
-) -> f32 {
-    let advance = glyph_extents(font, size, ch).advance;
-
+) -> crate::Result<()> {
     match canvas.orthogonal_text_transform() {
         // Crisp path: snap to the pixel grid, carry the sub-pixel x phase
         // into the rasterizer, and blit without any filtering.
@@ -757,7 +965,7 @@ fn draw_char(
                 xbin = 0;
                 ix += 1;
             }
-            with_glyph_mask(font, size, ch, xbin, |m| {
+            with_glyph_mask_id(font, size, glyph, xbin, |m| {
                 canvas.blit_mask_orthogonal(
                     ix + m.left,
                     gy - m.top,
@@ -767,31 +975,25 @@ fn draw_char(
                     color,
                     turn,
                 );
-            });
+            })
         }
         // General transforms (non-right-angle rotation or scaling) retain
         // the filtered fallback. Axis titles use the crisp path above.
-        None => {
-            with_glyph_mask(font, size, ch, 0, |m| {
-                canvas.draw_mask(
-                    pen_x + m.left as f32,
-                    baseline - m.top as f32,
-                    m.width,
-                    m.height,
-                    &m.data,
-                    color,
-                );
-            });
-        }
+        None => with_glyph_mask_id(font, size, glyph, 0, |m| {
+            canvas.draw_mask(
+                pen_x + m.left as f32,
+                baseline - m.top as f32,
+                m.width,
+                m.height,
+                &m.data,
+                color,
+            );
+        }),
     }
-    advance
 }
 
 // Rendering coefficients.
 
-const SUB_SUPER_SIZE_RATIO: f32 = 0.65;
-const SUPERSCRIPT_Y_RATIO: f32 = -0.5; // shift up from baseline
-const SUBSCRIPT_Y_RATIO: f32 = 0.25; // shift down from baseline
 const UNDERLINE_THICKNESS_RATIO: f32 = 0.06;
 const UNDERLINE_Y_OFFSET_RATIO: f32 = 0.1; // below baseline
 // Rule segments (legend line marks): bar center sits where dash glyphs put
@@ -802,10 +1004,6 @@ const RULE_THICKNESS_RATIO: f32 = 0.09;
 // rule's center down to this many em above the baseline, so it stays inside
 // the glyph ascent and never changes the line's measured extents.
 const RULE_BAND_BOTTOM_RATIO: f32 = 0.05;
-/// Horizontal kerning gap inserted before a super/sub segment, as a fraction
-/// of the base font_size. Prevents visual collision from italic overhang or
-/// size mismatch with the preceding glyph.
-const SUB_SUPER_KERN_RATIO: f32 = 0.08;
 
 // Line splitting — a `'\n'` segment ends the current line. Both drawing and
 // measurement share this so multi-line text (legend labels, titles) lays out
@@ -857,7 +1055,12 @@ fn layout_doc(rt: &RichText, policy: FontPolicy) -> DocLayout<'_> {
 
     let cell_metrics: Vec<Vec<TextMetrics>> = line_cells
         .iter()
-        .map(|cells| cells.iter().map(|c| measure_line(c, rt, policy)).collect())
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|c| place_cell(&mut MeasureSink, c, rt, (0.0, 0.0), policy))
+                .collect()
+        })
         .collect();
 
     let n_cols = line_cells.iter().map(|c| c.len()).max().unwrap_or(1);
@@ -896,50 +1099,256 @@ fn layout_doc(rt: &RichText, policy: FontPolicy) -> DocLayout<'_> {
     }
 }
 
-/// Envelope of one line. Empty lines fall back to a font-size-derived height
-/// so blank lines still advance the baseline.
-fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> TextMetrics {
+/// Width of the whole block: its widest line. Measurement reports it, and
+/// drawing aligns every line inside it, so the two cannot disagree.
+fn block_width(line_metrics: &[TextMetrics]) -> f32 {
+    line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
+}
+
+/// The least ink gap between two lines, in font sizes (#272): what a line
+/// taller than the nominal line height keeps from its neighbour, as TeX's
+/// `\lineskip` does, so a display formula's limits never touch the next
+/// line. Ordinary lines already keep about this much at the nominal height
+/// (a cap over a descender), so it moves only a taller line.
+const LINE_SKIP_EM: f32 = 0.2;
+
+/// Baseline-to-baseline advance between two lines. Ink envelopes alone make
+/// descender-less lines collapse together, so clamp to a nominal line height
+/// derived from the font size; a line whose ink reaches past it keeps
+/// [`LINE_SKIP_EM`] clear of its neighbour. Shared by draw + measure.
+fn line_advance(prev: &TextMetrics, this: &TextMetrics, rt: &RichText) -> f32 {
+    (prev.descent + this.ascent + rt.font_size * LINE_SKIP_EM).max(rt.font_size * 1.15)
+}
+
+/// Where the glyphs and rules of a laid-out cell go. The canvas sink paints
+/// them; the measuring sink drops them, so measurement and drawing run the
+/// same placement ([`place_cell`]) and cannot disagree. A glyph is named by
+/// its face and glyph id, so size variants, stretchy pieces and script
+/// alternates, which no character maps to, place like any other glyph.
+pub(crate) trait GlyphSink {
+    /// Whether the sink paints. The measuring sink does not, and placement
+    /// skips work that only produces pixels (dash patterns, the second pass
+    /// of a math node).
+    fn paints(&self) -> bool;
+    /// Glyph `glyph` of `font` at `size`, its pen at `pen` (left, baseline).
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        pen: (f32, f32),
+        color: &Color,
+    );
+    /// A filled rectangle: rules, dashes, bands, underlines, fraction bars.
+    fn rect(&mut self, rect: RectF, color: &Color);
+}
+
+/// The sink of [`measure_rich_text`]: places nothing.
+struct MeasureSink;
+
+impl GlyphSink for MeasureSink {
+    fn paints(&self) -> bool {
+        false
+    }
+    fn glyph(&mut self, _: FontRef<'static>, _: u16, _: f32, _: (f32, f32), _: &Color) {}
+    fn rect(&mut self, _: RectF, _: &Color) {}
+}
+
+/// The sink of [`draw_rich_text`]: paints onto the canvas. The first glyph
+/// that cannot be rasterized stops the painting of glyphs, and its error is
+/// what the draw returns ([`Self::finish`]).
+struct CanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>);
+
+impl<'a> CanvasSink<'a> {
+    fn new(canvas: &'a mut Canvas) -> Self {
+        Self(canvas, None)
+    }
+
+    fn finish(self) -> crate::Result<()> {
+        match self.1 {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl GlyphSink for CanvasSink<'_> {
+    fn paints(&self) -> bool {
+        true
+    }
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        pen: (f32, f32),
+        color: &Color,
+    ) {
+        if self.1.is_some() {
+            return;
+        }
+        if let Err(error) = draw_glyph(self.0, font, size, glyph, pen.0, pen.1, color) {
+            self.1 = Some(error);
+        }
+    }
+    fn rect(&mut self, r: RectF, color: &Color) {
+        self.0.draw_rect(
+            r.x,
+            r.y,
+            r.width,
+            r.height,
+            &crate::raster::Paint::fill(color),
+        );
+    }
+}
+
+/// Place one cell (a line, or a tab-column cell of it) with its first pen
+/// at `origin` (left, baseline) into `sink`, and return its envelope: the
+/// one placement measurement and drawing share. Empty cells fall back to a
+/// font-size-derived height so blank lines still advance the baseline.
+///
+/// The envelope is the ink extent of every glyph, rule and underline
+/// relative to the baseline, and the width the sum of the advances; the pen
+/// advances the same way, gap before a script, then the glyph.
+fn place_cell(
+    sink: &mut dyn GlyphSink,
+    segments: &[RichSegment],
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+) -> TextMetrics {
+    let (mut pen_x, baseline) = origin;
     let mut total_w = 0.0f32;
     let mut max_ascent = 0.0f32;
     let mut max_descent = 0.0f32;
+    // A cell whose math tree is malformed draws flat, as a consumer that
+    // ignores math nodes would, identically in measure and draw; so does a
+    // cell without a math face.
+    let math = (segments
+        .iter()
+        .any(|s| s.math_node.is_some() || s.math_parent.is_some())
+        && crate::text::math::validate_math_segments(segments).is_ok())
+    .then(|| math_font::MathFace::for_family(&rt.font))
+    .flatten();
 
-    for seg in segments {
+    let mut i = 0;
+    while i < segments.len() {
+        let seg = &segments[i];
+        i += 1;
+        let mut position = ScriptPosition::of(seg);
+        if let Some(face) = &math {
+            if let Some(node) = seg.math_node {
+                if matches!(node.kind, crate::text::MathKind::Math(_)) {
+                    // A formula: one atom of the cell, laid out from the
+                    // math face.
+                    let end = crate::text::math::subtree_end(segments, i - 1);
+                    let f = math_layout::place_formula(
+                        sink,
+                        rt,
+                        segments,
+                        (i - 1, end),
+                        (pen_x, baseline),
+                        policy,
+                        face.clone(),
+                    );
+                    max_ascent = max_ascent.max(f.ascent);
+                    max_descent = max_descent.max(f.descent);
+                    total_w += f.width;
+                    pen_x += f.width;
+                    i = end;
+                }
+                // A text-mode `Scripts` node places nothing itself.
+                continue;
+            }
+            // A text-mode script places its slots as the `superscript` and
+            // `subscript` flags do, so the node and the flags give the same
+            // pixels.
+            if let Some(parent) = seg.math_parent {
+                position = match parent.slot {
+                    1 => ScriptPosition::Superscript,
+                    2 => ScriptPosition::Subscript,
+                    _ => ScriptPosition::Base,
+                };
+            }
+        }
         let base = segment_base_size(seg, rt);
-        let size = segment_font_size(seg, base);
-        let y_offset = segment_y_offset(seg, base);
+        let script = script_placement(position, base);
+        let size = script.size;
+        let y_offset = script.shift;
+        let color = seg.color.unwrap_or(rt.color);
+        let y = baseline + y_offset;
 
-        let (advance, seg_top, mut seg_bottom) = if seg.rule {
+        // `advance` is the envelope's share of the width; `pen_advance` what
+        // the pen moves after the script gap (identical sums, kept in the
+        // order each was always added in).
+        let (advance, pen_advance, seg_top, mut seg_bottom) = if seg.rule {
             // Drawn rule: a bar centered on the symbol axis. Width is the
             // fixed field; vertical extent is the bar thickness only.
             let field = seg.field_em.unwrap_or(1.0) * base;
             let t = (base * RULE_THICKNESS_RATIO).max(1.0);
             let center = y_offset - base * RULE_Y_RATIO;
-            (field, center - t * 0.5, center + t * 0.5)
+            if sink.paints() {
+                place_rule(sink, seg, (pen_x, y), field, t, base, &color);
+            }
+            (field, field, center - t * 0.5, center + t * 0.5)
         } else {
-            let ch = if seg.greek {
-                greek_char(seg.text)
-            } else {
-                seg.text
+            let ch = seg.char_set.glyph_char(seg.text);
+            // A math character draws from the math face (whatever the
+            // policy), falling back to the text chain when the face lacks it.
+            let (font, glyph) = (seg.char_set == crate::text::CharSet::Math)
+                .then(|| math_layout::math_text_glyph(rt, seg, ch))
+                .flatten()
+                .unwrap_or_else(|| {
+                    let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
+                    (font, font.charmap().map(ch))
+                });
+            let g = glyph_extents_id(font, size, glyph);
+            let pen_advance = match seg.field_em {
+                Some(f) => {
+                    // Center the glyph ink inside the fixed field.
+                    let field = f * base;
+                    let inset = (field - g.advance) * 0.5;
+                    sink.glyph(font, glyph, size, (pen_x + inset, y), &color);
+                    field
+                }
+                None => {
+                    pen_x += script.kern_before;
+                    sink.glyph(font, glyph, size, (pen_x, y), &color);
+                    g.advance
+                }
             };
-            let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
-            let g = glyph_extents(font, size, ch);
             // A fixed field replaces both the kern and the glyph advance.
             let adv = match seg.field_em {
                 Some(f) => f * base,
-                None => segment_kern_before(seg, base) + g.advance,
+                None => script.advance(g.advance),
             };
-            (adv, y_offset + g.ink_top, y_offset + g.ink_bottom)
+            (
+                adv,
+                pen_advance,
+                y_offset + g.ink_top,
+                y_offset + g.ink_bottom,
+            )
         };
 
         if seg.underline {
             let underline_top = y_offset + size * UNDERLINE_Y_OFFSET_RATIO;
             let underline_thickness = (size * UNDERLINE_THICKNESS_RATIO).max(1.0);
             seg_bottom = seg_bottom.max(underline_top + underline_thickness);
+            sink.rect(
+                RectF {
+                    x: pen_x,
+                    y: y + size * UNDERLINE_Y_OFFSET_RATIO,
+                    width: pen_advance,
+                    height: underline_thickness,
+                },
+                &color,
+            );
         }
 
         max_ascent = max_ascent.max(-seg_top);
         max_descent = max_descent.max(seg_bottom);
         total_w += advance;
+        pen_x += pen_advance;
     }
 
     if segments.is_empty() || (max_ascent == 0.0 && max_descent == 0.0) {
@@ -954,103 +1363,55 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
     }
 }
 
-/// Width of the whole block: its widest line. Measurement reports it, and
-/// drawing aligns every line inside it, so the two cannot disagree.
-fn block_width(line_metrics: &[TextMetrics]) -> f32 {
-    line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
-}
-
-/// Baseline-to-baseline advance between two lines. Ink envelopes alone make
-/// descender-less lines collapse together, so clamp to a nominal line height
-/// derived from the font size. Shared by draw + measure.
-fn line_advance(prev: &TextMetrics, this: &TextMetrics, rt: &RichText) -> f32 {
-    (prev.descent + this.ascent).max(rt.font_size * 1.15)
-}
-
-fn draw_line_segments(
-    canvas: &mut Canvas,
-    segments: &[RichSegment],
-    rt: &RichText,
-    origin: (f32, f32),
-    policy: FontPolicy,
+/// A rule segment filling its fixed `field` with its pen at `pen`
+/// (left, baseline): the band under it, then the solid or dashed bar of
+/// thickness `t`, centered on the symbol axis — the exact-length line stroke
+/// of legend marks.
+fn place_rule(
+    sink: &mut dyn GlyphSink,
+    seg: &RichSegment,
+    pen: (f32, f32),
+    field: f32,
+    t: f32,
+    base: f32,
+    color: &Color,
 ) {
-    let (mut pen_x, baseline) = origin;
-    for seg in segments {
-        let base = segment_base_size(seg, rt);
-        let size = segment_font_size(seg, base);
-        let color = seg.color.unwrap_or(rt.color);
-        let y = baseline + segment_y_offset(seg, base);
-
-        let advance = if seg.rule {
-            // Drawn rule filling its fixed field, centered on the symbol
-            // axis — the exact-length line stroke of legend marks.
-            let field = seg.field_em.unwrap_or(1.0) * base;
-            let t = (base * RULE_THICKNESS_RATIO).max(1.0);
-            let ry = y - base * RULE_Y_RATIO - t * 0.5;
-            // The band goes under the rule first, so a dashed rule's gaps
-            // show the band and a solid rule covers its top edge.
-            if let Some(band) = &seg.rule_band {
-                let top = y - base * RULE_Y_RATIO;
-                let bottom = y - base * RULE_BAND_BOTTOM_RATIO;
-                canvas.draw_rect(
-                    pen_x,
-                    top,
-                    field,
-                    (bottom - top).max(1.0),
-                    &crate::raster::Paint::fill(band),
-                );
-            }
-            if let Some(pattern) = &seg.rule_dash {
-                draw_dashed_rule(
-                    canvas,
-                    RectF {
-                        x: pen_x,
-                        y: ry,
-                        width: field,
-                        height: t,
-                    },
-                    &color,
-                    pattern,
-                    base,
-                );
-            } else {
-                canvas.draw_rect(pen_x, ry, field, t, &crate::raster::Paint::fill(&color));
-            }
-            field
-        } else {
-            let ch = if seg.greek {
-                greek_char(seg.text)
-            } else {
-                seg.text
-            };
-            let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
-            match seg.field_em {
-                Some(f) => {
-                    // Center the glyph ink inside the fixed field.
-                    let field = f * base;
-                    let g = glyph_extents(font, size, ch);
-                    let inset = (field - g.advance) * 0.5;
-                    draw_char(canvas, font, size, ch, pen_x + inset, y, &color);
-                    field
-                }
-                None => {
-                    pen_x += segment_kern_before(seg, base);
-                    draw_char(canvas, font, size, ch, pen_x, y, &color)
-                }
-            }
-        };
-
-        if seg.underline {
-            let uy = y + size * UNDERLINE_Y_OFFSET_RATIO;
-            let uh = (size * UNDERLINE_THICKNESS_RATIO).max(1.0);
-            canvas.draw_rect(pen_x, uy, advance, uh, &crate::raster::Paint::fill(&color));
-        }
-
-        pen_x += advance;
+    let (pen_x, y) = pen;
+    let ry = y - base * RULE_Y_RATIO - t * 0.5;
+    // The band goes under the rule first, so a dashed rule's gaps show the
+    // band and a solid rule covers its top edge.
+    if let Some(band) = &seg.rule_band {
+        let top = y - base * RULE_Y_RATIO;
+        let bottom = y - base * RULE_BAND_BOTTOM_RATIO;
+        sink.rect(
+            RectF {
+                x: pen_x,
+                y: top,
+                width: field,
+                height: (bottom - top).max(1.0),
+            },
+            band,
+        );
+    }
+    let bar = RectF {
+        x: pen_x,
+        y: ry,
+        width: field,
+        height: t,
+    };
+    match &seg.rule_dash {
+        Some(pattern) => place_dashed_rule(sink, bar, color, pattern, base),
+        None => sink.rect(bar, color),
     }
 }
 
-fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[f32], base: f32) {
+fn place_dashed_rule(
+    sink: &mut dyn GlyphSink,
+    rect: RectF,
+    color: &Color,
+    dash_em: &[f32],
+    base: f32,
+) {
     let pattern: Vec<f32> = dash_em
         .iter()
         .filter_map(|v| {
@@ -1059,13 +1420,7 @@ fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[
         })
         .collect();
     if pattern.is_empty() {
-        canvas.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            &crate::raster::Paint::fill(color),
-        );
+        sink.rect(rect, color);
         return;
     }
 
@@ -1075,12 +1430,14 @@ fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[
     while offset < rect.width {
         let len = pattern[pattern_i % pattern.len()].min(rect.width - offset);
         if ink {
-            canvas.draw_rect(
-                rect.x + offset,
-                rect.y,
-                len,
-                rect.height,
-                &crate::raster::Paint::fill(color),
+            sink.rect(
+                RectF {
+                    x: rect.x + offset,
+                    y: rect.y,
+                    width: len,
+                    height: rect.height,
+                },
+                color,
             );
         }
         offset += len;
@@ -1093,6 +1450,90 @@ fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[
 mod dashed_rule_tests {
     use super::*;
     use crate::text::TextAlign;
+
+    /// The mask cache stays inside its byte budget however many sizes a
+    /// thread rasterizes, and the metrics cache inside its entry cap (#152).
+    #[test]
+    fn glyph_caches_stay_bounded() {
+        let font = glyph_font(FontPolicy::Standard, "", false, false, 'M');
+        let glyph = font.charmap().map('M');
+        let mut cleared = false;
+        let mut previous = 0usize;
+        for step in 0..12u16 {
+            let size = 4000.0 + f32::from(step);
+            with_glyph_mask_id(font, size, glyph, 0, |_| {}).unwrap();
+            let bytes = MASK_CACHE.with(|cache| cache.borrow().bytes);
+            assert!(
+                bytes <= MASK_CACHE_BUDGET_BYTES,
+                "{bytes} mask bytes cached"
+            );
+            cleared |= bytes < previous;
+            previous = bytes;
+        }
+        assert!(
+            cleared,
+            "twelve 4000 px masks pass the budget and clear the cache"
+        );
+
+        for step in 0..(METRICS_CACHE_MAX_ENTRIES as u32 + 10) {
+            glyph_extents_id(font, 8.0 + step as f32 * 0.001, glyph);
+            let entries = METRICS_CACHE.with(|cache| cache.borrow().len());
+            assert!(entries <= METRICS_CACHE_MAX_ENTRIES);
+        }
+    }
+
+    /// A glyph above `MAX_GLYPH_PX` is an error, not a mask of gigabytes,
+    /// and the error reaches the caller of the draw (#152).
+    #[test]
+    fn a_glyph_above_the_size_limit_is_an_error() {
+        let font = glyph_font(FontPolicy::Standard, "", false, false, 'x');
+        let glyph = font.charmap().map('x');
+        assert!(with_glyph_mask_id(font, MAX_GLYPH_PX, glyph, 0, |_| {}).is_ok());
+        for size in [MAX_GLYPH_PX + 1.0, 50_000.0, f32::INFINITY, f32::NAN] {
+            assert!(matches!(
+                with_glyph_mask_id(font, size, glyph, 0, |_| {}),
+                Err(crate::FiggyError::InvalidConfig {
+                    field: "font size",
+                    ..
+                })
+            ));
+        }
+        let mut canvas = Canvas::new(16, 16).unwrap();
+        let rt = RichText::plain("x", Color::BLACK, 50_000.0, "");
+        assert!(draw_rich_text(&mut canvas, &rt, (0.0, 8.0), FontPolicy::Standard).is_err());
+        assert!(
+            draw_plain_text(
+                &mut canvas,
+                "x",
+                (0.0, 8.0),
+                Color::BLACK,
+                "",
+                50_000.0,
+                false,
+                false,
+                FontPolicy::Standard,
+            )
+            .is_err()
+        );
+    }
+
+    /// Every bundled font file is a single face at offset 0, which
+    /// `bundled_face` relies on to skip the fallible parse.
+    #[test]
+    fn bundled_fonts_are_single_faces() {
+        for bytes in [
+            HANDWRITTEN_REGULAR,
+            HANDWRITTEN_BOLD,
+            embedded_bytes(false, false),
+            embedded_bytes(true, false),
+            embedded_bytes(false, true),
+            embedded_bytes(true, true),
+        ] {
+            let parsed = FontRef::from_index(bytes, 0).expect("bundled font parses");
+            assert_eq!(parsed.offset, 0);
+        }
+        assert!(math_font::MathFace::for_family("").is_some());
+    }
 
     // The band of a filled line's legend mark is painted under the rule in
     // the band colour, inside the rule's fixed field, and leaves the measured
@@ -1117,7 +1558,7 @@ mod dashed_rule_tests {
         );
 
         let mut canvas = Canvas::new(48, 32).unwrap();
-        draw_rich_text(&mut canvas, &banded, (4.0, 24.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &banded, (4.0, 24.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let px =
             |x: u32, y: u32| &rgba[((y * 48 + x) * 4) as usize..((y * 48 + x) * 4 + 4) as usize];
@@ -1134,7 +1575,7 @@ mod dashed_rule_tests {
         assert_eq!(px(20, 26)[3], 0);
         assert_eq!(px(40, 22)[3], 0);
         let mut plain_canvas = Canvas::new(48, 32).unwrap();
-        draw_rich_text(&mut plain_canvas, &plain, (4.0, 24.0), FontPolicy::Standard);
+        draw_rich_text(&mut plain_canvas, &plain, (4.0, 24.0), FontPolicy::Standard).unwrap();
         assert_eq!(
             plain_canvas.into_rgba()[((22 * 48 + 20) * 4 + 3) as usize],
             0
@@ -1155,7 +1596,7 @@ mod dashed_rule_tests {
             align: TextAlign::Left,
         };
         let mut canvas = Canvas::new(48, 32).unwrap();
-        draw_rich_text(&mut canvas, &rt, (4.0, 20.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &rt, (4.0, 20.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let ink_cols: Vec<u32> = (0..48u32)
             .filter(|&x| (0..32u32).any(|y| rgba[((y * 48 + x) * 4 + 3) as usize] > 0))
@@ -1182,7 +1623,29 @@ mod dashed_rule_tests {
 /// cells move with it.
 ///
 /// [`TextAlign::line_offset`]: crate::text::TextAlign::line_offset
-pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), policy: FontPolicy) {
+///
+/// A glyph above `MAX_GLYPH_PX` is an error; the glyphs before it are drawn.
+pub fn draw_rich_text(
+    canvas: &mut Canvas,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::new(canvas);
+    place_rich_text(&mut sink, rt, origin, policy);
+    sink.finish()
+}
+
+/// The placement of [`draw_rich_text`]: every glyph and rule of `rt` at
+/// `origin` (left edge of the block, baseline of the first line) handed to
+/// `sink`. The canvas paints through it and the vector export writes from
+/// it, so both place the same glyphs at the same pens.
+pub(crate) fn place_rich_text(
+    sink: &mut dyn GlyphSink,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+) {
     let doc = layout_doc(rt, policy);
     let (x, mut baseline) = origin;
     let block_width = block_width(&doc.line_metrics);
@@ -1193,8 +1656,8 @@ pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), po
         }
         let line_x = x + rt.align.line_offset(block_width, doc.line_metrics[i].width);
         for (k, cell) in cells.iter().enumerate() {
-            draw_line_segments(
-                canvas,
+            place_cell(
+                sink,
                 cell,
                 rt,
                 (line_x + doc.col_starts[k], baseline),
@@ -1235,6 +1698,11 @@ impl CpuTextMeasure {
             policy: FontPolicy::for_style(style),
         }
     }
+
+    /// Measure with an explicit font policy.
+    pub(crate) fn with_policy(policy: FontPolicy) -> Self {
+        Self { policy }
+    }
 }
 
 impl crate::text::MeasureText for CpuTextMeasure {
@@ -1242,15 +1710,21 @@ impl crate::text::MeasureText for CpuTextMeasure {
         measure_rich_text(rt, self.policy)
     }
 
-    /// The tick labels, axis lines and ticks the axis raster draws, from the
-    /// same walks and placement it draws them with.
-    fn drawn_parts(
-        &self,
-        cfg: &crate::config::Config,
-        element: &crate::layout::Element,
-        each: &mut dyn FnMut(crate::layout::DrawnPart),
-    ) -> bool {
-        crate::axis_render::drawn_parts(cfg, element, self.policy, each)
+    /// A tick label's extents as the raster draws plain text: per glyph,
+    /// in this measure's font policy.
+    fn measure_plain(&self, text: &str, family: &str, size: f32) -> crate::text::TextExtents {
+        let m = measure_plain_text(text, family, size, false, false, self.policy);
+        crate::text::TextExtents {
+            width: m.width,
+            ascent: m.ascent,
+            descent: m.descent,
+        }
+    }
+
+    /// The line ascent and descent the regular face this measure draws
+    /// `family` with states at `size` (the handwritten face in sketch mode).
+    fn font_line(&self, family: &str, size: f32) -> crate::text::TextExtents {
+        font_line_metrics(family, size, self.policy)
     }
 }
 
@@ -1288,37 +1762,97 @@ pub fn measure_rich_text(rt: &RichText, policy: FontPolicy) -> TextMetrics {
 
 /// Effective base size of a segment: the per-segment `font_size` override
 /// when present, the document-level `RichText.font_size` otherwise. The
-/// sub/superscript ratio (and the derived y-offset / kerning) apply on top.
+/// script layout ([`script_placement`]) applies on top.
 fn segment_base_size(seg: &RichSegment, rt: &RichText) -> f32 {
     seg.font_size.unwrap_or(rt.font_size)
 }
 
-fn segment_font_size(seg: &RichSegment, base: f32) -> f32 {
-    if seg.superscript || seg.subscript {
-        base * SUB_SUPER_SIZE_RATIO
-    } else {
-        base
+// Script layout.
+
+/// Script size as a fraction of the base font size.
+const SCRIPT_SIZE_RATIO: f32 = 0.65;
+/// Superscript baseline shift as a fraction of the base font size (y down,
+/// so negative raises).
+const SUPERSCRIPT_SHIFT_RATIO: f32 = -0.5;
+/// Subscript baseline shift as a fraction of the base font size (drops).
+const SUBSCRIPT_SHIFT_RATIO: f32 = 0.25;
+/// Horizontal gap before a script glyph, as a fraction of the base font
+/// size. Prevents visual collision from italic overhang or size mismatch
+/// with the preceding glyph.
+const SCRIPT_KERN_RATIO: f32 = 0.08;
+
+/// Where a glyph sits against the baseline of the text around it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScriptPosition {
+    /// On the baseline, at the base size.
+    Base,
+    /// Raised and reduced: an exponent, the superscript slot of a script.
+    Superscript,
+    /// Dropped and reduced: an index, the subscript slot of a script.
+    Subscript,
+}
+
+impl ScriptPosition {
+    /// The position a segment's `superscript` / `subscript` flags select.
+    /// `superscript` wins when both are set, as it always has.
+    pub(crate) fn of(seg: &RichSegment) -> Self {
+        if seg.superscript {
+            ScriptPosition::Superscript
+        } else if seg.subscript {
+            ScriptPosition::Subscript
+        } else {
+            ScriptPosition::Base
+        }
     }
 }
 
-fn segment_y_offset(seg: &RichSegment, base: f32) -> f32 {
-    if seg.superscript {
-        base * SUPERSCRIPT_Y_RATIO
-    } else if seg.subscript {
-        base * SUBSCRIPT_Y_RATIO
-    } else {
-        0.0
+/// How a glyph at a [`ScriptPosition`] is placed: computed by
+/// [`script_placement`] from the base font size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScriptPlacement {
+    /// Font size the glyph is drawn and measured at.
+    pub(crate) size: f32,
+    /// Shift of the glyph's baseline from the line's baseline, y down:
+    /// negative raises.
+    pub(crate) shift: f32,
+    /// Gap the pen advances before the glyph.
+    pub(crate) kern_before: f32,
+}
+
+impl ScriptPlacement {
+    /// The pen advance of a glyph whose own advance at `size` is
+    /// `glyph_advance`: the gap before it, then the glyph.
+    pub(crate) fn advance(self, glyph_advance: f32) -> f32 {
+        self.kern_before + glyph_advance
     }
 }
 
-/// Kerning gap added to pen_x just before drawing `seg`. Super/sub segments
-/// differ in size and y-offset from the preceding glyph and need a small gap
-/// to avoid visual overhang collisions.
-fn segment_kern_before(seg: &RichSegment, base: f32) -> f32 {
-    if seg.superscript || seg.subscript {
-        base * SUB_SUPER_KERN_RATIO
-    } else {
-        0.0
+/// The script layout: size ratio, raise or drop, and the gap before the
+/// glyph, for a glyph at `position` next to text of font size `base`.
+///
+/// This is the one place scripts are laid out. Rich-text segments with the
+/// `superscript` / `subscript` flags (titles, legends, annotations and the
+/// `LabelFormat::Power` tick-label exponents, which are such segments) are
+/// measured and drawn through it, and the math `Scripts` node of #45 calls
+/// it for its superscript and subscript slots, so the flags and the node
+/// place scripts with the same pixels.
+pub(crate) fn script_placement(position: ScriptPosition, base: f32) -> ScriptPlacement {
+    match position {
+        ScriptPosition::Base => ScriptPlacement {
+            size: base,
+            shift: 0.0,
+            kern_before: 0.0,
+        },
+        ScriptPosition::Superscript => ScriptPlacement {
+            size: base * SCRIPT_SIZE_RATIO,
+            shift: base * SUPERSCRIPT_SHIFT_RATIO,
+            kern_before: base * SCRIPT_KERN_RATIO,
+        },
+        ScriptPosition::Subscript => ScriptPlacement {
+            size: base * SCRIPT_SIZE_RATIO,
+            shift: base * SUBSCRIPT_SHIFT_RATIO,
+            kern_before: base * SCRIPT_KERN_RATIO,
+        },
     }
 }
 
@@ -1326,10 +1860,32 @@ fn segment_kern_before(seg: &RichSegment, base: f32) -> f32 {
 // Shares the same font resolution and per-glyph fallback as RichText via
 // `glyph_font`.
 
-/// Draw single-style text at `origin` (left, baseline).
+/// Draw single-style text at `origin` (left, baseline). A glyph above
+/// `MAX_GLYPH_PX` is an error.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_plain_text(
     canvas: &mut Canvas,
+    text: &str,
+    origin: (f32, f32),
+    color: Color,
+    family: &str,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    policy: FontPolicy,
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::new(canvas);
+    place_plain_text(
+        &mut sink, text, origin, color, family, size, bold, italic, policy,
+    );
+    sink.finish()
+}
+
+/// The placement of [`draw_plain_text`]: each character's glyph, from the
+/// face the policy resolves for it, at its pen, handed to `sink`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_plain_text(
+    sink: &mut dyn GlyphSink,
     text: &str,
     origin: (f32, f32),
     color: Color,
@@ -1342,7 +1898,9 @@ pub fn draw_plain_text(
     let (mut pen_x, baseline) = origin;
     for ch in text.chars() {
         let font = glyph_font(policy, family, bold, italic, ch);
-        pen_x += draw_char(canvas, font, size, ch, pen_x, baseline, &color);
+        let glyph = font.charmap().map(ch);
+        sink.glyph(font, glyph, size, (pen_x, baseline), &color);
+        pen_x += glyph_extents_id(font, size, glyph).advance;
     }
 }
 
@@ -1372,10 +1930,27 @@ pub fn measure_plain_text(
     }
 }
 
+/// The line ascent and descent the regular face `family` resolves to in
+/// `policy` states at `size` (the handwritten face in sketch mode): how far
+/// a line of it reaches above and below its baseline whatever its letters.
+/// `width` is 0.
+pub(crate) fn font_line_metrics(family: &str, size: f32, policy: FontPolicy) -> TextMetrics {
+    let font = match policy {
+        FontPolicy::Handwritten => handwritten_font(false),
+        FontPolicy::Standard => resolve_font(family, false, false),
+    };
+    let m = font.metrics(&[]).scale(size);
+    TextMetrics {
+        width: 0.0,
+        ascent: m.ascent,
+        descent: m.descent,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::{TextAlign, rich_segments_from_text};
+    use crate::text::{CharSet, TextAlign, rich_segments_from_text};
 
     fn measure_rich_text_std(rt: &RichText) -> TextMetrics {
         measure_rich_text(rt, FontPolicy::Standard)
@@ -1454,7 +2029,10 @@ mod tests {
             for size in [12.0_f32, 24.0, 32.0, 33.0, 40.0, 51.0, 64.0, 102.0] {
                 let font = glyph_font(FontPolicy::Standard, "", false, false, ch);
                 let mut seen = None;
-                with_glyph_mask(font, size, ch, 0, |m| seen = Some((m.width, m.height)));
+                with_glyph_mask_id(font, size, font.charmap().map(ch), 0, |m| {
+                    seen = Some((m.width, m.height))
+                })
+                .unwrap();
                 let (w, h) = seen.expect("basic Latin glyph must rasterize");
                 let rel_h = h as f32 / size;
                 let rel_w = w as f32 / size;
@@ -1484,7 +2062,8 @@ mod tests {
             false,
             false,
             FontPolicy::Standard,
-        );
+        )
+        .unwrap();
         let rgba = canvas.into_rgba();
         let inked = rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(inked > 20, "expected glyph pixels, got {inked}");
@@ -1590,49 +2169,101 @@ mod tests {
 
     #[test]
     fn font_generation_exhaustion_is_fail_closed_before_registry_mutation() {
-        let mut fonts = RegisteredFonts::new();
+        let fonts = FontRegistry::new();
 
         let error = fonts
             .register(EMBEDDED_REGULAR.to_vec(), u64::MAX)
             .expect_err("exhausted generation must reject registration");
 
-        assert_eq!(error, "font generation counter exhausted");
-        assert_eq!(fonts.db.faces().count(), 0);
-        assert!(fonts.families_by_bytes.is_empty());
+        assert!(matches!(
+            error,
+            crate::FiggyError::CounterExhausted {
+                counter: "font generation"
+            }
+        ));
+        assert_eq!(fonts.fonts.load().db.faces().count(), 0);
+        assert!(fonts.registered.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_file_without_a_usable_face_is_refused_without_publishing() {
+        let fonts = FontRegistry::new();
+        let error = fonts
+            .register(b"not a font".to_vec(), 0)
+            .expect_err("bytes that are no font must be refused");
+        assert!(matches!(error, crate::FiggyError::InvalidFont { .. }));
+        assert_eq!(fonts.fonts.load().db.faces().count(), 0);
+        assert!(fonts.registered.lock().unwrap().is_empty());
     }
 
     #[test]
     fn identical_font_bytes_are_stored_once() {
-        let mut fonts = RegisteredFonts::new();
+        let fonts = FontRegistry::new();
         let bytes = EMBEDDED_REGULAR.to_vec();
 
         let (first_families, first_generation) = fonts.register(bytes.clone(), 41).unwrap();
-        let face_count = fonts.db.faces().count();
+        let face_count = fonts.fonts.load().db.faces().count();
         let (second_families, second_generation) = fonts.register(bytes, 42).unwrap();
 
         assert_eq!(first_families, ["Liberation Sans"]);
         assert_eq!(second_families, first_families);
         assert_eq!(first_generation, Some(42));
         assert_eq!(second_generation, None);
-        assert_eq!(fonts.families_by_bytes.len(), 1);
+        assert_eq!(fonts.registered.lock().unwrap().len(), 1);
         assert_eq!(
-            fonts.db.faces().count(),
+            fonts.fonts.load().db.faces().count(),
             face_count,
             "identical bytes must not add duplicate fontdb faces"
         );
 
-        let first_face = fonts.lookup("Liberation Sans", false, false).unwrap();
-        let resolved_count = fonts.resolved_faces.len();
-        let second_face = fonts.lookup("Liberation Sans", false, false).unwrap();
+        let first_face = fonts
+            .fonts
+            .load()
+            .lookup("Liberation Sans", false, false)
+            .unwrap();
+        let second_face = fonts
+            .fonts
+            .load()
+            .lookup("Liberation Sans", false, false)
+            .unwrap();
         assert_eq!(second_face.data.as_ptr(), first_face.data.as_ptr());
         assert_eq!(
             second_face.key, first_face.key,
             "one parsed face, one cache key"
         );
-        assert_eq!(
-            fonts.resolved_faces.len(),
-            resolved_count,
-            "resolving the same face again must reuse its stable backing bytes"
+    }
+
+    /// A registered face is parsed over the one copy of the file the registry
+    /// keeps: the face's data is that copy, not a second one (#160).
+    #[test]
+    fn a_registered_face_reads_the_registered_bytes_themselves() {
+        let fonts = FontRegistry::new();
+        fonts.register(EMBEDDED_BOLD.to_vec(), 0).unwrap();
+        let face = fonts
+            .fonts
+            .load()
+            .lookup("Liberation Sans", true, false)
+            .unwrap();
+        let registered = fonts.registered.lock().unwrap();
+        let (&bytes, _) = registered.iter().next().unwrap();
+        assert_eq!(face.data.as_ptr(), bytes.as_ptr());
+        assert_eq!(face.data.len(), bytes.len());
+    }
+
+    /// Readers holding the snapshot from before a registration keep it whole,
+    /// and the next read sees the new font.
+    #[test]
+    fn a_registration_publishes_a_new_snapshot_and_keeps_the_old_one_readable() {
+        let fonts = FontRegistry::new();
+        let before = fonts.fonts.load_full();
+        fonts.register(EMBEDDED_ITALIC.to_vec(), 0).unwrap();
+        assert!(before.lookup("Liberation Sans", false, true).is_none());
+        assert!(
+            fonts
+                .fonts
+                .load()
+                .lookup("Liberation Sans", false, true)
+                .is_some()
         );
     }
 
@@ -1662,7 +2293,8 @@ mod tests {
                 bold,
                 italic,
                 policy,
-            );
+            )
+            .unwrap();
         }
         canvas.into_rgba()
     }
@@ -1931,7 +2563,8 @@ mod tests {
             &mk(&LegendEntryKind::Line),
             (4.0, 20.0),
             FontPolicy::Standard,
-        );
+        )
+        .unwrap();
         let rgba = canvas.into_rgba();
         let ink_cols: Vec<u32> = (0..48u32)
             .filter(|&x| (0..32u32).any(|y| rgba[((y * 48 + x) * 4 + 3) as usize] > 0))
@@ -1970,7 +2603,7 @@ mod tests {
 
         // Drawing: the leftmost ink of each line's second cell must agree.
         let mut canvas = Canvas::new(120, 60).unwrap();
-        draw_rich_text(&mut canvas, &rt, (4.0, 18.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &rt, (4.0, 18.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let leftmost_ink = |y0: u32, y1: u32| -> Option<u32> {
             (0..120u32).find(|&x| (y0..y1).any(|y| rgba[((y * 120 + x) * 4 + 3) as usize] > 0))
@@ -1998,7 +2631,7 @@ mod tests {
 
     fn draw_to_rgba(rt: &RichText, size: (u32, u32), origin: (f32, f32)) -> Vec<u8> {
         let mut canvas = Canvas::new(size.0, size.1).unwrap();
-        draw_rich_text(&mut canvas, rt, origin, FontPolicy::Standard);
+        draw_rich_text(&mut canvas, rt, origin, FontPolicy::Standard).unwrap();
         canvas.into_rgba()
     }
 
@@ -2024,7 +2657,13 @@ mod tests {
                 }
                 for (k, cell) in cells.iter().enumerate() {
                     let cell_origin = (x + doc.col_starts[k], baseline);
-                    draw_line_segments(canvas, cell, rt, cell_origin, FontPolicy::Standard);
+                    place_cell(
+                        &mut CanvasSink::new(canvas),
+                        cell,
+                        rt,
+                        cell_origin,
+                        FontPolicy::Standard,
+                    );
                 }
             }
         }
@@ -2138,7 +2777,8 @@ mod tests {
             &mk("ab\nab"),
             (5.0, 18.0),
             FontPolicy::Standard,
-        );
+        )
+        .unwrap();
         let rgba = canvas.into_rgba();
         let row_has_ink = |y: u32| (0..60u32).any(|x| rgba[((y * 60 + x) * 4 + 3) as usize] > 0);
         // Ink near the first baseline, a gap is not guaranteed (descenders),
@@ -2164,7 +2804,7 @@ mod tests {
         };
 
         let mut canvas = Canvas::new(60, 40).unwrap();
-        draw_rich_text(&mut canvas, &rt, (5.0, 30.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &rt, (5.0, 30.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let red_ink = rgba
             .chunks_exact(4)
@@ -2243,8 +2883,252 @@ mod tests {
         );
 
         let mut canvas = Canvas::new(80, 40).unwrap();
-        draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         assert!(rgba.chunks_exact(4).any(|p| p[3] > 0));
+    }
+
+    // `Greek` draws the Adobe Symbol letter of its Latin character, exactly as
+    // a segment holding that letter; `Math` draws the character as given from
+    // the bundled math face, its italic through the Mathematical Italic
+    // alphabet.
+    #[test]
+    fn char_set_picks_the_drawn_character() {
+        let with = |text: char, char_set: CharSet| RichText {
+            segments: vec![RichSegment {
+                char_set,
+                ..RichSegment::plain(text)
+            }],
+            ..RichText::plain("", Color::BLACK, 20.0, "")
+        };
+        let draw = |rt: &RichText| draw_to_rgba(rt, (40, 40), (5.0, 30.0));
+
+        let greek = with('a', CharSet::Greek);
+        let alpha = with('α', CharSet::Text);
+        assert_eq!(draw(&greek), draw(&alpha));
+        assert_eq!(measure_rich_text_std(&greek), measure_rich_text_std(&alpha));
+        assert_ne!(draw(&greek), draw(&with('a', CharSet::Text)));
+
+        let face = math_layout::math_text_glyph;
+        for c in ['a', '∑', '≤', '∂'] {
+            let math = with(c, CharSet::Math);
+            let (font, glyph) = face(&math, &math.segments[0], c).expect("in the math face");
+            assert_eq!(font.key, math_font::bundled_math_font().key);
+            assert_eq!(glyph, font.charmap().map(c), "math {c} draws as given");
+            assert_ne!(draw(&math), draw(&with(c, CharSet::Text)));
+        }
+        let italic = RichSegment {
+            char_set: CharSet::Math,
+            italic: true,
+            ..RichSegment::plain('x')
+        };
+        let rt = with('x', CharSet::Math);
+        let (font, glyph) = face(&rt, &italic, 'x').unwrap();
+        assert_eq!(glyph, font.charmap().map('\u{1D465}'));
+    }
+
+    // The script layout the math `Scripts` node (#45) will reuse: these ratios
+    // are the pixels every superscript and subscript has today, so a change
+    // here is a pixel change for every chart with scripts.
+    #[test]
+    fn script_placement_pins_the_size_ratio_shifts_and_gap() {
+        assert_eq!(SCRIPT_SIZE_RATIO, 0.65);
+        assert_eq!(SUPERSCRIPT_SHIFT_RATIO, -0.5);
+        assert_eq!(SUBSCRIPT_SHIFT_RATIO, 0.25);
+        assert_eq!(SCRIPT_KERN_RATIO, 0.08);
+
+        for base in [8.0f32, 12.0, 13.5, 20.0, 48.0] {
+            assert_eq!(
+                script_placement(ScriptPosition::Base, base),
+                ScriptPlacement {
+                    size: base,
+                    shift: 0.0,
+                    kern_before: 0.0,
+                }
+            );
+            assert_eq!(
+                script_placement(ScriptPosition::Superscript, base),
+                ScriptPlacement {
+                    size: base * 0.65,
+                    shift: base * -0.5,
+                    kern_before: base * 0.08,
+                }
+            );
+            assert_eq!(
+                script_placement(ScriptPosition::Subscript, base),
+                ScriptPlacement {
+                    size: base * 0.65,
+                    shift: base * 0.25,
+                    kern_before: base * 0.08,
+                }
+            );
+        }
+        let sup = script_placement(ScriptPosition::Superscript, 20.0);
+        assert_eq!(sup.shift, -10.0);
+        assert_eq!(sup.advance(7.0), sup.kern_before + 7.0);
+        assert_eq!(script_placement(ScriptPosition::Subscript, 20.0).shift, 5.0);
+        assert_eq!(
+            script_placement(ScriptPosition::Base, 20.0).advance(7.0),
+            7.0
+        );
+
+        let flags = |superscript: bool, subscript: bool| {
+            ScriptPosition::of(&RichSegment {
+                superscript,
+                subscript,
+                ..RichSegment::plain('2')
+            })
+        };
+        assert_eq!(flags(false, false), ScriptPosition::Base);
+        assert_eq!(flags(true, false), ScriptPosition::Superscript);
+        assert_eq!(flags(false, true), ScriptPosition::Subscript);
+        assert_eq!(flags(true, true), ScriptPosition::Superscript);
+    }
+
+    // A rich-text line is laid out through `script_placement`: its measured
+    // width is the base glyph advance plus the placement's advance of the
+    // script glyph at the script size, and its ascent reaches the raised ink.
+    #[test]
+    fn rich_text_scripts_measure_through_the_script_placement() {
+        let base = 20.0;
+        let font = |ch| glyph_font(FontPolicy::Standard, "", false, false, ch);
+        for (text, position) in [
+            ("x²", ScriptPosition::Superscript),
+            ("x₂", ScriptPosition::Subscript),
+        ] {
+            let rt = RichText::plain(text, Color::BLACK, base, "");
+            let m = measure_rich_text_std(&rt);
+            let place = script_placement(position, base);
+            let x = glyph_extents(font('x'), base, 'x');
+            let two = glyph_extents(font('2'), place.size, '2');
+            assert_eq!(m.width, x.advance + place.advance(two.advance), "{text}");
+            assert_eq!(
+                m.ascent,
+                (-x.ink_top).max(-(place.shift + two.ink_top)),
+                "{text}"
+            );
+            assert_eq!(
+                m.descent,
+                x.ink_bottom.max(place.shift + two.ink_bottom),
+                "{text}"
+            );
+        }
+    }
+
+    /// OUTLINE_VERBS_MATCH_POINTS (#152): `glyph_outline` reads one point
+    /// per `MoveTo` and `LineTo`, three per `CurveTo` and two per `QuadTo`
+    /// from the scaled outline. For every glyph id of every bundled face
+    /// (the four Liberation Sans styles, both Comic Neue weights, which are
+    /// emboldened, and the math face), `.notdef` and one id past the face
+    /// included, at a hinted and an unhinted size, those counts add up to
+    /// the outline's points, and `glyph_outline` hands out one segment per
+    /// verb.
+    #[test]
+    fn every_bundled_outline_has_the_points_its_verbs_read() {
+        use swash::zeno::Verb;
+        let faces = [
+            embedded_font(false, false),
+            embedded_font(true, false),
+            embedded_font(false, true),
+            embedded_font(true, true),
+            handwritten_font(false),
+            handwritten_font(true),
+            math_font::bundled_math_font(),
+        ];
+        for font in faces {
+            let count = font.metrics(&[]).glyph_count;
+            assert!(count > 1);
+            for size in [11.0, HINT_MAX_SIZE_PX + 9.0] {
+                let mut outlines = 0;
+                for glyph in 0..=count {
+                    let verbs = SCALE_CTX.with(|cx| {
+                        let mut cx = cx.borrow_mut();
+                        let mut scaler = cx
+                            .builder(font)
+                            .size(size)
+                            .hint(font_hinting(font, size))
+                            .build();
+                        let mut outline = scaler.scale_outline(glyph)?;
+                        let embolden = font_embolden(font, size);
+                        if embolden > 0.0 {
+                            outline.embolden(embolden, embolden);
+                        }
+                        let read: usize = outline
+                            .verbs()
+                            .iter()
+                            .map(|verb| match verb {
+                                Verb::MoveTo | Verb::LineTo => 1,
+                                Verb::CurveTo => 3,
+                                Verb::QuadTo => 2,
+                                Verb::Close => 0,
+                            })
+                            .sum();
+                        assert_eq!(read, outline.points().len(), "glyph {glyph} at {size}");
+                        Some(outline.verbs().len())
+                    });
+                    let mut segments = 0;
+                    glyph_outline(font, glyph, size, &mut |_| segments += 1);
+                    assert_eq!(segments, verbs.unwrap_or(0), "glyph {glyph} at {size}");
+                    outlines += usize::from(verbs.is_some());
+                }
+                assert!(outlines > 1, "a face with no outlines at {size}");
+            }
+        }
+    }
+
+    /// DOC_LAYOUT_SHAPE (#152): `layout_doc` gives every line one metric
+    /// and at least one cell, and as many column starts as the widest line
+    /// has cells, which `place_rich_text` and `measure_rich_text` index by.
+    /// Inputs: no segments, a single character, lone and repeated line
+    /// breaks, tabs with and without text, 1000 lines of varying tab counts
+    /// and a math cell.
+    #[test]
+    fn a_document_layout_has_a_metric_and_a_cell_per_line_and_a_start_per_column() {
+        let mut long = String::new();
+        for line in 0..1000 {
+            if line > 0 {
+                long.push('\n');
+            }
+            for cell in 0..line % 7 {
+                long.push_str(&format!("c{cell}\t"));
+            }
+            long.push_str("end");
+        }
+        let mut docs: Vec<RichText> = [
+            "",
+            "a",
+            "\n",
+            "\n\n",
+            "a\tb\nc",
+            "\t\t\n\t",
+            "\t",
+            long.as_str(),
+        ]
+        .iter()
+        .map(|text| RichText::plain(text, Color::BLACK, 12.0, ""))
+        .collect();
+        docs.push(
+            RichText::from_tex("x\t$\\frac{a}{b}$\n\t$y^2$", Color::BLACK, 12.0, "").unwrap(),
+        );
+        let mut empty = RichText::plain("x", Color::BLACK, 12.0, "");
+        empty.segments.clear();
+        docs.push(empty);
+        let mut canvas = Canvas::new(64, 64).unwrap();
+        for rt in &docs {
+            for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
+                let doc = layout_doc(rt, policy);
+                assert!(!doc.line_cells.is_empty());
+                assert_eq!(doc.line_metrics.len(), doc.line_cells.len());
+                assert!(doc.line_cells.iter().all(|cells| !cells.is_empty()));
+                let widest = doc.line_cells.iter().map(Vec::len).max().unwrap();
+                assert_eq!(doc.col_starts.len(), widest);
+                let lines = rt.segments.iter().filter(|s| s.text == '\n').count() + 1;
+                assert_eq!(doc.line_cells.len(), lines);
+                let m = measure_rich_text(rt, policy);
+                assert!(m.width.is_finite() && m.height().is_finite());
+                place_rich_text(&mut MeasureSink, rt, (0.0, 0.0), policy);
+                draw_rich_text(&mut canvas, rt, (2.0, 20.0), policy).unwrap();
+            }
+        }
     }
 }

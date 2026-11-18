@@ -1,10 +1,11 @@
 //! Point value maps: a value column colours the points through the chart's
 //! colourbar or sizes their markers.
 //! - `colormap_scatter` writes `gallery-colormap.png`: 1400 particles along two
-//!   spiral arms coloured by an age column (`point_color_map`).
+//!   spiral arms coloured by an age column (`point_color_map` through
+//!   `color_by`).
 //! - `bubbles` writes `gallery-bubbles.png`: three regions of cities whose
 //!   marker area follows a population column over one explicit domain
-//!   (`point_size_map` with `fit_domain`).
+//!   (`point_size_map` through `size_by`).
 //!
 //! cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
 #[allow(dead_code)]
@@ -13,33 +14,25 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, scatter, series};
+use gallery::Result;
+use renderer::theme::ThemeFamily;
 use renderer::{
-    Color, ColorMap, Renderer,
+    Renderer, SeriesConfig,
     config::{LegendCorner, LegendEntryKind},
-    data_config::{DataRenderType, PointColorMap, PointSizeMap, SizeScale},
-    text::RichText,
+    theme::ChartKind,
 };
 use std::path::Path;
-use styled::{cartesian, colorbar, export, rgb, save};
+use styled::{background, export, save, scene_chart, themed};
 
 // A colour-mapped scatter: samples along two spiral arms, coloured by a third
 // column through the colourbar.
 fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(250, 250, 252);
-    let ink = rgb(52, 57, 85);
-    let mut chart = cartesian(
-        "Particle ages / two arms",
-        "x (kpc)",
-        "y (kpc)",
-        bg,
-        ink,
-        rgb(232, 234, 242),
-    );
+    let theme = ThemeFamily::CoolSlate.theme(ChartKind::Scatter);
+    let bg = background(&theme);
+    let mut chart = scene_chart("Particle ages / two arms", "x (kpc)", "y (kpc)");
     chart.set_x_range(-10., 10.);
     chart.set_y_range(-7., 7.);
     chart.config_mut().legend.visible = false;
-    chart.config_mut().grid.show_major_x = true;
     let (mut x, mut y, mut age) = (Vec::new(), Vec::new(), Vec::new());
     let n = 1400u32;
     for i in 0..n {
@@ -56,83 +49,44 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
         age.push(100. * (1. - t) + 14. * j1);
     }
     for (id, data) in [("sx", x), ("sy", y), ("sage", age)] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
-    let mut points = scatter(ink, 5.5);
-    points.point_color_map = Some(PointColorMap {
-        column: "sage".into(),
-    });
-    let specs = [series(
-        "stars",
-        "sx",
-        "sy",
-        DataRenderType::Scatter { scatter: points },
-    )];
-    colorbar(
-        chart.config_mut(),
-        ColorMap::Custom {
-            stops: vec![
-                rgb(244, 190, 72),
-                rgb(238, 110, 92),
-                rgb(170, 70, 160),
-                rgb(70, 60, 160),
-                rgb(24, 32, 96),
-            ],
-        },
-        0.,
-        100.,
-        25.,
-        ink,
-    );
-    chart
-        .config_mut()
-        .colorbar
-        .as_mut()
-        .unwrap()
-        .axis
-        .title_option
-        .visible = true;
-    chart
-        .config_mut()
-        .colorbar
-        .as_mut()
-        .unwrap()
-        .axis
-        .title_option
-        .text = RichText::plain("Age (Myr)", ink, 19., "");
+    let mut specs = [SeriesConfig::scatter("stars", "sx", "sy").color_by("sage")];
+    // The age scale; the theme draws the bar and its ramp.
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = 0.;
+    bar.axis.max = 100.;
+    bar.axis.major_spacing = 25.;
+    chart.config_mut().colorbar = Some(bar);
+    let mut chart = chart.with_colorbar_title("Age (Myr)");
     chart.config_mut().bottom_x.major_spacing = 5.;
     chart.config_mut().left_y.major_spacing = 3.5;
-    let image = export(r, &chart, &specs, bg)?;
+    themed(&mut chart, &theme, &mut specs)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-colormap.png"))
 }
 
 // A bubble chart: three regions, marker area by population over one shared
 // domain, translucent fills so overlaps stay readable.
 fn bubbles(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(252, 249, 244);
-    let ink = rgb(70, 60, 56);
-    let mut chart = cartesian(
+    let theme = ThemeFamily::WarmPaper.theme(ChartKind::Scatter);
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Income and life expectancy / 54 cities",
         "Income per person (USD thousands)",
         "Life expectancy (years)",
-        bg,
-        ink,
-        rgb(235, 228, 216),
     );
     chart.set_x_range(0., 70.);
     chart.set_y_range(58., 86.);
-    chart.config_mut().legend.corner = LegendCorner::BottomRight;
     chart.config_mut().bottom_x.major_spacing = 10.;
     chart.config_mut().left_y.major_spacing = 4.;
+    let regions = [
+        ("east", "East", 8., 0.42, 0.55),
+        ("north", "North", 28., 0.24, 0.35),
+        ("south", "South", 16., 0.33, 0.8),
+    ];
     let mut specs = Vec::new();
-    for (k, (id, label, color, x0, slope, pop)) in [
-        ("east", "East", rgb(222, 101, 83), 8., 0.42, 0.55),
-        ("north", "North", rgb(45, 140, 135), 28., 0.24, 0.35),
-        ("south", "South", rgb(118, 92, 196), 16., 0.33, 0.8),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (k, (id, _, x0, slope, pop)) in regions.into_iter().enumerate() {
         let (mut x, mut y, mut p) = (Vec::new(), Vec::new(), Vec::new());
         for i in 0..18u32 {
             let h = f64::from(i * 31 + k as u32 * 97) * 0.618;
@@ -145,28 +99,24 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
             p.push(0.4 + 9.6 * j3 * j3 * pop);
         }
         for (suffix, data) in [("x", x), ("y", y), ("pop", p)] {
-            r.add_column(format!("{id}-{suffix}"), &column(data))?;
+            r.add_column(format!("{id}-{suffix}"), &data)?;
         }
-        let mut marker = scatter(Color::from_rgba(color.r, color.g, color.b, 0.62), 8.);
-        let mut size = PointSizeMap {
-            column: format!("{id}-pop"),
-            domain_min: 0.,
-            domain_max: 1.,
-            min_px: 5.,
-            max_px: 34.,
-            scale: SizeScale::Area,
-        };
-        size.fit_domain(0.4, 10.);
-        marker.point_size_map = Some(size);
-        specs.push(series(
-            id,
-            &format!("{id}-x"),
-            &format!("{id}-y"),
-            DataRenderType::Scatter { scatter: marker },
-        ));
-        chart = chart.with_legend_entry(label, color, 2., LegendEntryKind::Scatter);
+        specs.push(
+            SeriesConfig::scatter(id, format!("{id}-x"), format!("{id}-y")).size_by(
+                format!("{id}-pop"),
+                [0.4, 10.],
+                [5., 34.],
+            ),
+        );
     }
-    let image = export(r, &chart, &specs, bg)?;
+    themed(&mut chart, &theme, &mut specs)?;
+    // The legend shows each region's colour opaque, not the translucent
+    // marker fill.
+    for ((_, label, ..), color) in regions.iter().zip(&theme.series.palette) {
+        chart = chart.with_legend_entry(label, *color, 2., LegendEntryKind::Scatter);
+    }
+    chart.config_mut().legend.corner = LegendCorner::BottomRight;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-bubbles.png"))
 }
 

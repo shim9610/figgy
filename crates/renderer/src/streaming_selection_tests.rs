@@ -1,15 +1,10 @@
 use super::*;
-use crate::config::{DataSelectionsConfig, PickedPointsConfig};
-use crate::data_config::{
-    BarOrientation, DataBarBinStyleConfig, DataBarStyleOverride, DataScatterPointStyleOverride,
-};
+use crate::config::DataSelectionsConfig;
+use crate::data_config::DataScatterPointStyleOverride;
+use crate::test_gpu::BlockOn as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
-    crate::Column {
-        min: data.iter().copied().fold(f32::INFINITY, f32::min),
-        max: data.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-        data,
-    }
+    crate::Column { data }
 }
 
 fn fixture() -> (
@@ -53,7 +48,7 @@ fn fixture_with_display(
     let (device, queue) = data_render::shared_device().unwrap();
     let make = || {
         Renderer::try_new_with_sample_count(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             8192,
             4,
@@ -106,8 +101,9 @@ fn fixture_with_display(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::new(0.0, 0.2, 0.7, 0.4),
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 0.0,
@@ -125,36 +121,13 @@ fn fixture_with_display(
                 }]),
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+            stem: None,
+        }),
     };
-    let bar = SeriesConfig {
-        source_id: Some("source".into()),
-        series_id: "bar".into(),
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        render_type: DataRenderType::Histogram {
-            bar: DataBarStyleConfig {
-                fill_color: Color::new(0.5, 0.2, 0.1, 0.2),
-                border_color: Color::new(0.2, 0.3, 0.5, 0.3),
-                border_width: 1.0,
-                baseline: 0.0,
-                gap_px: 0.0,
-                width_ratio: 1.0,
-                orientation: BarOrientation::Vertical,
-                bar_style_overrides: Some(vec![DataBarStyleOverride {
-                    index: 10,
-                    style: DataBarBinStyleConfig {
-                        gap_px: Some(2.0),
-                        width_ratio: Some(0.4),
-                        ..Default::default()
-                    },
-                }]),
-            },
-        },
-    };
-    let series = vec![point, bar];
+    let series = vec![point];
     let mut config = crate::default::default_config();
     config.chart_area = crate::layout::ChartArea(Rect {
         x: 0,
@@ -192,36 +165,13 @@ fn fixture_with_display(
 }
 
 fn select(config: &mut Config, indices: &[usize]) {
-    config.picked_points = Some(PickedPointsConfig {
-        refs: indices
-            .iter()
-            .map(|index| PickedPointRef {
-                source_id: Some("source".into()),
-                series_id: "point".into(),
-                point_index: *index,
-            })
-            .collect(),
-        ring_color: Color::new(1.0, 0.0, 0.0, 0.45),
-        ring_width_px: 3.0,
-        radius_extra_px: 4.0,
-        ..Default::default()
-    });
     config.picked_data = Some(DataSelectionsConfig {
         refs: indices
             .iter()
-            .flat_map(|index| {
-                [
-                    PickedDataRef::Point {
-                        source_id: Some("source".into()),
-                        series_id: "point".into(),
-                        point_index: *index,
-                    },
-                    PickedDataRef::HistogramBin {
-                        source_id: Some("source".into()),
-                        series_id: "bar".into(),
-                        bin_index: *index,
-                    },
-                ]
+            .map(|index| PickedDataRef::Point {
+                source_id: Some("source".into()),
+                series_id: "point".into(),
+                point_index: *index,
             })
             .collect(),
         highlight_color: Color::new(0.0, 1.0, 0.0, 0.5),
@@ -267,9 +217,10 @@ fn pump(r: &mut Renderer, id: ChartId, values: &[(&str, crate::Column<f32>)]) {
     loop {
         match r.request_stream_selection_ranges(id).unwrap() {
             StreamingSelectionRequest::Ready { ticket, ranges, .. } => {
+                assert!(r.check_stream_tickets_for_test() >= 1);
                 supply(r, ticket, &ranges, values)
             }
-            StreamingSelectionRequest::Backpressure { .. } => r.wait_idle(),
+            StreamingSelectionRequest::Backpressure { .. } => r.wait_idle().unwrap(),
             StreamingSelectionRequest::Complete { .. } => break,
             StreamingSelectionRequest::Failed { .. } => panic!("unexpected failed selection"),
         }
@@ -313,12 +264,12 @@ fn finish_export(
                 r.submit_stream_operation_ranges(operation, &bindings)
                     .unwrap();
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => r.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => r.wait_idle().unwrap(),
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => break,
         }
     }
-    pollster::block_on(r.finish_stream_export(operation)).unwrap()
+    crate::test_gpu::block_on(r.finish_stream_export(operation)).unwrap()
 }
 
 #[cfg(test)]
@@ -326,6 +277,92 @@ fn screen(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
     let job = r.active_stream_job(id).unwrap();
     r.refresh_chart_stream_display(job, view).unwrap();
     let texture = wgpu::Texture::clone(r.chart_stream_display(job).unwrap());
+    read_display(r, &texture)
+}
+
+/// The resident twin of [`screen`]: `chart` and `series` drawn by the
+/// resident renderer `r` through the on-screen path (`prepare` and
+/// `paint_prepared`) at display `scale`, into a transparent target of the
+/// renderer's surface format and sample count, as the stream display is
+/// drawn. Both images then blend in the same 8-bit target and are read back
+/// alike; the export blends in `EXPORT_FORMAT` instead (#271).
+fn resident_screen(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    scale: f32,
+) -> Vec<u8> {
+    let display = Chart::new(chart.config().scaled(scale));
+    let area = display.config().chart_area.0;
+    let mut view = r.create_chart_view(&display, area).unwrap();
+    let styles: Vec<_> = series
+        .iter()
+        .map(|config| r.create_style_for_series_scaled(config, scale).unwrap())
+        .collect();
+    let series: Vec<_> = series
+        .iter()
+        .zip(&styles)
+        .map(|(config, style)| crate::Series { config, style })
+        .collect();
+    let mut frame = r
+        .prepare(&mut [ChartDrawItem {
+            view: &mut view,
+            chart: &display,
+            series: &series,
+        }])
+        .unwrap();
+    // The direct draw, as the export records it: without the Precise
+    // panel's cached bodies, which composite once more in UNORM
+    // (`resident_display_tests::painted_like_direct`).
+    for item in &mut frame.items {
+        item.resident_display = None;
+    }
+    let texture = |sample_count| {
+        r.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("resident display test target"),
+            size: wgpu::Extent3d {
+                width: area.width,
+                height: area.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: r.surface_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    };
+    let resolved = texture(1);
+    let samples = r.target_sample_count;
+    let multisampled = (samples > 1).then(|| texture(samples));
+    let resolved_view = resolved.create_view(&Default::default());
+    let multisampled_view = multisampled
+        .as_ref()
+        .map(|texture| texture.create_view(&Default::default()));
+    let mut encoder = r.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: multisampled_view.as_ref().unwrap_or(&resolved_view),
+                depth_slice: None,
+                resolve_target: multisampled_view.as_ref().map(|_| &resolved_view),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        r.paint_prepared(&mut pass, (area.width, area.height), &frame)
+            .unwrap();
+    }
+    r.queue.submit([encoder.finish()]);
+    read_display(r, &resolved)
+}
+
+/// A single-sample display texture read back as straight-alpha RGBA8.
+fn read_display(r: &mut Renderer, texture: &wgpu::Texture) -> Vec<u8> {
     let row = texture.width() * 4;
     let padded = row.div_ceil(256) * 256;
     let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
@@ -337,7 +374,7 @@ fn screen(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
     let mut encoder = r.device.create_command_encoder(&Default::default());
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -354,7 +391,7 @@ fn screen(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
     );
     r.queue.submit([encoder.finish()]);
     buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let mapped = buffer.slice(..).get_mapped_range().unwrap();
     let mut pixels: Vec<_> = mapped
         .chunks_exact(padded as usize)
@@ -395,7 +432,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
             .selection
             .ready
             .len(),
-        9
+        3
     );
     let bindings: Vec<_> = values
         .iter()
@@ -409,11 +446,11 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         match r.auto_stream_chart_step(id, &bindings).unwrap() {
             crate::AutoStreamingProgress::AllSubmitted { .. }
             | crate::AutoStreamingProgress::Complete { .. } => break,
-            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle(),
+            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle().unwrap(),
             _ => {}
         }
     }
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let old = screen(&mut r, id, &view);
     r.auto_stream_chart_step(id, &bindings).unwrap();
     let progress = r.stream_progress_counts(job).unwrap();
@@ -477,16 +514,22 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         matches!(r.request_stream_selection_ranges(id).unwrap(), StreamingSelectionRequest::Complete { revision } if revision == selection_revision)
     );
     for scale in [1.0, 2.0] {
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let expected = resident
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
         let operation = r
             .begin_stream_export(id, scale, Color::new(0.0, 0.0, 0.0, 0.0), 3)
             .unwrap();
         chart
             .config_mut()
-            .picked_points
+            .picked_data
             .as_mut()
             .unwrap()
-            .radius_extra_px += 1.0;
+            .point_radius_extra_px += 1.0;
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
         let actual = finish_export(&mut r, operation, &values);
@@ -522,13 +565,13 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         .unwrap()
         .outline_width_px += 0.5;
     r.set_chart_config(id, chart.config().clone()).unwrap();
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let bytes = r.gpu_memory_usage().total_bytes();
-    r.memory_budget = Some(bytes);
+    let _ = r.set_memory_budget(Some(bytes));
     assert!(r.request_stream_selection_ranges(id).is_err());
     assert_eq!(r.gpu_memory_usage().total_bytes(), bytes);
     assert_eq!(screen(&mut r, id, &view), before);
-    r.memory_budget = None;
+    let _ = r.set_memory_budget(None);
     chart
         .config_mut()
         .picked_data
@@ -559,7 +602,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
             crate::AutoStreamingProgress::Complete { .. } => break,
             crate::AutoStreamingProgress::Backpressure { .. }
             | crate::AutoStreamingProgress::AllSubmitted { .. } => {
-                r.wait_idle();
+                r.wait_idle().unwrap();
                 screen(&mut r, id, &view);
             }
             _ => {}
@@ -575,7 +618,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
         panic!()
     };
     supply(&mut r, ticket, &ranges, &values);
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let StreamingSelectionRequest::Ready {
         ticket: suspended,
         ranges: requested,
@@ -609,7 +652,11 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
     assert_eq!(
         actual.rgba,
         resident
-            .export_panel_rgba(&chart, &series, 1.0)
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(1.0)
+            )
+            .block_on()
             .unwrap()
             .rgba
     );
@@ -635,11 +682,15 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
     r.cancel_chart_stream(id).unwrap();
     assert!(r.submit_stream_selection_ranges(ticket, &[]).is_err());
     r.end_gpu_frame();
-    r.wait_idle();
+    r.wait_idle().unwrap();
     r.service_stream_requests();
     assert_eq!(r.stream_request_usage(), (0, 0, 0));
 }
 
+/// The stream display at a display scale against the resident chart drawn
+/// on screen at that scale: both blend in the renderer's 8-bit surface
+/// format. The export blends in `EXPORT_FORMAT` (#271), and the streamed
+/// export is compared with the resident export byte for byte above.
 #[test]
 fn stream_selection_and_data_match_resident_at_exact_display_scale() {
     let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
@@ -661,38 +712,35 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
                 crate::AutoStreamingProgress::Complete { .. } => break,
                 crate::AutoStreamingProgress::Backpressure { .. }
                 | crate::AutoStreamingProgress::AllSubmitted { .. } => {
-                    r.wait_idle();
+                    r.wait_idle().unwrap();
                     screen(&mut r, id, &view);
                 }
                 _ => {}
             }
         }
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let expected = resident_screen(&mut resident, &chart, &series, scale);
         let actual = screen(&mut r, id, &view);
-        assert_display_equivalent(
-            &actual,
-            &expected.rgba,
-            &format!("data display scale {scale}"),
-        );
+        assert_display_equivalent(&actual, &expected, &format!("data display scale {scale}"));
         select(chart.config_mut(), &[10, 2, 10]);
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let expected = resident_screen(&mut resident, &chart, &series, scale);
         let actual = screen(&mut r, id, &view);
         assert_display_equivalent(
             &actual,
-            &expected.rgba,
+            &expected,
             &format!("selection display scale {scale}"),
         );
     }
 }
 
-// PNGs contain straight-alpha RGB, whereas attachments blend premultiplied
-// channels. Dividing by alpha during export amplifies a one-code-value rounding
-// difference (e.g. alpha=55 turns it into almost five straight RGB values).
-// Compare the visible result on both black and white: these bound the error on
-// every background, independently per channel. Keep the three-code-value
-// composition bound and additionally limit alpha to one code value.
+// Both images are read back as straight-alpha RGB (`read_display`), whereas
+// attachments blend premultiplied channels. Dividing by alpha amplifies a
+// one-code-value rounding difference (e.g. alpha=55 turns it into almost five
+// straight RGB values). Compare the visible result on both black and white:
+// these bound the error on every background, independently per channel. Keep
+// the three-code-value composition bound and additionally limit alpha to one
+// code value.
 fn display_error(actual: &[u8], expected: &[u8]) -> (u32, u32) {
     assert_eq!(actual.len(), expected.len());
     assert_eq!(actual.len() % 4, 0);
@@ -733,4 +781,161 @@ fn display_comparison_measures_alpha_composition_and_rejects_visible_changes() {
     assert!(display_error(&[0, 0, 0, 0], &[0, 0, 0, 64]).0 > 1);
     assert!(display_error(&[255, 0, 0, 64], &[0, 0, 0, 64]).1 > 3 * 255);
     assert!(display_error(&[0, 0, 0, 255], &[4, 0, 0, 255]).1 > 3 * 255);
+}
+
+/// SELECTION_PLAN_COUNT_LE_3 (#152): `columns_for` names one to three
+/// distinct columns (`x`, `y` and the Precise style index), so its `[_; 3]`
+/// ids, rows and offsets cover `..count`: x equal to y, a Precise scatter
+/// with its own style column, a style column equal to x, a Sketch scatter
+/// (no style column), and a field cell on equal and on different axes.
+#[test]
+fn a_selection_column_plan_names_one_to_three_distinct_columns() {
+    let (_, _, _, _, chart, series, _) = fixture();
+    let precise = chart.config().clone();
+    assert!(matches!(precise.draw_style, DrawStyle::Precise));
+    let mut sketch = precise.clone();
+    sketch.draw_style = DrawStyle::Sketch(Default::default());
+    let entry = |field: Option<field::Cell>| SelectionEntry {
+        series: 0,
+        index: 4,
+        filter: SelectionRefFilter::All,
+        field,
+    };
+    let check = |plan: SelectionColumnPlan<'_>, expected: &[(&str, u64)]| {
+        assert!((1..=3).contains(&plan.count), "count {}", plan.count);
+        let named: Vec<(&str, u64)> = plan.ids[..plan.count]
+            .iter()
+            .copied()
+            .zip(plan.rows[..plan.count].iter().copied())
+            .collect();
+        assert_eq!(named, expected);
+        let mut ids = plan.ids[..plan.count].to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), plan.count, "repeated ids");
+    };
+    let point = &series[0];
+    check(
+        columns_for(&precise, point, entry(None)),
+        &[("x", 1), ("y", 1), ("index", 1)],
+    );
+    check(
+        columns_for(&sketch, point, entry(None)),
+        &[("x", 1), ("y", 1)],
+    );
+    let mut style_is_x = point.clone();
+    if let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(scatter),
+        line: None,
+        errors: None,
+        ..
+    }) = &mut style_is_x.render_type
+    {
+        scatter.point_style_index_column = Some("x".into());
+    }
+    check(
+        columns_for(&precise, &style_is_x, entry(None)),
+        &[("x", 1), ("y", 1)],
+    );
+    let mut same = style_is_x.clone();
+    same.y_column = "x".into();
+    check(columns_for(&precise, &same, entry(None)), &[("x", 1)]);
+
+    let heatmap = |x: &str, y: &str| SeriesConfig {
+        source_id: None,
+        series_id: "field".into(),
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        z_column: None,
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
+            matrix: crate::data_config::MatrixRef {
+                columns: vec!["z0".into(), "z1".into(), "z2".into(), "z3".into()],
+                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                grid_layout: crate::data_config::GridLayout::Edges,
+            },
+            fill: Some(crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    };
+    let len = |_: &str| Some(5u64);
+    for (x, y, count) in [("fx", "fy", 2), ("fx", "fx", 1)] {
+        let series = heatmap(x, y);
+        let cell = field::Cell::resolve(&series, [1, 1], len).expect("an inner cell");
+        let plan = columns_for(&precise, &series, entry(Some(cell)));
+        assert_eq!(plan.count, count, "{x} {y}");
+        assert!(plan.count <= 3);
+        let ids = &plan.ids[..plan.count];
+        assert!(ids.iter().all(|id| *id == x || *id == y));
+    }
+    // Different cells on one axis column are two ranges of the same id.
+    let series = heatmap("fx", "fx");
+    let cell = field::Cell::resolve(&series, [0, 2], len).expect("a cell");
+    let plan = columns_for(&precise, &series, entry(Some(cell)));
+    assert_eq!(plan.count, 2);
+}
+
+/// STREAM_JOB_CHART_LIVE (#152): a selection ticket issued for a chart
+/// that is then removed is refused, and the removed chart's selection
+/// request reports the unknown chart instead of reading its state.
+#[test]
+fn a_removed_chart_refuses_its_pending_selection_ticket() {
+    let (mut r, _, id, _, mut chart, _, values) = fixture();
+    let bindings: Vec<_> = values
+        .iter()
+        .map(|(id, values)| crate::StreamSourceBinding {
+            id,
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(values),
+        })
+        .collect();
+    loop {
+        match r.auto_stream_chart_step(id, &bindings).unwrap() {
+            crate::AutoStreamingProgress::AllSubmitted { .. }
+            | crate::AutoStreamingProgress::Complete { .. } => break,
+            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle().unwrap(),
+            _ => {}
+        }
+    }
+    r.wait_idle().unwrap();
+    select(chart.config_mut(), &[3, 4]);
+    r.set_chart_config(id, chart.config().clone()).unwrap();
+    let StreamingSelectionRequest::Ready { ticket, ranges, .. } =
+        r.request_stream_selection_ranges(id).unwrap()
+    else {
+        panic!("a selection ticket")
+    };
+    r.remove_chart(id).unwrap();
+    let payload: Vec<_> = ranges
+        .iter()
+        .map(|range| {
+            let values = &values
+                .iter()
+                .find(|(id, _)| *id == range.id)
+                .unwrap()
+                .1
+                .data;
+            column(values[range.offset as usize..(range.offset + range.len) as usize].to_vec())
+        })
+        .collect();
+    let supplied: Vec<_> = ranges
+        .iter()
+        .zip(&payload)
+        .map(|(range, data)| crate::StreamRangeSourceBinding {
+            id: &range.id,
+            revision: range.revision,
+            source_len: range.source_len,
+            offset: range.offset,
+            source: crate::StreamColumnSource::Scalar(data),
+        })
+        .collect();
+    let submit = r.submit_stream_selection_ranges(ticket, &supplied);
+    assert!(submit.is_err(), "{submit:?}");
+    let request = r.request_stream_selection_ranges(id);
+    assert!(request.is_err(), "{request:?}");
 }

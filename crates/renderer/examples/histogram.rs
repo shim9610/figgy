@@ -6,17 +6,15 @@
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
-use gallery::*;
-use renderer::{
-    Color, Renderer,
-    data_config::{BarOrientation, DataBarStyleConfig, DataRenderType},
-};
+use gallery::{Result, output_directory, save, themed, titled, with_renderer};
+use renderer::theme::ThemeFamily;
+use renderer::{Renderer, SeriesConfig, theme::ChartKind};
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
-    let teal = Color::from_rgb8(19, 154, 139);
+    let theme = ThemeFamily::Gallery.theme(ChartKind::Histogram);
     let edges: Vec<f64> = (0..41).map(|i| -4.0 + i as f64 * 0.2).collect();
-    let counts = edges
+    let counts: Vec<f64> = edges
         .windows(2)
         .map(|v| {
             let x = (v[0] + v[1]) * 0.5;
@@ -25,54 +23,29 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             .round()
         })
         .collect();
-    r.add_column("bin-edges", &column(edges))?;
-    r.add_column("bin-counts", &column(counts))?;
-    let mut specs = [series(
-        "distribution",
-        "bin-edges",
-        "bin-counts",
-        DataRenderType::Histogram {
-            bar: DataBarStyleConfig {
-                fill_color: teal,
-                border_color: Color::from_rgb8(10, 102, 95),
-                border_width: 0.8,
-                baseline: 0.0,
-                gap_px: 2.0,
-                width_ratio: 1.0,
-                orientation: BarOrientation::Vertical,
-                bar_style_overrides: None,
-            },
-        },
-    )];
-    let mut c = chart(
-        "A two-population distribution",
-        "Measured value",
-        "Count",
-        (960, 600),
-    );
+    r.add_column("bin-edges", &edges)?;
+    r.add_column("bin-counts", &counts)?;
+    let mut vertical = SeriesConfig::histogram("distribution", "bin-edges", "bin-counts");
+    let title = "A two-population distribution";
+    let mut c = titled(title, "Measured value", "Count", (960, 600));
     c.set_x_range(-4.2, 4.2);
     c.set_y_range(0.0, 120.0);
-    save(r, &c, &specs, &out.join("gallery-histogram.png"))?;
+    themed(&mut c, &theme, std::slice::from_mut(&mut vertical))?;
+    let specs = std::slice::from_ref(&vertical);
+    save(r, &mut c, specs, &out.join("gallery-histogram.png"))?;
 
     // Orientation defines the column roles; reuse the uploaded columns and
     // exchange their bindings together with the axis ranges and titles.
-    let s = &mut specs[0];
-    std::mem::swap(&mut s.x_column, &mut s.y_column);
-    let DataRenderType::Histogram { bar } = &mut s.render_type else {
-        unreachable!()
-    };
-    bar.orientation = BarOrientation::Horizontal;
-    let mut horizontal = chart(
-        "A two-population distribution",
-        "Count",
-        "Measured value",
-        (960, 600),
-    );
-    horizontal.set_x_range(0.0, 120.0);
-    horizontal.set_y_range(-4.2, 4.2);
+    let mut horizontal = vertical.horizontal();
+    std::mem::swap(&mut horizontal.x_column, &mut horizontal.y_column);
+    let mut c = titled(title, "Count", "Measured value", (960, 600));
+    c.set_x_range(0.0, 120.0);
+    c.set_y_range(-4.2, 4.2);
+    let mut specs = [horizontal];
+    themed(&mut c, &theme, &mut specs)?;
     save(
         r,
-        &horizontal,
+        &mut c,
         &specs,
         &out.join("gallery-histogram-horizontal.png"),
     )

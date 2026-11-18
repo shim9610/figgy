@@ -1,14 +1,12 @@
 #![cfg(target_arch = "wasm32")]
 
-use std::sync::Arc;
-
 use renderer::{
     Color, DataRenderType, DataScatterStyleConfig, GpuPickRequest, Renderer, RendererDevice,
     ScatterShape, SeriesConfig,
     config::DrawStyle,
     data::Column,
-    data_render::{create_instance, request_adapter_async, request_device_async},
     default,
+    gpu::{create_instance, request_adapter_async, request_device_async},
     layout::{ChartArea, Rect},
 };
 use wasm_bindgen::{JsCast, JsValue};
@@ -141,6 +139,86 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
     assert_eq!(picked["point_index"], 1);
 }
 
+/// A streamline series goes through the wrapper whole: `set_series` /
+/// `get_series` round-trip it byte for byte, it draws, and `pick_point`
+/// on its line names the vertex the GPU pick resolves.
+#[wasm_bindgen_test(async)]
+async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
+    // Created at a size the default layout fits (its margins need 152 px
+    // across); the config below shrinks the chart to 100 x 100 without them.
+    let mut chart = figgy::FiggyChart::create(canvas(400, 400))
+        .await
+        .expect("chart creation failed");
+    chart
+        .register_column_f32("sl-x", &[0.0, 1.0, 2.0, f32::NAN, 0.0, 2.0])
+        .expect("x-column registration failed");
+    chart
+        .register_column_f32("sl-y", &[1.0, 1.0, 1.0, f32::NAN, 0.2, 0.2])
+        .expect("y-column registration failed");
+    let series = vec![SeriesConfig {
+        series_id: "flow".into(),
+        source_id: None,
+        label: None,
+        x_column: "sl-x".into(),
+        y_column: "sl-y".into(),
+        z_column: None,
+        render_type: DataRenderType::Streamlines {
+            line: renderer::DataLineStyleConfig {
+                line_width: 2.0,
+                ..renderer::DataLineStyleConfig::default()
+            },
+            arrows: Some(renderer::StreamlineArrows::default()),
+            color_map: None,
+        },
+    }];
+    let json = serde_json::to_string(&series).expect("series serialization failed");
+    chart
+        .set_series(&json)
+        .expect("streamline registration failed");
+    assert_eq!(chart.get_series().expect("series read failed"), json);
+
+    let mut config: renderer::Config =
+        serde_json::from_str(&chart.get_config().expect("config serialization failed"))
+            .expect("config JSON failed to parse");
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    });
+    config.chart_title.top_margin = 0.0;
+    for axis in [
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.out_margin = 0.0;
+        axis.major_tick_length = 0.0;
+        axis.min = 0.0;
+        axis.max = 2.0;
+    }
+    chart
+        .set_config(&serde_json::to_string(&config).expect("config serialization failed"))
+        .expect("config update failed");
+    chart.resize(100, 100).expect("chart resize failed");
+    chart
+        .prewarm_gpu_picking()
+        .await
+        .expect("picker prewarm failed");
+    // The first streamline runs along y = 1, the middle of the panel.
+    let picked = chart
+        .pick_point(50.0, 50.0, 2.0)
+        .await
+        .expect("pick failed")
+        .as_string()
+        .expect("the streamline's middle vertex was not picked");
+    let picked: serde_json::Value =
+        serde_json::from_str(&picked).expect("pick payload was not JSON");
+    assert_eq!(picked["series_id"], "flow");
+    assert_eq!(picked["point_index"], 1);
+}
+
 #[wasm_bindgen_test(async)]
 async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_error() {
     let instance = create_instance();
@@ -150,10 +228,8 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
     let (device, queue) = request_device_async(&adapter)
         .await
         .expect("Chrome/Dawn must create a WebGPU device");
-    let device = Arc::new(device);
-    let queue = Arc::new(queue);
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         2 * 1024 * 1024,
     )
@@ -166,8 +242,6 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
                 id,
                 &Column {
                     data: vec![0.0_f32],
-                    min: 0.0,
-                    max: 0.0,
                 },
             )
             .expect("browser direct-scan column upload failed");
@@ -177,8 +251,6 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             "browser-pick-x",
             &Column {
                 data: (0..point_count).map(|index| index as f32).collect(),
-                min: 0.0,
-                max: (point_count - 1) as f32,
             },
         )
         .expect("browser pick x-column upload failed");
@@ -187,8 +259,6 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             "browser-pick-y",
             &Column {
                 data: vec![5.0_f32; point_count],
-                min: 5.0,
-                max: 5.0,
             },
         )
         .expect("browser pick y-column upload failed");
@@ -212,7 +282,13 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             label: None,
             x_column: "browser-direct-x".into(),
             y_column: "browser-direct-y".into(),
-            render_type: DataRenderType::Scatter { scatter: scatter() },
+            z_column: None,
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter()),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
         },
         SeriesConfig {
             source_id: Some("browser-source".into()),
@@ -220,7 +296,13 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             label: None,
             x_column: "browser-pick-x".into(),
             y_column: "browser-pick-y".into(),
-            render_type: DataRenderType::Scatter { scatter: scatter() },
+            z_column: None,
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter()),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
         },
     ];
 

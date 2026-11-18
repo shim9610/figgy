@@ -64,6 +64,10 @@ class FiggyRenderJob {
 export class FiggyChartElement extends HTMLElement {
   #canvas;
   #kernel = null;
+  /// The last frame's compile snapshot (#299), or null.
+  #pipelineStatus = null;
+  /// The kernel's shader set as last read (#299), or null before ready.
+  #shaderSet = null;
   #resizeObserver = null;
   #raf = 0;
   #started = false;
@@ -176,11 +180,17 @@ export class FiggyChartElement extends HTMLElement {
           || !this.#isCurrentOperation(token)) {
         return;
       }
-      kernel = await RawFiggyChart.create_with_progress(this.#canvas, (event) => {
-        if (this.#isCurrentConnection(generation, readyToken)
-            && this.#isCurrentOperation(token)) {
-          dispatchFiggyEvent(this, "figgy-init-progress", event);
-        }
+      // The `shaders` attribute as it is when the element connects (#299):
+      // the kernel refuses a value other than "basic" or "full", and that
+      // rejection fails `ready`.
+      kernel = await RawFiggyChart.create_with_options(this.#canvas, {
+        shaders: this.getAttribute("shaders") ?? "basic",
+        on_progress: (event) => {
+          if (this.#isCurrentConnection(generation, readyToken)
+              && this.#isCurrentOperation(token)) {
+            dispatchFiggyEvent(this, "figgy-init-progress", event);
+          }
+        },
       });
       token.kernel = kernel;
       if (!this.#isCurrentConnection(generation, readyToken)
@@ -215,6 +225,7 @@ export class FiggyChartElement extends HTMLElement {
     }
     readyToken.state = "fulfilled";
     readyToken.resolve(this);
+    if (typeof kernel.shader_set === "function") this.#shaderSet = kernel.shader_set();
     dispatchFiggyEvent(this, "figgy-ready", { chart: this, kernel });
     if (this.#isCurrentConnection(generation, readyToken) && this.#kernel === kernel) {
       this.#startLoop();
@@ -295,6 +306,9 @@ export class FiggyChartElement extends HTMLElement {
       }
       if (!this.busy) this.#pumpStreamSelection();
       if (!this.busy) this.#kernel?.frame();
+      if (!this.busy) this.#observePipelines();
+      // A picker prewarm waits for the render compiles (#299).
+      if (this.#pendingPrewarm && !this.busy) this.#drainBackgroundPrewarm();
     } catch (error) {
       if (this.#streamExecution && !this.#streamExecution.settled) {
         this.#failStreamingExecution(this.#streamExecution, error);
@@ -1126,19 +1140,46 @@ export class FiggyChartElement extends HTMLElement {
     }
   }
 
-  #resizeCanvas(notifyKernel) {
+  #measureCanvas() {
     const rect = this.getBoundingClientRect();
     const cssWidth = Math.max(1, Math.round(rect.width || this.clientWidth || 1));
     const cssHeight = Math.max(1, Math.round(rect.height || this.clientHeight || 1));
     const dpr = window.devicePixelRatio || 1;
     const width = Math.max(1, Math.round(cssWidth * dpr));
     const height = Math.max(1, Math.round(cssHeight * dpr));
+    return { width, height, cssWidth, cssHeight, dpr };
+  }
+
+  // A chart with monotonic series (#271) resizes only with its groups'
+  // sources: the host answers `figgy-resize` with `resize_monotonic`.
+  #isMonotonic(kernel) {
+    return kernel !== null && kernel !== undefined &&
+      JSON.parse(kernel.monotonic_groups()).length > 0;
+  }
+
+  #resizeCanvas(notifyKernel) {
+    const { width, height, cssWidth, cssHeight, dpr } = this.#measureCanvas();
     this.#dpr = dpr;
 
     if (this.#canvas.width === width && this.#canvas.height === height) {
       return;
     }
 
+    if (notifyKernel && this.#kernel && !this.busy && this.#isMonotonic(this.#kernel)) {
+      dispatchFiggyEvent(this, "figgy-resize", {
+        width,
+        height,
+        cssWidth,
+        cssHeight,
+        devicePixelRatio: dpr,
+        monotonic: true,
+      });
+      return;
+    }
+
+    // The size the kernel's surface has, kept while a resize waits.
+    const previous = this.#pendingResize?.previous ??
+      { width: this.#canvas.width, height: this.#canvas.height };
     this.#canvas.width = width;
     this.#canvas.height = height;
     if (notifyKernel && this.#kernel) {
@@ -1147,6 +1188,7 @@ export class FiggyChartElement extends HTMLElement {
           token: this.#operationToken,
           width,
           height,
+          previous,
         };
       } else {
         this.#kernel.resize(width, height);
@@ -1204,9 +1246,22 @@ export class FiggyChartElement extends HTMLElement {
       kernel.on_release();
       this.#notifyStreamingMutation();
       dispatchFiggyEvent(this, "figgy-release", { selected: kernel.has_selection() });
+      this.#emitPlotResizeRequest(kernel);
     };
     this.#canvas.addEventListener("pointerup", release);
     this.#canvas.addEventListener("pointercancel", release);
+  }
+
+  // A plot-area resize gesture on a chart with monotonic series (#271)
+  // applies nothing: it proposes a plot rect, and the host applies it with
+  // `resize_monotonic(sources, plotArea)`.
+  #emitPlotResizeRequest(kernel) {
+    const request = kernel.take_plot_resize_request?.();
+    if (request === undefined || request === null) return;
+    dispatchFiggyEvent(this, "figgy-plot-resize", {
+      plotArea: JSON.parse(request),
+      monotonic: true,
+    });
   }
 
   #eventPoint(event) {
@@ -1279,6 +1334,16 @@ export class FiggyChartElement extends HTMLElement {
     if (this.busy) {
       return;
     }
+    // The picker's compute pipelines compile one at a time after the
+    // chart's render pipelines (#299): the prewarm holds the kernel, and
+    // the frames that fill the chart in must not wait behind it. The frame
+    // loop drains this again once they have compiled.
+    const status = typeof pending.kernel.pipeline_status === "function"
+      ? pending.kernel.pipeline_status()
+      : null;
+    if (status && (status.all.compiling > 0 || !status.frame_complete)) {
+      return;
+    }
     this.#pendingPrewarm = null;
     this.#runKernelOperation(
       "picker-prewarm",
@@ -1311,6 +1376,36 @@ export class FiggyChartElement extends HTMLElement {
   async export_png(scale = 1.0) {
     if (this.#streamReplay) return this.#replayStreamExport(scale);
     return this.#runKernelOperation("export", (kernel) => kernel.export_png(scale));
+  }
+
+  // The SVG document (a string) and the PDF bytes of a resident chart.
+  // Streaming is not extended to them: a chart shown from a stream rejects.
+  async export_svg(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("SVG export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_svg(scale));
+  }
+
+  async export_pdf(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("PDF export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_pdf(scale));
+  }
+
+  // An export at another scale than the screen's maps a monotonic series'
+  // plot to other device pixels: these take each group's whole source,
+  // `[{ group, start, interval, data, stride?, columns? }]` (#271).
+  async export_png_monotonic(scale, sources) {
+    return this.#runKernelOperation(
+      "export", (kernel) => kernel.export_png_monotonic(scale, sources));
+  }
+
+  async export_svg_monotonic(scale, sources) {
+    return this.#runKernelOperation(
+      "export", (kernel) => kernel.export_svg_monotonic(scale, sources));
+  }
+
+  async export_pdf_monotonic(scale, sources) {
+    return this.#runKernelOperation(
+      "export", (kernel) => kernel.export_pdf_monotonic(scale, sources));
   }
 
   async #waitStreamOperation(token, pending, timeoutMs) {
@@ -1485,6 +1580,60 @@ export class FiggyChartElement extends HTMLElement {
     await this.#runKernelOperation("first-frame", (kernel) => kernel.first_frame_ready());
   }
 
+  /// Resolves once a frame draws every series (#299); rejects with an
+  /// `Error` carrying `label`, `kind` and `message` when a compile the chart
+  /// needs failed (the chart still draws that series).
+  async series_ready() {
+    await this.#runKernelOperation("series-ready", (kernel) => kernel.series_ready());
+  }
+
+  /// Resolves once every background compile scheduled so far has ended
+  /// (#299); rejects like `series_ready` with the first that failed.
+  async pipelines_ready() {
+    await this.#runKernelOperation("pipelines-ready", (kernel) => kernel.pipelines_ready());
+  }
+
+  /// The chart's background compiles (#299) as of the last frame:
+  /// `{ screen: { total, ready, compiling, failed }, all: { … },
+  /// frame_complete }`, or `null` before the chart is ready. It reads a
+  /// snapshot the frame loop takes, so it answers while the chart is busy.
+  pipeline_status() {
+    return this.#pipelineStatus;
+  }
+
+  /// Every background compile that failed (#299), as
+  /// `[{ label, kind, message }]`.
+  pipeline_failures() {
+    return this.#kernelForCall().pipeline_failures();
+  }
+
+  /// Take the frame's compile snapshot and report, on the
+  /// `figgy-init-progress` event, when the screen's and then all compiles
+  /// have ended (#299): `{ scope: "renderer.pipelines", stage: "screen
+  /// complete" | "all complete", phase: "finished" }`.
+  #observePipelines() {
+    const kernel = this.#kernel;
+    if (!kernel || typeof kernel.pipeline_status !== "function") return;
+    const status = kernel.pipeline_status();
+    // A chart moves to the full set by itself on its first break,
+    // probability axis or polar config.
+    if (typeof kernel.shader_set === "function") this.#shaderSet = kernel.shader_set();
+    const before = this.#pipelineStatus;
+    this.#pipelineStatus = status;
+    const screenDone = (s) => s.frame_complete && s.screen.compiling === 0;
+    const allDone = (s) => s.all.compiling === 0;
+    if (screenDone(status) && (!before || !screenDone(before))) {
+      dispatchFiggyEvent(this, "figgy-init-progress", {
+        scope: "renderer.pipelines", stage: "screen complete", phase: "finished",
+      });
+    }
+    if (allDone(status) && before && !allDone(before)) {
+      dispatchFiggyEvent(this, "figgy-init-progress", {
+        scope: "renderer.pipelines", stage: "all complete", phase: "finished",
+      });
+    }
+  }
+
   warm_up() {
     return this.first_frame_ready();
   }
@@ -1526,17 +1675,33 @@ export class FiggyChartElement extends HTMLElement {
         token.kernel.on_release();
         const selected = token.kernel.has_selection();
         dispatchFiggyEvent(this, "figgy-release", { selected });
+        this.#emitPlotResizeRequest(token.kernel);
       } catch (error) {
         cleanupError = error;
       }
     }
 
     if (this.#isCurrentOperation(token) && this.#pendingResize?.token === token) {
-      const { width, height } = this.#pendingResize;
+      const { width, height, previous } = this.#pendingResize;
       this.#pendingResize = null;
       try {
-        token.kernel.resize(width, height);
-        resized = true;
+        if (this.#isMonotonic(token.kernel)) {
+          // The canvas was resized while busy: it keeps the kernel's size
+          // until the host resizes the chart with its sources (#271).
+          this.#canvas.width = previous.width;
+          this.#canvas.height = previous.height;
+          dispatchFiggyEvent(this, "figgy-resize", {
+            width,
+            height,
+            cssWidth: this.#canvas.clientWidth,
+            cssHeight: this.#canvas.clientHeight,
+            devicePixelRatio: this.#dpr,
+            monotonic: true,
+          });
+        } else {
+          token.kernel.resize(width, height);
+          resized = true;
+        }
       } catch (error) {
         cleanupError ??= error;
       }
@@ -1586,6 +1751,8 @@ export class FiggyChartElement extends HTMLElement {
     this.#releaseSelectionRequest();
     this.#selectionDirty = false;
     this.#kernel = null;
+    this.#pipelineStatus = null;
+    this.#shaderSet = null;
     ++this.#lifecycleGeneration;
     operationToken?.cancel?.(new DOMException("chart disconnected during stream operation", "AbortError"));
     if (this.#streamExecution) {
@@ -2135,6 +2302,28 @@ export class FiggyChartElement extends HTMLElement {
     if (typeof enabled !== "boolean") throw new TypeError("enabled must be a boolean");
     return this.#kernelForCall().set_pool_auto_growth(enabled);
   }
+  /// The shader set the chart compiles (#299): "basic" or "full". Before the
+  /// chart is ready it is the `shaders` attribute ("basic" when absent).
+  get shaders() {
+    return this.#shaderSet ?? this.getAttribute("shaders") ?? "basic";
+  }
+
+  /// Ask for a shader set (#299): "basic" or "full"; any other value throws.
+  /// It sets the `shaders` attribute, which a chart reads when it connects,
+  /// and moves a ready chart to at least that set at once (a chart never
+  /// goes back to "basic").
+  set shaders(value) {
+    if (value !== "basic" && value !== "full") {
+      throw new TypeError(`shaders must be "basic" or "full", got ${JSON.stringify(value)}`);
+    }
+    if (this.#kernel) {
+      const kernel = this.#kernelForCall();
+      kernel.require_shader_set(value);
+      this.#shaderSet = kernel.shader_set();
+    }
+    this.setAttribute("shaders", value);
+  }
+
   gpu_memory_status() {
     return JSON.parse(this.#kernelForCall().gpu_memory_status());
   }
@@ -2227,9 +2416,71 @@ export class FiggyChartElement extends HTMLElement {
   auto_fit_overlay_y(layer, column, padding) {
     return this.#mutateChart("auto_fit_overlay_y", layer, column, padding);
   }
+  auto_fit_overlay_x(layer, column, padding) {
+    return this.#mutateChart("auto_fit_overlay_x", layer, column, padding);
+  }
   set_active_layer(json) { return JSON.parse(this.#mutateChart("set_active_layer", json)); }
   active_layer() { return JSON.parse(this.#kernelForCall().active_layer()); }
   auto_fit_colorbar(padding) { return this.#mutateChart("auto_fit_colorbar", padding); }
+  // Every axis the series use, from their registered columns, in one call
+  // (#297): the fit for a first plot. Synchronous; `auto_fit_all` measures
+  // the active layer's drawn extents instead.
+  fit_ranges() { return this.#mutateChart("fit_ranges"); }
+  // A candidate config fitted without installing it (#312): JSON in, JSON
+  // out; the chart is untouched. The Y variant keeps every X axis.
+  fit_config(json, padding) { return this.#kernelForCall().fit_config(json, padding); }
+  fit_y_axes_config(json, padding) {
+    return this.#kernelForCall().fit_y_axes_config(json, padding);
+  }
+  // One series' style domain from its columns' statistics (#312).
+  fit_point_size_domain(seriesId) { return this.#mutateChart("fit_point_size_domain", seriesId); }
+  fit_vector_scale(seriesId, target) {
+    return this.#mutateChart("fit_vector_scale", seriesId, target);
+  }
+  // Edit safety (#311): end every selection and pointer gesture, read a
+  // column's revision, check a candidate document's streaming support, and
+  // upload one column in chunks. The upload handle's `commit()` installs the
+  // column on this element's chart.
+  clear_selection() { return this.#mutateChart("clear_selection"); }
+  column_revision(id) { return this.#kernelForCall().column_revision(id); }
+  inspect_streaming_capabilities(configJson, seriesJson) {
+    return this.#kernelForCall().inspect_streaming_capabilities(configJson, seriesJson);
+  }
+  begin_column_upload(id, length, encoding, sourceRevision, maxChunkBytes) {
+    const handle = this.#kernelForCall().begin_column_upload(
+      id, length, encoding, sourceRevision ?? null, maxChunkBytes);
+    return {
+      push: (offset, chunk) => handle.push(offset, chunk),
+      commit: () => {
+        const result = handle.commit(this.#kernelForCall());
+        this.#notifyStreamingMutation();
+        return result;
+      },
+      cancel: () => handle.cancel(),
+      written: () => handle.written(),
+      length: () => handle.length(),
+      is_open: () => handle.is_open(),
+    };
+  }
+  // Editor queries (#312): JSON text, as the kernel returns it; nothing on
+  // the chart changes.
+  annotation_preview(json) { return this.#kernelForCall().annotation_preview(json); }
+  convert_annotation_anchor(json, kind) {
+    return this.#kernelForCall().convert_annotation_anchor(json, kind);
+  }
+  inspect_document_layout(configJson) {
+    return this.#kernelForCall().inspect_document_layout(configJson ?? null);
+  }
+  panel_at(x, y) { return this.#kernelForCall().panel_at(x, y); }
+  data_area_rect() { return this.#kernelForCall().data_area_rect(); }
+  legend_entry(seriesId) { return this.#kernelForCall().legend_entry(seriesId); }
+  render_warnings() { return this.#kernelForCall().render_warnings(); }
+  // Annotations by id, and a readiness handle that does not borrow the
+  // chart (#315).
+  annotation_ids() { return this.#kernelForCall().annotation_ids(); }
+  annotation_index(id) { return this.#kernelForCall().annotation_index(id); }
+  select_annotation_by_id(id) { return this.#mutateChart("select_annotation_by_id", id); }
+  readiness() { return this.#kernelForCall().readiness(); }
   async auto_fit_all(padding) {
     const kernel = this.#kernelForCall();
     if (kernel.request_stream_auto_fit(padding)) {
@@ -2275,11 +2526,87 @@ export class FiggyChartElement extends HTMLElement {
   series_draw_info(seriesId) {
     return JSON.parse(this.#kernelForCall().series_draw_info(seriesId));
   }
+  // Monotonic-x line series (#271): the group's samples as typed arrays,
+  // one per channel or one interleaved array with a stride, at
+  // `start + i * interval`. Four calls move a group's x-to-pixel mapping and
+  // each takes its source: `set_monotonic` (the only call that sets the x
+  // range: `[xMin, xMax]` or "autoscale"), `append_monotonic`,
+  // `resize_monotonic` and `fit_layout`. Every other setting needs no
+  // source. A canvas resize of a chart with monotonic series waits for the
+  // host: `figgy-resize` carries `monotonic: true` and the canvas keeps its
+  // size until `resize_monotonic(sources)`. `needs_source()` lists the
+  // series whose group was never supplied.
+  set_monotonic(group, start, interval, data, range, stride, columns) {
+    return JSON.parse(this.#mutateChart(
+      "set_monotonic", group, start, interval, data, range, stride,
+      columns === undefined ? undefined : Uint32Array.from(columns),
+    ));
+  }
+  append_monotonic(group, data, sliding = false, stride, columns) {
+    return JSON.parse(this.#mutateChart(
+      "append_monotonic", group, data, sliding, stride,
+      columns === undefined ? undefined : Uint32Array.from(columns),
+    ));
+  }
+  needs_source() { return JSON.parse(this.#kernelForCall().needs_source()); }
+  monotonic_groups() { return JSON.parse(this.#kernelForCall().monotonic_groups()); }
+  // A monotonic chart (#271): the only chart that holds monotonic series.
+  set_monotonic_document(config, series) {
+    return this.#mutateChart("set_monotonic_document",
+      typeof config === "string" ? config : JSON.stringify(config),
+      typeof series === "string" ? series : JSON.stringify(series));
+  }
+  clear_monotonic_document() { return this.#mutateChart("clear_monotonic_document"); }
+  // `sources`: `[{ group, start, interval, data, stride?, columns? }]`.
+  // `plotArea`: the rect a `figgy-plot-resize` event proposed, or undefined.
+  resize_monotonic(sources, plotArea) {
+    const size = this.#measureCanvas();
+    const kernel = this.#kernelForCall();
+    kernel.resize_monotonic(size.width, size.height, sources, plotArea);
+    this.#canvas.width = size.width;
+    this.#canvas.height = size.height;
+    this.#pendingResize = null;
+    this.#notifyStreamingMutation();
+  }
+  // A chart without monotonic series takes no argument.
+  fit_layout(sources) { return this.#mutateChart("fit_layout", sources); }
   set_title(text) { return this.#mutateChart("set_title", text); }
   set_x_title(text) { return this.#mutateChart("set_x_title", text); }
   set_y_title(text) { return this.#mutateChart("set_y_title", text); }
   set_colorbar_title(text) { return this.#mutateChart("set_colorbar_title", text); }
   set_colorbar_axis(json) { return this.#mutateChart("set_colorbar_axis", json); }
+  set_subplot_area(index, x, y, width, height) {
+    return this.#mutateChart("set_subplot_area", index, x, y, width, height);
+  }
+  subplot_area(index) { return JSON.parse(this.#kernelForCall().subplot_area(index)); }
+  set_subplot_background(index, color) {
+    return this.#mutateChart("set_subplot_background", index, JSON.stringify(color ?? null));
+  }
+  set_subplot_text_scale(index, mode) {
+    return this.#mutateChart("set_subplot_text_scale", index, mode);
+  }
+  subplot_text_scale(index) { return this.#kernelForCall().subplot_text_scale(index); }
+  subplot_text_factor(index) { return this.#kernelForCall().subplot_text_factor(index); }
+  // The whole document: the chart and every subplot.
+  apply_theme(name) { return this.#mutateChart("apply_theme", name); }
+  // `scope`: "all", "base", an array of subplot indices (those subplots
+  // alone) or an array holding "base" (the base chart and those subplots).
+  apply_theme_to(name, scope = "all") {
+    const list = typeof scope === "string" ? scope : JSON.stringify(scope);
+    return this.#mutateChart("apply_theme_to", name, list);
+  }
+  theme_names() { return this.#kernelForCall().theme_names(); }
+  theme(name) { return this.#kernelForCall().theme(name); }
+  subplot_theme(index, name) { return this.#kernelForCall().subplot_theme(index, name); }
+  apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
+  apply_custom_theme_to(theme, scope = "all") {
+    const list = typeof scope === "string" ? scope : JSON.stringify(scope);
+    return this.#mutateChart("apply_custom_theme_to", theme, list);
+  }
+  set_background(color) {
+    return this.#mutateChart("set_background", JSON.stringify(color ?? null));
+  }
+  insets() { return JSON.parse(this.#kernelForCall().insets()); }
   apply_axis_preset(preset) { return this.#mutateChart("apply_axis_preset", preset); }
   apply_color_cycle(cycle) { return this.#mutateChart("apply_color_cycle", cycle); }
   get_config() { return this.#kernelForCall().get_config(); }
@@ -2311,14 +2638,21 @@ export class FiggyChartElement extends HTMLElement {
     const index = this.#kernelForCall().next_view_point_index(sourceId ?? undefined, seriesId, current, forward);
     return index === undefined ? null : index;
   }
-  set_picked_points(json) { return this.#mutateSelection("set_picked_points", json); }
   set_picked_data(json) { return this.#mutateSelection("set_picked_data", json); }
   set_clear_color(r, g, b, a) { return this.#mutateChart("set_clear_color", r, g, b, a); }
   load_demo() { return this.#kernelForCall().load_demo(); }
   on_press(x, y) { return this.#mutateChart("on_press", x, y); }
+  // A value label a pick reported (`hit.label_id`): selects it and starts
+  // its drag; the pointer's moves then move it.
+  press_value_label(labelId) { return this.#mutateChart("press_value_label", labelId); }
   on_move(dx, dy) { return this.#mutateChart("on_move", dx, dy); }
   on_release() { return this.#mutateChart("on_release"); }
   has_selection() { return this.#kernelForCall().has_selection(); }
+  // Feynman diagrams (#234): commit the place of every unplaced vertex of
+  // the series. Returns whether anything was written.
+  place_feynman_vertices(seriesId) {
+    return this.#mutateChart("place_feynman_vertices", seriesId);
+  }
 }
 
 if (!customElements.get("figgy-chart")) {

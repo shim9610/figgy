@@ -2,41 +2,29 @@
 mod test_gpu;
 
 use std::cell::Cell;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
 use renderer::data_render::column_pool::ALIGN;
 use renderer::{
-    AllocError, Column, ColumnHandle, ColumnPairWriter, ColumnPool, ColumnSource,
-    ColumnUploadStats, HiLoColumnSource,
+    AllocError, Column, ColumnHandle, ColumnPairWriter, ColumnPool, ColumnSource, HiLoColumnSource,
 };
 use wgpu::{BufferDescriptor, BufferUsages};
-
-fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
-    if value.is_finite()
-        && value > 0.0
-        && match stats.min_positive {
-            Some(current) => value < current,
-            None => true,
-        }
-    {
-        stats.min_positive = Some(value);
-    }
-}
 
 fn scalar_upload(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     source: &dyn ColumnSource,
 ) -> (Vec<(f32, f32)>, Option<f64>) {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let mut pool =
-        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
+        ColumnPool::new(renderer::GpuAllocCtx::new(device, queue, &ledger), ALIGN).unwrap();
     let handle = pool
         .add_column(
             "matrix".into(),
             source,
-            renderer::GpuAllocCtx::unbudgeted(device, queue),
+            renderer::GpuAllocCtx::new(device, queue, &ledger),
         )
         .unwrap();
     let min_positive = pool.slot("matrix").unwrap().min_positive;
@@ -48,13 +36,14 @@ fn hilo_upload(
     queue: &wgpu::Queue,
     source: &dyn HiLoColumnSource,
 ) -> (Vec<(f32, f32)>, Option<f64>) {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let mut pool =
-        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
+        ColumnPool::new(renderer::GpuAllocCtx::new(device, queue, &ledger), ALIGN).unwrap();
     let handle = pool
         .add_hilo_column(
             "matrix".into(),
             source,
-            renderer::GpuAllocCtx::unbudgeted(device, queue),
+            renderer::GpuAllocCtx::new(device, queue, &ledger),
         )
         .unwrap();
     let min_positive = pool.slot("matrix").unwrap().min_positive;
@@ -88,30 +77,22 @@ impl ColumnSource for CustomScalar {
         self.0.len()
     }
 
-    fn min(&self) -> f64 {
-        self.0.iter().copied().fold(f32::INFINITY, f32::min) as f64
-    }
-
-    fn max(&self) -> f64 {
-        self.0.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (bytes, value) in dst.chunks_exact_mut(4).zip(&self.0) {
-            bytes.copy_from_slice(&value.to_le_bytes());
-        }
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for (index, &value) in self.0.iter().enumerate() {
             dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
         }
-        stats
+    }
+}
+
+/// A downstream type may implement both source traits; each `dyn` view of it
+/// stays object safe.
+impl HiLoColumnSource for CustomScalar {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        ColumnSource::write_pairs(self, dst)
     }
 }
 
@@ -122,37 +103,10 @@ impl HiLoColumnSource for CustomHiLo {
         self.0.len()
     }
 
-    fn min(&self) -> f64 {
-        self.0
-            .iter()
-            .map(|&(hi, lo)| hi as f64 + lo as f64)
-            .fold(f64::INFINITY, f64::min)
-    }
-
-    fn max(&self) -> f64 {
-        self.0
-            .iter()
-            .map(|&(hi, lo)| hi as f64 + lo as f64)
-            .fold(f64::NEG_INFINITY, f64::max)
-    }
-
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        for (pair, &(hi, lo)) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.0) {
-            pair[..4].copy_from_slice(&hi.to_le_bytes());
-            pair[4..].copy_from_slice(&lo.to_le_bytes());
-        }
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for (index, &(hi, lo)) in self.0.iter().enumerate() {
             dst.write_pair(index, hi, lo);
-            record_min_positive(&mut stats, hi as f64 + lo as f64);
         }
-        stats
     }
 }
 
@@ -166,33 +120,12 @@ impl ColumnSource for CountingScalar<'_> {
         self.values.len()
     }
 
-    fn min(&self) -> f64 {
-        self.values.iter().copied().fold(f32::INFINITY, f32::min) as f64
-    }
-
-    fn max(&self) -> f64 {
-        self.values
-            .iter()
-            .copied()
-            .fold(f32::NEG_INFINITY, f32::max) as f64
-    }
-
-    fn write_f32_le_into(&self, _dst: &mut [u8]) {
-        panic!("pool must use the fused scalar writer");
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         self.calls.set(self.calls.get() + 1);
         assert_eq!(dst.len(), self.values.len());
-        let mut stats = ColumnUploadStats { min_positive: None };
         for (index, &value) in self.values.iter().enumerate() {
             dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
         }
-        stats
     }
 }
 
@@ -206,36 +139,12 @@ impl HiLoColumnSource for CountingHiLo<'_> {
         self.values.len()
     }
 
-    fn min(&self) -> f64 {
-        self.values
-            .iter()
-            .map(|&(hi, lo)| hi as f64 + lo as f64)
-            .fold(f64::INFINITY, f64::min)
-    }
-
-    fn max(&self) -> f64 {
-        self.values
-            .iter()
-            .map(|&(hi, lo)| hi as f64 + lo as f64)
-            .fold(f64::NEG_INFINITY, f64::max)
-    }
-
-    fn write_f32_pair_le_into(&self, _dst: &mut [u8]) {
-        panic!("pool must use the fused hi/lo writer");
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         self.calls.set(self.calls.get() + 1);
         assert_eq!(dst.len(), self.values.len());
-        let mut stats = ColumnUploadStats { min_positive: None };
         for (index, &(hi, lo)) in self.values.iter().enumerate() {
             dst.write_pair(index, hi, lo);
-            record_min_positive(&mut stats, hi as f64 + lo as f64);
         }
-        stats
     }
 }
 
@@ -248,22 +157,7 @@ impl ColumnSource for PanickingScalar {
         1
     }
 
-    fn min(&self) -> f64 {
-        9.0
-    }
-
-    fn max(&self) -> f64 {
-        9.0
-    }
-
-    fn write_f32_le_into(&self, _dst: &mut [u8]) {
-        panic!("pool must use the fused scalar writer");
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         self.calls.set(self.calls.get() + 1);
         dst.write_pair(0, 9.0, 0.0);
         panic!("injected fused writer panic");
@@ -272,9 +166,13 @@ impl ColumnSource for PanickingScalar {
 
 #[test]
 fn required_fused_writer_keeps_source_traits_object_safe() {
-    let scalar: &dyn ColumnSource = &CustomScalar(vec![3.0]);
-    assert_eq!(scalar.len(), 1);
+    let both = CustomScalar(vec![3.0, 4.0]);
+    let scalar: &dyn ColumnSource = &both;
+    assert_eq!(scalar.len(), 2);
     assert!(!scalar.is_empty());
+    let scalar_as_hilo: &dyn HiLoColumnSource = &both;
+    assert_eq!(scalar_as_hilo.len(), 2);
+    assert!(!scalar_as_hilo.is_empty());
 
     let hilo: &dyn HiLoColumnSource = &CustomHiLo(vec![(3.0, 0.25)]);
     assert_eq!(hilo.len(), 1);
@@ -283,6 +181,7 @@ fn required_fused_writer_keeps_source_traits_object_safe() {
 
 #[test]
 fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = shared_device() else {
         eprintln!("no GPU adapter; skipping fused upload matrix");
         return;
@@ -298,8 +197,6 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
             -min_subnormal,
             min_subnormal,
         ],
-        min: f32::NEG_INFINITY,
-        max: f32::INFINITY,
     };
     let (pairs, min_positive) = scalar_upload(&device, &queue, &f32_column);
     let expected_pairs: Vec<_> = f32_column.data.iter().map(|&value| (value, 0.0)).collect();
@@ -317,8 +214,6 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
             -0.0,
             min_subnormal as f64,
         ],
-        min: f64::NEG_INFINITY,
-        max: f64::INFINITY,
     };
     let (pairs, min_positive) = scalar_upload(&device, &queue, &f64_column);
     let expected_pairs: Vec<_> = f64_column
@@ -331,8 +226,6 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
 
     let optional = Column {
         data: vec![None, Some(f64::NAN), Some(-0.0), Some(0.0)],
-        min: None,
-        max: None,
     };
     let (pairs, min_positive) = scalar_upload(&device, &queue, &optional);
     let expected_pairs: Vec<_> = optional
@@ -343,24 +236,18 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
     assert_pair_bits(&pairs, &expected_pairs);
     assert_eq!(min_positive, None);
 
-    let empty: Column<Option<f64>> = Column {
-        data: Vec::new(),
-        min: None,
-        max: None,
-    };
+    let empty: Column<Option<f64>> = Column { data: Vec::new() };
     let empty_f64 = Column {
         data: Vec::<f64>::new(),
-        min: f64::INFINITY,
-        max: f64::NEG_INFINITY,
     };
     let mut empty_pool =
-        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(&device, &queue), ALIGN).unwrap();
+        ColumnPool::new(renderer::GpuAllocCtx::new(&device, &queue, &ledger), ALIGN).unwrap();
     assert_eq!(
         empty_pool
             .add_column(
                 "empty-option".into(),
                 &empty,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
         AllocError::EmptySource
@@ -370,7 +257,7 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
             .add_column(
                 "empty-f64".into(),
                 &empty_f64,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
         AllocError::EmptySource
@@ -380,7 +267,7 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
             .add_hilo_column(
                 "empty-hilo".into(),
                 &empty_f64,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
         AllocError::EmptySource
@@ -398,8 +285,6 @@ fn built_in_hilo_stats_use_recorded_hi_plus_lo() {
     let epoch_b = epoch_a + 0.75;
     let column = Column {
         data: vec![cancellation, epoch_a, epoch_b],
-        min: cancellation,
-        max: epoch_b,
     };
     let (pairs, min_positive) = hilo_upload(&device, &queue, &column);
     let expected_pairs: Vec<_> = column
@@ -425,8 +310,6 @@ fn built_in_hilo_stats_use_recorded_hi_plus_lo() {
             0.0,
             -0.0,
         ],
-        min: f64::NEG_INFINITY,
-        max: f64::INFINITY,
     };
     let (pairs, min_positive) = hilo_upload(&device, &queue, &extremes);
     let expected_pairs: Vec<_> = extremes
@@ -440,23 +323,21 @@ fn built_in_hilo_stats_use_recorded_hi_plus_lo() {
 
     let optional = Column {
         data: vec![None, Some(cancellation)],
-        min: Some(cancellation),
-        max: Some(cancellation),
     };
     let (pairs, min_positive) = hilo_upload(&device, &queue, &optional);
     assert_pair_bits(&pairs, &[(f32::NAN, 0.0), (cancel_hi, cancel_lo)]);
     assert_eq!(min_positive, Some(cancel_hi as f64 + cancel_lo as f64));
 }
 
-fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-    static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let (device, queue) = test_gpu::device();
-            Some((Arc::new(device), Arc::new(queue)))
+            Some((device, queue))
         })
         .as_ref()
-        .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+        .map(|(device, queue)| (device.clone(), queue.clone()))
 }
 
 #[derive(Debug, PartialEq)]
@@ -558,12 +439,13 @@ fn read_pairs(
 
 #[test]
 fn pool_calls_fused_writer_once_and_panics_roll_back() {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = shared_device() else {
         eprintln!("no GPU adapter; skipping pool contract assertions");
         return;
     };
     let mut pool = ColumnPool::new(
-        renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+        renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         3 * ALIGN,
     )
     .unwrap();
@@ -575,7 +457,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         .add_column(
             "x".into(),
             &add_source,
-            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+            renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(add_source.calls.get(), 1);
@@ -592,7 +474,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
             .begin_upsert_hilo_column(
                 "x".into(),
                 &replacement,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         assert_eq!(replacement.calls.get(), 1);
@@ -609,7 +491,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         let _ = pool.add_column(
             "panic".into(),
             &panic_add,
-            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+            renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         );
     }));
     assert!(add_result.is_err());
@@ -624,11 +506,62 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         let _ = pool.begin_upsert_column(
             "x".into(),
             &panic_upsert,
-            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+            renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         );
     }));
     assert!(upsert_result.is_err());
     assert_eq!(panic_upsert.calls.get(), 1);
     assert_eq!(snapshot(&pool, "x"), before);
     assert_eq!(read_pairs(&device, &queue, &pool, handle), old_pairs);
+}
+
+/// The pool's statistics are measured from the pairs a source writes: the
+/// finite range and smallest positive of the values the GPU reads, through
+/// both traits, with non-finite values left out. A source has no way to
+/// report others.
+#[test]
+fn pool_statistics_are_measured_from_the_written_values() {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
+    let Some((device, queue)) = shared_device() else {
+        eprintln!("no GPU adapter; skipping measured statistics");
+        return;
+    };
+    let ctx = || renderer::GpuAllocCtx::new(&device, &queue, &ledger);
+    let mut pool = ColumnPool::new(ctx(), ALIGN).unwrap();
+    pool.add_column(
+        "scalar".into(),
+        &CustomScalar(vec![f32::NAN, 3.0, -2.5, f32::INFINITY, 0.0, 7.25]),
+        ctx(),
+    )
+    .unwrap();
+    let slot = pool.slot("scalar").unwrap();
+    assert_eq!(
+        (slot.min, slot.max, slot.min_positive),
+        (-2.5, 7.25, Some(3.0))
+    );
+
+    let (hi, lo) = split_f64_to_f32_pair(1_700_000_000_000.125);
+    pool.add_hilo_column(
+        "hilo".into(),
+        &CustomHiLo(vec![(hi, lo), (-4.0, 0.0), (f32::NAN, 0.0)]),
+        ctx(),
+    )
+    .unwrap();
+    let slot = pool.slot("hilo").unwrap();
+    assert_eq!(slot.min, -4.0);
+    assert_eq!(slot.max, hi as f64 + lo as f64);
+    assert_eq!(slot.min_positive, Some(hi as f64 + lo as f64));
+
+    // No finite value: an empty range and no positive value.
+    pool.add_column(
+        "missing".into(),
+        &CustomScalar(vec![f32::NAN, f32::NEG_INFINITY]),
+        ctx(),
+    )
+    .unwrap();
+    let slot = pool.slot("missing").unwrap();
+    assert_eq!(
+        (slot.min, slot.max, slot.min_positive),
+        (f64::INFINITY, f64::NEG_INFINITY, None)
+    );
 }

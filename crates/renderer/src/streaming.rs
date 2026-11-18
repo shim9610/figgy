@@ -324,6 +324,15 @@ impl StreamScheduler {
                 .any(|slot| slot.ticket == ticket && slot.state == SlotState::Requested)
     }
 
+    /// The ranges the slot of `ticket` reserved, while it is requested.
+    #[cfg(test)]
+    pub(crate) fn requested_columns(&self, ticket: RequestTicket) -> Option<&[ColumnRange]> {
+        self.slots
+            .iter()
+            .find(|slot| slot.ticket == ticket && slot.state == SlotState::Requested)
+            .map(|slot| slot.columns.as_slice())
+    }
+
     pub(crate) fn contains_ticket(&self, ticket: RequestTicket) -> bool {
         self.slots.iter().any(|slot| slot.ticket == ticket)
     }

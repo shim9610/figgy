@@ -10,10 +10,11 @@
 //! so the tests say where an isoline *should* be rather than where it happened to
 //! land.
 
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::config::AxisScale;
 use renderer::data::Column;
@@ -58,9 +59,7 @@ const RAMP_HIGH: Color = Color {
 };
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// The process-wide device, created once.
@@ -73,22 +72,22 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
 /// The `Renderer` is still per test: it owns the column pool, so sharing one
 /// would let test fixtures collide on column ids. Only the device is shared, and
 /// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-    static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let (device, queue) = test_gpu::device();
-            Some((Arc::new(device), Arc::new(queue)))
+            Some((device, queue))
         })
         .as_ref()
-        .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+        .map(|(device, queue)| (device.clone(), queue.clone()))
 }
 
 fn try_renderer() -> Option<Renderer> {
     let (device, queue) = shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
         )
@@ -159,10 +158,13 @@ fn contour_only(columns: &[&str], levels: Vec<f64>, colors: Option<Vec<Color>>) 
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
-        render_type: DataRenderType::Contour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(columns),
-            contour: contour_config(levels, colors),
-        },
+            fill: None,
+            contour: Some(contour_config(levels, colors)),
+            surface: None,
+        }),
     }
 }
 
@@ -173,15 +175,17 @@ fn heatmap_contour(columns: &[&str], levels: Vec<f64>) -> SeriesConfig {
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
-        render_type: DataRenderType::HeatmapContour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(columns),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour: contour_config(levels, None),
-        },
+            }),
+            contour: Some(contour_config(levels, None)),
+            surface: None,
+        }),
     }
 }
 
@@ -203,6 +207,11 @@ fn data_to_px(chart: &Chart, x: f64, y: f64) -> (u32, u32) {
 
 fn is_blue(p: &[u8]) -> bool {
     p[3] > 16 && p[2] > 140 && p[0] < 100 && p[1] < 100
+}
+/// The demo panel's near-black contour stroke, blended with the fill under it;
+/// no Viridis colour at or above the lowest drawn level is this dark.
+fn is_dark(p: &[u8]) -> bool {
+    p[3] > 16 && p[0] < 90 && p[1] < 90 && p[2] < 90
 }
 fn is_white(p: &[u8]) -> bool {
     p[3] > 16 && p[0] > 180 && p[1] > 180 && p[2] > 180
@@ -260,15 +269,26 @@ fn plane_fixture(renderer: &mut Renderer) {
 
 /// The implicit field shader puts the line on the isoline and leaves the rest of the field
 /// alone. `z = x + y`, level 2, so the line runs from (2, 0) to (0, 2).
+///
+/// One isoline per level and no spurious coverage: on a monotone plane every
+/// column of the data area that the line crosses holds exactly one run of ink.
+/// A duplicated branch shows up here as a second run.
 #[test]
-fn a_contour_traces_the_isoline_and_nothing_else() {
+fn a_contour_traces_one_unbroken_isoline_and_nothing_else() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    save_probe("lines", &img);
 
     // On the isoline, at three points along it.
     for (x, y) in [(0.25f64, 1.75f64), (1.0, 1.0), (1.75, 0.25)] {
@@ -286,6 +306,31 @@ fn a_contour_traces_the_isoline_and_nothing_else() {
             x + y
         );
     }
+
+    let da = chart.config().data_area().expect("data area").0;
+    let mut columns_with_ink = 0;
+    for x in (da.x + 6)..(da.x + da.width - 6) {
+        let mut runs = 0;
+        let mut inside = false;
+        for y in da.y..(da.y + da.height) {
+            let ink = is_blue(pixel(&img, x, y));
+            if ink && !inside {
+                runs += 1;
+            }
+            inside = ink;
+        }
+        if runs > 0 {
+            columns_with_ink += 1;
+        }
+        assert!(
+            runs <= 1,
+            "column {x} crosses the isoline {runs} times; a monotone plane has one"
+        );
+    }
+    assert!(
+        columns_with_ink > (da.width as usize) / 2,
+        "the isoline spans the field, but only {columns_with_ink} columns hold ink"
+    );
 }
 
 /// Each level draws in its own colour from the indexed group-2 colour table.
@@ -301,7 +346,13 @@ fn each_level_draws_in_its_own_colour() {
         vec![1.0, 3.0],
         Some(vec![LINE_A, LINE_B]),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     // z = 1 runs through (0.5, 0.5); z = 3 through (1.5, 1.5).
     assert!(
@@ -350,22 +401,28 @@ fn a_1024_level_draw_preserves_duplicate_order_across_lookup_blocks() {
     colors[31] = lower;
     colors[32] = upper;
     let expanded = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     let reference = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                vec![2.0, 2.0],
-                Some(vec![lower, upper]),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    vec![2.0, 2.0],
+                    Some(vec![lower, upper]),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
 
     assert_eq!(expanded.rgba, reference.rgba);
@@ -390,22 +447,28 @@ fn level_1023_keeps_its_declared_colour_and_numeric_lookup_index() {
     colors[1023] = marker;
 
     let expanded = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     let reference = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                vec![2.0],
-                Some(vec![marker]),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    vec![2.0],
+                    Some(vec![marker]),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
 
     assert_eq!(expanded.rgba, reference.rgba);
@@ -425,26 +488,32 @@ fn non_finite_levels_never_draw_contour_lines() {
         a: 0.75,
     };
     let expanded = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 2.0],
-                Some(vec![Color::WHITE, Color::WHITE, Color::WHITE, finite]),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 2.0],
+                    Some(vec![Color::WHITE, Color::WHITE, Color::WHITE, finite]),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     let reference = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                vec![2.0],
-                Some(vec![finite]),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    vec![2.0],
+                    Some(vec![finite]),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
 
     assert_eq!(expanded.rgba, reference.rgba);
@@ -484,10 +553,22 @@ fn finite_corners_whose_derivatives_overflow_draw_no_contour_or_anchor() {
     let mut series = contour_only(&["overflow_z0", "overflow_z1"], vec![0.0], None);
     series.x_column = "overflow_x".into();
     series.y_column = "overflow_y".into();
-    if let DataRenderType::Contour { contour, .. } = &mut series.render_type {
+    if let DataRenderType::Field(renderer::data_config::FieldSeries {
+        matrix: _,
+        fill: None,
+        contour: Some(contour),
+        ..
+    }) = &mut series.render_type
+    {
         contour.labels = Some(auto_label_config(2000.0));
     }
-    let image = renderer.export_panel_rgba(&chart, &[series], 1.0).unwrap();
+    let image = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     assert!(
         ink_bounds(&image, is_blue).is_none(),
@@ -513,15 +594,18 @@ fn all_1024_reachable_candidates_are_composited() {
         a: 1.0 / 2048.0,
     };
     let expanded = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                vec![2.0; renderer::MAX_CONTOUR_LEVELS],
-                Some(vec![layer; renderer::MAX_CONTOUR_LEVELS]),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    vec![2.0; renderer::MAX_CONTOUR_LEVELS],
+                    Some(vec![layer; renderer::MAX_CONTOUR_LEVELS]),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
 
     let equivalent_for = |count: usize| {
@@ -546,26 +630,32 @@ fn all_1024_reachable_candidates_are_composited() {
         }
     };
     let reference = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                vec![2.0],
-                Some(vec![equivalent_for(renderer::MAX_CONTOUR_LEVELS)]),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    vec![2.0],
+                    Some(vec![equivalent_for(renderer::MAX_CONTOUR_LEVELS)]),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     let under_composited = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                vec![2.0],
-                Some(vec![equivalent_for(621)]),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    vec![2.0],
+                    Some(vec![equivalent_for(621)]),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     let centre = data_to_px(&chart, 1.0, 1.0);
     assert_eq!(
@@ -591,29 +681,35 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
         .collect();
     let colors = vec![LINE_A; renderer::MAX_CONTOUR_LEVELS];
     let expected = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                sorted.clone(),
-                Some(colors.clone()),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    sorted.clone(),
+                    Some(colors.clone()),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
 
     let mut reversed = sorted.clone();
     reversed.reverse();
     let actual = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(
-                &["p0", "p1", "p2"],
-                reversed,
-                Some(colors.clone()),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(
+                    &["p0", "p1", "p2"],
+                    reversed,
+                    Some(colors.clone()),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     assert_eq!(actual.rgba, expected.rgba);
 
@@ -624,32 +720,16 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
         shuffled.swap(upper, state as usize % (upper + 1));
     }
     let actual = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(&["p0", "p1", "p2"], shuffled, Some(colors))],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(&["p0", "p1", "p2"], shuffled, Some(colors))],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     assert_eq!(actual.rgba, expected.rgba);
-}
-
-#[test]
-fn a_direct_export_rejects_1025_contour_levels() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
-    let levels = vec![2.0; renderer::MAX_CONTOUR_LEVELS + 1];
-    for series in [
-        contour_only(&["p0", "p1", "p2"], levels.clone(), None),
-        heatmap_contour(&["p0", "p1", "p2"], levels.clone()),
-    ] {
-        assert!(matches!(
-            renderer.export_panel_rgba(&chart, &[series], 1.0),
-            Err(renderer::FiggyError::InvalidSeriesConfig { .. })
-        ));
-    }
 }
 
 #[test]
@@ -666,7 +746,13 @@ fn the_last_1024_level_label_cell_and_manual_index_draw() {
         None,
         label_config(vec![anchor(1023, 0.4, 0.4, 1.0, 0.0)], true),
     )];
-    let image = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let image = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     assert!(
         near(&image, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
@@ -685,49 +771,16 @@ fn a_level_outside_the_data_draws_nothing() {
     let chart = bare_chart(colorbar(0.0, 4.0));
     for levels in [vec![], vec![99.0]] {
         let series = vec![contour_only(&["p0", "p1", "p2"], levels.clone(), None)];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         let ink = img.rgba.chunks_exact(4).filter(|p| is_blue(p)).count();
         assert_eq!(ink, 0, "levels {levels:?} left {ink} contour pixels");
     }
-}
-
-/// One isoline per level and no spurious coverage: on a monotone plane every
-/// column of the data area that the line crosses holds exactly one run of ink.
-/// A duplicated branch shows up here as a second run.
-#[test]
-fn a_monotone_field_traces_one_unbroken_isoline() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
-    let series = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-
-    let da = chart.config().data_area().expect("data area").0;
-    let mut columns_with_ink = 0;
-    for x in (da.x + 6)..(da.x + da.width - 6) {
-        let mut runs = 0;
-        let mut inside = false;
-        for y in da.y..(da.y + da.height) {
-            let ink = is_blue(pixel(&img, x, y));
-            if ink && !inside {
-                runs += 1;
-            }
-            inside = ink;
-        }
-        if runs > 0 {
-            columns_with_ink += 1;
-        }
-        assert!(
-            runs <= 1,
-            "column {x} crosses the isoline {runs} times; a monotone plane has one"
-        );
-    }
-    assert!(
-        columns_with_ink > (da.width as usize) / 2,
-        "the isoline spans the field, but only {columns_with_ink} columns hold ink"
-    );
 }
 
 /// Contour lines are drawn over the fill they describe, not under it.
@@ -740,7 +793,14 @@ fn contour_lines_land_on_top_of_the_field() {
     let bar = colorbar(0.0, 4.0);
     let chart = bare_chart(bar.clone());
     let series = vec![heatmap_contour(&["p0", "p1", "p2"], vec![2.0])];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    save_probe("over-fill", &img);
 
     // On the isoline: the line wins.
     assert!(
@@ -763,77 +823,6 @@ fn contour_lines_land_on_top_of_the_field() {
             &p[..4],
             [to8(want.r), to8(want.g), to8(want.b)]
         );
-    }
-}
-
-/// Visual probe — assertions above are the gate; this is for eyes.
-#[test]
-fn contour_probe_renders_lines_and_filled_bands() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    // A saddle: z = (x - 1)^2 - (y - 1)^2, sampled on a 5 x 5 lattice. Level 0
-    // is the pair of diagonals through the centre, which is exactly the
-    // saddle case that the bilinear implicit form must resolve without a branch.
-    let coords = vec![0.0, 0.5, 1.0, 1.5, 2.0];
-    let column = |x: f64| -> Column<f64> {
-        col_f64(
-            coords
-                .iter()
-                .map(|y| (x - 1.0) * (x - 1.0) - (y - 1.0) * (y - 1.0))
-                .collect(),
-        )
-    };
-    let columns: Vec<Column<f64>> = coords.iter().map(|x| column(*x)).collect();
-    let ids = ["s0", "s1", "s2", "s3", "s4"];
-    let batch: Vec<(&str, &dyn renderer::ColumnSource)> = ids
-        .iter()
-        .zip(&columns)
-        .map(|(id, col)| (*id, col as &dyn renderer::ColumnSource))
-        .collect();
-    renderer
-        .add_columns(&[
-            (
-                "gx",
-                &col_f64(coords.clone()) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "gy",
-                &col_f64(coords.clone()) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("coordinates");
-    renderer.add_columns(&batch).expect("saddle grid");
-
-    let dir = probe_dir();
-    let bar = colorbar(-1.0, 1.0);
-    let chart = bare_chart(bar);
-    // Labels: one anchor per level, placed on that level's line with the tangent
-    // that runs along it there.
-    let mut labelled_lines = contour_only(&ids, vec![-0.5, 0.0, 0.5], None);
-    if let DataRenderType::Contour { contour, .. } = &mut labelled_lines.render_type {
-        contour.labels = Some(ContourLabelConfig {
-            visible: true,
-            font_size: 18.0,
-            color: Color::BLACK,
-            format: LabelFormat::Decimal,
-            significant_digits: 1,
-            spacing_px: 140.0,
-            // Automatic: the probe shows what the anchor pass chooses.
-            anchors: Vec::new(),
-            bg_color: Some(Color::new(0.98, 0.98, 0.98, 1.0)),
-            bg_padding_px: 2.0,
-        });
-    }
-    let cases: [(&str, SeriesConfig); 3] = [
-        ("lines", contour_only(&ids, vec![-0.5, 0.0, 0.5], None)),
-        ("over-fill", heatmap_contour(&ids, vec![-0.5, 0.0, 0.5])),
-        ("labelled", labelled_lines),
-    ];
-    for (name, series) in cases {
-        let img = renderer.export_panel_rgba(&chart, &[series], 1.0).unwrap();
-        let png = encode_png(&img).expect("encode");
-        std::fs::write(format!("{dir}/probe_contour_{name}.png"), png).expect("write probe");
     }
 }
 
@@ -863,10 +852,13 @@ fn flat_y_series(levels: Vec<f64>, line_width: f32) -> SeriesConfig {
         label: None,
         x_column: "hx".into(),
         y_column: "hy".into(),
-        render_type: DataRenderType::Contour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(&["h0", "h1", "h2"]),
-            contour,
-        },
+            fill: None,
+            contour: Some(contour),
+            surface: None,
+        }),
     }
 }
 
@@ -885,7 +877,13 @@ fn the_stroke_is_as_wide_as_it_is_declared() {
     let chart = bare_chart(colorbar(0.0, 2.0));
     let run = |renderer: &mut Renderer, width: f32| {
         let series = vec![flat_y_series(vec![1.0], width)];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         let (_, y0, _, y1) = ink_bounds(&img, is_blue).expect("no contour ink");
         y1 - y0 + 1
     };
@@ -937,16 +935,25 @@ fn a_dense_grid_draws_an_unbroken_isoline() {
         label: None,
         x_column: "dx".into(),
         y_column: "dy".into(),
-        render_type: DataRenderType::Contour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: contour_config(vec![2.0], None),
-        },
+            fill: None,
+            contour: Some(contour_config(vec![2.0], None)),
+            surface: None,
+        }),
     }];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     // 33 samples along the whole isoline `x + y == 2`, every one of which must
     // have ink within a couple of pixels.
     for i in 1..34u32 {
@@ -1000,12 +1007,21 @@ fn a_saddle_needs_no_tie_break() {
         label: None,
         x_column: "qx".into(),
         y_column: "qy".into(),
-        render_type: DataRenderType::Contour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(&ids),
-            contour: contour_config(vec![0.0], None),
-        },
+            fill: None,
+            contour: Some(contour_config(vec![0.0], None)),
+            surface: None,
+        }),
     }];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     // Both diagonals, at four points each, and the centre they cross at.
     for t in [0.3f64, 0.7, 1.3, 1.7] {
         assert!(
@@ -1122,16 +1138,25 @@ fn the_isoline_lands_on_its_level_at_tight_curvature() {
             label: None,
             x_column: "hyx".into(),
             y_column: "hyy".into(),
-            render_type: DataRenderType::Contour {
+            z_column: None,
+            render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix: MatrixRef {
                     columns: ids.clone(),
                     orientation: MatrixOrientation::ColumnsAreX,
                     grid_layout: GridLayout::Centers,
                 },
-                contour,
-            },
+                fill: None,
+                contour: Some(contour),
+                surface: None,
+            }),
         }];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
 
         // The row nearest the hyperbola's vertex, and that row's exact crossing.
         // Taking the reference from the row's own data y (a pixel centre) keeps
@@ -1237,7 +1262,13 @@ fn labelled(
     labels: ContourLabelConfig,
 ) -> SeriesConfig {
     let mut cfg = contour_only(&["p0", "p1", "p2"], levels, colors);
-    if let DataRenderType::Contour { contour, .. } = &mut cfg.render_type {
+    if let DataRenderType::Field(renderer::data_config::FieldSeries {
+        matrix: _,
+        fill: None,
+        contour: Some(contour),
+        ..
+    }) = &mut cfg.render_type
+    {
         contour.labels = Some(labels);
     }
     cfg
@@ -1274,7 +1305,14 @@ fn a_contour_label_draws_at_its_anchor() {
         None,
         label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], true),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    save_probe("labelled", &img);
 
     assert!(
         near(&img, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
@@ -1282,7 +1320,13 @@ fn a_contour_label_draws_at_its_anchor() {
     );
     // And the same chart without the label has none there.
     let bare = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
-    let without = renderer.export_panel_rgba(&chart, &bare, 1.0).unwrap();
+    let without = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &bare),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert!(
         !near(&without, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
         "the anchor position already had ink before the label was added"
@@ -1305,7 +1349,13 @@ fn a_label_rotates_along_its_tangent() {
             None,
             label_config(vec![anchor(0, 1.0, 1.0, tx, ty)], true),
         )];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         let (x0, y0, x1, y1) = ink_bounds(&img, is_blue).expect("label ink");
         (x1 - x0, y1 - y0)
     };
@@ -1332,7 +1382,13 @@ fn an_invisible_label_draws_nothing() {
     let chart = bare_chart(colorbar(0.0, 4.0));
     let labels = label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], false);
     let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert!(
         !near(&img, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
         "a label was drawn where none was asked for"
@@ -1361,7 +1417,13 @@ fn an_anchor_naming_a_missing_level_is_skipped() {
             true,
         ),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert!(
         !near(&img, data_to_px(&chart, 0.3, 1.0), 14, is_blue),
         "an anchor for level 7 of a one-level declaration drew something"
@@ -1385,7 +1447,13 @@ fn all_stale_anchors_fall_back_to_automatic_placement() {
     labels.bg_color = Some(LABEL_BG);
     labels.bg_padding_px = 3.0;
     let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     assert!(
         ink_bounds(&img, is_magenta).is_some(),
@@ -1393,35 +1461,56 @@ fn all_stale_anchors_fall_back_to_automatic_placement() {
     );
 }
 
-/// Explicit anchors are resolved in declaration order and capped at the shared
-/// 1024-label draw capacity. The 1025th valid anchor must not replace an earlier
-/// one.
+/// Explicit anchors fill the shared 1024-label draw capacity in declaration
+/// order: the 1024th one draws. A 1025th makes the list invalid, so the export
+/// fails with `InvalidSeriesConfig` instead of dropping it.
 #[test]
-fn explicit_anchors_keep_the_first_1024_in_input_order() {
+fn explicit_anchors_draw_up_to_1024_and_reject_more() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
-    let filler = (0..1023).map(|_| anchor(0, 0.3, 0.3, 1.0, 0.0));
-    let kept_1024th = std::iter::once(anchor(0, 1.0, 0.7, 1.0, 0.0));
-    let dropped_1025th = std::iter::once(anchor(0, 1.7, 1.7, 1.0, 0.0));
-    let mut labels = label_config(
-        filler.chain(kept_1024th).chain(dropped_1025th).collect(),
-        true,
-    );
-    labels.bg_color = Some(LABEL_BG);
-    labels.bg_padding_px = 3.0;
-    let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let filler = || (0..1023).map(|_| anchor(0, 0.3, 0.3, 1.0, 0.0));
+    let last_1024th = || std::iter::once(anchor(0, 1.0, 0.7, 1.0, 0.0));
+    let series_with = |anchors: Vec<_>| {
+        let mut labels = label_config(anchors, true);
+        labels.bg_color = Some(LABEL_BG);
+        labels.bg_padding_px = 3.0;
+        vec![labelled(vec![2.0], None, labels)]
+    };
 
+    let full = series_with(filler().chain(last_1024th()).collect());
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &full),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert!(
         near(&img, data_to_px(&chart, 1.0, 0.7), 16, is_magenta),
-        "the distinguishable 1024th anchor must remain drawable"
+        "the 1024th anchor must draw"
     );
-    assert!(
-        !near(&img, data_to_px(&chart, 1.7, 1.7), 16, is_magenta),
-        "the 1025th anchor must be dropped instead of replacing an earlier one"
+
+    let over = series_with(
+        filler()
+            .chain(last_1024th())
+            .chain(std::iter::once(anchor(0, 1.7, 1.7, 1.0, 0.0)))
+            .collect(),
+    );
+    let result = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &over),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on();
+    let Err(renderer::FiggyError::InvalidSeriesConfig { kind: reason, .. }) = result else {
+        panic!("1025 explicit anchors were accepted or returned the wrong error");
+    };
+    assert_eq!(
+        reason,
+        renderer::data_config::ContourLabelConfig::TOO_MANY_ANCHORS_REASON
     );
 }
 
@@ -1447,7 +1536,13 @@ fn automatic_labels_keep_all_1024_levels() {
         labels.bg_color = Some(LABEL_BG);
         labels.bg_padding_px = 2.0;
         let series = [labelled(levels, Some(vec![transparent; count]), labels)];
-        renderer.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
     };
     let baseline = render(&mut renderer, all_levels[..256].to_vec());
     let full = render(&mut renderer, all_levels);
@@ -1481,7 +1576,13 @@ fn a_label_color_is_independent_of_per_level_stroke_colors() {
         Some(vec![LINE_A, LABEL_BG]),
         labels,
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     // Neither anchor sits on an isoline (z = 1.8 and z = 0.6 there), and both
     // labels stay white despite two unrelated per-level stroke colours.
     assert!(
@@ -1510,7 +1611,13 @@ fn a_label_reads_its_level_value() {
             None,
             label_config(vec![anchor(0, 1.0, 1.0, 1.0, 0.0)], true),
         )];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         let (x0, _, x1, _) = ink_bounds(&img, is_blue).expect("label ink");
         x1 - x0
     };
@@ -1553,7 +1660,13 @@ fn an_automatic_anchor_lands_on_its_isoline() {
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![labelled(vec![2.0], None, auto_label_config(2000.0))];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     let (x0, y0, x1, y1) = ink_bounds(&img, is_magenta).expect("no automatic label was placed");
     let centre = ((x0 + x1) / 2, (y0 + y1) / 2);
@@ -1600,14 +1713,17 @@ fn fine_labelled(ids: &[String], levels: Vec<f64>, labels: ContourLabelConfig) -
         label: None,
         x_column: "fx".into(),
         y_column: "fy".into(),
-        render_type: DataRenderType::Contour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids.to_vec(),
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour,
-        },
+            fill: None,
+            contour: Some(contour),
+            surface: None,
+        }),
     }
 }
 
@@ -1712,7 +1828,13 @@ fn spacing_px_separates_automatic_labels() {
     let chart = bare_chart(colorbar(0.0, 4.0));
     let clusters = |renderer: &mut Renderer, spacing: f32| {
         let series = vec![fine_labelled(&ids, vec![2.0], auto_label_config(spacing))];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         magenta_clusters(&img)
     };
     // Wider than the panel: the lattice saturates at 1 x 1, so one label.
@@ -1744,42 +1866,16 @@ fn spacing_px_separates_automatic_labels() {
     }
 }
 
-/// A non-empty anchor list overrides the automatic pass entirely.
+/// A non-empty anchor list overrides the automatic pass entirely, `bg_color`
+/// paints behind the text and `None` leaves it transparent.
 ///
 /// The override is placed where no isoline is, and the point the automatic pass
 /// would have chosen — the middle of the line — must come out empty. Getting both
-/// would mean two placement paths were running.
+/// would mean two placement paths were running. Then the same anchor, the same
+/// string, twice: with a background the box is there, without it nothing but the
+/// digits are.
 #[test]
-fn explicit_anchors_override_the_automatic_pass() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
-    let mut labels = auto_label_config(2000.0);
-    // z = 0.8 at (0.4, 0.4): well clear of the level-2 isoline.
-    labels.anchors = vec![anchor(0, 0.4, 0.4, 1.0, 0.0)];
-    let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-
-    assert!(
-        near(&img, data_to_px(&chart, 0.4, 0.4), 20, is_magenta),
-        "the explicit anchor was not drawn"
-    );
-    for (x, y) in [(1.0f64, 1.0f64), (1.75, 0.25), (0.25, 1.75)] {
-        assert!(
-            !near(&img, data_to_px(&chart, x, y), 14, is_magenta),
-            "an automatic label was placed at ({x}, {y}) despite the override"
-        );
-    }
-}
-
-/// `bg_color` paints behind the text and `None` leaves it transparent.
-///
-/// The same anchor, the same string, twice: with a background the box is there,
-/// without it nothing but the digits are.
-#[test]
-fn bg_color_paints_behind_the_label() {
+fn explicit_anchors_override_the_automatic_pass_and_paint_bg_color() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
@@ -1788,20 +1884,39 @@ fn bg_color_paints_behind_the_label() {
     let at = data_to_px(&chart, 0.4, 0.4);
 
     let mut with_bg = auto_label_config(2000.0);
+    // z = 0.8 at (0.4, 0.4): well clear of the level-2 isoline.
     with_bg.anchors = vec![anchor(0, 0.4, 0.4, 1.0, 0.0)];
     let series = vec![labelled(vec![2.0], None, with_bg)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert!(
         near(&img, at, 20, is_magenta),
-        "bg_color painted nothing behind the label"
+        "bg_color painted nothing behind the explicit anchor's label"
     );
+    for (x, y) in [(1.0f64, 1.0f64), (1.75, 0.25), (0.25, 1.75)] {
+        assert!(
+            !near(&img, data_to_px(&chart, x, y), 14, is_magenta),
+            "an automatic label was placed at ({x}, {y}) despite the override"
+        );
+    }
 
     let series = vec![labelled(
         vec![2.0],
         None,
         label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], true),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert!(
         near(&img, at, 20, is_blue),
         "the label itself must still draw without a background"
@@ -1824,11 +1939,14 @@ fn contour_line_is_interrupted_under_a_transparent_label() {
     let at = data_to_px(&chart, 1.0, 1.0); // z = 2, exactly on the isoline.
 
     let baseline = renderer
-        .export_panel_rgba(
-            &chart,
-            &[contour_only(&["p0", "p1", "p2"], vec![2.0], None)],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[contour_only(&["p0", "p1", "p2"], vec![2.0], None)],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
+        .block_on()
         .unwrap();
     assert!(
         near(&baseline, at, 2, is_blue),
@@ -1839,12 +1957,184 @@ fn contour_line_is_interrupted_under_a_transparent_label() {
     labels.color = Color::new(0.0, 0.0, 0.0, 0.0);
     labels.bg_padding_px = 3.0;
     let labelled = renderer
-        .export_panel_rgba(&chart, &[labelled(vec![2.0], None, labels)], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[labelled(vec![2.0], None, labels)]),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
         .unwrap();
     assert!(
         !near(&labelled, at, 2, is_blue),
         "contour stroke remained under the transparent label quad"
     );
+}
+
+/// z = 100 (x + y) on the `plane_fixture` lattice: the same anti-diagonal
+/// isolines, with three-digit levels, so a label is clearly longer than tall.
+fn hundreds_plane_fixture(renderer: &mut Renderer) {
+    plane_fixture(renderer);
+    renderer
+        .add_columns(&[
+            (
+                "h0",
+                &col_f64(vec![0.0, 100.0, 200.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "h1",
+                &col_f64(vec![100.0, 200.0, 300.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "h2",
+                &col_f64(vec![200.0, 300.0, 400.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("grid upload");
+}
+
+/// `data_to_px` without the rounding, in physical pixels at `scale`.
+fn data_to_px_f(chart: &Chart, x: f64, y: f64, scale: f64) -> (f64, f64) {
+    let cfg = chart.config();
+    let da = cfg.data_area().expect("data area");
+    let tx = (x - cfg.bottom_x.min) / (cfg.bottom_x.max - cfg.bottom_x.min);
+    let ty = (y - cfg.left_y.min) / (cfg.left_y.max - cfg.left_y.min);
+    (
+        (da.x as f64 + tx * da.width as f64) * scale,
+        ((da.y + da.height) as f64 - ty * da.height as f64) * scale,
+    )
+}
+
+/// A rotated label's stroke gap lies inside its quad, at 1x and 2x.
+///
+/// The label sits on the level-200 isoline with a tangent pointing left, so
+/// the quad turns upright by 180° and runs along the isoline. Its frame
+/// (`common/contour_label_box.wgsl`) is shared by the quad and the gap; the
+/// gap reaches `LABEL_GAP_EDGE_PX` (0.5) past the content, the quad
+/// `LABEL_EDGE_PX` (2), and the baked background fades out over the gutter
+/// between them. So with a background every pixel the label changes, the
+/// stroke it removes included, lies inside the box the label paints: no
+/// blanked stroke shows past the box. With a transparent label the gap alone
+/// shows: it blanks the stroke along the whole box, in the label's rotated
+/// frame, and nothing past the box.
+///
+/// The box is the label's rectangle in its own frame, measured from the
+/// pixels the label alone paints. A pixel of the fading rim is not tested on
+/// its own: its fragment can be under half a code value, which a
+/// transparent background rounds away, while over a partly covered stroke
+/// pixel the export's half-float target keeps it and the straight-alpha
+/// readback divides it by the stroke's alpha (#271), so the same fragment
+/// shows over the stroke and not alone.
+#[test]
+fn a_rotated_label_gap_lies_inside_its_quad() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    hundreds_plane_fixture(&mut renderer);
+    let chart = bare_chart(colorbar(0.0, 400.0));
+    let series = |line: Color, labels: Option<ContourLabelConfig>| {
+        let mut cfg = contour_only(&["h0", "h1", "h2"], vec![200.0], None);
+        if let DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: _,
+            fill: None,
+            contour: Some(contour),
+            ..
+        }) = &mut cfg.render_type
+        {
+            contour.line.line_color = line;
+            contour.labels = labels;
+        }
+        cfg
+    };
+    let clear = Color::new(0.0, 0.0, 0.0, 0.0);
+    let mut boxed = label_config(vec![anchor(0, 1.0, 1.0, -1.0, 1.0)], true);
+    boxed.color = LINE_B;
+    boxed.bg_color = Some(LABEL_BG);
+    boxed.bg_padding_px = 3.0;
+    let mut transparent = boxed.clone();
+    transparent.color = clear;
+    transparent.bg_color = None;
+    for scale in [1.0f32, 2.0] {
+        let s = f64::from(scale);
+        let mut export = |line: Color, labels: Option<ContourLabelConfig>| {
+            renderer
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[series(line, labels)]),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap()
+        };
+        let stroke = export(LINE_A, None);
+        let with_box = export(LINE_A, Some(boxed.clone()));
+        let label_only = export(clear, Some(boxed.clone()));
+        let nothing = export(clear, None);
+        let gapped = export(LINE_A, Some(transparent.clone()));
+
+        // The label frame in canvas pixels: the anchor and the isoline's
+        // direction through the drawn axes, and its normal.
+        let centre = data_to_px_f(&chart, 1.0, 1.0, s);
+        let ahead = data_to_px_f(&chart, 0.5, 1.5, s);
+        let (dx, dy) = (ahead.0 - centre.0, ahead.1 - centre.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        let (ux, uy) = (dx / len, dy / len);
+        let local = |x: u32, y: u32| {
+            let (px, py) = (x as f64 + 0.5 - centre.0, y as f64 + 0.5 - centre.1);
+            ((px * ux + py * uy).abs(), (py * ux - px * uy).abs())
+        };
+        let differs =
+            |a: &RasterImage, b: &RasterImage, x: u32, y: u32| pixel(a, x, y) != pixel(b, x, y);
+
+        // The painted box: every pixel the label alone changes.
+        let (mut box_u, mut box_v) = (0.0f64, 0.0f64);
+        for y in 0..label_only.height {
+            for x in 0..label_only.width {
+                if differs(&label_only, &nothing, x, y) {
+                    let (u, v) = local(x, y);
+                    box_u = box_u.max(u);
+                    box_v = box_v.max(v);
+                }
+            }
+        }
+        assert!(
+            box_u > box_v + 4.0 * s,
+            "{scale}x: the label box is not longer along the isoline: {box_u} x {box_v}"
+        );
+        let in_box = |u: f64, v: f64| u <= box_u && v <= box_v;
+
+        let (mut stroke_inside, mut stroke_outside, mut gap) = (0, 0, 0);
+        for y in 0..stroke.height {
+            for x in 0..stroke.width {
+                let (u, v) = local(x, y);
+                if differs(&with_box, &stroke, x, y) {
+                    assert!(
+                        in_box(u, v),
+                        "{scale}x: the label changed ({x}, {y}) past the box it paints: {u} x {v} past {box_u} x {box_v}"
+                    );
+                }
+                if differs(&gapped, &stroke, x, y) {
+                    gap += 1;
+                    assert!(
+                        in_box(u, v),
+                        "{scale}x: the stroke gap reaches ({x}, {y}) past the label box: {u} x {v} past {box_u} x {box_v}"
+                    );
+                }
+                if is_blue(pixel(&stroke, x, y)) {
+                    if u < box_u - 3.0 && v < box_v - 3.0 {
+                        stroke_inside += 1;
+                        assert!(
+                            !is_blue(pixel(&gapped, x, y)),
+                            "{scale}x: the stroke survives at ({x}, {y}) inside the label box"
+                        );
+                    } else if !in_box(u, v) {
+                        stroke_outside += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            stroke_inside > 0 && stroke_outside > 0 && gap > 0,
+            "{scale}x: the fixture proves nothing: {stroke_inside} stroke pixels inside the box, {stroke_outside} outside, {gap} blanked"
+        );
+    }
 }
 
 /// Two renders of the same input are **byte-identical**.
@@ -1865,8 +2155,20 @@ fn automatic_label_placement_is_deterministic() {
             auto_label_config(120.0),
         )]
     };
-    let first = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
-    let second = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
+    let first = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &build()),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let second = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &build()),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert!(
         ink_bounds(&first, is_magenta).is_some(),
         "the fixture drew no labels, so the comparison would prove nothing"
@@ -1891,12 +2193,24 @@ fn re_dispatching_anchors_allocates_nothing() {
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
     let build = || vec![labelled(vec![2.0], None, auto_label_config(120.0))];
-    let _ = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
+    let _ = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &build()),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     let after_first = renderer
         .gpu_memory_usage()
         .creations_of(renderer::GpuResourceKind::ContourScratch);
     for _ in 0..3 {
-        let _ = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
+        let _ = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &build()),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
     }
     let after_more = renderer
         .gpu_memory_usage()
@@ -1909,16 +2223,17 @@ fn re_dispatching_anchors_allocates_nothing() {
     );
 }
 
-/// Probe of the field panel `examples/winit_simple.rs` builds — the same 40 x 40
+/// The field panel `examples/winit_simple.rs` builds — the same 40 x 40
 /// Gaussian bump, uploaded as one batch, filled, contoured and labelled.
 ///
 /// Its job is the integration the unit fixtures above are too small to show: a
 /// real grid, forty columns through `add_columns`, interpolated shading, four
-/// levels and their labels, all in one panel. It writes a PNG rather than
-/// asserting a colour, so the windowed demo's look is inspectable without a
-/// window.
+/// levels and their labels, all in one panel. The fill is checked at the peak
+/// and at a corner, each level's ring is found where the Gaussian puts it, and
+/// the labels change pixels inside the data area only. The PNG is saved so the
+/// windowed demo's look is inspectable without a window.
 #[test]
-fn field_panel_probe_matches_the_winit_demo() {
+fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
@@ -1958,7 +2273,7 @@ fn field_panel_probe_matches_the_winit_demo() {
     bar.axis.min = 0.0;
     bar.axis.max = 1.0;
     bar.axis.major_spacing = 0.25;
-    let mut chart = bare_chart(bar);
+    let mut chart = bare_chart(bar.clone());
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
 
@@ -1972,19 +2287,20 @@ fn field_panel_probe_matches_the_winit_demo() {
         label: None,
         x_column: "bx".into(),
         y_column: "by".into(),
-        render_type: DataRenderType::HeatmapContour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
-                levels,
+            }),
+            contour: Some(ContourConfig {
+                levels: levels.clone(),
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(0.08, 0.08, 0.08, 1.0),
@@ -2005,21 +2321,160 @@ fn field_panel_probe_matches_the_winit_demo() {
                     bg_color: Some(Color::new(0.98, 0.98, 0.98, 1.0)),
                     bg_padding_px: 2.0,
                 }),
-            },
-        },
+            }),
+            surface: None,
+        }),
     }];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let dir = probe_dir();
-    let png = encode_png(&img).expect("encode");
-    std::fs::write(format!("{dir}/probe_contour_demo_panel.png"), png).expect("write probe");
+    let img = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    save_probe("demo_panel", &img);
+
+    // The fill: the peak is the ramp's top, a corner its bottom. The sample
+    // grid straddles the centre, so the interpolated peak is 0.99, a ramp
+    // step or two below 1.
+    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
+    let assert_fill = |x: f64, y: f64, z: f64, what: &str| {
+        let px = data_to_px(&chart, x, y);
+        let p = pixel(&img, px.0, px.1);
+        let want = bar.color_for_z(z);
+        for (got, expected) in [
+            (p[0] as i32, to8(want.r)),
+            (p[1] as i32, to8(want.g)),
+            (p[2] as i32, to8(want.b)),
+        ] {
+            assert!(
+                (got - expected).abs() <= 8,
+                "{what} at ({x}, {y}): got {:?}, expected {:?}",
+                &p[..4],
+                [to8(want.r), to8(want.g), to8(want.b)]
+            );
+        }
+    };
+    assert_fill(0.5, 0.5, 1.0, "the peak");
+    assert_fill(0.05, 0.05, 0.0, "a corner");
+
+    // The contours: level L is the circle exp(-r² / SPREAD) = L. A label and
+    // its background sit on the line at up to two places per ring, so the
+    // stroke is looked for at eight angles and must be there at six.
+    for level in &levels {
+        let r = (-SPREAD * level.ln()).sqrt();
+        let hits = (0..8)
+            .filter(|k| {
+                let angle = *k as f64 * std::f64::consts::FRAC_PI_4;
+                let px = data_to_px(&chart, 0.5 + r * angle.cos(), 0.5 + r * angle.sin());
+                near(&img, px, 3, is_dark)
+            })
+            .count();
+        assert!(
+            hits >= 6,
+            "level {level} (r = {r:.3}): stroke found at {hits} of 8 angles"
+        );
+    }
+    // Between two rings there is no stroke: z = 0.49 at r = 0.19, with the
+    // 0.4 and 0.6 rings 0.02 away on either side.
+    // Checked on the label-free render, where no label can sit there.
+    let mut unlabelled = series.clone();
+    let DataRenderType::Field(renderer::data_config::FieldSeries {
+        matrix: _,
+        fill: Some(_),
+        contour: Some(contour),
+        surface: _,
+    }) = &mut unlabelled[0].render_type
+    else {
+        unreachable!()
+    };
+    contour.labels = None;
+    let plain = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &unlabelled),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let between = data_to_px(&chart, 0.5 + 0.19, 0.5);
+    assert!(
+        !near(&plain, between, 1, is_dark),
+        "contour ink between the 0.4 and 0.6 rings"
+    );
+
+    // The labels: the same panel without them differs, and only in the data
+    // area, where the labels and their backgrounds are drawn.
+    let da = chart.config().data_area().expect("data area");
+    let mut label_pixels = 0u32;
+    for (i, (a, b)) in img
+        .rgba
+        .chunks_exact(4)
+        .zip(plain.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        if a == b {
+            continue;
+        }
+        label_pixels += 1;
+        let (x, y) = (i as u32 % img.width, i as u32 / img.width);
+        assert!(
+            x >= da.x && x < da.x + da.width && y >= da.y && y < da.y + da.height,
+            "a label changed pixel ({x}, {y}) outside the data area at ({}, {}) {} x {}",
+            da.x,
+            da.y,
+            da.width,
+            da.height
+        );
+    }
+    assert!(
+        label_pixels > 100,
+        "the four levels' labels changed only {label_pixels} pixels"
+    );
 }
 
-/// Where the visual probes land: `$FIGGY_PROBE_DIR` when set, otherwise
-/// Cargo's per-target scratch directory under `target/`, so a plain test run
-/// never writes into the source tree.
+/// Where the saved images land: `$FIGGY_PROBE_DIR` when set (`ci/verify.py`
+/// points it at the CI image directory), otherwise Cargo's per-target scratch
+/// directory under `target/`, so a plain test run never writes into the
+/// source tree.
 fn probe_dir() -> String {
     let dir = std::env::var("FIGGY_PROBE_DIR")
         .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
     std::fs::create_dir_all(&dir).expect("create probe directory");
     dir
+}
+
+/// Save a rendered panel as a PNG. The pixel assertions are the gate; the
+/// image is what a person looks at when one fails.
+fn save_probe(name: &str, img: &RasterImage) {
+    let png = encode_png(img).expect("encode png");
+    std::fs::write(format!("{}/probe_contour_{name}.png", probe_dir()), png).expect("write png");
+}
+
+/// Rule 10: a frame of three hundred contour series draws every one, past
+/// the contour scratch cache's 256 entries. The cache is bounded before the
+/// frame begins and evicts nothing while it resolves.
+#[test]
+fn three_hundred_contours_in_one_frame_all_draw() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    plane_fixture(&mut renderer);
+    let chart = bare_chart(colorbar(0.0, 4.0));
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| {
+            let mut s = contour_only(&["p0", "p1", "p2"], vec![2.0], None);
+            s.series_id = format!("contour{k}");
+            s
+        })
+        .collect();
+    for _ in 0..2 {
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        assert!(near(&img, data_to_px(&chart, 1.0, 1.0), 3, is_blue));
+    }
 }

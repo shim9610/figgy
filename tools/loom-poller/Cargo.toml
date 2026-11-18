@@ -1,0 +1,14 @@
+# Model-checks the native poll thread's protocol (`crates/renderer/src/gpu_poller.rs`,
+# #160) with loom. The module is compiled here, outside the renderer, because
+# `--cfg loom` in RUSTFLAGS would reach every dependency; `build.rs` sets the
+# cfg for this crate alone.
+[package]
+name = "figgy-loom-poller"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+loom = "0.7.2"

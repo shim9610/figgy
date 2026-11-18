@@ -16,7 +16,7 @@ impl ReplayTransfer {
         device: &wgpu::Device,
         spec: StreamSurfaceSpec,
     ) -> Result<Self, StreamSurfaceError> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::renderer::gpu_checked(device, "stream replay pipelines", || {
             let multisampled = spec.sample_count > 1;
             let texture_type = if multisampled { "texture_multisampled_2d<f32>" } else { "texture_2d<f32>" };
             let compute_shader = crate::gpu_compile::shader_module(&device, wgpu::ShaderModuleDescriptor {
@@ -76,7 +76,7 @@ impl ReplayTransfer {
                 multiview_mask: None, cache: None,
             });
             Self { compute_layout, restore_layout, compute, restore }
-        })).map_err(|_| StreamSurfaceError::AllocationFailed)
+        }).map_err(StreamSurfaceError::Gpu)
     }
 }
 
@@ -112,23 +112,22 @@ impl StreamSurface {
         clear: wgpu::Color,
         mut background: impl FnMut(&mut wgpu::RenderPass<'_>),
         budget: u64,
-        pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
         let bytes = replay_bytes(self.spec)?;
         if ledger
             .total_bytes()
-            .checked_add(pool_bytes)
-            .and_then(|n| n.checked_add(bytes))
+            .checked_add(bytes)
             .filter(|n| *n <= budget)
             .is_none()
         {
             return Err(StreamSurfaceError::TooLarge);
         }
-        if transfer.replay.is_none() {
-            transfer.replay = Some(ReplayTransfer::new(device, self.spec)?);
-        }
-        let pipelines = transfer.replay.as_ref().unwrap();
-        let replay = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let pipelines = match transfer.replay.take() {
+            Some(pipelines) => pipelines,
+            None => ReplayTransfer::new(device, self.spec)?,
+        };
+        let pipelines = &*transfer.replay.insert(pipelines);
+        let replay = crate::renderer::gpu_checked(device, "stream replay surface", || {
             let create = |label| {
                 // gpu-alloc: caller
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -211,8 +210,8 @@ impl StreamSurface {
                 compute,
                 restore,
             }
-        }))
-        .map_err(|_| StreamSurfaceError::AllocationFailed)?;
+        })
+        .map_err(StreamSurfaceError::Gpu)?;
         for (texture, include_data) in [(&replay.baseline, false), (&replay.preview, true)] {
             let view = texture.create_view(&Default::default());
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -262,9 +261,15 @@ impl StreamSurface {
         encoder: &mut wgpu::CommandEncoder,
         clip: [u32; 4],
         suffix: impl FnOnce(&mut wgpu::RenderPass<'_>),
-    ) {
-        let replay = self.replay.as_ref().unwrap();
-        let pipelines = transfer.replay.as_ref().unwrap();
+    ) -> Result<(), StreamSurfaceError> {
+        let (Some(replay), Some(pipelines)) = (self.replay.as_ref(), transfer.replay.as_ref())
+        else {
+            // The variant, not `internal`: the web crate's browser test
+            // compiles this file outside the renderer crate.
+            return Err(StreamSurfaceError::Gpu(crate::FiggyError::Internal {
+                invariant: "a replay restore follows a successful begin_replay",
+            }));
+        };
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("stream replay reveal pixels"),
@@ -294,6 +299,7 @@ impl StreamSurface {
             pass.draw(0..3, 0..1);
         }
         suffix(&mut pass);
+        Ok(())
     }
 }
 

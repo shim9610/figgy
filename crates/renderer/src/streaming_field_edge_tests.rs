@@ -68,7 +68,9 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
                     fit_reads += ranges.len();
                     supply(&mut f, None, &ranges);
                 }
-                crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+                crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                    f.renderer.wait_idle().unwrap()
+                }
                 crate::AutoStreamingRangeRequest::AllSubmitted {
                     total_primitives, ..
                 } => {
@@ -96,7 +98,7 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
         let displayed = snapshot.config.clone();
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -104,8 +106,8 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
         for (id, values) in &f.columns {
             resident.add_hilo_column(*id, values).unwrap();
         }
-        pollster::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
-        let expected_fit = pollster::block_on(
+        crate::test_gpu::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
+        let expected_fit = crate::test_gpu::block_on(
             resident
                 .begin_series_fit_extent(&f.series[0])
                 .unwrap()
@@ -130,7 +132,7 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
             display_scale: 1.0,
             max_distance_px: 5.0,
         };
-        let expected = pollster::block_on(
+        let expected = crate::test_gpu::block_on(
             resident
                 .pick_chart_data(resident_id, query)
                 .unwrap()
@@ -142,10 +144,11 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
             "chart-space query remains valid outside raster target"
         );
         let operation =
-            pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2)).unwrap();
+            crate::test_gpu::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
+                .unwrap();
         pump_pick(&mut f, operation);
         assert_eq!(
-            pollster::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap(),
+            crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap(),
             expected
         );
     }
@@ -160,31 +163,19 @@ impl crate::HiLoColumnSource for PartialFailure {
     fn len(&self) -> usize {
         self.values.data.len()
     }
-    fn min(&self) -> f64 {
-        self.values.min
-    }
-    fn max(&self) -> f64 {
-        self.values.max
-    }
-    fn write_f32_pair_le_into(&self, _: &mut [u8]) {
+    fn write_pairs(&self, _: &mut crate::ColumnPairWriter<'_>) {
         panic!("full-column writer forbidden");
     }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _: crate::ColumnPairWriter<'_>,
-    ) -> crate::ColumnUploadStats {
-        panic!("full-column writer forbidden");
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut writer: crate::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError> {
+        writer: &mut crate::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::ColumnRangeWriteError> {
         if self.fail.replace(false) {
             writer.write_pair(0, 0.5, 0.0);
             return Err(crate::ColumnRangeWriteError::SourceFailed);
         }
-        crate::HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.values, start, writer)
+        crate::HiLoColumnSource::write_pair_range(&self.values, start, writer)
     }
 }
 
@@ -203,8 +194,10 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
                 area.y as f32 + area.height as f32 * 0.61,
             ];
             Some(
-                pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
-                    .unwrap(),
+                crate::test_gpu::block_on(
+                    f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2),
+                )
+                .unwrap(),
             )
         } else {
             None
@@ -234,13 +227,13 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
             source: crate::StreamColumnSource::HiLo(&source),
         }];
         f.renderer.end_gpu_frame();
-        f.renderer.wait_idle();
+        f.renderer.wait_idle().unwrap();
         f.renderer.service_stream_requests();
         let before = f.renderer.gpu_memory_usage().total_bytes();
         let headroom = if picking {
             crate::data_render::stream_field::STEP_BYTES
         } else {
-            crate::gpu_errorbar::GpuSeriesExtentTicket::FIELD_BYTES
+            crate::gpu_extent::GpuSeriesExtentTicket::FIELD_BYTES
         };
         let _ = f
             .renderer
@@ -258,7 +251,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
             failed,
             Err(FiggyError::InvalidStreamSource { .. })
         ));
-        f.renderer.wait_idle();
+        f.renderer.wait_idle().unwrap();
         f.renderer.service_stream_requests();
         assert_eq!(
             f.renderer.gpu_memory_usage().total_bytes(),
@@ -278,7 +271,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
         if let Some(op) = operation {
             pump_pick(&mut f, op);
             assert!(
-                pollster::block_on(f.renderer.finish_stream_pick_data(op))
+                crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(op))
                     .unwrap()
                     .is_some()
             );

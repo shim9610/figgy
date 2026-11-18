@@ -17,29 +17,31 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
+use renderer::theme::ChartKind;
+use renderer::theme::ThemeFamily;
 use renderer::{
-    Color, Renderer,
-    config::LegendEntryKind,
-    data_config::{DataRenderType, LineFill, LineInterpolation},
-    line::LineStylePreset,
+    Color, Renderer, SeriesConfig, data_config::LineInterpolation, line::LineStylePreset,
 };
 use std::path::Path;
-use styled::{cartesian, export, rgb, save};
+use styled::{background, export, save, scene_chart, themed};
 
 // A forecast: the history as a solid line, the forecast dashed, with 80% and
 // 95% bands filled between their edge series.
 fn forecast(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(247, 248, 253);
-    let ink = rgb(52, 57, 85);
-    let teal = rgb(37, 150, 160);
-    let mut chart = cartesian(
+    let mut theme = ThemeFamily::CoolSlate.theme(ChartKind::Line);
+    let ink = theme.chrome.ink;
+    let teal = theme.series.palette[0];
+    // The colours carry meaning here: the history in ink, the forecast and
+    // its bands in one hue at three strengths. The series take them by role,
+    // so the theme keeps their colours and fills.
+    theme.series.palette.clear();
+    theme.series.lines.fill_opacity = None;
+    let bg = background(&theme);
+    let mut chart = scene_chart(
         "Demand forecast / next three weeks",
         "Day",
         "Orders per day",
-        bg,
-        ink,
-        rgb(228, 231, 240),
     );
     chart.set_x_range(0., 49.);
     chart.set_y_range(0., 1600.);
@@ -84,8 +86,10 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
             .collect();
         (upper, lower)
     };
-    let (up80, lo80) = band(28.);
-    let (up95, lo95) = band(52.);
+    // The forecast's standard deviation grows as 22·√(d − 26); the bands
+    // are its normal 80% and 95% intervals.
+    let (up80, lo80) = band(1.28 * 22.);
+    let (up95, lo95) = band(1.96 * 22.);
     for (id, data) in [
         ("day", day),
         ("history", history),
@@ -95,63 +99,53 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
         ("up95", up95),
         ("lo95", lo95),
     ] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
-    let edge = |id: &str, to: Option<&str>, alpha: f32| {
-        let mut style = line(Color::from_rgba(teal.r, teal.g, teal.b, 0.0), 0.5);
-        style.fill = to.map(|s| LineFill::ToSeries(s.into()));
-        style.fill_color = Some(Color::from_rgba(teal.r, teal.g, teal.b, alpha));
-        series(id, "day", id, DataRenderType::Line { line: style })
+    // An invisible edge line; the upper edge of a band fills down to the lower.
+    let edge = |id: &str| {
+        SeriesConfig::line(id, "day", id)
+            .color(Color::from_rgba(teal.r, teal.g, teal.b, 0.0))
+            .width(0.5)
     };
-    let mut dashed = line(teal, 3.);
-    dashed.line_style = LineStylePreset::Dash;
-    let specs = [
-        edge("up95", Some("lo95"), 0.14),
-        edge("lo95", None, 0.),
-        edge("up80", Some("lo80"), 0.22),
-        edge("lo80", None, 0.),
-        series(
-            "history",
-            "day",
-            "history",
-            DataRenderType::Line {
-                line: line(ink, 3.),
-            },
-        ),
-        series(
-            "forecast",
-            "day",
-            "forecast",
-            DataRenderType::Line { line: dashed },
-        ),
+    let band = |upper: &str, lower: &str, alpha: f32| {
+        edge(upper)
+            .fill_between(lower)
+            .fill_color(Color::from_rgba(teal.r, teal.g, teal.b, alpha))
+    };
+    // The labels in TeX: the observations y and the forecast ŷ with its
+    // intervals.
+    let mut specs = [
+        band("up95", "lo95", 0.14),
+        edge("lo95"),
+        band("up80", "lo80", 0.22),
+        edge("lo80"),
+        SeriesConfig::line("history", "day", "history")
+            .label(r"Actual $y_t$")
+            .color(ink),
+        SeriesConfig::line("forecast", "day", "forecast")
+            .label(r"Forecast $\hat{y}_t \pm 1.28\,\sigma_t$ (80%) and $\pm 1.96\,\sigma_t$ (95%)")
+            .color(teal)
+            .dash(LineStylePreset::Dash),
     ];
-    chart = chart
-        .with_legend_entry("Actual", ink, 3., LegendEntryKind::Line)
-        .with_legend_entry(
-            "Forecast, 80% and 95% bands",
-            teal,
-            3.,
-            LegendEntryKind::Line,
-        );
-    let image = export(r, &chart, &specs, bg)?;
+    themed(&mut chart, &theme, &mut specs)?;
+    // The band edges are invisible hairlines.
+    for edge in &mut specs[..4] {
+        *edge = edge.clone().width(0.5);
+    }
+    chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-forecast.png"))
 }
 
 // A thermostat schedule: the setpoint as a step line with a filled area, the
 // measured room temperature as a smooth line over it.
 fn thermostat(r: &mut Renderer, out: &Path) -> Result {
-    let bg = rgb(248, 247, 252);
-    let ink = rgb(58, 54, 82);
-    let violet = rgb(112, 92, 212);
-    let coral = rgb(232, 104, 84);
-    let mut chart = cartesian(
-        "Thermostat / a winter day",
-        "Hour",
-        "Temperature (°C)",
-        bg,
-        ink,
-        rgb(230, 228, 240),
-    );
+    let mut theme = ThemeFamily::CoolSlate.theme(ChartKind::Line);
+    // The setpoint in violet over a stronger fill, the room in coral.
+    theme.series.palette = vec![theme.series.palette[2], theme.series.palette[1]];
+    theme.series.lines.fill_opacity = Some(0.16);
+    let bg = background(&theme);
+    let mut chart = scene_chart("Thermostat / a winter day", "Hour", "Temperature (°C)");
     chart.set_x_range(0., 24.);
     chart.set_y_range(14., 24.);
     chart.config_mut().bottom_x.major_spacing = 3.;
@@ -188,34 +182,19 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
             temp
         })
         .collect();
-    r.add_column("hour", &column(hours))?;
-    r.add_column("setpoint", &column(setpoint))?;
-    r.add_column("minute", &column(minute))?;
-    r.add_column("room", &column(room))?;
-    let mut step = line(violet, 2.5);
-    step.interpolation = LineInterpolation::StepPost;
-    step.fill = Some(LineFill::ToBaseline(14.));
-    step.fill_color = Some(Color::from_rgba(violet.r, violet.g, violet.b, 0.16));
-    let specs = [
-        series(
-            "setpoint",
-            "hour",
-            "setpoint",
-            DataRenderType::Line { line: step },
-        ),
-        series(
-            "room",
-            "minute",
-            "room",
-            DataRenderType::Line {
-                line: line(coral, 3.5),
-            },
-        ),
-    ];
-    chart = chart
-        .with_legend_entry("Setpoint schedule", violet, 2.5, LegendEntryKind::Line)
-        .with_legend_entry("Room temperature", coral, 3.5, LegendEntryKind::Line);
-    let image = export(r, &chart, &specs, bg)?;
+    r.add_column("hour", &hours)?;
+    r.add_column("setpoint", &setpoint)?;
+    r.add_column("minute", &minute)?;
+    r.add_column("room", &room)?;
+    let schedule = SeriesConfig::line("setpoint", "hour", "setpoint")
+        .label("Setpoint schedule")
+        .interpolation(LineInterpolation::StepPost)
+        .fill_to(14.);
+    let measured = SeriesConfig::line("room", "minute", "room").label("Room temperature");
+    let mut specs = [schedule, measured];
+    themed(&mut chart, &theme, &mut specs)?;
+    chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-thermostat.png"))
 }
 
@@ -224,8 +203,8 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
 fn step_modes(r: &mut Renderer, out: &Path) -> Result {
     let sx: Vec<f64> = (0..8).map(f64::from).collect();
     let sy = vec![1.0, 2.5, 1.5, 3.0, 2.0, 3.5, 2.5, 3.0];
-    r.add_column("sx", &column(sx))?;
-    r.add_column("sy", &column(sy))?;
+    r.add_column("sx", &sx)?;
+    r.add_column("sy", &sy)?;
     let steps = [
         (
             "pre",
@@ -244,16 +223,21 @@ fn step_modes(r: &mut Renderer, out: &Path) -> Result {
         ),
     ]
     .map(|(id, interpolation, color)| {
-        let mut style = line(color, 2.0);
-        style.interpolation = interpolation;
+        let series = SeriesConfig::line(id, "sx", "sy")
+            .color(color)
+            .width(2.0)
+            .interpolation(interpolation);
         // A fill under a step line follows the steps.
-        style.fill = (id == "post").then_some(LineFill::ToBaseline(0.0));
-        series(id, "sx", "sy", DataRenderType::Line { line: style })
+        if id == "post" {
+            series.fill_to(0.0)
+        } else {
+            series
+        }
     });
     let mut chart = gallery::chart("Step interpolation", "Sample", "Value", (960, 600));
     chart.set_x_range(-0.5, 7.5);
     chart.set_y_range(0.0, 4.0);
-    gallery::save(r, &chart, &steps, &out.join("steps.png"))
+    gallery::save(r, &mut chart, &steps, &out.join("steps.png"))
 }
 
 fn main() -> Result {

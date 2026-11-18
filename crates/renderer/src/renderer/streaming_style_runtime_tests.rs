@@ -6,6 +6,7 @@ use crate::data_config::{
     ContourConfig, DataErrorBarPointStyleOverride, DataScatterPointStyleOverride, FieldFillConfig,
     FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
 };
+use crate::test_gpu::BlockOn as _;
 use std::cell::{Cell, RefCell};
 
 struct RangeOnly<'a> {
@@ -19,26 +20,14 @@ impl crate::ColumnSource for RangeOnly<'_> {
     fn len(&self) -> usize {
         self.values.len()
     }
-    fn min(&self) -> f64 {
-        0.0
-    }
-    fn max(&self) -> f64 {
-        1.0
-    }
-    fn write_f32_le_into(&self, _: &mut [u8]) {
-        panic!("stream called a full-column writer");
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _: crate::ColumnPairWriter<'_>,
-    ) -> crate::ColumnUploadStats {
+    fn write_pairs(&self, _: &mut crate::ColumnPairWriter<'_>) {
         panic!("stream called a full-column pair writer");
     }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut writer: crate::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError> {
+        writer: &mut crate::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::ColumnRangeWriteError> {
         let end = (start as usize)
             .checked_add(writer.len())
             .filter(|end| *end <= self.values.len())
@@ -49,7 +38,7 @@ impl crate::ColumnSource for RangeOnly<'_> {
         for (index, &value) in self.values[start as usize..end].iter().enumerate() {
             writer.write_pair(index, value, 0.0);
         }
-        Ok(None)
+        Ok(())
     }
 }
 
@@ -146,29 +135,41 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
     series.x_column = format!("r{}", series.x_column);
     series.y_column = format!("r{}", series.y_column);
     let (scatter, error) = match &mut series.render_type {
-        DataRenderType::Scatter { scatter } | DataRenderType::ScatterLine { scatter, .. } => {
-            (scatter, None)
-        }
-        DataRenderType::ScatterErrorbarXY {
-            scatter,
-            err_x,
-            err_y,
-            err_style,
-        } => {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            errors: None,
+            ..
+        }) => (scatter, None),
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors:
+                Some(crate::data_config::ErrorBars {
+                    x: Some(err_x),
+                    y: Some(err_y),
+                    style: err_style,
+                }),
+            ..
+        }) => {
             prefix_error_column(err_x);
             prefix_error_column(err_y);
             (scatter, Some(err_style))
         }
-        DataRenderType::Line { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        DataRenderType::Xy(_)
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Field(_)
+        | DataRenderType::RgbImage { .. }
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
+        | DataRenderType::Feynman(_)
+        | DataRenderType::MonotonicLine(_)
+        | DataRenderType::Streamlines { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
     scatter.point_style_index_column = (!remove_maps).then(|| "rindex".into());
@@ -185,9 +186,9 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
     }
 }
 
-fn draw_registered(r: &mut Renderer, id: ChartId, view: &ChartView, samples: u32) -> Vec<u8> {
+fn draw_registered(r: &mut Renderer, id: ChartId, view: &mut ChartView, samples: u32) -> Vec<u8> {
     let frame = r
-        .prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
+        .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
         .unwrap();
     let pixels = paint_frame_pixels(r, &frame, samples);
     drop(frame);
@@ -340,7 +341,8 @@ fn compare_isolated_stream_chunks(
         .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
-        RendererDevice::new(Arc::clone(&resident.device), Arc::clone(&resident.queue)),
+        RendererDevice::new(resident.device.clone(), resident.queue.clone())
+            .expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         8192,
         samples,
@@ -360,7 +362,7 @@ fn compare_isolated_stream_chunks(
         )
         .unwrap();
     let chart = Chart::new(config.clone());
-    let resident_view = resident
+    let mut resident_view = resident
         .create_chart_view(&chart, config.chart_area.0)
         .unwrap();
     let stream_view = streamed
@@ -439,7 +441,7 @@ fn compare_isolated_stream_chunks(
                         streamed
                             .submit_chart_stream_draw(ticket, &inputs, &stream_view, &target)
                             .unwrap();
-                        streamed.wait_idle();
+                        streamed.wait_idle().unwrap();
                         streamed.end_gpu_frame();
                         phases[phase_index] += 1;
                         continue;
@@ -453,9 +455,9 @@ fn compare_isolated_stream_chunks(
                     resident_y.data[end..].fill(f32::NAN);
                     resident.upsert_column("y", &resident_y).unwrap();
                     let frame = resident
-                        .prepare_registered(&[RegisteredChartDrawItem {
+                        .prepare_registered(&mut [RegisteredChartDrawItem {
                             chart_id: resident_id,
-                            view: &resident_view,
+                            view: &mut resident_view,
                         }])
                         .unwrap();
                     let reference = draw_target(resident, samples);
@@ -569,7 +571,8 @@ fn compare_stream_phase_pairs(
         .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
-        RendererDevice::new(Arc::clone(&resident.device), Arc::clone(&resident.queue)),
+        RendererDevice::new(resident.device.clone(), resident.queue.clone())
+            .expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         8192,
         samples,
@@ -589,7 +592,7 @@ fn compare_stream_phase_pairs(
         )
         .unwrap();
     let chart = Chart::new(config.clone());
-    let resident_view = resident
+    let mut resident_view = resident
         .create_chart_view(&chart, config.chart_area.0)
         .unwrap();
     let stream_view = streamed
@@ -602,9 +605,9 @@ fn compare_stream_phase_pairs(
         .register_chart(config.clone(), declarations.to_vec())
         .unwrap();
     let frame = resident
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: resident_id,
-            view: &resident_view,
+            view: &mut resident_view,
         }])
         .unwrap();
     let data = config.data_area().unwrap().0;
@@ -679,7 +682,7 @@ fn compare_stream_phase_pairs(
             streamed
                 .submit_chart_stream_draw(ticket, &inputs, &stream_view, &target)
                 .unwrap();
-            streamed.wait_idle();
+            streamed.wait_idle().unwrap();
             streamed.end_gpu_frame();
         }
         let actual = read_draw_target(&streamed, &target);
@@ -731,14 +734,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                     }) as f32
                 })
                 .collect();
-            (
-                id,
-                crate::Column {
-                    data,
-                    min: 0.0,
-                    max: 1.0,
-                },
-            )
+            (id, crate::Column { data })
         })
         .collect();
     let config = test_config(
@@ -777,18 +773,22 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                 error.cap_width = 0.0;
             }
             let mut cfg = declaration(id, "x", "y");
-            cfg.render_type = DataRenderType::ScatterErrorbarXY {
-                scatter: point,
-                err_x: ErrorRef::Asymmetric {
-                    lower: "ex_lo".into(),
-                    upper: "ex_hi".into(),
-                },
-                err_y: ErrorRef::Asymmetric {
-                    lower: "ey_lo".into(),
-                    upper: "ey_hi".into(),
-                },
-                err_style: error,
-            };
+            cfg.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(point),
+                line: None,
+                errors: Some(crate::data_config::ErrorBars {
+                    x: Some(ErrorRef::Asymmetric {
+                        lower: "ex_lo".into(),
+                        upper: "ex_hi".into(),
+                    }),
+                    y: Some(ErrorRef::Asymmetric {
+                        lower: "ey_lo".into(),
+                        upper: "ey_hi".into(),
+                    }),
+                    style: error,
+                }),
+                stem: None,
+            });
             cfg
         })
         .collect();
@@ -796,14 +796,17 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
     // browser/Dawn D3D12 result can be compared with native D3D12 and Vulkan.
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = data_render::request_adapter(&instance).expect("style export GPU required");
+    let adapter = data_render::request_adapter_async(&instance)
+        .block_on()
+        .expect("style export GPU required");
     eprintln!("style export adapter: {:?}", adapter.get_info());
-    let (device, queue) =
-        data_render::request_device(&adapter).expect("style export device required");
-    let (device, queue) = (Arc::new(device), Arc::new(queue));
+    let (device, queue) = data_render::request_device_async(&adapter)
+        .block_on()
+        .expect("style export device required");
+    let (device, queue) = (device, queue);
     let make = || {
         Renderer::try_new(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             8192,
         )
@@ -835,13 +838,13 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         let chart = resident
             .register_chart(config.clone(), series.clone())
             .unwrap();
-        let view = resident
+        let mut view = resident
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         let frame = resident
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: chart,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         let item = &frame.items[0];
@@ -975,11 +978,9 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         );
         return;
     }
-    let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
-        &Chart::new(config.clone()),
-        &series,
-        1.0,
-        Color::WHITE,
+    let expected = crate::test_gpu::block_on(resident.export_rgba(
+        crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+        crate::ExportOptions::panel(1.0).with_clear(Color::WHITE),
     ))
     .unwrap();
     let chunks = if std::env::var_os("FIGGY_STYLE_EXPORT_UNSPLIT").is_some() {
@@ -1016,7 +1017,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         let chart = streamed
             .register_chart(config.clone(), series.clone())
             .unwrap();
-        let view = streamed
+        let mut view = streamed
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         streamed
@@ -1043,16 +1044,16 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
             match streamed.auto_stream_chart_step(chart, &bindings).unwrap() {
                 crate::AutoStreamingProgress::AllSubmitted { .. }
                 | crate::AutoStreamingProgress::Complete { .. } => break,
-                crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle(),
+                crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle().unwrap(),
                 _ => {}
             }
         }
-        streamed.wait_idle();
+        streamed.wait_idle().unwrap();
         drop(
             streamed
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: chart,
-                    view: &view,
+                    view: &mut view,
                 }])
                 .unwrap(),
         );
@@ -1071,8 +1072,6 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                                 data: values.data
                                     [range.offset as usize..(range.offset + range.len) as usize]
                                     .to_vec(),
-                                min: 0.0,
-                                max: 1.0,
                             }
                         })
                         .collect();
@@ -1091,12 +1090,14 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                         .submit_stream_operation_ranges(operation, &bindings)
                         .unwrap();
                 }
-                crate::AutoStreamingRangeRequest::Backpressure { .. } => streamed.wait_idle(),
+                crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                    streamed.wait_idle().unwrap()
+                }
                 crate::AutoStreamingRangeRequest::AllSubmitted { .. }
                 | crate::AutoStreamingRangeRequest::Complete { .. } => break,
             }
         }
-        let actual = pollster::block_on(streamed.finish_stream_export(operation)).unwrap();
+        let actual = crate::test_gpu::block_on(streamed.finish_stream_export(operation)).unwrap();
         assert!(
             mismatch(
                 &expected.rgba,
@@ -1138,14 +1139,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                         _ => unreachable!(),
                     })
                     .collect();
-                (
-                    id,
-                    crate::Column {
-                        data,
-                        min: 0.0,
-                        max: 1.0,
-                    },
-                )
+                (id, crate::Column { data })
             })
             .collect();
     let mut failures = Vec::new();
@@ -1158,7 +1152,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                 let (device, queue) =
                     data_render::shared_device().expect("styled stream GPU required");
                 let mut r = Renderer::try_new_with_sample_count(
-                    RendererDevice::new(device, queue),
+                    RendererDevice::new(device, queue).expect("figgy poll thread"),
                     wgpu::TextureFormat::Rgba8Unorm,
                     8192,
                     samples,
@@ -1180,7 +1174,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                     r.add_column(&format!("r{id}"), column).unwrap();
                 }
                 let config = test_config(style);
-                let view = r
+                let mut view = r
                     .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
                     .unwrap();
                 let declarations: Vec<_> = ["front", "back"]
@@ -1194,34 +1188,43 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                         };
                         let mut series = declaration(id, "x", "y");
                         series.render_type = if mode == 2 {
-                            DataRenderType::ScatterLine {
-                                scatter: scatter(color),
-                                line: DataLineStyleConfig {
+                            DataRenderType::Xy(crate::data_config::XySeries {
+                                scatter: Some(scatter(color)),
+                                line: Some(DataLineStyleConfig {
                                     line_color: color,
                                     line_width: 2.5,
                                     line_style: LineStylePreset::Solid,
                                     fill: None,
                                     fill_color: None,
                                     interpolation: crate::data_config::LineInterpolation::Linear,
-                                },
-                            }
+                                }),
+                                errors: None,
+                                stem: None,
+                            })
                         } else if errorbars {
-                            DataRenderType::ScatterErrorbarXY {
-                                scatter: scatter(color),
-                                err_x: ErrorRef::Asymmetric {
-                                    lower: "ex_lo".into(),
-                                    upper: "ex_hi".into(),
-                                },
-                                err_y: ErrorRef::Asymmetric {
-                                    lower: "ey_lo".into(),
-                                    upper: "ey_hi".into(),
-                                },
-                                err_style: error_style(color),
-                            }
+                            DataRenderType::Xy(crate::data_config::XySeries {
+                                scatter: Some(scatter(color)),
+                                line: None,
+                                errors: Some(crate::data_config::ErrorBars {
+                                    x: Some(ErrorRef::Asymmetric {
+                                        lower: "ex_lo".into(),
+                                        upper: "ex_hi".into(),
+                                    }),
+                                    y: Some(ErrorRef::Asymmetric {
+                                        lower: "ey_lo".into(),
+                                        upper: "ey_hi".into(),
+                                    }),
+                                    style: error_style(color),
+                                }),
+                                stem: None,
+                            })
                         } else {
-                            DataRenderType::Scatter {
-                                scatter: scatter(color),
-                            }
+                            DataRenderType::Xy(crate::data_config::XySeries {
+                                scatter: Some(scatter(color)),
+                                line: None,
+                                errors: None,
+                                stem: None,
+                            })
                         };
                         series
                     })
@@ -1237,8 +1240,8 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                 let resident_id = r.register_chart(config.clone(), resident).unwrap();
                 let unmapped_id = r.register_chart(config.clone(), unmapped).unwrap();
                 let stream_id = r.register_chart(config, declarations).unwrap();
-                let expected = draw_registered(&mut r, resident_id, &view, samples);
-                let no_maps = draw_registered(&mut r, unmapped_id, &view, samples);
+                let expected = draw_registered(&mut r, resident_id, &mut view, samples);
+                let no_maps = draw_registered(&mut r, unmapped_id, &mut view, samples);
                 if let Some(failure) = mismatch(
                     &expected,
                     &no_maps,
@@ -1306,7 +1309,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                         range_sources.iter().all(|source| source.largest.get()
                             <= chunk as usize + usize::from(mode == 2))
                     );
-                    let actual = draw_registered(&mut r, stream_id, &view, samples);
+                    let actual = draw_registered(&mut r, stream_id, &mut view, samples);
                     if let Some(failure) = stream_mismatch(
                         &expected,
                         &actual,
@@ -1316,7 +1319,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                     ) {
                         failures.push(failure);
                     }
-                    let stable = draw_registered(&mut r, stream_id, &view, samples);
+                    let stable = draw_registered(&mut r, stream_id, &mut view, samples);
                     assert!(
                         mismatch(&actual, &stable, "completed stream output changed").is_none()
                     );
@@ -1330,7 +1333,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
 }
 
 #[test]
-fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
+fn styled_stream_suppressed_fields_are_exact_noops() {
     let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
         .unwrap();
@@ -1339,7 +1342,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
         for (mode, style) in styles().into_iter().enumerate() {
             let (device, queue) = data_render::shared_device().expect("styled stream GPU required");
             let mut r = Renderer::try_new_with_sample_count(
-                RendererDevice::new(device, queue),
+                RendererDevice::new(device, queue).expect("figgy poll thread"),
                 wgpu::TextureFormat::Rgba8Unorm,
                 4096,
                 samples,
@@ -1361,24 +1364,16 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                 ("ry", vec![0.2, 0.8]),
                 ("rz", vec![0.6]),
             ] {
-                r.add_column(
-                    id,
-                    &crate::Column {
-                        data,
-                        min: 0.0,
-                        max: 1.0,
-                    },
-                )
-                .unwrap();
+                r.add_column(id, &crate::Column { data }).unwrap();
             }
             let mut config = test_config(style);
             config.colorbar = Some(crate::default::default_colorbar_options());
-            let view = r
+            let mut view = r
                 .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
                 .unwrap();
             let empty = r.register_chart(config.clone(), Vec::new()).unwrap();
-            let blank = draw_registered(&mut r, empty, &view, samples);
-            for kind in 0..4 {
+            let blank = draw_registered(&mut r, empty, &mut view, samples);
+            for kind in 1..4 {
                 let matrix = MatrixRef {
                     columns: vec!["z".into()],
                     orientation: MatrixOrientation::ColumnsAreX,
@@ -1404,51 +1399,59 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                 };
                 let mut stream = declaration("suppressed", "x", "y");
                 stream.render_type = match kind {
-                    0 => DataRenderType::Histogram {
-                        bar: DataBarStyleConfig {
-                            fill_color: Color::BLACK,
-                            border_color: Color::BLACK,
-                            border_width: 1.0,
-                            baseline: 0.0,
-                            gap_px: 1.0,
-                            width_ratio: 1.0,
-                            orientation: crate::data_config::BarOrientation::Vertical,
-                            bar_style_overrides: None,
-                        },
-                    },
-                    1 => DataRenderType::Heatmap { matrix, fill },
-                    2 => DataRenderType::Contour { matrix, contour },
-                    3 => DataRenderType::HeatmapContour {
+                    1 => DataRenderType::Field(crate::data_config::FieldSeries {
                         matrix,
-                        fill,
-                        contour,
-                    },
+                        fill: Some(fill),
+                        contour: None,
+                        surface: None,
+                    }),
+                    2 => DataRenderType::Field(crate::data_config::FieldSeries {
+                        matrix,
+                        fill: None,
+                        contour: Some(contour),
+                        surface: None,
+                    }),
+                    3 => DataRenderType::Field(crate::data_config::FieldSeries {
+                        matrix,
+                        fill: Some(fill),
+                        contour: Some(contour),
+                        surface: None,
+                    }),
                     _ => unreachable!(),
                 };
                 let mut resident = stream.clone();
                 resident.x_column = "rx".into();
                 resident.y_column = "ry".into();
                 match &mut resident.render_type {
-                    DataRenderType::Heatmap { matrix, .. }
-                    | DataRenderType::Contour { matrix, .. }
-                    | DataRenderType::HeatmapContour { matrix, .. } => {
-                        matrix.columns = vec!["rz".into()]
-                    }
-                    DataRenderType::Scatter { .. }
-                    | DataRenderType::Line { .. }
-                    | DataRenderType::ScatterLine { .. }
-                    | DataRenderType::ScatterErrorbarX { .. }
-                    | DataRenderType::ScatterErrorbarY { .. }
-                    | DataRenderType::ScatterErrorbarXY { .. }
-                    | DataRenderType::LineScatterErrorbarX { .. }
-                    | DataRenderType::LineScatterErrorbarY { .. }
-                    | DataRenderType::LineScatterErrorbarXY { .. }
+                    DataRenderType::Field(crate::data_config::FieldSeries {
+                        matrix,
+                        contour: None,
+                        ..
+                    })
+                    | DataRenderType::RgbImage { red: matrix, .. }
+                    | DataRenderType::Field(crate::data_config::FieldSeries {
+                        matrix,
+                        contour: Some(_),
+                        ..
+                    }) => matrix.columns = vec!["rz".into()],
+                    DataRenderType::Xy(_)
                     | DataRenderType::Histogram { .. }
+                    | DataRenderType::CategoryBars { .. }
+                    | DataRenderType::BoxPlot { .. }
+                    | DataRenderType::RangeBars { .. }
+                    | DataRenderType::Radar { .. }
+                    | DataRenderType::Ternary { .. }
+                    | DataRenderType::Parallel { .. }
+                    | DataRenderType::EnergyLevels(_)
+                    | DataRenderType::TriMesh(_)
+                    | DataRenderType::Feynman(_)
+                    | DataRenderType::MonotonicLine(_)
+                    | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }
                 let resident_id = r.register_chart(config.clone(), vec![resident]).unwrap();
                 let stream_id = r.register_chart(config.clone(), vec![stream]).unwrap();
-                let expected = draw_registered(&mut r, resident_id, &view, samples);
+                let expected = draw_registered(&mut r, resident_id, &mut view, samples);
                 if let Some(failure) = mismatch(
                     &blank,
                     &expected,
@@ -1473,7 +1476,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                             total_primitives: 0
                         }
                     ));
-                    let actual = draw_registered(&mut r, stream_id, &view, samples);
+                    let actual = draw_registered(&mut r, stream_id, &mut view, samples);
                     if let Some(failure) = stream_mismatch(
                         &expected,
                         &actual,
@@ -1504,23 +1507,25 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
                 .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
                 .unwrap();
             let mut series = declaration("arc-gated", "x", "a");
-            series.render_type = DataRenderType::ScatterLine {
-                scatter: {
+            series.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some({
                     let mut point = scatter(Color::BLACK);
                     point.point_style_index_column = None;
                     point.point_style_table = None;
                     point.point_style_overrides = None;
                     point
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     line_color: Color::BLACK,
                     line_width: 2.0,
                     line_style: dash,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-            };
+                }),
+                errors: None,
+                stem: None,
+            });
             let id = r.register_chart(config, vec![series]).unwrap();
             let result = r.begin_streaming_chart(
                 id,
@@ -1548,18 +1553,20 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
         }
     }
     let mut series = declaration("precise-field", "x", "a");
-    series.render_type = DataRenderType::Heatmap {
+    series.render_type = DataRenderType::Field(crate::data_config::FieldSeries {
         matrix: MatrixRef {
             columns: vec!["a".into()],
             orientation: MatrixOrientation::ColumnsAreX,
             grid_layout: GridLayout::Edges,
         },
-        fill: FieldFillConfig {
+        fill: Some(FieldFillConfig {
             mode: FillMode::Continuous,
             shading: Shading::Flat,
             opacity: 1.0,
-        },
-    };
+        }),
+        contour: None,
+        surface: None,
+    });
     assert!(
         PrepareContext::validate_stream_series(&crate::default::default_config(), &series).is_ok()
     );

@@ -1,18 +1,29 @@
 # Native chart gallery
 
-Each README image links to the example file that draws it. The
+The README groups these images by kind (#250). Each thumbnail opens a category
+page with the large image, a description and the command that draws it, and the
+large image opens the example code: [lines](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/lines.md),
+[bars and distributions](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/distributions.md),
+[ranges](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/ranges.md),
+[fields](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/fields.md),
+[3D](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/3d.md),
+[polar and radial](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/polar.md),
+[science](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/science.md),
+[layouts](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/layouts.md) and
+[styles](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/styles.md). The
 [example index](examples/README.md#gallery-images) names the function for every
 image.
-[`readme_gallery.rs`](examples/readme_gallery.rs) runs the `error_bars`,
-`histogram`, `heatmap_contours` and `animated_lines` examples with one shared
-device. They use the native `Renderer` with an offscreen RGBA target, upload columns through
-the resident pool, and export through `export_panel_rgba_with_clear_async` and
-`encode_png`. No browser or window is needed. Axes, text, grid and legends follow
-the same CPU-raster/GPU-compositing path as other figgy charts.
+[`readme_gallery.rs`](examples/readme_gallery.rs) runs twelve examples with
+one shared device: `error_bars`, `histogram`, `heatmap_contours`,
+`animated_lines`, and the 0.19 scenes `ternary`, `surface_3d`, `trimesh`,
+`parallel`, `range_bars`, `stem`, `broken_axes` and `feynman`. They use the
+native `Renderer`, upload their columns, and export with
+`export_rgba_blocking` and `encode_png`. No browser or window is needed.
 
-All data is synthetic. These images demonstrate plotting features, not measured
-scientific results. The error bars are deliberately chosen widths, not confidence
-intervals inferred from observations.
+All data is synthetic except the energy-level diagram, which draws the bundled
+NIST ASD exports for He I. These images demonstrate plotting features, not
+measured scientific results. The error bars are synthetic ±1σ widths chosen for
+the example, not intervals estimated from observations.
 
 | Output | Data and rendering | Size |
 |---|---|---|
@@ -31,70 +42,146 @@ intervals inferred from observations.
 | `gallery-polar.png` | `01-antenna-pattern.png` from `polar_plot.rs`: a filled line in polar coordinates with degree labels | 960 × 640 |
 | `gallery-polar-compass.png` | `02-compass-rose.png` from `polar_plot.rs`: a scatter-line clockwise from the top with arc segments, the radius labels on the 45° ray | 960 × 640 |
 
-`error_bars`, `histogram`, `heatmap_contours` and `animated_lines` also run on
-their own; `animated_lines` writes the wave and orbit frames. `line` is not part
+Each of the twelve also runs on its own; `animated_lines` writes the wave and orbit frames. `line` is not part
 of `readme_gallery` and runs only on its own.
-[support/gallery.rs](examples/support/gallery.rs) holds device setup,
-presentation defaults and PNG checks, not the chart definitions. To add an image
-to a README gallery row, keep four images per row (`width="23%" align="top"`, no
-fixed height) and link the image to the example that writes it.
+[support/gallery.rs](examples/support/gallery.rs) holds device setup, the
+theme helpers (`themed`, and the custom looks in
+[support/looks.rs](examples/support/looks.rs)) and PNG checks, not the chart
+definitions. These twelve images are drawn in the `gallery` theme family
+([Themes](USAGE.md#themes)), except `gallery-line.png`, which keeps the
+documented look (`Theme::default()`) with a blue, heavier line. The category pages in `gallery/` name the theme of every image. To add an image
+to the gallery, write its thumbnail (see [Thumbnails](#thumbnails)), add an entry
+on its category page in `gallery/`, and add a cell to that category's README
+table: five per row, `<td align="center" width="20%">`, a `width="160"`
+thumbnail linking to the page anchor.
 
 ## Feature scenes
 
 The Cartesian feature examples draw the designed 1200 × 800 scenes in the
-README. [support/styled.rs](examples/support/styled.rs) holds their shared
-chrome: no axis lines or ticks, a horizontal grid and a quiet legend. Some scenes
-hide the legend or the grid, or add vertical grid lines; the data and series stay
-in each example.
+README. Each scene applies a theme family or a custom theme from
+[support/looks.rs](examples/support/looks.rs), named in the table; the scene
+themes share one chrome: no axis lines or ticks, a horizontal
+grid, large text and a quiet legend on an opaque background. Some themes hide
+the grid or add vertical grid lines, and an example may edit a copy of its
+theme (the palette order, a fill opacity). The data and series stay in each
+example; [support/styled.rs](examples/support/styled.rs) holds the scene size,
+`scene_chart` (a titled chart with a top-left legend), `export` and `save`.
 
-| Output | Example and function | Scene |
-|---|---|---|
-| `gallery-wind.png` | [vector_field.rs](examples/vector_field.rs), `wind` | A sea breeze: speed as a smooth field on a custom ramp, direction as white arrows on a coarser grid of the same coordinates |
-| `gallery-currents.png` | [vector_field.rs](examples/vector_field.rs), `currents` | Surface currents at jittered drifter positions; arrow length follows the (u, v) components, arrow colour follows a host-supplied speed column through the colourbar |
-| `gallery-colormap.png` | [value_maps.rs](examples/value_maps.rs), `colormap_scatter` | 1400 particles along two spiral arms, coloured by an age column |
-| `gallery-bubbles.png` | [value_maps.rs](examples/value_maps.rs), `bubbles` | Three regions of cities; marker area follows population over one shared domain, translucent fills |
-| `gallery-forecast.png` | [area_step.rs](examples/area_step.rs), `forecast` | History solid, forecast dashed, 80% and 95% bands filled between their edge series; samples outside each part are NaN |
-| `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
-| `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | Voltage on the left axis with a light fill, current on an overlay layer's right axis |
-| `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
+| Output | Example and function | Theme | Scene |
+|---|---|---|---|
+| `gallery-wind.png` | [vector_field.rs](examples/vector_field.rs), `wind` | `midnight` | A sea breeze: speed as a smooth field on a custom ramp, direction as white arrows on a coarser grid of the same coordinates |
+| `gallery-currents.png` | [vector_field.rs](examples/vector_field.rs), `currents` | custom: `looks::ocean()` | Surface currents at jittered drifter positions; arrow length follows the (u, v) components, arrow colour follows a host-supplied speed column through the colourbar |
+| `gallery-colormap.png` | [value_maps.rs](examples/value_maps.rs), `colormap_scatter` | `cool-slate` | 1400 particles along two spiral arms, coloured by an age column |
+| `gallery-bubbles.png` | [value_maps.rs](examples/value_maps.rs), `bubbles` | `warm-paper` | Three regions of cities; marker area follows population over one shared domain, translucent fills |
+| `gallery-forecast.png` | [area_step.rs](examples/area_step.rs), `forecast` | `cool-slate` | History solid, forecast dashed, 80% and 95% bands filled between their edge series; samples outside each part are NaN |
+| `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | `cool-slate` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
+| `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | `midnight` | Voltage on the left axis with a light fill, current on an overlay layer's right axis |
+| `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | `cool-slate` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
+| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | `warm-paper` | Probability paper: tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
 
-`twin_axes` and `small_multiples` export with
-`export_document_rgba_with_clear_async`: the panel export draws the base panel
-only, without overlay layers or subplots.
+`twin_axes`, `small_multiples` and `probability_paper` export with
+`ExportOptions::document`: the panel export draws the base panel only, without
+overlay layers or subplots.
 
 The same examples also write plain feature checks that are not in the README:
 `steps.png` compares the three step modes, `gradient.png` draws grid arrows in
 data units coloured by a third matrix, and `mixed-axes.png` puts a twin Y axis
 inside a subplot.
 
+## Charts new in 0.19
+
+Each 0.19 chart kind has a designed scene drawn by its example in a theme family or a custom theme, most with the shared chrome of the feature scenes; the energy-level diagram is in the `gallery` family on white paper, and the violins and rainclouds are 960 × 640. The examples compute every value they draw: bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
+
+| Output | Example and function | Theme | Scene |
+|---|---|---|---|
+| `gallery-ternary.png` | [ternary.rs](examples/ternary.rs), `render` | `warm-paper` | The USDA soil texture triangle: twelve texture classes as filled region polygons named by text annotations, and three soil cores sampled every 10 cm as lines whose markers grow with depth (`point_size_map`) |
+| `gallery-surface.png` | [surface_3d.rs](examples/surface_3d.rs), `terrain` | custom: `looks::warm_terrain()` | Two summits and a saddle as a lit, wireframed 3D surface on a 61 × 61 grid (`view_3d`), floor contours in the ramp's colours, and a trail with waypoints as 3D line and marker series with a `z_column` |
+| `gallery-quiver3d.png` | [surface_3d.rs](examples/surface_3d.rs), `vortex` | `midnight` | A Burgers vortex sampled on a 9 × 9 × 3 lattice: one arrow per sample along (u, v, w), coloured by a host speed column through the colourbar |
+| `gallery-trimesh.png` | [trimesh.rs](examples/trimesh.rs), `plate` | `midnight` | Von Mises stress around a hole in a plate under tension (Kirsch's solution) on the host's graded mesh: interpolated fill, contour lines and the mesh edges as a faint line series |
+| `gallery-trisurf.png` | [trimesh.rs](examples/trimesh.rs), `drum` | custom: `looks::warm_diverging()` | The (2, 2) mode of a circular drum on a disc mesh, a lit and wireframed 3D triangle surface on a diverging ramp, with floor contours |
+| `gallery-hexbin.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `hexbin` | `warm-paper` | 100,000 taxi pickups the host bins into counts on a hexagonal lattice (`GridLayout::Hexagonal`), on a log colourbar; empty cells are NaN |
+| `gallery-imshow.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `imshow` | custom: `looks::deep_space()` | A planetary nebula as one `RgbImage`: three host-composited channel grids on one lattice of square pixels, interpolated, with field stars |
+| `gallery-polar-heatmap.png` | [polar_plot.rs](examples/polar_plot.rs), `wave_spectrum` | `cool-slate` | A directional wave spectrum as annular cells: direction on a compass axis, frequency outward, energy in dB, with labelled polar contours |
+| `gallery-rose.png` | [polar_plot.rs](examples/polar_plot.rs), `wind_rose` | `warm-paper` | A wind rose: a year's hours from 16 directions as category bars stacked outward in four speed bands |
+| `gallery-sunburst.png` | [radial_gallery.rs](examples/radial_gallery.rs), `sunburst` | custom: `looks::sunburst()` | A sunburst of electricity generation: groups at the centre, sources on the middle ring and technologies outside, each share relative to its parent |
+| `gallery-parallel.png` | [parallel.rs](examples/parallel.rs), `render` | `midnight` | A 120-run hyperparameter sweep across six axes (two of them logarithmic), each run coloured by its validation accuracy through the colourbar, the best drawn last |
+| `gallery-violin.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `violins` | `cool-slate` | Split violins: reaction times under four memory loads, rested on the left half and after 24 h awake on the right; each half is the host's density curve as a ragged column |
+| `gallery-raincloud.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `raincloud` | `warm-paper` | Horizontal rainclouds of commute time by mode: the host's half violin above a quartile box, the raw samples jittered below |
+| `gallery-waterfall.png` | [range_bars.rs](examples/range_bars.rs), `waterfall` | `warm-paper` | A profit bridge: the host's running totals as start and end columns, increases and decreases coloured by direction, subtotal and totals flagged, connectors between the steps |
+| `gallery-candlestick.png` | [range_bars.rs](examples/range_bars.rs), `candlestick` | `midnight` | 64 days of synthetic prices on a date axis: open–close bodies, low–high wicks and the host's 20-day moving average |
+| `gallery-gantt.png` | [range_bars.rs](examples/range_bars.rs), `gantt` | `cool-slate` | A release plan on six rows over a date axis: a state column colours each task and a progress column shades its finished part |
+| `gallery-shapes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `shapes` | `cool-slate` | 4000 flow cytometry events with shape annotations as gates: an ellipse, a rectangle, a polygon and a dashed outline, labelled in text boxes |
+| `gallery-stem.png` | [stem.rs](examples/stem.rs), `impulse_response` | `cool-slate` | The 41 taps of a windowed-sinc low-pass filter as stems from zero, over the ideal sinc they approximate |
+| `gallery-lollipop.png` | [stem.rs](examples/stem.rs), `lollipop` | `warm-paper` | A ranked lollipop chart of tree canopy change in twelve districts: horizontal stems from zero on a categorical axis |
+| `gallery-broken-axes.png` | [broken_axes.rs](examples/broken_axes.rs), `gamma_spectrum` | `midnight` | A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 and 1080 keV, so both peak groups keep a readable scale |
+| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](examples/support/grotrian_sets.rs) | `gallery` | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis |
+| `gallery-feynman.png` | [feynman.rs](examples/feynman.rs), `render` | `warm-paper` | Six processes on cards: annihilation, Compton scattering, gluon fusion through a top loop, beta decay through a W, the electron's one-loop vertex and a three-jet event |
+
+`readme_gallery` writes the hexbin, colour image, ternary, 3D, mesh, parallel, range-bar, stem, broken-axis and Feynman images with the other images; the rest come from `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper` and `nist_grotrian_gallery`. Each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
+
 ## Visual concepts
 
 [`gallery_concepts.rs`](examples/gallery_concepts.rs) renders six complete chart
 images at **1200 × 800**. Each named function contains its data and styling choices;
-`cartesian` shares the axis/legend setup and `save` checks and encodes the output.
-These are examples to adapt, not additional built-in theme names.
+[`support/styled.rs`](examples/support/styled.rs) supplies `scene_chart`,
+`export` and `save`, which checks and encodes the output. Every image is drawn
+in a theme family or a custom theme from
+[support/looks.rs](examples/support/looks.rs) ([Themes](USAGE.md#themes)),
+named in the table; `revenue` reads a legacy categorical document and takes
+the custom `looks::revenue()`.
 
 ```bash
 cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
 ```
 
-| Image / function | Concept | Settings to try |
-|---|---|---|
-| `concept-observability.png` / `observability` | Dark service-monitoring card; two synthetic request-rate curves | Navy clear color, mint/lavender lines, horizontal grid only, hidden axis lines and ticks |
-| `concept-revenue.png` / `revenue` | Light product-analytics card; four regional revenue stacks | `Horizontal` + `Stacked`, inside value labels, rounded exposed ends, matte bars, no grid |
-| `concept-editorial.png` / `editorial` | Warm editorial chart; two community-growth series | `DrawStyle::Sketch`, fixed wobble seed, paper-colored background, sparse round markers |
-| `concept-pop-art.png` / `radial_concepts` | Bright, outlined pie; time allocation | `Toon`, 45° tilt, shallow extrusion, rim/separator outlines, small slice gaps |
-| `concept-portfolio.png` / `radial_concepts` | Dark presentation chart; asset allocation | `Pearl`, 55° tilt, 0.57 hole ratio, rounded corners, bevel, soft highlights |
-| `concept-terrain.png` / `terrain` | Topographic color study; an imaginary landscape | A custom forest-to-sand `ColorMap`, interpolated matrix fill and 17 fine isolines |
+| Image / function | Theme | Concept | Settings to try |
+|---|---|---|---|
+| `concept-observability.png` / `observability` | `midnight` | Dark service-monitoring card; two synthetic request-rate curves | Navy clear color, mint/lavender lines, horizontal grid only, hidden axis lines and ticks |
+| `concept-revenue.png` / `revenue` | custom: `looks::revenue()` | Light product-analytics card; four regional revenue stacks | `Horizontal` + `Stacked`, inside value labels, rounded exposed ends, matte bars, no grid |
+| `concept-editorial.png` / `editorial` | custom: `looks::editorial()` | Warm editorial chart; two community-growth series | `DrawStyle::Sketch`, fixed wobble seed, paper-colored background, sparse round markers |
+| `concept-pop-art.png` / `radial_concepts` | `warm-paper` | Bright, outlined pie; time allocation | `Toon`, 45° tilt, shallow extrusion, rim/separator outlines, small slice gaps |
+| `concept-portfolio.png` / `radial_concepts` | `midnight` | Dark presentation chart; asset allocation | `Pearl`, 55° tilt, 0.57 hole ratio, rounded corners, bevel, soft highlights |
+| `concept-terrain.png` / `terrain` | custom: `looks::topographic()` | Topographic color study; an imaginary landscape | A custom forest-to-sand `ColorMap`, interpolated matrix fill and 17 fine isolines |
 
 The dashboard examples are chart images suitable for embedding in a card. Page
 layout, KPI widgets and application controls belong to the host. The example
-uses only the public Cartesian, categorical and radial APIs. See
+uses only public APIs: the Cartesian, categorical and radial charts, the
+theme families and custom `Theme` values. See
 [configuration](CONFIG.md), [categorical bars](CATEGORICAL.md) and
 [radial materials](RADIAL.md) to adapt the recipes.
 
-The PNGs are the native export, written without resizing or post-processing. The export clear color supplies the Cartesian background; the
-categorical and radial charts use their model's `background` field.
+The PNGs are the native export, written without resizing or post-processing. The themed scenes fill their chart area
+from `Config::background` (the scene colour, also the clear colour); the category
+bars of `revenue` take the export clear colour, and the radial charts use their
+model's `background` field.
+
+## Math in text
+
+[`math_gallery.rs`](examples/math_gallery.rs) writes every construction of the
+math layout as annotation texts of an empty 1200 × 1600 chart, each formula
+with its TeX source beneath it in plain text: fractions and nested fractions,
+binomials, radicals with and without an index, big operators with side limits
+and with `\limits`, integrals, operator names, `\left`/`\middle`/`\right` and
+`\big` … `\Bigg` delimiters, fixed and wide accents, over and under lines,
+braces, labels and extensible arrows, scripts and primes, Greek, `\mathbf`,
+`\mathbb`, `\mathcal` and `\text`. Every formula is written with
+`RichText::from_tex` and laid out from the bundled New Computer Modern Math. A
+formula in `$…$` starts in text style, so `\sum` takes side limits unless
+`\limits` asks for them above and below; `$$…$$` (or a leading `\displaystyle`)
+starts it in display style, with the display operator, limits above and below
+and display fractions: the gallery shows the same sum both ways. The chart title
+is a formula too.
+
+| Output | Shows | Size |
+|---|---|---|
+| `math-gallery.png` | The gallery in the precise draw style | 1200 × 1600 |
+| `math-gallery@2x.png` | The same export at scale 2 | 2400 × 3200 |
+| `math-gallery-sketch.png` | The sketch draw style: text in the handwritten face, math still in the math face | 1200 × 1600 |
+| `math-gallery-sketch@2x.png` | The sketch gallery at scale 2 | 2400 × 3200 |
+
+```bash
+cargo run --locked -p figgy-renderer --example math_gallery -- target/math-gallery
+```
 
 ## Generate PNGs and animation frames
 
@@ -106,17 +193,26 @@ mixed into an animation.
 cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery
 ```
 
-This writes four static PNGs (`gallery-errorbars.png`, `gallery-histogram.png`,
-`gallery-histogram-horizontal.png` and `gallery-contours.png`) and the frames
-`wave/000.png` … `wave/047.png` and `orbit/000.png` … `orbit/047.png`. The
-optional second argument selects 2–240 frames; the default is 48. Phases cover
+This writes 19 static PNGs and the frames `wave/000.png` … `wave/047.png` and
+`orbit/000.png` … `orbit/047.png`. The PNGs are:
+- `gallery-errorbars.png`, `gallery-histogram.png` and
+  `gallery-histogram-horizontal.png`;
+- `gallery-contours.png`, `gallery-hexbin.png` and `gallery-imshow.png`;
+- `gallery-ternary.png`, `gallery-surface.png` and `gallery-quiver3d.png`;
+- `gallery-trimesh.png`, `gallery-trisurf.png` and `gallery-parallel.png`;
+- `gallery-waterfall.png`, `gallery-candlestick.png` and `gallery-gantt.png`;
+- `gallery-stem.png`, `gallery-lollipop.png`, `gallery-broken-axes.png` and
+  `gallery-feynman.png`.
+
+The optional second argument selects 2–240 frames; the default is 48. Phases cover
 one period without repeating the endpoint. The example uses fixed axis ranges so
 the animation does not rescale each frame.
 
-The example reports the selected adapter, dimensions and coloured-pixel count.
-Each export must succeed, be fully opaque on its white background, and contain
-at least 500 coloured pixels. Adapter, allocation and export failures return an
-error; missing GPU support is not treated as a successful run. These checks catch
+Each export prints its path and coloured-pixel count. Each export must succeed,
+be fully opaque and contain coloured chart pixels: at least 500 on white for the
+960-wide charts, more than 2000 against the scene background for the 1200 × 800
+scenes. Adapter, allocation and export failures and a failed check stop the run;
+missing GPU support is not treated as a successful run. These checks catch
 blank exports; visual review is still needed for layout.
 
 Normal native adapter selection is used, and the example does not force a
@@ -152,7 +248,7 @@ chosen for the README and says nothing about rendering throughput. If a differen
 frame count was requested, change `-frames:v` to match; duration is count / 12.
 
 To refresh the README, inspect the PNGs and the decoded animation frames, then
-copy those four static PNGs and the two `gallery-*.gif` files into
+copy the 19 static PNGs and the two `gallery-*.gif` files into
 [`assets/`](https://github.com/shim9610/figgy/tree/master/crates/renderer/assets). Keep the numbered intermediate frames outside source control.
 The source example is the authority for formulas, styles and export settings.
 
@@ -175,16 +271,25 @@ cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
 cargo run --locked -p figgy-renderer --example area_step -- target/area-step
 cargo run --locked -p figgy-renderer --example overlay_axes -- target/overlay-axes
 cargo run --locked -p figgy-renderer --example subplots -- target/subplots
+cargo run --locked -p figgy-renderer --example probability_paper -- target/probability
+cargo run --locked -p figgy-renderer --example nist_grotrian_gallery -- target/nist_grotrian_gallery
 ```
 
 Copy each output into `assets/` under its name in the table at the top of this
 page. The case outputs of `radial_gallery`, `categorical_gallery`,
 `boxplot_gallery`, `radar_gallery` and `polar_plot` are renamed, for example
-`target/radial-gallery/ceramic.png` → `assets/gallery-donut.png`; the feature
+`target/radial-gallery/ceramic.png` → `assets/gallery-donut.png` and
+`target/nist_grotrian_gallery/he-i-1x.png` → `assets/gallery-grotrian.png`; the feature
 examples and `gallery_concepts` already write their final names. The
-bounded examples use `RadialRenderer`, `CategoricalRenderer`, `BoxPlotRenderer`
-and `RadarRenderer`, respectively; their small-data models do not use the
-Cartesian column pool.
+radial example draws with `RadialRenderer`. `categorical_gallery`, `boxplot_gallery` and
+`radar_gallery` open their documents with `Config::from_categorical`,
+`Config::from_boxplot` and `Config::from_radar` and draw them with the
+Cartesian `Renderer`, value labels included (the documents' `labels`
+settings, written into `labels.text` by the readers). `categorical_gallery`
+leaves 12 % of the value range past the bars for outside labels.
+`boxplot_gallery` labels every box with its median; the
+label past the highest outlier, which would cross the top of the data area,
+sits below that outlier instead.
 
 ## Precise and hand-drawn Sketch previews
 
@@ -196,7 +301,7 @@ cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/
 two growth curves with ten samples each in Precise and Sketch mode. Sketch uses
 `amplitude_px = 2.2`, `wavelength_px = 55` and `seed = 1` for reproducible hand-drawn
 lines, axes and lettering. Both PNGs are 1280 × 1024, matching the Milkyway and
-Constellation thumbnails in the four-column draw-style row. Copy the two
+Constellation previews. Copy the two
 `style-growth-response-*.png` outputs into `assets/` after inspection.
 
 ## Milkyway line-only preview
@@ -209,15 +314,15 @@ cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/m
 
 [`milkyway_line_preview.rs`](examples/milkyway_line_preview.rs) exports a
 1280 × 1024 PNG containing two synthetic growth curves, each declared as
-`DataRenderType::Line`. The line pipeline generates the stars and nebula along
-arc length. There are no scatter planets or errorbar jets in this preview.
+`DataRenderType::Line`. The stars and nebula are spread along each line's
+length. There are no scatter planets or errorbar jets in this preview.
 The example also compares against an empty chart to verify visible data pixels.
 
-The selected parameters are explicit in the example: `star_density = 70`,
-`star_scale = 1`, `star_brightness = 0.32`, `spread_px = 8`,
-`ribbon_width_px = 24`, `ribbon_intensity = 0.08`, `structure_scale = 1`,
-`faint_bias = 4.5`, `glow = 0.35`, `nebula = 0.6`, `dust = 0.7`,
-`planet_rim = 0`, and `seed = 0`. These are presentation settings for this
+The example sets `star_density = 70`, `star_brightness = 0.32`,
+`spread_px = 8`, `ribbon_width_px = 24`, `ribbon_intensity = 0.08`,
+`faint_bias = 4.5`, `glow = 0.35`, `nebula = 0.6`, `dust = 0.7` and
+`planet_rim = 0`, and leaves the others at their defaults (`star_scale = 1`,
+`structure_scale = 1`, `seed = 0`). These are presentation settings for this
 preview; they do not change the renderer's default options. Planet removal
 comes from choosing `Line`, not from setting `planet_rim` to zero.
 
@@ -232,25 +337,49 @@ cargo run --locked -p figgy-renderer --example constellation_preview -- target/c
 [`constellation_preview.rs`](examples/constellation_preview.rs) renders two
 synthetic growth curves with ten samples each as `DataRenderType::ScatterLine`.
 Stars occupy those original sample positions, with translucent connecting lines.
-The example sets `star_opacity = 1` and `line_opacity = 0.45`, exports a
+The example uses the default `ConstellationOptions` (`star_opacity = 1`, `line_opacity = 0.45`), exports a
 1280 × 1024 PNG, and checks for visible data against an empty chart.
 
 After inspection, copy the output to `assets/style-growth-response-constellation.png`.
 
+## Thumbnails
+
+The README shows a 320-pixel-wide copy of every gallery image from
+`assets/thumbs/`, so the page loads about 2 MB instead of the full images.
+After copying a new or regenerated image into `assets/`, write its thumbnail
+from the workspace root with
+[`ci/gallery_thumbs.py`](https://github.com/shim9610/figgy/blob/master/ci/gallery_thumbs.py) (Pillow required):
+
+```sh
+python3 ci/gallery_thumbs.py
+```
+
+It rewrites the thumbnail of every `gallery-*`, `concept-*` and `style-*`
+image; a GIF keeps its frames. A new image also needs an entry on its category
+page in [`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery) and a cell in the README grid.
+
 ## 한국어 사용법
 
-이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 GPU 풀에 데이터를 올리고, 데이터와 축·눈금·텍스트를 합성해 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
+이 갤러리는 네이티브 렌더러가 출력한 PNG로 만들었다. `readme_gallery.rs`는 컬럼을 등록하고 데이터와 축·눈금·텍스트를 그려 PNG로 저장한다. 창이나 브라우저를 열지 않고 실행할 수 있다.
 
-- **정지 이미지 4종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선이다. 모두 예제용으로 생성한 데이터이며 오차 막대의 폭도 설명을 위한 값이다.
+- **정지 이미지 19종**: 응답 곡선과 오차 막대, 구간 40개의 세로·가로 히스토그램, 81×81 행렬의 보간 히트맵과 라벨이 있는 등고선, 그리고 육각 빈, 컬러 이미지, 삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 평행 좌표, 폭포·캔들스틱·간트, 줄기·롤리팝, 축 끊기, 파인만 도표 장면이다. 모두 예제용으로 생성한 데이터이며, 오차 막대는 예제용으로 정한 ±1σ 폭이다. 에너지 준위 도표만 저장소에 포함한 NIST ASD의 He I 자료를 그린다.
 - **애니메이션 2종**: 이동하는 파형과 2:3 위상 궤적이다. 프레임마다 컬럼 값을 갱신하고 PNG를 다시 출력한다. 축 범위는 고정하며 처음과 같은 위상이 되는 마지막 프레임은 제외한다.
-- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 4개와 애니메이션 프레임 96개를 만든다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
+- **생성 순서**: 저장소 루트에서 `cargo run --locked -p figgy-renderer --example readme_gallery -- target/readme-gallery`를 실행하면 정지 PNG 19개와 애니메이션 프레임 96개를 만든다. 오차 막대, 히스토그램, 등고선, 애니메이션 예제와 0.19 장면 예제 8개(삼각 좌표, 3D 곡면, 삼각 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표)를 장치 하나로 실행한다. 이어서 FFmpeg 명령으로 GIF 2개를 생성한다. 이전 프레임이 섞이지 않도록 빈 출력 디렉터리를 사용한다.
 - **재생 설정**: GIF 하나당 48프레임을 초당 12프레임으로 약 4초마다 반복한다. GIF는 색을 팔레트로 줄이므로 픽셀 검사는 원본 PNG로 한다. GIF의 재생 속도는 렌더링 성능을 나타내지 않는다.
 - **검증 환경**: 일반 장비에서는 기본 GPU 선택을 따른다. 이 이미지는 실제 GPU가 없는 Linux에서 Vulkan llvmpipe로 검증했다. 예제 자체가 소프트웨어 GPU를 강제하지는 않는다. 실제 GPU의 성능이나 다른 OS에서 같은 픽셀값이 나오는지는 확인하지 않았다.
 
-갤러리를 갱신할 때는 출력 오류 여부, 불투명 배경과 유효한 색상 픽셀, 축 제목·눈금·범례·색상 막대 배치를 확인한다. GIF도 디코딩해 프레임 수, 프레임 간 변화, 반복 설정을 검사한다. 나머지 정지 이미지는 `line`, `radial_gallery`, `categorical_gallery`, `boxplot_gallery`, `radar_gallery`, `polar_plot`, `vector_field`, `value_maps`, `area_step`, `overlay_axes`, `subplots`, `gallery_concepts`, `precise_sketch_preview`, `milkyway_line_preview`, `constellation_preview` 예제로 만든다. 출력 파일은 각 표와 절에 적힌 이름으로 `assets/`에 복사하고, 중간 프레임은 소스 관리에 넣지 않는다.
+갤러리를 갱신할 때는 출력 오류 여부, 불투명 배경과 유효한 색상 픽셀, 축 제목·눈금·범례·색상 막대 배치를 확인한다. GIF도 디코딩해 프레임 수, 프레임 간 변화, 반복 설정을 검사한다. 나머지 정지 이미지는 `line`, `radial_gallery`, `categorical_gallery`, `boxplot_gallery`, `radar_gallery`, `polar_plot`, `vector_field`, `value_maps`, `area_step`, `overlay_axes`, `subplots`, `probability_paper`, `nist_grotrian_gallery`, `gallery_concepts`, `precise_sketch_preview`, `milkyway_line_preview`, `constellation_preview` 예제로 만든다. 출력 파일은 각 표와 절에 적힌 이름으로 `assets/`에 복사하고, 중간 프레임은 소스 관리에 넣지 않는다.
 
 은하수 미리보기는 두 곡선을 `Line`으로 등록하므로 곡선을 따라 별과 성운 띠만 그린다. 산점도 기호가 없어 행성이 나타나지 않고, 오차 막대가 없어 제트도 나타나지 않는다. `planet_rim = 0`은 행성을 없애는 설정이 아니다. 예제의 옵션 값은 이 미리보기에만 적용되며 렌더러 기본값은 바꾸지 않는다.
 
+수식 갤러리(`math_gallery.rs`)는 `RichText::from_tex`로 쓴 모든 수식 구성(분수, 근호, 큰 연산자와 극한, 구분 기호, 악센트, 위아래 괄호와 화살표, 첨자, 그리스 문자)을 1200 × 1600 차트의 주석 텍스트로 그리고, 각 수식 아래에 TeX 원문을 적는다. 출력은 `math-gallery.png`, `math-gallery@2x.png`, 스케치 스타일의 `math-gallery-sketch.png`, `math-gallery-sketch@2x.png`이다. 스케치 스타일에서도 수식은 내장 수식 글꼴로 그린다.
+
+0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. 육각 빈, 컬러 이미지, 삼각 좌표, 3D, 메시, 평행 좌표, 범위 막대, 줄기, 축 끊기, 파인만 도표 그림은 `readme_gallery`가 다른 그림과 함께 만들고, 나머지는 `polar_plot`, `radial_gallery`, `boxplot_gallery`, `overlay_axes`, `probability_paper`, `nist_grotrian_gallery`가 만든다. 예제마다 따로 실행할 수도 있다.
+
+갤러리 그림은 테마 계열(`gallery`, `cool-slate`, `midnight`, `warm-paper`)이나 직접 만든 테마로 그린다([테마](USAGE.md#테마)). 예제는 계열 구성원을 `ThemeFamily::theme(kind)`(원형 차트는 `ThemeFamily::radial()`)로 얻거나, 계열에 없는 모양을 [examples/support/looks.rs](examples/support/looks.rs)에서 `Theme` 값으로 만들어 `Chart::apply_custom_theme`으로 적용한다. 팔레트 순서나 채움 불투명도처럼 그림에 맞춰 복사본을 조금 고치는 예제도 있다. 그림마다 쓴 테마는 위의 표와 종류별 페이지에 적었다.
+
+README는 갤러리 그림을 종류별로 묶어 작은 그림(썸네일)으로 보여 준다. 썸네일을 누르면 그 종류의 페이지([`gallery/`](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery))에서 큰 그림과 설명, 실행 명령을 볼 수 있고, 큰 그림을 누르면 그림을 그린 예제 코드가 열린다. 썸네일은 `assets/thumbs/`에 있는 폭 320픽셀짜리 사본이다. 그림을 새로 만들거나 다시 만든 뒤에는 저장소 루트에서 `python3 ci/gallery_thumbs.py`(Pillow 필요)를 실행해 썸네일을 다시 쓴다. 새 그림은 해당 종류 페이지와 README 표에도 추가한다.
+
 가로 히스토그램 PNG는 방향 설정을 보여주는 추가 예제다. 컬럼 연결과 축 설정, 기존 차트의 방향 변경은 [히스토그램 사용법](HISTOGRAM.md)을 참고한다.
 
-일반 Rust 사용법은 [빠른 시작](https://github.com/shim9610/figgy/blob/master/README.ko.md#빠른-시작)과 [상세 사용법](USAGE.md), 브라우저 통합 예제의 초기화·수명 관리·입출력은 [WASM.md](WASM.md), JSON 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.
+일반 Rust 사용법은 [빠른 시작](https://github.com/shim9610/figgy/blob/master/README.ko.md#빠른-시작)과 [상세 사용법](USAGE.md), 브라우저용 제품의 초기화·수명 관리·입출력은 [WASM.md](WASM.md), JSON 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.

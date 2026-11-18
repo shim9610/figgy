@@ -28,14 +28,12 @@ use renderer::config::{
     AxisOptions, Config, ConstellationOptions, DrawStyle, GridOptions, MilkywayOptions,
     SketchOptions,
 };
-use renderer::data::Column;
 use renderer::default;
-use renderer::layout::{ChartArea, Rect};
+use renderer::layout::Rect;
 use renderer::line::LineStylePreset;
 use renderer::{
-    Chart, ChartDrawItem, ChartStyle, ChartView, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, PreparedFrame, Renderer, RendererDevice, ScatterShape, Series,
-    SeriesConfig,
+    Chart, ChartDrawItem, ChartStyle, ChartView, PreparedFrame, Renderer, RendererDevice,
+    ScatterShape, Series, SeriesConfig,
 };
 
 // 3M points/series × (1 shared x + 4 y) columns × 4 bytes = 60 MB live,
@@ -51,12 +49,6 @@ const X_ID: &str = "quad_x";
 const Y_IDS: [&str; 4] = ["quad_y0", "quad_y1", "quad_y2", "quad_y3"];
 const SERIES_IDS: [&str; 4] = ["precise", "sketch", "milkyway", "constellation"];
 const X_SPAN: f64 = 12.566; // 4π
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
-}
 
 const FG: Color = Color {
     r: 0.92,
@@ -167,7 +159,7 @@ struct LabState {
 
 impl LabState {
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
     }
 
     fn regen_data(&mut self, n: usize, bump_variant: bool) {
@@ -185,13 +177,13 @@ impl LabState {
                 return;
             }
         }
-        if let Err(e) = self.renderer.add_column(X_ID, &col_f64(xs.clone())) {
+        if let Err(e) = self.renderer.add_column(X_ID, &xs) {
             self.last_error = Some(format!("regen add_column x: {e}"));
             return;
         }
         for (i, y_id) in Y_IDS.iter().enumerate() {
             let ys = lab_ys(i, self.data_variant, &xs);
-            if let Err(e) = self.renderer.add_column(*y_id, &col_f64(ys)) {
+            if let Err(e) = self.renderer.add_column(*y_id, &ys) {
                 self.last_error = Some(format!("regen add_column {y_id}: {e}"));
                 return;
             }
@@ -214,18 +206,6 @@ impl Drop for LabState {
 /// the split-borrow pattern from the renderer's host-integration notes.
 fn one_series<'a>(cfg: &'a SeriesConfig, style: &'a ChartStyle) -> [Series<'a>; 1] {
     [Series { config: cfg, style }]
-}
-
-fn panel_items<'a>(
-    view: &'a ChartView,
-    chart_config: &'a Config,
-    series: &'a [Series<'a>],
-) -> [ChartDrawItem<'a>; 1] {
-    [ChartDrawItem {
-        view,
-        chart_config,
-        series,
-    }]
 }
 
 // ============================================================================
@@ -253,35 +233,24 @@ impl CallbackTrait for LabCallback {
             return Vec::new();
         };
 
-        let cur_rect = panel.view.panel_rect();
-        let rect_changed = cur_rect != self.panel_rect_px;
-        if rect_changed {
-            panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
-        }
-        let raster_dirty = panel.chart.consume_raster_dirty();
-        // The data→NDC transform uniform is written by `Renderer::prepare`
-        // below every frame; the flag only needs consuming.
-        let _ = panel.chart.consume_data_dirty();
-        if rect_changed || raster_dirty {
-            let rect = if rect_changed {
-                self.panel_rect_px
-            } else {
-                cur_rect
-            };
-            if let Err(e) = state
-                .renderer
-                .refresh_axis(&mut panel.view, &panel.chart, rect)
-            {
-                state.last_error = Some(format!("refresh_axis: {e}"));
-                state.panels[self.panel_idx].prepared = None;
-                return Vec::new();
-            }
+        // `Renderer::prepare` redraws the text and axis raster when the
+        // chart (here its area) changed, and writes the data→NDC transform
+        // every frame.
+        if panel.chart.config().chart_area.0 != self.panel_rect_px {
+            let r = self.panel_rect_px;
+            panel.chart.set_area(r.x, r.y, r.width, r.height);
+            // Refit the margins to the labels at the new size.
+            panel.chart.fit_layout();
         }
 
         let prepared = {
             let series = one_series(&panel.series, &panel.style);
-            let items = panel_items(&panel.view, panel.chart.config(), &series);
-            state.renderer.prepare(&items)
+            let mut items = [ChartDrawItem {
+                view: &mut panel.view,
+                chart: &panel.chart,
+                series: &series,
+            }];
+            state.renderer.prepare(&mut items)
         };
         let panel = &mut state.panels[self.panel_idx];
         match prepared {
@@ -358,70 +327,50 @@ impl Default for LabApp {
     }
 }
 
-/// (draw style, title, series config) per panel — fixed, no dropdown.
-fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
-    let line = |style, color, w| DataLineStyleConfig {
-        line_style: style,
-        line_color: color,
-        line_width: w,
-        fill: None,
-        fill_color: None,
-        interpolation: renderer::data_config::LineInterpolation::Linear,
-    };
-    let scatter = |color: Color, size| DataScatterStyleConfig {
-        point_color: color,
-        point_shape: ScatterShape::CircleFilled,
-        point_size: size,
-        point_style_table: None,
-        point_style_index_column: None,
-        point_style_overrides: None,
-        point_color_map: None,
-        point_size_map: None,
-    };
+/// (draw style, title, series) per panel — fixed, no dropdown.
+fn panel_recipe(i: usize) -> (DrawStyle, &'static str, SeriesConfig) {
+    let line = || SeriesConfig::line(SERIES_IDS[i], X_ID, Y_IDS[i]);
     match i {
         0 => (
             DrawStyle::Precise,
             "Precise — dashed line (GPU arc scan)",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Dash, Color::from_rgb8(100, 180, 255), 2.0),
-            },
+            line()
+                .dash(LineStylePreset::Dash)
+                .color(Color::from_rgb8(100, 180, 255))
+                .width(2.0),
         ),
         1 => (
             DrawStyle::Sketch(SketchOptions::default()),
             "Sketch — arc-parameterized wobble",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(255, 150, 110), 2.0),
-            },
+            line().color(Color::from_rgb8(255, 150, 110)).width(2.0),
         ),
         2 => (
             DrawStyle::Milkyway(MilkywayOptions::default()),
             "Milkyway — ribbon + indirect star pass",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(190, 150, 255), 2.0),
-            },
+            line().color(Color::from_rgb8(190, 150, 255)).width(2.0),
         ),
         _ => (
             DrawStyle::Constellation(ConstellationOptions::default()),
             "Constellation — PSF stars",
-            DataRenderType::ScatterLine {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(255, 214, 130), 1.5),
-                scatter: scatter(Color::from_rgb8(255, 214, 130), 3.0),
-            },
+            SeriesConfig::scatter_line(SERIES_IDS[i], X_ID, Y_IDS[i])
+                .marker(ScatterShape::CircleFilled, 3.0)
+                .color(Color::from_rgb8(255, 214, 130))
+                .width(1.5),
         ),
     }
 }
 
 impl LabApp {
     fn init_state(&mut self, render_state: &egui_wgpu::RenderState) -> Result<LabState, String> {
-        let device = Arc::new(render_state.device.clone());
-        let queue = Arc::new(render_state.queue.clone());
+        let device = render_state.device.clone();
+        let queue = render_state.queue.clone();
         // Ask for the target pool; `try_new` clamps it to what the device's
         // storage binding can address (the arc scan binds the whole pool as
         // one binding). Size the density ceiling from the GRANTED capacity
         // read back below — 5 columns × 4 bytes per point, ~10% slack for
         // allocator alignment.
         let mut renderer = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             render_state.target_format,
             POOL_TARGET_BYTES,
         )
@@ -433,43 +382,32 @@ impl LabApp {
         let n = self.point_count as usize;
         let xs = lab_xs(n);
         renderer
-            .add_column(X_ID, &col_f64(xs.clone()))
+            .add_column(X_ID, &xs)
             .map_err(|e| format!("add_column x failed: {e}"))?;
         for (i, y_id) in Y_IDS.iter().enumerate() {
             renderer
-                .add_column(*y_id, &col_f64(lab_ys(i, 0, &xs)))
+                .add_column(*y_id, &lab_ys(i, 0, &xs))
                 .map_err(|e| format!("add_column {y_id} failed: {e}"))?;
         }
 
-        let placeholder = Rect {
-            x: 0,
-            y: 0,
-            width: 600,
-            height: 350,
-        };
         let mut panels = Vec::with_capacity(4);
         for i in 0..4 {
-            let (draw_style, title, render_type) = panel_recipe(i);
+            let (draw_style, title, series) = panel_recipe(i);
             let mut config = dark_config();
-            config.chart_area = ChartArea(placeholder);
             config.draw_style = draw_style;
+            // A first-frame guess: prepare moves the chart to its egui rect.
             let mut chart = Chart::new(config)
+                .with_area(0, 0, 600, 350)
                 .with_title(title)
                 .with_x_title("x [rad]")
                 .with_y_title("y");
             chart.set_x_range(0.0, X_SPAN);
             let _ = chart.auto_fit_y(renderer.pool(), Y_IDS[i], 0.10);
+            // Fit the margins to the labels and titles.
+            chart.fit_layout();
             let view = renderer
-                .create_chart_view(&chart, placeholder)
+                .create_chart_view(&chart, chart.config().chart_area.0)
                 .map_err(|e| format!("create_chart_view failed: {e}"))?;
-            let series = SeriesConfig {
-                series_id: SERIES_IDS[i].into(),
-                label: None,
-                source_id: None,
-                x_column: X_ID.into(),
-                y_column: Y_IDS[i].into(),
-                render_type,
-            };
             let style = renderer.create_style_for_series(&series).unwrap();
             panels.push(PanelEntry {
                 chart,

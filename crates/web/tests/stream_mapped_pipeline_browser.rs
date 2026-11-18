@@ -1,7 +1,5 @@
 #![cfg(target_arch = "wasm32")]
 
-use std::sync::Arc;
-
 use renderer::{
     Chart, Color, DataRenderType, RegisteredChartDrawItem, Renderer, RendererDevice, SeriesConfig,
     data::Column,
@@ -10,8 +8,8 @@ use renderer::{
         DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig,
         ErrorRef, ScatterShape,
     },
-    data_render::{create_instance, request_adapter_async, request_device_async},
     default,
+    gpu::{create_instance, request_adapter_async, request_device_async},
     layout::{ChartArea, Rect},
 };
 use wasm_bindgen::{JsCast, JsValue};
@@ -55,10 +53,8 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
     let (device, queue) = request_device_async(&adapter)
         .await
         .expect("Chrome WebGPU device required");
-    let device = Arc::new(device);
-    let queue = Arc::new(queue);
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4096,
     )
@@ -71,14 +67,7 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
         ("error-index", vec![1.0, 0.0, 1.0, 0.0]),
     ] {
         renderer
-            .add_column(
-                id,
-                &Column {
-                    data: values,
-                    min: 0.0,
-                    max: 1.0,
-                },
-            )
+            .add_column(id, &Column { data: values })
             .expect("browser column upload failed");
     }
     let mut config = default::default_config();
@@ -94,8 +83,9 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        render_type: DataRenderType::ScatterErrorbarX {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::BLACK,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 7.0,
@@ -107,26 +97,31 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
                 }]),
                 point_color_map: None,
                 point_size_map: None,
-            },
-            err_x: ErrorRef::Symmetric { column: "e".into() },
-            err_style: DataErrorBarStyleConfig {
-                error_bar_color: Color::BLACK,
-                error_bar_width: 2.0,
-                error_bar_cap_size: 5.0,
-                cap_width: 2.0,
-                error_bar_style_table: Some(vec![DataErrorBarPointStyleConfig::default()]),
-                error_bar_style_index_column: Some("error-index".into()),
-                error_bar_style_overrides: Some(vec![DataErrorBarPointStyleOverride {
-                    index: 2,
-                    style: DataErrorBarPointStyleConfig::default(),
-                }]),
-            },
-        },
+            }),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: Some(ErrorRef::Symmetric { column: "e".into() }),
+                y: None,
+                style: DataErrorBarStyleConfig {
+                    error_bar_color: Color::BLACK,
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 5.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: Some(vec![DataErrorBarPointStyleConfig::default()]),
+                    error_bar_style_index_column: Some("error-index".into()),
+                    error_bar_style_overrides: Some(vec![DataErrorBarPointStyleOverride {
+                        index: 2,
+                        style: DataErrorBarPointStyleConfig::default(),
+                    }]),
+                },
+            }),
+            stem: None,
+        }),
     };
     let chart_id = renderer
         .register_chart(config.clone(), vec![series])
         .expect("mapped chart registration failed");
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .expect("chart view creation failed");
     let raw = device.as_webgpu().expect("browser WebGPU backend required");
@@ -134,9 +129,9 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
         .call1(raw.as_ref(), &JsValue::from_str("validation"))
         .expect("pushErrorScope failed");
     renderer
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .expect("mapped chart preparation failed");
     let error = validation_error(&device).await;

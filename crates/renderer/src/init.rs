@@ -78,15 +78,22 @@ pub(crate) fn observe_result<T, E>(
 pub(crate) async fn yield_init_frame() {
     #[cfg(target_arch = "wasm32")]
     {
+        // No window (a worker) or no animation frame: there is no paint to
+        // yield to, so the yield is skipped.
         let Some(window) = web_sys::window() else {
             return;
         };
+        let mut scheduled = false;
         let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            if window.request_animation_frame(&resolve).is_err() {
-                let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
-            }
+            scheduled = window.request_animation_frame(&resolve).is_ok();
         });
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        if !scheduled {
+            return;
+        }
+        if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+            // The executor above never rejects: the frame callback only
+            // resolves, so there is no failure to report.
+        }
     }
 }
 
@@ -192,7 +199,7 @@ mod tests {
     #[test]
     fn async_observe_matches_sync_pairs_when_yield_is_noop() {
         let mut events = Vec::new();
-        let value = pollster::block_on(observe_value_async(
+        let value = crate::test_gpu::block_on(observe_value_async(
             &mut |event| events.push(event),
             "test",
             "async",

@@ -1,5 +1,5 @@
 //! End-to-end pixel verification of the hand-drawn ("sketch") render mode
-//! using only the public renderer API and the headless `export_panel_rgba`
+//! using only the public renderer API and the headless `export_rgba`
 //! path.
 //!
 //! House pattern (mirrors the in-crate GPU tests): every test builds its own
@@ -14,17 +14,17 @@
 //!
 //! JSON default round-trip coverage is not duplicated here; it lives in
 //! `draw_style_serde_tests` in
-//! `crates/model/src/config.rs` (config_without_draw_style_key_deserializes_to_precise,
+//! `crates/model/src/config.rs` (a_document_without_the_additive_keys_parses_to_their_defaults,
 //! sketch_tag_alone_yields_all_defaults,
 //! partial_sketch_fields_fill_remaining_defaults,
 //! sketch_round_trips_with_inline_fields,
-//! explicit_precise_mode_deserializes_to_precise,
-//! precise_serializes_without_key).
+//! explicit_precise_mode_deserializes_to_precise).
 
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::config::{DrawStyle, SketchOptions};
 use renderer::data::Column;
@@ -39,9 +39,7 @@ use renderer::{
 // ───────────────────────── plumbing / fixtures ─────────────────────────
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// The process-wide device, created once.
@@ -54,15 +52,15 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
 /// The `Renderer` is still per test: it owns the column pool, so sharing one
 /// would let test fixtures collide on column ids. Only the device is shared, and
 /// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-    static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let (device, queue) = test_gpu::device();
-            Some((Arc::new(device), Arc::new(queue)))
+            Some((device, queue))
         })
         .as_ref()
-        .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+        .map(|(device, queue)| (device.clone(), queue.clone()))
 }
 
 /// Headless renderer. Initialization failures panic; the optional return type
@@ -71,7 +69,7 @@ fn try_renderer() -> Option<Renderer> {
     let (device, queue) = shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
         )
@@ -123,16 +121,20 @@ fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset)
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: style,
                 line_color: color,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     }
 }
 
@@ -143,8 +145,9 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: color,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 7.0,
@@ -153,8 +156,11 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+            stem: None,
+        }),
     }
 }
 
@@ -167,8 +173,9 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::ScatterErrorbarY {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color {
                     r: 0.0,
                     g: 0.0,
@@ -182,18 +189,23 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            err_y: ErrorRef::Symmetric { column: err.into() },
-            err_style: DataErrorBarStyleConfig {
-                error_bar_color: color,
-                error_bar_width: 2.0,
-                error_bar_cap_size: 4.0,
-                cap_width: 2.0,
-                error_bar_style_table: None,
-                error_bar_style_index_column: None,
-                error_bar_style_overrides: None,
-            },
-        },
+            }),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: None,
+                y: Some(ErrorRef::Symmetric { column: err.into() }),
+                style: DataErrorBarStyleConfig {
+                    error_bar_color: color,
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 4.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: None,
+                    error_bar_style_index_column: None,
+                    error_bar_style_overrides: None,
+                },
+            }),
+            stem: None,
+        }),
     }
 }
 
@@ -324,9 +336,21 @@ fn sketch_diverges_from_precise() {
     let Some(mut r) = try_renderer() else { return };
     let (mut chart, series) = build_combined(&mut r);
 
-    let img_p = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img_p = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
-    let img_s = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img_s = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     assert!(
         img_p.rgba != img_s.rgba,
@@ -391,9 +415,21 @@ fn sketch_diverges_from_precise() {
         chart.set_x_range(0.0, 6.5);
         chart.set_y_range(-1.2, 1.2);
         let one = [cfg];
-        let p = r.export_panel_rgba(&chart, &one, 1.0).unwrap();
+        let p = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &one),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
-        let s = r.export_panel_rgba(&chart, &one, 1.0).unwrap();
+        let s = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &one),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         let (cp, cs) = (count_class(&p, pred), count_class(&s, pred));
         assert!(cp > min_ink, "{name}: precise ink missing ({cp} px)");
         assert!(cs > min_ink, "{name}: sketch ink missing ({cs} px)");
@@ -415,14 +451,32 @@ fn sketch_is_deterministic() {
     let (mut chart, series) = build_combined(&mut r);
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
 
-    let a = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let b = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let a = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let b = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert_bytes_eq(&a, &b, "same renderer, repeated sketch export");
 
     let Some(mut r2) = try_renderer() else { return };
     let (mut chart2, series2) = build_combined(&mut r2);
     chart2.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
-    let c = r2.export_panel_rgba(&chart2, &series2, 1.0).unwrap();
+    let c = r2
+        .export_rgba(
+            renderer::ExportSource::chart(&chart2, &series2),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     assert_bytes_eq(&a, &c, "fresh renderer instance, identical inputs");
 }
 
@@ -438,12 +492,24 @@ fn sketch_seed_separates() {
         seed: 0,
         ..SketchOptions::default()
     });
-    let s0 = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let s0 = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions {
         seed: 1,
         ..SketchOptions::default()
     });
-    let s1 = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let s1 = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     assert!(
         s0.rgba != s1.rgba,
@@ -483,7 +549,13 @@ fn sketch_amplitude_is_bounded() {
     chart.set_y_range(0.0, 1.0);
     let series = [line_series("h", "hx", "hy", RED, LineStylePreset::Solid)];
 
-    let img_p = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img_p = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     let da = chart.config().data_area().unwrap().0;
     let (x0, x1) = ((da.x + 8) as usize, (da.x + da.width - 8) as usize);
 
@@ -510,7 +582,13 @@ fn sketch_amplitude_is_bounded() {
         amplitude_px: AMP,
         ..SketchOptions::default()
     });
-    let img_s = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img_s = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     let (smin, smax) = red_rows(&img_s).expect("sketch horizontal line drew no ink");
 
     // The sketch pass must still wobble (guards a vacuous bound pass)…
@@ -556,7 +634,13 @@ fn sketch_preserves_nan_gaps() {
     chart.set_y_range(-0.1, 1.1);
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let series = [line_series("gap", "gx", "gy", RED, LineStylePreset::Solid)];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     let (w, h) = (img.width as usize, img.height as usize);
     let red_cols: Vec<usize> = (0..w)
@@ -607,9 +691,21 @@ fn sketch_composes_with_dash() {
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
 
     let solid = [line_series("ds", "dx", "dy", RED, LineStylePreset::Solid)];
-    let img_solid = r.export_panel_rgba(&chart, &solid, 1.0).unwrap();
+    let img_solid = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &solid),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     let dashed = [line_series("dd", "dx", "dy", RED, LineStylePreset::Dash)];
-    let img_dash = r.export_panel_rgba(&chart, &dashed, 1.0).unwrap();
+    let img_dash = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &dashed),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     let (cs, cd) = (
         count_class(&img_solid, is_red),
@@ -667,30 +763,59 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                     };
                     let mut series = line_series("signal", x, y, RED, preset);
                     if matches!(draw_style, DrawStyle::Constellation(_)) {
-                        let DataRenderType::Line { line } = series.render_type else {
-                            unreachable!()
-                        };
-                        let DataRenderType::Scatter { scatter } =
-                            scatter_series("signal", x, y, RED).render_type
+                        let DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: None,
+                            line: Some(line),
+                            errors: None,
+                            ..
+                        }) = series.render_type
                         else {
                             unreachable!()
                         };
-                        series.render_type = DataRenderType::ScatterLine { line, scatter };
+                        let DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: Some(scatter),
+                            line: None,
+                            errors: None,
+                            ..
+                        }) = scatter_series("signal", x, y, RED).render_type
+                        else {
+                            unreachable!()
+                        };
+                        series.render_type = DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: Some(scatter),
+                            line: Some(line),
+                            errors: None,
+                            stem: None,
+                        });
                     }
                     series
                 };
                 let actual = r
-                    .export_panel_rgba(&chart, &[series("noisy")], 1.0)
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &[series("noisy")]),
+                        renderer::ExportOptions::panel(1.0),
+                    )
+                    .block_on()
                     .unwrap();
                 let expected = r
-                    .export_panel_rgba(&chart, &[series("masked")], 1.0)
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &[series("masked")]),
+                        renderer::ExportOptions::panel(1.0),
+                    )
+                    .block_on()
                     .unwrap();
                 assert_bytes_eq(
                     &actual,
                     &expected,
                     "logarithmic noise must leave a masked gap",
                 );
-                let blank = r.export_panel_rgba(&chart, &[], 1.0).unwrap();
+                let blank = r
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &[]),
+                        renderer::ExportOptions::panel(1.0),
+                    )
+                    .block_on()
+                    .unwrap();
                 assert!(
                     actual.rgba != blank.rgba,
                     "positive segments must remain visible; log_x={log_x}, style={draw_style:?}, preset={preset:?}; alpha={}",
@@ -738,26 +863,55 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
                 };
                 let mut series = scatter_series("signal", x, y, GREEN);
                 if matches!(draw_style, DrawStyle::Constellation(_)) {
-                    let DataRenderType::Scatter { scatter } = series.render_type else {
-                        unreachable!()
-                    };
-                    let DataRenderType::Line { line } =
-                        line_series("signal", x, y, GREEN, LineStylePreset::Solid).render_type
+                    let DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: Some(scatter),
+                        line: None,
+                        errors: None,
+                        ..
+                    }) = series.render_type
                     else {
                         unreachable!()
                     };
-                    series.render_type = DataRenderType::ScatterLine { line, scatter };
+                    let DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: None,
+                        line: Some(line),
+                        errors: None,
+                        ..
+                    }) = line_series("signal", x, y, GREEN, LineStylePreset::Solid).render_type
+                    else {
+                        unreachable!()
+                    };
+                    series.render_type = DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: Some(scatter),
+                        line: Some(line),
+                        errors: None,
+                        stem: None,
+                    });
                 }
                 series
             };
             let actual = r
-                .export_panel_rgba(&chart, &[series("noisy")], 1.0)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[series("noisy")]),
+                    renderer::ExportOptions::panel(1.0),
+                )
+                .block_on()
                 .unwrap();
             let expected = r
-                .export_panel_rgba(&chart, &[series("masked")], 1.0)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[series("masked")]),
+                    renderer::ExportOptions::panel(1.0),
+                )
+                .block_on()
                 .unwrap();
             assert_bytes_eq(&actual, &expected, "nonpositive log markers must be masked");
-            let blank = r.export_panel_rgba(&chart, &[], 1.0).unwrap();
+            let blank = r
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[]),
+                    renderer::ExportOptions::panel(1.0),
+                )
+                .block_on()
+                .unwrap();
             assert!(
                 actual.rgba != blank.rgba,
                 "positive markers must remain visible; log_x={log_x}, style={draw_style:?}; alpha={}",

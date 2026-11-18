@@ -11,7 +11,7 @@
 //! series' GPU style (`Renderer::create_style_for_series`) after recoloring.
 
 use crate::color::Color;
-use crate::config::{AxisOptions, Config, TickVisibility};
+use crate::config::{AxisBreakStyle, AxisOptions, Config, PieceSizing, TickVisibility};
 use crate::data_config::{DataRenderType, SeriesConfig};
 
 const fn rgb8(r: u8, g: u8, b: u8) -> Color {
@@ -22,14 +22,20 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 // Axis presets.
 // ============================================================================
 
-/// Whole-chart axis frame styles, applied to all four axes at once via
-/// [`Config::apply_axis_preset`].
+/// Whole-chart axis frame styles, applied to all four axes and every
+/// overlay's own axes at once via [`Config::apply_axis_preset`].
 ///
-/// Every preset keeps labels and titles on the bottom/left axes only and
-/// leaves data ranges, margins, tick lengths, colors, and title text
-/// untouched — it only switches which axis lines are drawn, the tick
-/// direction, and which sides show tick-value labels.
+/// Every preset leaves data ranges, margins, tick lengths, colors and title
+/// text untouched. It switches which axis lines are drawn, the tick
+/// direction and which sides show tick-value labels; every preset but
+/// [`AxisPreset::Hidden`] keeps labels on the bottom/left axes only. An
+/// overlay's `x_axis` and `y_axis` are data axes and take the bottom/left
+/// style on the side they are drawn on (#283).
+/// `Hidden`, which shows none, and [`AxisPreset::Grotrian`] also switch the
+/// grid off, and `Grotrian` gives a continuous `left_y` break a thin lowest
+/// piece (#205).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AxisPreset {
     /// Closed box frame with ticks pointing **inward** on all four sides —
     /// the classic lab-instrument / scientific-plotting default.
@@ -46,6 +52,18 @@ pub enum AxisPreset {
     /// No axis lines and no ticks; tick-value labels only. Pair with a grid
     /// for a minimal, web-dashboard look.
     Minimal,
+    /// No axis lines, ticks, tick-value labels or grid: the frame of a figure
+    /// whose data is its own picture, such as a Feynman diagram (#234). The
+    /// one preset that also switches the grid off; titles stay as set.
+    Hidden,
+    /// A Grotrian (energy-level) diagram
+    /// ([#205](https://github.com/shim9610/figgy/issues/205)): the boxed
+    /// frame with outward ticks and labels on the bottom and left only, no
+    /// grid, and a thin ground-state strip: a `Continuous` break on `left_y`
+    /// shares the height `1 : 9 : …` between its lowest piece and the rest
+    /// (`PieceSizing::Weights`, one weight per piece). A `Panels` break or
+    /// an unbroken axis keeps its sizing.
+    Grotrian,
 }
 
 /// Per-side knobs a preset controls.
@@ -63,8 +81,8 @@ fn apply_side(axis: &mut AxisOptions, s: SideStyle) {
 }
 
 impl Config {
-    /// Apply `preset` to all four axes at once. See [`AxisPreset`] for what
-    /// is (and is not) touched.
+    /// Apply `preset` to all four axes and every overlay's own axes at once.
+    /// See [`AxisPreset`] for what is (and is not) touched.
     pub fn apply_axis_preset(&mut self, preset: AxisPreset) {
         use TickVisibility::{Inside, None as NoTick, Outside};
 
@@ -130,8 +148,54 @@ impl Config {
                     labels: false,
                 },
             ),
+            AxisPreset::Hidden => {
+                let bare = SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: false,
+                };
+                self.grid.show_major_x = false;
+                self.grid.show_major_y = false;
+                self.grid.show_minor_x = false;
+                self.grid.show_minor_y = false;
+                (bare.clone(), bare)
+            }
+            AxisPreset::Grotrian => {
+                self.grid.show_major_x = false;
+                self.grid.show_major_y = false;
+                self.grid.show_minor_x = false;
+                self.grid.show_minor_y = false;
+                if let Some(breaks) = self.left_y.breaks.as_mut()
+                    && breaks.style == AxisBreakStyle::Continuous
+                    && !breaks.ranges.is_empty()
+                {
+                    // One weight per piece (#205): the lowest piece thin,
+                    // the rest sharing the height equally.
+                    let mut weights = vec![9.0; breaks.ranges.len() + 1];
+                    weights[0] = 1.0;
+                    breaks.sizing = PieceSizing::Weights(weights);
+                }
+                (
+                    SideStyle {
+                        line: true,
+                        tick: Outside,
+                        labels: true,
+                    },
+                    SideStyle {
+                        line: true,
+                        tick: NoTick,
+                        labels: false,
+                    },
+                )
+            }
         };
 
+        // An overlay's own axes are data axes, so they take the labeled
+        // side's frame wherever they are drawn (#283).
+        for overlay in &mut self.overlays {
+            apply_side(&mut overlay.x_axis, labeled.clone());
+            apply_side(&mut overlay.y_axis, labeled.clone());
+        }
         apply_side(&mut self.bottom_x, labeled.clone());
         apply_side(&mut self.left_y, labeled);
         apply_side(&mut self.top_x, unlabeled.clone());
@@ -252,75 +316,118 @@ impl ColorCycle {
     /// Rebuild the series' GPU style afterwards
     /// (`Renderer::create_style_for_series`).
     pub fn apply_to_series(self, series: &mut SeriesConfig, index: usize) {
-        let c = self.color(index);
-        match &mut series.render_type {
-            DataRenderType::Scatter { scatter } => {
-                scatter.point_color = c;
-            }
-            DataRenderType::Line { line } => {
-                line.line_color = c;
-            }
-            DataRenderType::ScatterLine { scatter, line } => {
-                scatter.point_color = c;
-                line.line_color = c;
-            }
-            DataRenderType::ScatterErrorbarX {
-                scatter, err_style, ..
-            }
-            | DataRenderType::ScatterErrorbarY {
-                scatter, err_style, ..
-            }
-            | DataRenderType::ScatterErrorbarXY {
-                scatter, err_style, ..
-            } => {
-                scatter.point_color = c;
-                err_style.error_bar_color = c;
-            }
-            DataRenderType::LineScatterErrorbarX {
-                scatter,
-                line,
-                err_style,
-                ..
-            }
-            | DataRenderType::LineScatterErrorbarY {
-                scatter,
-                line,
-                err_style,
-                ..
-            }
-            | DataRenderType::LineScatterErrorbarXY {
-                scatter,
-                line,
-                err_style,
-                ..
-            } => {
-                scatter.point_color = c;
-                line.line_color = c;
-                err_style.error_bar_color = c;
-            }
-            DataRenderType::Histogram { bar } => {
-                bar.fill_color = c;
-            }
-            // The contour line joins the cycle like any other line. The fill
-            // does not: its colours come from the colormap, and overwriting one
-            // of them with a cycle entry would make the colourbar lie.
-            DataRenderType::Contour { contour, .. }
-            | DataRenderType::HeatmapContour { contour, .. } => {
-                contour.line.line_color = c;
-            }
-            DataRenderType::Heatmap { .. } => {}
-            // The arrow colour joins the cycle; a colour map, when set, still
-            // draws from the colourbar.
-            DataRenderType::Vector { style, .. } => {
-                style.color = c;
-            }
-        }
+        recolor_series(series, self.color(index));
     }
 
     /// Recolor a whole series list in order: series `i` gets `color(i)`.
     pub fn apply_to_all(self, series: &mut [SeriesConfig]) {
         for (i, s) in series.iter_mut().enumerate() {
             self.apply_to_series(s, i);
+        }
+    }
+}
+
+/// Give `series` the colour `c` where a palette colours it: the line,
+/// marker, error bar and stem colour of an x-y series, a histogram's fill,
+/// the series colour of a category, box, range or radar series, a contour
+/// line, the arrows and streamlines, a parallel series' rows, a monotonic
+/// channel, an energy diagram's level strokes and a Feynman diagram's
+/// lines. A field fill and an RGB image keep their colours, which come
+/// from the colour map or the image; per-item overrides stay. Shared by
+/// [`ColorCycle::apply_to_series`] and the themes.
+pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
+    match &mut series.render_type {
+        // Markers, line, error bars and stems all take the cycle colour.
+        DataRenderType::Xy(xy) => {
+            if let Some(scatter) = &mut xy.scatter {
+                scatter.point_color = c;
+            }
+            if let Some(line) = &mut xy.line {
+                line.line_color = c;
+            }
+            if let Some(errors) = &mut xy.errors {
+                errors.style.error_bar_color = c;
+            }
+            if let Some(stem) = &mut xy.stem {
+                stem.color = c;
+            }
+        }
+        DataRenderType::Histogram { bar } => {
+            bar.fill_color = c;
+        }
+        // The level strokes take the cycle colour; the arrows keep theirs
+        // (#203).
+        DataRenderType::EnergyLevels(levels) => {
+            levels.style.level.color = c;
+        }
+        // The lines take the cycle colour; per-line overrides stay
+        // (#234).
+        DataRenderType::Feynman(diagram) => {
+            diagram.style.color = c;
+        }
+        // The contour line joins the cycle like any other line. The fill
+        // does not: its colours come from the colormap, and overwriting one
+        // of them with a cycle entry would make the colourbar lie.
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(contour),
+            ..
+        }) => {
+            contour.line.line_color = c;
+        }
+        // A mesh's contour line joins the cycle as a field's does (#210).
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            contour: Some(contour),
+            ..
+        }) => {
+            contour.line.line_color = c;
+        }
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
+        | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. })
+        | DataRenderType::RgbImage { .. } => {}
+        // The arrow colour joins the cycle; a colour map, when set, still
+        // draws from the colourbar.
+        DataRenderType::Vector { style, .. } => {
+            style.color = c;
+        }
+        // The bar fill joins the cycle; per-bar override colours stay.
+        DataRenderType::CategoryBars { color, .. } => {
+            *color = c;
+        }
+        // The box fill joins the cycle; per-box override colours stay.
+        DataRenderType::BoxPlot { color, .. } => {
+            *color = c;
+        }
+        // The series fill joins the cycle; direction and state colours
+        // stay, since they carry the bars' meaning.
+        DataRenderType::RangeBars { color, .. } => {
+            *color = c;
+        }
+        // The outline and markers join the cycle, and the fill follows
+        // them unless the style names its own.
+        DataRenderType::Radar { color, .. } => {
+            *color = c;
+        }
+        DataRenderType::Ternary { scatter, line, .. } => {
+            if let Some(scatter) = scatter {
+                scatter.point_color = c;
+            }
+            if let Some(line) = line {
+                line.line_color = c;
+            }
+        }
+        // The line and its arrowheads join the cycle; a colour map, when
+        // set, still draws from the colourbar.
+        DataRenderType::Streamlines { line, .. } => {
+            line.line_color = c;
+        }
+        // The rows join the cycle; a colour column, when set, still
+        // draws from the colourbar.
+        DataRenderType::Parallel { line, .. } => {
+            line.line_color = c;
+        }
+        // Each channel of a monotonic group joins the cycle (#271).
+        DataRenderType::MonotonicLine(series) => {
+            series.line.line_color = c;
         }
     }
 }
@@ -332,12 +439,11 @@ mod tests {
         DataErrorBarStyleConfig, DataLineStyleConfig, DataScatterStyleConfig, ErrorRef,
         ScatterShape,
     };
-    use crate::default::default_config;
     use crate::line::LineStylePreset;
 
     #[test]
     fn boxed_inward_shows_full_frame_with_inside_ticks() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.apply_axis_preset(AxisPreset::BoxedInward);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
             assert!(axis.line_visible);
@@ -351,7 +457,7 @@ mod tests {
 
     #[test]
     fn open_outward_hides_top_right_entirely() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.apply_axis_preset(AxisPreset::OpenOutward);
         assert!(cfg.bottom_x.line_visible);
         assert_eq!(cfg.bottom_x.tick, TickVisibility::Outside);
@@ -362,7 +468,7 @@ mod tests {
 
     #[test]
     fn minimal_drops_lines_and_ticks_but_keeps_labels() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.apply_axis_preset(AxisPreset::Minimal);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
             assert!(!axis.line_visible);
@@ -371,10 +477,100 @@ mod tests {
         assert!(cfg.bottom_x.label_style.label_visible);
     }
 
+    // #205: the Grotrian preset keeps the boxed frame with labels and
+    // outward ticks on the bottom and left, drops the grid and the mirrored
+    // ticks, and gives a continuous `left_y` break a thin lowest piece; a
+    // `Panels` break or an unbroken axis keeps its sizing.
+    #[test]
+    fn grotrian_drops_the_grid_and_mirrored_ticks_and_thins_the_ground_strip() {
+        use crate::config::{AxisBreak, AxisBreaks};
+        let mut cfg = crate::defaults::config();
+        cfg.left_y.min = 0.0;
+        cfg.left_y.max = 25.0;
+        cfg.left_y.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(0.5, 10.0), AxisBreak::new(12.0, 20.0)],
+            ..crate::defaults::axis_breaks()
+        });
+        cfg.apply_axis_preset(AxisPreset::Grotrian);
+        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
+            assert!(axis.line_visible);
+        }
+        assert_eq!(cfg.bottom_x.tick, TickVisibility::Outside);
+        assert_eq!(cfg.left_y.tick, TickVisibility::Outside);
+        assert_eq!(cfg.top_x.tick, TickVisibility::None);
+        assert_eq!(cfg.right_y.tick, TickVisibility::None);
+        assert!(cfg.bottom_x.label_style.label_visible && cfg.left_y.label_style.label_visible);
+        assert!(!cfg.top_x.label_style.label_visible && !cfg.right_y.label_style.label_visible);
+        assert!(!cfg.grid.show_major_x && !cfg.grid.show_major_y);
+        assert!(!cfg.grid.show_minor_x && !cfg.grid.show_minor_y);
+        assert_eq!(
+            cfg.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
+            Some(PieceSizing::Weights(vec![1.0, 9.0, 9.0]))
+        );
+        let mut panels = crate::defaults::config();
+        panels.left_y.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(0.5, 10.0)],
+            style: AxisBreakStyle::Panels,
+            ..crate::defaults::axis_breaks()
+        });
+        panels.apply_axis_preset(AxisPreset::Grotrian);
+        assert_eq!(
+            panels.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
+            Some(PieceSizing::ByValue)
+        );
+        let mut plain = crate::defaults::config();
+        plain.apply_axis_preset(AxisPreset::Grotrian);
+        assert!(plain.left_y.breaks.is_none());
+    }
+
+    #[test]
+    fn hidden_drops_lines_ticks_labels_and_the_grid_and_keeps_the_layout() {
+        let mut cfg = crate::defaults::config();
+        cfg.grid.show_major_x = true;
+        cfg.grid.show_minor_y = true;
+        let before = cfg.clone();
+        cfg.apply_axis_preset(AxisPreset::Hidden);
+        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
+            assert!(!axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::None);
+            assert!(!axis.label_style.label_visible);
+        }
+        assert!(!cfg.grid.show_major_x && !cfg.grid.show_major_y);
+        assert!(!cfg.grid.show_minor_x && !cfg.grid.show_minor_y);
+        assert_eq!(cfg.chart_title, before.chart_title);
+        assert_eq!(cfg.bottom_x.title_option, before.bottom_x.title_option);
+        assert_eq!(cfg.data_area().unwrap(), before.data_area().unwrap());
+    }
+
+    // An overlay's own axes are data axes: they take the labeled side's
+    // frame, so a minimal or hidden chart has no stray overlay frame (#283).
+    #[test]
+    fn an_overlay_s_own_axes_take_the_labeled_frame() {
+        let mut cfg = crate::defaults::config();
+        cfg.overlays.push(crate::defaults::overlay_layer());
+        cfg.overlays[0].link_x = false;
+        cfg.apply_axis_preset(AxisPreset::Minimal);
+        for axis in [&cfg.overlays[0].x_axis, &cfg.overlays[0].y_axis] {
+            assert!(!axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::None);
+            assert!(axis.label_style.label_visible);
+        }
+        cfg.apply_axis_preset(AxisPreset::BoxedOutward);
+        for axis in [&cfg.overlays[0].x_axis, &cfg.overlays[0].y_axis] {
+            assert!(axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::Outside);
+            assert!(axis.label_style.label_visible);
+        }
+        cfg.apply_axis_preset(AxisPreset::Hidden);
+        for axis in [&cfg.overlays[0].x_axis, &cfg.overlays[0].y_axis] {
+            assert!(!axis.line_visible && !axis.label_style.label_visible);
+        }
+    }
+
     // A preset must not disturb anything outside frame/tick/label visibility.
     #[test]
     fn preset_leaves_ranges_margins_titles_untouched() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         cfg.apply_axis_preset(AxisPreset::OpenOutward);
 
@@ -415,8 +611,9 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
-            render_type: DataRenderType::LineScatterErrorbarXY {
-                scatter: DataScatterStyleConfig {
+            z_column: None,
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::Circle,
                     point_size: 4.0,
@@ -425,31 +622,34 @@ mod tests {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width: 1.0,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-                err_x: ErrorRef::Symmetric {
-                    column: "ex".into(),
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: "ey".into(),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: Color::BLACK,
-                    error_bar_width: 1.0,
-                    error_bar_cap_size: 3.0,
-                    cap_width: 1.0,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+                }),
+                errors: Some(crate::data_config::ErrorBars {
+                    x: Some(ErrorRef::Symmetric {
+                        column: "ex".into(),
+                    }),
+                    y: Some(ErrorRef::Symmetric {
+                        column: "ey".into(),
+                    }),
+                    style: DataErrorBarStyleConfig {
+                        error_bar_color: Color::BLACK,
+                        error_bar_width: 1.0,
+                        error_bar_cap_size: 3.0,
+                        cap_width: 1.0,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+                stem: None,
+            }),
         }
     }
 
@@ -458,12 +658,17 @@ mod tests {
         let mut s = full_series();
         ColorCycle::Balanced.apply_to_series(&mut s, 2);
         let expected = ColorCycle::Balanced.color(2);
-        let DataRenderType::LineScatterErrorbarXY {
-            scatter,
-            line,
-            err_style,
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: Some(line),
+            errors:
+                Some(crate::data_config::ErrorBars {
+                    x: Some(_),
+                    y: Some(_),
+                    style: err_style,
+                }),
             ..
-        } = &s.render_type
+        }) = &s.render_type
         else {
             unreachable!()
         };
@@ -477,7 +682,18 @@ mod tests {
         let mut list = vec![full_series(), full_series(), full_series()];
         ColorCycle::Classic.apply_to_all(&mut list);
         for (i, s) in list.iter().enumerate() {
-            let DataRenderType::LineScatterErrorbarXY { line, .. } = &s.render_type else {
+            let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(_),
+                line: Some(line),
+                errors:
+                    Some(crate::data_config::ErrorBars {
+                        x: Some(_),
+                        y: Some(_),
+                        style: _,
+                    }),
+                ..
+            }) = &s.render_type
+            else {
                 unreachable!()
             };
             assert_eq!(line.line_color, ColorCycle::Classic.color(i));
@@ -522,6 +738,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type,
         };
         let expected = ColorCycle::Classic.color(2);
@@ -545,21 +762,26 @@ mod tests {
         assert_eq!(bar.fill_color, expected);
 
         for render_type in [
-            DataRenderType::Contour {
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix(),
-                contour: contour(),
-            },
-            DataRenderType::HeatmapContour {
+                fill: None,
+                contour: Some(contour()),
+                surface: None,
+            }),
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix(),
-                fill: fill(),
-                contour: contour(),
-            },
+                fill: Some(fill()),
+                contour: Some(contour()),
+                surface: None,
+            }),
         ] {
             let mut item = series(render_type);
             ColorCycle::Classic.apply_to_series(&mut item, 2);
             let line_color = match &item.render_type {
-                DataRenderType::Contour { contour, .. }
-                | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
+                DataRenderType::Field(crate::data_config::FieldSeries {
+                    contour: Some(contour),
+                    ..
+                }) => contour.line.line_color,
                 _ => unreachable!(),
             };
             assert_eq!(line_color, expected);
@@ -567,10 +789,12 @@ mod tests {
 
         // A fill is left exactly as declared — including inside the combined
         // variant, where only the line was recoloured above.
-        let mut heatmap = series(DataRenderType::Heatmap {
+        let mut heatmap = series(DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix(),
-            fill: fill(),
-        });
+            fill: Some(fill()),
+            contour: None,
+            surface: None,
+        }));
         let before = heatmap.clone();
         ColorCycle::Classic.apply_to_series(&mut heatmap, 2);
         assert_eq!(heatmap, before);

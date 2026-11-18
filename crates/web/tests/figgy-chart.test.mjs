@@ -97,6 +97,15 @@ class FakeHTMLElement extends FakeEventTarget {
     this.clientHeight = 480;
     this.rect = { left: 0, top: 0, width: 640, height: 480 };
     this.shadow = null;
+    this.attributes = new Map();
+  }
+
+  getAttribute(name) {
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
   }
 
   attachShadow() {
@@ -132,6 +141,7 @@ async function loadFacade({ initImpl, createImpl } = {}) {
   const state = {
     initCalls: 0,
     createCalls: [],
+    createOptions: [],
     observers: [],
     rafs: new Map(),
     nextRaf: 1,
@@ -240,6 +250,26 @@ async function loadFacade({ initImpl, createImpl } = {}) {
       onEvent({ scope: "web.create", stage: "first frame", phase: "finished" });
       return kernel;
     }
+    // As the kernel: the options are checked before anything is created.
+    static async create_with_options(canvas, options = {}) {
+      state.createOptions.push({ ...options });
+      for (const key of Object.keys(options)) {
+        if (key !== "shaders" && key !== "on_progress") {
+          throw new Error(`unknown create option "${key}": the options are shaders and on_progress`);
+        }
+      }
+      const shaders = options.shaders ?? "basic";
+      if (shaders !== "basic" && shaders !== "full") {
+        throw new Error(`shaders must be "basic" or "full", got "${shaders}"`);
+      }
+      const kernel = options.on_progress
+        ? await RawFiggyChart.create_with_progress(canvas, options.on_progress)
+        : await RawFiggyChart.create(canvas);
+      if (kernel && typeof kernel === "object") {
+        kernel.shaderSet = shaders;
+      }
+      return kernel;
+    }
   }
 
   const init = () => {
@@ -324,6 +354,9 @@ function makeKernel(name, options = {}) {
         throw options.resizeError;
       }
     },
+    monotonic_groups() {
+      return JSON.stringify(options.monotonicGroups ?? []);
+    },
     on_press(x, y) {
       calls.push(["press", x, y]);
       return true;
@@ -345,6 +378,14 @@ function makeKernel(name, options = {}) {
     export_png(scale) {
       calls.push(["export", scale]);
       return this.exportImpl(scale);
+    },
+    export_svg(scale) {
+      calls.push(["export_svg", scale]);
+      return Promise.resolve("<svg/>");
+    },
+    export_pdf(scale) {
+      calls.push(["export_pdf", scale]);
+      return Promise.resolve(new Uint8Array([37, 80, 68, 70]));
     },
     first_frame_ready() {
       calls.push(["first_frame_ready"]);
@@ -549,6 +590,33 @@ test("completed stream export reuses source views and picking delegates without 
   assert.equal(element.busy, false);
 });
 
+test("SVG and PDF export run as the export operation on a resident chart", async () => {
+  const kernel = makeKernel("vector");
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const svg = element.export_svg(2);
+  assert.equal(element.busy, true, "the export holds the operation gate");
+  await assert.rejects(element.export_pdf(), /busy/);
+  assert.equal(await svg, "<svg/>");
+  assert.equal(element.busy, false);
+  assert.deepEqual(Array.from(await element.export_pdf()), [37, 80, 68, 70]);
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name.startsWith("export")),
+    [["export_svg", 2], ["export_pdf", 1]],
+  );
+});
+
+test("SVG and PDF export reject a chart shown from a stream without calling the kernel", async () => {
+  const { kernel, element } = await completedReplayFixture({ typed: true });
+  await assert.rejects(element.export_svg(2), /SVG export does not support streamed sources/);
+  await assert.rejects(element.export_pdf(2), /PDF export does not support streamed sources/);
+  assert.equal(kernel.calls.filter(([name]) => name === "export_svg" || name === "export_pdf").length, 0);
+  assert.equal(element.busy, false);
+});
+
 function runFacadeFrame(state) {
   const [id, callback] = [...state.rafs.entries()].at(-1);
   state.rafs.delete(id);
@@ -571,10 +639,9 @@ test("selection-only mutations do not replay a completed stream", async () => {
     replayRequests += 1;
     return { status: "complete" };
   };
-  kernel.set_picked_points = () => {};
   kernel.set_picked_data = () => {};
   for (let index = 0; index < 10; index += 1) {
-    element.set_picked_points(String(index));
+    element.set_picked_data(String(index));
     runFacadeFrame(state);
   }
   element.set_picked_data("null");
@@ -591,7 +658,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
     return range.offset === 3 ? first.promise : newest.promise;
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request, ids, revisions, lengths, offsets, chunks) => {
@@ -604,7 +671,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
   runFacadeFrame(state);
   assert.equal(reads.length, 1, "unchanged pending selection must not re-read");
   assert.equal(committed, 1);
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   assert.deepEqual(reads.map((r) => r.offset), [3, 5]);
@@ -629,7 +696,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
     return range.offset === 3 ? old.promise : new Float32Array([5]);
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request) => { committed = request.index; };
@@ -637,7 +704,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
   runFacadeFrame(state);
   old.reject(new Error("old selection failed"));
   await flushTasks();
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   runFacadeFrame(state);
@@ -2929,4 +2996,396 @@ test("facade exposes pool growth, detailed memory status, and awaited cleanup", 
   assert.equal(cleaned.total_bytes, 16);
   assert.equal(cleaned.pool.capacity_bytes, 8);
   assert.equal(element.busy, false);
+});
+
+test("monotonic calls forward typed arrays and parse their JSON (#271)", async () => {
+  const kernel = makeKernel("monotonic", { monotonicGroups: ["daq"] });
+  const update = { len: 4, truncated: false, dropped: 0, x_range: [0, 3], pixel_offset: 0 };
+  kernel.set_monotonic = (group, start, interval, data, range, stride, columns) => {
+    kernel.calls.push(["set_monotonic", group, start, interval, data, range, stride, columns]);
+    return JSON.stringify(update);
+  };
+  kernel.append_monotonic = (group, data, sliding, stride, columns) => {
+    kernel.calls.push(["append_monotonic", group, data, sliding, stride, columns]);
+    return JSON.stringify({ ...update, len: 6, x_range: [2, 5] });
+  };
+  kernel.needs_source = () => {
+    kernel.calls.push(["needs_source"]);
+    return JSON.stringify([{ series_id: "ch0", group: "daq", change: "NotBuilt" }]);
+  };
+  kernel.resize_monotonic = (width, height, sources, plotArea) => {
+    kernel.calls.push(["resize_monotonic", width, height, sources, plotArea]);
+  };
+  let plotRequest = JSON.stringify({ x: 60, y: 20, width: 300, height: 140 });
+  kernel.take_plot_resize_request = () => {
+    const request = plotRequest;
+    plotRequest = undefined;
+    return request;
+  };
+  kernel.fit_layout = (sources) => {
+    kernel.calls.push(["fit_layout", sources]);
+  };
+  kernel.set_monotonic_document = (config, series) => {
+    kernel.calls.push(["set_monotonic_document", JSON.parse(config), JSON.parse(series)]);
+  };
+  kernel.clear_monotonic_document = () => {
+    kernel.calls.push(["clear_monotonic_document"]);
+  };
+  kernel.export_png_monotonic = (scale, sources) => {
+    kernel.calls.push(["export_png_monotonic", scale, sources]);
+    return Promise.resolve(new Uint8Array([137, 80]));
+  };
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  const channels = [new Float64Array([1, 2, 3, 4]), new Int16Array([5, 6, 7, 8])];
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(element.set_monotonic("daq", 0, 1, channels, "autoscale")), update);
+  const frames = new Uint16Array([0, 1, 2, 0, 3, 4]);
+  assert.deepEqual(
+    plain(element.append_monotonic("daq", frames, true, 3, [1, 2]).x_range),
+    [2, 5],
+  );
+  assert.deepEqual(plain(element.needs_source()), [
+    { series_id: "ch0", group: "daq", change: "NotBuilt" },
+  ]);
+  assert.deepEqual(plain(element.monotonic_groups()), ["daq"]);
+  element.set_monotonic_document({ chart_area: {} }, []);
+  element.clear_monotonic_document();
+
+  // A canvas resize of a monotonic chart waits for the host's sources: the
+  // canvas keeps its size and figgy-resize says so.
+  const resizes = [];
+  element.addEventListener("figgy-resize", (event) => resizes.push(event.detail));
+  const before = [element.canvas.width, element.canvas.height];
+  element.setRect(320, 200);
+  element.resize();
+  assert.equal(kernel.calls.filter(([name]) => name === "resize").length, 0);
+  assert.deepEqual([element.canvas.width, element.canvas.height], before);
+  assert.equal(resizes.at(-1).monotonic, true);
+  assert.deepEqual([resizes.at(-1).width, resizes.at(-1).height], [320, 200]);
+  const sources = [{ group: "daq", start: 0, interval: 1, data: channels }];
+  element.resize_monotonic(sources);
+  assert.deepEqual([element.canvas.width, element.canvas.height], [320, 200]);
+  element.fit_layout(sources);
+
+  // A plot-area resize gesture proposes a rect on release; the host applies
+  // it with the sources.
+  const plotResizes = [];
+  element.addEventListener("figgy-plot-resize", (event) => plotResizes.push(event.detail));
+  element.canvas.emit("pointerdown", { pointerId: 3, clientX: 10, clientY: 20 });
+  element.canvas.emit("pointerup");
+  assert.deepEqual(plain(plotResizes), [
+    { plotArea: { x: 60, y: 20, width: 300, height: 140 }, monotonic: true },
+  ]);
+  element.canvas.emit("pointerdown", { pointerId: 3, clientX: 10, clientY: 20 });
+  element.canvas.emit("pointerup");
+  assert.equal(plotResizes.length, 1, "a request is emitted once");
+  element.resize_monotonic(sources, plotResizes[0].plotArea);
+
+  const png = element.export_png_monotonic(2, sources);
+  assert.equal(element.busy, true, "the export holds the operation gate");
+  assert.deepEqual(Array.from(await png), [137, 80]);
+  const calls = kernel.calls.filter(([name]) =>
+    name.includes("monotonic") || name === "needs_source" || name === "fit_layout");
+  assert.equal(calls[0][4], channels, "the channel arrays are passed as they are");
+  assert.equal(calls[0][5], "autoscale", "the range is forwarded");
+  assert.equal(calls[0][6], undefined);
+  assert.equal(calls[1][2], frames, "an interleaved array is passed as it is");
+  assert.deepEqual(Array.from(calls[1][5]), [1, 2]);
+  assert.equal(calls[1][3], true);
+  assert.deepEqual(
+    calls.slice(2).map(([name]) => name),
+    [
+      "needs_source", "set_monotonic_document", "clear_monotonic_document",
+      "resize_monotonic", "fit_layout", "resize_monotonic", "export_png_monotonic",
+    ],
+  );
+  assert.deepEqual(plain(calls[3].slice(1)), [{ chart_area: {} }, []]);
+  assert.deepEqual(calls[5].slice(1, 3), [320, 200]);
+  assert.equal(calls[5][3], sources, "the sources are passed as they are");
+  assert.equal(calls[5][4], undefined);
+  assert.equal(calls[6][1], sources);
+  assert.deepEqual(plain(calls[7][4]), { x: 60, y: 20, width: 300, height: 140 });
+  assert.equal(calls[8][2], sources);
+});
+
+test("fit_ranges, the theme pair, fit_layout and place_feynman_vertices forward (#297)", async () => {
+  const kernel = makeKernel("api-297");
+  for (const name of [
+    "fit_ranges", "apply_theme", "apply_theme_to", "fit_layout", "place_feynman_vertices",
+  ]) {
+    kernel[name] = (...args) => {
+      kernel.calls.push([name, ...args]);
+      return name === "place_feynman_vertices" ? true : undefined;
+    };
+  }
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  element.fit_ranges();
+  element.apply_theme("midnight");
+  element.apply_theme_to("midnight");
+  element.apply_theme_to("gallery", [0, 2]);
+  element.apply_theme_to("gallery", "base");
+  element.apply_theme_to("gallery", ["base", 1]);
+  // An ordinary chart fits its layout with no argument.
+  element.fit_layout();
+  assert.equal(element.place_feynman_vertices("s-channel"), true);
+  const names = new Set([
+    "fit_ranges", "apply_theme", "apply_theme_to", "fit_layout", "place_feynman_vertices",
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(kernel.calls.filter(([name]) => names.has(name)))),
+    [
+      ["fit_ranges"],
+      ["apply_theme", "midnight"],
+      ["apply_theme_to", "midnight", "all"],
+      ["apply_theme_to", "gallery", "[0,2]"],
+      ["apply_theme_to", "gallery", "base"],
+      ["apply_theme_to", "gallery", "[\"base\",1]"],
+      ["fit_layout", null],
+      ["place_feynman_vertices", "s-channel"],
+    ],
+  );
+});
+
+test("the candidate fits and the style domain fits forward (#312)", async () => {
+  const kernel = makeKernel("api-312");
+  const names = ["fit_config", "fit_y_axes_config", "fit_point_size_domain", "fit_vector_scale"];
+  for (const name of names) {
+    kernel[name] = (...args) => {
+      kernel.calls.push([name, ...args]);
+      return name.endsWith("_config") ? `{"fitted":"${name}"}` : undefined;
+    };
+  }
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  assert.equal(element.fit_config("{}", 0.1), '{"fitted":"fit_config"}');
+  assert.equal(element.fit_y_axes_config("{}", 0), '{"fitted":"fit_y_axes_config"}');
+  element.fit_point_size_domain("bubbles");
+  element.fit_vector_scale("wind", 24);
+  const wanted = new Set(names);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(kernel.calls.filter(([name]) => wanted.has(name)))),
+    [
+      ["fit_config", "{}", 0.1],
+      ["fit_y_axes_config", "{}", 0],
+      ["fit_point_size_domain", "bubbles"],
+      ["fit_vector_scale", "wind", 24],
+    ],
+  );
+});
+
+test("the edit-safety, editor-query and annotation-id calls forward (#311, #312, #315)", async () => {
+  const kernel = makeKernel("api-311-315");
+  const names = [
+    "clear_selection", "column_revision", "inspect_streaming_capabilities",
+    "annotation_preview", "convert_annotation_anchor", "inspect_document_layout", "panel_at",
+    "data_area_rect", "legend_entry", "render_warnings", "annotation_ids", "annotation_index",
+    "select_annotation_by_id", "readiness",
+  ];
+  for (const name of names) {
+    kernel[name] = (...args) => {
+      kernel.calls.push([name, ...args]);
+      return `{"from":"${name}"}`;
+    };
+  }
+  const upload = [];
+  kernel.begin_column_upload = (...args) => {
+    kernel.calls.push(["begin_column_upload", ...args]);
+    return {
+      push: (offset, chunk) => upload.push(["push", offset, chunk.length]),
+      commit: (target) => { upload.push(["commit", target === kernel]); return "handle"; },
+      cancel: () => upload.push(["cancel"]),
+      written: () => 3,
+      length: () => 4,
+      is_open: () => true,
+    };
+  };
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  element.clear_selection();
+  element.column_revision("y");
+  element.inspect_streaming_capabilities("{}", "[]");
+  assert.equal(element.annotation_preview("{}"), '{"from":"annotation_preview"}');
+  element.convert_annotation_anchor("{}", "Ratio");
+  element.inspect_document_layout();
+  element.panel_at(1, 2);
+  element.data_area_rect();
+  element.legend_entry("a");
+  element.render_warnings();
+  element.annotation_ids();
+  element.annotation_index("note");
+  element.select_annotation_by_id("note");
+  element.readiness();
+  const handle = element.begin_column_upload("y", 4, "f32", undefined, 1024);
+  handle.push(0, new Float32Array(3));
+  assert.equal(handle.written(), 3);
+  assert.equal(handle.length(), 4);
+  assert.equal(handle.is_open(), true);
+  assert.equal(handle.commit(), "handle");
+  handle.cancel();
+  const wanted = new Set([...names, "begin_column_upload"]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(kernel.calls.filter(([name]) => wanted.has(name)))),
+    [
+      ["clear_selection"],
+      ["column_revision", "y"],
+      ["inspect_streaming_capabilities", "{}", "[]"],
+      ["annotation_preview", "{}"],
+      ["convert_annotation_anchor", "{}", "Ratio"],
+      ["inspect_document_layout", null],
+      ["panel_at", 1, 2],
+      ["data_area_rect"],
+      ["legend_entry", "a"],
+      ["render_warnings"],
+      ["annotation_ids"],
+      ["annotation_index", "note"],
+      ["select_annotation_by_id", "note"],
+      ["readiness"],
+      ["begin_column_upload", "y", 4, "f32", null, 1024],
+    ],
+  );
+  assert.deepEqual(upload, [["push", 0, 3], ["commit", true], ["cancel"]]);
+});
+
+test("the shaders attribute reaches the kernel's create options and round-trips", async () => {
+  // Absent: the basic set, which is the kernel's default.
+  const plainKernel = makeKernel("shaders-default");
+  plainKernel.shader_set = () => plainKernel.shaderSet;
+  const plain = await loadFacade({ createImpl: () => Promise.resolve(plainKernel) });
+  const first = new plain.Element();
+  assert.equal(first.shaders, "basic");
+  connect(first);
+  await first.ready;
+  await waitForIdle(first);
+  assert.equal(plain.state.createOptions.length, 1);
+  assert.equal(plain.state.createOptions[0].shaders, "basic");
+  assert.equal(typeof plain.state.createOptions[0].on_progress, "function");
+  assert.equal(first.shaders, "basic");
+
+  // `shaders="full"`: the chart is created on the full set.
+  const fullKernel = makeKernel("shaders-full");
+  fullKernel.shader_set = () => fullKernel.shaderSet;
+  const full = await loadFacade({ createImpl: () => Promise.resolve(fullKernel) });
+  const second = new full.Element();
+  second.setAttribute("shaders", "full");
+  assert.equal(second.shaders, "full");
+  connect(second);
+  await second.ready;
+  await waitForIdle(second);
+  assert.equal(full.state.createOptions[0].shaders, "full");
+  assert.equal(second.shaders, "full");
+});
+
+test("the shaders property upgrades a ready chart and refuses any other value", async () => {
+  const kernel = makeKernel("shaders-upgrade");
+  kernel.shaderSet = "basic";
+  kernel.shader_set = () => kernel.shaderSet;
+  kernel.require_shader_set = (value) => {
+    kernel.calls.push(["require_shader_set", value]);
+    if (value === "full") kernel.shaderSet = "full";
+  };
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  assert.equal(element.shaders, "basic");
+
+  for (const invalid of ["Full", "fast", "", null, undefined, 1]) {
+    assert.throws(() => { element.shaders = invalid; }, /shaders must be "basic" or "full"/);
+  }
+  assert.equal(element.getAttribute("shaders"), null);
+  assert.deepEqual(kernel.calls.filter(([name]) => name === "require_shader_set"), []);
+
+  element.shaders = "full";
+  assert.equal(element.getAttribute("shaders"), "full");
+  assert.equal(element.shaders, "full");
+  // A chart never goes back: asking for "basic" again leaves it on "full".
+  element.shaders = "basic";
+  assert.equal(element.shaders, "full");
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name === "require_shader_set"),
+    [["require_shader_set", "full"], ["require_shader_set", "basic"]],
+  );
+});
+
+test("an invalid shaders attribute fails ready with the kernel's error and creates nothing", async () => {
+  const kernel = makeKernel("shaders-invalid");
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  element.setAttribute("shaders", "turbo");
+  connect(element);
+  await assert.rejects(element.ready, /shaders must be "basic" or "full", got "turbo"/);
+  assert.equal(state.createCalls.length, 0);
+});
+
+test("the element snapshots compile status each frame, reports completion and forwards the waits", async () => {
+  const kernel = makeKernel("pipeline-status");
+  kernel.shaderSet = "basic";
+  kernel.shader_set = () => kernel.shaderSet;
+  const counts = (total, ready, compiling) => ({ total, ready, compiling, failed: 0 });
+  const statuses = [
+    { screen: counts(1, 0, 1), all: counts(61, 4, 57), frame_complete: false },
+    { screen: counts(1, 1, 0), all: counts(61, 30, 31), frame_complete: true },
+    { screen: counts(1, 1, 0), all: counts(61, 61, 0), frame_complete: true },
+  ];
+  let next = 0;
+  kernel.pipeline_status = () => statuses[Math.min(next, statuses.length - 1)];
+  kernel.pipeline_failures = () => [{ label: "x", kind: "validation", message: "bad" }];
+  kernel.series_ready = async () => { kernel.calls.push(["series_ready"]); };
+  kernel.pipelines_ready = async () => { kernel.calls.push(["pipelines_ready"]); };
+  const { Element, state } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  assert.equal(element.pipeline_status(), null, "no snapshot before the chart is ready");
+  const stages = [];
+  element.addEventListener("figgy-init-progress", ({ detail }) => {
+    if (detail.scope === "renderer.pipelines") stages.push(detail.stage);
+  });
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+
+  runFacadeFrame(state);
+  assert.equal(element.pipeline_status().screen.compiling, 1);
+  assert.deepEqual(stages, []);
+  next = 1;
+  runFacadeFrame(state);
+  assert.deepEqual(stages, ["screen complete"]);
+  next = 2;
+  runFacadeFrame(state);
+  runFacadeFrame(state);
+  assert.deepEqual(stages, ["screen complete", "all complete"], "each reported once");
+  assert.equal(element.pipeline_status().all.ready, 61);
+
+  // The chart moved to the full set by itself: the property follows. (The
+  // picker prewarm the finished compiles started holds the chart first.)
+  await waitForIdle(element);
+  kernel.shaderSet = "full";
+  runFacadeFrame(state);
+  assert.equal(element.shaders, "full");
+
+  assert.deepEqual(element.pipeline_failures(), [{ label: "x", kind: "validation", message: "bad" }]);
+  await element.series_ready();
+  await element.pipelines_ready();
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name === "series_ready" || name === "pipelines_ready"),
+    [["series_ready"], ["pipelines_ready"]],
+  );
 });

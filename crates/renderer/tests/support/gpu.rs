@@ -13,7 +13,7 @@ pub fn instance() -> wgpu::Instance {
 }
 
 pub fn adapter(instance: &wgpu::Instance) -> wgpu::Adapter {
-    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         apply_limit_buckets: false,
         force_fallback_adapter: std::env::var("FIGGY_TEST_FORCE_FALLBACK").as_deref() == Ok("1"),
         ..Default::default()
@@ -25,7 +25,7 @@ pub fn request_device(
     adapter: &wgpu::Adapter,
     descriptor: &wgpu::DeviceDescriptor<'_>,
 ) -> (wgpu::Device, wgpu::Queue) {
-    pollster::block_on(adapter.request_device(descriptor))
+    block_on(adapter.request_device(descriptor))
         .expect("required GPU test: device initialization failed")
 }
 
@@ -35,3 +35,43 @@ pub fn device() -> (wgpu::Device, wgpu::Queue) {
     eprintln!("required GPU test adapter: {:?}", adapter.get_info());
     request_device(&adapter, &wgpu::DeviceDescriptor::default())
 }
+
+/// Run `future` to completion on this thread: the tests' executor for the
+/// async API (#160), so the repository needs no executor crate. The thread
+/// parks until the future's waker unparks it; a spurious wake-up only polls
+/// again.
+pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    /// Wakes the blocked thread.
+    struct Unpark(std::thread::Thread);
+
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
+/// [`block_on`] as a method: `future.block_on()`.
+pub trait BlockOn: std::future::Future + Sized {
+    fn block_on(self) -> Self::Output {
+        block_on(self)
+    }
+}
+
+impl<F: std::future::Future> BlockOn for F {}

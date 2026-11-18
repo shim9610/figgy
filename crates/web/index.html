@@ -44,6 +44,8 @@
     <output id="bin-label"></output>
     <label><input id="border" type="checkbox" checked disabled /> Black border (1 px)</label>
     <button id="export">Export PNG x2</button>
+    <button id="export-svg">Export SVG</button>
+    <button id="export-pdf">Export PDF</button>
     <span id="status"></span>
   </div>
   <div id="chart-wrap"><figgy-chart id="chart"></figgy-chart></div>
@@ -152,23 +154,30 @@
       });
       showSwatches("Classic");
 
-      const exportBtn = document.getElementById("export");
-      exportBtn.addEventListener("click", async () => {
-        if (chart.busy) return;
-        exportBtn.disabled = true;
-        try {
-          const png = await chart.export_png(2.0);
-          const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
-          const a = Object.assign(document.createElement("a"), { href: url, download: "figgy.png" });
-          a.click();
-          URL.revokeObjectURL(url);
-        } catch (error) {
-          console.error("export:", error);
-          status.textContent = `export failed: ${error?.message ?? error}`;
-        } finally {
-          exportBtn.disabled = false;
-        }
-      });
+      const exports = [
+        ["export", () => chart.export_png(2.0), "image/png", "figgy.png"],
+        ["export-svg", () => chart.export_svg(1.0), "image/svg+xml", "figgy.svg"],
+        ["export-pdf", () => chart.export_pdf(1.0), "application/pdf", "figgy.pdf"],
+      ];
+      for (const [id, run, type, download] of exports) {
+        const exportBtn = document.getElementById(id);
+        exportBtn.addEventListener("click", async () => {
+          if (chart.busy) return;
+          exportBtn.disabled = true;
+          try {
+            const file = await run();
+            const url = URL.createObjectURL(new Blob([file], { type }));
+            const a = Object.assign(document.createElement("a"), { href: url, download });
+            a.click();
+            URL.revokeObjectURL(url);
+          } catch (error) {
+            console.error("export:", error);
+            status.textContent = `export failed: ${error?.message ?? error}`;
+          } finally {
+            exportBtn.disabled = false;
+          }
+        });
+      }
     } catch (error) {
       console.error("init:", error);
       status.textContent = `init failed: ${error?.message ?? error}`;

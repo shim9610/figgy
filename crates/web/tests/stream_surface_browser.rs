@@ -2,13 +2,27 @@
 
 use std::sync::Arc;
 
-use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
-use renderer::gpu_memory;
+use ::renderer::FiggyError;
+use ::renderer::gpu::{create_instance, request_adapter_async, request_device_async};
+use ::renderer::gpu_memory;
 use wasm_bindgen_test::*;
 
 // Exercise the product module without adding a public renderer API for tests.
-// It reaches `crate::gpu_memory` through the import above and
-// `crate::gpu_compile` through this copy of the renderer's compile boundary.
+// It reaches `crate::gpu_memory` and `crate::FiggyError` through the imports
+// above, `crate::gpu_compile` through this copy of the renderer's compile
+// boundary, and `crate::renderer::gpu_checked` through the module below.
+mod renderer {
+    /// The renderer's wasm32 `gpu_checked`: a browser error scope resolves
+    /// asynchronously, so the work runs unscoped and errors reach the
+    /// device's uncaptured-error handler.
+    pub(crate) fn gpu_checked<T>(
+        _device: &wgpu::Device,
+        _resource: &'static str,
+        work: impl FnOnce() -> T,
+    ) -> Result<T, crate::FiggyError> {
+        Ok(work())
+    }
+}
 #[path = "../../renderer/src/gpu_compile.rs"]
 #[allow(dead_code, unused_imports)]
 mod gpu_compile;
@@ -218,7 +232,6 @@ async fn chrome_stream_surface_matches_direct_render_all_formats_and_samples() {
                     sample_count: samples,
                 },
                 16 * 1024 * 1024,
-                0,
             )
             .expect("production surface");
             let direct = texture(&device, format, samples);
