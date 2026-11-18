@@ -862,6 +862,37 @@ impl FiggyRadialChart {
     pub fn annotation_warnings(&self) -> Result<String, JsValue> {
         crate::annotation_warnings_json(self.annotations.render_warnings())
     }
+    /// Where an annotation that is not part of the document yet would be
+    /// drawn (#334), with the contract of `FiggyChart.annotation_preview`:
+    /// placed by the annotation layer's own placement code in the current
+    /// frame's anchor space, its text measured at the scale the canvas
+    /// shows the chart at. The document, the selection and the raster stay
+    /// as they are. `json` is an `Annotation`, the shape `add_annotation`
+    /// takes, checked like `FiggyChart.annotation_preview` checks it
+    /// (codes `annotation_json`, `annotation_invalid`).
+    ///
+    /// Returns JSON `{ kind, visible, drawn, canvas, document }`. `canvas`
+    /// is the shape in physical canvas pixels and `document` in document
+    /// logical pixels (the units of `annotations` and `hit_annotation`),
+    /// each `{ shape, points | rect, bounds }`: `shape` is `"text"` (`rect`
+    /// `[x, y, w, h]`), `"arrow"` (`points`, its two ends) or `"polygon"`
+    /// (a shape's outline), and `bounds` is everything the raster paints for
+    /// it, labels included. The radial chart has no value axes, so a
+    /// reference line, a span and a data anchor are never drawn. An item the
+    /// raster would skip has `drawn: false` and the `reason`
+    /// `annotation_warnings` would give (`NonFinite`, `NoValueAxis`,
+    /// `OutOfRange`, `EmptyText`). `visible: false` (a hidden item) is
+    /// placed as it is drawn once shown.
+    /// JS: `const p = JSON.parse(chart.annotation_preview(itemJson));`
+    pub fn annotation_preview(&self, json: &str) -> Result<String, JsValue> {
+        let item = crate::web::FiggyChart::parse_annotation(json)?;
+        let placed = crate::radial_annotation_preview(
+            &item,
+            *self.annotations.annotations().space(),
+            self.surface_scale(),
+        );
+        serde_json::to_string(&crate::annotation_preview_value(&item, placed)).map_err(js_err)
+    }
     /// Select the data under a point (or toggle it off) and resolve to the
     /// selection as JSON. Asynchronous: the radial chart picks on the GPU,
     /// like `FiggyChart.pick_point`.

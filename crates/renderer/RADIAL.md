@@ -663,7 +663,10 @@ The `BoundedAnnotationFrame` returned by
 `annotations()`. Bands are skipped, so there is no layer drawn below the
 slices. Editing annotations and selecting with
 `decorations.selected = Annotation(i)` do not rebuild the frame or the label
-raster. For the full contract, see the
+raster. In the browser, `FiggyBoundedChart.annotation_preview(json)` reports
+where an item that is not added yet would be drawn, or why it would be
+skipped, without changing the document or the selection
+([#334](https://github.com/shim9610/figgy/issues/334)). For the full contract, see the
 [shared interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 
 ## 한국어 사용법
@@ -1186,4 +1189,5 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 `renderer.prepare_annotations(chart, size, scale)`가 돌려주는 `BoundedAnnotationFrame`은
 `frame.draw` 다음에 `draw_overlay`로 그리고, 히트 맵은 `annotations()`로 얻는다. 구간은
 건너뛰므로 조각 아래에 그리는 층은 없다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 프레임과 라벨 래스터를 다시 만들지
-않는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.
+않는다. 브라우저에서는 `FiggyBoundedChart.annotation_preview(json)`가 아직 넣지 않은 항목이 그려질 자리나
+건너뛸 이유를 문서와 선택을 바꾸지 않고 알려 준다(#334). 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

@@ -1082,19 +1082,59 @@ impl ShownDocument<'_> {
 }
 
 /// An annotation preview's shape as JSON: `{ shape, points | rect, bounds }`
-/// with `shape` one of `line`, `span`, `text`, `arrow`, `polygon`.
+/// with `shape` one of `line`, `span`, `text`, `arrow`, `polygon`, every
+/// coordinate multiplied by `scale` (1 keeps the preview's own pixels; the
+/// radial chart's canvas is its logical placement times the display scale,
+/// #334).
 #[cfg(any(target_arch = "wasm32", test))]
-fn annotation_preview_json(preview: &renderer::AnnotationPreview) -> serde_json::Value {
+fn annotation_preview_json(preview: &renderer::AnnotationPreview, scale: f32) -> serde_json::Value {
     use renderer::annotation::AnnotationGeometry as G;
-    let mut value = match &preview.geometry {
-        G::Line { a, b } => serde_json::json!({ "shape": "line", "points": [a, b] }),
-        G::Span(rect) => serde_json::json!({ "shape": "span", "rect": rect_f_json(*rect) }),
-        G::Text(rect) => serde_json::json!({ "shape": "text", "rect": rect_f_json(*rect) }),
-        G::Arrow { from, to } => serde_json::json!({ "shape": "arrow", "points": [from, to] }),
-        G::Polygon(points) => serde_json::json!({ "shape": "polygon", "points": points }),
+    let point = |[x, y]: [f32; 2]| [x * scale, y * scale];
+    let rect = |r: renderer::layout::RectF| {
+        rect_f_json(renderer::layout::RectF {
+            x: r.x * scale,
+            y: r.y * scale,
+            width: r.width * scale,
+            height: r.height * scale,
+        })
     };
-    value["bounds"] = rect_f_json(preview.bounds);
+    let mut value = match &preview.geometry {
+        G::Line { a, b } => {
+            serde_json::json!({ "shape": "line", "points": [point(*a), point(*b)] })
+        }
+        G::Span(r) => serde_json::json!({ "shape": "span", "rect": rect(*r) }),
+        G::Text(r) => serde_json::json!({ "shape": "text", "rect": rect(*r) }),
+        G::Arrow { from, to } => {
+            serde_json::json!({ "shape": "arrow", "points": [point(*from), point(*to)] })
+        }
+        G::Polygon(points) => serde_json::json!({
+            "shape": "polygon",
+            "points": points.iter().map(|p| point(*p)).collect::<serde_json::Value>(),
+        }),
+    };
+    value["bounds"] = rect(preview.bounds);
     value
+}
+
+/// Where `item` (in document logical pixels) would be drawn on a radial
+/// chart's annotation layer (#334), as the `(canvas, document)` JSON shapes
+/// of [`annotation_preview_json`]: placed by the raster's own placement
+/// (`renderer::preview_annotation`) in the frame's anchor space `space`
+/// (logical pixels) with the text measured at the display `scale` and the
+/// font policy the radial raster uses. The radial raster paints that one
+/// placement at `scale`, so the canvas shape is the document shape times
+/// `scale`. `Err` is the raster's skip reason.
+#[cfg(any(target_arch = "wasm32", test))]
+fn radial_annotation_preview(
+    item: &renderer::Annotation,
+    space: renderer::annotation::PixelSpace,
+    scale: f32,
+) -> Result<(serde_json::Value, serde_json::Value), renderer::AnnotationSkip> {
+    let placed = renderer::preview_annotation(item, space, scale, renderer::FontPolicy::Standard)?;
+    Ok((
+        annotation_preview_json(&placed, scale),
+        annotation_preview_json(&placed, 1.0),
+    ))
 }
 
 /// One `RenderWarning` as JSON (#312): `kind` (the variant name), the
@@ -1176,7 +1216,9 @@ mod tests {
         prepare_demo_declarations, set_chart_title_label, validate_column_batch,
         validate_column_data_len, validate_column_registry_action,
     };
-    use super::{ShownDocument, annotation_preview_json, render_warning_json};
+    use super::{
+        ShownDocument, annotation_preview_json, radial_annotation_preview, render_warning_json,
+    };
 
     fn scatter_style() -> DataScatterStyleConfig {
         DataScatterStyleConfig {
@@ -2579,8 +2621,8 @@ mod tests {
             let (canvas, document) = shown.annotation_preview(&arrow).unwrap();
             let document = document.unwrap();
             let (canvas, document) = (
-                annotation_preview_json(&canvas),
-                annotation_preview_json(&document),
+                annotation_preview_json(&canvas, 1.0),
+                annotation_preview_json(&document, 1.0),
             );
             assert_eq!(canvas["shape"], "arrow");
             for i in 0..2 {
@@ -2611,6 +2653,93 @@ mod tests {
             assert_eq!(
                 shown.annotation_preview(&outside).err(),
                 Some(renderer::AnnotationSkip::OutOfRange)
+            );
+        }
+    }
+
+    /// The radial preview (#334) places the item once in the frame's
+    /// logical anchor space: the canvas shape is that shape times the display
+    /// scale, and an item the radial raster skips reports why.
+    #[test]
+    fn radial_annotation_preview_scales_the_logical_placement() {
+        use renderer::annotation::{AxisSpace, PixelSpace};
+        use renderer::layout::RectF;
+        use renderer::{Anchor, Annotation, AnnotationKind, AnnotationSkip};
+        let canvas = RectF {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let space = PixelSpace {
+            panel: canvas,
+            plot: canvas,
+            x: AxisSpace::NONE,
+            y: AxisSpace::NONE,
+        };
+        let note = |anchor, text: &str| {
+            Annotation::new(AnnotationKind::Text {
+                anchor,
+                text: renderer::text::RichText::plain(text, renderer::Color::BLACK, 12.0, ""),
+                box_style: Some(Default::default()),
+                align: Default::default(),
+            })
+        };
+        let text = note(Anchor::Ratio { x: 0.25, y: 0.75 }, "peak");
+        let shape = Annotation::new(AnnotationKind::Rect {
+            from: Anchor::Ratio { x: 0.5, y: 0.5 },
+            to: Anchor::Ratio { x: 0.75, y: 0.25 },
+            style: Default::default(),
+        });
+        let rect = |value: &serde_json::Value| -> Vec<f64> {
+            (0..4).map(|i| value[i].as_f64().unwrap()).collect()
+        };
+        for scale in [1.0f32, 2.0] {
+            for (item, shape_name) in [(&text, "text"), (&shape, "polygon")] {
+                let (canvas, document) = radial_annotation_preview(item, space, scale).unwrap();
+                assert_eq!(canvas["shape"], shape_name);
+                assert_eq!(document["shape"], shape_name);
+                let (c, d) = (rect(&canvas["bounds"]), rect(&document["bounds"]));
+                for (c, d) in c.iter().zip(&d) {
+                    assert!(
+                        (c - d * f64::from(scale)).abs() < 1e-3,
+                        "{scale}: {c} vs {d}"
+                    );
+                }
+                assert!(d[2] > 0.0 && d[3] > 0.0, "{d:?}");
+            }
+            // The polygon's corners scale with the bounds.
+            let (canvas, document) = radial_annotation_preview(&shape, space, scale).unwrap();
+            let corners = document["points"].as_array().unwrap();
+            assert_eq!(corners.len(), canvas["points"].as_array().unwrap().len());
+            for (i, corner) in corners.iter().enumerate() {
+                for axis in 0..2 {
+                    let d = corner[axis].as_f64().unwrap();
+                    let c = canvas["points"][i][axis].as_f64().unwrap();
+                    assert!((c - d * f64::from(scale)).abs() < 1e-3);
+                }
+            }
+            // The radial chart has no value axes.
+            let line = Annotation::new(AnnotationKind::ReferenceLine {
+                axis: renderer::AnnotationAxis::X,
+                value: 1.0,
+                style: Default::default(),
+                label: None,
+            });
+            for item in [line, note(Anchor::Data { x: 1.0, y: 1.0 }, "peak")] {
+                assert_eq!(
+                    radial_annotation_preview(&item, space, scale).err(),
+                    Some(AnnotationSkip::NoValueAxis)
+                );
+            }
+            assert_eq!(
+                radial_annotation_preview(
+                    &note(Anchor::Ratio { x: 0.5, y: 0.5 }, ""),
+                    space,
+                    scale
+                )
+                .err(),
+                Some(AnnotationSkip::EmptyText)
             );
         }
     }
@@ -2724,7 +2853,8 @@ mod web {
     pub use decorations::AxisPreset;
     pub(crate) use decorations::vertex_handle_index;
     pub(crate) use decorations::{
-        annotation_index_of, annotation_kind_name, annotation_warnings_json,
+        annotation_index_of, annotation_kind_name, annotation_preview_value,
+        annotation_warnings_json,
     };
     mod export;
     mod monotonic;
