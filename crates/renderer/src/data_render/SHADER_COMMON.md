@@ -1353,8 +1353,8 @@ fn stem_end_ndc(t: Transform, g: ErrorBarSegment, at_a: bool, flags: u32) -> vec
 The radial chart draws each slice as a solid: an extruded sector, its
 footprint rounded at its corners and walls, seen by an orthographic camera
 tilted about the x axis, and ray-marched per pixel. The draw (`radial.wgsl`,
-`scene` and the moving inside glyphs of `label_pixel`) shades the sector a
-pixel's ray reaches first, and the radial pick module (`radial_pick.wgsl`)
+`coverage` and the moving inside glyphs of `label_pixel`) shades the sector
+a pixel's ray reaches first, and the radial pick module (`radial_pick.wgsl`)
 answers which slice that is: both run the same functions over the same
 storage layout, so the pick is the draw's own geometry and occlusion.
 
@@ -1385,10 +1385,35 @@ fn hit_pixel(pixel: vec2<f32>, s: Sector) -> Hit
 `hit_pixel` returns the hit of the ray through a physical pixel, `t` its
 distance from the camera, or `t = 10000` for a miss; a pixel is drawn, and
 picked, as the sector with the smallest `t`, the first one on a tie.
-The loops that choose a sector by index (the pick, and the draw's moving
-inside glyphs) count the winner from 1, with 0 for none: Metal compiles a
-0-based `winner = i` as a constant 0, so every pick would answer sector 0
-(#63).
+The loops that choose a sector by index (the pick, the draw's `coverage`
+and its moving inside glyphs) count the winner from 1, with 0 for none:
+Metal compiles a 0-based `winner = i` as a constant 0, so every pick would
+answer sector 0 (#63).
+
+`hit_sector` marches to the surface and takes the six-sample normal once,
+at the point the march stopped. The draw supersamples coverage and shades
+once per surface (#349), in this order, for a pixel outside the Flat fast
+path (`flat_pixel`, #41):
+
+1. `floor_shadow` once, at the pixel centre: a soft blur, it shades the
+   background samples.
+2. For each sample of the `size.w` × `size.w` grid (2 × 2), in row order,
+   `coverage` at the sample's own position: the nearest sector, or the
+   background. Coverage, and with it every edge, is per sample.
+3. The lit material (`sector_surface`) once for the samples that hit one
+   sector with one normal (within about 2.5 degrees), at the first of them.
+   An interior pixel of a face evaluates one material; samples across a
+   bevel or a crease keep their own normal and highlight.
+4. The outline (`outlined`) per sample, at its own position and hit, so the
+   ink keeps its antialiasing.
+5. Each sample's colour is added in sample order, so a pixel whose samples
+   all take the Flat colour is bit-identical to the fast path.
+
+Only appearance moves with this order: which sector each sample hits, the
+geometry, the fast path, the labels and the pick are as before. A unit test
+(`shading_tolerance_tests` in `radial.rs`) compares it with every sample
+shaded at its own position (`tests/support/radial_per_sample.wgsl`) and pins
+the difference.
 
 Rust twin: `radial::Sector` (`radial.rs`), built per slice by
 `radial_layout.rs`; `mirrored_struct_layouts_match_their_rust_twins` holds
