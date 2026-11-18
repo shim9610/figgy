@@ -1484,11 +1484,19 @@ impl FiggyChart {
     }
 
     /// The displayed geometry of a document and its panels, read-only
-    /// (#312). Without an argument it is the installed document as the
-    /// canvas shows it; with a `Config` JSON it is that candidate, placed
-    /// on this canvas the way `set_config` would place it, and nothing is
+    /// (#312). Without a config it is the installed document as the canvas
+    /// shows it; with a `Config` JSON it is that candidate, placed on this
+    /// canvas the way `set_config` would place it, and nothing is
     /// installed. A candidate whose overlays, subplots or line offsets
     /// cannot be laid out is refused with code `layout`.
+    ///
+    /// `surface_width` and `surface_height` (#334), physical pixels, lay
+    /// the document (or the candidate) out as a canvas of that size would
+    /// show it, the way the chart reports it after `resize(width,
+    /// height)`; the canvas and its surface are not resized. Give both or
+    /// neither: one alone, or a dimension that is not a whole number of
+    /// pixels from 1, is refused with code `invalid_size`. Without them the
+    /// call reads the canvas as before.
     ///
     /// Returns JSON `{ scale, surface, document_area, active_layer, panels }`:
     /// `scale` is canvas pixels per document pixel, `surface` the canvas
@@ -1502,38 +1510,23 @@ impl FiggyChart {
     /// `data_area` its exact data area (`null` without one). An overlay
     /// and a member share their chart's frame and data area.
     /// JS: `const layout = JSON.parse(chart.inspect_document_layout());`
-    pub fn inspect_document_layout(&self, config_json: Option<String>) -> Result<String, JsValue> {
-        let value = match config_json {
-            None => self.with_shown_document(|shown| Ok(shown.layout_json(self.surface_size)))?,
-            Some(json) => {
-                let candidate: renderer::Config = serde_json::from_str(&json).map_err(|error| {
-                    coded_error(
-                        &format!("config is not a Config JSON value: {error}"),
-                        "config_json",
-                        [],
-                    )
-                })?;
-                if !candidate.overlays.is_empty()
-                    || !candidate.subplots.is_empty()
-                    || candidate.has_offset_members()
-                {
-                    candidate.expand().map_err(|error| {
-                        coded_error(
-                            &format!("the candidate's panels cannot be laid out ({error:?})"),
-                            "layout",
-                            [],
-                        )
-                    })?;
-                }
-                let (placed, _, scale) =
-                    renderer::display_config_for_surface(&candidate, self.surface_size);
-                ShownDocument {
-                    logical: &candidate,
-                    placed: &placed,
-                    scale,
-                }
-                .layout_json(self.surface_size)
+    pub fn inspect_document_layout(
+        &self,
+        config_json: Option<String>,
+        surface_width: Option<f64>,
+        surface_height: Option<f64>,
+    ) -> Result<String, JsValue> {
+        let surface =
+            crate::layout_surface(surface_width, surface_height).map_err(layout_query_error)?;
+        let value = match (config_json, surface) {
+            (None, None) => {
+                self.with_shown_document(|shown| Ok(shown.layout_json(self.surface_size)))?
             }
+            (None, Some(surface)) => crate::fitted_layout_json(self.chart_config()?, surface),
+            (Some(json), surface) => crate::fitted_layout_json(
+                &crate::layout_candidate(&json).map_err(layout_query_error)?,
+                surface.unwrap_or(self.surface_size),
+            ),
         };
         serde_json::to_string(&value).map_err(js_err)
     }
@@ -1625,4 +1618,34 @@ impl FiggyChart {
             .collect::<Vec<_>>();
         serde_json::to_string(&values).map_err(js_err)
     }
+}
+
+/// A refused layout query as a JS `Error` with its `code` (#334).
+fn layout_query_error(error: crate::LayoutQueryError) -> JsValue {
+    coded_error(&error.message, error.code, [])
+}
+
+/// The layout `FiggyChart.inspect_document_layout(configJson)` reports for
+/// a candidate `Config` JSON on a canvas whose surface is `surface_width` x
+/// `surface_height` physical pixels, without a chart (#334): no renderer,
+/// GPU device or surface is created, and the result is the JSON a chart
+/// of that surface size reports for the same candidate. `scale` is that
+/// canvas's device pixel ratio; it must be finite and positive, and it
+/// does not move anything, since a canvas places its document by its
+/// surface size alone (the result's `scale` is that fit). Refused with
+/// code `config_json` or `layout` as `inspect_document_layout` refuses a
+/// candidate, and with `invalid_size` for a dimension that is not a whole
+/// number of pixels from 1 or a scale that is not finite and positive.
+///
+/// JS: `const layout = JSON.parse(inspect_config_layout(cfg, canvas.width, canvas.height, devicePixelRatio));`
+#[wasm_bindgen]
+pub fn inspect_config_layout(
+    config_json: &str,
+    surface_width: f64,
+    surface_height: f64,
+    scale: f64,
+) -> Result<String, JsValue> {
+    let value = crate::config_layout_json(config_json, surface_width, surface_height, scale)
+        .map_err(layout_query_error)?;
+    serde_json::to_string(&value).map_err(js_err)
 }
