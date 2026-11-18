@@ -2062,16 +2062,17 @@ mod pick_module_tests {
         );
     }
 
-    /// The pick and the moving inside glyphs count their winner from 1:
-    /// Metal compiles a 0-based `winner=i` as a constant 0 (#63).
+    /// The pick, the draw's shaded winner (#349) and the moving inside
+    /// glyphs count their winner from 1: Metal compiles a 0-based
+    /// `winner=i` as a constant 0 (#63).
     #[test]
     fn sector_index_loops_count_the_winner_from_one() {
-        for (name, source) in [
-            ("radial.wgsl", include_str!("radial.wgsl")),
-            ("radial_pick.wgsl", include_str!("radial_pick.wgsl")),
+        for (name, source, loops) in [
+            ("radial.wgsl", include_str!("radial.wgsl"), 2),
+            ("radial_pick.wgsl", include_str!("radial_pick.wgsl"), 1),
         ] {
             assert!(!source.contains("winner=i;"), "{name}");
-            assert_eq!(source.matches("winner=i+1u;").count(), 1, "{name}");
+            assert_eq!(source.matches("winner=i+1u;").count(), loops, "{name}");
         }
     }
 }
@@ -2229,5 +2230,432 @@ mod layer_cache_key_tests {
         assert_ne!(FrameKey::of(&base), FrameKey::of(&edited));
         assert!(!FrameKey::of(&base).matches(&edited));
         assert_ne!(annotation_key(&base), annotation_key(&edited));
+    }
+}
+
+/// Shading once per surface (#349) is an appearance change: it moves no
+/// coverage, no data and no pick, and the image stays within a pinned
+/// colour difference of the draw that shaded every sample.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod shading_tolerance_tests {
+    use super::*;
+    use crate::Material;
+    use crate::test_gpu::BlockOn as _;
+
+    /// The draw before #349, as test support: the module the renderer
+    /// compiles with the entry `fs_per_sample` appended, which shades every
+    /// sample at its own position with the same functions.
+    fn per_sample_pipeline(r: &RadialRenderer) -> wgpu::RenderPipeline {
+        let device = r.gpu.device();
+        let source = format!(
+            "{}\n{}",
+            RADIAL_SHADER.source,
+            include_str!("../tests/support/radial_per_sample.wgsl")
+        );
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("radial per-sample reference"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&r.layout)],
+            immediate_size: 0,
+        });
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("radial per-sample reference"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_per_sample"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: r.format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    fn renderer() -> RadialRenderer {
+        let (device, queue) = crate::test_gpu::device();
+        RadialRenderer::try_new(
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .unwrap()
+    }
+
+    const PALETTE: [[u8; 3]; 6] = [
+        [217, 76, 64],
+        [64, 128, 217],
+        [76, 178, 89],
+        [242, 204, 51],
+        [150, 90, 200],
+        [60, 180, 190],
+    ];
+    fn donut(values: &[f64], style: RadialStyle) -> RadialChart {
+        let mut c = RadialChart {
+            kind: RadialKind::Donut { inner_radius: 0.5 },
+            start_angle_degrees: -90.0,
+            labels: RadialLabels::Outside,
+            font_size: 13.0,
+            label_color: crate::Color::new(0.2, 0.4, 0.65, 1.0),
+            background: crate::Color::WHITE,
+            style,
+            slices: values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let [r, g, b] = PALETTE[i % PALETTE.len()];
+                    RadialSlice::new(format!("{}", i + 1), *v, crate::Color::from_rgb8(r, g, b))
+                })
+                .collect(),
+            ..Default::default()
+        };
+        c.format_labels();
+        c
+    }
+    /// The Ceramic donut of the issue (#349).
+    fn ceramic() -> RadialStyle {
+        RadialStyle {
+            material: Material::Ceramic,
+            tilt_degrees: 38.0,
+            depth: 0.10,
+            bevel: 0.012,
+            shadow: true,
+            inner_corner: 0.008,
+            outer_corner: 0.008,
+            gloss: 0.3,
+            roughness: 0.48,
+            texture_strength: 0.08,
+            gap_degrees: 1.3,
+            ..RadialStyle::default()
+        }
+    }
+    fn outlined(mut style: RadialStyle) -> RadialStyle {
+        style.outline.rim = true;
+        style.outline.separators = true;
+        style.outline.width = 1.5;
+        style.outline.color = crate::Color::new(0.1, 0.1, 0.1, 1.0);
+        style
+    }
+    /// Eleven slices, one per material.
+    fn materials(style: impl Fn(RadialStyle) -> RadialStyle) -> RadialChart {
+        let base = style(RadialStyle {
+            tilt_degrees: 25.0,
+            depth: 0.08,
+            bevel: 0.012,
+            shadow: true,
+            inner_corner: 0.008,
+            outer_corner: 0.008,
+            gap_degrees: 1.3,
+            material: Material::Ceramic,
+            ..RadialStyle::default()
+        });
+        let mut c = donut(&[1.0; 11], base.clone());
+        let all = [
+            Material::Matte,
+            Material::Ceramic,
+            Material::BrushedMetal,
+            Material::Paper,
+            Material::Wood,
+            Material::SatinMetal,
+            Material::Toon,
+            Material::Enamel,
+            Material::Hatch,
+            Material::Pearl,
+            Material::Flat,
+        ];
+        for (slice, material) in c.slices.iter_mut().zip(all) {
+            slice.style = Some(RadialStyle {
+                material,
+                ..base.clone()
+            });
+        }
+        c
+    }
+    fn charts() -> Vec<(&'static str, RadialChart)> {
+        const SIX: [f64; 6] = [31.0, 23.0, 20.0, 12.0, 8.0, 6.0];
+        let textured = |material| RadialStyle {
+            material,
+            tilt_degrees: 30.0,
+            depth: 0.12,
+            texture_strength: 0.8,
+            gloss: 0.6,
+            ..RadialStyle::default()
+        };
+        let mut v = vec![
+            ("flat", donut(&SIX, RadialStyle::default())),
+            (
+                "flat shadow",
+                donut(
+                    &SIX,
+                    RadialStyle {
+                        shadow: true,
+                        ..RadialStyle::default()
+                    },
+                ),
+            ),
+            (
+                "flat outlined",
+                donut(&SIX, outlined(RadialStyle::default())),
+            ),
+            ("ceramic", donut(&SIX, ceramic())),
+            ("ceramic outlined", donut(&SIX, outlined(ceramic()))),
+            ("materials", materials(|s| s)),
+            ("materials outlined", materials(outlined)),
+            ("brushed", donut(&SIX, textured(Material::BrushedMetal))),
+            ("wood", donut(&SIX, textured(Material::Wood))),
+            (
+                "ceramic depth 0",
+                donut(
+                    &SIX,
+                    RadialStyle {
+                        depth: 0.0,
+                        ..ceramic()
+                    },
+                ),
+            ),
+            (
+                "ceramic tilt 0",
+                donut(
+                    &SIX,
+                    RadialStyle {
+                        tilt_degrees: 0.0,
+                        ..ceramic()
+                    },
+                ),
+            ),
+            ("ceramic 3 slices", donut(&[50.0, 30.0, 20.0], ceramic())),
+        ];
+        let mut c = donut(&SIX, ceramic());
+        c.slices[1].explode = 0.15;
+        c.slices[3].explode = 0.25;
+        v.push(("ceramic explode", c));
+        let mut c = donut(&SIX, ceramic());
+        c.labels = RadialLabels::Inside;
+        c.style.hover_lift = 0.06;
+        c.interaction.hovered = Some(RadialTarget::main(1));
+        c.interaction.hover_progress = 1.0;
+        c.format_labels();
+        v.push(("ceramic hover lift, inside labels", c));
+        let mut c = donut(&SIX, outlined(ceramic()));
+        c.style.outline.emphasis = true;
+        c.interaction.selected = Some(RadialTarget::main(2));
+        c.interaction.hover_progress = 1.0;
+        v.push(("ceramic selected, emphasis", c));
+        let mut c = donut(&SIX, ceramic());
+        c.split = Some(RadialSplit {
+            slice_index: 1,
+            kind: RadialKind::Pie,
+            children: vec![
+                RadialSlice::new("D", 10.0, crate::Color::from_rgb8(0, 200, 150)),
+                RadialSlice::new("E", 13.0, crate::Color::from_rgb8(220, 180, 80)),
+            ],
+        });
+        c.format_labels();
+        v.push(("ceramic detail", c));
+        // A sunburst stays level (`RuleKind::SunburstTilt`).
+        let mut c = donut(
+            &SIX,
+            RadialStyle {
+                tilt_degrees: 0.0,
+                depth: 0.0,
+                ..ceramic()
+            },
+        );
+        c.kind = RadialKind::Pie;
+        c.slices[0].children = vec![
+            RadialSlice::new("a", 10.0, crate::Color::from_rgb8(200, 100, 50)),
+            RadialSlice::new("b", 21.0, crate::Color::from_rgb8(50, 100, 200)),
+        ];
+        c.slices[2].children = vec![RadialSlice::new(
+            "c",
+            12.0,
+            crate::Color::from_rgb8(90, 200, 90),
+        )];
+        c.format_labels();
+        v.push(("ceramic sunburst", c));
+        v
+    }
+
+    /// `chart` drawn as one opaque Flat colour on white, with no outline or
+    /// hover brightness, and with its shadow and labels, which keep the
+    /// layout: a pixel of that colour has every sample on a sector, a grey
+    /// one every sample on the background (white, or shadowed), and a
+    /// label's pixels are neither.
+    fn coverage_chart(chart: &RadialChart) -> RadialChart {
+        let ink = crate::Color::from_rgb8(255, 0, 255);
+        let plain = |s: &mut RadialStyle| {
+            s.material = Material::Flat;
+            s.outline.rim = false;
+            s.outline.separators = false;
+            s.outline.emphasis = false;
+            s.hover_brightness = 0.0;
+        };
+        fn paint(slices: &mut [RadialSlice], ink: crate::Color, plain: &dyn Fn(&mut RadialStyle)) {
+            for s in slices {
+                s.color = ink;
+                if let Some(style) = s.style.as_mut() {
+                    plain(style);
+                }
+                paint(&mut s.children, ink, plain);
+            }
+        }
+        let mut c = chart.clone();
+        c.background = crate::Color::WHITE;
+        plain(&mut c.style);
+        paint(&mut c.slices, ink, &plain);
+        if let Some(split) = c.split.as_mut() {
+            paint(&mut split.children, ink, &plain);
+        }
+        c
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Cover {
+        Background,
+        Edge,
+        Interior,
+    }
+
+    #[test]
+    fn shading_once_per_surface_stays_within_the_pinned_difference() {
+        let mut r = renderer();
+        let reference = per_sample_pipeline(&r);
+        let shipped = r.pipeline.clone();
+        let size = (600, 400);
+        let mut report = String::new();
+        for (name, chart) in charts() {
+            for scale in [1.0f32, 2.0] {
+                let export =
+                    |r: &mut RadialRenderer, pipeline: &wgpu::RenderPipeline, c: &RadialChart| {
+                        r.pipeline = pipeline.clone();
+                        r.cached = None;
+                        let image = r
+                            .export_rgba(c, size, crate::ExportOptions::document(scale))
+                            .block_on()
+                            .unwrap();
+                        r.end_frame();
+                        image
+                    };
+                let new = export(&mut r, &shipped, &chart);
+                let old = export(&mut r, &reference, &chart);
+                let mask = export(&mut r, &shipped, &coverage_chart(&chart));
+                let (w, h) = (new.width as usize, new.height as usize);
+                let cover: Vec<Cover> = mask
+                    .rgba
+                    .chunks_exact(4)
+                    .map(|p| match p {
+                        [255, 0, 255, 255] => Cover::Interior,
+                        [r, g, b, 255] if r == g && g == b => Cover::Background,
+                        _ => Cover::Edge,
+                    })
+                    .collect();
+                // The largest channel difference per pixel, in 8-bit sRGB.
+                let mut differences: Vec<u8> = new
+                    .rgba
+                    .chunks_exact(4)
+                    .zip(old.rgba.chunks_exact(4))
+                    .map(|(a, b)| (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap())
+                    .collect();
+                let mean = differences.iter().map(|&d| d as f64).sum::<f64>() / (w * h) as f64;
+                let flat = chart.style.material == Material::Flat
+                    && !chart.style.shadow
+                    && chart.slices.iter().all(|s| s.style.is_none());
+                let textured_interior = |i: usize| !flat && cover[i] == Cover::Interior;
+                let edge_max = (0..w * h)
+                    .filter(|&i| cover[i] == Cover::Edge)
+                    .map(|i| differences[i])
+                    .max()
+                    .unwrap_or(0);
+                let background_max = (0..w * h)
+                    .filter(|&i| cover[i] == Cover::Background)
+                    .map(|i| differences[i])
+                    .max()
+                    .unwrap_or(0);
+                let outside_max = (0..w * h)
+                    .filter(|&i| !textured_interior(i))
+                    .map(|i| differences[i])
+                    .max()
+                    .unwrap_or(0);
+                differences.sort_unstable();
+                let p99 = differences[(w * h * 99) / 100];
+                let max = differences[w * h - 1];
+                report.push_str(&format!(
+                    "{name} @{scale}x: mean {mean:.3}, p99 {p99}, max {max}, \
+                     edge max {edge_max}, background max {background_max}, \
+                     outside textured interiors {outside_max}\n"
+                ));
+                // Measured on lavapipe and SwiftShader (#349): a mean of at
+                // most 0.22, a p99 of at most 3, at most 3 at edges and on
+                // the background (its shadow, at most 2) and at most 14 in a
+                // textured interior. A Flat chart without a shadow is exact.
+                if flat {
+                    assert_eq!(max, 0, "{name} @{scale}x: a Flat chart is exact\n{report}");
+                }
+                assert!(mean <= 0.35, "{name} @{scale}x: mean {mean}\n{report}");
+                assert!(p99 <= 4, "{name} @{scale}x: p99 {p99}\n{report}");
+                assert!(
+                    outside_max <= 5,
+                    "{name} @{scale}x: outside textured interiors {outside_max}\n{report}"
+                );
+                assert!(max <= 20, "{name} @{scale}x: max {max}\n{report}");
+                if scale != 1.0 {
+                    continue;
+                }
+                // The pick, at points a pixel or more from any edge, finds a
+                // sector exactly where every sample does, from frames of
+                // both draws.
+                // A label's pixels count as edges, so a point in a label
+                // is skipped.
+                let far_from_edges = |x: usize, y: usize| {
+                    let c = cover[y * w + x];
+                    (c != Cover::Edge
+                        && (y - 1..=y + 1).all(|v| (x - 1..=x + 1).all(|u| cover[v * w + u] == c)))
+                    .then_some(c)
+                };
+                let frames = [&shipped, &reference].map(|pipeline| {
+                    r.pipeline = pipeline.clone();
+                    r.cached = None;
+                    r.prepare(&chart, size, scale).unwrap()
+                });
+                let mut points = 0;
+                for y in (2..h - 2).step_by(13) {
+                    for x in (2..w - 2).step_by(13) {
+                        let Some(c) = far_from_edges(x, y) else {
+                            continue;
+                        };
+                        points += 1;
+                        let at = [x as f32 + 0.5, y as f32 + 0.5];
+                        let picked = frames
+                            .each_ref()
+                            .map(|f| f.pick(at).unwrap().resolve().block_on().unwrap());
+                        assert_eq!(picked[0], picked[1], "{name} at {at:?}");
+                        assert_eq!(
+                            picked[0].is_some(),
+                            c == Cover::Interior,
+                            "{name} at {at:?}"
+                        );
+                    }
+                }
+                assert!(points > 500, "{name}: {points} points");
+                r.end_frame();
+            }
+        }
+        r.pipeline = shipped;
+        println!("{report}");
     }
 }

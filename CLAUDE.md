@@ -158,6 +158,7 @@ follow-up.
   serialized fields are `Option` or defaulted, with `skip_serializing_if`. A
   changed wire form and breaking Rust literals get a CHANGELOG migration
   note.
+- Appearance may change; data may not. A renderer change may alter pixels that only decide how data looks (material texture and shading, highlights, bevel normals, soft shadows, antialiasing) when the result stays visually equivalent: a tolerance test pins the difference (a mean and a high-percentile colour difference), and nothing the user reads as data moves: values, positions, angles and extents, coverage edges beyond one pixel, series colours, labels and pick results. Byte equality still holds where a test compares one renderer with itself, such as a document before and after a save.
 - Check external facts at the source. Publication state comes from the
   crates.io index, not from wording in the docs.
 - Telling objects apart and detecting stale tokens reuse one of the patterns

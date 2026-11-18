@@ -18,9 +18,9 @@ fn crosses_top_wall(a: Hit,b: Hit) -> bool {
     // Testing first hits avoids drawing hidden edges through the solid.
     return b.t<9999.0 && (a.n.z>=0.70710678)!=(b.n.z>=0.70710678);
 }
-fn scene(pixel: vec2<f32>) -> vec4<f32> {
-    var color=vec4(globals.background.rgb*globals.background.a,globals.background.a);
-    // Per-slice floor shadows follow lift without changing the chart bounds.
+// The floor shadow under `pixel`: a soft blur, taken once per pixel (#349).
+// Per-slice floor shadows follow lift without changing the chart bounds.
+fn floor_shadow(pixel: vec2<f32>) -> f32 {
     var shade=0.0;
     for(var i=0u;i<u32(globals.size.z);i++) {
         let s=sectors[i];
@@ -33,52 +33,64 @@ fn scene(pixel: vec2<f32>) -> vec4<f32> {
         let blur=0.025+elevation*0.13;
         shade=max(shade,(1.0-smoothstep(-blur,blur*2.0,d))*0.16);
     }
-    color=vec4(color.rgb*(1.0-shade),shade+color.a*(1.0-shade));
-    var closest=10000.0;
+    return shade;
+}
+// What one antialiasing sample covers: the nearest sector, the first of
+// equals as in the radial pick, and its hit. `winner` counts sectors from
+// 1, and 0 means the background: Metal compiles a 0-based `winner=i` as a
+// constant 0 (#63).
+struct Coverage { winner: u32, hit: Hit };
+fn coverage(pixel: vec2<f32>) -> Coverage {
+    var closest=10000.0;var winner=0u;var h=Hit(10000.0,vec3(0.0),vec3(0.0));
     for(var i=0u;i<u32(globals.size.z);i++) {
-        let s=sectors[i];
-        let cs=cos(s.arc.z);let sn=sin(s.arc.z);
-        let rd=vec3(0.0,-sn,-cs);
-        let h=hit_pixel(pixel,s);
-        if h.t<closest {
-            closest=h.t;
-            // The brush of BrushedMetal and SatinMetal runs around the
-            // center: its tangent is circumferential in the turned texture
-            // frame, its coordinates are (radius, twice the turned angle).
-            let ca=cos(s.material.finish.z);let sa=sin(s.material.finish.z);
-            let turned=vec2(h.p.x*ca-h.p.y*sa,h.p.x*sa+h.p.y*ca)*s.material.params.w;
-            let direction=vec3(-h.p.y*ca-h.p.x*sa,-h.p.y*sa+h.p.x*ca,0.0);
-            let tangent=normalize(direction-h.n*dot(h.n,direction)+vec3(0.000001,0.0,0.0));
-            var rgb=material_surface(s.material,s.color.rgb,h.p,h.n,-rd,normalize(s.light.xyz),tangent,
-                vec2(length(h.p.xy),atan2(turned.y,turned.x)*2.0),s.geometry.z);
-            let d=edges(h.p.xy,s);
-            let rim_distance=min(abs(d.x),abs(d.y));
-            let separation=abs(d.z);
-            let width=s.outline.w/s.geometry.z;
-            let is_rim=rim_distance<=separation;
-            let enabled=select(s.outline.y,s.outline.x,is_rim);
-            if max(enabled,s.outline.z)>0.0 && width>0.0 {
-                let band=s.outline.w*select(0.5,1.0,is_rim);
-                let offsets=array<vec2<f32>,4>(vec2(band,0.0),vec2(-band,0.0),vec2(0.0,band),vec2(0.0,-band));
-                var border=false;
-                for(var j=0u;j<4u;j++) {
-                    let neighbor=hit_pixel(pixel+offsets[j],s);
-                    border=neighbor.t>=9999.0;
-                    if !border && crosses_top_wall(h,neighbor) {
-                        // A crease is inked on both faces, unlike the inward
-                        // silhouette band. Keep the total logical width equal.
-                        if is_rim {
-                            border=crosses_top_wall(h,hit_pixel(pixel+offsets[j]*0.5,s));
-                        } else { border=true; }
-                    }
-                    if border { break; }
-                }
-                if border { rgb=mix(rgb,s.outline_color.rgb,s.outline_color.a*max(enabled,s.outline.z)); }
-            }
-            color=vec4(rgb,1.0);
-        }
+        let hit=hit_pixel(pixel,sectors[i]);
+        if hit.t<closest {closest=hit.t;winner=i+1u;h=hit;}
     }
-    return color;
+    return Coverage(winner,h);
+}
+// The lit material colour of sector `s` where `h` hits it.
+fn sector_surface(h: Hit,s: Sector) -> vec3<f32> {
+    let cs=cos(s.arc.z);let sn=sin(s.arc.z);
+    let rd=vec3(0.0,-sn,-cs);
+    // The brush of BrushedMetal and SatinMetal runs around the
+    // center: its tangent is circumferential in the turned texture
+    // frame, its coordinates are (radius, twice the turned angle).
+    let ca=cos(s.material.finish.z);let sa=sin(s.material.finish.z);
+    let turned=vec2(h.p.x*ca-h.p.y*sa,h.p.x*sa+h.p.y*ca)*s.material.params.w;
+    let direction=vec3(-h.p.y*ca-h.p.x*sa,-h.p.y*sa+h.p.x*ca,0.0);
+    let tangent=normalize(direction-h.n*dot(h.n,direction)+vec3(0.000001,0.0,0.0));
+    return material_surface(s.material,s.color.rgb,h.p,h.n,-rd,normalize(s.light.xyz),tangent,
+        vec2(length(h.p.xy),atan2(turned.y,turned.x)*2.0),s.geometry.z);
+}
+// `surface` inked with the outline of sector `s` where the sample at `pixel`
+// hits it at `h`. Taken per sample, so the ink keeps its antialiasing.
+fn outlined(pixel: vec2<f32>,h: Hit,s: Sector,surface: vec3<f32>) -> vec3<f32> {
+    var rgb=surface;
+    let d=edges(h.p.xy,s);
+    let rim_distance=min(abs(d.x),abs(d.y));
+    let separation=abs(d.z);
+    let width=s.outline.w/s.geometry.z;
+    let is_rim=rim_distance<=separation;
+    let enabled=select(s.outline.y,s.outline.x,is_rim);
+    if max(enabled,s.outline.z)>0.0 && width>0.0 {
+        let band=s.outline.w*select(0.5,1.0,is_rim);
+        let offsets=array<vec2<f32>,4>(vec2(band,0.0),vec2(-band,0.0),vec2(0.0,band),vec2(0.0,-band));
+        var border=false;
+        for(var j=0u;j<4u;j++) {
+            let neighbor=hit_pixel(pixel+offsets[j],s);
+            border=neighbor.t>=9999.0;
+            if !border && crosses_top_wall(h,neighbor) {
+                // A crease is inked on both faces, unlike the inward
+                // silhouette band. Keep the total logical width equal.
+                if is_rim {
+                    border=crosses_top_wall(h,hit_pixel(pixel+offsets[j]*0.5,s));
+                } else { border=true; }
+            }
+            if border { break; }
+        }
+        if border { rgb=mix(rgb,s.outline_color.rgb,s.outline_color.a*max(enabled,s.outline.z)); }
+    }
+    return rgb;
 }
 // Flat, level, unlit and unoutlined sectors (#41). At depth and tilt zero a
 // sector is hit exactly where its footprint is at most zero, at a depth that
@@ -86,7 +98,7 @@ fn scene(pixel: vec2<f32>) -> vec4<f32> {
 // it is hit. The footprint changes by at most sqrt(2) times the distance
 // moved, so when every sector's footprint at the pixel center is at least
 // `margin` pixels from zero, every antialiasing sample lies on the same side
-// of every footprint and `scene` returns this one colour for each of them.
+// of every footprint and the sampled path returns this one colour for each of them.
 // Otherwise, or when a sector needs another feature, `exact` is false and the
 // samples are taken.
 struct FlatPixel { exact: bool, color: vec4<f32> };
@@ -165,8 +177,37 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
         // bit-identical to theirs.
         for(var k=0u;k<grid*grid;k++) { color+=flat.color; }
     } else {
+        // Supersample coverage, shade once per surface (#349). Every sample
+        // finds the sector it hits, or the background, at its own position,
+        // and takes its outline there, so edges and ink keep their
+        // antialiasing. The lit material is evaluated once for the samples
+        // that hit one sector with one normal, at the first of them, and
+        // used for each, added in sample order: an interior pixel of a face
+        // evaluates one material, while samples across a bevel or a crease
+        // keep their own normal and highlight. The floor shadow, a soft
+        // blur, is taken once at the pixel center.
+        let shade=floor_shadow(p.xy);
+        let ground=vec4(globals.background.rgb*globals.background.a*(1.0-shade),
+            shade+globals.background.a*(1.0-shade));
+        // Indexed by sample: a grid side is at most 3 (`Globals::size.w`).
+        var winners=array<u32,9>();var normals=array<vec3<f32>,9>();var surfaces=array<vec3<f32>,9>();
         for(var y=0u;y<grid;y++) { for(var x=0u;x<grid;x++) {
-            color+=scene(p.xy+(vec2(f32(x),f32(y))+0.5)/f32(grid)-0.5);
+            let k=y*grid+x;
+            let at=p.xy+(vec2(f32(x),f32(y))+0.5)/f32(grid)-0.5;
+            let c=coverage(at);
+            winners[k]=c.winner;normals[k]=c.hit.n;
+            if c.winner==0u { color+=ground; continue; }
+            // One normal: within about 2.5 degrees, so a face's curvature
+            // across a pixel shares and a bevel's turn does not.
+            var first=k;
+            for(var j=0u;j<k;j++) {
+                if winners[j]==c.winner && dot(normals[j],c.hit.n)>0.999 { first=j;break; }
+            }
+            let s=sectors[c.winner-1u];
+            // Every slot is filled: the test is not transitive, so a later
+            // sample may share with one that shared with an earlier one.
+            if first==k { surfaces[k]=sector_surface(c.hit,s); } else { surfaces[k]=surfaces[first]; }
+            color+=vec4(outlined(at,c.hit,s,surfaces[k]),1.0);
         }}
     }
     color/=f32(grid*grid);
