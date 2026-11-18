@@ -71,6 +71,32 @@ pub(crate) fn annotation_kind_name(kind: &renderer::AnnotationKind) -> &'static 
     }
 }
 
+/// The `annotation_preview` JSON of `item` (#312), shared by `FiggyChart`
+/// and the radial chart (#334): `{ kind, visible, drawn, canvas, document }`
+/// from the placed `(canvas, document)` shapes, or `drawn: false` and the
+/// skip `reason`.
+pub(crate) fn annotation_preview_value(
+    item: &renderer::Annotation,
+    placed: Result<(serde_json::Value, serde_json::Value), renderer::AnnotationSkip>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "kind": annotation_kind_name(&item.kind),
+        "visible": item.visible,
+    });
+    match placed {
+        Ok((canvas, document)) => {
+            value["drawn"] = true.into();
+            value["canvas"] = canvas;
+            value["document"] = document;
+        }
+        Err(reason) => {
+            value["drawn"] = false.into();
+            value["reason"] = format!("{reason:?}").into();
+        }
+    }
+    value
+}
+
 /// The vertex index a polygon handle name (`"v3"`) names.
 pub(crate) fn vertex_handle_index(name: &str) -> Option<usize> {
     name.strip_prefix('v')?.parse().ok()
@@ -1314,8 +1340,9 @@ impl FiggyChart {
     }
 
     /// An `Annotation` JSON value, checked by the rules a document's
-    /// annotation layer is.
-    fn parse_annotation(json: &str) -> Result<renderer::Annotation, JsValue> {
+    /// annotation layer is. The radial chart's `annotation_preview` reads
+    /// its item through it too (#334).
+    pub(crate) fn parse_annotation(json: &str) -> Result<renderer::Annotation, JsValue> {
         let item: renderer::Annotation = serde_json::from_str(json).map_err(|error| {
             coded_error(
                 &format!("annotation is not an Annotation JSON value: {error}"),
@@ -1358,24 +1385,15 @@ impl FiggyChart {
     pub fn annotation_preview(&self, json: &str) -> Result<String, JsValue> {
         let item = Self::parse_annotation(json)?;
         let value = self.with_shown_document(|shown| {
-            let mut value = serde_json::json!({
-                "kind": annotation_kind_name(&item.kind),
-                "visible": item.visible,
-            });
-            match shown.annotation_preview(&item) {
-                Ok((canvas, document)) => {
-                    value["drawn"] = true.into();
-                    value["canvas"] = annotation_preview_json(&canvas);
-                    value["document"] = document
+            let placed = shown.annotation_preview(&item).map(|(canvas, document)| {
+                (
+                    annotation_preview_json(&canvas, 1.0),
+                    document
                         .as_ref()
-                        .map_or(serde_json::Value::Null, annotation_preview_json);
-                }
-                Err(reason) => {
-                    value["drawn"] = false.into();
-                    value["reason"] = format!("{reason:?}").into();
-                }
-            }
-            Ok(value)
+                        .map_or(serde_json::Value::Null, |d| annotation_preview_json(d, 1.0)),
+                )
+            });
+            Ok(annotation_preview_value(&item, placed))
         })?;
         serde_json::to_string(&value).map_err(js_err)
     }

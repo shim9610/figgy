@@ -213,8 +213,11 @@ panel's frame, data area and layer, for the installed document or a candidate
 config), `panel_at(x, y)` (the panel on top at a point), `data_area_rect()`
 (the active layer's exact data area), `legend_entry(series_id)` (one legend row
 as the auto legend writes it) and `render_warnings()` (every warning of the
-last frame). The [WASM guide](../renderer/WASM.md#editor-queries-figgychart-312)
-gives the result shapes and error codes.
+last frame). The radial `FiggyBoundedChart` has `annotation_preview(json)` too,
+with the same contract and JSON in its document logical pixels
+([#334](https://github.com/shim9610/figgy/issues/334)). The
+[WASM guide](../renderer/WASM.md#editor-queries-figgychart-312) gives the
+result shapes and error codes.
 
 A Feynman diagram's parts are pick and drag targets too: `pick_point`
 reports a vertex, a propagator or a label as `{kind: "feynman_vertex" |
@@ -303,7 +306,9 @@ crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝�
 설치된 문서나 후보 설정의 문서 영역·배율·패널별 프레임·데이터 영역·레이어를, `panel_at(x, y)`는
 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다.
 `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄을, `render_warnings()`는 마지막 프레임의 모든
-경고를 돌려준다. 결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
+경고를 돌려준다. 원형 차트의 `FiggyBoundedChart`에도 같은 계약과 JSON의 `annotation_preview(json)`가 있으며,
+좌표는 그 차트의 문서 논리 픽셀이다([#334](https://github.com/shim9610/figgy/issues/334)).
+결과 형식과 오류 코드는 [WASM 안내](../renderer/WASM.md#editor-queries-figgychart-312)에 있다.
 
 `set_categorical_document`·`set_boxplot_document`·`set_radar_document`는 차트를 한 번에 바꾼다.
 검사·업로드·축 맞춤·반영 중 어느 단계에서 실패하든 `stage`로 그 단계를 알려 주는 `Error`를 던지고
