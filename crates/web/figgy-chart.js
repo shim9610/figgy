@@ -2472,8 +2472,13 @@ export class FiggyChartElement extends HTMLElement {
   convert_annotation_anchor(json, kind) {
     return this.#kernelForCall().convert_annotation_anchor(json, kind);
   }
-  inspect_document_layout(configJson) {
-    return this.#kernelForCall().inspect_document_layout(configJson ?? null);
+  // Optional physical surface dimensions (#334): both or neither.
+  inspect_document_layout(configJson, surfaceWidth, surfaceHeight) {
+    return this.#kernelForCall().inspect_document_layout(
+      configJson ?? null,
+      surfaceWidth ?? null,
+      surfaceHeight ?? null,
+    );
   }
   panel_at(x, y) { return this.#kernelForCall().panel_at(x, y); }
   data_area_rect() { return this.#kernelForCall().data_area_rect(); }

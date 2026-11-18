@@ -547,7 +547,7 @@ chart.auto_fit_y("adc", 0.05);                     // 표시 범위에 맞는 �
 
 전체 필드와 열거형 값, serde 표현 규칙, 함께 수정해야 하는 옵션은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다. SCHEMA.md의 예시 JSON은 소스와 자동으로 대조하지 않으므로, 정확한 형식은 `get_config()` / `get_series()`의 실제 출력으로 확인한다.
 
-편집기용 조회 호출(#312)은 렌더러가 직접 계산한 배치와 레이아웃을 돌려주며 문서·선택·실행 취소 상태·래스터를 바꾸지 않는다. `annotation_preview(json)`는 아직 문서에 넣지 않은 주석을 주석 레이어의 배치 코드로 놓아 본 모양과 좌표를 캔버스 픽셀과 문서 픽셀로 돌려준다. 원형 차트의 `FiggyBoundedChart.annotation_preview(json)`도 같은 계약과 JSON을 따르며(#334), 문서 좌표는 그 차트의 `annotations()`와 같은 문서 논리 픽셀이다. `convert_annotation_anchor(json, "Data" | "Ratio")`는 그려지는 위치를 그대로 둔 채 앵커 종류를 바꾼다. `inspect_document_layout(config_json?)`는 문서 영역, 배율, 패널마다의 프레임·데이터 영역·레이어를 돌려주고, 설정 JSON을 넘기면 설치하지 않고 그 후보를 계산한다. `panel_at(x, y)`는 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다. `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄(기호와 라벨)을 돌려주므로 범례 전체를 다시 쓰지 않고 한 줄만 붙일 수 있다. `render_warnings()`는 마지막 프레임의 모든 경고(모든 패널의 눈금 설정과 건너뛴 주석)를 구조화된 JSON으로 돌려준다. 결과 형식과 오류 코드는 [8장의 Editor queries](#editor-queries-figgychart-312)를 참고한다.
+편집기용 조회 호출(#312)은 렌더러가 직접 계산한 배치와 레이아웃을 돌려주며 문서·선택·실행 취소 상태·래스터를 바꾸지 않는다. `annotation_preview(json)`는 아직 문서에 넣지 않은 주석을 주석 레이어의 배치 코드로 놓아 본 모양과 좌표를 캔버스 픽셀과 문서 픽셀로 돌려준다. 원형 차트의 `FiggyBoundedChart.annotation_preview(json)`도 같은 계약과 JSON을 따르며(#334), 문서 좌표는 그 차트의 `annotations()`와 같은 문서 논리 픽셀이다. `convert_annotation_anchor(json, "Data" | "Ratio")`는 그려지는 위치를 그대로 둔 채 앵커 종류를 바꾼다. `inspect_document_layout(config_json?)`는 문서 영역, 배율, 패널마다의 프레임·데이터 영역·레이어를 돌려주고, 설정 JSON을 넘기면 설치하지 않고 그 후보를 계산한다. 물리 픽셀 표면 크기(`surface_width`, `surface_height`)를 함께 넘기면 캔버스를 바꾸지 않고 그 크기로 `resize`했을 때의 레이아웃을 돌려주며, 차트 없이 쓰는 `inspect_config_layout(config_json, surface_width, surface_height)`도 같은 JSON을 돌려준다(#334). `panel_at(x, y)`는 그 점에서 맨 위에 있는 패널을, `data_area_rect()`는 활성 레이어의 정확한 데이터 영역을 돌려준다. `legend_entry(series_id)`는 자동 범례가 쓰는 한 줄(기호와 라벨)을 돌려주므로 범례 전체를 다시 쓰지 않고 한 줄만 붙일 수 있다. `render_warnings()`는 마지막 프레임의 모든 경고(모든 패널의 눈금 설정과 건너뛴 주석)를 구조화된 JSON으로 돌려준다. 결과 형식과 오류 코드는 [8장의 Editor queries](#editor-queries-figgychart-312)를 참고한다.
 
 <a id="39-async-메서드와-객체-잠금-필독"></a>
 
@@ -1905,7 +1905,20 @@ document pixels (the coordinates of `get_config`).
   data_area }`. Without an argument, it reads the installed document as
   shown. With a `Config` JSON, it reads that candidate as `set_config` would
   place it on this canvas, without installing it. A candidate whose panels
-  cannot be laid out is refused with code `layout`.
+  cannot be laid out is refused with code `layout`. Optional
+  `surface_width` and `surface_height` (#334), in physical pixels, lay the
+  document or the candidate out as a canvas of that surface would show it,
+  the layout the chart reports after `resize(width, height)`, without
+  resizing the canvas or its surface. Give both or neither; one alone, or a
+  dimension that is not a whole number of pixels from 1, is refused with
+  code `invalid_size`.
+- The free function `inspect_config_layout(config_json, surface_width,
+  surface_height)` (#334) returns the same JSON for a candidate without a
+  chart: it creates no renderer, GPU device or surface, and its result
+  equals what a chart whose surface has that size reports for the
+  candidate. A canvas places its document by its surface size alone, so
+  the result's `scale` is that fit. Dimensions are refused as above
+  (`invalid_size`), and the candidate with `config_json` or `layout`.
 - `panel_at(x, y)` returns the panel on top at a point, as `{ layer, panel,
   subplot, active, in_data_area, document }`, or `null` off every frame.
   Subplot frames win over the parent chart, and the one drawn on top wins:
