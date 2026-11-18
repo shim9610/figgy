@@ -1494,12 +1494,137 @@ impl Renderer {
         self.reported(result)
     }
 
+    /// [`Self::fit_config`] for one layer's chosen axes (#334): a copy of
+    /// `config` in which only the axes `scope` selects move, fitted from
+    /// the registered columns' cached statistics with `padding`. No chart,
+    /// view or column changes, and `config` is not changed.
+    ///
+    /// The target is `scope.layer`'s `x`, `y` and `z` axes as
+    /// `scope.axes` selects them: `x` and `y` are the axes the layer's
+    /// series are drawn against (an overlay's own, or with its link on its
+    /// chart's), `z` is the z axis of a 3D chart (the cell's `right_y`),
+    /// and on a parallel chart the parallel axes are `y`. Every other axis
+    /// of every layer comes back exactly as given. A moved axis that is
+    /// linked moves its whole link group, as in [`Self::fit_config`].
+    ///
+    /// `scope.linked` chooses the series read: [`LinkedFitData::Group`]
+    /// reads every series drawn against the axis' link group, as
+    /// [`Self::fit_config`] does; [`LinkedFitData::Target`] reads only the
+    /// series drawn in the target's panel (the parent chart, or the
+    /// target's subplot cell, its overlays included), and the link group
+    /// still shares the resulting range. `scope.keep` names axes that hold
+    /// their range: a target axis linked to a kept axis (the same axis
+    /// after following overlay and subplot links) is not moved either,
+    /// since a link group has one range.
+    ///
+    /// Statistics only: error bar ends, heatmap cell half-widths and
+    /// arrow tips are not in the column statistics and are not included;
+    /// [`Self::begin_series_fit_extent`] measures drawn extents. An axis
+    /// whose series have no finite span keeps its range.
+    ///
+    /// The refusals are those of [`Self::fit_config`] (padding, layer
+    /// series, overlay and subplot rules, line offsets, unregistered or
+    /// streamed columns, monotonic series), and a `scope.layer` or a
+    /// `scope.keep` entry naming an overlay or subplot the candidate does
+    /// not have (`InvalidConfig { field: "fit_scope", kind: FitScopeLayer
+    /// }`).
+    ///
+    /// [`LinkedFitData::Group`]: crate::LinkedFitData::Group
+    /// [`LinkedFitData::Target`]: crate::LinkedFitData::Target
+    pub fn fit_config_scoped(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+        scope: &crate::FitScope<'_>,
+    ) -> Result<crate::Config> {
+        let result = self.fit_config_scoped_unreported(config, series, padding, scope);
+        self.reported(result)
+    }
+
+    fn fit_config_scoped_unreported(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+        scope: &crate::FitScope<'_>,
+    ) -> Result<crate::Config> {
+        self.require_fit_candidate(config, series, padding)?;
+        if !fit_layer_exists(config, scope.layer)
+            || scope
+                .keep
+                .iter()
+                .any(|kept| !fit_layer_exists(config, kept.layer))
+        {
+            return Err(FiggyError::InvalidConfig {
+                field: "fit_scope",
+                kind: crate::RuleKind::FitScopeLayer,
+            });
+        }
+        // A selected axis moves unless it is one of the kept axes' link
+        // groups.
+        let moved = |selected: bool, axis: crate::FitAxis| {
+            let identity = fit_axis_identity(config, scope.layer, axis);
+            (selected
+                && !scope
+                    .keep
+                    .iter()
+                    .any(|kept| fit_axis_identity(config, kept.layer, kept.axis) == identity))
+            .then_some(identity)
+        };
+        let moved = [
+            moved(scope.axes.x, crate::FitAxis::X),
+            moved(scope.axes.y, crate::FitAxis::Y),
+            moved(scope.axes.z, crate::FitAxis::Z),
+        ];
+        let axes = crate::FitAxes {
+            x: moved[0].is_some(),
+            y: moved[1].is_some(),
+            z: moved[2].is_some(),
+        };
+        let panel = fit_cell(scope.layer);
+        let include = |item: &SeriesConfig| match scope.linked {
+            crate::LinkedFitData::Group => true,
+            crate::LinkedFitData::Target => {
+                fit_cell(config.layer_of_series(&item.series_id)) == panel
+            }
+        };
+        let mut fitted = crate::chart::Chart::fitted_layer_where(
+            config,
+            &self.pool,
+            scope.layer,
+            series,
+            include,
+            axes,
+            padding,
+        )?;
+        // A fit also keeps link groups in step and gives a 3D chart's z axis
+        // the y range before fitting it; put back every axis outside the
+        // moved link groups, so only the scope moves.
+        keep_unmoved_axes(&mut fitted, config, |identity| {
+            moved.contains(&Some(identity))
+        });
+        Ok(fitted)
+    }
+
     fn fit_config_unreported(
         &self,
         config: &crate::Config,
         series: &[SeriesConfig],
         padding: f64,
     ) -> Result<crate::Config> {
+        self.require_fit_candidate(config, series, padding)?;
+        crate::chart::Chart::fitted_every_layer(config, &self.pool, series, padding)
+    }
+
+    /// The rules every candidate fit holds `config`, `series` and
+    /// `padding` to ([`Self::fit_config`], [`Self::fit_config_scoped`]).
+    fn require_fit_candidate(
+        &self,
+        config: &crate::Config,
+        series: &[SeriesConfig],
+        padding: f64,
+    ) -> Result<()> {
         if !padding.is_finite() || padding < 0.0 {
             return Err(FiggyError::InvalidConfig {
                 field: "padding",
@@ -1525,8 +1650,7 @@ impl Renderer {
                 field: "line_offsets",
                 kind,
             })?;
-        self.require_fit_series(series)?;
-        crate::chart::Chart::fitted_every_layer(config, &self.pool, series, padding)
+        self.require_fit_series(series)
     }
 
     /// Fit `series`' point size map domain to its size column's native
@@ -1705,5 +1829,155 @@ fn keep_x_axes(fitted: &mut crate::Config, original: &crate::Config) {
     }
     for (subplot, kept) in fitted.subplots.iter_mut().zip(&original.subplots) {
         keep_x_axes(&mut subplot.config, &kept.config);
+    }
+}
+
+/// One axis as a link group: every axis a scoped fit (#334) cannot move
+/// without the others. A chart's X or Y is the root of its subplot link
+/// chain (`Config::subplot_link_root`); an overlay's own axis is its own;
+/// an overlay's linked axis is its chart's; the z axis (`right_y` of a 3D
+/// chart) is its cell's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FitAxisIdentity {
+    ChartX(crate::CellRef),
+    ChartY(crate::CellRef),
+    Z(crate::CellRef),
+    OverlayX(crate::LayerRef),
+    OverlayY(crate::LayerRef),
+}
+
+/// The panel `layer` draws in: the parent chart, or a subplot cell (its
+/// overlays included), as `Config::series_fit_roles` groups them.
+fn fit_cell(layer: crate::LayerRef) -> crate::CellRef {
+    match layer {
+        crate::LayerRef::Subplot(index) | crate::LayerRef::SubplotOverlay(index, _) => {
+            crate::CellRef::Subplot(index)
+        }
+        crate::LayerRef::Base | crate::LayerRef::Overlay(_) | crate::LayerRef::Annotations => {
+            crate::CellRef::Parent
+        }
+    }
+}
+
+/// The link group of `axis` of `layer` in `config` ([`FitAxisIdentity`]).
+fn fit_axis_identity(
+    config: &crate::Config,
+    layer: crate::LayerRef,
+    axis: crate::FitAxis,
+) -> FitAxisIdentity {
+    let cell = fit_cell(layer);
+    let root = |x: bool| match cell {
+        crate::CellRef::Parent => crate::CellRef::Parent,
+        crate::CellRef::Subplot(index) => config.subplot_link_root(index, x),
+    };
+    let overlay = config.overlay_of_layer(layer);
+    match axis {
+        crate::FitAxis::X if overlay.is_some_and(|overlay| !overlay.link_x) => {
+            FitAxisIdentity::OverlayX(layer)
+        }
+        crate::FitAxis::X => FitAxisIdentity::ChartX(root(true)),
+        crate::FitAxis::Y if overlay.is_some_and(|overlay| !overlay.link_y) => {
+            FitAxisIdentity::OverlayY(layer)
+        }
+        crate::FitAxis::Y => FitAxisIdentity::ChartY(root(false)),
+        crate::FitAxis::Z => FitAxisIdentity::Z(cell),
+    }
+}
+
+/// Whether `config` has `layer`: the base and annotation layers always,
+/// an overlay or subplot only inside its list.
+fn fit_layer_exists(config: &crate::Config, layer: crate::LayerRef) -> bool {
+    match layer {
+        crate::LayerRef::Base | crate::LayerRef::Annotations => true,
+        crate::LayerRef::Overlay(index) => index < config.overlays.len(),
+        crate::LayerRef::Subplot(index) => index < config.subplots.len(),
+        crate::LayerRef::SubplotOverlay(index, overlay) => config
+            .subplots
+            .get(index)
+            .is_some_and(|subplot| overlay < subplot.config.overlays.len()),
+    }
+}
+
+/// Put every axis of `original` whose link group `moved` does not accept
+/// back into `fitted`: the parent's, each overlay's and each subplot's and
+/// its overlays'. Both configurations have the same layers, since a fit
+/// changes ranges only.
+fn keep_unmoved_axes(
+    fitted: &mut crate::Config,
+    original: &crate::Config,
+    moved: impl Fn(FitAxisIdentity) -> bool,
+) {
+    let parent = crate::CellRef::Parent;
+    keep_unmoved_chart_axes(
+        fitted,
+        original,
+        [
+            FitAxisIdentity::ChartX(parent),
+            FitAxisIdentity::ChartY(parent),
+            FitAxisIdentity::Z(parent),
+        ],
+        crate::LayerRef::Overlay,
+        &moved,
+    );
+    for (index, (subplot, kept)) in fitted
+        .subplots
+        .iter_mut()
+        .zip(&original.subplots)
+        .enumerate()
+    {
+        keep_unmoved_chart_axes(
+            &mut subplot.config,
+            &kept.config,
+            [
+                FitAxisIdentity::ChartX(original.subplot_link_root(index, true)),
+                FitAxisIdentity::ChartY(original.subplot_link_root(index, false)),
+                FitAxisIdentity::Z(crate::CellRef::Subplot(index)),
+            ],
+            |overlay| crate::LayerRef::SubplotOverlay(index, overlay),
+            &moved,
+        );
+    }
+}
+
+/// [`keep_unmoved_axes`] for one chart, whose X, Y and z axes are
+/// `[x, y, z]` and whose overlay `n` is `overlay(n)`. `right_y` is the z
+/// axis on a 3D chart and the Y axis' partner otherwise; the parallel axes
+/// are Y.
+fn keep_unmoved_chart_axes(
+    fitted: &mut crate::Config,
+    original: &crate::Config,
+    [x, y, z]: [FitAxisIdentity; 3],
+    overlay: impl Fn(usize) -> crate::LayerRef,
+    moved: &impl Fn(FitAxisIdentity) -> bool,
+) {
+    if !moved(x) {
+        fitted.bottom_x = original.bottom_x.clone();
+        fitted.top_x = original.top_x.clone();
+    }
+    if !moved(y) {
+        fitted.left_y = original.left_y.clone();
+        if let (Some(parallel), Some(kept)) = (fitted.parallel_mut(), original.parallel()) {
+            for (axis, kept) in parallel.axes.iter_mut().zip(&kept.axes) {
+                axis.min = kept.min;
+                axis.max = kept.max;
+            }
+        }
+    }
+    let right = if original.view_3d().is_some() { z } else { y };
+    if !moved(right) {
+        fitted.right_y = original.right_y.clone();
+    }
+    for (index, (layer, kept)) in fitted
+        .overlays
+        .iter_mut()
+        .zip(&original.overlays)
+        .enumerate()
+    {
+        if !moved(FitAxisIdentity::OverlayX(overlay(index))) {
+            layer.x_axis = kept.x_axis.clone();
+        }
+        if !moved(FitAxisIdentity::OverlayY(overlay(index))) {
+            layer.y_axis = kept.y_axis.clone();
+        }
     }
 }

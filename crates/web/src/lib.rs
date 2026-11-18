@@ -84,6 +84,119 @@ fn normalize_config_json(json: &str) -> Result<String, String> {
     serde_json::to_string(&config).map_err(|e| e.to_string())
 }
 
+/// A scoped fit's scope as `FiggyChart.fit_config_scoped` reads it (#334):
+/// [`renderer::FitScope`] with the kept axes it borrows.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, PartialEq)]
+struct FitScopeJson {
+    layer: renderer::LayerRef,
+    axes: renderer::FitAxes,
+    linked: renderer::LinkedFitData,
+    keep: Vec<renderer::FitAxisRef>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl FitScopeJson {
+    fn scope(&self) -> renderer::FitScope<'_> {
+        renderer::FitScope {
+            layer: self.layer,
+            axes: self.axes,
+            linked: self.linked,
+            keep: &self.keep,
+        }
+    }
+}
+
+/// Read a fit scope (#334): `{ "layer": <LayerRef>, "axes": ["x", "y",
+/// "z"], "linked": "group" | "target", "keep": [{ "layer": <LayerRef>,
+/// "axis": "x" | "y" | "z" }] }`. `linked` (default `"group"`) and `keep`
+/// (default none) may be left out; a `LayerRef` is written as in
+/// `set_active_layer` (`"Base"`, `{"Overlay": 0}`, `{"Subplot": 1}`,
+/// `{"SubplotOverlay": [1, 0]}`). An unknown field, axis name or `linked`
+/// value is refused. The error names what is wrong.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fit_scope_from_json(json: &str) -> Result<FitScopeJson, String> {
+    use serde_json::Value;
+    fn object(
+        value: Value,
+        what: &str,
+        fields: &[&str],
+    ) -> Result<serde_json::Map<String, Value>, String> {
+        let Value::Object(object) = value else {
+            return Err(format!("{what} is not a JSON object"));
+        };
+        if let Some(field) = object.keys().find(|key| !fields.contains(&key.as_str())) {
+            return Err(format!("unknown {what} field {field:?}"));
+        }
+        Ok(object)
+    }
+    fn layer_of(value: Option<Value>, what: &str) -> Result<renderer::LayerRef, String> {
+        let value = value.ok_or_else(|| format!("{what} has no \"layer\""))?;
+        serde_json::from_value(value).map_err(|e| format!("{what} layer: {e}"))
+    }
+    fn axis_of(value: &Value) -> Result<renderer::FitAxis, String> {
+        match value.as_str() {
+            Some("x") => Ok(renderer::FitAxis::X),
+            Some("y") => Ok(renderer::FitAxis::Y),
+            Some("z") => Ok(renderer::FitAxis::Z),
+            _ => Err(format!(
+                "unknown fit axis {value}: expected \"x\", \"y\" or \"z\""
+            )),
+        }
+    }
+    let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let mut scope = object(value, "fit scope", &["layer", "axes", "linked", "keep"])?;
+    let layer = layer_of(scope.remove("layer"), "fit scope")?;
+    let Some(Value::Array(names)) = scope.remove("axes") else {
+        return Err("fit scope \"axes\" is not an array of axis names".to_owned());
+    };
+    let mut axes = renderer::FitAxes::default();
+    for name in &names {
+        match axis_of(name)? {
+            renderer::FitAxis::X => axes.x = true,
+            renderer::FitAxis::Y => axes.y = true,
+            renderer::FitAxis::Z => axes.z = true,
+        }
+    }
+    let linked = match scope.remove("linked") {
+        None => renderer::LinkedFitData::Group,
+        Some(value) => match value.as_str() {
+            Some("group") => renderer::LinkedFitData::Group,
+            Some("target") => renderer::LinkedFitData::Target,
+            _ => {
+                return Err(format!(
+                    "unknown fit scope linked {value}: expected \"group\" or \"target\""
+                ));
+            }
+        },
+    };
+    let keep = match scope.remove("keep") {
+        None => Vec::new(),
+        Some(Value::Array(entries)) => entries
+            .into_iter()
+            .map(|entry| {
+                let mut entry = object(entry, "fit scope keep entry", &["layer", "axis"])?;
+                let axis = axis_of(
+                    &entry
+                        .remove("axis")
+                        .ok_or("fit scope keep entry has no \"axis\"")?,
+                )?;
+                Ok(renderer::FitAxisRef {
+                    layer: layer_of(entry.remove("layer"), "fit scope keep entry")?,
+                    axis,
+                })
+            })
+            .collect::<Result<_, String>>()?,
+        Some(_) => return Err("fit scope \"keep\" is not an array".to_owned()),
+    };
+    Ok(FitScopeJson {
+        layer,
+        axes,
+        linked,
+        keep,
+    })
+}
+
 /// The JSON of one validation error of [`validate_config_json`].
 #[cfg(any(target_arch = "wasm32", test))]
 fn config_error_json(
@@ -1484,6 +1597,76 @@ mod tests {
         let refused = report(&config, Some("[1]"));
         assert_eq!(refused["errors"][0]["path"], "series");
         assert_eq!(refused["errors"][0]["stage"], "parse");
+    }
+
+    #[test]
+    fn fit_scope_from_json_reads_every_field_and_refuses_unknown_ones() {
+        use renderer::{FitAxes, FitAxis, FitAxisRef, LayerRef, LinkedFitData};
+        let scope = super::fit_scope_from_json(
+            r#"{"layer": {"Subplot": 1}, "axes": ["x", "z"], "linked": "target",
+                "keep": [{"layer": "Base", "axis": "x"},
+                         {"layer": {"SubplotOverlay": [1, 0]}, "axis": "y"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(scope.layer, LayerRef::Subplot(1));
+        assert_eq!(
+            scope.axes,
+            FitAxes {
+                x: true,
+                y: false,
+                z: true
+            }
+        );
+        assert_eq!(scope.linked, LinkedFitData::Target);
+        assert_eq!(
+            scope.keep,
+            [
+                FitAxisRef {
+                    layer: LayerRef::Base,
+                    axis: FitAxis::X
+                },
+                FitAxisRef {
+                    layer: LayerRef::SubplotOverlay(1, 0),
+                    axis: FitAxis::Y
+                },
+            ]
+        );
+        let view = scope.scope();
+        assert_eq!(view.keep.len(), 2);
+        assert_eq!(view.layer, LayerRef::Subplot(1));
+
+        // `linked` and `keep` default to the group and nothing kept.
+        let scope =
+            super::fit_scope_from_json(r#"{"layer": {"Overlay": 0}, "axes": ["y"]}"#).unwrap();
+        assert_eq!(scope.linked, LinkedFitData::Group);
+        assert!(scope.keep.is_empty());
+        assert_eq!(
+            scope.axes,
+            FitAxes {
+                y: true,
+                ..FitAxes::default()
+            }
+        );
+
+        for refused in [
+            "not json",
+            "[]",
+            r#"{"axes": ["x"]}"#,
+            r#"{"layer": "Base"}"#,
+            r#"{"layer": "Base", "axes": "x"}"#,
+            r#"{"layer": "Base", "axes": ["w"]}"#,
+            r#"{"layer": "Base", "axes": ["X"]}"#,
+            r#"{"layer": "Nowhere", "axes": ["x"]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "linked": "all"}"#,
+            r#"{"layer": "Base", "axes": ["x"], "extra": 1}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": {"layer": "Base", "axis": "x"}}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"layer": "Base"}]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"axis": "x"}]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"layer": "Base", "axis": "q"}]}"#,
+            r#"{"layer": "Base", "axes": ["x"], "keep": [{"layer": "Base", "axis": "x", "z": 1}]}"#,
+        ] {
+            assert!(super::fit_scope_from_json(refused).is_err(), "{refused}");
+        }
     }
 
     #[test]
