@@ -235,6 +235,69 @@ impl FitExtent {
     }
 }
 
+/// Which axes of one layer a scoped candidate fit moves
+/// (`Renderer::fit_config_scoped`, #334). `z` is the z axis of a 3D chart
+/// (its `right_y`); on a parallel chart the parallel axes are `y`. An axis
+/// not selected keeps the range it was given.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FitAxes {
+    pub x: bool,
+    pub y: bool,
+    pub z: bool,
+}
+
+impl FitAxes {
+    /// Every axis: x, y and z.
+    pub const ALL: Self = Self {
+        x: true,
+        y: true,
+        z: true,
+    };
+}
+
+/// Which series a linked axis of a scoped candidate fit reads
+/// (`Renderer::fit_config_scoped`, #334).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LinkedFitData {
+    /// A linked axis fits every series drawn against its link group, as
+    /// `Renderer::fit_config` fits it ([`Config::series_fit_roles`]).
+    #[default]
+    Group,
+    /// Only the series drawn in the target's panel (the parent chart or one
+    /// subplot cell, that cell's overlays included) are read; the link
+    /// group still shares the resulting range.
+    Target,
+}
+
+/// One axis of a layer, as a scoped fit names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FitAxis {
+    X,
+    Y,
+    /// The z axis of a 3D chart: its cell's `right_y`.
+    Z,
+}
+
+/// An axis a scoped fit holds: `axis` of layer `layer`
+/// (`FitScope::keep`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FitAxisRef {
+    pub layer: LayerRef,
+    pub axis: FitAxis,
+}
+
+/// What a scoped candidate fit moves (`Renderer::fit_config_scoped`,
+/// #334): the selected `axes` of `layer`, reading the series `linked`
+/// chooses, except the axes `keep` holds. A kept axis holds every axis
+/// linked to it, since a link group has one range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FitScope<'a> {
+    pub layer: LayerRef,
+    pub axes: FitAxes,
+    pub linked: LinkedFitData,
+    pub keep: &'a [FitAxisRef],
+}
+
 /// Validate the invariants required before a `Config` becomes renderer-owned.
 ///
 /// Raster helpers remain defensive against invalid ad-hoc values, but the
@@ -1352,17 +1415,43 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        self.fit_layer_union_where(pool, layer, series, |_| true, FitAxes::ALL, padding_ratio)
+    }
+
+    /// [`Self::auto_fit_layer_union`] over the series `include` accepts,
+    /// moving only the selected `axes`: an axis not selected is fitted
+    /// with [`FitExtent::EMPTY`] (which leaves it as it is) and the z axis
+    /// is fitted only with `axes.z`. On a parallel chart the parallel axes
+    /// are `axes.y`. A series `include` refuses reads nothing. The scoped
+    /// candidate fit (`Renderer::fit_config_scoped`, #334) and the whole
+    /// layer fit (`include` accepting every series, every axis) share it.
+    pub(crate) fn fit_layer_union_where(
+        &mut self,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        axes: FitAxes,
+        padding_ratio: f64,
+    ) -> Result<()> {
         // A parallel chart fits each of its axes to its columns (#141); the
         // categorical positions and the normalized band stay.
         if self.config.parallel().is_some()
             && matches!(layer, LayerRef::Base | LayerRef::Annotations)
         {
-            return self.auto_fit_parallel_axes(pool, series, padding_ratio);
+            if !axes.y {
+                return Ok(());
+            }
+            return self.fit_parallel_axes_where(pool, series, &include, padding_ratio);
         }
         let mut x = FitExtent::EMPTY;
         let mut y = FitExtent::EMPTY;
         for cfg in series {
+            if !include(cfg) {
+                continue;
+            }
             let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
+            let (fit_x, fit_y) = (fit_x && axes.x, fit_y && axes.y);
             // A DataLess series reads no column (#203, #234). A Feynman
             // diagram fits its vertices' positions; an energy-level series
             // moves no axis.
@@ -1472,8 +1561,12 @@ impl Chart {
                 }
             }
         }
-        self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
-        self.auto_fit_view_3d_z(pool, layer, series, padding_ratio)?;
+        if axes.x || axes.y {
+            self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
+        }
+        if axes.z {
+            self.fit_view_3d_z_where(pool, layer, series, &include, padding_ratio)?;
+        }
         Ok(())
     }
 
@@ -1528,6 +1621,26 @@ impl Chart {
         Ok(fitted.config)
     }
 
+    /// `config` with the selected `axes` of `layer` fitted as
+    /// [`Self::fit_layer_union_where`] fits them over the series `include`
+    /// accepts, returned without touching any chart: the fit path of
+    /// `Renderer::fit_config_scoped` (#334). The fit works on a copy of the
+    /// configuration (SSOT configuration only, rule 2) and reads the
+    /// columns' cached statistics only.
+    pub(crate) fn fitted_layer_where(
+        config: &Config,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        axes: FitAxes,
+        padding_ratio: f64,
+    ) -> Result<Config> {
+        let mut fitted = Chart::new(config.clone());
+        fitted.fit_layer_union_where(pool, layer, series, include, axes, padding_ratio)?;
+        Ok(fitted.config)
+    }
+
     /// On a parallel chart (`Config.parallel`, #141), fit each parallel
     /// axis's range to the union of the cached statistics of the column
     /// every parallel series names for it, padded by `padding_ratio` (a
@@ -1541,13 +1654,24 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        self.fit_parallel_axes_where(pool, series, |_| true, padding_ratio)
+    }
+
+    /// [`Self::auto_fit_parallel_axes`] over the series `include` accepts.
+    fn fit_parallel_axes_where(
+        &mut self,
+        pool: &ColumnPool,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        padding_ratio: f64,
+    ) -> Result<()> {
         let axes = match self.config.parallel() {
             Some(parallel) => parallel.axes.len(),
             None => return Ok(()),
         };
         for i in 0..axes {
             let mut ext = FitExtent::EMPTY;
-            for cfg in series {
+            for cfg in series.iter().filter(|cfg| include(cfg)) {
                 if let Some(column) = cfg.render_type.parallel().and_then(|p| p.columns.get(i)) {
                     ext.union(&Self::slot_extent(pool, column)?);
                 }
@@ -1584,6 +1708,18 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        self.fit_view_3d_z_where(pool, layer, series, |_| true, padding_ratio)
+    }
+
+    /// [`Self::auto_fit_view_3d_z`] over the series `include` accepts.
+    fn fit_view_3d_z_where(
+        &mut self,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        include: impl Fn(&SeriesConfig) -> bool,
+        padding_ratio: f64,
+    ) -> Result<()> {
         let chart = match layer {
             LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
                 match self.config.subplots.get(index) {
@@ -1597,7 +1733,7 @@ impl Chart {
             return Ok(());
         }
         let mut z = FitExtent::EMPTY;
-        for cfg in series {
+        for cfg in series.iter().filter(|cfg| include(cfg)) {
             let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
             if !(fit_x || fit_y) {
                 continue;

@@ -776,6 +776,8 @@ pub enum RuleKind {
     VectorExportWholeDocument,
     /// padding must be finite and non-negative
     FitPadding,
+    /// a fit scope names a layer the chart does not have
+    FitScopeLayer,
     /// a layer's area lies outside the chart area
     LayerOutsideChart,
     /// the layered document has no feasible layout
@@ -1580,6 +1582,7 @@ impl RuleKind {
             Self::RgbaBufferLength => "RgbaBufferLength",
             Self::VectorExportWholeDocument => "VectorExportWholeDocument",
             Self::FitPadding => "FitPadding",
+            Self::FitScopeLayer => "FitScopeLayer",
             Self::LayerOutsideChart => "LayerOutsideChart",
             Self::NoFeasibleLayout => "NoFeasibleLayout",
             Self::SeriesPaintOrderOverflow => "SeriesPaintOrderOverflow",
@@ -2391,6 +2394,7 @@ impl std::fmt::Display for RuleKind {
             Self::RgbaBufferLength => "the RGBA8 buffer length is not width * height * 4",
             Self::VectorExportWholeDocument => "a vector export renders the whole document",
             Self::FitPadding => "padding must be finite and non-negative",
+            Self::FitScopeLayer => "a fit scope names a layer the chart does not have",
             Self::LayerOutsideChart => "a layer's area lies outside the chart area",
             Self::NoFeasibleLayout => "the layered document has no feasible layout",
             Self::SeriesPaintOrderOverflow => "series paint order exceeds the GPU u32 index space",
@@ -4339,6 +4343,10 @@ mod tests {
             (
                 RuleKind::FitPadding,
                 "padding must be finite and non-negative",
+            ),
+            (
+                RuleKind::FitScopeLayer,
+                "a fit scope names a layer the chart does not have",
             ),
             (
                 RuleKind::LayerOutsideChart,
