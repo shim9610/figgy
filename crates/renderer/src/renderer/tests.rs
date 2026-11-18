@@ -15397,6 +15397,8 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         "self.inner.pick_chart(",
         "self.inner.pick_chart_data(",
         "self.inner.compile_pick_pipelines_async(",
+        // rustfmt puts this call on its own line after `self.inner`.
+        ".compile_data_pick_pipelines_async(",
     ];
     let mut seen = 0;
     for (index, _) in methods.match_indices("\n    pub ") {
@@ -15436,6 +15438,8 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         include_str!("style.rs"),
         include_str!("preparation.rs"),
         include_str!("device/renderer_prewarm.rs"),
+        include_str!("monotonic.rs"),
+        include_str!("monotonic_chart.rs"),
         include_str!("../streaming_runtime.rs"),
     ];
     let mut wrapped = 0;
