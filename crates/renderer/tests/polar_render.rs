@@ -23,7 +23,8 @@ use renderer::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest
 use renderer::polar::{AngleUnit, PolarInterpolation, PolarOptions};
 use renderer::{
     Chart, Color, Config, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, FiggyError,
-    OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape, SeriesConfig, Subplot,
+    HistogramSeries, OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape,
+    SeriesConfig, Subplot,
 };
 #[cfg(feature = "cpu-twin")]
 use renderer::{GpuPickRequest, display_config_for_surface};
@@ -705,7 +706,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         x_column: "theta".into(),
         y_column: "r".into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: RED,
                 border_color: Color::BLACK,
@@ -716,7 +717,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
                 orientation: BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
     };
     match renderer
         .export_rgba(

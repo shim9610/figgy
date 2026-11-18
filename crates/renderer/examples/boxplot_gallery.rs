@@ -445,7 +445,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     .style_box_plot(|parts| {
         parts.style.show_outliers = false;
         // The samples jittered in a band below each box.
-        *parts.points = Some(BoxPoints {
+        parts.points = Some(BoxPoints {
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle {

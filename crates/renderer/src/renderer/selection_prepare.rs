@@ -617,7 +617,7 @@ mod tests {
         for kind in 0..3 {
             let mut declaration = declaration();
             if kind != 0 {
-                declaration.render_type = DataRenderType::Histogram {
+                declaration.render_type = DataRenderType::Histogram(HistogramSeries {
                     bar: DataBarStyleConfig {
                         fill_color: Color::BLACK,
                         border_color: Color::BLACK,
@@ -639,7 +639,7 @@ mod tests {
                             },
                         }]),
                     },
-                };
+                });
                 if kind == 2 {
                     std::mem::swap(&mut declaration.x_column, &mut declaration.y_column);
                 }

@@ -2939,7 +2939,8 @@ mod tests {
     /// A category bar, box plot and range bar series named `id`.
     fn indexed_series(id: &str) -> [crate::data_config::SeriesConfig; 3] {
         use crate::data_config::{
-            CategoryBarLabelFormat, DataRenderType, RangeColor, SeriesConfig,
+            BoxSeries, CategoryBarLabelFormat, CategoryBarSeries, DataRenderType, RangeBarSeries,
+            RangeColor, SeriesConfig,
         };
         let series = |render_type| SeriesConfig {
             series_id: id.into(),
@@ -2952,14 +2953,14 @@ mod tests {
         };
         let color = crate::Color::from_rgb8(40, 120, 200);
         [
-            series(DataRenderType::CategoryBars {
+            series(DataRenderType::CategoryBars(CategoryBarSeries {
                 color,
                 style: crate::defaults::category_bar_style(),
                 labels: crate::defaults::category_bar_series_labels(),
                 label_format: CategoryBarLabelFormat::Value,
                 overrides: None,
-            }),
-            series(DataRenderType::BoxPlot {
+            })),
+            series(DataRenderType::BoxPlot(BoxSeries {
                 color,
                 style: crate::defaults::box_plot_style(),
                 labels: crate::defaults::box_plot_series_labels(),
@@ -2967,8 +2968,8 @@ mod tests {
                 overrides: None,
                 violin: None,
                 points: None,
-            }),
-            series(DataRenderType::RangeBars {
+            })),
+            series(DataRenderType::RangeBars(RangeBarSeries {
                 color,
                 style: crate::defaults::category_bar_style(),
                 start: format!("{id}.start"),
@@ -2978,7 +2979,7 @@ mod tests {
                 connector: None,
                 slot_width: None,
                 labels: crate::defaults::category_bar_series_labels(),
-            }),
+            })),
         ]
     }
 

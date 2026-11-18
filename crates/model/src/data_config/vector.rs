@@ -37,27 +37,33 @@ impl StreamlineArrows {
     }
 }
 
-/// The fields of a [`DataRenderType::Streamlines`] series, borrowed.
-#[derive(Clone, Copy, Debug)]
-pub struct StreamlinesRef<'a> {
-    pub line: &'a DataLineStyleConfig,
-    pub arrows: Option<&'a StreamlineArrows>,
-    pub color_map: Option<&'a PointColorMap>,
+/// The fields of a [`DataRenderType::Streamlines`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct StreamlineSeries {
+    /// The line the streamlines are drawn with. `interpolation` must
+    /// be `Linear` and `fill` `None`.
+    pub line: DataLineStyleConfig,
+    /// Arrowheads along the drawn lines, or none.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub arrows: Option<StreamlineArrows>,
+    /// Colour the lines and arrowheads by a host column through
+    /// `Config.colorbar`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub color_map: Option<PointColorMap>,
 }
 
 impl DataRenderType {
     /// The fields of a streamline series, or `None` for every other kind.
-    pub fn streamlines(&self) -> Option<StreamlinesRef<'_>> {
+    pub fn streamlines(&self) -> Option<&StreamlineSeries> {
         match self {
-            DataRenderType::Streamlines {
-                line,
-                arrows,
-                color_map,
-            } => Some(StreamlinesRef {
-                line,
-                arrows: arrows.as_ref(),
-                color_map: color_map.as_ref(),
-            }),
+            DataRenderType::Streamlines(streamlines) => Some(streamlines),
             _ => None,
         }
     }
@@ -77,7 +83,7 @@ pub fn validate_streamline_series(series: &SeriesConfig) -> Result<(), crate::Ru
     if streamlines.line.fill.is_some() {
         return Err(crate::RuleKind::StreamlineFill);
     }
-    if let Some(arrows) = streamlines.arrows {
+    if let Some(arrows) = &streamlines.arrows {
         arrows.validate()?;
     }
     if series.x_column.is_empty() || series.y_column.is_empty() {
@@ -85,6 +91,7 @@ pub fn validate_streamline_series(series: &SeriesConfig) -> Result<(), crate::Ru
     }
     if streamlines
         .color_map
+        .as_ref()
         .is_some_and(|map| map.column.is_empty())
     {
         return Err(crate::RuleKind::StreamlineColorMapColumn);
@@ -311,4 +318,12 @@ impl VectorStyle {
         }
         true
     }
+}
+
+/// The fields of a [`DataRenderType::Vector`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct VectorSeries {
+    pub components: VectorComponents,
+    pub style: VectorStyle,
 }

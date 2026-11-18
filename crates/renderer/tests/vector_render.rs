@@ -26,7 +26,7 @@ use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, FiggyError,
     GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice,
-    SeriesConfig, Subplot, display_config_for_surface,
+    SeriesConfig, StreamlineSeries, Subplot, VectorSeries, display_config_for_surface,
 };
 
 const WIDTH: u32 = 480;
@@ -127,14 +127,14 @@ fn points(id: &str, style: VectorStyle) -> SeriesConfig {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
                 w: None,
             },
             style,
-        },
+        }),
     }
 }
 
@@ -164,13 +164,13 @@ fn grid(
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Grid {
                 u: matrix(u, orientation, grid_layout),
                 v: matrix(v, orientation, grid_layout),
             },
             style,
-        },
+        }),
     }
 }
 
@@ -1457,14 +1457,14 @@ fn vector_series_are_validated_at_registration() {
     );
 
     let mut missing = points("v", pixels(1.0));
-    missing.render_type = DataRenderType::Vector {
+    missing.render_type = DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Points {
             u: "u".into(),
             v: "nope".into(),
             w: None,
         },
         style: pixels(1.0),
-    };
+    });
     assert!(matches!(
         renderer.register_chart(config.clone(), vec![missing]),
         Err(FiggyError::UnknownColumn { id }) if id == "nope"
@@ -1477,10 +1477,10 @@ fn vector_series_are_validated_at_registration() {
         &GridLayout::Edges,
         pixels(1.0),
     );
-    if let DataRenderType::Vector {
+    if let DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Grid { v, .. },
         ..
-    } = &mut mismatched.render_type
+    }) = &mut mismatched.render_type
     {
         v.orientation = MatrixOrientation::ColumnsAreY;
     }
@@ -1558,7 +1558,7 @@ fn removing_a_component_column_removes_the_series() {
 // ── Streamlines ──────────────────────────────────────────────────────────────
 
 fn streamline_style(arrows: Option<StreamlineArrows>, color: Option<&str>) -> DataRenderType {
-    DataRenderType::Streamlines {
+    DataRenderType::Streamlines(StreamlineSeries {
         line: DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
             line_color: RED,
@@ -1571,7 +1571,7 @@ fn streamline_style(arrows: Option<StreamlineArrows>, color: Option<&str>) -> Da
         color_map: color.map(|column| PointColorMap {
             column: column.into(),
         }),
-    }
+    })
 }
 
 fn streamlines(arrows: Option<StreamlineArrows>, color: Option<&str>) -> SeriesConfig {
@@ -1675,7 +1675,7 @@ const ARROWS: StreamlineArrows = StreamlineArrows {
 /// inside a head (10 px wide).
 fn thin_streamlines(arrows: Option<StreamlineArrows>) -> SeriesConfig {
     let mut series = streamlines(arrows, None);
-    if let DataRenderType::Streamlines { line, .. } = &mut series.render_type {
+    if let DataRenderType::Streamlines(StreamlineSeries { line, .. }) = &mut series.render_type {
         line.line_width = 1.0;
     }
     series

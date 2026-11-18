@@ -28,8 +28,8 @@ use renderer::{
     Category, Color, Renderer, SeriesConfig,
     config::LegendCorner,
     data_config::{
-        BarGroups, CategoryBarDirection, CategoryBarLabels, DataRenderType, RangeColor,
-        RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers,
+        BarGroups, CategoryBarDirection, CategoryBarLabels, DataRenderType, RangeBarSeries,
+        RangeColor, RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers,
     },
     format::{LabelFormat, TimestampLabelFormat, TimestampLabelMode},
     theme::ChartKind,
@@ -116,12 +116,12 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
     // Bars by direction, totals flagged by a column, joined step to step;
     // the theme colours them and draws the connectors.
     let mut bars = SeriesConfig::range_bars("bridge", "wf-pos", "wf-start", "wf-end");
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         color_by,
         connector,
         labels,
         ..
-    } = &mut bars.render_type
+    }) = &mut bars.render_type
     {
         *color_by = RangeColor::Direction {
             up: Color::BLACK,
@@ -200,12 +200,12 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("cd-sma", &sma)?;
     // Bodies by direction over low-to-high wicks; the theme colours them.
     let mut candles = SeriesConfig::range_bars("price", "cd-t", "cd-open", "cd-close");
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         whiskers,
         color_by,
         slot_width,
         ..
-    } = &mut candles.render_type
+    }) = &mut candles.render_type
     {
         *whiskers = Some(RangeWhiskers {
             low: "cd-low".into(),
@@ -288,12 +288,12 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("gt-state", &pick(&|t| t.3 as f64))?;
     r.add_column("gt-progress", &pick(&|t| t.4))?;
     let mut bars = SeriesConfig::range_bars("tasks", "gt-row", "gt-start", "gt-end");
-    if let DataRenderType::RangeBars {
+    if let DataRenderType::RangeBars(RangeBarSeries {
         color_by,
         progress,
         labels,
         ..
-    } = &mut bars.render_type
+    }) = &mut bars.render_type
     {
         // One style per state; the theme colours them.
         *color_by = RangeColor::State {

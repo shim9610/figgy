@@ -8,7 +8,7 @@
 
 use figgy::FiggyChart;
 use renderer::{
-    Chart, Color, DataRenderType, SeriesConfig,
+    Chart, Color, DataRenderType, SeriesConfig, VectorSeries,
     config::{AxisOptions, Config, DataSelectionsConfig, PickedDataRef},
     data_config::{MatrixRef, VectorScale},
 };
@@ -322,7 +322,7 @@ async fn fit_point_size_domain_takes_the_column_extent() {
 
 fn vector_scale(series: &SeriesConfig) -> f64 {
     match &series.render_type {
-        DataRenderType::Vector { style, .. } => match style.scale {
+        DataRenderType::Vector(VectorSeries { style, .. }) => match style.scale {
             VectorScale::Pixels { px_per_unit } => px_per_unit,
             VectorScale::Data { factor } => factor,
         },

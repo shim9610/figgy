@@ -15,10 +15,11 @@
 use crate::color::Color;
 use crate::data::ColumnId;
 use crate::data_config::{
-    DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorBars, ErrorRef, FieldFillConfig, FieldSeries, GridLayout,
-    LineFill, MatrixOrientation, MatrixRef, ScatterShape, SeriesConfig, Stem, VectorComponents,
-    VectorStyle, XySeries,
+    BoxSeries, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig,
+    DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef, FieldFillConfig, FieldSeries,
+    GridLayout, HistogramSeries, LineFill, MatrixOrientation, MatrixRef, ParallelSeries,
+    RadarPolygonSeries, RangeBarSeries, RgbImageSeries, ScatterShape, SeriesConfig, Stem,
+    StreamlineSeries, TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
 };
 use crate::line::LineStylePreset;
 use crate::text::RichText;
@@ -170,9 +171,9 @@ impl SeriesConfig {
             id,
             edges,
             counts,
-            DataRenderType::Histogram {
+            DataRenderType::Histogram(HistogramSeries {
                 bar: DataBarStyleConfig::default(),
-            },
+            }),
         )
     }
 
@@ -257,14 +258,14 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::RgbImage {
+            DataRenderType::RgbImage(RgbImageSeries {
                 red,
                 green,
                 blue,
                 range: [0.0, 1.0],
                 shading: crate::data_config::Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
         )
     }
 
@@ -281,14 +282,14 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Points {
                     u: u.into(),
                     v: v.into(),
                     w: None,
                 },
                 style: VectorStyle::default(),
-            },
+            }),
         )
     }
 
@@ -303,11 +304,11 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Streamlines {
+            DataRenderType::Streamlines(StreamlineSeries {
                 line: DataLineStyleConfig::default(),
                 arrows: Some(crate::defaults::streamline_arrows()),
                 color_map: None,
-            },
+            }),
         )
     }
 
@@ -323,13 +324,13 @@ impl SeriesConfig {
             id,
             positions,
             values,
-            DataRenderType::CategoryBars {
+            DataRenderType::CategoryBars(CategoryBarSeries {
                 color: SERIES_INK,
                 style: crate::defaults::category_bar_style(),
                 labels: crate::defaults::category_bar_series_labels(),
                 label_format: crate::defaults::category_bar_label_format(),
                 overrides: None,
-            },
+            }),
         )
     }
 
@@ -345,7 +346,7 @@ impl SeriesConfig {
             id,
             positions,
             records,
-            DataRenderType::BoxPlot {
+            DataRenderType::BoxPlot(BoxSeries {
                 color: SERIES_INK,
                 style: crate::defaults::box_plot_style(),
                 labels: crate::defaults::box_plot_series_labels(),
@@ -353,7 +354,7 @@ impl SeriesConfig {
                 overrides: None,
                 violin: None,
                 points: None,
-            },
+            }),
         )
     }
 
@@ -372,7 +373,7 @@ impl SeriesConfig {
             id,
             positions,
             end,
-            DataRenderType::RangeBars {
+            DataRenderType::RangeBars(RangeBarSeries {
                 color: SERIES_INK,
                 style: crate::defaults::category_bar_style(),
                 start: start.into(),
@@ -382,7 +383,7 @@ impl SeriesConfig {
                 connector: None,
                 slot_width: None,
                 labels: crate::defaults::category_bar_series_labels(),
-            },
+            }),
         )
     }
 
@@ -398,11 +399,11 @@ impl SeriesConfig {
             id,
             categories,
             values,
-            DataRenderType::Radar {
+            DataRenderType::Radar(RadarPolygonSeries {
                 color: SERIES_INK,
                 style: crate::defaults::radar_series_style(),
                 labels: crate::defaults::radar_series_labels(),
-            },
+            }),
         )
     }
 
@@ -418,12 +419,12 @@ impl SeriesConfig {
             id,
             a,
             b,
-            DataRenderType::Ternary {
+            DataRenderType::Ternary(TernarySeries {
                 c_column: c.into(),
                 scatter: Some(DataScatterStyleConfig::default()),
                 line: None,
                 region: None,
-            },
+            }),
         )
     }
 
@@ -442,11 +443,11 @@ impl SeriesConfig {
             id,
             x,
             y,
-            DataRenderType::Parallel {
+            DataRenderType::Parallel(ParallelSeries {
                 columns,
                 line: DataLineStyleConfig::default(),
                 color_column: None,
-            },
+            }),
         )
     }
 
@@ -559,13 +560,13 @@ impl SeriesConfig {
                     contour.line.line_color = color;
                 }
             }
-            DataRenderType::Histogram { bar } => bar.fill_color = color,
-            DataRenderType::Vector { style, .. } => style.color = color,
-            DataRenderType::CategoryBars { color: c, .. }
-            | DataRenderType::BoxPlot { color: c, .. }
-            | DataRenderType::RangeBars { color: c, .. }
-            | DataRenderType::Radar { color: c, .. } => *c = color,
-            DataRenderType::Ternary { scatter, line, .. } => {
+            DataRenderType::Histogram(HistogramSeries { bar }) => bar.fill_color = color,
+            DataRenderType::Vector(VectorSeries { style, .. }) => style.color = color,
+            DataRenderType::CategoryBars(CategoryBarSeries { color: c, .. })
+            | DataRenderType::BoxPlot(BoxSeries { color: c, .. })
+            | DataRenderType::RangeBars(RangeBarSeries { color: c, .. })
+            | DataRenderType::Radar(RadarPolygonSeries { color: c, .. }) => *c = color,
+            DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
                 if let Some(scatter) = scatter {
                     scatter.point_color = color;
                 }
@@ -573,11 +574,12 @@ impl SeriesConfig {
                     line.line_color = color;
                 }
             }
-            DataRenderType::Streamlines { line, .. } | DataRenderType::Parallel { line, .. } => {
+            DataRenderType::Streamlines(StreamlineSeries { line, .. })
+            | DataRenderType::Parallel(ParallelSeries { line, .. }) => {
                 line.line_color = color;
             }
             DataRenderType::MonotonicLine(series) => series.line.line_color = color,
-            DataRenderType::RgbImage { .. }
+            DataRenderType::RgbImage(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::Feynman(_) => {}
         }
@@ -594,8 +596,10 @@ impl SeriesConfig {
                     stem.width = width;
                 }
             }
-            DataRenderType::Vector { style, .. } => style.width_px = width,
-            DataRenderType::Radar { style, .. } => style.line_width_px = Some(width),
+            DataRenderType::Vector(VectorSeries { style, .. }) => style.width_px = width,
+            DataRenderType::Radar(RadarPolygonSeries { style, .. }) => {
+                style.line_width_px = Some(width)
+            }
             _ => {}
         }
         self
@@ -621,7 +625,7 @@ impl SeriesConfig {
         });
         let slot = match &mut self.render_type {
             DataRenderType::Xy(xy) => Some(&mut xy.scatter),
-            DataRenderType::Ternary { scatter, .. } => Some(scatter),
+            DataRenderType::Ternary(TernarySeries { scatter, .. }) => Some(scatter),
             _ => None,
         };
         if let Some(slot) = slot {
@@ -690,7 +694,7 @@ impl SeriesConfig {
     /// sideways to a vertical baseline. (Category bars take their direction
     /// from the chart's `bar_groups`.)
     pub fn horizontal(mut self) -> Self {
-        if let DataRenderType::Histogram { bar } = &mut self.render_type {
+        if let DataRenderType::Histogram(HistogramSeries { bar }) = &mut self.render_type {
             bar.orientation = crate::data_config::BarOrientation::Horizontal;
         }
         self.horizontal_stem();
@@ -704,11 +708,11 @@ impl SeriesConfig {
             DataRenderType::Xy(XySeries {
                 line: Some(line), ..
             })
-            | DataRenderType::Ternary {
+            | DataRenderType::Ternary(TernarySeries {
                 line: Some(line), ..
-            }
-            | DataRenderType::Streamlines { line, .. }
-            | DataRenderType::Parallel { line, .. } => visit(line),
+            })
+            | DataRenderType::Streamlines(StreamlineSeries { line, .. })
+            | DataRenderType::Parallel(ParallelSeries { line, .. }) => visit(line),
             DataRenderType::MonotonicLine(series) => visit(&mut series.line),
             DataRenderType::Field(FieldSeries {
                 contour: Some(contour),
@@ -837,7 +841,7 @@ mod tests {
         let bars = SeriesConfig::histogram("h", "e", "c")
             .color(red)
             .horizontal();
-        let DataRenderType::Histogram { bar } = &bars.render_type else {
+        let DataRenderType::Histogram(HistogramSeries { bar }) = &bars.render_type else {
             panic!("a histogram");
         };
         assert_eq!(bar.fill_color, red);

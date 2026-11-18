@@ -14,5 +14,3 @@ mod series;
 mod series_family;
 mod series_style;
 pub mod theme;
-
-pub use series_family::{BoxPlotParts, RangeBarsParts};

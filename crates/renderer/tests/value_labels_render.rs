@@ -31,10 +31,10 @@ use renderer::raster::Canvas;
 use renderer::select::{SELECTION_PADDING, SELECTION_STROKE_WIDTH};
 use renderer::text_render::{FontPolicy, draw_plain_text, measure_plain_text};
 use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
-    GpuPickRequest, Material, PickedData, PickedDataRef, RadarLabels, RadarMarker,
-    RadarSeriesLabels, RadarSeriesStyle, RaggedSource, RasterImage, RecordSource, Renderer,
-    RendererDevice, SeriesConfig, Subplot,
+    BOX_PLOT_RECORD, BoxSeries, CategoryBarSeries, Chart, Color, ColumnSource, DataRenderType,
+    DataSelectionsConfig, GpuPickRequest, Material, PickedData, PickedDataRef, RadarLabels,
+    RadarMarker, RadarPolygonSeries, RadarSeriesLabels, RadarSeriesStyle, RaggedSource,
+    RasterImage, RecordSource, Renderer, RendererDevice, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 480;
@@ -205,7 +205,7 @@ fn bars(
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::CategoryBars {
+        render_type: DataRenderType::CategoryBars(CategoryBarSeries {
             color,
             style: CategoryBarStyle {
                 material: Material::Flat,
@@ -220,7 +220,7 @@ fn bars(
             },
             label_format: Default::default(),
             overrides: None,
-        },
+        }),
     }
 }
 
@@ -664,7 +664,7 @@ fn boxes(direction: CategoryBarDirection, text: &[&str]) -> SeriesConfig {
         x_column: "pos".into(),
         y_column: "box".into(),
         z_column: None,
-        render_type: DataRenderType::BoxPlot {
+        render_type: DataRenderType::BoxPlot(BoxSeries {
             color: RED,
             style,
             labels: BoxPlotSeriesLabels {
@@ -676,7 +676,7 @@ fn boxes(direction: CategoryBarDirection, text: &[&str]) -> SeriesConfig {
             overrides: None,
             violin: None,
             points: None,
-        },
+        }),
     }
 }
 
@@ -769,7 +769,7 @@ fn box_labels_sit_beside_the_median() {
         first.series_id = "box-a".into();
         let mut second = boxes(direction, &["", "31", ""]);
         second.series_id = "box-b".into();
-        if let DataRenderType::BoxPlot {
+        if let DataRenderType::BoxPlot(BoxSeries {
             color,
             style: _,
             labels: _,
@@ -777,7 +777,7 @@ fn box_labels_sit_beside_the_median() {
             overrides: _,
             violin: _,
             points: _,
-        } = &mut second.render_type
+        }) = &mut second.render_type
         {
             *color = BLUE;
         }
@@ -841,7 +841,7 @@ fn radar_series(id: &str, column: &str, values: &[f64], placement: RadarLabels) 
         x_column: "cat".into(),
         y_column: column.into(),
         z_column: None,
-        render_type: DataRenderType::Radar {
+        render_type: DataRenderType::Radar(RadarPolygonSeries {
             color: RED,
             style: RadarSeriesStyle {
                 line_width_px: Some(2.0),
@@ -859,7 +859,7 @@ fn radar_series(id: &str, column: &str, values: &[f64], placement: RadarLabels) 
                 text: values.iter().map(|v| format!("{v}")).collect(),
                 ..RadarSeriesLabels::default()
             },
-        },
+        }),
     }
 }
 
@@ -1032,7 +1032,7 @@ fn two_radars() -> Vec<SeriesConfig> {
 fn only_label(series: &[SeriesConfig], k: usize, i: usize) -> Vec<SeriesConfig> {
     let mut out = series.to_vec();
     for (j, s) in out.iter_mut().enumerate() {
-        if let DataRenderType::Radar { labels, .. } = &mut s.render_type {
+        if let DataRenderType::Radar(RadarPolygonSeries { labels, .. }) = &mut s.render_type {
             labels.offsets = (0..labels.text.len())
                 .map(|c| {
                     if j == k && c == i {

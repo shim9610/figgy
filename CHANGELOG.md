@@ -146,6 +146,54 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
     picking stays disabled. The six `*-probe.html` pages are removed, and
     the unused `serde` dev-dependency.
 
+- **Every `DataRenderType` variant wraps a struct** ([#341](https://github.com/shim9610/figgy/issues/341)).
+  The ten kinds whose fields were written inline in the enum now wrap a
+  named struct, as `Xy`, `Field`, `EnergyLevels`, `TriMesh`, `Feynman` and
+  `MonotonicLine` already did. The fields, their docs and their defaults
+  are unchanged, and the wire form is unchanged: `{"BoxPlot": {...}}` and
+  the rest parse and re-serialize byte for byte. Breaking for Rust
+  literals and patterns. Migration (old → new; every new struct is in
+  `figgy_model::data_config` and re-exported at the crate roots):
+  - `DataRenderType::Histogram { bar }` → `Histogram(HistogramSeries { bar })`.
+  - `RgbImage { red, green, blue, range, shading, opacity }` →
+    `RgbImage(RgbImageSeries { .. })`.
+  - `Vector { components, style }` → `Vector(VectorSeries { .. })`.
+  - `CategoryBars { color, style, labels, label_format, overrides }` →
+    `CategoryBars(CategoryBarSeries { .. })`.
+  - `BoxPlot { color, style, labels, outliers, overrides, violin, points }`
+    → `BoxPlot(BoxSeries { .. })` (`BoxPlotSeries` stays the pre-0.13
+    document reader).
+  - `RangeBars { color, style, start, whiskers, color_by, progress,
+    connector, slot_width, labels }` → `RangeBars(RangeBarSeries { .. })`.
+  - `Radar { color, style, labels }` → `Radar(RadarPolygonSeries { .. })`
+    (`RadarSeries` stays the pre-0.13 document reader).
+  - `Ternary { c_column, scatter, line, region }` →
+    `Ternary(TernarySeries { .. })`.
+  - `Streamlines { line, arrows, color_map }` →
+    `Streamlines(StreamlineSeries { .. })`.
+  - `Parallel { columns, line, color_column }` →
+    `Parallel(ParallelSeries { .. })`.
+  - A pattern `DataRenderType::BoxPlot { .. }` → `DataRenderType::BoxPlot(_)`.
+  - The borrowed views are removed; each accessor returns the struct:
+    `render_type.category_bars()` → `Option<&CategoryBarSeries>` (was
+    `CategoryBarsRef`), `box_plot()` → `Option<&BoxSeries>` (`BoxPlotRef`),
+    `range_bars()` → `Option<&RangeBarSeries>` (`RangeBarsRef`), `radar()`
+    → `Option<&RadarPolygonSeries>` (`RadarRef`), `streamlines()` →
+    `Option<&StreamlineSeries>` (`StreamlinesRef`) and `parallel()` →
+    `Option<&ParallelSeries>` (`ParallelRef`). The views' fields read the
+    struct's own fields: an `Option<&T>` field is now `Option<T>` (use
+    `.as_ref()` or `.as_deref()`), `overrides` is the stored
+    `Option<Vec<_>>` (use `.as_deref().unwrap_or_default()` for the slice
+    the view gave), and `style`, `labels`, `start` and `line` are fields,
+    not references. `RadarRef::{line_style, scatter_style}`,
+    `RangeBarsRef::extra_columns` and `BoxPlotRef::{ragged_columns,
+    plain_columns, draws_boxes}` are methods of the structs.
+  - With the `helpers` feature, `helpers::RangeBarsParts` and
+    `helpers::BoxPlotParts` are removed: `SeriesConfig::style_range_bars`
+    and `style_box_plot` hand the closure `&mut RangeBarSeries` /
+    `&mut BoxSeries`, so `*parts.slot_width = w` becomes
+    `parts.slot_width = w`.
+
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)

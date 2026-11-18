@@ -947,7 +947,7 @@ An upserted value column restyles the points on the next draw.
 
 #### Vector fields
 
-`DataRenderType::Vector { components, style }` draws one arrow per sample.
+`DataRenderType::Vector(VectorSeries { components, style })` draws one arrow per sample.
 `components` names where the (u, v) components come from; the series'
 `x_column` / `y_column` stay the anchors, as for every other render type:
 
@@ -1039,7 +1039,7 @@ and the colour column.
 
 #### Streamlines
 
-`DataRenderType::Streamlines { line, arrows, color_map }` draws the
+`DataRenderType::Streamlines(StreamlineSeries { line, arrows, color_map })` draws the
 streamlines of a flow, electric or magnetic field. The host integrates the
 field into paths. The series' `x_column` / `y_column` hold every streamline
 one after another, with a NaN row between two streamlines; the line breaks
@@ -1244,7 +1244,7 @@ raised centre of an odd column.
 
 #### Colour images (imshow)
 
-`DataRenderType::RgbImage { red, green, blue, range, shading, opacity }`
+`DataRenderType::RgbImage(RgbImageSeries { red, green, blue, range, shading, opacity })`
 ([#139](https://github.com/shim9610/figgy/issues/139)) draws three matrices
 as one colour image: `red`, `green` and `blue` are `MatrixRef`s on one
 lattice (the series' coordinate columns; the three share their column count,
@@ -1398,7 +1398,7 @@ and, after a later shortening, not drawn.
 
 #### Parallel coordinates
 
-`DataRenderType::Parallel { columns, line, color_column }`
+`DataRenderType::Parallel(ParallelSeries { columns, line, color_column })`
 ([#141](https://github.com/shim9610/figgy/issues/141)) draws a multivariate
 table as parallel coordinates on a chart with
 [`Config.parallel`](#paralleloptions-configparallel): `columns` names one
@@ -2043,7 +2043,7 @@ pub struct Config {
 
 #### 벡터장
 
-`DataRenderType::Vector { components, style }`는 표본마다 화살표 하나를 그린다. `components`는 (u, v) 성분을 읽을 곳이며, 다른 종류와 마찬가지로 시리즈의 `x_column` / `y_column`이 기준점이다.
+`DataRenderType::Vector(VectorSeries { components, style })`는 표본마다 화살표 하나를 그린다. `components`는 (u, v) 성분을 읽을 곳이며, 다른 종류와 마찬가지로 시리즈의 `x_column` / `y_column`이 기준점이다.
 
 - `VectorComponents::Points { u, v, w }`: 기준점과 인덱스가 맞는 값 컬럼. 인덱스마다 화살표를 하나 그리며, 개수는 네 컬럼(`VectorColorMap::Column`이 있으면 다섯 컬럼) 중 가장 짧은 길이다. `w: Option<ColumnId>`는 z 성분으로, 3D 차트에서만 기준점 높이 `SeriesConfig.z_column`과 함께 읽는다([3D 벡터장](#3d-벡터장) 참고). 평면 차트에서는 둘 다 보관만 하고 쓰지 않으며, `w`가 `None`이면 JSON에서 생략한다.
 - `VectorComponents::Grid { u, v }`: 히트맵 행렬과 똑같이 시리즈의 좌표 컬럼 위에 선언한 `MatrixRef` 두 개. 두 격자의 `orientation`과 `grid_layout`이 같아야 하며 다르면 거부한다. `Centers`에서는 좌표 위에, `Edges`에서는 셀 중심(두 경계의 데이터 좌표 중점이라 로그축에서는 화면 중점과 다르다)에 화살표를 놓는다. 두 격자가 공통으로 덮는 범위까지만 그리고, 짧은 히트맵 행렬처럼 잘림으로 보고한다. 같은 격자의 히트맵·등고선과 좌표 컬럼을 함께 쓸 수 있으며, 촘촘한 필드 위에 성긴 화살표를 그리려면 더 성긴 좌표 컬럼을 따로 등록한다.
@@ -2078,7 +2078,7 @@ pub struct Config {
 
 #### 유선
 
-`DataRenderType::Streamlines { line, arrows, color_map }`은 유동장, 전기장, 자기장의 유선을 그린다. 장을 적분해 경로를 만드는 일은 호스트가 맡는다. 시리즈의 `x_column` / `y_column`에 모든 유선을 차례로 담고, 유선 사이에는 NaN 행을 하나 둔다. 다른 선 시리즈처럼 NaN에서 선이 끊긴다.
+`DataRenderType::Streamlines(StreamlineSeries { line, arrows, color_map })`은 유동장, 전기장, 자기장의 유선을 그린다. 장을 적분해 경로를 만드는 일은 호스트가 맡는다. 시리즈의 `x_column` / `y_column`에 모든 유선을 차례로 담고, 유선 사이에는 NaN 행을 하나 둔다. 다른 선 시리즈처럼 NaN에서 선이 끊긴다.
 
 - `line: DataLineStyleConfig`은 그리는 선이다. 색, 두께, 점선 형식을 그대로 쓰며 `interpolation`은 `Linear`, `fill`은 `None`이어야 한다.
 - `arrows: Option<StreamlineArrows>`가 있으면 그린 경로를 따라 `spacing_px`마다 벡터 글리프의 머리를 하나씩 놓는다. 위치는 시리즈 전체의 화면 호 길이로 재며, 첫 머리는 첫 점에서 간격의 절반만큼 떨어진 곳에 있다. 머리는 그 자리에서 경로의 접선 방향을 가리키고, 길이 `head_length_px`, 폭 `head_width_px`로 위치를 가운데에 두고 그린다. 세 값 모두 논리 픽셀이며 출력 배율이 적용된다. `spacing_px`는 0보다 크고 `head_length_px` 이상이어야 한다. 머리는 점선처럼 그린 선에 딸린 모양이다. 이동이나 확대로 경로의 화면 길이가 바뀌면 머리도 경로를 따라 옮겨 픽셀 간격을 유지하며, NaN 구간에는 머리가 없다. 머리는 선 아래에 그린다.
@@ -2090,7 +2090,7 @@ pub struct Config {
 
 #### 평행 좌표
 
-`DataRenderType::Parallel { columns, line, color_column }`([#141](https://github.com/shim9610/figgy/issues/141))은 `Config.parallel`이 있는 차트에서 다변량 표를 평행 좌표로 그린다. `Config.parallel`은 `ParallelOptions { axes }`이며 `bottom_x`의 범주마다 축 하나(`ParallelAxis { min, max, inverted, scale, label_offset }`)를 그 범주 자리에 세로로 세운다. `columns`는 축 순서대로 등록된 컬럼 하나씩이고(`x_column`·`y_column`은 그 첫 둘), 행 `r`은 축마다 `(v_i − min_i) / (max_i − min_i)`(로그 축은 `log10`, `inverted`면 뒤집음)에 놓인 점을 잇는 꺾은선이다. 호버·선택·보고 값은 원래 컬럼 값이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. 그리는 행 수는 가장 짧은 컬럼(색 컬럼 포함)이 정한다.
+`DataRenderType::Parallel(ParallelSeries { columns, line, color_column })`([#141](https://github.com/shim9610/figgy/issues/141))은 `Config.parallel`이 있는 차트에서 다변량 표를 평행 좌표로 그린다. `Config.parallel`은 `ParallelOptions { axes }`이며 `bottom_x`의 범주마다 축 하나(`ParallelAxis { min, max, inverted, scale, label_offset }`)를 그 범주 자리에 세로로 세운다. `columns`는 축 순서대로 등록된 컬럼 하나씩이고(`x_column`·`y_column`은 그 첫 둘), 행 `r`은 축마다 `(v_i − min_i) / (max_i − min_i)`(로그 축은 `log10`, `inverted`면 뒤집음)에 놓인 점을 잇는 꺾은선이다. 호버·선택·보고 값은 원래 컬럼 값이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. 그리는 행 수는 가장 짧은 컬럼(색 컬럼 포함)이 정한다.
 
 - `line`은 행의 색과 굵기다. 실선·직선·채움 없음이어야 한다.
 - `color_column`이 있으면 행마다 그 컬럼 값을 `Config.colorbar`의 색으로 입힌다(색상 막대가 없으면 거부). 없으면 모든 행이 `line.line_color`다.

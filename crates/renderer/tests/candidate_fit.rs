@@ -9,7 +9,7 @@ use renderer::config::{AxisOptions, Config};
 use renderer::data_config::{MatrixRef, VectorScale};
 use renderer::{
     CellRef, Chart, Color, DataRenderType, FIT_RANGES_PADDING, FiggyError, FitAxes, FitAxis,
-    FitAxisRef, FitScope, LayerRef, LinkedFitData, Renderer, RuleKind, SeriesConfig,
+    FitAxisRef, FitScope, LayerRef, LinkedFitData, Renderer, RuleKind, SeriesConfig, VectorSeries,
 };
 
 /// A headless renderer with columns of eleven values: `t` 0..10, `a`
@@ -301,7 +301,7 @@ fn fit_point_size_domain_takes_the_size_column_extent() {
 /// The scale value of a vector series.
 fn scale_of(series: &SeriesConfig) -> f64 {
     match &series.render_type {
-        DataRenderType::Vector { style, .. } => match style.scale {
+        DataRenderType::Vector(VectorSeries { style, .. }) => match style.scale {
             VectorScale::Pixels { px_per_unit } => px_per_unit,
             VectorScale::Data { factor } => factor,
         },
@@ -323,7 +323,7 @@ fn fit_vector_scale_targets_the_longest_vector() {
     let longest = 30f64.hypot(1.0);
     assert!((scale_of(&points) - 24.0 / longest).abs() < 1e-12);
     let mut expected = before.clone();
-    if let DataRenderType::Vector { style, .. } = &mut expected.render_type {
+    if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut expected.render_type {
         style.scale = VectorScale::Pixels {
             px_per_unit: scale_of(&points),
         };

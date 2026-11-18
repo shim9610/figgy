@@ -17,7 +17,7 @@ A ternary series names three columns: `x_column`, `y_column` and
 use renderer::{
     Chart, Color, Renderer, ScatterShape, SeriesConfig, TernaryOptions,
     data::Column,
-    data_config::{DataRenderType, DataScatterStyleConfig},
+    data_config::{DataRenderType, DataScatterStyleConfig, TernarySeries},
     default,
     layout::{ChartArea, Rect},
 };
@@ -47,7 +47,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         x_column: "fe".into(), // x: the bottom-left corner
         y_column: "ni".into(), // y: the top corner
         z_column: None,
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "cr".into(), // c: the bottom-right corner
             scatter: Some(DataScatterStyleConfig {
                 point_color: Color::from_rgb8(40, 90, 200),
@@ -61,7 +61,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
             }),
             line: None,
             region: None, // Some(TernaryRegionStyle { .. }) fills the polygons the samples outline
-        },
+        }),
     }];
     let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0))?;
     std::fs::write("ternary.png", renderer::encode_png(&image)?)?;

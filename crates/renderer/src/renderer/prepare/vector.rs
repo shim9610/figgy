@@ -224,7 +224,9 @@ impl PrepareContext<'_> {
                 epochs
                     .try_reserve_exact(1)
                     .map_err(alloc("vector source epochs"))?;
-                if let Some(map) = streamline.and_then(|(streamlines, _)| streamlines.color_map) {
+                if let Some(map) =
+                    streamline.and_then(|(streamlines, _)| streamlines.color_map.as_ref())
+                {
                     let c_h = handle(&map.column)?;
                     params.c_base = lane(&c_h)?;
                     params.c_len = len32(&c_h);

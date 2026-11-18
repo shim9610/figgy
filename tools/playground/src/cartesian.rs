@@ -10,8 +10,10 @@ use renderer::config::{
     MilkywayOptions, ProbabilityScale, SketchOptions,
 };
 use renderer::data_config::{
-    BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
-    SeriesConfig, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
+    BarOrientation, BoxSeries, CategoryBarSeries, DataRenderType, HistogramSeries, LineFill,
+    LineInterpolation, ParallelSeries, PointColorMap, PointSizeMap, RadarPolygonSeries,
+    RangeBarSeries, RgbImageSeries, SeriesConfig, Shading, SizeScale, StreamlineSeries,
+    TernarySeries, VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorSeries,
     VectorStyle,
 };
 use renderer::layout::ChartArea;
@@ -1848,21 +1850,21 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
                 (true, true, true) => "line+scatter+errors",
             }
         }
-        DataRenderType::Histogram { .. } => "histogram",
-        DataRenderType::CategoryBars { .. } => "category bars",
-        DataRenderType::BoxPlot { .. } => "box plot",
-        DataRenderType::RangeBars { .. } => "range bars",
-        DataRenderType::Ternary { .. } => "ternary",
-        DataRenderType::Radar { .. } => "radar",
-        DataRenderType::RgbImage { .. } => "image",
+        DataRenderType::Histogram(_) => "histogram",
+        DataRenderType::CategoryBars(_) => "category bars",
+        DataRenderType::BoxPlot(_) => "box plot",
+        DataRenderType::RangeBars(_) => "range bars",
+        DataRenderType::Ternary(_) => "ternary",
+        DataRenderType::Radar(_) => "radar",
+        DataRenderType::RgbImage(_) => "image",
         DataRenderType::Field(field) => match (field.fill.is_some(), field.contour.is_some()) {
             (_, false) => "heatmap",
             (false, true) => "contour",
             (true, true) => "heatmap+contour",
         },
-        DataRenderType::Vector { .. } => "vector",
-        DataRenderType::Streamlines { .. } => "streamlines",
-        DataRenderType::Parallel { .. } => "parallel",
+        DataRenderType::Vector(_) => "vector",
+        DataRenderType::Streamlines(_) => "streamlines",
+        DataRenderType::Parallel(_) => "parallel",
         DataRenderType::EnergyLevels(_) => "energy levels",
         DataRenderType::TriMesh(mesh) => match (mesh.fill.is_some(), mesh.contour.is_some()) {
             (_, false) => "triangle mesh",
@@ -1999,10 +2001,10 @@ fn series_columns(s: &SeriesConfig) -> Vec<String> {
 
 /// The component and colour columns of a point vector series.
 fn vector_point_columns(t: &DataRenderType) -> Option<(&String, &String, Option<&String>)> {
-    let DataRenderType::Vector {
+    let DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Points { u, v, .. },
         style,
-    } = t
+    }) = t
     else {
         return None;
     };
@@ -2193,7 +2195,7 @@ fn series_controls(
         }
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
-        DataRenderType::Parallel { line, .. } => line_controls(ui, line),
+        DataRenderType::Parallel(ParallelSeries { line, .. }) => line_controls(ui, line),
         // A monotonic line (#271) is linear without a fill: its colour,
         // width and dash. A width that widens the columns its stroke
         // reaches from asks for the samples again.
@@ -2233,7 +2235,7 @@ fn series_controls(
             );
         }
         // The markers and the line of a ternary series, whichever it draws.
-        DataRenderType::Ternary { scatter, line, .. } => {
+        DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
             if let Some(scatter) = scatter {
                 scatter_controls(ui, scatter, columns, r);
             }
@@ -2241,7 +2243,7 @@ fn series_controls(
                 line_controls(ui, line);
             }
         }
-        DataRenderType::Histogram { bar } => {
+        DataRenderType::Histogram(HistogramSeries { bar }) => {
             color(ui, "fill", &mut bar.fill_color);
             color(ui, "border", &mut bar.border_color);
             slider(ui, "border width", &mut bar.border_width, 0.0..=4.0);
@@ -2269,9 +2271,9 @@ fn series_controls(
         }
         // The direction and stacking are the chart's (`Config::bar_groups`),
         // shared by every bar series of the panel.
-        DataRenderType::CategoryBars {
+        DataRenderType::CategoryBars(CategoryBarSeries {
             color: fill, style, ..
-        } => {
+        }) => {
             color(ui, "fill", fill);
             slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
             ui.checkbox(&mut style.outline, "outline");
@@ -2280,9 +2282,9 @@ fn series_controls(
         }
         // The direction, group width and gap are the chart's
         // (`Config::bar_groups`), shared by the panel's box plot series.
-        DataRenderType::BoxPlot {
+        DataRenderType::BoxPlot(BoxSeries {
             color: fill, style, ..
-        } => {
+        }) => {
             color(ui, "fill", fill);
             choice(ui, "material", &mut style.material, FLAT_BODY_MATERIALS);
             ui.checkbox(&mut style.notched, "notched");
@@ -2296,13 +2298,13 @@ fn series_controls(
         }
         // The direction, group width and gap are the chart's
         // (`Config::bar_groups`); the columns are the scene's.
-        DataRenderType::RangeBars {
+        DataRenderType::RangeBars(RangeBarSeries {
             color: fill,
             style,
             whiskers,
             connector,
             ..
-        } => {
+        }) => {
             color(ui, "fill", fill);
             slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
             ui.checkbox(&mut style.outline, "outline");
@@ -2318,9 +2320,9 @@ fn series_controls(
         }
         // The grid shape, the spoke direction and the rings are the polar
         // chart's (the "Chart" section); the look is the series'.
-        DataRenderType::Radar {
+        DataRenderType::Radar(RadarPolygonSeries {
             color: c, style, ..
-        } => {
+        }) => {
             color(ui, "colour", c);
             let mut width = style.line_width();
             slider(ui, "line width", &mut width, 0.0..=12.0);
@@ -2372,12 +2374,12 @@ fn series_controls(
         }
         // An image's channels are its data; its look is the opacity and the
         // shading, and the range the bytes map through.
-        DataRenderType::RgbImage {
+        DataRenderType::RgbImage(RgbImageSeries {
             range,
             shading,
             opacity,
             ..
-        } => {
+        }) => {
             slider(ui, "opacity", opacity, 0.0..=1.0);
             choice(
                 ui,
@@ -2391,12 +2393,12 @@ fn series_controls(
                 ui.add(egui::DragValue::new(&mut range[1]).speed(0.5));
             });
         }
-        DataRenderType::Vector { components, style } => {
+        DataRenderType::Vector(VectorSeries { components, style }) => {
             vector_controls(ui, components, style, columns);
         }
         // The paths are the host's; the look is the line's and the heads'.
         // Interpolation and fill stay off: streamlines are plain polylines.
-        DataRenderType::Streamlines { line, arrows, .. } => {
+        DataRenderType::Streamlines(StreamlineSeries { line, arrows, .. }) => {
             color(ui, "line colour", &mut line.line_color);
             slider(ui, "line width", &mut line.line_width, 0.5..=10.0);
             choice(ui, "dash", &mut line.line_style, widgets::LINE_STYLES);
@@ -2578,7 +2580,7 @@ fn layer_columns<'a>(
         .filter(|s| {
             !matches!(
                 s.render_type,
-                DataRenderType::Field(_) | DataRenderType::RgbImage { .. }
+                DataRenderType::Field(_) | DataRenderType::RgbImage(_)
             )
         })
         .collect();

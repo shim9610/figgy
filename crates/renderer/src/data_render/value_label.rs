@@ -14,7 +14,10 @@
 //! bake's cell widths.
 
 use super::*;
-use crate::data_config::{BoxPlotLabels, CategoryBarLabels, DataRenderType, RadarLabels};
+use crate::data_config::{
+    BoxPlotLabels, BoxSeries, CategoryBarLabels, CategoryBarSeries, DataRenderType, RadarLabels,
+    RadarPolygonSeries, RangeBarSeries,
+};
 
 /// Vertices per label: one quad (`VALUE_LABEL_VERTICES`).
 pub const VALUE_LABEL_VERTICES: u32 = 6;
@@ -181,9 +184,9 @@ pub(crate) fn value_label_kind(
     selected: bool,
 ) -> Option<(u32, &[String])> {
     let kind = match render_type {
-        DataRenderType::CategoryBars {
+        DataRenderType::CategoryBars(CategoryBarSeries {
             labels, overrides, ..
-        } => {
+        }) => {
             let any = labels.placement != CategoryBarLabels::None
                 || overrides.as_deref().unwrap_or(&[]).iter().any(|o| {
                     o.labels
@@ -191,9 +194,9 @@ pub(crate) fn value_label_kind(
                 });
             any.then_some((VALUE_LABEL_KIND_BARS, labels.text.as_slice()))
         }
-        DataRenderType::BoxPlot {
+        DataRenderType::BoxPlot(BoxSeries {
             labels, overrides, ..
-        } => {
+        }) => {
             let any = labels.placement != BoxPlotLabels::None
                 || overrides.as_deref().unwrap_or(&[]).iter().any(|o| {
                     o.labels
@@ -201,9 +204,10 @@ pub(crate) fn value_label_kind(
                 });
             any.then_some((VALUE_LABEL_KIND_BOXES, labels.text.as_slice()))
         }
-        DataRenderType::RangeBars { labels, .. } => (labels.placement != CategoryBarLabels::None)
+        DataRenderType::RangeBars(RangeBarSeries { labels, .. }) => (labels.placement
+            != CategoryBarLabels::None)
             .then_some((VALUE_LABEL_KIND_RANGE, labels.text.as_slice())),
-        DataRenderType::Radar { labels, .. } => {
+        DataRenderType::Radar(RadarPolygonSeries { labels, .. }) => {
             let shown = match labels.placement {
                 RadarLabels::None => false,
                 RadarLabels::Values => true,
@@ -228,10 +232,10 @@ fn label_placement(render_type: &DataRenderType, category_id: Option<&str>) -> O
         CategoryBarLabels::Auto => Some(VALUE_LABEL_AUTO),
     };
     match render_type {
-        DataRenderType::RangeBars { labels, .. } => bar_placement(labels.placement),
-        DataRenderType::CategoryBars {
+        DataRenderType::RangeBars(RangeBarSeries { labels, .. }) => bar_placement(labels.placement),
+        DataRenderType::CategoryBars(CategoryBarSeries {
             labels, overrides, ..
-        } => {
+        }) => {
             let placement = overrides
                 .as_deref()
                 .unwrap_or(&[])
@@ -241,9 +245,9 @@ fn label_placement(render_type: &DataRenderType, category_id: Option<&str>) -> O
                 .unwrap_or(labels.placement);
             bar_placement(placement)
         }
-        DataRenderType::BoxPlot {
+        DataRenderType::BoxPlot(BoxSeries {
             labels, overrides, ..
-        } => {
+        }) => {
             let placement = overrides
                 .as_deref()
                 .unwrap_or(&[])
@@ -253,7 +257,7 @@ fn label_placement(render_type: &DataRenderType, category_id: Option<&str>) -> O
                 .unwrap_or(labels.placement);
             (placement != BoxPlotLabels::None).then_some(VALUE_LABEL_OUTSIDE)
         }
-        DataRenderType::Radar { .. } => Some(VALUE_LABEL_OUTSIDE),
+        DataRenderType::Radar(_) => Some(VALUE_LABEL_OUTSIDE),
         _ => None,
     }
 }
@@ -331,7 +335,7 @@ pub(crate) fn radar_label_gap(font_px: f32, scale: f32) -> f32 {
 /// pixels: its marker's circumradius (half the size of a circle, half the
 /// diagonal of a square), or half the outline width without a marker or
 /// with a thinner one. A label keeps its gap past it.
-pub(crate) fn radar_marker_reach(radar: &crate::data_config::RadarRef<'_>) -> f32 {
+pub(crate) fn radar_marker_reach(radar: &crate::data_config::RadarPolygonSeries) -> f32 {
     let half = radar.style.marker_size() * 0.5;
     let marker = match radar.style.marker() {
         crate::data_config::RadarMarker::None => 0.0,

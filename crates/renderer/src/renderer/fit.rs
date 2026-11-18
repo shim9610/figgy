@@ -299,16 +299,16 @@ pub(super) fn build_fit_token_from_state(
             push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_V, v)?;
         }
         let params = match &item.render_type {
-            DataRenderType::Vector {
+            DataRenderType::Vector(VectorSeries {
                 components: crate::data_config::VectorComponents::Points { .. },
                 style,
-            } => match style.scale {
+            }) => match style.scale {
                 crate::data_config::VectorScale::Data { factor } => FitExtentParams::VectorTips {
                     factor_bits: factor.to_bits(),
                 },
                 crate::data_config::VectorScale::Pixels { .. } => FitExtentParams::Columns,
             },
-            DataRenderType::Histogram { bar } => FitExtentParams::Histogram {
+            DataRenderType::Histogram(HistogramSeries { bar }) => FitExtentParams::Histogram {
                 baseline_bits: bar.baseline.to_bits(),
                 orientation: match bar.orientation {
                     crate::data_config::BarOrientation::Vertical => 0,
@@ -1288,7 +1288,8 @@ impl Renderer {
                     }
                 }
                 for item in &state.series {
-                    let DataRenderType::Histogram { bar } = &item.render_type else {
+                    let DataRenderType::Histogram(HistogramSeries { bar }) = &item.render_type
+                    else {
                         continue;
                     };
                     let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
@@ -1726,7 +1727,7 @@ impl Renderer {
             kind,
         };
         let three_d = config.drawn_z_column(series).is_some();
-        let DataRenderType::Vector { components, style } = &series.render_type else {
+        let DataRenderType::Vector(VectorSeries { components, style }) = &series.render_type else {
             return Err(refuse(series, crate::RuleKind::VectorFitNotVector));
         };
         if !target.is_finite() || target <= 0.0 {
@@ -1759,7 +1760,7 @@ impl Renderer {
         if !fits {
             return Err(refuse(series, crate::RuleKind::VectorFitExtent));
         }
-        if let DataRenderType::Vector { style, .. } = &mut series.render_type {
+        if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut series.render_type {
             *style = fitted;
         }
         Ok(())
@@ -1784,10 +1785,10 @@ fn point_size_map_mut(series: &mut SeriesConfig) -> Option<&mut crate::data_conf
             scatter: Some(scatter),
             ..
         })
-        | DataRenderType::Ternary {
+        | DataRenderType::Ternary(TernarySeries {
             scatter: Some(scatter),
             ..
-        } => scatter.point_size_map.as_mut(),
+        }) => scatter.point_size_map.as_mut(),
         _ => None,
     }
 }

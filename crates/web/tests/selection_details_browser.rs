@@ -2,7 +2,7 @@
 
 use figgy::FiggyChart;
 use renderer::{
-    Color, DataRenderType, SeriesConfig,
+    Color, DataRenderType, HistogramSeries, SeriesConfig, VectorSeries,
     config::{DataSelectionsConfig, PickedDataRef},
     data_config::{
         BarOrientation, DataBarStyleConfig, VectorComponents, VectorPivot, VectorScale, VectorStyle,
@@ -41,7 +41,7 @@ fn histogram(id: &str, edges: &str, values: &str, orientation: BarOrientation) -
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -52,7 +52,7 @@ fn histogram(id: &str, edges: &str, values: &str, orientation: BarOrientation) -
                 orientation,
                 bar_style_overrides: None,
             },
-        },
+        }),
     }
 }
 
@@ -173,7 +173,7 @@ async fn point_vector_selection_steps_along_its_anchors() {
         x_column: "vx".into(),
         y_column: "vy".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points {
                 u: "vu".into(),
                 v: "vv".into(),
@@ -189,7 +189,7 @@ async fn point_vector_selection_steps_along_its_anchors() {
                 min_length_px: 0.0,
                 color_map: None,
             },
-        },
+        }),
     }];
     chart
         .set_series(&serde_json::to_string(&series).unwrap())

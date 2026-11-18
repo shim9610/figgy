@@ -2,7 +2,7 @@
 
 use renderer::{
     Color, DataRenderType, DataScatterStyleConfig, GpuPickRequest, Renderer, RendererDevice,
-    ScatterShape, SeriesConfig,
+    ScatterShape, SeriesConfig, StreamlineSeries,
     config::DrawStyle,
     data::Column,
     default,
@@ -162,14 +162,14 @@ async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
         x_column: "sl-x".into(),
         y_column: "sl-y".into(),
         z_column: None,
-        render_type: DataRenderType::Streamlines {
+        render_type: DataRenderType::Streamlines(StreamlineSeries {
             line: renderer::DataLineStyleConfig {
                 line_width: 2.0,
                 ..renderer::DataLineStyleConfig::default()
             },
             arrows: Some(renderer::StreamlineArrows::default()),
             color_map: None,
-        },
+        }),
     }];
     let json = serde_json::to_string(&series).expect("series serialization failed");
     chart

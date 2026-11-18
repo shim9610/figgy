@@ -140,10 +140,10 @@ impl SeriesConfig {
     /// radar series (`labels.offsets`), or `None` for every other kind.
     pub fn value_label_offsets(&self) -> Option<&[[f32; 2]]> {
         match &self.render_type {
-            DataRenderType::CategoryBars { labels, .. } => Some(&labels.offsets),
-            DataRenderType::BoxPlot { labels, .. } => Some(&labels.offsets),
-            DataRenderType::RangeBars { labels, .. } => Some(&labels.offsets),
-            DataRenderType::Radar { labels, .. } => Some(&labels.offsets),
+            DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) => Some(&labels.offsets),
+            DataRenderType::BoxPlot(BoxSeries { labels, .. }) => Some(&labels.offsets),
+            DataRenderType::RangeBars(RangeBarSeries { labels, .. }) => Some(&labels.offsets),
+            DataRenderType::Radar(RadarPolygonSeries { labels, .. }) => Some(&labels.offsets),
             _ => None,
         }
     }
@@ -152,10 +152,10 @@ impl SeriesConfig {
     /// series' value labels (`labels.text`), or `None` for every other kind.
     pub fn value_label_text(&self) -> Option<&[String]> {
         match &self.render_type {
-            DataRenderType::CategoryBars { labels, .. } => Some(&labels.text),
-            DataRenderType::BoxPlot { labels, .. } => Some(&labels.text),
-            DataRenderType::RangeBars { labels, .. } => Some(&labels.text),
-            DataRenderType::Radar { labels, .. } => Some(&labels.text),
+            DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) => Some(&labels.text),
+            DataRenderType::BoxPlot(BoxSeries { labels, .. }) => Some(&labels.text),
+            DataRenderType::RangeBars(RangeBarSeries { labels, .. }) => Some(&labels.text),
+            DataRenderType::Radar(RadarPolygonSeries { labels, .. }) => Some(&labels.text),
             _ => None,
         }
     }
@@ -191,10 +191,10 @@ impl SeriesConfig {
         use crate::layout::{NudgeReject, NudgeResult};
         let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
         let offsets = match &mut self.render_type {
-            DataRenderType::CategoryBars { labels, .. } => &mut labels.offsets,
-            DataRenderType::BoxPlot { labels, .. } => &mut labels.offsets,
-            DataRenderType::RangeBars { labels, .. } => &mut labels.offsets,
-            DataRenderType::Radar { labels, .. } => &mut labels.offsets,
+            DataRenderType::CategoryBars(CategoryBarSeries { labels, .. }) => &mut labels.offsets,
+            DataRenderType::BoxPlot(BoxSeries { labels, .. }) => &mut labels.offsets,
+            DataRenderType::RangeBars(RangeBarSeries { labels, .. }) => &mut labels.offsets,
+            DataRenderType::Radar(RadarPolygonSeries { labels, .. }) => &mut labels.offsets,
             _ => return reject,
         };
         if index >= categories || !dx.is_finite() || !dy.is_finite() {
@@ -348,33 +348,47 @@ impl BarGroups {
     }
 }
 
-/// The fields of a [`DataRenderType::CategoryBars`] series, borrowed.
-#[derive(Clone, Copy, Debug)]
-pub struct CategoryBarsRef<'a> {
+/// The fields of a [`DataRenderType::CategoryBars`] series.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CategoryBarSeries {
+    /// The fill colour of the series' bars, opaque.
     pub color: Color,
-    pub style: &'a CategoryBarStyle,
-    pub labels: &'a CategoryBarSeriesLabels,
+    /// The look of the bars: material, corner radius, outline, texture,
+    /// gloss and the brightness of a picked bar.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::category_bar_style")
+    )]
+    pub style: CategoryBarStyle,
+    /// Where the value labels go, how values are written and the drawn
+    /// text of each bar.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::category_bar_series_labels")
+    )]
+    pub labels: CategoryBarSeriesLabels,
+    /// What a value label says.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::category_bar_label_format")
+    )]
     pub label_format: CategoryBarLabelFormat,
-    pub overrides: &'a [CategoryBarOverride],
+    /// Sparse per-bar overrides, keyed by category id and this series'
+    /// id. At most one per bar; an override's `style` replaces the
+    /// series' style whole.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub overrides: Option<Vec<CategoryBarOverride>>,
 }
 
 impl DataRenderType {
     /// The fields of a category bar series, or `None` for every other kind.
-    pub fn category_bars(&self) -> Option<CategoryBarsRef<'_>> {
+    pub fn category_bars(&self) -> Option<&CategoryBarSeries> {
         match self {
-            DataRenderType::CategoryBars {
-                color,
-                style,
-                labels,
-                label_format,
-                overrides,
-            } => Some(CategoryBarsRef {
-                color: *color,
-                style,
-                labels,
-                label_format: *label_format,
-                overrides: overrides.as_deref().unwrap_or(&[]),
-            }),
+            DataRenderType::CategoryBars(bars) => Some(bars),
             _ => None,
         }
     }
@@ -424,10 +438,11 @@ pub fn validate_category_bar_series(
     {
         return Err(crate::RuleKind::BarLabel);
     }
-    for (index, o) in bars.overrides.iter().enumerate() {
+    let overrides = bars.overrides.as_deref().unwrap_or_default();
+    for (index, o) in overrides.iter().enumerate() {
         if o.target.series_id != series.series_id
             || !categories.iter().any(|c| c.id == o.target.category_id)
-            || bars.overrides[..index].iter().any(|e| e.target == o.target)
+            || overrides[..index].iter().any(|e| e.target == o.target)
         {
             return Err(crate::RuleKind::BarOverride);
         }
@@ -601,12 +616,12 @@ pub fn format_labels(
     let mut k = 0;
     for item in series.iter_mut() {
         let series_id = item.series_id.clone();
-        let DataRenderType::CategoryBars {
+        let DataRenderType::CategoryBars(CategoryBarSeries {
             labels,
             label_format,
             overrides,
             ..
-        } = &mut item.render_type
+        }) = &mut item.render_type
         else {
             continue;
         };

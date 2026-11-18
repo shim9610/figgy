@@ -15,7 +15,9 @@
 use crate::LayerRef;
 use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LegendEntryKind};
-use crate::data_config::{BarOrientation, DataRenderType, SeriesConfig};
+use crate::data_config::{
+    BarOrientation, DataRenderType, HistogramSeries, SeriesConfig, VectorSeries,
+};
 use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
@@ -549,8 +551,8 @@ pub fn range_bar_extents(
         return Ok((value, position, groups.direction));
     };
     value.union(&Chart::slot_extent(pool, &item.y_column)?);
-    value.union(&Chart::slot_extent(pool, bars.start)?);
-    if let Some(w) = bars.whiskers {
+    value.union(&Chart::slot_extent(pool, &bars.start)?);
+    if let Some(w) = &bars.whiskers {
         value.union(&Chart::slot_extent(pool, &w.low)?);
         value.union(&Chart::slot_extent(pool, &w.high)?);
     }
@@ -645,7 +647,7 @@ pub fn box_plot_value_extent(
             }
         }
         // The raw points' values.
-        if let Some(points) = boxes.points
+        if let Some(points) = &boxes.points
             && let Some(slot) = pool.slot(&points.values)
         {
             include(slot.min, slot.max);
@@ -1542,7 +1544,7 @@ impl Chart {
                     y.union(&member_y);
                 }
             }
-            if let DataRenderType::Histogram { bar } = &cfg.render_type {
+            if let DataRenderType::Histogram(HistogramSeries { bar }) = &cfg.render_type {
                 let baseline = FitExtent {
                     min: bar.baseline,
                     max: bar.baseline,
@@ -1779,10 +1781,10 @@ impl Chart {
         anchors: &FitExtent,
     ) -> Result<Option<FitExtent>> {
         use crate::data_config::{VectorComponents, VectorScale};
-        let DataRenderType::Vector {
+        let DataRenderType::Vector(VectorSeries {
             components: VectorComponents::Points { w: Some(w), .. },
             style,
-        } = &cfg.render_type
+        }) = &cfg.render_type
         else {
             return Ok(None);
         };

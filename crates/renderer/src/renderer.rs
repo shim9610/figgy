@@ -85,8 +85,9 @@ use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
     DataBarBinStyleConfig, DataBarStyleConfig, DataErrorBarPointStyleConfig,
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, ScatterShape, SeriesConfig,
-    SizeScale,
+    DataScatterStyleConfig, ErrorRef, HistogramSeries, LineFill, LineInterpolation, ParallelSeries,
+    RgbImageSeries, ScatterShape, SeriesConfig, SizeScale, StreamlineSeries, TernarySeries,
+    VectorSeries,
 };
 use crate::data_render::{
     self, AxisLayer, BatchSource, ColumnBarSelectionLayer, ColumnErrorBarDraw,

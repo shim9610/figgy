@@ -19,7 +19,10 @@ fn settle_gpu_retirement(renderer: &mut Renderer) {
     }
 }
 use crate::data::Column;
-use crate::data_config::{DataErrorBarPointStyleOverride, DataScatterPointStyleOverride};
+use crate::data_config::{
+    BoxSeries, CategoryBarSeries, DataErrorBarPointStyleOverride, DataScatterPointStyleOverride,
+    RadarPolygonSeries, RangeBarSeries,
+};
 
 #[test]
 fn every_line_preset_packs_without_gpu_dash_truncation() {
@@ -1009,11 +1012,11 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
                 x_column: "cat".into(),
                 y_column: "radius".into(),
                 z_column: None,
-                render_type: DataRenderType::Radar {
+                render_type: DataRenderType::Radar(RadarPolygonSeries {
                     color: Color::BLACK,
                     style: Default::default(),
                     labels: Default::default(),
-                },
+                }),
             }],
         )
         .unwrap();
@@ -1072,7 +1075,7 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
                 x_column: "edges".into(),
                 y_column: "counts".into(),
                 z_column: None,
-                render_type: DataRenderType::Histogram {
+                render_type: DataRenderType::Histogram(HistogramSeries {
                     bar: crate::data_config::DataBarStyleConfig {
                         fill_color: Color::BLACK,
                         border_color: Color::BLACK,
@@ -1083,7 +1086,7 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
                         orientation: crate::data_config::BarOrientation::Vertical,
                         bar_style_overrides: None,
                     },
-                },
+                }),
             }],
         )
         .unwrap();
@@ -1167,7 +1170,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
         x_column: "edges".into(),
         y_column: "counts".into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -1178,7 +1181,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
     };
     let chart = renderer
         .register_chart(config.clone(), vec![series])
@@ -1223,7 +1226,7 @@ fn typed_gpu_pick_uses_the_overridden_histogram_width() {
         x_column: "edges".into(),
         y_column: "counts".into(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -1240,7 +1243,7 @@ fn typed_gpu_pick_uses_the_overridden_histogram_width() {
                     },
                 }]),
             },
-        },
+        }),
     };
     let chart = renderer
         .register_chart(config.clone(), vec![series])
@@ -2995,7 +2998,7 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
         labels: None,
     };
     let unpaired = [
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -3006,7 +3009,7 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
         DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix.clone(),
             fill: Some(fill.clone()),
@@ -3113,7 +3116,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
         stem: None,
     });
     let precise_only = [
-        DataRenderType::Histogram {
+        DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::BLACK,
                 border_color: Color::BLACK,
@@ -3124,7 +3127,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 orientation: crate::data_config::BarOrientation::Vertical,
                 bar_style_overrides: None,
             },
-        },
+        }),
         DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix.clone(),
             fill: Some(fill.clone()),
@@ -5208,7 +5211,7 @@ fn state_test_histogram(
         x_column: x.to_string(),
         y_column: y.to_string(),
         z_column: None,
-        render_type: DataRenderType::Histogram {
+        render_type: DataRenderType::Histogram(HistogramSeries {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::new(0.2, 0.5, 0.8, 1.0),
                 border_color: Color::BLACK,
@@ -5219,7 +5222,7 @@ fn state_test_histogram(
                 orientation,
                 bar_style_overrides: None,
             },
-        },
+        }),
     }
 }
 
@@ -6857,7 +6860,7 @@ fn vector_points_series(id: &str) -> SeriesConfig {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Vector {
+        render_type: DataRenderType::Vector(VectorSeries {
             components: crate::data_config::VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
@@ -6873,7 +6876,7 @@ fn vector_points_series(id: &str) -> SeriesConfig {
                 min_length_px: 0.0,
                 color_map: None,
             },
-        },
+        }),
     }
 }
 
@@ -6902,13 +6905,13 @@ fn streamed_series_reject_category_bars() {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::CategoryBars {
+        render_type: DataRenderType::CategoryBars(CategoryBarSeries {
             color: Color::BLACK,
             style: Default::default(),
             labels: Default::default(),
             label_format: Default::default(),
             overrides: None,
-        },
+        }),
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
@@ -6930,7 +6933,7 @@ fn streamed_series_reject_box_plots() {
         x_column: "x".into(),
         y_column: "record".into(),
         z_column: None,
-        render_type: DataRenderType::BoxPlot {
+        render_type: DataRenderType::BoxPlot(BoxSeries {
             color: Color::BLACK,
             style: Default::default(),
             labels: Default::default(),
@@ -6938,7 +6941,7 @@ fn streamed_series_reject_box_plots() {
             overrides: None,
             violin: None,
             points: None,
-        },
+        }),
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
@@ -6960,7 +6963,7 @@ fn streamed_series_reject_range_bars() {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::RangeBars {
+        render_type: DataRenderType::RangeBars(RangeBarSeries {
             color: Color::BLACK,
             style: Default::default(),
             start: "start".into(),
@@ -6970,7 +6973,7 @@ fn streamed_series_reject_range_bars() {
             connector: None,
             slot_width: None,
             labels: Default::default(),
-        },
+        }),
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
@@ -7004,7 +7007,7 @@ fn streamed_series_reject_histograms() {
                 x_column: "x".into(),
                 y_column: "y".into(),
                 z_column: None,
-                render_type: DataRenderType::Histogram {
+                render_type: DataRenderType::Histogram(HistogramSeries {
                     bar: DataBarStyleConfig {
                         fill_color: Color::BLACK,
                         border_color: Color::BLACK,
@@ -7015,7 +7018,7 @@ fn streamed_series_reject_histograms() {
                         orientation: orientation.clone(),
                         bar_style_overrides: overrides,
                     },
-                },
+                }),
             };
             let refused = PrepareContext::validate_stream_series(&config, &series);
             assert!(
@@ -7085,7 +7088,7 @@ fn streamed_series_reject_ternary_series() {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Ternary {
+        render_type: DataRenderType::Ternary(TernarySeries {
             c_column: "c".into(),
             scatter: Some(crate::data_config::DataScatterStyleConfig {
                 point_color: Color::BLACK,
@@ -7099,7 +7102,7 @@ fn streamed_series_reject_ternary_series() {
             }),
             line: None,
             region: None,
-        },
+        }),
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
@@ -7121,7 +7124,7 @@ fn streamed_series_reject_violins_and_raw_points() {
         x_column: "x".into(),
         y_column: String::new(),
         z_column: None,
-        render_type: DataRenderType::BoxPlot {
+        render_type: DataRenderType::BoxPlot(BoxSeries {
             color: Color::BLACK,
             style: Default::default(),
             labels: Default::default(),
@@ -7138,7 +7141,7 @@ fn streamed_series_reject_violins_and_raw_points() {
                 values: "y".into(),
                 style: Default::default(),
             }),
-        },
+        }),
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
@@ -7167,11 +7170,11 @@ fn streamed_series_reject_radar() {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Radar {
+        render_type: DataRenderType::Radar(RadarPolygonSeries {
             color: Color::BLACK,
             style: Default::default(),
             labels: Default::default(),
-        },
+        }),
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
@@ -7188,13 +7191,13 @@ fn streamline_series(id: &str, color: Option<&str>) -> SeriesConfig {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Streamlines {
+        render_type: DataRenderType::Streamlines(StreamlineSeries {
             line: crate::data_config::DataLineStyleConfig::default(),
             arrows: Some(crate::data_config::StreamlineArrows::default()),
             color_map: color.map(|column| crate::data_config::PointColorMap {
                 column: column.into(),
             }),
-        },
+        }),
     }
 }
 
@@ -7209,7 +7212,8 @@ fn streamed_sources_reject_streamlines() {
         streamline_series("stream", Some("c")),
     ] {
         for arrows in [true, false] {
-            if let DataRenderType::Streamlines { arrows: a, .. } = &mut series.render_type
+            if let DataRenderType::Streamlines(StreamlineSeries { arrows: a, .. }) =
+                &mut series.render_type
                 && !arrows
             {
                 *a = None;
@@ -7265,20 +7269,20 @@ fn polar_rejects_streamlines() {
     };
     for series in [
         rejected(|s| {
-            if let DataRenderType::Streamlines { line, .. } = &mut s.render_type {
+            if let DataRenderType::Streamlines(StreamlineSeries { line, .. }) = &mut s.render_type {
                 line.interpolation = LineInterpolation::StepPost;
             }
         }),
         rejected(|s| {
-            if let DataRenderType::Streamlines { line, .. } = &mut s.render_type {
+            if let DataRenderType::Streamlines(StreamlineSeries { line, .. }) = &mut s.render_type {
                 line.fill = Some(LineFill::ToBaseline(0.0));
             }
         }),
         rejected(|s| {
-            if let DataRenderType::Streamlines {
+            if let DataRenderType::Streamlines(StreamlineSeries {
                 arrows: Some(arrows),
                 ..
-            } = &mut s.render_type
+            }) = &mut s.render_type
             {
                 arrows.spacing_px = arrows.head_length_px * 0.5;
             }
@@ -7464,7 +7468,7 @@ fn vector_scratch_is_reused_until_its_inputs_change() {
         "an unchanged chart repaints identically"
     );
 
-    let DataRenderType::Vector { style, .. } = &mut series[0].render_type else {
+    let DataRenderType::Vector(VectorSeries { style, .. }) = &mut series[0].render_type else {
         unreachable!()
     };
     style.width_px = 12.0;
@@ -16206,7 +16210,7 @@ fn whole_chart_auto_fit_fits_a_histogram_from_its_columns() {
         .add_column("counts", &col_f64(vec![5.0, 8.0]))
         .unwrap();
     let mut series = state_test_line("hist", "edges", "counts");
-    series.render_type = DataRenderType::Histogram {
+    series.render_type = DataRenderType::Histogram(HistogramSeries {
         bar: crate::data_config::DataBarStyleConfig {
             fill_color: Color::BLACK,
             border_color: Color::BLACK,
@@ -16217,7 +16221,7 @@ fn whole_chart_auto_fit_fits_a_histogram_from_its_columns() {
             orientation: crate::data_config::BarOrientation::Vertical,
             bar_style_overrides: None,
         },
-    };
+    });
     assert_eq!(
         fit::histogram_fit_columns(&series, &crate::data_config::BarOrientation::Vertical),
         ("edges", "counts")

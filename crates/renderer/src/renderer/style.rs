@@ -392,7 +392,7 @@ pub(super) fn category_bar_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     categories: &[crate::config::Category],
-    bars: crate::data_config::CategoryBarsRef<'_>,
+    bars: &crate::data_config::CategoryBarSeries,
     scale: f32,
 ) -> Result<data_render::BarStyleMap> {
     const MASK_FILL: u32 = 1;
@@ -401,6 +401,7 @@ pub(super) fn category_bar_style_map(
     let overrides: Vec<data_render::BarStyleOverrideGpu> = bars
         .overrides
         .iter()
+        .flatten()
         .filter_map(|o| {
             let row = categories
                 .iter()
@@ -454,17 +455,15 @@ pub(super) fn box_plot_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     categories: &[crate::config::Category],
-    boxes: crate::data_config::BoxPlotRef<'_>,
+    boxes: &crate::data_config::BoxSeries,
     scale: f32,
 ) -> Result<data_render::BarStyleMap> {
     use data_render::{BOX_PLOT_PARTS, BarStyleOverrideGpu, BarStyleSlotGpu};
-    let slots = box_plot_part_slots(boxes.style, scale);
-    let capacity = boxes
-        .overrides
-        .len()
-        .saturating_mul(BOX_PLOT_PARTS as usize);
+    let slots = box_plot_part_slots(&boxes.style, scale);
+    let overrides = boxes.overrides.as_deref().unwrap_or_default();
+    let capacity = overrides.len().saturating_mul(BOX_PLOT_PARTS as usize);
     let write = |push: &mut dyn FnMut(&BarStyleOverrideGpu)| {
-        for o in boxes.overrides {
+        for o in overrides {
             let Some(row) = categories
                 .iter()
                 .position(|c| c.id == o.target.category_id)
@@ -531,7 +530,7 @@ pub(super) fn box_plot_style_map(
 pub(super) fn range_bar_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    bars: crate::data_config::RangeBarsRef<'_>,
+    bars: &crate::data_config::RangeBarSeries,
     scale: f32,
 ) -> Result<data_render::BarStyleMap> {
     use crate::data_config::RangeColor;
@@ -556,7 +555,7 @@ pub(super) fn range_bar_style_map(
         ..bytemuck::Zeroable::zeroed()
     };
     let none: BarStyleSlotGpu = bytemuck::Zeroable::zeroed();
-    let states: &[crate::data_config::RangeStateStyle] = match bars.color_by {
+    let states: &[crate::data_config::RangeStateStyle] = match &bars.color_by {
         RangeColor::State { styles, .. } => styles,
         RangeColor::Single | RangeColor::Direction { .. } => &[],
     };
@@ -564,23 +563,27 @@ pub(super) fn range_bar_style_map(
     let mut parts = [none; RANGE_SLOT_STATES as usize];
     parts[RANGE_SLOT_WHISKER as usize] = bars
         .whiskers
+        .as_ref()
         .map_or(none, |w| stroke(w.color.unwrap_or(bars.color), w.width));
-    parts[RANGE_SLOT_CONNECTOR as usize] =
-        bars.connector.map_or(none, |c| stroke(c.color, c.width));
-    if let RangeColor::Direction { up, down, total } = bars.color_by {
+    parts[RANGE_SLOT_CONNECTOR as usize] = bars
+        .connector
+        .as_ref()
+        .map_or(none, |c| stroke(c.color, c.width));
+    if let RangeColor::Direction { up, down, total } = &bars.color_by {
         parts[RANGE_SLOT_UP as usize] = fill(*up);
         parts[RANGE_SLOT_DOWN as usize] = fill(*down);
         parts[RANGE_SLOT_TOTAL as usize] = total.as_ref().map_or(none, |t| fill(t.color));
     }
-    parts[RANGE_SLOT_PROGRESS as usize] = bars.progress.map_or(none, |p| BarStyleSlotGpu {
-        params: [
-            0.0,
-            0.0,
-            p.remaining_opacity.clamp(0.0, 1.0),
-            BAR_STYLE_MASK_WIDTH_RATIO as f32,
-        ],
-        ..bytemuck::Zeroable::zeroed()
-    });
+    parts[RANGE_SLOT_PROGRESS as usize] =
+        bars.progress.as_ref().map_or(none, |p| BarStyleSlotGpu {
+            params: [
+                0.0,
+                0.0,
+                p.remaining_opacity.clamp(0.0, 1.0),
+                BAR_STYLE_MASK_WIDTH_RATIO as f32,
+            ],
+            ..bytemuck::Zeroable::zeroed()
+        });
     let write_slots = |push: &mut dyn FnMut(&BarStyleSlotGpu)| {
         for part in &parts {
             push(part);
@@ -604,7 +607,7 @@ pub(super) fn violin_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     categories: &[crate::config::Category],
-    boxes: crate::data_config::BoxPlotRef<'_>,
+    boxes: &crate::data_config::BoxSeries,
     violin: &crate::data_config::Violin,
     scale: f32,
 ) -> Result<data_render::BarStyleMap> {
@@ -630,8 +633,9 @@ pub(super) fn violin_style_map(
             push(&half_slot(half));
         }
     };
+    let overrides = boxes.overrides.as_deref().unwrap_or_default();
     let write = |push: &mut dyn FnMut(&BarStyleOverrideGpu)| {
-        for o in boxes.overrides {
+        for o in overrides {
             let Some(row) = categories
                 .iter()
                 .position(|c| c.id == o.target.category_id)
@@ -662,7 +666,7 @@ pub(super) fn violin_style_map(
         layout,
         violin.halves().count(),
         write_slots,
-        boxes.overrides.len(),
+        overrides.len(),
         write,
     )
 }
@@ -998,17 +1002,17 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
             errors: Some(_),
             ..
         })
-        | DataRenderType::Histogram { .. }
+        | DataRenderType::Histogram(_)
         | DataRenderType::Field(_)
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::Vector(_)
+        | DataRenderType::CategoryBars(_)
+        | DataRenderType::BoxPlot(_)
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::Radar(_)
+        | DataRenderType::Streamlines(_)
+        | DataRenderType::Ternary(_)
+        | DataRenderType::Parallel(_)
         | DataRenderType::EnergyLevels(_)
         | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_)
@@ -1097,7 +1101,7 @@ impl Renderer {
         // `extract_line` answers none for it, since its rows are not the
         // polyline through `(x_column, y_column)`.
         let line_style = extract_line(render_type)
-            .or_else(|| render_type.parallel().map(|p| Cow::Borrowed(p.line)));
+            .or_else(|| render_type.parallel().map(|p| Cow::Borrowed(&p.line)));
         let line = match line_style.as_deref() {
             Some(DataLineStyleConfig {
                 line_style,
@@ -1236,13 +1240,13 @@ impl Renderer {
         ) {
             (Some(b), _, _, _) => PrimitiveStyle::from_bar(b, scale),
             (None, Some(bars), _, _) => {
-                PrimitiveStyle::from_category_bars(bars.color, bars.style, scale)
+                PrimitiveStyle::from_category_bars(bars.color, &bars.style, scale)
             }
             (None, None, Some(boxes), _) => {
-                PrimitiveStyle::from_box_plot(boxes.color, boxes.style, scale)
+                PrimitiveStyle::from_box_plot(boxes.color, &boxes.style, scale)
             }
             (None, None, None, Some(ranges)) => {
-                PrimitiveStyle::from_category_bars(ranges.color, ranges.style, scale)
+                PrimitiveStyle::from_category_bars(ranges.color, &ranges.style, scale)
             }
             (None, None, None, None) => PrimitiveStyle::from_color(Color::BLACK),
         };

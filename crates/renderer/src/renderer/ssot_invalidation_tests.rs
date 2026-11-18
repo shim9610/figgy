@@ -2223,7 +2223,7 @@ fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
     config.left_y.max = 1.0;
     config.legend.visible = false;
     let mut series = declaration("hist", "x", "a");
-    series.render_type = DataRenderType::Histogram {
+    series.render_type = DataRenderType::Histogram(HistogramSeries {
         bar: DataBarStyleConfig {
             fill_color: Color::new(0.1, 0.5, 0.8, 1.0),
             border_color: Color::BLACK,
@@ -2234,7 +2234,7 @@ fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
             orientation: BarOrientation::Vertical,
             bar_style_overrides: None,
         },
-    };
+    });
     let (mut r, id) = fixture(&config, true, false);
     r.set_chart_series(id, vec![series.clone()]).unwrap();
     let (vertical, _) = frame(&mut r, id, true);
@@ -2251,7 +2251,7 @@ fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
             series.x_column = "x".into();
             series.y_column = "a".into();
         }
-        let DataRenderType::Histogram { bar } = &mut series.render_type else {
+        let DataRenderType::Histogram(HistogramSeries { bar }) = &mut series.render_type else {
             unreachable!()
         };
         bar.orientation = if horizontal {
@@ -2298,7 +2298,7 @@ fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
     }
     // Repeating a changed declaration before its first prepare must not mark
     // the previous, now-stale styles as valid for the new declaration.
-    let DataRenderType::Histogram { bar } = &mut series.render_type else {
+    let DataRenderType::Histogram(HistogramSeries { bar }) = &mut series.render_type else {
         unreachable!()
     };
     bar.fill_color = Color::new(0.8, 0.2, 0.1, 1.0);
@@ -2785,14 +2785,14 @@ fn streamline_arrow_and_colour_map_edits_refresh_first_frame_without_reupload() 
     let mut config = baseline_with_colorbar();
     config.legend.visible = false;
     let mut series = declaration("s", "x", "a");
-    series.render_type = DataRenderType::Streamlines {
+    series.render_type = DataRenderType::Streamlines(StreamlineSeries {
         line: DataLineStyleConfig {
             line_width: 1.5,
             ..DataLineStyleConfig::default()
         },
         arrows: None,
         color_map: None,
-    };
+    });
     let (mut r, id) = fixture(&config, true, false);
     r.set_chart_series(id, vec![series.clone()]).unwrap();
     let (mut previous, _) = frame(&mut r, id, true);
@@ -2824,9 +2824,9 @@ fn streamline_arrow_and_colour_map_edits_refresh_first_frame_without_reupload() 
         ("no colour map", |_, color_map| *color_map = None),
     ];
     for (name, apply) in edits {
-        let DataRenderType::Streamlines {
+        let DataRenderType::Streamlines(StreamlineSeries {
             arrows, color_map, ..
-        } = &mut series.render_type
+        }) = &mut series.render_type
         else {
             unreachable!()
         };
@@ -2881,7 +2881,7 @@ fn vector_3d_edits_refresh_first_frame_without_reupload() {
     config.set_view_3d(Some(crate::view3d::View3d::default()));
     let mut series = declaration("s", "x", "a");
     series.z_column = Some("zc".into());
-    series.render_type = DataRenderType::Vector {
+    series.render_type = DataRenderType::Vector(VectorSeries {
         components: VectorComponents::Points {
             u: "u".into(),
             v: "v".into(),
@@ -2897,7 +2897,7 @@ fn vector_3d_edits_refresh_first_frame_without_reupload() {
             min_length_px: 0.0,
             color_map: None,
         },
-    };
+    });
     let add_columns = |r: &mut Renderer| {
         let column = |v: [f32; 8]| crate::Column { data: v.to_vec() };
         for (id, data) in [
@@ -2930,16 +2930,16 @@ fn vector_3d_edits_refresh_first_frame_without_reupload() {
     type SeriesEdit = fn(&mut SeriesConfig);
     fn style(series: &mut SeriesConfig) -> &mut VectorStyle {
         match &mut series.render_type {
-            DataRenderType::Vector { style, .. } => style,
+            DataRenderType::Vector(VectorSeries { style, .. }) => style,
             _ => unreachable!(),
         }
     }
     let series_edits: [(&str, SeriesEdit); 10] = [
         ("w", |s| {
-            if let DataRenderType::Vector {
+            if let DataRenderType::Vector(VectorSeries {
                 components: VectorComponents::Points { w, .. },
                 ..
-            } = &mut s.render_type
+            }) = &mut s.render_type
             {
                 *w = Some("w2".into());
             }
