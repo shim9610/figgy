@@ -648,7 +648,10 @@ A host that holds only a built renderer, such as a `WindowedRenderer` from
 device-loss record, the ledger and the budget. `WindowedRenderer::instance()`
 and `adapter()` give the handles another surface on that device is created
 and configured from. Dropping any of these renderers or bundles never destroys
-the device.
+the device while another of them holds it. In the browser, the last holder of
+a device figgy requested itself (`RendererDevice::request_async`, a windowed or
+headless renderer) destroys it on drop, after the work submitted on it (#322);
+a device from `RendererDevice::new` stays the host's and is never destroyed.
 
 ## Render targets, coordinates and output
 

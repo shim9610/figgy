@@ -70,7 +70,10 @@ impl Renderer {
     /// A [`crate::radial::RadialRenderer`] (or another [`Renderer`]) built
     /// from it shares the device, its loss and the one budget with this
     /// renderer. Dropping the renderer built from it, or the bundle, never
-    /// destroys the device: the device lives while any holder of it does.
+    /// destroys the device while another holder of it remains: the device
+    /// lives while any holder of it does. In the browser, the last renderer
+    /// dropped on a device figgy requested itself (a windowed or headless
+    /// renderer's) destroys it after its submitted work (#322).
     pub fn renderer_device(&self) -> RendererDevice {
         RendererDevice {
             device: self.device.clone(),

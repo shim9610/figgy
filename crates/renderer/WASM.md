@@ -1424,7 +1424,8 @@ counts the radial chart's allocations.
 - **Lifetime.** Each chart holds its own references to the device. Disposing
   the radial chart (`free()`) never destroys the parent's device, and
   disposing the parent leaves the radial chart drawing; the device lives
-  while either holds it.
+  while either holds it. Disposing the last of them destroys the device,
+  which figgy requested, once the work submitted on it completes (#322).
 - **Async calls and dispose.** An async call (`export_png`, `pick`, `hover`,
   `first_frame_ready`) borrows only the object it is called on: await it
   before `free()` on that object, as on every wasm-bindgen object. Disposing
