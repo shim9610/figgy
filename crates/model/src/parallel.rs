@@ -232,7 +232,8 @@ impl Config {
     /// without a fill; a colour column maps through `Config.colorbar`.
     pub fn validate_parallel_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
-            match (&item.render_type, self.parallel()) {
+            let chart = self.series_chart(&item.series_id);
+            match (&item.render_type, chart.parallel()) {
                 (DataRenderType::Parallel { .. }, None) => {
                     return Err(crate::RuleKind::ParallelSeriesNotParallel);
                 }
@@ -268,7 +269,7 @@ impl Config {
                     if color_column.as_deref().is_some_and(str::is_empty) {
                         return Err(crate::RuleKind::ParallelSeriesColorColumn);
                     }
-                    if color_column.is_some() && self.colorbar.is_none() {
+                    if color_column.is_some() && chart.colorbar.is_none() {
                         return Err(crate::RuleKind::ParallelSeriesColorbar);
                     }
                 }
@@ -339,6 +340,45 @@ mod tests {
             ],
         }));
         config
+    }
+
+    /// A Cartesian root chart whose one subplot is `cell`, drawing `ids`
+    /// (#325).
+    fn root_with_subplot(mut cell: Config, ids: &[&str]) -> Config {
+        let mut root = crate::defaults::config();
+        cell.chart_area = root.chart_area.clone();
+        root.subplots.push(crate::layer::Subplot {
+            config: cell,
+            series: ids.iter().map(|id| id.to_string()).collect(),
+            ..crate::defaults::subplot()
+        });
+        root
+    }
+
+    #[test]
+    fn a_subplot_draws_parallel_series_on_its_own_parallel_chart() {
+        let root = root_with_subplot(chart(), &["rows"]);
+        let rows = series(&["a", "b", "c"]);
+        assert_eq!(
+            root.validate_parallel_series(std::slice::from_ref(&rows)),
+            Ok(())
+        );
+        assert_eq!(root.validate_series(&[rows]), Ok(()));
+        // The colour map is the subplot's colour bar, not the root's.
+        let mut coloured_cell = chart();
+        coloured_cell.colorbar = Some(crate::defaults::color_bar_options());
+        let coloured = root_with_subplot(coloured_cell, &["rows"]);
+        let mut s = series(&["a", "b", "c"]);
+        if let DataRenderType::Parallel { color_column, .. } = &mut s.render_type {
+            *color_column = Some("class".into());
+        }
+        assert_eq!(coloured.validate_parallel_series(&[s]), Ok(()));
+        // The plain root still refuses a parallel series of its own.
+        let unplaced = root_with_subplot(chart(), &["other"]);
+        assert_eq!(
+            unplaced.validate_parallel_series(&[series(&["a", "b", "c"])]),
+            Err(crate::RuleKind::ParallelSeriesNotParallel)
+        );
     }
 
     #[test]

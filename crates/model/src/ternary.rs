@@ -325,7 +325,8 @@ impl Config {
     /// line is linear (no step modes) and has no fill.
     pub fn validate_ternary_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
-            match (&item.render_type, self.ternary().is_some()) {
+            let chart = self.series_chart(&item.series_id);
+            match (&item.render_type, chart.ternary().is_some()) {
                 (DataRenderType::Ternary { .. }, false) => {
                     return Err(crate::RuleKind::TernarySeriesNotTernary);
                 }
@@ -449,6 +450,49 @@ mod tests {
             line,
             region: None,
         }
+    }
+
+    /// A Cartesian root chart whose one subplot is `cell`, drawing `ids`
+    /// (#325).
+    fn root_with_subplot(mut cell: Config, ids: &[&str]) -> Config {
+        let mut root = crate::defaults::config();
+        cell.chart_area = root.chart_area.clone();
+        root.subplots.push(crate::layer::Subplot {
+            config: cell,
+            series: ids.iter().map(|id| id.to_string()).collect(),
+            ..crate::defaults::subplot()
+        });
+        root
+    }
+
+    #[test]
+    fn a_subplot_draws_ternary_series_on_its_own_ternary_chart() {
+        let root = root_with_subplot(chart(), &["t"]);
+        let t = series("t", ternary(Some(scatter()), None));
+        assert_eq!(
+            root.validate_ternary_series(std::slice::from_ref(&t)),
+            Ok(())
+        );
+        assert_eq!(root.validate_series(&[t]), Ok(()));
+        // The rectangular root still refuses a ternary series of its own,
+        // and the ternary subplot a plain one.
+        assert_eq!(
+            root.validate_ternary_series(&[series("u", ternary(Some(scatter()), None))]),
+            Err(crate::RuleKind::TernarySeriesNotTernary)
+        );
+        let plain = series(
+            "t",
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter()),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        );
+        assert_eq!(
+            root.validate_ternary_series(&[plain]),
+            Err(crate::RuleKind::TernaryChartSeriesKind)
+        );
     }
 
     #[test]

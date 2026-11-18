@@ -731,6 +731,68 @@ fn a_ternary_subplot_draws_in_its_own_cell() {
     }
 }
 
+/// A registered chart whose root is Cartesian and whose subplot is ternary
+/// (#325): the series is held to its subplot's coordinates, not the
+/// root's, and the registered chart draws and picks it in the subplot.
+#[test]
+fn a_registered_ternary_subplot_beside_a_cartesian_root_draws_and_picks() {
+    let mut r = renderer();
+    let rows = [[70.0, 10.0, 20.0], [10.0, 70.0, 20.0], [20.0, 20.0, 60.0]];
+    upload(&mut r, &rows);
+    let mut parent = renderer::default::default_config();
+    parent.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    let mut inner = bare_config();
+    inner.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT / 2,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    let cell = inner.clone();
+    parent.subplots.push(Subplot {
+        config: inner,
+        series: vec!["p".into()],
+        ..Subplot::default()
+    });
+    assert!(parent.ternary().is_none(), "the root stays rectangular");
+    let series = [ternary("p", Some(marker_style(8.0)), None)];
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(parent.clone(), series.to_vec())
+        .expect("validated against the ternary subplot");
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    for row in rows {
+        let p = ternary_px(&cell, row, 1.0);
+        assert!(is_red(at(&img, p)), "{row:?} at {p:?}");
+    }
+    let p = ternary_px(&cell, rows[1], 1.0);
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [p.0 as f32, p.1 as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 6.0,
+    };
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    assert_eq!(picked_point(hit), Some(("p".to_string(), 1)));
+    r.remove_chart(id).unwrap();
+}
+
 /// An edge drags along its outward normal (`line_offset`) and ignores the
 /// component along it; its labels drag in the edge frame; a title drags in
 /// screen space; the top axis is not drawn and does not move.
