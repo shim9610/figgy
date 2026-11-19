@@ -492,8 +492,12 @@ fn a_family_with_its_own_frame_keeps_it() {
     theme
         .apply(&mut config, &mut series, ThemeScope::All)
         .unwrap();
-    assert!(config.bottom_x.line_visible && config.top_x.line_visible);
-    assert_eq!(config.bottom_x.tick, TickVisibility::Outside);
+    // The Grotrian frame (#357): the energy axis alone, the term columns
+    // named without a line or ticks.
+    assert!(config.left_y.line_visible && !config.top_x.line_visible);
+    assert!(!config.bottom_x.line_visible && config.bottom_x.label_style.label_visible);
+    assert_eq!(config.left_y.tick, TickVisibility::Outside);
+    assert_eq!(config.bottom_x.tick, TickVisibility::None);
     let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
         panic!("an energy-level series");
     };
@@ -501,6 +505,58 @@ fn a_family_with_its_own_frame_keeps_it() {
         levels.style.transition.color,
         theme.series.energy_levels.transition_color
     );
+}
+
+// #357: every Grotrian member draws its lines and arrowheads at one weight
+// and its texts on one scale; the documented look keeps each series' own
+// arrowheads.
+#[test]
+fn the_grotrian_members_share_their_weights_and_text_scale() {
+    for family in ThemeFamily::ALL {
+        let theme = family.theme(ChartKind::EnergyLevels);
+        let energy = theme.series.energy_levels;
+        let name = family.name();
+        assert_eq!(energy.level_width, 3.0, "{name}");
+        assert_eq!(energy.transition_width, 2.2, "{name}");
+        assert_eq!(
+            (energy.head_length, energy.head_width),
+            (Some(13.0), Some(10.0)),
+            "{name}"
+        );
+        assert_eq!(theme.chrome.tick_label_size, 20.0, "{name}");
+        let size = |look: Option<TextLook>| look.map(|look| look.size);
+        assert_eq!(size(energy.level_labels), Some(20.0), "{name}");
+        assert_eq!(size(energy.column_labels), Some(24.0), "{name}");
+        assert_eq!(size(energy.transition_labels), Some(18.0), "{name}");
+        let mut series = [SeriesConfig::energy_levels(
+            "e",
+            crate::defaults::energy_level_series(),
+        )];
+        theme
+            .apply(&mut Config::default(), &mut series, ThemeScope::All)
+            .unwrap();
+        let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
+            panic!("an energy-level series");
+        };
+        let arrow = &levels.style.transition;
+        assert_eq!(
+            (arrow.head_length, arrow.head_width),
+            (13.0, 10.0),
+            "{name}"
+        );
+    }
+    let documented = named(ChartKind::EnergyLevels, "default");
+    assert_eq!(documented.series.energy_levels.head_length, None);
+    let mut own = crate::defaults::energy_level_series();
+    own.style.transition.head_length = 21.0;
+    let mut series = [SeriesConfig::energy_levels("e", own)];
+    documented
+        .apply(&mut Config::default(), &mut series, ThemeScope::All)
+        .unwrap();
+    let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
+        panic!("an energy-level series");
+    };
+    assert_eq!(levels.style.transition.head_length, 21.0);
 }
 
 // A chart without a selection gets the highlight look only when it differs
@@ -2739,6 +2795,26 @@ fn a_theme_round_trips_through_json() {
         let back: RadialTheme = serde_json::from_str(&json).unwrap();
         assert_eq!(back, theme, "radial {name}");
     }
+}
+
+// #357: an energy-level theme saved before the arrowhead fields reads them
+// as `None`, so it keeps each series' own arrowheads as it did.
+#[cfg(feature = "serde")]
+#[test]
+fn an_energy_level_theme_without_arrowheads_keeps_the_series_own() {
+    let member = ThemeFamily::Gallery.theme(ChartKind::EnergyLevels);
+    let mut json = serde_json::to_value(&member).unwrap();
+    let energy = json["series"]["energy_levels"].as_object_mut().unwrap();
+    assert!(energy.remove("head_length").is_some() && energy.remove("head_width").is_some());
+    let back: Theme = serde_json::from_value(json).unwrap();
+    assert_eq!(back.series.energy_levels.head_length, None);
+    assert_eq!(back.series.energy_levels.head_width, None);
+    let documented = serde_json::to_value(named(ChartKind::EnergyLevels, "default")).unwrap();
+    assert!(
+        documented["series"]["energy_levels"]
+            .get("head_length")
+            .is_none()
+    );
 }
 
 // A theme object saved before a field was added still parses: every field

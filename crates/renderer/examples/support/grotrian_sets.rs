@@ -17,9 +17,13 @@
 //!   591.5 nm first step of laser isotope separation.
 //!
 //! The host chooses the columns, the labels and the lines; the renderer
-//! draws them. Every colour, width and text size is the gallery family's
-//! energy-level member's (#295): a builder gives each text its content and
-//! applies the theme last. The including module declares `gallery` (for
+//! draws them. The host also writes them in physics notation (#357): a
+//! term symbol such as NIST's `1P*` as ¹P°, a configuration such as `1s2`
+//! as 1s², and it finds where its levels leave the energy axis empty and
+//! writes that range as the axis break ([`derived_break`]). Every colour,
+//! width and text size is the gallery family's energy-level member's
+//! (#295): a builder gives each text its content and applies the theme
+//! last. The including module declares `gallery` (for
 //! `titled` and `Result`) and `nist_csv` beside this one.
 
 pub use super::gallery::Result;
@@ -64,9 +68,101 @@ fn data(name: &str) -> Result<String> {
     .to_string())
 }
 
-/// [`plain`] from TeX.
-fn tex(text: &str) -> Result<RichText> {
-    Ok(RichText::from_tex(text, Color::BLACK, 16.0, "")?)
+/// `digits` as Unicode superscripts, which every text draws as raised
+/// digits (#353).
+fn superscript(digits: &str) -> String {
+    digits.chars().map(|c| shifted(c, "⁰¹²³⁴⁵⁶⁷⁸⁹")).collect()
+}
+
+/// `digits` as Unicode subscripts, lowered digits (#353): a J value such
+/// as `3/2` reads ₃/₂.
+pub fn subscript(digits: &str) -> String {
+    digits.chars().map(|c| shifted(c, "₀₁₂₃₄₅₆₇₈₉")).collect()
+}
+
+/// The digit `c` from `forms`, the ten forms of 0–9; any other character
+/// as it is.
+fn shifted(c: char, forms: &str) -> char {
+    c.to_digit(10)
+        .and_then(|d| forms.chars().nth(d as usize))
+        .unwrap_or(c)
+}
+
+/// A NIST term in physics notation: the leading multiplicity raised and
+/// the odd-parity `*` written as °, so `1P*` reads ¹P° and the jK term
+/// `2[3/2]*` reads ²[3/2]°. The host writes the notation; the renderer
+/// draws the characters it is given.
+pub fn term_symbol(term: &str) -> String {
+    let digits = term.chars().take_while(char::is_ascii_digit).count();
+    let (multiplicity, rest) = term.split_at(digits);
+    let (rest, odd) = match rest.strip_suffix('*') {
+        Some(rest) => (rest, "°"),
+        None => (rest, ""),
+    };
+    format!("{}{rest}{odd}", superscript(multiplicity))
+}
+
+/// A NIST configuration in physics notation: each subshell's occupancy
+/// raised, so `1s2` reads 1s², `3p6` 3p⁶ and `3d10.4s` 3d¹⁰4s. A subshell
+/// is its principal number, its letter and its occupancy; parenthesized
+/// parent terms are left as written.
+pub fn configuration(text: &str) -> String {
+    let mut out = String::new();
+    for part in text.split('.') {
+        let n = part.chars().take_while(char::is_ascii_digit).count();
+        let letters = part[n..]
+            .chars()
+            .take_while(char::is_ascii_lowercase)
+            .count();
+        let occupancy = &part[n + letters..];
+        if n > 0 && letters == 1 && occupancy.chars().all(|c| c.is_ascii_digit()) {
+            out.push_str(&part[..n + letters]);
+            out.push_str(&superscript(occupancy));
+        } else {
+            out.push_str(part);
+        }
+    }
+    out
+}
+
+/// The axis break a host derives from its own levels (#357 item 13): the
+/// widest empty range between the drawn levels and limits in `min..=max`,
+/// cut out when it spans more than 30 % of the range, kept 1.5 % of the
+/// range clear of the strokes on each side. The piece with fewer levels
+/// is drawn thin (`1 : 9`), whichever side of the break it lies on. The
+/// renderer computes no break: the host writes this into the axis.
+pub fn derived_break(series: &EnergyLevelSeries, min: f64, max: f64) -> Option<AxisBreaks> {
+    let mut energies: Vec<f64> = (series.levels.iter().map(|l| l.energy))
+        .chain(series.limits.iter().map(|l| l.energy))
+        .filter(|e| (min..=max).contains(e))
+        .collect();
+    energies.sort_by(f64::total_cmp);
+    let (low, high) = energies
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .max_by(|a, b| (a.1 - a.0).total_cmp(&(b.1 - b.0)))?;
+    let span = max - min;
+    if high - low <= 0.3 * span {
+        return None;
+    }
+    let pad = 0.015 * span;
+    let below = energies.iter().filter(|e| **e <= low).count();
+    let above = energies.len() - below;
+    let weights = if below <= above {
+        vec![1.0, 9.0]
+    } else {
+        vec![9.0, 1.0]
+    };
+    Some(AxisBreaks {
+        ranges: vec![AxisBreak::new(low + pad, high - pad)],
+        style: AxisBreakStyle::Continuous,
+        gap_px: 12.0,
+        mark: BreakMark::default(),
+        // The Grotrian frame is open: the slashes on the energy axis mark
+        // the gap, with no panel lines across the columns.
+        frame_each_panel: false,
+        sizing: renderer::config::PieceSizing::Weights(weights),
+    })
 }
 
 fn level(row: &LevelRow, column: &str, label: Option<RichText>) -> EnergyLevel {
@@ -189,8 +285,22 @@ fn band(series: &mut EnergyLevelSeries, column: &str, low: f64, high: f64, label
     });
 }
 
-/// A Grotrian chart with its term columns named. Each diagram adds and
-/// sizes its own break; the theme gives it the Grotrian frame (#205).
+/// A term column: its NIST id (`1P*`), named by its term symbol (¹P°) as
+/// both its plain label and the rich label the theme styles as a header
+/// (#357). The `gap` spacer has no name.
+fn column(id: &str) -> Category {
+    if id == "gap" {
+        return Category::new(id, "");
+    }
+    let symbol = term_symbol(id);
+    let mut category = Category::new(id, symbol.as_str());
+    category.rich_label = Some(plain(&symbol));
+    category
+}
+
+/// A Grotrian chart with its term columns named. Each diagram derives its
+/// own break from its levels ([`energy_axis`]); the theme gives it the
+/// Grotrian frame (#205, #357).
 fn grotrian(title: &str, y_title: &str, categories: Vec<Category>) -> Chart {
     let mut c = titled(title, "", y_title, (1100, 780));
     c.config_mut().bottom_x.categories = Some(categories);
@@ -222,35 +332,12 @@ fn groups(c: &mut Chart, groups: &[(&str, &str, &str)]) {
     });
 }
 
-fn break_below(c: &mut Chart, min: f64, max: f64, from: f64, to: f64) {
-    break_sized(
-        c,
-        min,
-        max,
-        from,
-        to,
-        renderer::config::PieceSizing::Weights(vec![1.0, 9.0]),
-    );
-}
-
-fn break_sized(
-    c: &mut Chart,
-    min: f64,
-    max: f64,
-    from: f64,
-    to: f64,
-    sizing: renderer::config::PieceSizing,
-) {
+/// The energy range `min..=max` and the break the host derives from the
+/// series' own levels ([`derived_break`]), if they leave a wide gap.
+fn energy_axis(c: &mut Chart, series: &EnergyLevelSeries, min: f64, max: f64) {
     c.set_y_range(min, max);
     c.config_mut().left_y.minor_count = 1;
-    c.config_mut().left_y.breaks = Some(AxisBreaks {
-        ranges: vec![AxisBreak::new(from, to)],
-        style: AxisBreakStyle::Continuous,
-        gap_px: 12.0,
-        mark: BreakMark::default(),
-        frame_each_panel: true,
-        sizing,
-    });
+    c.config_mut().left_y.breaks = derived_break(series, min, max);
 }
 
 fn spec(id: &str, series: EnergyLevelSeries) -> SeriesConfig {
@@ -340,7 +427,7 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
             .unwrap_or(1);
         // A triplet keeps one labelled row per term: J = 1 (³S has one).
         let shown = !row.term.starts_with('3') || row.term == "3S" || row.j == "1";
-        let label = (n <= 4 && shown).then(|| plain(outer));
+        let label = (n <= 4 && shown).then(|| plain(&configuration(outer)));
         series.levels.push(level(row, &row.term, label));
     }
     for l in &limits {
@@ -419,20 +506,7 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
         },
         12,
     );
-    let mut categories = Vec::new();
-    for id in columns {
-        let mut category = Category::new(id, "");
-        if id != "gap" {
-            let (m, rest) = id.split_at(1);
-            let (l, odd) = rest.split_at(1);
-            category.label = id.into();
-            category.rich_label = Some(tex(&format!(
-                "$^{m}\\mathrm{{{l}}}{}$",
-                if odd == "*" { "^o" } else { "" }
-            ))?);
-        }
-        categories.push(category);
-    }
+    let categories = columns.iter().map(|id| column(id)).collect();
     let mut c = grotrian("He I", "Energy (eV)", categories);
     groups(
         &mut c,
@@ -441,7 +515,7 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
             ("Triplets (S = 1)", "3S", "3F*"),
         ],
     );
-    break_below(&mut c, -0.15, 25.2, 0.25, 19.6);
+    energy_axis(&mut c, &series, -0.15, 25.2);
     let series = labelled(series);
     let theme = theme()?;
     continuum(&mut c, &series, "he", 25.2)?;
@@ -483,13 +557,14 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
             continue;
         };
         let label = match paschen(row) {
-            Some(p) => Some(plain(&p)),
-            None if col == "ground" => Some(tex("$3p^6$")?),
+            Some(p) => p,
+            None if col == "ground" => configuration("3p6"),
             None => {
                 let k = row.term.trim_start_matches('2').trim_end_matches('*');
-                Some(tex(&format!("${k}_{{{}}}$", row.j))?)
+                format!("{k}{}", subscript(&row.j))
             }
         };
+        let label = Some(plain(&label));
         series.levels.push(level(row, &col, label));
     }
     // The 3d and 5p manifolds as bands: a plasma paper labels 4s and 4p.
@@ -527,18 +602,18 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
     let order = [
         "ground", "4s", "4p", "5s", "3d", "5p", "gap", "4s'", "4p'", "5s'", "3d'", "5p'",
     ];
+    // The columns named by their outer subshell, primed for the ²P°₁/₂
+    // core, and the ground state by its configuration.
     let categories = order
         .iter()
         .map(|id| {
-            let mut c = Category::new(*id, "");
-            if *id != "gap" {
-                c.label = (*id).into();
-                c.rich_label = tex(&match *id {
-                    "ground" => "$3p^6$".to_string(),
-                    id => format!("$\\mathrm{{{}}}$", id.replace('\'', "'")),
-                })
-                .ok();
-            }
+            let name = match *id {
+                "gap" => return Category::new(*id, ""),
+                "ground" => configuration("3p6"),
+                id => id.replace('\'', "′"),
+            };
+            let mut c = Category::new(*id, name.as_str());
+            c.rich_label = Some(plain(&name));
             c
         })
         .collect();
@@ -550,7 +625,7 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
             ("3p⁵ ²P°₁/₂ core", "4s'", "5p'"),
         ],
     );
-    break_below(&mut c, -0.2, 16.0, 0.3, 11.3);
+    energy_axis(&mut c, &series, -0.2, 16.0);
     let series = labelled(series);
     let theme = theme()?;
     continuum(&mut c, &series, "ar", 16.0)?;
@@ -581,7 +656,7 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
         if !columns.contains(&column) {
             columns.push(column.clone());
         }
-        let mut l = level(row, &column, Some(plain(row.outer())));
+        let mut l = level(row, &column, Some(plain(&configuration(row.outer()))));
         l.id = format!("{} {}", row.id(), row.energy);
         series.levels.push(l);
     }
@@ -618,22 +693,30 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
         }
     }
     columns.sort();
+    // Each column named by its jK term symbol, primed for the ²P°₁/₂ core.
     let categories = columns
         .iter()
-        .map(|id| Category::new(id.as_str(), id.as_str()))
+        .map(|id| {
+            let label = match id.strip_suffix('\'') {
+                _ if id == "ground" => configuration("3p6"),
+                Some(term) => format!("{}′", term_symbol(term)),
+                None => term_symbol(id),
+            };
+            Category::new(id.as_str(), label)
+        })
         .collect();
     let mut c = grotrian("Ar I, all levels", "Energy (eV)", categories);
     // Twenty-five term columns: drawn wide, as a full term diagram is.
     c.config_mut().chart_area.0.width = 2000;
     c.config_mut().chart_area.0.height = 900;
-    break_below(&mut c, -0.2, 16.3, 0.3, 11.3);
+    energy_axis(&mut c, &series, -0.2, 16.3);
     let mut series = labelled(series);
     // Narrow slots leave lanes for the labels of fourteen columns.
     series.style.level.slot_fraction = 0.45;
     // Five hundred labels: a size smaller than the theme's.
     let mut theme = theme()?;
     if let Some(look) = &mut theme.series.energy_levels.level_labels {
-        look.size = 15.0;
+        look.size = 16.0;
     }
     themed(c, vec![spec("ar-all", series)], &theme)
 }
@@ -649,15 +732,16 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
         if !order.contains(&row.term.as_str()) {
             continue;
         }
-        let shell = row
-            .configuration
-            .trim_start_matches("3d10.")
-            .trim_start_matches("3d9.(2D).")
-            .trim_start_matches("3d9.")
-            .replace(".(3P*)", "")
-            .replace(".(1P*)", "")
-            .replace('.', "");
-        let label = tex(&format!("$\\mathrm{{{shell}}}_{{{}}}$", row.j))?;
+        // The outer subshells in physics notation, J as a subscript.
+        let shell = configuration(
+            &row.configuration
+                .trim_start_matches("3d10.")
+                .trim_start_matches("3d9.(2D).")
+                .trim_start_matches("3d9.")
+                .replace(".(3P*)", "")
+                .replace(".(1P*)", ""),
+        );
+        let label = plain(&format!("{shell}{}", subscript(&row.j)));
         series.levels.push(level(row, &row.term, Some(label)));
     }
     // The 3d⁹4s4p quartets as bands, one per term.
@@ -691,23 +775,7 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
         }
     }
     series.transitions = transitions;
-    let categories = order
-        .iter()
-        .map(|id| {
-            let mut c = Category::new(*id, "");
-            if *id != "gap" {
-                let (m, rest) = id.split_at(1);
-                let (l, odd) = rest.split_at(1);
-                c.label = (*id).into();
-                c.rich_label = tex(&format!(
-                    "$^{m}\\mathrm{{{l}}}{}$",
-                    if odd == "*" { "^o" } else { "" }
-                ))
-                .ok();
-            }
-            c
-        })
-        .collect();
+    let categories = order.iter().map(|id| column(id)).collect();
     let mut c = grotrian("Cu I", "Energy (eV)", categories);
     groups(
         &mut c,
@@ -716,8 +784,9 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
             ("Quartets (3d⁹4s4p)", "4P*", "4F*"),
         ],
     );
-    c.set_y_range(-0.2, 8.2);
-    c.config_mut().left_y.minor_count = 1;
+    // The levels leave no gap wide enough to break: `derived_break` finds
+    // none, and the axis stays whole.
+    energy_axis(&mut c, &series, -0.2, 8.2);
     let series = labelled(series);
     let theme = theme()?;
     continuum(&mut c, &series, "cu", 8.2)?;
@@ -738,16 +807,8 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
     let uid = |row: &LevelRow| format!("{} {}", row.id(), row.energy);
     let mut series = EnergyLevelSeries::default();
     for row in &levels {
-        let label = (!row.term.is_empty() && row.term != "*").then(|| {
-            let t = row.term.trim_end_matches('*');
-            let (m, l) = t.split_at(1);
-            tex(&format!(
-                "$^{m}\\mathrm{{{l}}}{}_{{{}}}$",
-                if row.odd() { "^o" } else { "" },
-                row.j
-            ))
-        });
-        let label = label.transpose()?;
+        let label = (!row.term.is_empty() && row.term != "*")
+            .then(|| plain(&format!("{}{}", term_symbol(&row.term), subscript(&row.j))));
         let mut l = level(row, &column(row), label);
         l.id = uid(row);
         series.levels.push(l);
@@ -835,15 +896,9 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
             ("Even parity", &first_even, &last_even),
         ],
     );
-    // The limit sits far above the levels: a thin piece above the break.
-    break_sized(
-        &mut c,
-        -500.0,
-        51_500.0,
-        33_000.0,
-        49_000.0,
-        renderer::config::PieceSizing::Weights(vec![9.0, 1.0]),
-    );
+    // The limit sits far above the levels: the derived break leaves it a
+    // thin piece above the gap.
+    energy_axis(&mut c, &series, -500.0, 51_500.0);
     let series = labelled(series);
     let theme = theme()?;
     continuum(&mut c, &series, "u", 52_000.0)?;
