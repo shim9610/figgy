@@ -11,12 +11,14 @@
 //! anchors.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/svg_parts.rs"]
 mod svg_parts;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{BLUE, GREEN, RED, is_blue_rgba as is_blue, is_red_rgba as is_red, save};
+use test_gpu::shared_device;
 
 use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect, RectF};
@@ -29,34 +31,6 @@ use renderer::{
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 360;
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
 /// A renderer holding one horizontal line's columns, `y = 5` over `x` 0..10.
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
@@ -218,14 +192,8 @@ fn pixel(img: &RasterImage, (x, y): (f32, f32)) -> [u8; 4] {
     ]
 }
 
-fn is_red(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
 fn is_green(p: [u8; 4]) -> bool {
     p[3] > 200 && p[1] > 200 && p[0] < 60 && p[2] < 60
-}
-fn is_blue(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
 }
 fn is_black(p: [u8; 4]) -> bool {
     p[3] > 200 && p[0] < 40 && p[1] < 40 && p[2] < 40
@@ -233,23 +201,11 @@ fn is_black(p: [u8; 4]) -> bool {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
     r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
+        renderer::ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
         renderer::ExportOptions::document(scale),
     )
     .block_on()
     .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 /// A rectangle fills its box and nothing past it, an ellipse its centre
@@ -477,10 +433,10 @@ fn shapes_hit_drag_resize_and_move_their_vertices() {
 #[test]
 fn the_vector_export_writes_closed_paths_for_shapes() {
     let mut r = renderer();
-    let chart = chart(shapes());
+    let mut chart = chart(shapes());
     let svg = r
         .export_svg(
-            renderer::ExportSource::chart(&chart, &[]),
+            renderer::ExportSource::chart(&mut chart, &[]),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()

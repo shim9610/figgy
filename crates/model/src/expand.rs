@@ -59,7 +59,7 @@
 
 use crate::config::{
     AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
-    TickVisibility,
+    LayoutState, TickVisibility,
 };
 use crate::layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, SubplotTextScale};
 use crate::layout::{DataArea, LayoutError, Margins, Rect, Side};
@@ -746,6 +746,8 @@ impl Config {
             line_offsets: _,
             plot_background: _,
             background: _,
+            // A panel is drawn as the document's layout places it.
+            layout_state: _,
         } = self;
         let OverlayLayer {
             y_axis,
@@ -855,6 +857,7 @@ impl Config {
             line_offsets: None,
             plot_background: None,
             background: None,
+            layout_state: LayoutState::Fixed,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
@@ -898,6 +901,7 @@ impl Config {
             line_offsets: _,
             plot_background: _,
             background: _,
+            layout_state: _,
         } = owner;
         let [dx, dy] = self
             .line_offsets
@@ -933,6 +937,7 @@ impl Config {
             line_offsets: None,
             plot_background: None,
             background: None,
+            layout_state: LayoutState::Fixed,
         };
         retain_picks(&mut panel, |id| id == series_id);
         align_margins(&mut panel, group, data_area)?;
@@ -1373,6 +1378,7 @@ impl Config {
             line_offsets: _,
             plot_background: _,
             background: _,
+            layout_state: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -1428,6 +1434,7 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         line_offsets: _,
         plot_background: _,
         background: _,
+        layout_state: _,
     } = panel;
     if let Some(picked) = picked_data.as_mut() {
         picked.refs.retain(|reference| keep(reference.series_id()));

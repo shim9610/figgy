@@ -163,6 +163,7 @@ impl Sink for Backdrop<'_> {
         let size = match text.text {
             TextRef::Plain { size, .. } => size,
             TextRef::Rich(rich) => rich.font_size,
+            TextRef::ScaledRich { text, scale } => text.font_size * scale,
         };
         let pad = size * crate::parallel::LABEL_BACKDROP_PAD;
         let rect = text.rect();

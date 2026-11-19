@@ -60,7 +60,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     bar.axis.min = 0.0;
     bar.axis.max = 1.0;
     config.colorbar = Some(bar);
-    let chart = Chart::new(config).with_title("Peak");
+    let mut chart = Chart::new(config).with_title("Peak");
 
     let series = [SeriesConfig {
         series_id: "peak".into(),
@@ -79,7 +79,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
                 opacity: 1.0,
             }), contour: None, surface: None }),
     }];
-    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0))?;
+    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&mut chart, &series), renderer::ExportOptions::panel(1.0))?;
     std::fs::write("surface.png", renderer::encode_png(&image)?)?;
     Ok(())
 }

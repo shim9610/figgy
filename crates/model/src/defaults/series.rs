@@ -308,6 +308,15 @@ pub(crate) fn contour_label_color() -> Color {
     Color::BLACK
 }
 
+/// [`ContourLabelConfig::bg_color`] of the host default label
+/// (`crate::helpers`, #357): a translucent white plate, so the black text
+/// reads on the dark end of a map as well as the light. A document that
+/// omits it still reads `None`.
+#[cfg(feature = "helpers")]
+pub(crate) fn contour_label_background() -> Option<Color> {
+    Some(Color::new(1.0, 1.0, 1.0, 0.75))
+}
+
 /// An image series' value range where a document omits it.
 #[cfg(feature = "serde")]
 pub(crate) fn image_range() -> [f64; 2] {

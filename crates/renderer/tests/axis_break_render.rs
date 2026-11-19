@@ -11,17 +11,18 @@
 //! pure colour, so a colour predicate attributes every pixel to one mark.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, CYAN, GREEN, MAGENTA, RED, is, markers, pixel_rgba as pixel, renderer_rgba as renderer,
+    upload,
+};
+use test_gpu::shared_device;
 
 use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, AxisScale, BreakMark};
-use renderer::data::Column;
-use renderer::data_config::{
-    DataLineStyleConfig, DataScatterStyleConfig, LineFill, LineInterpolation, ScatterShape,
-    XySeries,
-};
+use renderer::data_config::{DataLineStyleConfig, LineFill, LineInterpolation, XySeries};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
@@ -31,30 +32,6 @@ use renderer::{
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
-
-fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    r.add_column(id, &Column { data }).unwrap();
-}
-
 /// A bare chart: x over 0..10, y over `y_min..y_max` cut by `cuts`.
 fn config(y_min: f64, y_max: f64, cuts: &[(f64, f64)]) -> renderer::Config {
     let mut config = renderer::default::default_config();
@@ -95,32 +72,6 @@ fn config(y_min: f64, y_max: f64, cuts: &[(f64, f64)]) -> renderer::Config {
     config
 }
 
-fn markers(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: color,
-                point_shape: ScatterShape::SquareFilled,
-                point_size: 8.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    }
-}
-
 fn line(id: &str, x: &str, y: &str, color: Color, fill: Option<LineFill>) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
@@ -151,30 +102,13 @@ fn export(
     series: &[SeriesConfig],
     scale: f32,
 ) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportSource::chart(&mut chart, series),
         renderer::ExportOptions::panel(scale),
     )
     .block_on()
     .unwrap()
-}
-
-fn pixel(img: &RasterImage, x: u32, y: u32) -> [u8; 4] {
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn is(color: Color) -> impl Fn([u8; 4]) -> bool {
-    let [r, g, b] = [color.r, color.g, color.b].map(|c| (c * 255.0).round() as i32);
-    move |p| {
-        (p[0] as i32 - r).abs() < 40 && (p[1] as i32 - g).abs() < 40 && (p[2] as i32 - b).abs() < 40
-    }
 }
 
 /// The data area at `scale`, in image pixels: the export lays out the
@@ -654,7 +588,7 @@ fn a_panels_pick_hits_what_each_piece_draws() {
 /// `paint_prepared` into a target of the chart's size, through the resident
 /// composite and the live picked slot.
 fn screen(r: &mut Renderer, config: &renderer::Config, series: &[SeriesConfig]) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let rect = config.chart_area.0;
     let mut view = r.create_chart_view(&chart, rect).unwrap();
     let styles: Vec<_> = series
@@ -668,7 +602,7 @@ fn screen(r: &mut Renderer, config: &renderer::Config, series: &[SeriesConfig]) 
         .collect();
     let mut items = [renderer::ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &drawn,
     }];
     let prepared = r.prepare(&mut items).unwrap();
@@ -859,8 +793,6 @@ fn a_streamed_source_on_a_broken_axis_is_refused() {
     r.remove_chart(id).unwrap();
 }
 
-const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
-const CYAN: Color = Color::from_rgb8(0, 255, 255);
 const BLACK: Color = Color::from_rgb8(0, 0, 0);
 
 /// A line in black with `color` markers on its points: the kind a line
@@ -956,11 +888,11 @@ fn overlays_subplots_and_line_offsets_draw_their_pieces() {
             line_markers("lo0", "lx", "ly", MAGENTA),
             line_markers("lo1", "lx", "ly", CYAN),
         ];
-        let chart = Chart::new(document.clone());
+        let mut chart = Chart::new(document.clone());
         for scale in [1.0f32, 2.0] {
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
@@ -1478,9 +1410,9 @@ fn export_document(
     config: &renderer::Config,
     series: &[SeriesConfig],
 ) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportSource::chart(&mut chart, series),
         renderer::ExportOptions::document(1.0),
     )
     .block_on()

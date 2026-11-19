@@ -7,27 +7,21 @@
 
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{SCALES, gpu as device};
 
 use renderer::config::Config;
 use renderer::{
     BOX_PLOT_RECORD, BoxPlotChart, CategoricalChart, Chart, ColumnSource, ExportOptions,
     ExportSource, RadarChart, RadialChart, RadialRenderer, RaggedSource, RecordSource, Renderer,
-    RendererDevice, SeriesConfig, SeriesUpload, UploadValues,
+    SeriesConfig, SeriesUpload, UploadValues,
 };
 
-const SCALES: [f32; 2] = [1.0, 2.0];
 /// The canvas a radial document is exported on; its documents carry no size.
 const RADIAL_SIZE: (u32, u32) = (1000, 700);
-
-fn device() -> RendererDevice {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread")
-}
 
 fn read<T: serde::de::DeserializeOwned>(file: &str) -> T {
     let path = format!(
@@ -136,9 +130,9 @@ fn export_chart(
     let mut r = Renderer::try_new(device(), wgpu::TextureFormat::Rgba8Unorm, 4 * 1024 * 1024)
         .expect("renderer");
     upload(&mut r, uploads)?;
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     r.export_rgba(
-        ExportSource::chart(&chart, series),
+        ExportSource::chart(&mut chart, series),
         ExportOptions::document(scale),
     )
     .block_on()

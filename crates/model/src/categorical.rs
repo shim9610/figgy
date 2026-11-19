@@ -122,6 +122,17 @@ pub struct CategoricalChart {
     pub bar_gap: f32,
     pub font_family: String,
     pub font_size: f32,
+    /// The text sizes by role (#357, [`crate::DocumentTextSizes`]): the
+    /// title, the axis titles, the tick labels and the legend. `None` (key
+    /// absent in JSON, every document written before the field) draws every
+    /// text at `font_size` and the title half as large again; the Rust
+    /// `Default` sets the documented Cartesian chart's sizes
+    /// ([`crate::DocumentTextSizes::CARTESIAN`]).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text_sizes: Option<crate::DocumentTextSizes>,
     pub text_color: Color,
     pub background: Color,
 }
@@ -159,12 +170,20 @@ impl CategoricalChart {
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
     }
+    /// The text sizes the document draws with (#357): `text_sizes`, or every
+    /// role at `font_size` with the title half as large again
+    /// ([`crate::DocumentTextSizes::resolved`]).
+    pub fn resolved_text_sizes(&self) -> crate::DocumentTextSizes {
+        crate::DocumentTextSizes::resolved(self.text_sizes.as_ref(), self.font_size)
+    }
+
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
         crate::BoundedTitleOptions::resolved(
             self.chart_title.as_ref(),
             &self.title,
             &self.font_family,
             self.font_size,
+            self.text_sizes.as_ref(),
             self.text_color,
         )
     }
@@ -219,7 +238,8 @@ impl CategoricalChart {
         }
         bar_material(&self.style)?;
         if !style(&self.style)
-            || !range(self.font_size, 8.0, 32.0)
+            || !(range(self.font_size, 8.0, 32.0)
+                && self.text_sizes.is_none_or(|sizes| sizes.is_valid()))
             || !range(self.group_width, 0.1, 0.95)
             || !range(self.bar_gap, 0.0, 24.0)
             || !color(self.text_color, false)

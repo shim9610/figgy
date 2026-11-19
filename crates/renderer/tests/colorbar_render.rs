@@ -12,8 +12,12 @@
 //! `ci/verify.py` points at the CI image directory), the same place the
 //! layout geometry images go.
 
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/gpu.rs"]
+mod test_gpu;
+use harness::output_dir;
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::colormap::ColorMap;
@@ -121,18 +125,6 @@ fn probes() -> Vec<(&'static str, renderer::Config)> {
     out.push(("right-short-inverted-gray", short));
 
     out
-}
-
-fn output_dir() -> PathBuf {
-    let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let configured = std::env::var_os("FIGGY_LAYOUT_PROBE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/arch-after"));
-    if configured.is_absolute() {
-        configured
-    } else {
-        package_root.join(configured)
-    }
 }
 
 /// Pixels painted in a colour the ramp passes through at `t`, within `tol` per

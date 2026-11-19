@@ -31,7 +31,7 @@ fn prepare(r: &mut Renderer, view: &mut ChartView, chart: &Chart) {
     drop(
         r.prepare(&mut [ChartDrawItem {
             view,
-            chart,
+            chart: &mut crate::Chart::new(chart.config().clone()),
             series: &[],
         }])
         .unwrap(),

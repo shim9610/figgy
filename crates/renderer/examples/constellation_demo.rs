@@ -196,7 +196,7 @@ fn main() {
     let mut x2 = spec_chart();
     x2.fit_layout();
     r.save_blocking(
-        ExportSource::chart(&x2, &spec_distinct),
+        ExportSource::chart(&mut x2, &spec_distinct),
         ExportOptions::panel(2.0).with_clear(SPACE),
         "target/constellation_demo/spectrum_x2.png",
     )

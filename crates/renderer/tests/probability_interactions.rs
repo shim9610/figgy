@@ -14,22 +14,21 @@
 //! pure colour, so a colour predicate attributes every pixel to one mark.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, GREEN, RED, centroid, is, markers, pick_at, picked, pixel_rgba as pixel,
+    renderer_rgba as renderer, upload,
+};
 
 use renderer::config::{AxisScale, ProbabilityScale};
-use renderer::data::Column;
-use renderer::data_config::{DataScatterStyleConfig, ScatterShape, XySeries};
 use renderer::layout::{ChartArea, Rect};
-use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig};
+use renderer::{Chart, Color, RasterImage, Renderer, SeriesConfig};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
 /// The default picked-highlight colour.
 const GOLD: Color = Color::from_rgb8(255, 215, 0);
 const SCALES: [ProbabilityScale; 3] = [
@@ -37,26 +36,6 @@ const SCALES: [ProbabilityScale; 3] = [
     ProbabilityScale::Weibull,
     ProbabilityScale::Logistic,
 ];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
-
-fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    r.add_column(id, &Column { data }).unwrap();
-}
 
 /// A bare chart: x over 0..10, y a probability axis of `kind` over
 /// `y_min..y_max`.
@@ -99,63 +78,20 @@ fn chart_with_y(scale: AxisScale, y_min: f64, y_max: f64) -> renderer::Config {
     chart.config().clone()
 }
 
-fn markers(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: color,
-                point_shape: ScatterShape::SquareFilled,
-                point_size: 8.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    }
-}
-
 fn export(
     r: &mut Renderer,
     config: &renderer::Config,
     series: &[SeriesConfig],
     scale: f32,
 ) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportSource::chart(&mut chart, series),
         // The whole document: overlay layers and subplots draw too.
         renderer::ExportOptions::document(scale),
     )
     .block_on()
     .unwrap()
-}
-
-fn pixel(img: &RasterImage, x: u32, y: u32) -> [u8; 4] {
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn is(color: Color) -> impl Fn([u8; 4]) -> bool {
-    let [r, g, b] = [color.r, color.g, color.b].map(|c| (c * 255.0).round() as i32);
-    move |p| {
-        (p[0] as i32 - r).abs() < 40 && (p[1] as i32 - g).abs() < 40 && (p[2] as i32 - b).abs() < 40
-    }
 }
 
 /// The data area of `config` at `scale`, in image pixels.
@@ -178,74 +114,6 @@ fn chrome_at(
     let fx = renderer::layout::axis_fraction(x, &scaled.bottom_x, aw);
     let fy = renderer::layout::axis_fraction(y, y_axis.unwrap_or(&scaled.left_y), ah);
     (ax + aw * fx, ay + ah * (1.0 - fy))
-}
-
-/// The centroid of the pixels matching `pred` within `radius` of `(cx, cy)`.
-fn centroid(
-    img: &RasterImage,
-    (cx, cy): (f32, f32),
-    radius: f32,
-    pred: impl Fn([u8; 4]) -> bool,
-) -> Option<(f32, f32)> {
-    let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
-    let lo = |c: f32| (c - radius).max(0.0) as u32;
-    for y in lo(cy)..((cy + radius) as u32).min(img.height) {
-        for x in lo(cx)..((cx + radius) as u32).min(img.width) {
-            if pred(pixel(img, x, y)) {
-                sx += x as f32 + 0.5;
-                sy += y as f32 + 0.5;
-                n += 1.0;
-            }
-        }
-    }
-    (n > 0.0).then(|| (sx / n, sy / n))
-}
-
-/// What a data pick at `at` (image pixels) answers, as `(series_id, point
-/// index)`.
-fn pick_at(
-    r: &mut Renderer,
-    config: &renderer::Config,
-    series: &[SeriesConfig],
-    at: (f32, f32),
-    scale: f32,
-) -> Option<(String, usize)> {
-    let panel = config.chart_area.0;
-    let id = r.register_chart(config.clone(), series.to_vec()).unwrap();
-    let request = renderer::GpuPickRequest {
-        canvas_position_px: [at.0, at.1],
-        display_panel_px: Rect {
-            x: 0,
-            y: 0,
-            width: ((panel.x + panel.width) as f32 * scale) as u32,
-            height: ((panel.y + panel.height) as f32 * scale) as u32,
-        },
-        display_scale: scale,
-        max_distance_px: 6.0 * scale,
-    };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
-    r.remove_chart(id).unwrap();
-    match hit {
-        Some(renderer::PickedData::Point {
-            series_id,
-            point_index,
-            ..
-        }) => Some((series_id, point_index)),
-        Some(other) => panic!("unexpected pick {other:?}"),
-        None => None,
-    }
-}
-
-fn picked(mut config: renderer::Config, series_id: &str, index: usize) -> renderer::Config {
-    config.picked_data = Some(renderer::DataSelectionsConfig {
-        refs: vec![renderer::PickedDataRef::Point {
-            source_id: None,
-            series_id: series_id.into(),
-            point_index: index,
-        }],
-        ..Default::default()
-    });
-    config
 }
 
 /// Points in both tails and at the median, inside the [`LO`]..[`HI`] axis

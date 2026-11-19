@@ -47,6 +47,9 @@ pub(in crate::web) async fn create_chart_kernel(
         width: w,
         height: h,
     });
+    // A new chart's layout follows what it holds: each default frame or
+    // export after an edit fits it (#357), until the user moves part of it.
+    config.layout_state = renderer::LayoutState::NeedsFit;
     let chart_id = renderer
         .register_chart(config.clone(), Vec::new())
         .map_err(js_err)?;
@@ -84,7 +87,8 @@ pub(in crate::web) async fn create_chart_kernel(
         dragging: false,
         drag_pointer: [0.0; 2],
         resizing: None,
-        cycle: renderer::ColorCycle::Classic,
+        // A new series takes the default palette's next colour (#357).
+        cycle: renderer::ColorCycle::DEFAULT,
         clear_color: Color::WHITE,
         view_dirty: false,
         redraw_pending: true,

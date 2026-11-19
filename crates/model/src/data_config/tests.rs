@@ -16,6 +16,7 @@ mod vector_style_tests {
             head_width_px: 6.0,
             min_length_px: 0.0,
             color_map: None,
+            auto_scale: false,
         }
     }
 
@@ -63,6 +64,47 @@ mod vector_style_tests {
         assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (f64::NAN, 1.0), 1.0));
         assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (0.0, 1.0), -1.0));
         assert_eq!(data.scale, VectorScale::Data { factor: 2.0 });
+    }
+
+    // The auto-scale target is the mean spacing between the arrows over
+    // the data area, a little short of it, never shorter than the head
+    // (#357); an explicit fit turns auto-scaling off.
+    #[test]
+    fn auto_scale_targets_the_arrow_spacing() {
+        let mut style = style(VectorScale::Pixels { px_per_unit: 1.0 });
+        style.auto_scale = true;
+        // 25 x 17 arrows on a 650 x 450 area: about 26.2 px apart.
+        let target = style.auto_scale_target_px(25 * 17, 650.0, 450.0).unwrap();
+        let spacing = (650.0f64 * 450.0 / 425.0).sqrt();
+        assert!((target - spacing * VectorStyle::AUTO_SCALE_SPACING).abs() < 1e-9);
+        // Dense arrows still get a head's length.
+        let dense = style.auto_scale_target_px(1_000_000, 100.0, 100.0).unwrap();
+        assert_eq!(dense, f64::from(style.head_length_px));
+        assert_eq!(style.auto_scale_target_px(0, 100.0, 100.0), None);
+        assert_eq!(style.auto_scale_target_px(4, 0.0, 100.0), None);
+        assert_eq!(style.auto_scale_target_px(4, f64::NAN, 100.0), None);
+        assert!(style.fit_scale((-1.0, 1.0), (0.0, 1.0), target));
+        assert!(!style.auto_scale, "an explicit fit fixes the scale");
+        let mut style = self::style(VectorScale::Pixels { px_per_unit: 1.0 });
+        style.auto_scale = true;
+        assert!(style.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (0.0, 1.0), 10.0));
+        assert!(!style.auto_scale);
+    }
+
+    // A document written before `auto_scale` reads it off, and it is only
+    // written when on (#357).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_scale_is_optional_on_the_wire() {
+        let off = style(VectorScale::Pixels { px_per_unit: 1.0 });
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(!json.contains("auto_scale"), "{json}");
+        assert_eq!(serde_json::from_str::<VectorStyle>(&json).unwrap(), off);
+        let mut on = off.clone();
+        on.auto_scale = true;
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains("\"auto_scale\":true"), "{json}");
+        assert_eq!(serde_json::from_str::<VectorStyle>(&json).unwrap(), on);
     }
 
     #[test]
@@ -497,6 +539,7 @@ mod serde_tests {
             head_width_px: 6.0,
             min_length_px: 2.0,
             color_map: Some(VectorColorMap::Column("speed".into())),
+            auto_scale: false,
         };
         let points = SeriesConfig {
             series_id: "flow".into(),
@@ -535,6 +578,7 @@ mod serde_tests {
                 style: VectorStyle {
                     scale: VectorScale::Data { factor: 0.5 },
                     color_map: Some(VectorColorMap::Grid(grid(&["m0", "m1"]))),
+                    auto_scale: false,
                     ..style
                 },
             }),
@@ -2851,6 +2895,7 @@ mod step_selection_tests {
                 head_width_px: 4.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
         })
     }
@@ -3931,6 +3976,7 @@ mod hexagonal_tests {
                     pivot: crate::defaults::vector_pivot(),
                     min_length_px: 0.0,
                     color_map: None,
+                    auto_scale: false,
                 },
             }))]),
             Err(crate::RuleKind::HexagonalGridVector)

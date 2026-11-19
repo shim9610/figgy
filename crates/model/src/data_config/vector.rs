@@ -223,9 +223,28 @@ pub struct VectorStyle {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub color_map: Option<VectorColorMap>,
+    /// Whether a whole-chart fit rewrites [`Self::scale`] from the data
+    /// (#357): `Renderer::commit_auto_fit_all` and
+    /// `Renderer::fit_vector_scales` set it so the longest vector the
+    /// component columns' statistics allow draws about as long as the
+    /// spacing between arrows ([`Self::auto_scale_target_px`]). The arrows
+    /// always draw at [`Self::scale`]; this flag only says that a fit may
+    /// write it. The series constructors turn it on; an explicit scale
+    /// ([`Self::fit_scale`], [`Self::fit_scale_3d`], the `vector_scale`
+    /// builder) turns it off. A document that omits it reads `false`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "VectorStyle::is_false")
+    )]
+    pub auto_scale: bool,
 }
 
 impl VectorStyle {
+    /// The fraction of the spacing between arrows that an auto-scaled
+    /// field's longest vector draws ([`Self::auto_scale_target_px`]): a
+    /// little short of the spacing, so neighbouring arrows do not touch.
+    pub const AUTO_SCALE_SPACING: f64 = 0.9;
+
     /// The validation reason for a non-finite or negative pixel size.
     pub const INVALID_PIXELS_REASON: crate::RuleKind = crate::RuleKind::VectorPixels;
     /// The validation reason for a non-finite or zero scale.
@@ -234,6 +253,29 @@ impl VectorStyle {
     #[cfg(feature = "serde")]
     fn is_zero(value: &f32) -> bool {
         *value == 0.0
+    }
+
+    #[cfg(feature = "serde")]
+    fn is_false(value: &bool) -> bool {
+        !*value
+    }
+
+    /// The length, in logical pixels, that an auto-scaled field fits its
+    /// longest vector to (#357): the mean spacing between `arrows` anchors
+    /// spread over a `width` × `height` logical-pixel data area,
+    /// `sqrt(width * height / arrows)`, times
+    /// [`Self::AUTO_SCALE_SPACING`], and never shorter than the head
+    /// (`head_length_px`), so the smallest fitted arrow still shows one.
+    /// A display parameter chosen from the column statistics (rule 1): the
+    /// arrow count is the component columns' registered length. `None` for
+    /// no arrows or an empty or non-finite area.
+    pub fn auto_scale_target_px(&self, arrows: usize, width: f64, height: f64) -> Option<f64> {
+        let area = width * height;
+        if arrows == 0 || !area.is_finite() || area <= 0.0 {
+            return None;
+        }
+        let spacing = (area / arrows as f64).sqrt() * Self::AUTO_SCALE_SPACING;
+        Some(spacing.max(f64::from(self.head_length_px)))
     }
 
     /// Validate invariants owned by the style itself.
@@ -265,6 +307,9 @@ impl VectorStyle {
     /// different samples. The bounds are the component columns' statistics,
     /// which the host already has.
     ///
+    /// An explicit scale: a successful fit turns [`Self::auto_scale`] off,
+    /// so a later whole-chart fit keeps it.
+    ///
     /// A display helper, like `PointSizeMap::fit_domain`: it writes only the
     /// scale value. A non-finite or zero extent, or a `target` that is not
     /// finite and positive, leaves the style unchanged and returns `false`.
@@ -283,6 +328,7 @@ impl VectorStyle {
             VectorScale::Data { factor } => *factor = target / longest,
             VectorScale::Pixels { px_per_unit } => *px_per_unit = target / longest,
         }
+        self.auto_scale = false;
         true
     }
 
@@ -316,6 +362,7 @@ impl VectorStyle {
             VectorScale::Data { factor } => *factor = target / longest,
             VectorScale::Pixels { px_per_unit } => *px_per_unit = target / longest,
         }
+        self.auto_scale = false;
         true
     }
 }

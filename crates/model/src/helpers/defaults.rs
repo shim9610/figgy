@@ -299,15 +299,19 @@ impl Default for crate::decoration::DecorationLayout {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::energy_level_series`.
 impl Default for crate::energy_levels::EnergyLevelSeries {
     fn default() -> Self {
-        crate::defaults::energy_level_series()
+        crate::defaults::grotrian_level_series()
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::energy_level_style`.
 impl Default for crate::energy_levels::EnergyLevelStyle {
     fn default() -> Self {
-        crate::defaults::energy_level_style()
+        crate::defaults::grotrian_level_style()
     }
 }
 
@@ -329,9 +333,11 @@ impl Default for crate::energy_levels::LevelRole {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::level_stroke_style`.
 impl Default for crate::energy_levels::LevelStrokeStyle {
     fn default() -> Self {
-        crate::defaults::level_stroke_style()
+        crate::defaults::grotrian_level_stroke_style()
     }
 }
 
@@ -341,9 +347,11 @@ impl Default for crate::energy_levels::LevelView {
     }
 }
 
+/// The Grotrian look a host-built series starts with (#357); a document
+/// that omits the value reads `crate::defaults::transition_arrow_style`.
 impl Default for crate::energy_levels::TransitionArrowStyle {
     fn default() -> Self {
-        crate::defaults::transition_arrow_style()
+        crate::defaults::grotrian_transition_arrow_style()
     }
 }
 
@@ -733,6 +741,9 @@ impl Default for crate::data_config::VectorStyle {
             head_width_px: 8.0,
             min_length_px: 0.0,
             color_map: None,
+            // A fit sizes the arrows to their spacing (#357): `|v|` pixels
+            // draws a unit field as specks.
+            auto_scale: true,
         }
     }
 }
@@ -757,7 +768,7 @@ impl Default for crate::data_config::ContourLabelConfig {
             significant_digits: 2,
             spacing_px: 120.0,
             anchors: Vec::new(),
-            bg_color: None,
+            bg_color: crate::defaults::contour_label_background(),
             bg_padding_px: 2.0,
         }
     }
@@ -847,5 +858,31 @@ mod tests {
         VectorStyle::default().validate().unwrap();
         let wireframe = crate::view3d::SurfaceWireframe::default();
         assert!(wireframe.width > 0.0 && wireframe.width.is_finite());
+    }
+
+    // The field defaults of #357: arrows that a fit sizes to their spacing,
+    // and black contour labels on a translucent white plate. A document
+    // that omits them still reads the earlier values, so stored documents
+    // draw unchanged.
+    #[test]
+    fn field_defaults_are_readable() {
+        let vectors = VectorStyle::default();
+        assert!(vectors.auto_scale);
+        assert_eq!(vectors.scale, crate::defaults::vector_scale());
+        let labels = ContourLabelConfig::default();
+        assert_eq!(labels.color, crate::color::Color::BLACK);
+        let plate = labels.bg_color.expect("a label plate");
+        assert_eq!((plate.r, plate.g, plate.b), (1.0, 1.0, 1.0));
+        assert!(plate.a > 0.5 && plate.a < 1.0, "translucent: {plate:?}");
+        #[cfg(feature = "serde")]
+        {
+            let mut json = serde_json::to_value(&labels).unwrap();
+            json.as_object_mut().unwrap().remove("bg_color");
+            let back: ContourLabelConfig = serde_json::from_value(json).unwrap();
+            assert_eq!(back.bg_color, None);
+            let back: ContourLabelConfig =
+                serde_json::from_str(&serde_json::to_string(&labels).unwrap()).unwrap();
+            assert_eq!(back, labels);
+        }
     }
 }

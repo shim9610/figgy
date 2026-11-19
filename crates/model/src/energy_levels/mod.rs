@@ -1780,6 +1780,42 @@ mod tests {
         assert_eq!(chart().validate_series(&[series("big", levels)]), Ok(()));
     }
 
+    // #357: a host-built series starts with the Grotrian look and writes
+    // it in full; a document that omits its style still reads the earlier
+    // default, so older documents draw as they did.
+    #[cfg(all(feature = "serde", feature = "helpers"))]
+    #[test]
+    fn a_host_built_series_writes_its_look_and_older_documents_keep_theirs() {
+        let built = EnergyLevelSeries::default();
+        assert_eq!(built.style.level.width, 3.0);
+        assert_eq!(built.style.transition.width, 2.25);
+        let arrow = &built.style.transition;
+        assert_eq!((arrow.head_length, arrow.head_width), (13.0, 10.0));
+        assert_eq!(built.style.limit.width, 2.0);
+        assert_eq!(built.style.validate(), Ok(()));
+        let item = series(
+            "he",
+            EnergyLevelSeries {
+                levels: helium().levels,
+                ..built
+            },
+        );
+        let json = serde_json::to_value(&item).unwrap();
+        let body = &json["render_type"]["EnergyLevels"];
+        assert_eq!(body["style"]["level"]["width"], 3.0);
+        let back: SeriesConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back, item);
+        // An older document without a style reads the serde default.
+        let older = serde_json::to_value(series("he", helium())).unwrap();
+        assert!(older["render_type"]["EnergyLevels"].get("style").is_none());
+        let older: SeriesConfig = serde_json::from_value(older).unwrap();
+        let DataRenderType::EnergyLevels(older) = older.render_type else {
+            panic!("an energy-level series");
+        };
+        assert_eq!(older.style, crate::defaults::energy_level_style());
+        assert_eq!(older.style.level.width, 2.0);
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn the_series_round_trips_and_omits_its_defaults() {

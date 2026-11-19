@@ -94,6 +94,22 @@ impl Probe {
     }
 }
 
+/// The digit count and the largest drawn size of a rich text drawn at
+/// `scale` times its stored sizes.
+fn rich_probe(rich: &crate::text::RichText, scale: f32) -> (usize, f32) {
+    (
+        rich.segments
+            .iter()
+            .filter(|s| s.text.is_ascii_digit())
+            .count(),
+        rich.segments
+            .iter()
+            .map(|s| s.font_size.unwrap_or(rich.font_size))
+            .fold(0.0, f32::max)
+            * scale,
+    )
+}
+
 impl Sink for Probe {
     fn text(&mut self, _slot: Slot, text: &PlacedText<'_>) {
         self.add(text.rect());
@@ -101,16 +117,8 @@ impl Sink for Probe {
             TextRef::Plain { text, size, .. } => {
                 (text.chars().filter(char::is_ascii_digit).count(), size)
             }
-            TextRef::Rich(rich) => (
-                rich.segments
-                    .iter()
-                    .filter(|s| s.text.is_ascii_digit())
-                    .count(),
-                rich.segments
-                    .iter()
-                    .map(|s| s.font_size.unwrap_or(rich.font_size))
-                    .fold(0.0, f32::max),
-            ),
+            TextRef::Rich(rich) => rich_probe(rich, 1.0),
+            TextRef::ScaledRich { text, scale } => rich_probe(text, scale),
         };
         self.digits = self.digits.max(digits);
         if size.is_finite() {
@@ -489,6 +497,9 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   it needs is placed the title gap past its labels, whatever offset it
 ///   had. A cell that shares no row or column with another keeps its own
 ///   fit, and a widening that would leave a cell no data area is not made.
+/// - **State.** A config whose [`Config::layout_state`] is
+///   [`LayoutState::NeedsFit`](crate::config::LayoutState::NeedsFit) comes
+///   back `Fitted` (#357); a `Fixed` or `Fitted` one keeps its state.
 ///
 /// Not covered: overlay axes drawn over each other or over the parent's
 /// right or top axis (only `line_offset` separates them; a polar chart's radius
@@ -518,6 +529,11 @@ pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
     for (subplot, stored) in out.subplots.iter_mut().zip(&cfg.subplots) {
         subplot.config.scale_text_sizes(Some(&stored.config), 1.0);
         subplot.text_scale = stored.text_scale;
+    }
+    // A layout waiting for its fit has it now (#357); a fixed or fitted one
+    // keeps its state.
+    if out.layout_state.needs_fit() {
+        out.layout_state = crate::config::LayoutState::Fitted;
     }
     out
 }
@@ -1532,6 +1548,100 @@ pub(super) mod tests {
         cfg.left_y.title_option.text.segments = crate::text::rich_segments_from_text(left);
         cfg.bottom_x.title_option.text.segments = crate::text::rich_segments_from_text("x");
         cfg
+    }
+
+    // #357: the layout state. `auto_layout` fits a `NeedsFit` layout into
+    // `Fitted` and keeps `Fixed` and `Fitted`; an edit of a fitted layout
+    // asks for its fit again; a move of the user fixes it; a rejected move
+    // changes nothing; and the state is absent from JSON while `Fixed`.
+    #[test]
+    fn layout_state_follows_fits_edits_and_moves() {
+        use crate::config::LayoutState::{Fitted, Fixed, NeedsFit};
+        let measure = Labels;
+        let mut pending = with_titles("Amplitude");
+        pending.layout_state = NeedsFit;
+        let fitted = auto_layout(&pending, &measure);
+        assert_eq!(fitted.layout_state, Fitted);
+        let mut fixed = pending.clone();
+        fixed.layout_state = Fixed;
+        assert_eq!(
+            auto_layout(&fixed, &measure),
+            Config {
+                layout_state: Fixed,
+                ..fitted.clone()
+            },
+            "the fit itself is the same in every state"
+        );
+        assert_eq!(auto_layout(&fitted, &measure), fitted, "idempotent");
+
+        assert_eq!(Fitted.after_edit(Fitted), NeedsFit);
+        assert_eq!(Fitted.after_edit(Fixed), Fixed);
+        assert_eq!(NeedsFit.after_edit(Fitted), Fitted);
+        assert_eq!(Fixed.after_edit(Fixed), Fixed);
+        assert_eq!(NeedsFit.after_edit(NeedsFit), NeedsFit);
+
+        let mut moved = fitted.clone();
+        assert_eq!(
+            moved.nudge(
+                Element::AxisTitle(Side::Left),
+                &crate::select::tests::LaysOut,
+                -4.0,
+                2.0
+            ),
+            crate::layout::NudgeResult::Moved
+        );
+        assert_eq!(moved.layout_state, Fixed, "a drag fixes the layout");
+        let mut resized = fitted.clone();
+        assert_eq!(
+            resized.nudge(
+                Element::DataAreaEdge(Side::Left),
+                &crate::select::tests::LaysOut,
+                10.0,
+                0.0
+            ),
+            crate::layout::NudgeResult::Moved
+        );
+        assert_eq!(resized.layout_state, Fixed, "a plot-area resize fixes it");
+        let mut rejected = fitted.clone();
+        assert!(matches!(
+            rejected.nudge(
+                Element::AxisTitle(Side::Left),
+                &crate::select::tests::LaysOut,
+                -1e6,
+                0.0
+            ),
+            crate::layout::NudgeResult::Rejected(_)
+        ));
+        assert_eq!(rejected, fitted, "a rejected move changes nothing");
+
+        let mut placed = fitted.clone();
+        let mut area = placed.data_area().unwrap();
+        area.0.width -= 20;
+        placed
+            .fit_to_data_area(area, crate::layout::FitStrategy::PreserveTitles)
+            .unwrap();
+        assert_eq!(placed.layout_state, Fixed, "a placed data area is kept");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn layout_state_is_absent_from_json_while_fixed() {
+        use crate::config::LayoutState;
+        let fixed = crate::defaults::config();
+        let json = serde_json::to_value(&fixed).unwrap();
+        assert!(json.get("layout_state").is_none());
+        for (state, wire) in [
+            (LayoutState::NeedsFit, "needs_fit"),
+            (LayoutState::Fitted, "fitted"),
+        ] {
+            let config = Config {
+                layout_state: state,
+                ..fixed.clone()
+            };
+            let json = serde_json::to_value(&config).unwrap();
+            assert_eq!(json["layout_state"], wire);
+            assert_eq!(serde_json::from_value::<Config>(json).unwrap(), config);
+        }
     }
 
     /// `out` with every field `auto_layout` writes on the four axes and the

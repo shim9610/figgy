@@ -4701,14 +4701,14 @@ fn paint_view(
     selected: Option<usize>,
 ) -> Result<RasterImage, String> {
     let e = |e: renderer::FiggyError| e.to_string();
-    let chart = Chart::new(cfg.clone());
+    let mut chart = Chart::new(cfg.clone());
     let rect = cfg.chart_area.0;
     let mut view = r.create_chart_view(&chart, rect).map_err(e)?;
     r.refresh_annotations(&mut view, &chart, rect, selected)
         .map_err(e)?;
     let mut items = [renderer::ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &[],
     }];
     let prepared = r.prepare(&mut items).map_err(e)?;

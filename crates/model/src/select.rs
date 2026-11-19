@@ -1040,6 +1040,8 @@ fn drag_overlay_axis_element(
             Side::Top => adopt_overlay_axis(&mut overlay.x_axis, &panel.top_x),
             _ => adopt_overlay_axis(&mut overlay.y_axis, &panel.right_y),
         }
+        // The user moved part of the document's layout (#357).
+        cfg.layout_state = crate::config::LayoutState::Fixed;
     }
     result
 }
@@ -1164,6 +1166,8 @@ impl Draggable for OverlayLegendElement {
         {
             legend.offset_x = panel.legend.offset_x;
             legend.offset_y = panel.legend.offset_y;
+            // The user moved part of the document's layout (#357).
+            cfg.layout_state = crate::config::LayoutState::Fixed;
         }
         result
     }

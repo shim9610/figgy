@@ -246,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "line.png".into());
     let options = ExportOptions::panel(1.0).with_clear(Color::WHITE);
-    renderer.save_blocking(ExportSource::chart(&chart, &series), options, &output)?;
+    renderer.save_blocking(ExportSource::chart(&mut chart, &series), options, &output)?;
     println!("{}", std::path::Path::new(&output).display());
     Ok(())
 }
@@ -314,9 +314,9 @@ config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y
 for upload in &uploads {
     renderer.add_column(upload.column.clone(), &upload.values)?;
 }
-let chart = Chart::new(config);
+let mut chart = Chart::new(config);
 let image = renderer.export_rgba_blocking(
-    renderer::ExportSource::chart(&chart, &series),
+    renderer::ExportSource::chart(&mut chart, &series),
     renderer::ExportOptions::panel(1.0),
 )?;
 std::fs::write("radar.png", encode_png(&image)?)?;
@@ -414,3 +414,8 @@ Bundled fonts retain their OFL and GUST notices: [Liberation Sans](crates/render
 and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt) (SIL OFL 1.1), and
 [New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt) (GUST Font License),
 the face used for formulas in rich text.
+The palette presets ([`ColorCycle`](crates/renderer/USAGE.md#palette-presets)) keep their
+sources' terms: ColorBrewer Set2 and Dark2 (Apache-2.0; this product includes color
+specifications and designs developed by Cynthia Brewer, http://colorbrewer.org/),
+D3 category10 and Tableau 10 from d3-scale-chromatic (ISC), Plotly and Dark24 from
+plotly.py (MIT), and the Okabe–Ito palette.

@@ -13,13 +13,14 @@
 //! file exists to catch.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{col as col_f64, is_selection, pixel, probe_dir, to8, try_renderer};
 
 use renderer::config::AxisScale;
-use renderer::data::{Column, ColumnPairWriter, ColumnSource};
+use renderer::data::{ColumnPairWriter, ColumnSource};
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
     MatrixRef, Shading,
@@ -28,7 +29,7 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, PickedDataRef,
-    RasterImage, Renderer, RendererDevice, SeriesConfig, encode_png,
+    RasterImage, Renderer, SeriesConfig, encode_png,
 };
 
 const WIDTH: u32 = 480;
@@ -53,10 +54,6 @@ const NAN_PAINT: Color = Color {
     a: 1.0,
 };
 
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
 struct PairColumn {
     pairs: Vec<(f32, f32)>,
 }
@@ -71,39 +68,6 @@ impl ColumnSource for PairColumn {
             dst.write_pair(index, hi, lo);
         }
     }
-}
-
-/// The process-wide device, created once.
-///
-/// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
-/// creating one per test made this binary's tests contend for the driver and hold
-/// a device apiece. `column_upload_stats.rs` already pools this way — the pixel
-/// suites simply had not.
-///
-/// The `Renderer` is still per test: it owns the column pool, so sharing one
-/// would let test fixtures collide on column ids. Only the device is shared, and
-/// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
-fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
-    Some(
-        Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Bgra8Unorm,
-            4 * 1024 * 1024,
-        )
-        .expect("renderer init"),
-    )
 }
 
 fn colorbar(z_min: f64, z_max: f64, scale: AxisScale) -> ColorBarOptions {
@@ -195,15 +159,6 @@ fn heatmap(
     }
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_selection(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[2] > 180 && p[1] < 80
-}
-
 /// Data (x, y) → panel pixel, through the same data area and axis range the
 /// renderer draws with.
 fn data_to_px(chart: &Chart, x: f64, y: f64) -> (u32, u32) {
@@ -215,10 +170,6 @@ fn data_to_px(chart: &Chart, x: f64, y: f64) -> (u32, u32) {
         (da.x as f64 + tx * da.width as f64).round() as u32,
         ((da.y + da.height) as f64 - ty * da.height as f64).round() as u32,
     )
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 /// Assert the pixel at a data-space point is the colour the CPU says that z has.
@@ -280,7 +231,7 @@ fn every_cell_carries_its_own_value_colour() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     let series = vec![heatmap(
         &["z0", "z1", "z2"],
         MatrixOrientation::ColumnsAreX,
@@ -291,7 +242,7 @@ fn every_cell_carries_its_own_value_colour() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -338,7 +289,7 @@ fn selected_matrix_cell_outlines_the_canonical_xy_cell() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -398,7 +349,7 @@ fn selected_contour_level_is_redrawn_from_the_same_field_snapshot() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -438,7 +389,7 @@ fn nothing_is_painted_outside_the_grid() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -499,7 +450,7 @@ fn a_nan_cell_takes_the_nan_colour() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -541,7 +492,7 @@ fn columns_are_y_reads_the_grid_transposed() {
     }];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -606,7 +557,7 @@ fn centers_layout_puts_the_cell_around_its_coordinate() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -674,7 +625,7 @@ fn interpolated_shading_blends_between_sample_points() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -735,7 +686,7 @@ fn bands_quantize_the_ramp_into_flat_steps() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     // One level at 2.5: z 0/1/2 fall below it, z 3/4/5 above.
     let series = vec![heatmap(
         &["z0", "z1", "z2"],
@@ -747,7 +698,7 @@ fn bands_quantize_the_ramp_into_flat_steps() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -805,7 +756,7 @@ fn interpolated_finite_pairs_that_overflow_reconstruction_take_nan_colour() {
     )];
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -846,7 +797,7 @@ fn nonfinite_coordinate_boundaries_leave_flat_field_unpainted() {
     let image = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[heatmap(
                     &["z0"],
                     MatrixOrientation::ColumnsAreX,
@@ -862,7 +813,7 @@ fn nonfinite_coordinate_boundaries_leave_flat_field_unpainted() {
         .unwrap();
     let empty = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[]),
+            renderer::ExportSource::chart(&mut chart, &[]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -882,7 +833,7 @@ fn a_1024_level_banded_fill_counts_unsorted_duplicates_by_value() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     let mut levels: Vec<f64> = (0..renderer::MAX_CONTOUR_LEVELS)
         .map(|index| ((index * 37) % 11) as f64 - 2.0)
         .collect();
@@ -901,7 +852,7 @@ fn a_1024_level_banded_fill_counts_unsorted_duplicates_by_value() {
     )];
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -964,7 +915,7 @@ fn a_logarithmic_colourbar_maps_z_by_its_logarithm() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1069,7 +1020,7 @@ fn three_hundred_heatmaps_in_one_frame_all_draw() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     let series: Vec<SeriesConfig> = (0..300)
         .map(|k| {
             let mut s = heatmap(
@@ -1087,7 +1038,7 @@ fn three_hundred_heatmaps_in_one_frame_all_draw() {
     for _ in 0..2 {
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1095,17 +1046,6 @@ fn three_hundred_heatmaps_in_one_frame_all_draw() {
         let px = data_to_px(&chart, 2.5, 1.5);
         assert_colour_at(&img, px, bar.color_for_z(Z[2][1]), "cell (2,1)");
     }
-}
-
-/// Where the saved images land: `$FIGGY_PROBE_DIR` when set (`ci/verify.py`
-/// points it at the CI image directory), otherwise Cargo's per-target scratch
-/// directory under `target/`, so a plain test run never writes into the
-/// source tree.
-fn probe_dir() -> String {
-    let dir = std::env::var("FIGGY_PROBE_DIR")
-        .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
-    std::fs::create_dir_all(&dir).expect("create probe directory");
-    dir
 }
 
 /// Save a rendered field as a PNG. The pixel assertions are the gate; the
