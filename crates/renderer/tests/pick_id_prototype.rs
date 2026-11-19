@@ -409,8 +409,8 @@ fn nearest_pick(
 /// scenes. Today a click hits when the exact picker finds the cursor inside
 /// a drawn shape (`max_distance_px` 0). Under the rule, the cursor hits when
 /// the drawn pixel under it has data ink, and the hit is the nearest datum
-/// (the first of the [`renderer::PICK_NEAREST_K`] the kernel returns, with
-/// no reach), whichever series it belongs to. Data ink here is the export
+/// over every series (each series' nearest, with no reach, then the
+/// nearest of those), whichever series it belongs to. Data ink here is the export
 /// with the scene's series against the export without them (a channel
 /// difference of at least 6), which stands in for the panel's resolved
 /// data pixels. Only the point picker's families count as ink (the other
@@ -421,12 +421,12 @@ fn nearest_pick(
 ///   today's series, and how often the same series answers another index.
 #[test]
 #[ignore = "measurement (#381): run in release with --ignored"]
-fn nearest_k_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
+fn nearest_per_series_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
     let step = env_f32("FIGGY_PICK_ID_STEP", 6.0);
     let mut rows = Vec::new();
     let mut total = [0usize; 8];
     println!(
-        "| scene | positions | today hits | ink hits | hit/no-hit agree | ink only | today only | both: other series | both: same series, other index | K returned (min) | today ms | nearest ms |"
+        "| scene | positions | today hits | ink hits | hit/no-hit agree | ink only | today only | both: other series | both: same series, other index | series answered (min) | today ms | nearest ms |"
     );
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for kind in SceneKind::ALL {
@@ -522,11 +522,11 @@ fn nearest_k_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
                     continue;
                 };
                 let started = Instant::now();
-                let nearest = nearest_pick(&mut r, target, request(x, y, 0.0))
-                    .unwrap_or_else(|error| panic!("{}: {error}", kind.label()))
-                    .nearest;
+                let picked = nearest_pick(&mut r, target, request(x, y, 0.0))
+                    .unwrap_or_else(|error| panic!("{}: {error}", kind.label()));
                 nearest_time += started.elapsed();
-                min_k = min_k.min(nearest.len());
+                min_k = min_k.min(picked.per_series.len());
+                let nearest = picked.nearest;
                 let hit = ink(x, y);
                 t[0] += 1;
                 t[1] += usize::from(today.is_some());
@@ -537,7 +537,7 @@ fn nearest_k_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
                     (Some(_), false) => t[5] += 1,
                     (Some(e), true) => {
                         t[3] += 1;
-                        match nearest.first() {
+                        match nearest.as_ref() {
                             Some(n) if n.series_id != e.series_id => t[6] += 1,
                             Some(n) if n.point_index != e.point_index => t[7] += 1,
                             Some(_) => {}
@@ -601,9 +601,9 @@ fn nearest_k_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ci-results");
     std::fs::create_dir_all(&out).ok();
     std::fs::write(
-        out.join("pick_nearest_k_agreement.csv"),
+        out.join("pick_nearest_per_series_agreement.csv"),
         format!(
-            "scene,positions,today_hits,ink_hits,agree,ink_only,today_only,other_series,other_index,min_k,today_ms,nearest_ms\n{}\n",
+            "scene,positions,today_hits,ink_hits,agree,ink_only,today_only,other_series,other_index,min_series,today_ms,nearest_ms\n{}\n",
             rows.join("\n")
         ),
     )

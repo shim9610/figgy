@@ -1,6 +1,6 @@
 // Runs the nearest-datum pick kernel (#381 prototype) in headless Chromium
-// and times one pick per size: the kernel over every datum, the merge of the
-// per-workgroup K nearest and the readback of the K nearest. Measurement only.
+// and times one pick per size: the kernel over every datum and the readback
+// of its per-workgroup candidates. Measurement only.
 //
 // node ci/pick_nearest_browser.cjs target/ci-results/pick_nearest_browser.json report.json
 //
@@ -69,7 +69,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) n
         layout: device.createPipelineLayout({bindGroupLayouts: groups}),
         compute: {module, entryPoint: 'pick_nearest_points'},
       });
-      window.merge = await device.createComputePipelineAsync({layout: 'auto', compute: {module, entryPoint: 'pick_nearest_merge'}});
       window.compileMs = performance.now() - start;
       window.fill = await device.createComputePipelineAsync({layout: 'auto', compute: {module: device.createShaderModule({code: fillSource}), entryPoint: 'main'}});
       return {architecture: adapter.info.architecture, maxStorageBufferBindingSize: limits.maxStorageBufferBindingSize, maxBufferSize: limits.maxBufferSize, compileMs: window.compileMs};
@@ -77,7 +76,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) n
     console.log(JSON.stringify(report.adapter));
     for (const c of inputs.cases) {
       for (const allInside of [false, true]) {
-        const row = await page.evaluate(async ({c, allInside, candidateBytes, k}) => {
+        const row = await page.evaluate(async ({c, allInside, candidateBytes}) => {
           const poolBytes = c.points * 16;
           if (poolBytes > device.limits.maxStorageBufferBindingSize) {
             return {points: c.points, allInside, refused: `pool of ${poolBytes} B exceeds the ${device.limits.maxStorageBufferBindingSize} B storage binding`};
@@ -99,14 +98,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) n
           await device.queue.onSubmittedWorkDone();
           const params = buffer(c.params.length * 4, S.UNIFORM | S.COPY_DST);
           device.queue.writeBuffer(params, 0, new Uint32Array(c.params));
-          const candidatesBytes = c.groups * k * candidateBytes;
-          const candidates = buffer(candidatesBytes, S.STORAGE);
-          const result = buffer(k * candidateBytes, S.STORAGE | S.COPY_SRC);
-          const readback = buffer(k * candidateBytes, S.MAP_READ | S.COPY_DST);
+          const candidatesBytes = c.groups * candidateBytes;
+          const candidates = buffer(candidatesBytes, S.STORAGE | S.COPY_SRC);
+          const readback = buffer(candidatesBytes, S.MAP_READ | S.COPY_DST);
           const small = () => buffer(64, S.STORAGE);
           const g0 = device.createBindGroup({layout: layouts[0], entries: [{binding: 0, resource: {buffer: pool}}, {binding: 1, resource: {buffer: small()}}, {binding: 2, resource: {buffer: candidates}}]});
           const g1 = device.createBindGroup({layout: layouts[1], entries: [{binding: 0, resource: {buffer: params}}, {binding: 1, resource: {buffer: small()}}, {binding: 2, resource: {buffer: small()}}, {binding: 3, resource: {buffer: small()}}]});
-          const gm = device.createBindGroup({layout: merge.getBindGroupLayout(0), entries: [{binding: 2, resource: {buffer: result}}, {binding: 3, resource: {buffer: candidates}}]});
           const g2 = device.createBindGroup({layout: layouts[2], entries: [{binding: 0, resource: {buffer: small()}}, {binding: 1, resource: {buffer: small()}}]});
           const pick = async () => {
             const start = performance.now();
@@ -116,29 +113,27 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) n
             pass.setBindGroup(0, g0); pass.setBindGroup(1, g1); pass.setBindGroup(2, g2);
             pass.dispatchWorkgroups(c.dispatch[0], c.dispatch[1]);
             pass.end();
-            const mergePass = encoder.beginComputePass();
-            mergePass.setPipeline(merge);
-            mergePass.setBindGroup(0, gm);
-            mergePass.dispatchWorkgroups(1);
-            mergePass.end();
-            encoder.copyBufferToBuffer(result, 0, readback, 0, k * candidateBytes);
+            encoder.copyBufferToBuffer(candidates, 0, readback, 0, candidatesBytes);
             device.queue.submit([encoder.finish()]);
             await readback.mapAsync(GPUMapMode.READ);
             const words = new Uint32Array(readback.getMappedRange().slice(0));
             readback.unmap();
             const floats = new Float32Array(words.buffer);
-            const nearest = [];
-            for (let j = 0; j < k; j++) if (words[j * 8] === 1) nearest.push({index: words[j * 8 + 2], d2: floats[j * 8 + 5]});
-            return {ms: performance.now() - start, best: nearest[0], returned: nearest.length};
+            let best = null;
+            for (let g = 0; g < c.groups; g++) {
+              const o = g * 8;
+              if (words[o] === 1 && (best === null || floats[o + 5] < best.d2)) best = {index: words[o + 2], d2: floats[o + 5]};
+            }
+            return {ms: performance.now() - start, best};
           };
           const first = await pick();
           const times = [];
           let best;
           for (let k = 0; k < 7; k++) { const r = await pick(); times.push(r.ms); best = r.best; }
           times.sort((a, b) => a - b);
-          for (const b of [pool, fillParams, params, candidates, result, readback]) b.destroy();
-          return {points: c.points, allInside, firstMs: first.ms, medianMs: times[3], hoverPerSecond: 1000 / times[3], best, returned: first.returned};
-        }, {c, allInside, candidateBytes: inputs.candidate_bytes, k: inputs.k});
+          for (const b of [pool, fillParams, params, candidates, readback]) b.destroy();
+          return {points: c.points, allInside, firstMs: first.ms, medianMs: times[3], hoverPerSecond: 1000 / times[3], best};
+        }, {c, allInside, candidateBytes: inputs.candidate_bytes});
         console.log(JSON.stringify(row));
         report.rows.push(row);
         fs.writeFileSync(output, JSON.stringify(report, null, 2));

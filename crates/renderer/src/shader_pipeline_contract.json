@@ -3897,25 +3897,13 @@
       "descriptor": {
         "compute": {
           "constants": {},
-          "entryPoint": "pick_nearest_merge"
-        },
-        "label": "figgy GPU pick nearest-datum merge pipeline",
-        "layout": "auto"
-      },
-      "kind": "compute",
-      "source": "6e1d6c4f44013c9d"
-    },
-    {
-      "descriptor": {
-        "compute": {
-          "constants": {},
           "entryPoint": "pick_nearest_points"
         },
         "label": "figgy GPU pick nearest-datum pipeline",
         "layout": 1
       },
       "kind": "compute",
-      "source": "6e1d6c4f44013c9d"
+      "source": "ce606385d24ea24f"
     },
     {
       "descriptor": {

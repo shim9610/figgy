@@ -161,7 +161,7 @@ pub use gpu_memory::{
 };
 pub use gpu_pick::{
     GpuPickError, GpuPickTicket, IdPickGeometry, IdPickHit, IdPickTicket, NearestDatum,
-    NearestPick, NearestPickTicket, PICK_NEAREST_K,
+    NearestPick, NearestPickTicket,
 };
 pub use gpu_readback::TryResolve;
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
