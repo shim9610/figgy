@@ -11,21 +11,23 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{fresh_gpu as gpu, upload};
 
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{
     AxisOptions, Category, DataSelectionsConfig, PickedDataRef, TickVisibility,
 };
-use renderer::data::Column;
 use renderer::format::{LabelFormat, PlainNumberFormat};
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side, axis_fraction};
 use renderer::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use renderer::{
     AxisLabelElement, Chart, Color, ColorBarOptions, Config, CpuTextMeasure, DataRenderType,
     DataScatterStyleConfig, Draggable, GpuPickRequest, HitMap, LayerRef, OverlayLayer, Renderer,
-    RendererDevice, ScatterShape, Selectable, SelectionGeometry, SeriesConfig, Subplot,
+    ScatterShape, Selectable, SelectionGeometry, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 640;
@@ -163,15 +165,6 @@ fn a_categorical_axis_rasterizes_like_its_numeric_twin() {
     .unwrap();
     let ink = |px: &[u8]| px.chunks_exact(4).filter(|p| p[3] > 0).count();
     assert!(ink(&left) > ink(&right), "staggered labels add ink");
-}
-
-fn gpu() -> RendererDevice {
-    let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue).expect("figgy poll thread")
-}
-
-fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    r.add_column(id, &Column { data }).unwrap();
 }
 
 fn markers(id: &str, x: &str, y: &str) -> SeriesConfig {

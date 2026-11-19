@@ -318,6 +318,19 @@ pub struct FieldTheme {
     /// The space around a contour label, logical pixels: the gap it leaves
     /// in its line.
     pub contour_label_padding: f32,
+    /// The fill behind each contour label (`ContourLabelConfig::bg_color`,
+    /// #357); `None` draws the text alone. The documented look puts a
+    /// translucent white plate behind its black labels so they read on
+    /// either end of a map.
+    pub contour_label_background: Option<Color>,
+    /// The contour lines' colour on a field or mesh without a fill (#357):
+    /// its lines are drawn straight on the plot background, which an ink
+    /// chosen for a map's colours may vanish into. `None` takes
+    /// [`Self::contour_color`], as a filled field does.
+    pub unfilled_contour_color: Option<Color>,
+    /// The contour labels' colour on a field without a fill (#357);
+    /// `None` takes [`Self::contour_label_color`].
+    pub unfilled_contour_label_color: Option<Color>,
 }
 
 /// Vector arrows.
@@ -1021,6 +1034,9 @@ impl Theme {
                     contour_label_color: contour_labels.color,
                     contour_label_size: contour_labels.font_size,
                     contour_label_padding: contour_labels.bg_padding_px,
+                    contour_label_background: contour_labels.bg_color,
+                    unfilled_contour_color: None,
+                    unfilled_contour_label_color: None,
                 },
                 vectors: VectorTheme {
                     width_px: vector.width_px,
@@ -1634,17 +1650,28 @@ impl Theme {
                 }
             }
         }
+        // Lines without a fill under them sit on the plot background, so
+        // they take the theme's ink for that (#357).
+        let unfilled = fill.is_none();
         if let (Some(opacity), Some(fill)) = (fields.fill_opacity, fill) {
             fill.opacity = opacity;
         }
         if let Some(contour) = contour {
-            if let Some(color) = fields.contour_color {
+            let line_color = match fields.unfilled_contour_color {
+                Some(color) if unfilled => Some(color),
+                _ => fields.contour_color,
+            };
+            if let Some(color) = line_color {
                 contour.line.line_color = color;
             }
             contour.line.line_width = fields.contour_width;
             if let Some(labels) = &mut contour.labels {
-                labels.color = fields.contour_label_color;
+                labels.color = match fields.unfilled_contour_label_color {
+                    Some(color) if unfilled => color,
+                    _ => fields.contour_label_color,
+                };
                 labels.font_size = fields.contour_label_size;
+                labels.bg_color = fields.contour_label_background;
                 labels.bg_padding_px = fields.contour_label_padding;
             }
         }

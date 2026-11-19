@@ -1369,7 +1369,23 @@ impl Renderer {
                 .into_iter()
                 .map(|(stamp, _, _, extent)| (stamp, extent)),
         );
+        // Auto-scaled arrows fit their spacing in the fitted chart (#357):
+        // the series are cloned only when a scale moves.
+        let rescaled = if state
+            .series
+            .iter()
+            .any(|item| auto_scaled_components(item).is_some())
+        {
+            let mut series = state.series.clone();
+            self.fit_vector_scales_unreported(chart.config(), &mut series)?
+                .then_some(series)
+        } else {
+            None
+        };
         self.set_chart_config(id, chart.config().clone())?;
+        if let Some(series) = rescaled {
+            self.set_chart_series_unreported(id, series)?;
+        }
         let state = self
             .chart_states
             .get_mut(&id)
@@ -1766,6 +1782,105 @@ impl Renderer {
         Ok(())
     }
 
+    /// Fit every auto-scaled vector series in `series` to the spacing of
+    /// its arrows (#357): each vector series with
+    /// `VectorStyle::auto_scale` on and a `VectorScale::Pixels` scale gets
+    /// the scale [`Self::fit_vector_scale`] writes for the target
+    /// `VectorStyle::auto_scale_target_px` chooses from its arrow count
+    /// (its `u` columns' registered length) and `config`'s data area, and
+    /// keeps `auto_scale` on. Only those scale values change; the arrows
+    /// draw at the written scale, so the SSOT always says how long they
+    /// are. A `Data` scale is an explicit unit choice and stays, as does a
+    /// series whose components are all zero or a config whose layout is
+    /// infeasible. [`Self::commit_auto_fit_all`] runs this on the chart's
+    /// own series; a host that fits with [`Self::fit_ranges`] calls it
+    /// with the fitted config.
+    ///
+    /// Refused, leaving every series unchanged: a component column that is
+    /// not registered (`UnknownColumn`) or streamed (`ColumnNotResident`,
+    /// rule 8).
+    pub fn fit_vector_scales(
+        &self,
+        config: &crate::Config,
+        series: &mut [SeriesConfig],
+    ) -> Result<()> {
+        let result = self
+            .fit_vector_scales_unreported(config, series)
+            .map(|_| ());
+        self.reported(result)
+    }
+
+    /// [`Self::fit_vector_scales`], reporting whether a scale changed.
+    fn fit_vector_scales_unreported(
+        &self,
+        config: &crate::Config,
+        series: &mut [SeriesConfig],
+    ) -> Result<bool> {
+        // Every refusal comes before the first write.
+        for item in series.iter() {
+            if let Some(components) = auto_scaled_components(item) {
+                self.vector_arrow_count(components)?;
+            }
+        }
+        let Ok(area) = config.data_area() else {
+            return Ok(false);
+        };
+        let (width, height) = (f64::from(area.0.width), f64::from(area.0.height));
+        let mut changed = false;
+        for item in series.iter_mut() {
+            let Some(components) = auto_scaled_components(item) else {
+                continue;
+            };
+            let arrows = self.vector_arrow_count(components)?;
+            let DataRenderType::Vector(VectorSeries { style, .. }) = &item.render_type else {
+                continue;
+            };
+            let Some(target) = style.auto_scale_target_px(arrows, width, height) else {
+                continue;
+            };
+            let before = style.scale.clone();
+            match self.fit_vector_scale_unreported(config, item, target) {
+                Ok(()) => {}
+                // A field of zero vectors has no scale to fit.
+                Err(FiggyError::InvalidSeriesConfig {
+                    kind: crate::RuleKind::VectorFitExtent,
+                    ..
+                }) => continue,
+                Err(error) => return Err(error),
+            }
+            if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut item.render_type {
+                // The explicit fit turned it off; this one is the automatic.
+                style.auto_scale = true;
+                changed |= style.scale != before;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// The number of arrows `components` draw: the registered length of
+    /// the `u` column, or of every column of a `u` grid.
+    fn vector_arrow_count(
+        &self,
+        components: &crate::data_config::VectorComponents,
+    ) -> Result<usize> {
+        let len = |id: &str| {
+            if self.streaming_sources.contains_key(id) {
+                return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
+            }
+            self.pool
+                .slot(id)
+                .map(|slot| slot.len_values)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.to_owned() })
+        };
+        match components {
+            crate::data_config::VectorComponents::Points { u, .. } => len(u),
+            crate::data_config::VectorComponents::Grid { u, .. } => u
+                .columns
+                .iter()
+                .try_fold(0usize, |sum, id| Ok(sum + len(id)?)),
+        }
+    }
+
     /// A resident column's cached statistics as a fit extent: a streamed
     /// source is `ColumnNotResident` (rule 8) and an unknown id
     /// `UnknownColumn`. Nothing is read back.
@@ -1774,6 +1889,20 @@ impl Renderer {
             return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
         }
         crate::chart::Chart::slot_extent(&self.pool, id)
+    }
+}
+
+/// The components of an auto-scaled vector series with a pixel scale, the
+/// series [`Renderer::fit_vector_scales`] fits (#357).
+fn auto_scaled_components(series: &SeriesConfig) -> Option<&crate::data_config::VectorComponents> {
+    match &series.render_type {
+        DataRenderType::Vector(VectorSeries { components, style })
+            if style.auto_scale
+                && matches!(style.scale, crate::data_config::VectorScale::Pixels { .. }) =>
+        {
+            Some(components)
+        }
+        _ => None,
     }
 }
 

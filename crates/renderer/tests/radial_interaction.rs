@@ -2,21 +2,17 @@
 //! and inspect pixels. A successful data pick does not cover decoration editing.
 #![cfg(not(target_arch = "wasm32"))]
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{
     layout::{NudgeResult, RectF, Side},
     *,
 };
-use std::sync::{Arc, Mutex, OnceLock};
+use harness::{gpu, ink};
+use std::sync::{Arc, Mutex};
 static LOCK: Mutex<()> = Mutex::new(());
-/// The shared test device in a bundle of its own per call, so each renderer
-/// a test builds charges its own ledger and budget (#160).
-fn gpu() -> RendererDevice {
-    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
-}
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 use radial_decorations::Decorations;
@@ -63,16 +59,6 @@ fn moved<F: Decorations>(
     // The same trait-object workflow as existing Cartesian charts.
     assert_eq!(f.drag(chart, hit, dx, dy), Some(NudgeResult::Moved));
     old
-}
-fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
-    let x0 = (r.x * scale).floor().max(0.) as u32;
-    let y0 = (r.y * scale).floor().max(0.) as u32;
-    let x1 = ((r.x + r.width) * scale).ceil().min(image.width as f32) as u32;
-    let y1 = ((r.y + r.height) * scale).ceil().min(image.height as f32) as u32;
-    (y0..y1)
-        .flat_map(|y| (x0..x1).map(move |x| ((y * image.width + x) * 4) as usize))
-        .filter(|&i| image.rgba[i..i + 3].iter().any(|v| *v < 200))
-        .count()
 }
 fn save(name: &str, img: &RasterImage) {
     if let Ok(dir) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {

@@ -985,6 +985,16 @@ An upserted value column restyles the points on the next draw.
   `VectorStyle::fit_scale(u_bounds, v_bounds, target_px_or_units)` writes it
   from statistics the host already has, the way `PointSizeMap::fit_domain`
   writes a domain, so appending a sample never rescales the others.
+- `auto_scale` (#357): whether a whole-chart fit may rewrite a `Pixels`
+  scale so the longest vector draws about as long as the spacing between
+  arrows, `VectorStyle::auto_scale_target_px` (`sqrt(data area / arrows)`
+  times 0.9, at least the head length). `Renderer::commit_auto_fit_all` (the
+  browser `auto_fit_all`) runs `Renderer::fit_vector_scales` on the chart's
+  series and stores the result in `scale`; a host that fits with
+  `fit_ranges` calls `fit_vector_scales` itself. The arrows always draw at
+  the stored `scale`. The series constructors turn it on; `fit_scale`,
+  `fit_scale_3d` and the `vector_scale` builder, explicit scales, turn it
+  off. Omitted from JSON while `false`, which a document without it reads.
 - `pivot`: `Tail` (default, the anchor is the tail), `Middle` or `Tip`.
 - `min_length_px`: an arrow shorter than this (after scaling) is not drawn;
   a zero vector, a non-finite component or a non-finite anchor draws nothing.
@@ -1319,7 +1329,12 @@ an x-axis interval, and `significant_digits` remains effective without allowing
 adjacent levels to collapse to one string. The contour line is not drawn inside
 a label's rectangle, and `bg_padding_px` widens that gap whether `bg_color` is
 opaque or absent. A `bg_color` box is antialiased at any rotation, like the
-glyphs inside it.
+glyphs inside it. `ContourLabelConfig::default()` puts its black text on a
+translucent white plate (`bg_color` white at 0.75, #357), so it reads on
+either end of a map; a document without `bg_color` reads `None`. A theme
+writes the plate from `FieldTheme::contour_label_background`, and a field or
+mesh without a fill takes `FieldTheme::unfilled_contour_color` and
+`unfilled_contour_label_color` where the theme sets them.
 
 <a id="triangle-meshes"></a>
 
@@ -2060,6 +2075,7 @@ pub struct Config {
 
 - `color`는 `color_map`이 없을 때의 화살표 색이다. `width_px`(몸통 두께), `head_length_px`, `head_width_px`는 `point_size`와 같은 논리 픽셀이며 출력 배율이 적용되고, 유한한 0 이상의 값이어야 한다. 화살표가 머리보다 짧으면 머리를 화살표 길이에 맞춰 줄인다.
 - `scale`: `VectorScale::Pixels { px_per_unit }`는 `px_per_unit * |(u, v)|` 픽셀 길이로 그리며, 방향은 두 축의 단위당 픽셀 비율을 따른다. 그래서 (1, 1) 벡터는 데이터 영역의 가로세로 비율만큼 기운다. `VectorScale::Data { factor }`는 축 변환을 거쳐 끝점을 데이터 좌표 `anchor + factor * (u, v)`에 두므로, 화살표가 뒤집힌 축이나 로그축을 따르고 끝점도 자동 범위 맞춤에 들어간다. 배율은 유한하고 0이 아니어야 한다. `VectorStyle::fit_scale(u_bounds, v_bounds, target)`은 호스트가 이미 가진 성분 통계로, 그 범위에서 가능한 가장 긴 벡터가 `target`(`Pixels`는 논리 픽셀, `Data`는 데이터 단위)이 되도록 배율만 쓴다. 따라서 표본을 추가해도 다른 화살표의 길이가 바뀌지 않는다.
+- `auto_scale`(#357): 차트 전체 맞춤이 `Pixels` 배율을 다시 쓸지 정한다. 다시 쓰면 가장 긴 벡터가 화살표 간격만큼(`VectorStyle::auto_scale_target_px`: `sqrt(데이터 영역 / 화살표 수)`의 0.9배, 머리 길이 이상) 그려진다. `Renderer::commit_auto_fit_all`(웹 `auto_fit_all`)은 차트의 시리즈에 `Renderer::fit_vector_scales`를 실행해 결과를 `scale`에 저장하고, `fit_ranges`로 맞추는 호스트는 `fit_vector_scales`를 직접 부른다. 화살표는 항상 저장된 `scale`로 그린다. 시리즈 생성자는 이 값을 켜고, 명시적 배율인 `fit_scale`, `fit_scale_3d`, `vector_scale` 빌더는 끈다. `false`이면 JSON에서 생략하며, 이 키가 없는 문서는 `false`로 읽는다.
 - `pivot`: `Tail`(기본값, 기준점이 꼬리), `Middle`, `Tip`.
 - `min_length_px`: 배율을 적용한 길이가 이보다 짧은 화살표는 그리지 않는다. 0 벡터와 유한하지 않은 성분이나 기준점도 그리지 않는다.
 - `color_map: Option<VectorColorMap>`: 점 형식에는 `Column(id)`, 격자 형식에는 `Grid(MatrixRef)`를 쓰며 성분 형식과 맞아야 한다. 값은 히트맵 셀이나 `point_color_map` 마커와 똑같이 `Config.colorbar`로 색이 정해지며, 색상 막대가 없으면 시리즈를 거부한다.
@@ -2201,7 +2217,7 @@ pub struct Config {
 
 출력 배율은 자동 배치 간격에만 곱하며, 그 곱도 유한한 양수여야 한다. 라벨 아틀라스는 어댑터의 텍스처 크기 한도 안에 들어야 한다. 간격 오류, 곱셈 오버플로, 아틀라스 크기 초과는 렌더러를 바꾸지 않고 실패하므로 기존 차트를 계속 그린다. 앵커는 데이터 좌표와 데이터 공간의 접선으로 저장하므로 확대·이동 시 화면 좌표로 다시 투영할 수 있다.
 
-라벨 글자색은 선 색이나 `per_level_color`와 별도로 `ContourLabelConfig.color`에서 정한다. 소수 표시는 아래쪽 X축이 아니라 등고선 레벨 간격을 기준으로 하며, 간격을 구할 수 없으면 색상 막대의 간격을 사용한다. `significant_digits`를 적용하되 인접 레벨이 같은 문자열로 표시되지 않도록 조절한다. 라벨 사각형 안에는 등고선을 그리지 않으며, `bg_color`가 없어도 `bg_padding_px`만큼 선을 더 비운다. `bg_color` 상자는 어떤 각도로 회전해도 안의 글자처럼 가장자리가 부드럽다.
+라벨 글자색은 선 색이나 `per_level_color`와 별도로 `ContourLabelConfig.color`에서 정한다. 소수 표시는 아래쪽 X축이 아니라 등고선 레벨 간격을 기준으로 하며, 간격을 구할 수 없으면 색상 막대의 간격을 사용한다. `significant_digits`를 적용하되 인접 레벨이 같은 문자열로 표시되지 않도록 조절한다. 라벨 사각형 안에는 등고선을 그리지 않으며, `bg_color`가 없어도 `bg_padding_px`만큼 선을 더 비운다. `bg_color` 상자는 어떤 각도로 회전해도 안의 글자처럼 가장자리가 부드럽다. `ContourLabelConfig::default()`는 검은 글자 뒤에 반투명한 흰 판(`bg_color`, 불투명도 0.75, #357)을 깔아 색상 지도의 어두운 끝에서도 읽히게 한다. `bg_color`가 없는 문서는 `None`으로 읽는다. 테마는 `FieldTheme::contour_label_background`로 이 판을 쓰고, 채우기가 없는 필드나 메시에는 테마가 정한 `FieldTheme::unfilled_contour_color`와 `unfilled_contour_label_color`를 쓴다.
 
 <a id="삼각-메시"></a>
 
