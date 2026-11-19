@@ -237,10 +237,11 @@ impl Renderer {
 
     /// Compile, on the browser's compile queue, the pick pipelines chart
     /// `id`'s picks can need, ahead of the waiting compiles (#363): while
-    /// the picker is not enabled its gate and reduce pipelines, then the
-    /// typed data pick kernels the chart's series can dispatch
-    /// ([`Self::data_pick_warm_kernels`]), then its exact keys
-    /// ([`Self::for_each_exact_pick_key`]), which go first. Each that the
+    /// the picker is not enabled its gate and reduce pipelines, then its
+    /// exact keys ([`Self::for_each_exact_pick_key`]), then the typed data
+    /// pick kernels the chart's series can dispatch
+    /// ([`Self::data_pick_warm_kernels`]), which go first: they are the
+    /// longest to compile. Each that the
     /// picker's caches do not hold yet is scheduled with a commit: its
     /// completion puts the pipeline straight into that cache when it
     /// resolves (the last of gate and reduce enables the picker), so no
@@ -296,23 +297,6 @@ impl Renderer {
                     // The first pick enables the picker as it always did.
                 }
             }
-            let data = self.picker.data_kernels.share();
-            for kernel in kernels.into_iter().flat_map(|kernels| kernels.iter()) {
-                if data.borrow().get(kernel).is_none()
-                    && queue
-                        .schedule_pick_compute(set, kernel.source(set), &[kernel.label()], |_| {
-                            Box::new(warm_commit::Data {
-                                state: std::rc::Rc::clone(&pick_state),
-                                data: std::rc::Rc::clone(&data),
-                                kernel,
-                                set,
-                            })
-                        })
-                        .is_err()
-                {
-                    // The first pick compiles this one as it always did.
-                }
-            }
             let exact = self.picker.exact.share();
             let device = self.device.clone();
             let _ = walked
@@ -341,6 +325,26 @@ impl Renderer {
                         }
                     })
                     .is_ok();
+            // Then the typed data pick kernels the chart's series can
+            // dispatch, pushed last so they are issued first: they are the
+            // longest compiles, and a pick needs every one (#363).
+            let data = self.picker.data_kernels.share();
+            for kernel in kernels.into_iter().flat_map(|kernels| kernels.iter()) {
+                if data.borrow().get(kernel).is_none()
+                    && queue
+                        .schedule_pick_compute(set, kernel.source(set), &[kernel.label()], |_| {
+                            Box::new(warm_commit::Data {
+                                state: std::rc::Rc::clone(&pick_state),
+                                data: std::rc::Rc::clone(&data),
+                                kernel,
+                                set,
+                            })
+                        })
+                        .is_err()
+                {
+                    // The first pick compiles this one as it always did.
+                }
+            }
         }
         if let Some(state) = self.chart_states.get_mut(&id) {
             state.pick_warmup = Some(stamp);

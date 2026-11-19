@@ -292,7 +292,7 @@ test binary that runs longer than the runner's default 240 s wait sets
 The test runs real window initialization and full prewarm, checks that a second
 prewarm creates nothing, renders automatic contour labels, and decodes the exported
 PNG to check its pixels. Change `--test` to run another renderer browser test the
-same way, for example `radial_interaction_browser` or `radial_area_browser`. The `figgy`
+same way, for example `radial_interaction_browser` or `radial_area_browser`. `pick_warmup_static_browser` (#363) runs about 200 s on SwiftShader: give it `FIGGY_BROWSER_TEST_TIMEOUT_MS=600000`. The `figgy`
 wrapper's `startup_progress_browser` (`-p figgy`) checks initialization event
 compatibility. See [optimization measurements and limitations](shader-compilation.md).
 

@@ -6,7 +6,8 @@
 //! the background. Issuing them all at once made a pipeline the screen
 //! needs wait behind every one issued before it, since the browser works
 //! in issue order. This schedule keeps at most [`CompileSchedule::limit`]
-//! compiles in flight ([`compile_limit`]), issues what the screen asks for
+//! compiles in flight ([`compile_limit`]), past which only a chart's few
+//! pick compiles are issued (#363), issues what the screen asks for
 //! ([`CompileSchedule::prioritize`]) before what it does not, and records
 //! how each compile ended, so a frame draws a series only once its
 //! pipelines are ready and a later synchronous creation finds them in the
@@ -391,10 +392,15 @@ impl CompileSchedule {
     }
 
     /// The next compile to issue, marked compiling, while fewer than the
-    /// limit are in flight; `None` when the limit is reached or nothing
-    /// waits.
+    /// limit are in flight, or a pick compile at any count; `None` when the
+    /// limit is reached for the next one or nothing waits.
     pub(crate) fn issue_next(&mut self) -> Option<usize> {
-        if self.in_flight >= self.limit {
+        // A pick compile (#363), always at the front, does not wait for a
+        // free slot: a chart's few are issued at once, so a first pick a
+        // few seconds later finds them done instead of queued behind the
+        // render compiles that took the slots first.
+        let front = *self.waiting.front()?;
+        if self.in_flight >= self.limit && !self.compiles[front].pick {
             return None;
         }
         let index = self.waiting.pop_front()?;
@@ -602,10 +608,11 @@ mod tests {
         );
         let all = schedule.counts(ShaderSet::Basic, Scope::All);
         assert_eq!((all.total, all.compiling), (2, 2), "{all:?}");
-        // The issued draw compile keeps its slot; the pick is next.
+        // The pick does not wait for the draw compile's slot: it is issued
+        // past the limit, and the waiting draw compile is not.
+        assert_eq!(schedule.issue_next(), Some(pick));
         assert_eq!(schedule.issue_next(), None);
         schedule.settle(first, CompileOutcome::Ready);
-        assert_eq!(schedule.issue_next(), Some(pick));
         assert_eq!(schedule.wait_step(pick), WaitStep::Pending(pick));
         schedule.settle(pick, rejected(RejectReason::Internal));
         assert_eq!(
