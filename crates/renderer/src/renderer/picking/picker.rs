@@ -66,6 +66,9 @@ pub(in crate::renderer) struct RendererPicker {
     /// The typed data pick kernels created so far: compiled on the first
     /// pick that dispatches each (`DataPickKernels`, #327).
     pub(in crate::renderer) data_kernels: crate::gpu_data_pick::DataPickKernels,
+    /// The pick ID pass's pipelines (#381 prototype), created on its first
+    /// pick for the bundle's shader set.
+    pub(in crate::renderer) id: Option<crate::gpu_pick::IdPickPipelines>,
     #[cfg(test)]
     pub(in crate::renderer) injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -77,6 +80,7 @@ impl RendererPicker {
             active: None,
             exact: crate::gpu_pick::PickExactPipelines::default(),
             data_kernels: crate::gpu_data_pick::DataPickKernels::default(),
+            id: None,
             #[cfg(test)]
             injected_activation_failure: None,
         }

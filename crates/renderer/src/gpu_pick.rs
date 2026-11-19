@@ -27,6 +27,7 @@ use crate::init::{InitEvent, finished, observe_value, started};
 use crate::pick::PickedPoint;
 
 mod engine;
+mod id_pass;
 mod registry;
 mod shader;
 pub(crate) mod types;
@@ -41,6 +42,8 @@ pub(crate) use engine::milkyway_line_half_extent;
 use engine::query_params;
 use engine::{GPU_PICK_DIRECT_SCAN_POINTS, GPU_PICK_WORKGROUP_SIZE, GpuPickTicketState};
 use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_base};
+pub(crate) use id_pass::{ID_PICK_MODULE, ID_PICK_VECTOR_MODULE, IdPickPipelines};
+pub use id_pass::{IdPickGeometry, IdPickHit, IdPickTicket};
 #[cfg(test)]
 use registry::GpuPickSeriesId;
 pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};

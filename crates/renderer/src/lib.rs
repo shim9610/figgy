@@ -159,7 +159,7 @@ pub use gpu_memory::{
     GpuMemoryUsage, GpuResourceKind, ResidentAdmission, ResidentAdmissionRequest,
     ResidentAdmissionStatus,
 };
-pub use gpu_pick::{GpuPickError, GpuPickTicket};
+pub use gpu_pick::{GpuPickError, GpuPickTicket, IdPickGeometry, IdPickHit, IdPickTicket};
 pub use gpu_readback::TryResolve;
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedData, PickedPoint};

@@ -75,6 +75,9 @@ fn all_shader_compilation_times_and_entry_coverage() {
             for kernel in crate::gpu_data_pick::DataPickKernel::ALL {
                 renderer.picker.data_kernels.ensure(&data, kernel).unwrap();
             }
+            // The pick ID pass (#381 prototype): every kind in both
+            // geometries.
+            crate::gpu_pick::IdPickPipelines::new(&device, set).ensure_all(&device);
         }
         data_render::stream_field::Pipelines::new(
             &device,

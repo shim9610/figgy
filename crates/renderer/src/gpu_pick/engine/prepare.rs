@@ -307,6 +307,7 @@ impl GpuPickEngine {
             query_data_bg,
             query_work_bg,
             reduce_bg,
+            style_rows,
         ) = self.create_slot_resources(
             buffer,
             gate_mask_bytes,
@@ -361,6 +362,7 @@ impl GpuPickEngine {
                 workgroup_candidates,
                 query_data_bg,
                 query_work_bg,
+                style_rows,
                 reduce_bg,
                 result,
                 point_count,
@@ -691,6 +693,7 @@ impl GpuPickEngine {
             wgpu::BindGroup,
             wgpu::BindGroup,
             wgpu::BindGroup,
+            [wgpu::Buffer; 2],
         ),
         GpuPickError,
     > {
@@ -839,6 +842,7 @@ impl GpuPickEngine {
             query_data_bg,
             query_work_bg,
             reduce_bg,
+            [style_slots, style_overrides],
         ))
     }
 }

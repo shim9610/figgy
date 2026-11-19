@@ -286,6 +286,19 @@ impl MonotonicChart<'_> {
         self.renderer.pick_chart(self.id, request)
     }
 
+    /// [`Self::pick`] through the pick ID pass (#381 prototype): a
+    /// monotonic series reports the logical sample index of a kept point,
+    /// mapped through the envelope its columns were written from.
+    #[doc(hidden)]
+    pub fn pick_id_prototype(
+        &mut self,
+        request: GpuPickRequest,
+        geometry: crate::gpu_pick::IdPickGeometry,
+    ) -> std::result::Result<crate::gpu_pick::IdPickTicket, crate::gpu_pick::GpuPickError> {
+        self.renderer
+            .pick_chart_id_prototype(self.id, request, geometry)
+    }
+
     /// Builds the chart's GPU picker
     /// ([`Renderer::prepare_gpu_picking_for_chart`]).
     pub fn prepare_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {

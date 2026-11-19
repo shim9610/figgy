@@ -2392,6 +2392,37 @@ painting that level's stroke widened by `metrics.y`.
 The gradient only sets stroke coverage, and the blend only shades given
 values; nothing per vertex is stored.
 
+### 5.26 Pick ID input and output (#381 prototype)
+
+Two fragments carry a pick ID from a vertex stage to an ID target, so any
+assembled module can write what it drew at a pixel:
+
+- [`common/pick_id_input.wgsl`](common/pick_id_input.wgsl): `PickIdVarying`,
+  the clip position and `@interpolate(flat) pick_id: vec2<u32>` (series
+  slot, primitive index), built by `pick_id_varying(series, primitive,
+  ndc)`; `pick_id_culled` makes a vertex whose primitive has no fragment.
+  It only forwards indices the vertex stage already has; it reads no data.
+- [`common/pick_id_output.wgsl`](common/pick_id_output.wgsl):
+  `PickIdOutput`, `@location(0) id: vec4<u32>` into an `Rgba32Uint` target,
+  never blended, and `@builtin(frag_depth)`. The colour is
+  `(kind + 1 | PICK_ID_COVERING, series slot, point index, primitive index)`;
+  zero in the first lane is empty space. The depth, compared `LessEqual` and
+  cleared to 1, resolves overlaps: a hit inside its drawn shape writes
+  `PICK_ID_DEPTH_BODY` (an area fill `PICK_ID_DEPTH_FILL`, which every body
+  covers), so the last covering hit drawn wins; a near miss writes a depth
+  that grows with its distance from `PICK_ID_DEPTH_NEAR`, so the nearest
+  wins.
+
+The prototype splices them only into the on-demand pick ID modules
+(`gpu_pick/id_pass.rs`): the exact marker-line and vector pick modules with
+[`gpu_pick/id_entries.wgsl`](../gpu_pick/id_entries.wgsl),
+[`gpu_pick/id_segments.wgsl`](../gpu_pick/id_segments.wgsl) and
+[`gpu_pick/id_simple.wgsl`](../gpu_pick/id_simple.wgsl) in place of the exact
+compute entry. One vertex per primitive (a point list at the centre of a
+1×1 target) runs the point picker's per-axis gate; the fragment measures the
+primitive at the cursor with the module's candidate functions. No draw
+module splices them.
+
 ## Checklist
 
 When shared shader code changes:

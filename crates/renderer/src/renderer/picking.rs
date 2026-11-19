@@ -9,6 +9,7 @@ mod data_pick_series;
 mod descriptors;
 mod energy_levels;
 mod entry;
+mod id_pick;
 mod picker;
 mod plan;
 #[cfg(test)]

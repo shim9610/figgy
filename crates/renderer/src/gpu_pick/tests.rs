@@ -3519,6 +3519,12 @@ fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
             assert_eq!(last, "gpu_pick/exact_entry.wgsl", "{shader:?}");
         }
     }
+    // The pick ID modules (#381 prototype) start with the core too.
+    for (label, by_set) in [super::ID_PICK_MODULE, super::ID_PICK_VECTOR_MODULE] {
+        let fragments = by_set.full.fragments;
+        assert_eq!(fragments[0], "gpu_pick/core.wgsl", "{label}");
+        used.extend(fragments.iter().copied());
+    }
     for entry in std::fs::read_dir(&dir).unwrap() {
         let name = entry.unwrap().file_name().into_string().unwrap();
         // The pick modules' Rust files share this directory with the fragments.

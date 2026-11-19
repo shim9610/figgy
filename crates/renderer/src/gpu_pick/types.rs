@@ -911,6 +911,9 @@ pub(super) struct PickSeriesGpu {
     pub(super) workgroup_candidates: wgpu::Buffer,
     pub(super) query_data_bg: wgpu::BindGroup,
     pub(super) query_work_bg: wgpu::BindGroup,
+    /// The style slot and override rows `query_work_bg` binds, kept so the
+    /// pick ID pass (#381) can bind them to its render stages.
+    pub(super) style_rows: [wgpu::Buffer; 2],
     pub(super) reduce_bg: wgpu::BindGroup,
     pub(super) result: wgpu::Buffer,
     pub(super) point_count: u32,
