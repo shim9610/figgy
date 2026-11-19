@@ -109,6 +109,27 @@ pub struct RangeConnector {
     pub width: f32,
 }
 
+/// The fields of a [`DataRenderType::RangeLinks`] series (#357): the
+/// dependency links between the bars of the range bar series `bars`, drawn
+/// as elbows in `color`, `width` logical pixels wide, with an arrowhead of
+/// `head` pixels at the successor and `elbow` pixels of lead-out.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeLinkSeries {
+    /// The `series_id` of the range bar series whose rows the links join,
+    /// in the same layer.
+    pub bars: String,
+    /// The stroke and head colour; channels in `0..=1`.
+    pub color: Color,
+    /// The stroke width in logical pixels, `0..=`[`MAX_RANGE_STROKE_WIDTH`].
+    pub width: f32,
+    /// The arrowhead's length and width in logical pixels, `0..=32`.
+    pub head: f32,
+    /// The lead-out past the predecessor's end and before the successor's
+    /// start, in logical pixels, `0..=64`.
+    pub elbow: f32,
+}
+
 /// The fields of a [`DataRenderType::RangeBars`] series.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -177,6 +198,53 @@ impl DataRenderType {
             _ => None,
         }
     }
+
+    /// The fields of a range link series, or `None` for every other kind.
+    pub fn range_links(&self) -> Option<&RangeLinkSeries> {
+        match self {
+            DataRenderType::RangeLinks(links) => Some(links),
+            _ => None,
+        }
+    }
+}
+
+/// The most a range link's arrowhead is long and wide, in logical pixels.
+pub const MAX_RANGE_LINK_HEAD: f32 = 32.0;
+/// The most a range link's lead-out is long, in logical pixels.
+pub const MAX_RANGE_LINK_ELBOW: f32 = 64.0;
+
+/// The rules one range link series is held to among the chart's `series`
+/// (#357): its bars series is a range bar series of the same layer, its
+/// two columns are not empty and distinct, its width, head and elbow are
+/// in range and its colour's channels in `0..=1`.
+pub fn validate_range_link_series(
+    config: &crate::config::Config,
+    series: &[SeriesConfig],
+    item: &SeriesConfig,
+) -> Result<(), crate::RuleKind> {
+    let Some(links) = item.render_type.range_links() else {
+        return Ok(());
+    };
+    let bars = series
+        .iter()
+        .find(|s| s.series_id == links.bars && s.render_type.range_bars().is_some());
+    match bars {
+        Some(bars)
+            if config.layer_of_series(&bars.series_id)
+                == config.layer_of_series(&item.series_id) => {}
+        _ => return Err(crate::RuleKind::RangeLinkBars),
+    }
+    if item.x_column.is_empty() || item.y_column.is_empty() || item.x_column == item.y_column {
+        return Err(crate::RuleKind::RangeLinkColumns);
+    }
+    if !finite_in(links.width, 0.0, MAX_RANGE_STROKE_WIDTH)
+        || !finite_in(links.head, 0.0, MAX_RANGE_LINK_HEAD)
+        || !finite_in(links.elbow, 0.0, MAX_RANGE_LINK_ELBOW)
+        || !valid_bar_color(links.color, false)
+    {
+        return Err(crate::RuleKind::RangeLinkStyle);
+    }
+    Ok(())
 }
 
 impl RangeBarSeries {
@@ -381,6 +449,17 @@ impl crate::config::Config {
                     return Err(crate::RuleKind::RangeBarSlotWidthAxis);
                 }
             }
+        }
+        Ok(())
+    }
+}
+
+impl crate::config::Config {
+    /// The rules the range link series of a chart are held to, with the
+    /// series list it draws: each passes [`validate_range_link_series`].
+    pub fn validate_range_links(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
+        for item in series {
+            validate_range_link_series(self, series, item)?;
         }
         Ok(())
     }

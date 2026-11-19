@@ -29,6 +29,7 @@ impl DataRenderType {
             | DataRenderType::RgbImage(_)
             | DataRenderType::CategoryBars(_)
             | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_)
             // Its transitions step as points by their own rule (#203).
             | DataRenderType::EnergyLevels(_)
             // Its triangles step by their own rule (#210).
@@ -193,7 +194,22 @@ impl crate::config::Config {
                 let selected = &series[position].render_type;
                 let boxes = selected.box_plot().is_some();
                 let ranges = selected.range_bars().is_some();
-                if selected.category_bars().is_some() || boxes || ranges {
+                if selected.range_links().is_some() {
+                    // A dependency link (#357) steps along the link rows by
+                    // either pointer axis, bounded by the shorter of its
+                    // two row columns; it stays in its series.
+                    let next = &series[position];
+                    let count = len(&next.x_column).min(len(&next.y_column));
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    Some(PickedDataRef::HistogramBin {
+                        series_id: next.series_id.clone(),
+                        source_id: next.source_id.clone(),
+                        bin_index: shift(*bin_index, dx + dy, count),
+                        half: None,
+                    })
+                } else if selected.category_bars().is_some() || boxes || ranges {
                     let layer = self.layer_of_series(series_id);
                     let groups = self.bar_groups_of(layer);
                     let horizontal = groups.direction == CategoryBarDirection::Horizontal;

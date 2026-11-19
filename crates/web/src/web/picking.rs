@@ -16,6 +16,7 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         // A radar vertex maps no value to its marker.
         | DataRenderType::Radar(_)
         // A streamline has no markers; its colour column colours the line.

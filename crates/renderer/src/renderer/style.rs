@@ -859,6 +859,9 @@ pub(super) struct EffectiveSeriesPrimitives {
     pub(super) box_plot: bool,
     /// A range bar series' bars. Precise mode only, like category bars.
     pub(super) range_bars: bool,
+    /// A range link series' links (#357). Precise mode only, like the bars
+    /// they join.
+    pub(super) range_links: bool,
     /// A box plot series' violins, with its boxes.
     pub(super) violin: bool,
     /// A box plot series' raw points, with its boxes.
@@ -889,6 +892,7 @@ pub(super) fn effective_series_primitives(
             category_bars: false,
             box_plot: false,
             range_bars: false,
+            range_links: false,
             violin: false,
             box_points: false,
             vector: false,
@@ -928,6 +932,9 @@ pub(super) fn effective_series_primitives(
         box_plot: matches!(draw_style, DrawStyle::Precise) && render_type.box_plot().is_some(),
         // Range bars are precise like category bars, for the same reason.
         range_bars: matches!(draw_style, DrawStyle::Precise) && render_type.range_bars().is_some(),
+        // Links are precise like the bars they join.
+        range_links: matches!(draw_style, DrawStyle::Precise)
+            && render_type.range_links().is_some(),
         // A box plot's violins and raw points are drawn with its boxes.
         violin: matches!(draw_style, DrawStyle::Precise)
             && render_type.box_plot().is_some_and(|b| b.violin.is_some()),
@@ -1015,6 +1022,7 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -1254,7 +1262,12 @@ impl Renderer {
             (None, None, None, Some(ranges)) => {
                 PrimitiveStyle::from_category_bars(ranges.color, &ranges.style, scale)
             }
-            (None, None, None, None) => PrimitiveStyle::from_color(Color::BLACK),
+            (None, None, None, None) => match render_type.range_links() {
+                // A range link series' colour (#357, SHADER_COMMON.md §5.18);
+                // its width, head and lead-out are lanes of its group 3.
+                Some(links) => PrimitiveStyle::from_color(links.color),
+                None => PrimitiveStyle::from_color(Color::BLACK),
+            },
         };
         let (mut line, mut scatter, mut bar) = (line, scatter, bar);
         line.series_salt = series_salt;

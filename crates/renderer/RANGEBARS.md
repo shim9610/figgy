@@ -126,10 +126,9 @@ A web Gantt's other elements are the host's, with existing parts: a
 milestone is a `ScatterShape::DiamondFilled` scatter series on the bars'
 layer (positions the row index, x the date; no row of the bars needs a
 value), today is an `AnnotationKind::ReferenceLine` on `X` at the time
-the host passes (the renderer never reads a clock), and a finish-to-start
-link is drawn as an elbow of `AnnotationKind::Arrow` segments until the
-link series lands. The `timeline` scene of `examples/range_bars.rs` draws
-all of them.
+the host passes (the renderer never reads a clock), and finish-to-start
+links are a `RangeLinks` series (below). The `timeline` scene of
+`examples/range_bars.rs` draws all of them.
 
 Every choice is a stored field, so a saved timeline reads back with the
 same look, and the documented defaults (`SeriesConfig::range_bars`,
@@ -150,6 +149,39 @@ let chart = Chart::new(config).with_area(0, 0, 800, 600);
 let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_progress("done");
 ```
 
+### Dependency links
+
+`SeriesConfig::range_links(id, bars, from, to)` adds a
+`DataRenderType::RangeLinks` series: link `i` joins the bar of row
+`from[i]` to the bar of row `to[i]` of the range bar series `bars`, finish
+to start. The host supplies the two row columns through `ColumnSource`;
+there is no cap on links. The renderer routes each link on every draw from
+the two bars as they are drawn: out of the predecessor's end, across to the
+successor's row and into its start with an arrowhead, or, when the
+successor starts before the predecessor ends, an S route through the
+midline between the rows. A row that is missing, negative or past the bars'
+rows draws no link.
+
+| Field | Default (`range_links`) | Range |
+|---|---|---|
+| `bars` | the bars' `series_id` | a range bar series in the same layer (`RuleKind::RangeLinkBars`) |
+| `color` | slate grey `#949CAA` | channels in `0..=1`; a theme sets its connector colour |
+| `width` | 1.25 px | `0..=24` |
+| `head` | 7 px | `0..=32` |
+| `elbow` | 8 px of lead-out | `0..=64` |
+
+The two columns must be set and distinct (`RuleKind::RangeLinkColumns`);
+the style ranges are `RuleKind::RangeLinkStyle`. Polar charts refuse links
+(`RuleKind::PolarRangeLinks`), and a streamed source is refused
+(`RuleKind::StreamedRangeLinks`). The legend draws a link series as a line.
+
+```rust
+use renderer::SeriesConfig;
+
+let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end");
+let links = SeriesConfig::range_links("links", "tasks", "link.from", "link.to");
+```
+
 ## Interaction
 
 Every part of a bar picks it: the body, the whisker and the connector each
@@ -164,6 +196,14 @@ the shortest of the series' columns. The web wrapper's
 `total` or `state`, and `progress`, with `category_id` and
 `category_label` on a categorical axis. It reports no difference or
 duration: those are the host's to derive.
+
+A link picks as `PickedData::HistogramBin` with its own series and its
+row, wherever its stroke or head is painted; the picked link is redrawn in
+the selection colour with a wider stroke, and `step_selection` moves along
+the link rows by `dx + dy`, bounded by the shorter of the two columns,
+staying in the series. `selection_details()` reports `index`, `from` and
+`to`. Links draw on overlays and subplots next to their bars and export
+with them.
 
 Value labels are picked, selected and dragged as a category bar's are
 (`labels.offsets`), one per row, wherever their placement puts them

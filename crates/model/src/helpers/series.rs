@@ -18,9 +18,9 @@ use crate::data_config::{
     BoxSeries, CategoryBarLabels, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig,
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef,
     FieldFillConfig, FieldSeries, GridLayout, HistogramSeries, LineFill, MatrixOrientation,
-    MatrixRef, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, RangeProgress,
-    RgbImageSeries, ScatterShape, SeriesConfig, Stem, StreamlineSeries, TernarySeries,
-    VectorComponents, VectorSeries, VectorStyle, XySeries,
+    MatrixRef, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, RangeLinkSeries,
+    RangeProgress, RgbImageSeries, ScatterShape, SeriesConfig, Stem, StreamlineSeries,
+    TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
 };
 use crate::line::LineStylePreset;
 use crate::preset::ColorCycle;
@@ -432,6 +432,30 @@ impl SeriesConfig {
             })
     }
 
+    /// Dependency links (#357) between the bars of the range bar series
+    /// `bars`: link `i` runs from the bar of row `from[i]` to the bar of
+    /// row `to[i]`, finish to start, in slate grey, 1.25 px wide with a
+    /// 7 px arrowhead and 8 px of lead-out ([`RangeLinkSeries`]).
+    pub fn range_links(
+        id: impl Into<String>,
+        bars: impl Into<String>,
+        from: impl Into<ColumnId>,
+        to: impl Into<ColumnId>,
+    ) -> Self {
+        Self::of_kind(
+            id,
+            from,
+            to,
+            DataRenderType::RangeLinks(RangeLinkSeries {
+                bars: bars.into(),
+                color: Color::from_rgb8(148, 156, 170),
+                width: 1.25,
+                head: 7.0,
+                elbow: 8.0,
+            }),
+        )
+    }
+
     /// A range bar series' progress (#357): each bar is drawn whole up to
     /// its share in `column` (`0..=1`, the host's) and in the light tint of
     /// [`crate::default::TIMELINE_REMAINING_OPACITY`] past it ([`RangeProgress`]). No effect
@@ -633,6 +657,7 @@ impl SeriesConfig {
             DataRenderType::CategoryBars(CategoryBarSeries { color: c, .. })
             | DataRenderType::BoxPlot(BoxSeries { color: c, .. })
             | DataRenderType::RangeBars(RangeBarSeries { color: c, .. })
+            | DataRenderType::RangeLinks(RangeLinkSeries { color: c, .. })
             | DataRenderType::Radar(RadarPolygonSeries { color: c, .. }) => *c = color,
             DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
                 if let Some(scatter) = scatter {

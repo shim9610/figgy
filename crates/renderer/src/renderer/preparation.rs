@@ -117,7 +117,8 @@ impl PreparationFeature {
                 DataRenderType::Histogram(_)
                 | DataRenderType::CategoryBars(_)
                 | DataRenderType::BoxPlot(_)
-                | DataRenderType::RangeBars(_) => Self::Bars,
+                | DataRenderType::RangeBars(_)
+                | DataRenderType::RangeLinks(_) => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Field(_)

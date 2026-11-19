@@ -2148,6 +2148,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::CategoryBars(_)
                     | DataRenderType::BoxPlot(_)
                     | DataRenderType::RangeBars(_)
+                    | DataRenderType::RangeLinks(_)
                     | DataRenderType::Radar(_)
                     | DataRenderType::Ternary(_)
                     | DataRenderType::Parallel(_)

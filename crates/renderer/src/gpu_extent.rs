@@ -176,7 +176,8 @@ impl GpuSeriesFitMode {
             DataRenderType::Histogram(_)
             | DataRenderType::CategoryBars(_)
             | DataRenderType::BoxPlot(_)
-            | DataRenderType::RangeBars(_) => {
+            | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_) => {
                 return None;
             }
             // A radar series and streamlines fit as the line they draw (the
@@ -280,6 +281,7 @@ impl GpuSeriesExtentMode {
             | DataRenderType::CategoryBars(_)
             | DataRenderType::BoxPlot(_)
             | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_)
             // A ternary chart's axes are the triangle, not a data extent.
             | DataRenderType::Ternary(_)
             // A parallel chart's are the categorical positions and the

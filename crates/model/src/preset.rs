@@ -592,6 +592,7 @@ fn cycle_color(series: &SeriesConfig) -> Option<Color> {
         DataRenderType::CategoryBars(CategoryBarSeries { color, .. })
         | DataRenderType::BoxPlot(BoxSeries { color, .. })
         | DataRenderType::RangeBars(RangeBarSeries { color, .. })
+        | DataRenderType::RangeLinks(crate::data_config::RangeLinkSeries { color, .. })
         | DataRenderType::Radar(RadarPolygonSeries { color, .. }) => see(*color),
         DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
             if let Some(scatter) = scatter {
@@ -685,7 +686,8 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
         }
         // The series fill joins the cycle; direction and state colours
         // stay, since they carry the bars' meaning.
-        DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
+        DataRenderType::RangeBars(RangeBarSeries { color, .. })
+        | DataRenderType::RangeLinks(crate::data_config::RangeLinkSeries { color, .. }) => {
             *color = c;
         }
         // The outline and markers join the cycle, and the fill follows

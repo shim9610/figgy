@@ -242,6 +242,16 @@ pub enum DataRenderType {
     /// The columns must be GPU resident; a streamed source is rejected with
     /// an error. Polar charts (`Config.polar`) reject range bars.
     RangeBars(RangeBarSeries),
+    /// Dependency links between the bars of one range bar series (#357):
+    /// one finish-to-start link per row, from the bar of row `x_column[i]`
+    /// to the bar of row `y_column[i]` of the series named by `bars`, in
+    /// the same layer. The renderer routes each link on every draw from
+    /// the two bars it draws (out of the predecessor's end, across to the
+    /// successor's row, into its start, with an arrowhead); it computes no
+    /// value. A NaN row, a row past the bars' columns or a bar that does
+    /// not draw draws no link. Any number of links. The columns must be
+    /// GPU resident; a streamed source is rejected with an error.
+    RangeLinks(RangeLinkSeries),
     /// The polygon of a radar chart: one vertex per category of the polar
     /// chart's categorical angle axis (`bottom_x` with
     /// [`AxisOptions::categories`]), joined into a closed outline, filled
@@ -450,7 +460,8 @@ impl SeriesConfig {
             | DataRenderType::MonotonicLine(_)
             | DataRenderType::Histogram(_)
             | DataRenderType::CategoryBars(_)
-            | DataRenderType::Radar(_) => {}
+            | DataRenderType::Radar(_)
+            | DataRenderType::RangeLinks(_) => {}
             DataRenderType::Ternary(TernarySeries { c_column, .. }) => visit(c_column),
             // Its triangle index column and its value column (#210); the
             // height is the `z_column` visited above.

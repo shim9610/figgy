@@ -58,6 +58,7 @@ To change shared shader code:
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
+| `range_links.wgsl` (§5.18) | bar |
 | `violin.wgsl` (§2.5, §5.19) | bar |
 | `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh, triangle surface |
 | `surface_mesh/surface_params.wgsl`, `surface_mesh/surface_entry.wgsl` (§5.21) | surface mesh (with `surface_input_grid.wgsl`), triangle surface (with `tri_mesh/mesh_input.wgsl` and `surface_input_mesh.wgsl`) |
@@ -1905,6 +1906,46 @@ row; a connector is a candidate of the bar it leaves. A bar's value label
 category bar rule, a range bar counting as grouped. Nothing per bar is
 stored anywhere; the CPU keeps the lane bases, the part colours of the
 configuration and the columns' scalar statistics (the fit).
+
+#### Dependency links
+
+The links of a `DataRenderType::RangeLinks` series (#357) are drawn by
+[`common/range_links.wgsl`](common/range_links.wgsl), spliced right after
+`range_bars.wgsl`. A link series binds the group 3 of the range bar series
+it names: that series' `CategoryBarParams` at binding 9 and its lane table
+at binding 10, extended by six entries (`RANGE_LINK_LANES`, 14 entries, a
+fixed schema; CPU writer `renderer/series.rs::range_link_data`), so
+`range_bar(row)` is exactly the bar that series draws.
+
+| Entry of `category_lanes` | Meaning for a link series |
+|---|---|
+| 0 to 7 | the bars' own, as above |
+| `RANGE_LANE_LINK_FROM` (8), `RANGE_LANE_LINK_TO` (9) | the f32 lane bases of the predecessor (`x_column`) and successor (`y_column`) row columns |
+| `RANGE_LANE_LINK_COUNT` (10) | the link count: the shorter of the two columns, any number |
+| `RANGE_LANE_LINK_WIDTH` (11), `_HEAD` (12), `_LEAD` (13) | the stroke width, the arrowhead's size and the lead-out in render pixels, as f32 bits |
+
+The geometry sits in the lane table rather than `Style` because the pick
+compute binds no `Style`; the draw, the highlight and the pick read one
+route. One instance is one link and draws `RANGE_LINK_VERTICES` (36): five
+segment quads and the head's quad, each a box around its stroke that the
+fragment covers by distance (half the width from the segment, or inside
+the head's triangle, antialiased over one pixel). The route is built on
+every draw from the two bars: out of the predecessor's end by the
+lead-out, across to the successor's row and into its start (three
+segments); when the successor starts before the predecessor's end plus
+two lead-outs, the route is an S through the midline between the two rows
+(five segments). Each bar is left and entered the way it runs, so a bar
+whose end is before its start is handled too. A row that is NaN, negative,
+or past the bars' row count, or a bar that draws nothing, draws no link.
+The colour is the series' `Style` colour; nothing per link is stored.
+
+`vs_range_link_selection` / `fs_range_link_selection` draw the picked
+link's route in the selection colour, its stroke widened by the
+selection's width on each side. The compute entry `pick_range_links`
+answers the nearest segment or head within half the stroke plus the pick
+distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
+link's row. The route is appearance: it reads the values the bars are
+drawn from, and the user reads no value computed from them.
 
 ### 5.19 Violins and raw points (group 3, bindings 8 to 10)
 

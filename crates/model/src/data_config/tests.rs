@@ -830,6 +830,7 @@ mod serde_tests {
         super::radar_tests::radar_series_round_trip_and_omit_their_defaults();
         super::streamline_tests::streamlines_round_trip();
         super::range_bar_tests::range_bars_round_trip_and_omit_unset_options();
+        super::range_bar_tests::range_links_round_trip();
         a_hexagonal_grid_round_trips_and_counts_a_cell_per_coordinate();
         an_image_parses_with_its_defaults_and_round_trips();
     }
@@ -3887,6 +3888,126 @@ mod range_bar_tests {
         assert_eq!(
             validate_category_bar_series(&bars_series, &cats),
             Err(crate::RuleKind::ContrastInkSeries)
+        );
+    }
+
+    fn links() -> SeriesConfig {
+        SeriesConfig::range_links("deps", "one", "deps.from", "deps.to")
+    }
+
+    fn style(l: &mut SeriesConfig) -> &mut RangeLinkSeries {
+        match &mut l.render_type {
+            DataRenderType::RangeLinks(links) => links,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Dependency links (#357): they name a range bar series in their own
+    /// layer, read two distinct row columns, keep their stroke, head and
+    /// lead-out in range, take any colour with channels in `0..=1` (a
+    /// translucent one too, as a connector does), and refuse polar axes.
+    #[test]
+    fn range_links_name_bars_in_their_layer_and_validate_their_style() {
+        let mut config = chart();
+        let series = [ranges("one"), links()];
+        assert_eq!(config.validate_range_links(&series), Ok(()));
+        let refused = |edit: fn(&mut SeriesConfig)| {
+            let mut l = links();
+            edit(&mut l);
+            chart().validate_range_links(&[ranges("one"), l])
+        };
+        assert_eq!(
+            refused(|l| style(l).bars = "missing".into()),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        assert_eq!(
+            config.validate_range_links(&[links()]),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        assert_eq!(
+            refused(|l| l.y_column = l.x_column.clone()),
+            Err(crate::RuleKind::RangeLinkColumns)
+        );
+        assert_eq!(
+            refused(|l| l.x_column = String::new().into()),
+            Err(crate::RuleKind::RangeLinkColumns)
+        );
+        for edit in [
+            (|l: &mut SeriesConfig| style(l).width = -1.0) as fn(&mut SeriesConfig),
+            |l| style(l).width = f32::NAN,
+            |l| style(l).head = 33.0,
+            |l| style(l).elbow = 65.0,
+            |l| style(l).color = Color::new(2.0, 0.0, 0.0, 1.0),
+        ] {
+            assert_eq!(refused(edit), Err(crate::RuleKind::RangeLinkStyle));
+        }
+        // The bars in an overlay and the links in the base layer differ.
+        config.overlays.push(OverlayLayer {
+            series: vec!["one".into()],
+            ..crate::defaults::overlay_layer()
+        });
+        assert_eq!(
+            config.validate_range_links(&series),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        config.overlays[0].series.push("deps".into());
+        assert_eq!(config.validate_range_links(&series), Ok(()));
+        // A polar chart refuses them.
+        let mut polar = chart();
+        polar.coordinates =
+            crate::coordinates::Coordinates::Polar(crate::defaults::polar_options());
+        assert_eq!(
+            polar.validate_series_on_polar(&links()),
+            Err(crate::RuleKind::PolarRangeLinks)
+        );
+    }
+
+    /// Links step along their own rows, bounded by the shorter row column,
+    /// and stay in their series.
+    #[test]
+    fn step_selection_walks_range_links_by_row() {
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
+        let mut config = chart();
+        let series = [ranges("one"), links()];
+        let pick = |row: usize| PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "deps".into(),
+            bin_index: row,
+            half: None,
+        };
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![pick(0)],
+            ..crate::defaults::data_selections_config()
+        });
+        let len = |c: &str| match c {
+            "deps.from" => Some(4000),
+            "deps.to" => Some(3000),
+            "pos" | "one.end" | "one.start" => Some(5),
+            _ => None,
+        };
+        assert_eq!(config.step_selection(&series, 1, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(1));
+        assert_eq!(config.step_selection(&series, 0, 1, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(2));
+        assert_eq!(config.step_selection(&series, 5000, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(2999));
+    }
+
+    /// Run by `serde_tests`' one test.
+    #[cfg(feature = "serde")]
+    pub(super) fn range_links_round_trip() {
+        let original = links();
+        let json = serde_json::to_value(&original).unwrap();
+        let fields = json["render_type"]["RangeLinks"].as_object().unwrap();
+        for key in ["bars", "color", "width", "head", "elbow"] {
+            assert!(fields.contains_key(key), "{key}");
+        }
+        let parsed: SeriesConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, original);
+        let again = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SeriesConfig>(&again).unwrap(),
+            original
         );
     }
 

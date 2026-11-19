@@ -325,6 +325,7 @@ impl PreparedSeries {
                     instance: layer.instance,
                     instances: layer.instances,
                     category: layer.category,
+                    vertices: layer.vertices,
                 })
                 .collect(),
             selected_fields: layers
@@ -511,6 +512,7 @@ impl PreparedSeries {
                     instance: layer.instance,
                     instances: layer.instances,
                     category: layer.category.clone(),
+                    vertices: layer.vertices,
                 })
                 .collect(),
             selected_fields: self

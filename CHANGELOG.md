@@ -37,7 +37,7 @@ chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
 breaks' `sizing`, the energy-level `bands` and `band` style, a
 subplot's `marker`, the energy-level `wavelength_labels`, a text
-annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `category_bands`, the range bar labels' `contrast_ink`, the
+annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `category_bands`, the range bar labels' `contrast_ink`, the `RangeLinks` series kind, the
 `MonotonicLine` series kind, a subplot's `text_scale`, a radial slice's
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
@@ -386,6 +386,8 @@ and radar documents' `text_sizes`) are additive.
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
+
+- **Dependency links for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 D). New series kind `DataRenderType::RangeLinks(RangeLinkSeries { bars, color, width, head, elbow })`: link `i` joins the bar of row `x_column[i]` to the bar of row `y_column[i]` of the range bar series `bars`, finish to start. The rows come from the host through `ColumnSource`; nothing caps the links. New helper `SeriesConfig::range_links(id, bars, from, to)` (slate grey, 1.25 px, a 7 px head, 8 px lead-out). Rules: `RangeLinkBars` (the bars must be a range bar series in the link series' layer), `RangeLinkColumns` (two set, distinct columns), `RangeLinkStyle` (width `0..=24`, head `0..=32`, lead-out `0..=64`, colour channels in `0..=1`), `PolarRangeLinks` and `StreamedRangeLinks`. `step_selection` moves a picked link along its rows by `dx + dy`, bounded by the shorter column; a theme gives links its connector colour and width; the legend draws them as a line. The key is additive. `DataRenderType` gains a variant: an exhaustive `match` on it adds a `DataRenderType::RangeLinks(_)` arm. Tests: `range_links_name_bars_in_their_layer_and_validate_their_style`, `step_selection_walks_range_links_by_row` (3000 links), `range_links_round_trip`.
 
 - **Calendar header for time axes** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). `TimestampLabelFormat` gains two serde-defaulted fields, omitted when unset:
   - `step: Option<CalendarStep>`: `Day`, `Week { start: Weekday }`, `Month`, `Quarter` or `Year`. The ticks fall at every boundary of the unit at local midnight in the format's time zone. `tick_policy` and `major_spacing` are not read, and a range of more than 1000 periods draws no ticks, as the planner's.
@@ -1948,13 +1950,15 @@ and radar documents' `text_sizes`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Dependency links for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 D). The bar module splices a new input fragment, `common/range_links.wgsl` (approved on #357), after `range_bars.wgsl`. A link series binds the group 3 of the range bar series it names, with six more lane-table entries (the two row columns, the count, and the width, head and lead-out in render pixels), so a link always meets the bars as they are drawn. Each link is routed on every draw: out of the predecessor's end, across to the successor's row and into its start with an arrowhead, or an S route through the midline when the successor starts first. Nothing per link is stored. Two new precise pipelines (`RangeLink`, `RangeLinkSelection`) and a pick kernel (`pick_range_links`) answer `PickedData::HistogramBin` for the link's own series and row. The picked highlight redraws the route wider in the selection colour (the bar selection layer now carries its vertex count). Links draw on overlays and subplots and export to PNG at any scale and to SVG and PDF. A streamed source is refused. The `timeline` scene of `examples/range_bars.rs` draws its links with this series in place of `Arrow` elbows. Tests (`range_bars_render.rs`): `range_links_route_between_their_bars_and_keep_every_interaction` (routes, pick, highlight, `step_selection`, 1x and 2x, SVG, PDF, serde), `range_links_draw_on_overlays_and_subplots` and `three_thousand_links_draw_and_pick`; the `range links` row of `streamed_series_are_rejected_per_family`.
+
 - **Calendar headers** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). The tick-label emit places a timestamp axis' labels at the plan's label positions, so period labels and the host's relative or custom strings draw, hit, select and drag as the axis' tick-label element, in PNG at any scale and in SVG and PDF. No shader or new path changes. The `timeline` scene of `examples/range_bars.rs` uses the calendar header. Tests (`tests/calendar_axis.rs`): `the_month_header_centres_each_month_and_the_weeks_start_on_monday`, `period_labels_hit_select_and_drag_as_tick_labels`, `relative_and_custom_labels_follow_the_origin` (10 000 custom strings), `the_header_draws_at_1x_and_2x_and_round_trips`.
 
 - **Row bands and contrast-ink labels for timelines** ([#357](https://github.com/shim9610/figgy/issues/357), item 14).
   - **Category bands.** The grid emitter draws `category_bands` as plot-wide rectangles under the grid lines, in the same sink, so PNG at any scale, SVG, PDF, subplots and the hit-free chrome all follow.
   - **Inside-or-beside placement.** The value label shader places `InsideOrBeside` labels with the bar rule (the same fit test as `Auto`), and the draw, the selection box and the pick share that placement.
   - **Contrast ink.** For a range bar series with contrast ink, the atlas is baked in white (alpha as coverage). `fs_value_label` paints each pixel in whichever ink has the higher WCAG contrast with what lies under it, computed on every draw from the bar's rect, `range_fill` and the progress split; nothing per label is stored. The value label uniform grows from 128 to 192 B (`ink_dark`, `ink_light`, `ink_back`, `ink_base`).
-  - **Example.** `examples/range_bars.rs` gains a `timeline` scene: the default look with progress, `DiamondFilled` milestones, a today `ReferenceLine` and `Arrow` elbows for links.
+  - **Example.** `examples/range_bars.rs` gains a `timeline` scene: the default look with progress, `DiamondFilled` milestones, a today `ReferenceLine` and its dependency links.
   - Tests: `inside_or_beside_labels_take_contrast_ink_and_keep_every_interaction` (placement, per-pixel ink across a progress split, pick, outline and drag at 1x and 2x, SVG, PDF, serde round trip), `contrast_labels_draw_on_every_row` (3000 rows), `the_timeline_look_bands_every_other_row_under_the_bars` (1x, 2x, pick over a band, a subplot, serde), and the `category_bands` cases of the SSOT invalidation table.
 
 - **Range bars coloured by row** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). The range bar shader draws `RangeColor::ByRow`: a fourth colour mode (`RANGE_COLOR_ROW`) whose row colours fill the state style slots, written straight into the mapped slot buffer, and `range_fill` takes slot `row % count` on every draw. Picks, the picked highlight, `step_selection`, the legend swatch (the series colour), PNG at any scale and the SVG and PDF exports work as for the other colour modes. No other pixel changes. Test: `rows_take_their_colours_and_keep_every_interaction` (`range_bars_render.rs`); `overlays_and_subplots_draw_their_own_range_groups` and `three_thousand_rows_draw_pick_and_highlight` now colour by row.
@@ -3446,6 +3450,8 @@ and radar documents' `text_sizes`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Dependency links** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 D). A document may name a `"RangeLinks"` series; `validate_config` reports its rules, and `selection_details()` of a picked link reports `index`, `from` and `to`, read back from its columns. Test: `range_links_validate_in_the_browser`.
 
 - **Calendar headers** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). A `Timestamp` format may name `"step"`, `"period_labels"` and the `"Relative"` and `"Custom"` label modes; `validate_config` reports their rules. Test: `calendar_formats_validate_and_normalize`.
 

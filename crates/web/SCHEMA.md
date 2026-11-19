@@ -148,7 +148,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"BoxPlot"` `"RangeBars"` `"Radar"` `"Ternary"` `"Streamlines"` `"RgbImage"` `"Parallel"` `"EnergyLevels"` `"TriMesh"` `"Feynman"` `"MonotonicLine"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"BoxPlot"` `"RangeBars"` `"RangeLinks"` `"Radar"` `"Ternary"` `"Streamlines"` `"RgbImage"` `"Parallel"` `"EnergyLevels"` `"TriMesh"` `"Feynman"` `"MonotonicLine"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
 | `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
@@ -1298,6 +1298,38 @@ past the progress split or the plot background. Only range bar labels take
 `contrast_ink` (a category bar series refuses it with `ContrastInkSeries`).
 A timeline's `left_y` names `"category_bands": { "fill": { … }, "every":
 "Alternate" }`, a band behind every other row (see the axis keys).
+
+## `RangeLinks` render_type
+
+Dependency links (#357) join the bars of the range bar series named in
+`bars`, which must be in the same layer: link `i` runs from the bar of row
+`x_column[i]` to the bar of row `y_column[i]`, finish to start, with an
+arrowhead at the successor. The two columns hold row indices and must be
+set and distinct; a NaN, negative or out-of-range row draws no link. Every
+field is written. `width` is `0..=24`, `head` `0..=32` and `elbow` (the
+lead-out) `0..=64`, in logical pixels (`RangeLinkStyle`); a polar chart and
+a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
+
+```json
+{
+  "series_id": "links",
+  "label": null,
+  "x_column": "link.from",
+  "y_column": "link.to",
+  "render_type": {
+    "RangeLinks": {
+      "bars": "tasks",
+      "color": { "r": 0.58, "g": 0.61, "b": 0.67, "a": 1.0 },
+      "width": 1.25,
+      "head": 7.0,
+      "elbow": 8.0
+    }
+  }
+}
+```
+
+The picked link's `selection_details()` carries `index`, `from` and `to`
+(`null` for a NaN).
 
 <a id="surface-render_type"></a>
 

@@ -205,6 +205,13 @@ impl PrepareContext<'_> {
                 kind: streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
             });
         }
+        // Nor to range links (#357, rule 8): a link reads its bars' rows.
+        if series.render_type.range_links().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedRangeLinks,
+            });
+        }
         // Nor to 3D charts: a surface and its floor read their grid from the
         // resident pool through the camera of the panel composite.
         if config.view_3d().is_some() {

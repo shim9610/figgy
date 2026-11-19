@@ -359,6 +359,11 @@ rule_kinds! {
         RangeBarContrastInk => "a range bar's contrast ink colours must be opaque",
         ContrastInkSeries => "only range bar labels take contrast ink",
         CategoryBandsFill => "a category band fill has every channel in 0..=1",
+        RangeLinkBars => "a range link series names a range bar series of its own layer",
+        RangeLinkColumns => "a range link series needs two distinct, non-empty row columns",
+        RangeLinkStyle => "a range link's width is 0..=24, its head 0..=32 and its elbow 0..=64 pixels, its colour channels in 0..=1",
+        PolarRangeLinks => "a polar chart draws no range links",
+        StreamedRangeLinks => "range links need resident columns; a streamed source is rejected",
         TimestampStepRequired => "relative, custom and period timestamp labels need a calendar step",
         TimestampRelativePrefix => "a relative timestamp label prefix is one line of at most 24 characters",
         TimestampCustomLabel => "a custom timestamp label is one line of at most 160 characters",
@@ -2115,6 +2120,26 @@ mod tests {
             (
                 RuleKind::CategoryBandsFill,
                 "a category band fill has every channel in 0..=1",
+            ),
+            (
+                RuleKind::RangeLinkBars,
+                "a range link series names a range bar series of its own layer",
+            ),
+            (
+                RuleKind::RangeLinkColumns,
+                "a range link series needs two distinct, non-empty row columns",
+            ),
+            (
+                RuleKind::RangeLinkStyle,
+                "a range link's width is 0..=24, its head 0..=32 and its elbow 0..=64 pixels, its colour channels in 0..=1",
+            ),
+            (
+                RuleKind::PolarRangeLinks,
+                "a polar chart draws no range links",
+            ),
+            (
+                RuleKind::StreamedRangeLinks,
+                "range links need resident columns; a streamed source is rejected",
             ),
             (
                 RuleKind::TimestampStepRequired,

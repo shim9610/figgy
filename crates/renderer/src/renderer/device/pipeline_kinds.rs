@@ -364,7 +364,7 @@ pub(super) fn create_view3d_pipeline(
 }
 
 /// The precise pipelines (`TargetPipelines::precise`, #341).
-pub(in crate::renderer) const PRECISE_PIPELINES: usize = 37;
+pub(in crate::renderer) const PRECISE_PIPELINES: usize = 39;
 
 /// One of a target's precise (unstyled) pipelines (`TargetPipelines::precise`,
 /// #341): the one table that frame preparation, the prewarm and the format
@@ -422,11 +422,15 @@ pub(in crate::renderer) enum PrecisePipeline {
     FieldSelectionLabelled = 35,
     /// The contour label draw, from the renderer's label engine.
     ContourLabel = 36,
+    /// The dependency links of a range link series (#357).
+    RangeLink = 37,
+    /// The picked link's highlight.
+    RangeLinkSelection = 38,
 }
 
 // `TargetPipelines::precise` is indexed by `kind as usize`: the last
 // discriminant is the last slot (#152).
-const _: () = assert!(PrecisePipeline::ContourLabel as usize + 1 == PRECISE_PIPELINES);
+const _: () = assert!(PrecisePipeline::RangeLinkSelection as usize + 1 == PRECISE_PIPELINES);
 
 impl PrecisePipeline {
     /// Every kind, in the order the prewarm creates them.
@@ -468,6 +472,8 @@ impl PrecisePipeline {
         Self::FieldSelection,
         Self::FieldSelectionLabelled,
         Self::ContourLabel,
+        Self::RangeLink,
+        Self::RangeLinkSelection,
     ];
 
     /// The prewarm's progress stage for this kind (#299).
@@ -510,6 +516,8 @@ impl PrecisePipeline {
             Self::FieldSelection => "selected field data",
             Self::FieldSelectionLabelled => "selected labelled field data",
             Self::ContourLabel => "contour labels",
+            Self::RangeLink => "range links",
+            Self::RangeLinkSelection => "selected range link",
         }
     }
 
@@ -555,6 +563,8 @@ impl PrecisePipeline {
             Self::FieldSelection => "figgy selected field data pipeline",
             Self::FieldSelectionLabelled => "figgy selected labelled field data pipeline",
             Self::ContourLabel => "figgy contour label pipeline",
+            Self::RangeLink => "figgy range link columnar pipeline",
+            Self::RangeLinkSelection => "figgy selected range link columnar pipeline",
         }
     }
 
@@ -592,6 +602,7 @@ impl PrecisePipeline {
             Self::FieldSelection => "field_selection",
             Self::FieldSelectionLabelled => "field_selection_labelled",
             Self::ContourLabel => "contour_label",
+            Self::RangeLink | Self::RangeLinkSelection => "bar_range_link",
         }
     }
 
@@ -886,6 +897,10 @@ pub(super) fn create_precise_pipeline(
         K::BoxPlotSelection => category_axis(("vs_box_plot_selection", "fs_box_plot_selection")),
         K::RangeBar => category_axis(("vs_range_bars", "fs_range_bars")),
         K::RangeBarSelection => category_axis(("vs_range_bar_selection", "fs_range_bar_selection")),
+        K::RangeLink => category_axis(("vs_range_links", "fs_range_links")),
+        K::RangeLinkSelection => {
+            category_axis(("vs_range_link_selection", "fs_range_link_selection"))
+        }
         K::Violin => category_axis(("vs_violin", "fs_violin")),
         K::ViolinSelection => category_axis(("vs_violin_selection", "fs_violin_selection")),
         K::BoxPoints => category_axis(("vs_box_points", "fs_box_points")),

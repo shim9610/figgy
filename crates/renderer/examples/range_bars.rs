@@ -16,7 +16,7 @@
 //!   `default::default_calendar_timeline_config` (a month header over Monday
 //!   weeks), with the recipes a web Gantt chart
 //!   reads by: a progress column, milestones as filled diamonds, a today
-//!   line and finish-to-start links as elbow arrows.
+//!   line and finish-to-start dependency links (`SeriesConfig::range_links`).
 //!
 //! The example computes the running totals, the prices, the moving average,
 //! the dates and the progress; the renderer draws the columns it is given.
@@ -350,9 +350,7 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
 // progress, milestones, today line and links. The host computes every
 // value: dates, progress, which rows link and where today is.
 fn timeline(r: &mut Renderer, out: &Path) -> Result {
-    use renderer::annotation::{
-        Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, ArrowStyle,
-    };
+    use renderer::annotation::{Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle};
     use renderer::{ScatterShape, line::LineStylePreset, text::RichText};
     const T0: f64 = 1_772_409_600.0; // Monday 2026-03-02T00:00:00Z
     // (id, task, start day, days, progress, label); no days is a milestone.
@@ -368,8 +366,9 @@ fn timeline(r: &mut Renderer, out: &Path) -> Result {
         ("docs", "Docs", 56.0, 9.0, 0.0, "Not started"),
         ("release", "Release", 70.0, 0.0, 0.0, ""),
     ];
-    // Finish-to-start links, by row.
-    let links = [(0, 2), (2, 3), (3, 5), (4, 5), (7, 9)];
+    // Finish-to-start links, by row: the host's dependencies. Test pass to
+    // Docs runs backward (Docs starts first) and takes the S route.
+    let links = [(0, 2), (2, 3), (3, 5), (4, 5), (7, 8)];
     let today = T0 + 37.5 * DAY;
     let column = |f: &dyn Fn(&(&str, &str, f64, f64, f64, &str)) -> f64| -> Vec<f64> {
         tasks.iter().map(f).collect()
@@ -396,39 +395,6 @@ fn timeline(r: &mut Renderer, out: &Path) -> Result {
     };
     let font = config.left_y.label_style.label_font.clone();
     let items = &mut config.annotations.items;
-    // Links as elbows: out of the predecessor's end, down to the
-    // successor's row, into its start.
-    for (a, b) in links {
-        let (from, to) = (tasks[a], tasks[b]);
-        let end = T0 + (from.2 + from.3) * DAY;
-        let elbow = end + 0.8 * DAY;
-        let start = T0 + to.2 * DAY;
-        let points = [
-            (end, a as f64),
-            (elbow, a as f64),
-            (elbow, b as f64),
-            (start, b as f64),
-        ];
-        for k in 0..3 {
-            let head = if k == 2 { 7.0 } else { 0.0 };
-            items.push(Annotation::new(AnnotationKind::Arrow {
-                from: Anchor::Data {
-                    x: points[k].0,
-                    y: points[k].1,
-                },
-                to: Anchor::Data {
-                    x: points[k + 1].0,
-                    y: points[k + 1].1,
-                },
-                style: ArrowStyle {
-                    line: line(Color::from_rgb8(148, 156, 170), 1.25),
-                    head_length: head,
-                    head_width: head,
-                },
-                text: None,
-            }));
-        }
-    }
     let red = Color::from_rgb8(220, 68, 55);
     items.push(Annotation::new(AnnotationKind::ReferenceLine {
         axis: AnnotationAxis::X,
@@ -452,7 +418,17 @@ fn timeline(r: &mut Renderer, out: &Path) -> Result {
     let milestones = SeriesConfig::scatter("milestones", "tl-mark", "tl-row")
         .marker(ScatterShape::DiamondFilled, 16.0)
         .color(ink);
-    let specs = [bars, milestones];
+    r.add_column(
+        "tl-link-from",
+        &links.iter().map(|l| l.0 as f64).collect::<Vec<_>>(),
+    )?;
+    r.add_column(
+        "tl-link-to",
+        &links.iter().map(|l| l.1 as f64).collect::<Vec<_>>(),
+    )?;
+    // The links route between the bars on every draw (#357).
+    let dependencies = SeriesConfig::range_links("links", "tasks", "tl-link-from", "tl-link-to");
+    let specs = [bars, dependencies, milestones];
     for (scale, name) in [(1.0, "timeline.png"), (2.0, "timeline@2x.png")] {
         chart.fit_layout();
         let image = r.export_rgba_blocking(

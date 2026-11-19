@@ -380,7 +380,7 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
             pass.set_bind_group(2, &category.style_map, &[]);
             pass.set_bind_group(3, &category.bind_group, &[]);
             pass.draw(
-                0..CATEGORY_BAR_VERTICES,
+                0..selection.vertices,
                 selection.instance..selection.instance.saturating_add(selection.instances),
             );
             continue;

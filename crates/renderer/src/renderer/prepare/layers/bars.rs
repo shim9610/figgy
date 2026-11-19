@@ -153,6 +153,35 @@ impl PrepareContext<'_> {
                     .precise(PrecisePipeline::RangeBar)
                     .ok_or(FiggyError::internal("prepare ensured range bar pipeline"))?,
             ))
+        } else if primitives.range_links && phase.is_none() {
+            // Range links (#357): routed from the panel's range bar series
+            // they name, through that series' group 3. No streamed form.
+            let (data, count) = range_link_data(
+                &self.device,
+                self.gpu_ledger,
+                self.category_bar_data_bgl,
+                self.per_point_style_map_bgl,
+                column_buffer,
+                chart_config,
+                series_specs
+                    .iter()
+                    .filter(|s| {
+                        effective_series_primitives(&chart_config.draw_style, &s.config.render_type)
+                            .range_bars
+                    })
+                    .map(|s| s.config),
+                cfg,
+                series.style.display_scale,
+                &mut lookup,
+            )?;
+            Some((
+                data,
+                count,
+                data_render::RANGE_LINK_VERTICES,
+                pipelines
+                    .precise(PrecisePipeline::RangeLink)
+                    .ok_or(FiggyError::internal("prepare ensured range link pipeline"))?,
+            ))
         } else {
             None
         };

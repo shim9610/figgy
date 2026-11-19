@@ -140,6 +140,8 @@ impl PreciseNeeds {
                 needs.add(K::BoxPlotSelection, primitives.box_plot && typed_bin);
                 needs.add(K::RangeBar, primitives.range_bars);
                 needs.add(K::RangeBarSelection, primitives.range_bars && typed_bin);
+                needs.add(K::RangeLink, primitives.range_links);
+                needs.add(K::RangeLinkSelection, primitives.range_links && typed_bin);
                 needs.add(K::Violin, primitives.violin);
                 needs.add(K::ViolinSelection, primitives.violin && typed_bin);
                 needs.add(K::BoxPoints, primitives.box_points);

@@ -110,7 +110,8 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         | DataRenderType::Vector(_)
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
-        | DataRenderType::RangeBars(_) => None,
+        | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_) => None,
     }
 }
 
@@ -148,6 +149,7 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         // Arrowheads are not markers either; they are drawn along the line
         // by the vector glyph (`DataRenderType::streamlines`).
         | DataRenderType::Streamlines(_) => None,
@@ -194,6 +196,7 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -234,6 +237,7 @@ pub(super) fn extract_field_fill(
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -271,6 +275,7 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -301,6 +306,7 @@ pub(super) fn extract_vector(
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -562,6 +568,17 @@ pub(super) fn series_draw_info_from_pool(
         // One bar per row where every column of the series has a value:
         // the positions, the ends and the referenced columns are
         // index-aligned, so the shortest decides.
+        // A link per row of its two row columns (#357): the shorter bounds
+        // the links.
+        DataRenderType::RangeLinks(_) => {
+            let (count, truncated) = paired(&[x, y]);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
         DataRenderType::RangeBars(_) => {
             let bars = series.render_type.range_bars();
             let lengths = || {
@@ -668,6 +685,7 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -701,6 +719,7 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -722,6 +741,7 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -743,6 +763,7 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -1667,4 +1688,87 @@ pub(super) fn range_bar_data<'c>(
         style_map,
     )?;
     Ok((data, params.count))
+}
+
+/// The group 3 and style map a range link series `links` of the panel
+/// `config` is drawn, picked and highlighted with at `display_scale`
+/// (#357), and its link count. A link series reads its bars through the
+/// group 3 of the range bar series it names (`range_bar_params` of that
+/// series in its `group`), so its routes join exactly the drawn bars; the
+/// lane table adds its row columns, its link count (the shorter column)
+/// and its stroke width, head and lead-out in render pixels.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn range_link_data<'c>(
+    device: &wgpu::Device,
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    data_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    pool_buffer: &wgpu::Buffer,
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig> + Clone,
+    links: &SeriesConfig,
+    display_scale: f32,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+) -> Result<(data_render::CategoryBarData, u32)> {
+    use data_render::{
+        RANGE_LANE_LINK_COUNT, RANGE_LANE_LINK_FROM, RANGE_LANE_LINK_HEAD, RANGE_LANE_LINK_LEAD,
+        RANGE_LANE_LINK_TO, RANGE_LANE_LINK_WIDTH, RANGE_LINK_LANES,
+    };
+    let invalid = |kind: crate::RuleKind| FiggyError::InvalidSeriesConfig {
+        series_id: links.series_id.clone(),
+        kind,
+    };
+    let style = links
+        .render_type
+        .range_links()
+        .ok_or_else(|| invalid(crate::RuleKind::RangeLinkBars))?;
+    let bars = group
+        .clone()
+        .into_iter()
+        .find(|s| s.series_id == style.bars && s.render_type.range_bars().is_some())
+        .ok_or_else(|| invalid(crate::RuleKind::RangeLinkBars))?;
+    let ranges = bars
+        .render_type
+        .range_bars()
+        .ok_or_else(|| invalid(crate::RuleKind::RangeLinkBars))?;
+    let (params, bar_lanes) = range_bar_params(config, group, bars, display_scale, &mut lookup)?;
+    let from = lookup(&links.x_column)?;
+    let to = lookup(&links.y_column)?;
+    let lane = |handle: &ColumnHandle| {
+        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "range link column lane",
+            requested: handle.offset / 4,
+            limit: u64::from(u32::MAX),
+        })
+    };
+    let count = from.len_values.min(to.len_values);
+    let count = u32::try_from(count).map_err(|_| FiggyError::GpuResourceLimit {
+        resource: "range links",
+        requested: count as u64,
+        limit: u64::from(u32::MAX),
+    })?;
+    let mut lanes = [0u32; RANGE_LINK_LANES];
+    lanes[..bar_lanes.len()].copy_from_slice(&bar_lanes);
+    lanes[RANGE_LANE_LINK_FROM as usize] = lane(&from)?;
+    lanes[RANGE_LANE_LINK_TO as usize] = lane(&to)?;
+    lanes[RANGE_LANE_LINK_COUNT as usize] = count;
+    lanes[RANGE_LANE_LINK_WIDTH as usize] = (style.width * display_scale).to_bits();
+    lanes[RANGE_LANE_LINK_HEAD as usize] = (style.head * display_scale).to_bits();
+    lanes[RANGE_LANE_LINK_LEAD as usize] = (style.elbow * display_scale).to_bits();
+    let style_map =
+        crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale)?;
+    let data = data_render::create_category_bar_data_bind_group(
+        device,
+        ledger,
+        data_bgl,
+        pool_buffer,
+        &params,
+        lanes.len(),
+        |push| {
+            lanes.iter().for_each(|&lane| push(lane));
+            Ok(())
+        },
+        style_map,
+    )?;
+    Ok((data, count))
 }

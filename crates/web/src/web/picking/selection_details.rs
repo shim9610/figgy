@@ -87,6 +87,21 @@ impl FiggyChart {
                 self.range_bar_details(&series, bin_index, &mut result)
                     .await?;
             }
+            // A dependency link (#357) reports its index and the two rows
+            // it joins, read back from its GPU columns.
+            PickedDataRef::HistogramBin { bin_index, .. }
+                if series.render_type.range_links().is_some() =>
+            {
+                let samples = [
+                    (series.x_column.clone(), *bin_index),
+                    (series.y_column.clone(), *bin_index),
+                ];
+                let values = self.read_selection_samples(&samples).await?;
+                result["index"] = serde_json::json!(bin_index);
+                for (name, value) in ["from", "to"].iter().zip(&values) {
+                    result[*name] = serde_json::json!(value.is_finite().then_some(*value));
+                }
+            }
             // A category bar reports its category and its value, read back
             // from the GPU column the draw used.
             PickedDataRef::HistogramBin { bin_index, .. }

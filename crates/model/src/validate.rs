@@ -305,10 +305,11 @@ impl Config {
             })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), crate::RuleKind>;
-        let rules: [(&'static str, Rule); 14] = [
+        let rules: [(&'static str, Rule); 15] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
             ("range_bars", Config::validate_range_bars),
+            ("range_links", Config::validate_range_links),
             ("radar", Config::validate_radar),
             ("ternary", Config::validate_ternary_series),
             ("parallel", Config::validate_parallel_series),
@@ -402,6 +403,9 @@ impl Config {
             }
             DataRenderType::RangeBars(_) => {
                 return Err(crate::RuleKind::PolarRangeBars);
+            }
+            DataRenderType::RangeLinks(_) => {
+                return Err(crate::RuleKind::PolarRangeLinks);
             }
             DataRenderType::Streamlines(_) => {
                 return Err(crate::RuleKind::PolarStreamlines);
