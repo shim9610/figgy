@@ -7,23 +7,13 @@ use figgy::FiggyChart;
 use renderer::data_config::{
     FieldFillConfig, FieldSeries, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
 };
-use renderer::{DataRenderType, HistogramSeries, SeriesConfig, TernarySeries, VectorSeries};
-use wasm_bindgen::JsCast;
+use renderer::{DataRenderType, HistogramSeries, TernarySeries, VectorSeries};
 use wasm_bindgen_test::*;
 
-wasm_bindgen_test_configure!(run_in_browser);
+mod support;
+use support::{canvas_320x240 as canvas, series};
 
-fn canvas() -> web_sys::HtmlCanvasElement {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .unwrap();
-    canvas.set_width(320);
-    canvas.set_height(240);
-    canvas
-}
+wasm_bindgen_test_configure!(run_in_browser);
 
 /// Report `cores` as `navigator.hardwareConcurrency` (`undefined` for
 /// `None`), and record every `createRenderPipelineAsync` and
@@ -165,18 +155,6 @@ async fn the_in_flight_compiles_never_exceed_the_core_count() {
             limit,
             "{cores:?}: the most compiles in flight at once"
         );
-    }
-}
-
-fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type,
     }
 }
 

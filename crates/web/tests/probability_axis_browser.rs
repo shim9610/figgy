@@ -11,27 +11,14 @@ use renderer::config::{AxisScale, Config, DataSelectionsConfig, PickedDataRef, P
 use renderer::data_config::{DataScatterStyleConfig, ScatterShape, XySeries};
 use renderer::format::LabelFormat;
 use renderer::{Color, DataRenderType, SeriesConfig};
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::canvas_480x360 as canvas;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
 const POINTS: [(f64, f64); 3] = [(2.0, 0.01), (5.0, 0.5), (8.0, 0.98)];
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(360);
-    canvas
-}
 
 fn markers() -> SeriesConfig {
     SeriesConfig {

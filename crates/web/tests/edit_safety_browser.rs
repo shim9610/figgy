@@ -38,6 +38,9 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
+mod support;
+use support::rect;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 const RADAR: &str = r#"{
@@ -1055,11 +1058,6 @@ fn with_data_area(document: &str, area: [f64; 4]) -> String {
         "selected": null,
     });
     value.to_string()
-}
-
-fn rect(value: &serde_json::Value) -> [f64; 4] {
-    let n = |i: usize| value[i].as_f64().unwrap();
-    [n(0), n(1), n(2), n(3)]
 }
 
 /// The PNG's size and the bounding box `[x, y, w, h]`, in its pixels, of
