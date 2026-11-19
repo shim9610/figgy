@@ -168,7 +168,12 @@ ring. `children` is omitted from JSON when it is empty.
   - its outer corners stay inside the rim.
 
   So a horizontal label at the top or bottom of a thin ring keeps its size,
-  and one at the ring's side is held to the thickness.
+  and one at the ring's side is held to the thickness. A label never
+  shrinks below 12 logical pixels (or the chart's `font_size` when that
+  is smaller): one that would is hidden, not drawn
+  and not hit, so no label is drawn too small to read (#357). Set
+  `labels = Outside` on the slice to show it outside, or give the chart
+  more room.
 - Sunbursts are drawn flat only. A nonzero `tilt_degrees` or `depth` in the
   chart style or a node style is rejected
   (`"a sunburst draws flat: no tilt or depth"`). A sunburst cannot be used
@@ -183,7 +188,12 @@ ring. `children` is omitted from JSON when it is empty.
   depth, gap or rounded corners, and a 1 px white rim and separators. The
   white line separates every node from its siblings and every ring from the
   next, even when a whole branch shares one colour. On another background,
-  set `outline.color` to it. A theme with `child_tint` (the Gallery and
+  set `outline.color` to it. It is the host default
+  ([#357](https://github.com/shim9610/figgy/issues/357)):
+  `RadialStyle::default()` and `RadialChart::default()` draw it, so a chart
+  without a theme shows its separators. The serde default a document reads
+  when it omits the style keeps no outline, so stored documents draw as
+  before; `RadialOutline::default()` keeps the documented (off) outline. A theme with `child_tint` (the Gallery and
   cool slate members) colours each branch from its top-level slice, each
   ring paler.
 
@@ -816,7 +826,9 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
   반지름에 놓인다. 크기는 조각 자신의 좌표계에서 맞춘다(#357). 이등분선 방향 길이는 띠 두께 안에,
   그와 수직인 방향 길이는 라벨 중심을 지나는 호 안에 들어가야 하고, 바깥 모서리는 테두리 안에 있어야
   한다. 그래서 얇은 고리의 위나 아래에 놓인 가로 라벨은 원래 크기를 지키고, 옆에 놓인 라벨은 두께에
-  맞춰 줄어든다.
+  맞춰 줄어든다. 라벨은 12 논리 픽셀(차트의 `font_size`가 더 작으면 그 값)보다 작아지지 않는다. 그보다
+  작아져야 하는 라벨은 숨긴다. 그리지도 않고 맞히지도 않으므로 읽을 수 없을 만큼 작은 라벨은 없다(#357).
+  보이게 하려면 그 조각의 `labels`를 `Outside`로 두거나 차트에 공간을 더 준다.
 - 평면에서만 그린다. 차트 스타일이나 노드 스타일의 `tilt_degrees`·`depth`가 0이 아니면
   거부한다(`"a sunburst draws flat: no tilt or depth"`). `split`과 함께 쓸 수 없다
   (`"a sunburst has no detail circle"`).
@@ -826,7 +838,10 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
 - 피킹·강조·호버·재질(고리마다 다른 결)은 모두 조각과 같다.
 - `RadialStyle::sunburst()`는 웹 선버스트 차트의 평면 모양이다. 깊이·간격·둥근 모서리가 없고,
   1px 흰색 테두리와 구분선을 그린다. 그래서 한 가지가 같은 색이어도 노드와 고리가 서로 구분된다.
-  배경이 흰색이 아니면 `outline.color`를 배경색으로 바꾼다. `child_tint`가 있는 테마(Gallery,
+  배경이 흰색이 아니면 `outline.color`를 배경색으로 바꾼다. 이 모양이 호스트 기본값이다(#357).
+  `RadialStyle::default()`와 `RadialChart::default()`가 이 모양을 그리므로 테마 없는 차트에도
+  구분선이 보인다. 스타일을 생략한 문서가 읽는 serde 기본값은 윤곽선이 없으므로 저장된 문서는
+  예전 그대로 그려진다. `RadialOutline::default()`는 문서화된(꺼진) 윤곽선을 유지한다. `child_tint`가 있는 테마(Gallery,
   cool slate)는 가지마다 맨 위 조각의 색을 쓰고, 바깥 고리로 갈수록 옅게 칠한다.
 
 ```rust

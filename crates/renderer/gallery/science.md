@@ -14,7 +14,7 @@ palette order.
 
 <a href="../examples/nist_grotrian_gallery.rs"><img src="../assets/gallery-grotrian.png" alt="Grotrian diagram of He I" width="760"></a>
 
-A Grotrian diagram of He I from NIST data: singlet and triplet term columns headed by their term symbols (¹P°), levels labelled by configuration (1s²), transitions labelled with their wavelengths to one decimal, the unit once in a corner note, and the ground state below a broken energy axis. The Grotrian frame draws the energy axis alone; the host derives the break from its own levels (#357).
+A Grotrian diagram of He I from NIST data: singlet and triplet term columns headed by their term symbols (<sup>1</sup>P°), levels labelled by configuration (1s<sup>2</sup>), all written as rich-text script segments, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, and the ground state below a broken energy axis. The Grotrian frame draws the energy axis alone; the host derives the break from its own levels (#357).
 
 **Code:** [nist_grotrian_gallery.rs](../examples/nist_grotrian_gallery.rs), case `he-i` (`he-i-1x.png`); the diagram is `helium` in [support/grotrian_sets.rs](../examples/support/grotrian_sets.rs)
 

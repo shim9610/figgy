@@ -419,7 +419,7 @@ impl LevelPlacement<'_> {
             &mut brackets,
             &mut root,
         );
-        let obstacles = self.level_obstacles(records, style);
+        let obstacles = self.level_obstacles(records, style, measure);
         let rect_of = |item: usize, shift: [f32; 2], side: LevelLabelSide| {
             let (slot, run) = match side {
                 LevelLabelSide::Right => (0, shift[0]),
@@ -760,13 +760,14 @@ impl LevelPlacement<'_> {
         }
     }
 
-    /// The level strokes and band fills, sorted by their tops: the obstacles
-    /// a level label keeps clear of (#248) and, with the level labels added,
-    /// a transition label.
+    /// The level strokes, band fills and limit labels, sorted by their
+    /// tops: the obstacles a level label keeps clear of (#248, #357) and,
+    /// with the level labels added, a transition label.
     fn level_obstacles(
         &self,
         records: &EnergyLevelSeries,
         style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
     ) -> Vec<crate::layout::RectF> {
         let mut obstacles: Vec<crate::layout::RectF> = Vec::new();
         for index in 0..records.levels.len() {
@@ -783,6 +784,13 @@ impl LevelPlacement<'_> {
         for index in 0..records.bands.len() {
             if let Some(rect) = self.band_rect(records, style, index) {
                 obstacles.push(rect);
+            }
+        }
+        // The limit labels (#357): a level or transition label keeps clear
+        // of them as it does of a stroke.
+        for index in 0..records.limits.len() {
+            if let Some(label) = self.limit_label(records, index, measure) {
+                obstacles.push(label.rect());
             }
         }
         obstacles.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
@@ -1213,6 +1221,40 @@ impl LevelPlacement<'_> {
         Some(([plot.x, y], [plot.x + plot.width, y]))
     }
 
+    /// The label of limit row `index` (#357): right-aligned at the plot's
+    /// right edge, just above its line, or just below it when above would
+    /// leave the plot (a limit near the top of the energy range), so the
+    /// label is not clipped. The host's `label_offset` moves it from
+    /// there. `None` when the limit has no label or is not drawn.
+    fn limit_label<'t>(
+        &self,
+        records: &'t EnergyLevelSeries,
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+    ) -> Option<crate::sink::PlacedText<'t>> {
+        let limit = records.limits.get(index)?;
+        let (_, end) = self.limit_line(records, index)?;
+        let text = limit.label.as_ref()?;
+        let extents = measure.measure_rich(text);
+        let plot = self.space.plot_rect();
+        let above = end[1] - LABEL_GAP - extents.descent;
+        let baseline = if above - extents.ascent >= plot.y - 0.5 {
+            above
+        } else {
+            end[1] + LABEL_GAP + extents.ascent
+        };
+        let origin = (
+            end[0] - LABEL_GAP - extents.width + limit.label_offset[0],
+            baseline + limit.label_offset[1],
+        );
+        Some(crate::sink::PlacedText {
+            text: crate::sink::TextRef::Rich(text),
+            origin,
+            extents,
+            rotation: None,
+        })
+    }
+
     fn transition_color(&self, style: &EnergyLevelStyle, transition: &Transition) -> Color {
         let arrow = &style.transition;
         if !arrow.color_by_value {
@@ -1393,22 +1435,7 @@ impl LevelPlacement<'_> {
                     transition.label_offset,
                 ))
             }
-            LabelPart::Limit => {
-                let limit = records.limits.get(index)?;
-                let (_, end) = self.limit_line(records, index)?;
-                let text = limit.label.as_ref()?;
-                let extents = measure.measure_rich(text);
-                let origin = (
-                    end[0] - LABEL_GAP - extents.width + limit.label_offset[0],
-                    end[1] - LABEL_GAP - extents.descent + limit.label_offset[1],
-                );
-                Some(crate::sink::PlacedText {
-                    text: crate::sink::TextRef::Rich(text),
-                    origin,
-                    extents,
-                    rotation: None,
-                })
-            }
+            LabelPart::Limit => self.limit_label(records, index, measure),
         }
     }
 

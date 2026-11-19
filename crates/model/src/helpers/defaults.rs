@@ -547,9 +547,17 @@ impl Default for crate::radar::RadarStyle {
     }
 }
 
+/// The documented chart in the host default style ([`RadialStyle::default`],
+/// #357): white separators between segments and rings. A document that
+/// omits a field still reads the serde default.
+///
+/// [`RadialStyle::default`]: crate::radial::RadialStyle
 impl Default for crate::radial::RadialChart {
     fn default() -> Self {
-        crate::defaults::radial_chart()
+        Self {
+            style: crate::radial::RadialStyle::default(),
+            ..crate::defaults::radial_chart()
+        }
     }
 }
 
@@ -571,9 +579,13 @@ impl Default for crate::radial::RadialOutline {
     }
 }
 
+/// The host default style (#357): [`crate::radial::RadialStyle::sunburst`],
+/// the flat documented look with white separators between segments and
+/// rings. The serde default (`crate::defaults::radial_style`, no outline)
+/// is unchanged, so a document that omits it draws as before.
 impl Default for crate::radial::RadialStyle {
     fn default() -> Self {
-        crate::defaults::radial_style()
+        crate::radial::RadialStyle::sunburst()
     }
 }
 

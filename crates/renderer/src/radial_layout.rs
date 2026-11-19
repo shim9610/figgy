@@ -536,9 +536,47 @@ fn inside_fit(s: &Sector, at: f32, width: f32, height: f32) -> f32 {
     fit.max(0.0)
 }
 
+/// The smallest size an inside label is drawn at, logical pixels (#357):
+/// a label that would have to shrink below it to fit its slice's face is
+/// hidden (not drawn, not hit) instead of drawn too small to read. A
+/// chart whose own `font_size` is smaller draws at that size. A display
+/// parameter: the label's text, anchor and colour do not change.
+pub(crate) const MIN_INSIDE_LABEL_PX: f32 = 12.0;
+
+/// The fitted font size, in physical pixels, of slice `index`'s inside
+/// label on circle `g`, with its sector and the label's centre: the size
+/// that fits the slice's face, or `None` when the slice has no face or the
+/// label would be smaller than [`MIN_INSIDE_LABEL_PX`] (hidden). The emit
+/// and the hit map read the same answer.
+fn inside_label(
+    chart: &RadialChart,
+    f: &Frame,
+    c: &Circle<'_>,
+    g: usize,
+    index: usize,
+) -> Option<(Sector, f32, f32)> {
+    let scale = f.scale;
+    let s = sector(chart, c, g, index, scale)?;
+    let slice = c.node(index)?;
+    let r = (s.geometry[3] + 1.0) * 0.5;
+    let fs = chart.font_size * scale;
+    let line_count = text_lines(slice).count();
+    let text_width = text_lines(slice)
+        .map(|s| width(chart, s, fs))
+        .fold(0.0, f32::max);
+    // Keep inside glyphs anchored to their slice, so the cached hover
+    // translation and the hit region still agree. Fit the text to the
+    // available face instead of rejecting the chart.
+    let fit = inside_fit(&s, r.max(0.6), text_width, fs * line_count as f32 * 1.2);
+    let fitted = (fs * fit).max(scale);
+    let floor = MIN_INSIDE_LABEL_PX.min(chart.font_size) * scale;
+    (fitted >= floor * (1.0 - 1e-4)).then_some((s, fitted, r))
+}
+
 /// The inside label of slice `index` of circle `g`: its lines on the
 /// slice's face, at the face's lifted place, or at its unlifted place when
-/// `at_rest` (the raster while the shader lifts the inside glyphs).
+/// `at_rest` (the raster while the shader lifts the inside glyphs). Nothing
+/// when the label is hidden ([`inside_label`]).
 fn emit_inside(
     chart: &RadialChart,
     f: &Frame,
@@ -549,28 +587,18 @@ fn emit_inside(
     sink: &mut dyn Sink,
 ) {
     let scale = f.scale;
-    let Some(s) = sector(chart, c, g, index, scale) else {
+    let Some((s, fs, r)) = inside_label(chart, f, c, g, index) else {
         return;
     };
     let Some(slice) = c.node(index) else {
         return;
     };
     let mid = s.arc[0] + s.arc[1] * 0.5;
-    let r = (s.geometry[3] + 1.0) * 0.5;
     let (x, mut y) = projected(&s, mid, r.max(0.6));
     if !at_rest {
         y -= s.effects[3];
     }
-    let fs = chart.font_size * scale;
     let line_count = text_lines(slice).count();
-    let text_width = text_lines(slice)
-        .map(|s| width(chart, s, fs))
-        .fold(0.0, f32::max);
-    // Keep inside glyphs anchored to their slice, so the cached hover
-    // translation and the hit region still agree. Fit the text to the
-    // available face instead of rejecting the chart.
-    let fit = inside_fit(&s, r.max(0.6), text_width, fs * line_count as f32 * 1.2);
-    let fs = (fs * fit).max(scale);
     let color = slice
         .label_color
         .unwrap_or_else(|| inside_label_ink(s.color, chart.label_color));
@@ -1100,7 +1128,12 @@ pub(super) fn layout(
             let Some(slice) = c.node(index) else {
                 continue;
             };
-            if slice.value > 0.0 && c.placement(index, slice) == RadialLabels::Inside {
+            // A hidden inside label (too small to read, #357) is neither
+            // drawn nor hit.
+            if slice.value > 0.0
+                && c.placement(index, slice) == RadialLabels::Inside
+                && inside_label(chart, &f, &c, g, index).is_some()
+            {
                 if let Some(paint) = paint.as_deref_mut() {
                     emit_inside(chart, &f, &c, g, index, inside_at_rest, paint);
                 }

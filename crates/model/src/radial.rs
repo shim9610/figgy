@@ -399,8 +399,11 @@ impl RadialStyle {
     /// without depth, gap or rounded corners, every node outlined along its
     /// rim and its two radial edges in a 1 px white line, so the segments
     /// of one branch colour and its rings stay apart. Hosts on another
-    /// background set `outline.color` to it. An explicit preset: the
-    /// documented default keeps its look.
+    /// background set `outline.color` to it. It is the host default
+    /// (`RadialStyle::default()`, `RadialChart::default()` with the
+    /// `helpers` feature); the serde default a document reads when it
+    /// omits the style keeps no outline, so stored documents draw as
+    /// before.
     pub fn sunburst() -> Self {
         // Every field is named (#46): the preset sets the flat outlined
         // look and keeps the documented default for the rest.
@@ -1246,8 +1249,38 @@ mod tests {
         c.style = style;
         c.format_labels();
         assert_eq!(c.validate(), Ok(()));
-        // The documented default keeps its look.
+        // The documented (serde) default keeps its look.
         assert!(!crate::defaults::radial_style().outline.rim);
+    }
+
+    /// The host default (#357) draws white separators between segments
+    /// and rings; a document that omits the style or its outline reads the
+    /// serde default without them, so stored documents draw as before.
+    #[cfg(feature = "helpers")]
+    #[test]
+    fn the_host_default_separates_segments_and_rings() {
+        assert_eq!(RadialStyle::default(), RadialStyle::sunburst());
+        // The outline building block keeps the documented values: an
+        // outline a host switches on is drawn in the documented ink.
+        assert_eq!(RadialOutline::default(), crate::defaults::radial_outline());
+        let chart = RadialChart::default();
+        assert_eq!(chart.style, RadialStyle::sunburst());
+        assert_eq!(
+            RadialChart {
+                style: crate::defaults::radial_style(),
+                ..chart
+            },
+            crate::defaults::radial_chart()
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_document_without_an_outline_reads_no_outline() {
+        let json = serde_json::json!({"material": "Flat"});
+        let style: RadialStyle = serde_json::from_value(json).unwrap();
+        assert_eq!(style.outline, crate::defaults::radial_outline());
+        assert!(!style.outline.rim && !style.outline.separators);
     }
 
     #[test]

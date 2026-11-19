@@ -42,6 +42,42 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
 
+- **Contour ink, sunburst separators and readable labels, Grotrian limit
+  labels** ([#357](https://github.com/shim9610/figgy/issues/357), round
+  2). Appearance only; no value, position or pick target moves, and
+  stored documents read back unchanged.
+  - **Contours without a theme.** `SeriesConfig::contours` draws its
+    isolines in a dark ink (`#262626`) instead of palette blue, which was
+    hard to see on a chart without a theme. `.color(c)` and the themes
+    recolour them as before.
+  - **Sunburst and radial default.** `RadialStyle::default()` and
+    `RadialChart::default()` (`helpers`) are now `RadialStyle::sunburst()`:
+    the documented flat look with a 1 px white rim and separators, so the
+    segments and rings of a chart without a theme stay apart.
+    `RadialOutline::default()` and every serde default are unchanged, so a
+    document that omits the style draws as before.
+  - **Inside labels have a readable minimum.** An inside radial label is
+    no longer shrunk below 12 logical pixels (or the chart's `font_size`
+    when that is smaller). A label that would be is hidden: it is not
+    drawn, has no hit region, and the selection and hover paths skip it,
+    the same in PNG, SVG and PDF. Before, labels such as "Oil 8%" were
+    drawn at about 7 px. This applies to documents written before too: a
+    label they drew below the minimum is now hidden. A host that wants it
+    shown sets the slice's `labels` to `Outside` or gives the chart room.
+  - **Grotrian ionisation-limit labels.** A limit's label sits above its
+    line, right-aligned. When that would leave the plot (a limit near the
+    top of the energy range), it is placed just below the line, so it is
+    not clipped. The level and transition labels keep clear of it as they
+    do of a stroke. The host's `label_offset` still moves it from there.
+  - Tests: `contours_draw_in_dark_ink` (`helpers/series.rs`),
+    `the_host_default_separates_segments_and_rings`,
+    `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
+    `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`) and
+    `crowded_radial_labels_prepare_and_remain_in_the_hit_map`
+    (`tests/radial_label_layout.rs`, now checking hidden labels and the
+    minimum size).
+  - **Migration:** a host that relied on `RadialChart::default()` drawing
+    no outline sets `style.outline = RadialOutline::default()`.
 - **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),
   items 8 and 9). Appearance only; no value, position or pick moves.
   - `ParallelOptions` gains `names_on_top` (the axis names above the plot)
@@ -156,7 +192,7 @@ and radar documents' `text_sizes`) are additive.
     textbook term diagrams do: `left_y` keeps its line, outward ticks and
     labels; `bottom_x` keeps the term-column labels without a line or
     ticks; `top_x` and `right_y` draw nothing, unless `right_y` has a
-    `unit` (a second energy unit such as cm⁻¹), which then takes the
+    `unit` (a second energy unit such as cm<sup>-1</sup>), which then takes the
     energy axis' frame. It used to draw the boxed frame with outward ticks
     on the bottom and left. Migration: a host that wants the old frame
     applies `AxisPreset::BoxedOutward` and switches the grid off itself.
@@ -179,11 +215,14 @@ and radar documents' `text_sizes`) are additive.
     Rust literal of `EnergyLevelTheme` adds the two fields.
   - The Grotrian examples (`nist_grotrian`, `nist_grotrian_gallery` and
     the playground's energy-level scenes, `support/grotrian_sets.rs`)
-    write physics notation as host text: term symbols such as ¹P° and
-    ²[3/2]°, configurations such as 1s² and J as a subscript, in Unicode
-    super- and subscripts (#353). They derive each axis break from their
-    own levels (`derived_break`: the widest empty energy range), as the
-    item 13 decision keeps breaks the host's job.
+    write physics notation as host text: term symbols with a raised
+    multiplicity, configurations with raised occupancies and J as a
+    subscript, built from rich-text script segments (TeX `^{}` and `_{}`
+    spans), never from Unicode super- or subscript characters, which
+    figgy's own examples, presets and docs do not use (#357; #353's
+    mapping stays for hosts that pass them). They derive each axis break
+    from their own levels (`derived_break`: the widest empty energy
+    range), as the item 13 decision keeps breaks the host's job.
 - **Palette presets and a default colour cycle** ([#357](https://github.com/shim9610/figgy/issues/357)).
   `ColorCycle` gains five categorical presets from public palettes:
   `Tableau10` (d3-scale-chromatic, ISC), `Set2` and `Dark2` (ColorBrewer,

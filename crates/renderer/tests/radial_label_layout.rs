@@ -1,4 +1,5 @@
-//! A crowded first frame must remain renderable and editable through the shared API.
+//! A crowded first frame must remain renderable and editable through the shared API;
+//! an inside label too small to read is hidden, not shrunk (#357).
 #![cfg(not(target_arch = "wasm32"))]
 use test_gpu::BlockOn as _;
 #[path = "support/harness.rs"]
@@ -60,16 +61,52 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
         ..Default::default()
     };
     chart.format_labels();
-    for mode in [RadialLabels::Inside, RadialLabels::Outside] {
+    // Too small for its slices, an inside label is hidden (#357): it is
+    // neither drawn nor hit, never shrunk below the readable minimum, and
+    // the first frame still prepares.
+    chart.labels = RadialLabels::Inside;
+    for scale in [1., 2.] {
+        let frame = renderer
+            .prepare(&chart, (420, 280), scale)
+            .expect("label spacing cannot reject the first frame");
+        assert!(radial_labels(&*frame, &chart).is_empty());
+        let mut unlabelled = chart.clone();
+        unlabelled.labels = RadialLabels::None;
+        let export = |renderer: &mut RadialRenderer, chart: &RadialChart| {
+            renderer
+                .export_rgba(chart, (420, 280), renderer::ExportOptions::document(scale))
+                .block_on()
+                .unwrap()
+                .rgba
+        };
+        assert_eq!(
+            export(&mut renderer, &chart),
+            export(&mut renderer, &unlabelled)
+        );
+        renderer.end_frame();
+    }
+    // With room, every inside label is drawn, at least the minimum size,
+    // and hit; outside labels are always drawn.
+    for (mode, size) in [
+        (RadialLabels::Inside, (1200, 900)),
+        (RadialLabels::Outside, (420, 280)),
+    ] {
         chart.labels = mode;
         for scale in [1., 2.] {
             chart.decorations = Default::default();
             let frame = renderer
-                .prepare(&chart, (420, 280), scale)
+                .prepare(&chart, size, scale)
                 .expect("label spacing cannot reject the first frame");
             assert_eq!(radial_labels(&*frame, &chart).len(), 16);
+            if mode == RadialLabels::Inside {
+                for (hit, _) in radial_labels(&*frame, &chart) {
+                    let text = frame.text_bounds(&chart, hit).unwrap();
+                    // Two lines at no less than 12 px.
+                    assert!(text.height >= 2.0 * 12.0, "{text:?}");
+                }
+            }
             let image = renderer
-                .export_rgba(&chart, (420, 280), renderer::ExportOptions::document(scale))
+                .export_rgba(&chart, size, renderer::ExportOptions::document(scale))
                 .block_on()
                 .unwrap();
             assert_pixels(&image);
@@ -88,7 +125,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
                 frame.drag(&mut chart, hit, 0.5, 3.25),
                 Some(NudgeResult::Moved)
             );
-            let moved = renderer.prepare(&chart, (420, 280), scale).unwrap();
+            let moved = renderer.prepare(&chart, size, scale).unwrap();
             let after = moved
                 .text_bounds(&chart, moved.id_of(&chart, &key))
                 .unwrap();
@@ -102,7 +139,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             assert_ne!(
                 image.rgba,
                 renderer
-                    .export_rgba(&chart, (420, 280), renderer::ExportOptions::document(scale))
+                    .export_rgba(&chart, size, renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap()
                     .rgba
@@ -111,7 +148,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             assert_eq!(
                 image.rgba,
                 renderer
-                    .export_rgba(&chart, (420, 280), renderer::ExportOptions::document(scale))
+                    .export_rgba(&chart, size, renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap()
                     .rgba
