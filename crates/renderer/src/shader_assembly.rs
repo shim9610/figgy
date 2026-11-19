@@ -1393,6 +1393,10 @@ mod tests {
                     selection,
                     radar,
                     ring,
+                    ink_dark,
+                    ink_light,
+                    ink_back,
+                    ink_base,
                 }
             ),
             mirror!(
