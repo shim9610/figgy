@@ -7341,6 +7341,16 @@ fn streamed_series_are_rejected_per_family() {
             ),
             RuleKind::StreamedRangeBars,
         ),
+        // Dependency links (#357) read their bars' rows from the pool.
+        (
+            "range links",
+            base.clone(),
+            streamed_series(
+                SeriesConfig::range_links("stream", "bars", [(0, 1)]).render_type,
+                "y",
+            ),
+            RuleKind::StreamedRangeLinks,
+        ),
         // A histogram's columns are the host's bins, one row per bin, so it
         // is resident only (#284), in either orientation and with or without
         // bar style overrides.

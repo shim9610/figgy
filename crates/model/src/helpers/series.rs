@@ -18,9 +18,9 @@ use crate::data_config::{
     BoxSeries, CategoryBarLabels, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig,
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef,
     FieldFillConfig, FieldSeries, GridLayout, HistogramSeries, LineFill, MatrixOrientation,
-    MatrixRef, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, RangeProgress,
-    RgbImageSeries, ScatterShape, SeriesConfig, Stem, StreamlineSeries, TernarySeries,
-    VectorComponents, VectorSeries, VectorStyle, XySeries,
+    MatrixRef, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, RangeLinkSeries,
+    RangeProgress, RgbImageSeries, ScatterShape, SeriesConfig, Stem, StreamlineSeries,
+    TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
 };
 use crate::line::LineStylePreset;
 use crate::preset::ColorCycle;
@@ -441,6 +441,35 @@ impl SeriesConfig {
             })
     }
 
+    /// Dependency links (#357) between the bars of the range bar series
+    /// `bars`, one per `(from, to)` row pair, in the web Gantt look: amber
+    /// (`#D4A24C`), 1.5 px wide, leaving the predecessor 6 px from its start
+    /// and ending in a 6 px open chevron ([`RangeLinkSeries`]). The series
+    /// is DataLess: the links are its SSOT. List the links before their
+    /// bars so the bars cover the link ends.
+    pub fn range_links(
+        id: impl Into<String>,
+        bars: impl Into<String>,
+        links: impl IntoIterator<Item = (u32, u32)>,
+    ) -> Self {
+        Self::of_kind(
+            id,
+            "",
+            "",
+            DataRenderType::RangeLinks(RangeLinkSeries {
+                bars: bars.into(),
+                color: Color::from_rgb8(212, 162, 76),
+                width: 1.5,
+                head: 6.0,
+                inset: 6.0,
+                links: links
+                    .into_iter()
+                    .map(|(from, to)| crate::data_config::RangeLink::new(from, to))
+                    .collect(),
+            }),
+        )
+    }
+
     /// A range bar series' progress (#357): each bar is drawn whole up to
     /// its share in `column` (`0..=1`, the host's) and in the light tint of
     /// [`crate::default::TIMELINE_REMAINING_OPACITY`] past it ([`RangeProgress`]). No effect
@@ -640,6 +669,7 @@ impl SeriesConfig {
             DataRenderType::CategoryBars(CategoryBarSeries { color: c, .. })
             | DataRenderType::BoxPlot(BoxSeries { color: c, .. })
             | DataRenderType::RangeBars(RangeBarSeries { color: c, .. })
+            | DataRenderType::RangeLinks(RangeLinkSeries { color: c, .. })
             | DataRenderType::Radar(RadarPolygonSeries { color: c, .. }) => *c = color,
             DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
                 if let Some(scatter) = scatter {

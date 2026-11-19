@@ -541,8 +541,8 @@ impl Config {
     /// writes), so a chart of many series draws each in its own colour. A
     /// kind whose default ink is not a palette colour keeps its colours: a
     /// field or mesh (its fill comes from the colour map and its contour
-    /// lines are dark ink), an RGB image, an energy-level diagram and a
-    /// Feynman diagram. Such a series still takes its index, so series `i`
+    /// lines are dark ink), an RGB image, an energy-level diagram, a
+    /// Feynman diagram and dependency links (#357). Such a series still takes its index, so series `i`
     /// always takes colour `i`.
     ///
     /// The colours are written into the series, so the document says what
@@ -578,6 +578,8 @@ fn takes_palette(series: &SeriesConfig) -> bool {
             | DataRenderType::RgbImage(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::Feynman(_)
+            // Dependency links keep their own accent (#357).
+            | DataRenderType::RangeLinks(_)
     )
 }
 
@@ -679,6 +681,9 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
         DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
             *color = c;
         }
+        // Dependency links keep their own accent (#357): a cycle colour
+        // would read as one more task series.
+        DataRenderType::RangeLinks(_) => {}
         // The outline and markers join the cycle, and the fill follows
         // them unless the style names its own.
         DataRenderType::Radar(RadarPolygonSeries { color, .. }) => {

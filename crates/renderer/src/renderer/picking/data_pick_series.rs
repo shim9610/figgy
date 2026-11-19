@@ -200,6 +200,49 @@ impl Renderer {
         Ok(())
     }
 
+    /// A range link series' links for the typed data pick (#357), at the
+    /// pick's display transform: the routes of the draw, from the same
+    /// group 3 of the bars they join.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn range_link_data_pick(
+        &mut self,
+        config: &Config,
+        display_config: &Config,
+        series: &[SeriesConfig],
+        request: GpuPickRequest,
+        cfg: &SeriesConfig,
+        paint_order: u32,
+        data_series: &mut Vec<crate::gpu_data_pick::GpuDataPickSeries>,
+    ) -> Result<()> {
+        let (data, count) = range_link_data(
+            &self.device,
+            &self.gpu_ledger,
+            &self.category_bar_data_bgl,
+            &self.per_point_style_map_bgl,
+            self.pool.buffer(),
+            &display_config,
+            series.iter().filter(|s| {
+                effective_series_primitives(&config.draw_style, &s.render_type).range_bars
+            }),
+            cfg,
+            request.display_scale,
+            |id| {
+                self.pool
+                    .handle_for(id)
+                    .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+            },
+        )?;
+        if count != 0 {
+            data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                source_id: cfg.source_id.clone(),
+                series_id: cfg.series_id.clone(),
+                paint_order,
+                geometry: crate::gpu_data_pick::GpuDataPickGeometry::RangeLinks { data },
+            });
+        }
+        Ok(())
+    }
+
     /// A category bar series' bars for the typed data pick, at the pick's display transform.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn category_bar_data_pick(

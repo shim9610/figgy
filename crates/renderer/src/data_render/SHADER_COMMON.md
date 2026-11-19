@@ -58,6 +58,7 @@ To change shared shader code:
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
+| `range_links.wgsl` (§5.18) | bar |
 | `violin.wgsl` (§2.5, §5.19) | bar |
 | `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh, triangle surface |
 | `surface_mesh/surface_params.wgsl`, `surface_mesh/surface_entry.wgsl` (§5.21) | surface mesh (with `surface_input_grid.wgsl`), triangle surface (with `tri_mesh/mesh_input.wgsl` and `surface_input_mesh.wgsl`) |
@@ -1905,6 +1906,64 @@ row; a connector is a candidate of the bar it leaves. A bar's value label
 category bar rule, a range bar counting as grouped. Nothing per bar is
 stored anywhere; the CPU keeps the lane bases, the part colours of the
 configuration and the columns' scalar statistics (the fit).
+
+#### Dependency links
+
+The links of a `DataRenderType::RangeLinks` series (#357) are drawn by
+[`common/range_links.wgsl`](common/range_links.wgsl), spliced right after
+`range_bars.wgsl`. A link series binds the group 3 of the range bar series
+it names: that series' `CategoryBarParams` at binding 9 and its lane table
+at binding 10, extended by a fixed head of four entries (`RANGE_LINK_LANES`,
+12) and then three entries per SSOT link (`RANGE_LINK_STRIDE`). The CPU
+writer `renderer/series.rs::range_link_data` writes the table straight into
+the mapped buffer when the series is prepared, on an SSOT change. The links
+take no pool column (the series is DataLess), and `range_bar(row)` is
+exactly the bar that series draws.
+
+| Entry of `category_lanes` | Meaning for a link series |
+|---|---|
+| 0 to 7 | the bars' own, as above |
+| `RANGE_LANE_LINK_COUNT` (8) | the link count, any number |
+| `RANGE_LANE_LINK_WIDTH` (9), `_HEAD` (10), `_INSET` (11) | the stroke width, the chevron's length and the default exit inset in render pixels, as f32 bits |
+| `RANGE_LINK_LANES + i · RANGE_LINK_STRIDE` (12 + 3i) .. +2 | link `i`: its `from` row, its `to` row, and its exit offset in render pixels as f32 bits (NaN for the default) |
+
+The geometry sits in the lane table rather than `Style` because the pick
+compute binds no `Style`; the draw, the highlight and the pick read one
+route. One instance is one link and draws `RANGE_LINK_VERTICES` (6): one
+quad over the route's bounding box, whose fragments rebuild the route from
+the link's index and cover by distance to its centre line (half the
+stroke, antialiased over one pixel), so overlapping parts never blend
+twice. The route follows the web Gantt convention and is built on every
+draw from the two bars, with the value axis signed so the successor runs
+forward:
+
+- The exit is on the predecessor's edge facing the successor's row, the
+  link's exit offset (or `inset`) in from the predecessor's first end, kept
+  on the bar. When the successor starts too
+  soon for the last leg and its head, the exit moves back to
+  `successor start − head − 4 px`, so a route never turns back through a
+  bar.
+- The first leg runs across to the successor's centre line. It turns
+  through one quarter arc of 4 logical pixels, fitted to both legs.
+- The last leg runs along the centre line to 1.5 px before the successor's
+  start.
+- The head is an open chevron of two arms `head` pixels long.
+
+Links leaving one bar share their trunk. Bars on one centre line (tasks on
+one row) get a straight link out of the predecessor's last end, so no
+stroke runs inside a bar whose unfinished part is translucent. A row that is NaN, negative or
+past the bars' row count, or a bar that draws nothing, draws no link. The
+colour is the series' `Style` colour; nothing per link is stored. A link
+draws in its series' place in the list, so a host lists the links before
+their bars to have the bars cover the link ends.
+
+`vs_range_link_selection` / `fs_range_link_selection` draw the picked
+link's route in the selection colour, its stroke widened by the
+selection's width on each side. The compute entry `pick_range_links`
+answers the nearest point of the route (legs, corner or chevron) within half the stroke plus the pick
+distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
+link's row. The route is appearance: it reads the values the bars are
+drawn from, and the user reads no value computed from them.
 
 ### 5.19 Violins and raw points (group 3, bindings 8 to 10)
 

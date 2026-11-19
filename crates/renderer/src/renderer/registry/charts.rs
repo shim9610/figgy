@@ -77,6 +77,26 @@ impl Renderer {
         if series.monotonic().is_some() {
             info.truncated = self.monotonic.truncated(series);
         }
+        // A link naming a row past its bars' rows draws nothing (#357): the
+        // declaration asked for more than the data supports.
+        if let Some(links) = series.render_type.range_links() {
+            let rows = state
+                .series
+                .iter()
+                .find(|s| s.series_id == links.bars && s.render_type.range_bars().is_some())
+                .map_or(0, |bars| {
+                    series_draw_info_from_pool(
+                        &(&self.pool, &self.streaming_sources),
+                        bars,
+                        state.config.drawn_z_column(bars),
+                    )
+                    .drawn_count
+                });
+            info.truncated = links
+                .links
+                .iter()
+                .any(|l| u64::from(l.from) >= rows || u64::from(l.to) >= rows);
+        }
         Ok(info)
     }
 

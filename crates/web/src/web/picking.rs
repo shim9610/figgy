@@ -16,6 +16,7 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         // A radar vertex maps no value to its marker.
         | DataRenderType::Radar(_)
         // A streamline has no markers; its colour column colours the line.
@@ -508,6 +509,79 @@ impl FiggyChart {
         Ok(true)
     }
 
+    /// Press on a dependency link (#357): link `index` of the range link
+    /// series `series_id`, as a `pick_data` hit names it (a histogram bin of
+    /// that series). The link becomes the data selection and the drag
+    /// starts: `on_move` moves its exit along the predecessor's edge
+    /// (`drag_link_exit`, moving a shared trunk as one and snapping to the
+    /// default within 3 px) and `on_release` ends it. Returns `false` and
+    /// changes nothing for an id or index that names no link.
+    /// JS: `const hit = JSON.parse(await chart.pick_data(x, y, 6));`
+    /// `if (hit?.kind === "HistogramBin") chart.press_range_link(hit.series_id, hit.index);`
+    pub fn press_range_link(&mut self, series_id: &str, index: usize) -> Result<bool, JsValue> {
+        let Some(series) = self
+            .chart_series()?
+            .iter()
+            .find(|series| series.series_id == series_id)
+        else {
+            return Ok(false);
+        };
+        if !series
+            .render_type
+            .range_links()
+            .is_some_and(|links| index < links.links.len())
+        {
+            return Ok(false);
+        }
+        let reference = renderer::config::PickedDataRef::HistogramBin {
+            source_id: series.source_id.clone(),
+            series_id: series.series_id.clone(),
+            bin_index: index,
+            half: None,
+        };
+        if self.chart_selection()?.is_some() {
+            self.set_chart_selection(None)?;
+        }
+        self.set_selected_annotation(None);
+        let mut config = self.chart_config()?.clone();
+        let mut picked = config.picked_data.take().unwrap_or_default();
+        picked.refs = vec![reference];
+        config.picked_data = Some(picked);
+        self.replace_chart_config(config)?;
+        self.annotation_pointer = false;
+        self.resizing = None;
+        self.dragging = true;
+        self.value_label_pointer = true;
+        Ok(true)
+    }
+
+    /// Set the exit offset of link `index` of the range link series
+    /// `series_id` (#357), in logical pixels from its predecessor's start;
+    /// `undefined`, 0 or a non-finite value restores the default exit.
+    /// Returns `false` and changes nothing for an unknown series, an index
+    /// past its links or a negative offset.
+    pub fn set_link_exit_offset(
+        &mut self,
+        series_id: &str,
+        index: usize,
+        offset: Option<f32>,
+    ) -> Result<bool, JsValue> {
+        let mut series = self.chart_series()?.to_vec();
+        let Some(links) = series
+            .iter_mut()
+            .find(|s| s.series_id == series_id)
+            .and_then(|s| s.render_type.range_links_mut())
+        else {
+            return Ok(false);
+        };
+        if !links.set_link_exit_offset(index, offset) {
+            return Ok(false);
+        }
+        let config = self.chart_config()?.clone();
+        self.replace_chart_state(config, series)?;
+        Ok(true)
+    }
+
     /// Whether `series_id` names a DataLess series of the chart: an
     /// energy-level series or a Feynman diagram.
     fn is_dataless_series(&self, series_id: &str) -> Result<bool, JsValue> {
@@ -709,6 +783,41 @@ impl FiggyChart {
             };
             if diagram.drag_label(part, index, dx, dy) == NudgeResult::Moved {
                 let config = self.chart_config()?.clone();
+                self.replace_chart_state(config, series)?;
+            }
+            return Ok(());
+        }
+        // A dependency link moves its exit along its predecessor (#357):
+        // along the value axis, x for horizontal bars and y (up) otherwise.
+        if let Some(renderer::config::PickedDataRef::HistogramBin {
+            series_id,
+            bin_index,
+            ..
+        }) = self
+            .chart_config()?
+            .picked_data
+            .as_ref()
+            .and_then(|picked| picked.refs.first())
+            .cloned()
+            && self
+                .chart_series()?
+                .iter()
+                .any(|s| s.series_id == series_id && s.render_type.range_links().is_some())
+        {
+            let (dx, dy) = self.display_delta_to_document(dx, dy)?;
+            let config = self.chart_config()?.clone();
+            let horizontal = config
+                .bar_groups_of(config.layer_of_series(&series_id))
+                .direction
+                == renderer::data_config::CategoryBarDirection::Horizontal;
+            let along = if horizontal { dx } else { -dy };
+            let mut series = self.chart_series()?.to_vec();
+            if let Some(links) = series
+                .iter_mut()
+                .find(|s| s.series_id == series_id)
+                .and_then(|s| s.render_type.range_links_mut())
+                && links.drag_link_exit(bin_index, along) == NudgeResult::Moved
+            {
                 self.replace_chart_state(config, series)?;
             }
             return Ok(());

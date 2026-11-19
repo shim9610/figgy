@@ -10,6 +10,7 @@ pub(super) enum DataPickRoute {
     Histogram,
     BoxPlot,
     RangeBars,
+    RangeLinks,
     CategoryBars,
     Parallel,
     Vector,
@@ -27,6 +28,8 @@ impl DataPickRoute {
             Self::BoxPlot
         } else if primitives.range_bars {
             Self::RangeBars
+        } else if primitives.range_links {
+            Self::RangeLinks
         } else if primitives.category_bars {
             Self::CategoryBars
         } else if primitives.parallel {
@@ -52,6 +55,7 @@ impl DataPickRoute {
             Self::BoxPlot if primitives.violin => Set::EMPTY.with(K::BoxPlot).with(K::Violin),
             Self::BoxPlot => Set::EMPTY.with(K::BoxPlot),
             Self::RangeBars => Set::EMPTY.with(K::RangeBar),
+            Self::RangeLinks => Set::EMPTY.with(K::RangeLink),
             Self::CategoryBars => Set::EMPTY.with(K::CategoryBar),
             Self::Parallel => Set::EMPTY.with(K::Parallel),
             Self::Vector => Set::EMPTY.with(K::VectorCell),
@@ -410,6 +414,15 @@ impl Renderer {
                     &mut data_series,
                 )?,
                 DataPickRoute::RangeBars => self.range_bar_data_pick(
+                    &config,
+                    &display_config,
+                    &series,
+                    request,
+                    cfg,
+                    paint_order,
+                    &mut data_series,
+                )?,
+                DataPickRoute::RangeLinks => self.range_link_data_pick(
                     &config,
                     &display_config,
                     &series,

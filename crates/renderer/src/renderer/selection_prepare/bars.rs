@@ -72,6 +72,7 @@ impl PrepareContext<'_> {
             instance,
             instances: 1,
             category: None,
+            vertices: data_render::BAR_SELECTION_VERTICES,
         });
         Ok(())
     }
@@ -139,6 +140,7 @@ impl PrepareContext<'_> {
                 instance: 0,
                 instances: segments,
                 category: Some(violin),
+                vertices: data_render::CATEGORY_BAR_VERTICES,
             });
         }
         if half.is_some_and(|half| half != ViolinSide::Both) {
@@ -157,6 +159,7 @@ impl PrepareContext<'_> {
             instance: row,
             instances: 1,
             category: Some(category),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
         });
         Ok(())
     }
@@ -208,6 +211,7 @@ impl PrepareContext<'_> {
             instance: index,
             instances: 1,
             category: Some(points),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
         });
         Ok(())
     }
@@ -264,6 +268,54 @@ impl PrepareContext<'_> {
             instance: row,
             instances: 1,
             category: Some(category),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
+        });
+        Ok(())
+    }
+
+    /// A range link (#357): the picked link's route again, in the
+    /// selection's colour, widened by its outline width, from the same
+    /// group 3 as the draw.
+    pub(super) fn range_link_selection<'a>(
+        &'a self,
+        s: &SelectionInputs<'a, '_>,
+        selection_cfg: &crate::config::DataSelectionsConfig,
+        bin_index: &usize,
+        selected_bars: &mut Vec<ColumnBarSelectionLayer<'a>>,
+    ) -> Result<()> {
+        let SelectionInputs {
+            view,
+            pipelines,
+            columns,
+            column_buffer,
+            ..
+        } = *s;
+        let Some(category) = columns.category.clone() else {
+            return Ok(());
+        };
+        let Ok(row) = u32::try_from(*bin_index) else {
+            return Ok(());
+        };
+        let mut highlight = PrimitiveStyle::from_color(selection_cfg.highlight_color);
+        highlight.line_width_px = selection_cfg.outline_width_px;
+        let buffer = data_render::create_style_uniform_buffer(&self.device, &highlight);
+        let style_bg = data_render::create_style_bind_group(&self.device, &self.style_bgl, &buffer);
+        selected_bars.push(ColumnBarSelectionLayer {
+            pipeline: pipelines
+                .precise(PrecisePipeline::RangeLinkSelection)
+                .ok_or(FiggyError::internal(
+                    "prepare ensured range link selection pipeline",
+                ))?,
+            transform_bg: &view.transform_bg,
+            style_bg,
+            style_map_bg: None,
+            pool_buffer: column_buffer,
+            edges: columns.x,
+            values: columns.y,
+            instance: row,
+            instances: 1,
+            category: Some(category),
+            vertices: data_render::RANGE_LINK_VERTICES,
         });
         Ok(())
     }
@@ -317,6 +369,7 @@ impl PrepareContext<'_> {
             instance: row,
             instances: 1,
             category: Some(category),
+            vertices: data_render::CATEGORY_BAR_VERTICES,
         });
         Ok(())
     }

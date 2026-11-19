@@ -34,6 +34,7 @@ pub(crate) const BAR_SHADER_BY_SET: crate::shader_assembly::AssembledBySet = cra
     "data_render/common/errorbar_segment.wgsl",
     "data_render/common/box_plot.wgsl",
     "data_render/common/range_bars.wgsl",
+    "data_render/common/range_links.wgsl",
     "data_render/common/violin.wgsl",
     "data_render/bar_columnar.wgsl",
     "data_render/common/contour_label_box.wgsl",
@@ -152,6 +153,10 @@ pub struct ColumnBarSelectionLayer<'a> {
     /// every segment (its vertex stage keeps the selected category's).
     pub instances: u32,
     pub category: Option<CategoryBarData>,
+    /// Vertices per instance: `CATEGORY_BAR_VERTICES` for a bar or box,
+    /// `RANGE_LINK_VERTICES` for a range link (#357), `BAR_SELECTION_VERTICES`
+    /// for a histogram bin.
+    pub vertices: u32,
 }
 
 /// Bars drawable from an `(edges, values)` pair.
@@ -271,6 +276,22 @@ pub(crate) const RANGE_LANE_PROGRESS: u32 = 5;
 pub(crate) const RANGE_LANE_COLOR_MODE: u32 = 6;
 pub(crate) const RANGE_LANE_STATES: u32 = 7;
 pub(crate) const RANGE_BAR_LANES: usize = RANGE_LANE_STATES as usize + 1;
+/// A range link series' lanes past its bars' (#357, `range_links.wgsl`):
+/// the link count and the stroke width, head length and exit inset in
+/// render pixels as f32 bits, then the links themselves.
+pub(crate) const RANGE_LANE_LINK_COUNT: u32 = 8;
+pub(crate) const RANGE_LANE_LINK_WIDTH: u32 = 9;
+pub(crate) const RANGE_LANE_LINK_HEAD: u32 = 10;
+pub(crate) const RANGE_LANE_LINK_INSET: u32 = 11;
+/// The fixed head of a link series' lane table; link `i` follows in
+/// `RANGE_LINK_STRIDE` entries from `RANGE_LINK_LANES + i * RANGE_LINK_STRIDE`:
+/// its `from` row, its `to` row and its exit offset in render pixels as f32
+/// bits (NaN for the default).
+pub(crate) const RANGE_LINK_LANES: usize = RANGE_LANE_LINK_INSET as usize + 1;
+pub(crate) const RANGE_LINK_STRIDE: usize = 3;
+/// Vertices per link: one quad over the whole route. Must match
+/// `range_links.wgsl`'s `RANGE_LINK_VERTICES`.
+pub const RANGE_LINK_VERTICES: u32 = 6;
 /// `RANGE_LANE_COLOR_MODE` values (`RANGE_COLOR_*`).
 pub(crate) const RANGE_COLOR_SINGLE: u32 = 0;
 pub(crate) const RANGE_COLOR_DIRECTION: u32 = 1;

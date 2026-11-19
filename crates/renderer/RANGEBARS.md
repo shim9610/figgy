@@ -126,10 +126,9 @@ A web Gantt's other elements are the host's, with existing parts: a
 milestone is a `ScatterShape::DiamondFilled` scatter series on the bars'
 layer (positions the row index, x the date; no row of the bars needs a
 value), today is an `AnnotationKind::ReferenceLine` on `X` at the time
-the host passes (the renderer never reads a clock), and a finish-to-start
-link is drawn as an elbow of `AnnotationKind::Arrow` segments until the
-link series lands. The `timeline` scene of `examples/range_bars.rs` draws
-all of them.
+the host passes (the renderer never reads a clock), and finish-to-start
+links are a `RangeLinks` series (below). The `timeline` scene of
+`examples/range_bars.rs` draws all of them.
 
 Every choice is a stored field, so a saved timeline reads back with the
 same look, and the documented defaults (`SeriesConfig::range_bars`,
@@ -150,6 +149,52 @@ let chart = Chart::new(config).with_area(0, 0, 800, 600);
 let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_progress("done");
 ```
 
+### Dependency links
+
+`SeriesConfig::range_links(id, bars, [(from, to), …])` adds a
+`DataRenderType::RangeLinks` series: each `RangeLink { from, to,
+exit_offset }` joins the bar of row `from` to the bar of row `to` of the
+range bar series `bars`, finish to start. The series is DataLess: the links
+are SSOT (`links`), like annotations, and it reads no column (`x_column`
+and `y_column` empty, `RuleKind::RangeLinkColumns`). There is no cap on
+links; each costs one 6-vertex instance and one pick candidate per draw,
+and 12 bytes of the lane table the series uploads when it is prepared
+(`three_thousand_links_draw_and_pick` draws 3749). The renderer routes each link on every draw from
+the two bars as they are drawn, in the web Gantt convention (Frappe Gantt):
+the link leaves the predecessor's edge facing the successor's row, a small
+inset from its start, runs across to the successor's centre line, turns
+through one rounded corner and ends in an open chevron just before the
+successor's start. When the successor starts before that exit, the exit
+moves back to leave room for the head, so a link never turns back through
+a bar. Links leaving one bar share their trunk, and a link between two
+tasks on one row runs straight from the first's end. A link naming a row
+past the bars' rows draws and picks nothing, and `series_draw_info`
+reports the series as `truncated`. List the links before their
+bars: a series draws in its place in the list, so the bars then cover the
+link ends.
+
+| Field | Default (`range_links`) | Range |
+|---|---|---|
+| `bars` | the bars' `series_id` | a range bar series in the same layer (`RuleKind::RangeLinkBars`) |
+| `color` | amber `#D4A24C` | channels in `0..=1`; a theme keeps it, since the waterfall connector's thin dark line does not read as a dependency |
+| `width` | 1.5 px | `0..=24` |
+| `head` | 6 px open chevron | `0..=32` |
+| `inset` | 6 px from the predecessor's start: the default exit | `0..=64` |
+| `links[i].exit_offset` | `None`: the default exit | finite, not negative; `Some(0)` is the default |
+
+The style ranges are `RuleKind::RangeLinkStyle`. Polar charts refuse links
+(`RuleKind::PolarRangeLinks`), and a streamed source is refused
+(`RuleKind::StreamedRangeLinks`). The legend draws a link series as a line.
+
+```rust
+use renderer::SeriesConfig;
+
+let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end");
+let links = SeriesConfig::range_links("links", "tasks", [(0, 1), (1, 2), (1, 3)]);
+// Links first, so the bars cover their ends.
+let series = [links, tasks];
+```
+
 ## Interaction
 
 Every part of a bar picks it: the body, the whisker and the connector each
@@ -164,6 +209,24 @@ the shortest of the series' columns. The web wrapper's
 `total` or `state`, and `progress`, with `category_id` and
 `category_label` on a categorical axis. It reports no difference or
 duration: those are the host's to derive.
+
+A link picks as `PickedData::HistogramBin` with its own series and its
+index in `links`, wherever its stroke or head is painted; the picked link
+is redrawn in the selection colour with a wider stroke, and
+`step_selection` moves along the links by `dx + dy`, staying in the
+series. `selection_details()` reports `index`, `from`, `to` and
+`exit_offset`. Links draw on overlays and subplots next to their bars and
+export with them.
+
+A link's exit is draggable. `RangeLinkSeries::drag_link_exit(index,
+along)` moves it along the predecessor's edge: every link that leaves the
+same bar at the same exit moves with it, so a shared trunk moves as one,
+and an exit within 3 px of the default snaps back to it (`None`). The draw
+keeps a dragged exit on the bar. `set_link_exit_offset(index, offset)`
+sets one link's offset directly. In the browser, `press_range_link(series_id,
+index)` after a `pick_data` hit starts the drag, `on_move` moves the exit
+along the value axis and `on_release` ends it; `set_link_exit_offset` is the
+twin of the Rust helper.
 
 Value labels are picked, selected and dragged as a category bar's are
 (`labels.offsets`), one per row, wherever their placement puts them
