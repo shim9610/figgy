@@ -1058,68 +1058,68 @@ marker-line,full,0,none,HexagonFilled,PICK_VARIANT=0;PICK_SHAPE=23,xy; xy (strea
 marker-line,full,0,none,OctagonFilled,PICK_VARIANT=0;PICK_SHAPE=24,xy; xy (streamed),xy (streamed): cartesian precise markers=OctagonFilled line=Dash errors=none stem=no fill=none,34,2774,8400
 marker-line,full,0,none,StarFilled,PICK_VARIANT=0;PICK_SHAPE=25,xy; xy (streamed),xy (streamed): cartesian precise markers=StarFilled line=Dash errors=none stem=no fill=none,34,2709,8200
 marker-line,full,0,none,any,PICK_VARIANT=0,xy; xy (streamed),xy (streamed): cartesian precise markers=style-overrides line=Dash errors=none stem=no fill=none,68,3305,10000
-marker-line,full,2,STYLED_MARKER,Circle,PICK_VARIANT=2;PICK_SHAPE=0,xy; xy (streamed),xy (streamed): cartesian constellation markers=Circle line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Square,PICK_VARIANT=2;PICK_SHAPE=1,xy; xy (streamed),xy (streamed): cartesian constellation markers=Square line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Triangle,PICK_VARIANT=2;PICK_SHAPE=2,xy; xy (streamed),xy (streamed): cartesian constellation markers=Triangle line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Diamond,PICK_VARIANT=2;PICK_SHAPE=3,xy; xy (streamed),xy (streamed): cartesian constellation markers=Diamond line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Cross,PICK_VARIANT=2;PICK_SHAPE=4,xy; xy (streamed),xy (streamed): cartesian constellation markers=Cross line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,CircleFilled,PICK_VARIANT=2;PICK_SHAPE=5,xy; xy (streamed),xy (streamed): cartesian constellation markers=CircleFilled line=Dash errors=none stem=no fill=none,36,,
-marker-line,full,2,STYLED_MARKER,SquareFilled,PICK_VARIANT=2;PICK_SHAPE=6,xy; xy (streamed),xy (streamed): cartesian constellation markers=SquareFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,TriangleFilled,PICK_VARIANT=2;PICK_SHAPE=7,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,DiamondFilled,PICK_VARIANT=2;PICK_SHAPE=8,xy; xy (streamed),xy (streamed): cartesian constellation markers=DiamondFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,TriangleDown,PICK_VARIANT=2;PICK_SHAPE=9,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleDown line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,TriangleLeft,PICK_VARIANT=2;PICK_SHAPE=10,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleLeft line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,TriangleRight,PICK_VARIANT=2;PICK_SHAPE=11,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleRight line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Plus,PICK_VARIANT=2;PICK_SHAPE=12,xy; xy (streamed),xy (streamed): cartesian constellation markers=Plus line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Pentagon,PICK_VARIANT=2;PICK_SHAPE=13,xy; xy (streamed),xy (streamed): cartesian constellation markers=Pentagon line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Hexagon,PICK_VARIANT=2;PICK_SHAPE=14,xy; xy (streamed),xy (streamed): cartesian constellation markers=Hexagon line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Octagon,PICK_VARIANT=2;PICK_SHAPE=15,xy; xy (streamed),xy (streamed): cartesian constellation markers=Octagon line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,Star,PICK_VARIANT=2;PICK_SHAPE=16,xy; xy (streamed),xy (streamed): cartesian constellation markers=Star line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,TriangleDownFilled,PICK_VARIANT=2;PICK_SHAPE=17,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleDownFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,TriangleLeftFilled,PICK_VARIANT=2;PICK_SHAPE=18,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleLeftFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,TriangleRightFilled,PICK_VARIANT=2;PICK_SHAPE=19,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleRightFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,PlusFilled,PICK_VARIANT=2;PICK_SHAPE=20,xy; xy (streamed),xy (streamed): cartesian constellation markers=PlusFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,CrossFilled,PICK_VARIANT=2;PICK_SHAPE=21,xy; xy (streamed),xy (streamed): cartesian constellation markers=CrossFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,PentagonFilled,PICK_VARIANT=2;PICK_SHAPE=22,xy; xy (streamed),xy (streamed): cartesian constellation markers=PentagonFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,HexagonFilled,PICK_VARIANT=2;PICK_SHAPE=23,xy; xy (streamed),xy (streamed): cartesian constellation markers=HexagonFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,OctagonFilled,PICK_VARIANT=2;PICK_SHAPE=24,xy; xy (streamed),xy (streamed): cartesian constellation markers=OctagonFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,2,STYLED_MARKER,StarFilled,PICK_VARIANT=2;PICK_SHAPE=25,xy; xy (streamed),xy (streamed): cartesian constellation markers=StarFilled line=Dash errors=none stem=no fill=none,12,,
-marker-line,full,4,ERRORBAR,Circle,PICK_VARIANT=4;PICK_SHAPE=0,xy,xy: cartesian precise markers=Circle line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Square,PICK_VARIANT=4;PICK_SHAPE=1,xy,xy: cartesian precise markers=Square line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Triangle,PICK_VARIANT=4;PICK_SHAPE=2,xy,xy: cartesian precise markers=Triangle line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Diamond,PICK_VARIANT=4;PICK_SHAPE=3,xy,xy: cartesian precise markers=Diamond line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Cross,PICK_VARIANT=4;PICK_SHAPE=4,xy,xy: cartesian precise markers=Cross line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,CircleFilled,PICK_VARIANT=4;PICK_SHAPE=5,xy,xy: cartesian precise markers=CircleFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,SquareFilled,PICK_VARIANT=4;PICK_SHAPE=6,xy,xy: cartesian precise markers=SquareFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,TriangleFilled,PICK_VARIANT=4;PICK_SHAPE=7,xy,xy: cartesian precise markers=TriangleFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,DiamondFilled,PICK_VARIANT=4;PICK_SHAPE=8,xy,xy: cartesian precise markers=DiamondFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,TriangleDown,PICK_VARIANT=4;PICK_SHAPE=9,xy,xy: cartesian precise markers=TriangleDown line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,TriangleLeft,PICK_VARIANT=4;PICK_SHAPE=10,xy,xy: cartesian precise markers=TriangleLeft line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,TriangleRight,PICK_VARIANT=4;PICK_SHAPE=11,xy,xy: cartesian precise markers=TriangleRight line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Plus,PICK_VARIANT=4;PICK_SHAPE=12,xy,xy: cartesian precise markers=Plus line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Pentagon,PICK_VARIANT=4;PICK_SHAPE=13,xy,xy: cartesian precise markers=Pentagon line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Hexagon,PICK_VARIANT=4;PICK_SHAPE=14,xy,xy: cartesian precise markers=Hexagon line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Octagon,PICK_VARIANT=4;PICK_SHAPE=15,xy,xy: cartesian precise markers=Octagon line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,Star,PICK_VARIANT=4;PICK_SHAPE=16,xy,xy: cartesian precise markers=Star line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,TriangleDownFilled,PICK_VARIANT=4;PICK_SHAPE=17,xy,xy: cartesian precise markers=TriangleDownFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,TriangleLeftFilled,PICK_VARIANT=4;PICK_SHAPE=18,xy,xy: cartesian precise markers=TriangleLeftFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,TriangleRightFilled,PICK_VARIANT=4;PICK_SHAPE=19,xy,xy: cartesian precise markers=TriangleRightFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,PlusFilled,PICK_VARIANT=4;PICK_SHAPE=20,xy,xy: cartesian precise markers=PlusFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,CrossFilled,PICK_VARIANT=4;PICK_SHAPE=21,xy,xy: cartesian precise markers=CrossFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,PentagonFilled,PICK_VARIANT=4;PICK_SHAPE=22,xy,xy: cartesian precise markers=PentagonFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,HexagonFilled,PICK_VARIANT=4;PICK_SHAPE=23,xy,xy: cartesian precise markers=HexagonFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,OctagonFilled,PICK_VARIANT=4;PICK_SHAPE=24,xy,xy: cartesian precise markers=OctagonFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,StarFilled,PICK_VARIANT=4;PICK_SHAPE=25,xy,xy: cartesian precise markers=StarFilled line=Solid errors=none stem=yes fill=none,5,,
-marker-line,full,4,ERRORBAR,any,PICK_VARIANT=4,xy,xy: cartesian precise markers=style-overrides line=Solid errors=none stem=yes fill=none,10,,
-marker-line,full,8,AREA,Circle,PICK_VARIANT=8;PICK_SHAPE=0,xy,xy: cartesian precise markers=Circle line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,Square,PICK_VARIANT=8;PICK_SHAPE=1,xy,xy: cartesian precise markers=Square line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,Triangle,PICK_VARIANT=8;PICK_SHAPE=2,xy,xy: cartesian precise markers=Triangle line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,Diamond,PICK_VARIANT=8;PICK_SHAPE=3,xy,xy: cartesian precise markers=Diamond line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,Cross,PICK_VARIANT=8;PICK_SHAPE=4,xy,xy: cartesian precise markers=Cross line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,CircleFilled,PICK_VARIANT=8;PICK_SHAPE=5,xy,xy: cartesian precise markers=CircleFilled line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,SquareFilled,PICK_VARIANT=8;PICK_SHAPE=6,xy,xy: cartesian precise markers=SquareFilled line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,TriangleFilled,PICK_VARIANT=8;PICK_SHAPE=7,xy,xy: cartesian precise markers=TriangleFilled line=Solid errors=none stem=no fill=baseline,2,,
-marker-line,full,8,AREA,DiamondFilled,PICK_VARIANT=8;PICK_SHAPE=8,xy,xy: cartesian precise markers=DiamondFilled line=Solid errors=none stem=no fill=baseline,2,,
+marker-line,full,2,STYLED_MARKER,Circle,PICK_VARIANT=2;PICK_SHAPE=0,xy; xy (streamed),xy (streamed): cartesian constellation markers=Circle line=Dash errors=none stem=no fill=none,12,2821,8500
+marker-line,full,2,STYLED_MARKER,Square,PICK_VARIANT=2;PICK_SHAPE=1,xy; xy (streamed),xy (streamed): cartesian constellation markers=Square line=Dash errors=none stem=no fill=none,12,2623,7900
+marker-line,full,2,STYLED_MARKER,Triangle,PICK_VARIANT=2;PICK_SHAPE=2,xy; xy (streamed),xy (streamed): cartesian constellation markers=Triangle line=Dash errors=none stem=no fill=none,12,2738,8300
+marker-line,full,2,STYLED_MARKER,Diamond,PICK_VARIANT=2;PICK_SHAPE=3,xy; xy (streamed),xy (streamed): cartesian constellation markers=Diamond line=Dash errors=none stem=no fill=none,12,2741,8300
+marker-line,full,2,STYLED_MARKER,Cross,PICK_VARIANT=2;PICK_SHAPE=4,xy; xy (streamed),xy (streamed): cartesian constellation markers=Cross line=Dash errors=none stem=no fill=none,12,2685,8100
+marker-line,full,2,STYLED_MARKER,CircleFilled,PICK_VARIANT=2;PICK_SHAPE=5,xy; xy (streamed),xy (streamed): cartesian constellation markers=CircleFilled line=Dash errors=none stem=no fill=none,36,2598,7800
+marker-line,full,2,STYLED_MARKER,SquareFilled,PICK_VARIANT=2;PICK_SHAPE=6,xy; xy (streamed),xy (streamed): cartesian constellation markers=SquareFilled line=Dash errors=none stem=no fill=none,12,2958,8900
+marker-line,full,2,STYLED_MARKER,TriangleFilled,PICK_VARIANT=2;PICK_SHAPE=7,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleFilled line=Dash errors=none stem=no fill=none,12,2570,7800
+marker-line,full,2,STYLED_MARKER,DiamondFilled,PICK_VARIANT=2;PICK_SHAPE=8,xy; xy (streamed),xy (streamed): cartesian constellation markers=DiamondFilled line=Dash errors=none stem=no fill=none,12,2807,8500
+marker-line,full,2,STYLED_MARKER,TriangleDown,PICK_VARIANT=2;PICK_SHAPE=9,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleDown line=Dash errors=none stem=no fill=none,12,2830,8500
+marker-line,full,2,STYLED_MARKER,TriangleLeft,PICK_VARIANT=2;PICK_SHAPE=10,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleLeft line=Dash errors=none stem=no fill=none,12,2378,7200
+marker-line,full,2,STYLED_MARKER,TriangleRight,PICK_VARIANT=2;PICK_SHAPE=11,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleRight line=Dash errors=none stem=no fill=none,12,2753,8300
+marker-line,full,2,STYLED_MARKER,Plus,PICK_VARIANT=2;PICK_SHAPE=12,xy; xy (streamed),xy (streamed): cartesian constellation markers=Plus line=Dash errors=none stem=no fill=none,12,2717,8200
+marker-line,full,2,STYLED_MARKER,Pentagon,PICK_VARIANT=2;PICK_SHAPE=13,xy; xy (streamed),xy (streamed): cartesian constellation markers=Pentagon line=Dash errors=none stem=no fill=none,12,2882,8700
+marker-line,full,2,STYLED_MARKER,Hexagon,PICK_VARIANT=2;PICK_SHAPE=14,xy; xy (streamed),xy (streamed): cartesian constellation markers=Hexagon line=Dash errors=none stem=no fill=none,12,2869,8700
+marker-line,full,2,STYLED_MARKER,Octagon,PICK_VARIANT=2;PICK_SHAPE=15,xy; xy (streamed),xy (streamed): cartesian constellation markers=Octagon line=Dash errors=none stem=no fill=none,12,2986,9000
+marker-line,full,2,STYLED_MARKER,Star,PICK_VARIANT=2;PICK_SHAPE=16,xy; xy (streamed),xy (streamed): cartesian constellation markers=Star line=Dash errors=none stem=no fill=none,12,2734,8300
+marker-line,full,2,STYLED_MARKER,TriangleDownFilled,PICK_VARIANT=2;PICK_SHAPE=17,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleDownFilled line=Dash errors=none stem=no fill=none,12,2563,7700
+marker-line,full,2,STYLED_MARKER,TriangleLeftFilled,PICK_VARIANT=2;PICK_SHAPE=18,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleLeftFilled line=Dash errors=none stem=no fill=none,12,2803,8500
+marker-line,full,2,STYLED_MARKER,TriangleRightFilled,PICK_VARIANT=2;PICK_SHAPE=19,xy; xy (streamed),xy (streamed): cartesian constellation markers=TriangleRightFilled line=Dash errors=none stem=no fill=none,12,2784,8400
+marker-line,full,2,STYLED_MARKER,PlusFilled,PICK_VARIANT=2;PICK_SHAPE=20,xy; xy (streamed),xy (streamed): cartesian constellation markers=PlusFilled line=Dash errors=none stem=no fill=none,12,2868,8700
+marker-line,full,2,STYLED_MARKER,CrossFilled,PICK_VARIANT=2;PICK_SHAPE=21,xy; xy (streamed),xy (streamed): cartesian constellation markers=CrossFilled line=Dash errors=none stem=no fill=none,12,2698,8100
+marker-line,full,2,STYLED_MARKER,PentagonFilled,PICK_VARIANT=2;PICK_SHAPE=22,xy; xy (streamed),xy (streamed): cartesian constellation markers=PentagonFilled line=Dash errors=none stem=no fill=none,12,2688,8100
+marker-line,full,2,STYLED_MARKER,HexagonFilled,PICK_VARIANT=2;PICK_SHAPE=23,xy; xy (streamed),xy (streamed): cartesian constellation markers=HexagonFilled line=Dash errors=none stem=no fill=none,12,2591,7800
+marker-line,full,2,STYLED_MARKER,OctagonFilled,PICK_VARIANT=2;PICK_SHAPE=24,xy; xy (streamed),xy (streamed): cartesian constellation markers=OctagonFilled line=Dash errors=none stem=no fill=none,12,2734,8300
+marker-line,full,2,STYLED_MARKER,StarFilled,PICK_VARIANT=2;PICK_SHAPE=25,xy; xy (streamed),xy (streamed): cartesian constellation markers=StarFilled line=Dash errors=none stem=no fill=none,12,2832,8500
+marker-line,full,4,ERRORBAR,Circle,PICK_VARIANT=4;PICK_SHAPE=0,xy,xy: cartesian precise markers=Circle line=Solid errors=none stem=yes fill=none,5,3213,9700
+marker-line,full,4,ERRORBAR,Square,PICK_VARIANT=4;PICK_SHAPE=1,xy,xy: cartesian precise markers=Square line=Solid errors=none stem=yes fill=none,5,3267,9900
+marker-line,full,4,ERRORBAR,Triangle,PICK_VARIANT=4;PICK_SHAPE=2,xy,xy: cartesian precise markers=Triangle line=Solid errors=none stem=yes fill=none,5,3223,9700
+marker-line,full,4,ERRORBAR,Diamond,PICK_VARIANT=4;PICK_SHAPE=3,xy,xy: cartesian precise markers=Diamond line=Solid errors=none stem=yes fill=none,5,3243,9800
+marker-line,full,4,ERRORBAR,Cross,PICK_VARIANT=4;PICK_SHAPE=4,xy,xy: cartesian precise markers=Cross line=Solid errors=none stem=yes fill=none,5,3338,10100
+marker-line,full,4,ERRORBAR,CircleFilled,PICK_VARIANT=4;PICK_SHAPE=5,xy,xy: cartesian precise markers=CircleFilled line=Solid errors=none stem=yes fill=none,5,3023,9100
+marker-line,full,4,ERRORBAR,SquareFilled,PICK_VARIANT=4;PICK_SHAPE=6,xy,xy: cartesian precise markers=SquareFilled line=Solid errors=none stem=yes fill=none,5,3109,9400
+marker-line,full,4,ERRORBAR,TriangleFilled,PICK_VARIANT=4;PICK_SHAPE=7,xy,xy: cartesian precise markers=TriangleFilled line=Solid errors=none stem=yes fill=none,5,3179,9600
+marker-line,full,4,ERRORBAR,DiamondFilled,PICK_VARIANT=4;PICK_SHAPE=8,xy,xy: cartesian precise markers=DiamondFilled line=Solid errors=none stem=yes fill=none,5,3400,10200
+marker-line,full,4,ERRORBAR,TriangleDown,PICK_VARIANT=4;PICK_SHAPE=9,xy,xy: cartesian precise markers=TriangleDown line=Solid errors=none stem=yes fill=none,5,3401,10300
+marker-line,full,4,ERRORBAR,TriangleLeft,PICK_VARIANT=4;PICK_SHAPE=10,xy,xy: cartesian precise markers=TriangleLeft line=Solid errors=none stem=yes fill=none,5,3421,10300
+marker-line,full,4,ERRORBAR,TriangleRight,PICK_VARIANT=4;PICK_SHAPE=11,xy,xy: cartesian precise markers=TriangleRight line=Solid errors=none stem=yes fill=none,5,3415,10300
+marker-line,full,4,ERRORBAR,Plus,PICK_VARIANT=4;PICK_SHAPE=12,xy,xy: cartesian precise markers=Plus line=Solid errors=none stem=yes fill=none,5,2964,8900
+marker-line,full,4,ERRORBAR,Pentagon,PICK_VARIANT=4;PICK_SHAPE=13,xy,xy: cartesian precise markers=Pentagon line=Solid errors=none stem=yes fill=none,5,3437,10400
+marker-line,full,4,ERRORBAR,Hexagon,PICK_VARIANT=4;PICK_SHAPE=14,xy,xy: cartesian precise markers=Hexagon line=Solid errors=none stem=yes fill=none,5,3244,9800
+marker-line,full,4,ERRORBAR,Octagon,PICK_VARIANT=4;PICK_SHAPE=15,xy,xy: cartesian precise markers=Octagon line=Solid errors=none stem=yes fill=none,5,3103,9400
+marker-line,full,4,ERRORBAR,Star,PICK_VARIANT=4;PICK_SHAPE=16,xy,xy: cartesian precise markers=Star line=Solid errors=none stem=yes fill=none,5,3193,9600
+marker-line,full,4,ERRORBAR,TriangleDownFilled,PICK_VARIANT=4;PICK_SHAPE=17,xy,xy: cartesian precise markers=TriangleDownFilled line=Solid errors=none stem=yes fill=none,5,3231,9700
+marker-line,full,4,ERRORBAR,TriangleLeftFilled,PICK_VARIANT=4;PICK_SHAPE=18,xy,xy: cartesian precise markers=TriangleLeftFilled line=Solid errors=none stem=yes fill=none,5,3384,10200
+marker-line,full,4,ERRORBAR,TriangleRightFilled,PICK_VARIANT=4;PICK_SHAPE=19,xy,xy: cartesian precise markers=TriangleRightFilled line=Solid errors=none stem=yes fill=none,5,3381,10200
+marker-line,full,4,ERRORBAR,PlusFilled,PICK_VARIANT=4;PICK_SHAPE=20,xy,xy: cartesian precise markers=PlusFilled line=Solid errors=none stem=yes fill=none,5,3460,10400
+marker-line,full,4,ERRORBAR,CrossFilled,PICK_VARIANT=4;PICK_SHAPE=21,xy,xy: cartesian precise markers=CrossFilled line=Solid errors=none stem=yes fill=none,5,3441,10400
+marker-line,full,4,ERRORBAR,PentagonFilled,PICK_VARIANT=4;PICK_SHAPE=22,xy,xy: cartesian precise markers=PentagonFilled line=Solid errors=none stem=yes fill=none,5,3161,9500
+marker-line,full,4,ERRORBAR,HexagonFilled,PICK_VARIANT=4;PICK_SHAPE=23,xy,xy: cartesian precise markers=HexagonFilled line=Solid errors=none stem=yes fill=none,5,3654,11000
+marker-line,full,4,ERRORBAR,OctagonFilled,PICK_VARIANT=4;PICK_SHAPE=24,xy,xy: cartesian precise markers=OctagonFilled line=Solid errors=none stem=yes fill=none,5,3354,10100
+marker-line,full,4,ERRORBAR,StarFilled,PICK_VARIANT=4;PICK_SHAPE=25,xy,xy: cartesian precise markers=StarFilled line=Solid errors=none stem=yes fill=none,5,3400,10200
+marker-line,full,4,ERRORBAR,any,PICK_VARIANT=4,xy,xy: cartesian precise markers=style-overrides line=Solid errors=none stem=yes fill=none,10,3803,11500
+marker-line,full,8,AREA,Circle,PICK_VARIANT=8;PICK_SHAPE=0,xy,xy: cartesian precise markers=Circle line=Solid errors=none stem=no fill=baseline,2,2948,8900
+marker-line,full,8,AREA,Square,PICK_VARIANT=8;PICK_SHAPE=1,xy,xy: cartesian precise markers=Square line=Solid errors=none stem=no fill=baseline,2,2993,9000
+marker-line,full,8,AREA,Triangle,PICK_VARIANT=8;PICK_SHAPE=2,xy,xy: cartesian precise markers=Triangle line=Solid errors=none stem=no fill=baseline,2,3224,9700
+marker-line,full,8,AREA,Diamond,PICK_VARIANT=8;PICK_SHAPE=3,xy,xy: cartesian precise markers=Diamond line=Solid errors=none stem=no fill=baseline,2,2943,8900
+marker-line,full,8,AREA,Cross,PICK_VARIANT=8;PICK_SHAPE=4,xy,xy: cartesian precise markers=Cross line=Solid errors=none stem=no fill=baseline,2,3065,9200
+marker-line,full,8,AREA,CircleFilled,PICK_VARIANT=8;PICK_SHAPE=5,xy,xy: cartesian precise markers=CircleFilled line=Solid errors=none stem=no fill=baseline,2,3012,9100
+marker-line,full,8,AREA,SquareFilled,PICK_VARIANT=8;PICK_SHAPE=6,xy,xy: cartesian precise markers=SquareFilled line=Solid errors=none stem=no fill=baseline,2,3293,9900
+marker-line,full,8,AREA,TriangleFilled,PICK_VARIANT=8;PICK_SHAPE=7,xy,xy: cartesian precise markers=TriangleFilled line=Solid errors=none stem=no fill=baseline,2,2710,8200
+marker-line,full,8,AREA,DiamondFilled,PICK_VARIANT=8;PICK_SHAPE=8,xy,xy: cartesian precise markers=DiamondFilled line=Solid errors=none stem=no fill=baseline,2,3217,9700
 marker-line,full,8,AREA,TriangleDown,PICK_VARIANT=8;PICK_SHAPE=9,xy,xy: cartesian precise markers=TriangleDown line=Solid errors=none stem=no fill=baseline,2,,
 marker-line,full,8,AREA,TriangleLeft,PICK_VARIANT=8;PICK_SHAPE=10,xy,xy: cartesian precise markers=TriangleLeft line=Solid errors=none stem=no fill=baseline,2,,
 marker-line,full,8,AREA,TriangleRight,PICK_VARIANT=8;PICK_SHAPE=11,xy,xy: cartesian precise markers=TriangleRight line=Solid errors=none stem=no fill=baseline,2,,
