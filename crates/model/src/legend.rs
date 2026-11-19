@@ -215,7 +215,18 @@ mod legend_update_tests {
         let mut cfg = line_cfg(Color::BLACK, LineStylePreset::Solid);
         if let DataRenderType::Xy(xy) = &mut cfg.render_type {
             xy.line.as_mut().unwrap().line_width = 2.8;
-            xy.scatter = Some(crate::data_config::DataScatterStyleConfig::default());
+            // A literal, not `Default`: the model's tests also build
+            // without the `helpers` feature (#266).
+            xy.scatter = Some(crate::data_config::DataScatterStyleConfig {
+                point_color: Color::BLACK,
+                point_shape: crate::data_config::ScatterShape::CircleFilled,
+                point_size: 6.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            });
         }
         let segs = series_symbol_segments(&cfg, None);
         let rules: Vec<_> = segs.iter().filter(|s| s.rule).collect();
