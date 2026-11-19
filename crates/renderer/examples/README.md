@@ -148,7 +148,7 @@ themes built in [support/looks.rs](support/looks.rs).
 | [surface_3d.rs](surface_3d.rs) | `gallery-surface.png`, `gallery-quiver3d.png` | `cargo run --locked -p figgy-renderer --example surface_3d -- target/surface-3d` |
 | [trimesh.rs](trimesh.rs) | `gallery-trimesh.png`, `gallery-trisurf.png` | `cargo run --locked -p figgy-renderer --example trimesh -- target/trimesh` |
 | [parallel.rs](parallel.rs) | `gallery-parallel.png` | `cargo run --locked -p figgy-renderer --example parallel -- target/parallel` |
-| [range_bars.rs](range_bars.rs) | `gallery-waterfall.png`, `gallery-candlestick.png`, `gallery-gantt.png` | `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars` |
+| [range_bars.rs](range_bars.rs) | `gallery-waterfall.png`, `gallery-candlestick.png`, `gallery-gantt.png`, `timeline.png`, `timeline@2x.png` (the default timeline look with progress, milestones, a today line and links) | `cargo run --locked -p figgy-renderer --example range_bars -- target/range-bars` |
 | [stem.rs](stem.rs) | `gallery-stem.png`, `gallery-lollipop.png` | `cargo run --locked -p figgy-renderer --example stem -- target/stem` |
 | [broken_axes.rs](broken_axes.rs) | `gallery-broken-axes.png` | `cargo run --locked -p figgy-renderer --example broken_axes -- target/broken-axes` |
 | [feynman.rs](feynman.rs) | `gallery-feynman.png` | `cargo run --locked -p figgy-renderer --example feynman -- target/feynman` |

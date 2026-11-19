@@ -51,8 +51,8 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// An axis range's own rules: categories well formed, a finite crossing, and
-/// for a value axis finite, increasing bounds that are positive on a
+/// An axis range's own rules: categories well formed, a finite crossing, a
+/// category band fill with channels in `0..=1`, and for a value axis finite, increasing bounds that are positive on a
 /// logarithmic scale.
 fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), ConfigError> {
     let fail = |reason| Err(ConfigError::chart(field, reason));
@@ -67,6 +67,14 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     }
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
         return fail(crate::RuleKind::AxisCrossAt);
+    }
+    if axis.category_bands.is_some_and(|bands| {
+        let c = bands.fill;
+        ![c.r, c.g, c.b, c.a]
+            .into_iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+    }) {
+        return fail(crate::RuleKind::CategoryBandsFill);
     }
     // A categorical axis maps its category range; `min` / `max` are ignored
     // there.

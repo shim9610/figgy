@@ -987,6 +987,8 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         breaks,
         // Shown units, not pixels.
         unit: _,
+        // A colour and a pattern of categories, not pixels.
+        category_bands: _,
     } = axis;
     if let Some(AxisBreaks {
         ranges: _,

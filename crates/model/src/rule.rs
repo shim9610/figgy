@@ -356,6 +356,9 @@ rule_kinds! {
         RangeBarSlotWidth => "a range bar slot width is finite and greater than 0",
         RangeBarLabelFormat => "range bar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
         RangeBarLabel => "a range bar label is one line of at most 160 characters",
+        RangeBarContrastInk => "a range bar's contrast ink colours must be opaque",
+        ContrastInkSeries => "only range bar labels take contrast ink",
+        CategoryBandsFill => "a category band fill has every channel in 0..=1",
         RangeBarsWithOtherBars => "a layer draws either category bars, box plots or range bars",
         RangeBarsStacked => "range bars stand side by side: their bar_groups mode must be Grouped, not Stacked or PercentStacked",
         HorizontalRangeBarsOnOverlay => "horizontal range bars cannot sit on an overlay layer: its own axis is a value axis on y",
@@ -2097,6 +2100,18 @@ mod tests {
             (
                 RuleKind::RangeBarLabel,
                 "a range bar label is one line of at most 160 characters",
+            ),
+            (
+                RuleKind::RangeBarContrastInk,
+                "a range bar's contrast ink colours must be opaque",
+            ),
+            (
+                RuleKind::ContrastInkSeries,
+                "only range bar labels take contrast ink",
+            ),
+            (
+                RuleKind::CategoryBandsFill,
+                "a category band fill has every channel in 0..=1",
             ),
             (
                 RuleKind::RangeBarsWithOtherBars,

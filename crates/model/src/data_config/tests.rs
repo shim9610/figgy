@@ -3547,6 +3547,7 @@ mod range_bar_tests {
         labels.placement = CategoryBarLabels::Outside;
         labels.text = vec!["+1".into(), "-2".into(), "3".into()];
         labels.offsets = vec![[0.0, 0.0], [1.0, -2.0], [0.0, 0.0]];
+        labels.contrast_ink = Some([Color::from_rgb8(20, 20, 20), Color::WHITE]);
     }
 
     #[test]
@@ -3849,6 +3850,44 @@ mod range_bar_tests {
         let len = |c: &str| matches!(c, "pos" | "one.end" | "one.start").then_some(5);
         assert_eq!(config.step_selection(&[rows], 4, 0, len), Ok(true));
         assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(4));
+    }
+
+    /// Contrast ink and the inside-or-beside placement (#357): opaque inks
+    /// on a range bar series validate, a translucent one is refused, and a
+    /// category bar series refuses contrast ink (only range bars draw it)
+    /// but takes the placement.
+    #[test]
+    fn contrast_ink_is_opaque_and_only_on_range_bars() {
+        let config = chart();
+        let with_ink = |inks: [Color; 2]| {
+            let mut s = ranges("one");
+            let DataRenderType::RangeBars(RangeBarSeries { labels, .. }) = edit(&mut s) else {
+                unreachable!()
+            };
+            labels.placement = CategoryBarLabels::InsideOrBeside;
+            labels.contrast_ink = Some(inks);
+            s
+        };
+        let ok = with_ink([Color::BLACK, Color::WHITE]);
+        assert_eq!(config.validate_range_bars(&[ok]), Ok(()));
+        let translucent = with_ink([Color::BLACK, Color::new(1.0, 1.0, 1.0, 0.5)]);
+        assert_eq!(
+            config.validate_range_bars(&[translucent]),
+            Err(crate::RuleKind::RangeBarContrastInk)
+        );
+        let cats = [Category::new("a", "A"), Category::new("b", "B")];
+        let mut bars_series = super::category_bar_tests::bars("a");
+        if let DataRenderType::CategoryBars(b) = &mut bars_series.render_type {
+            b.labels.placement = CategoryBarLabels::InsideOrBeside;
+        }
+        assert_eq!(validate_category_bar_series(&bars_series, &cats), Ok(()));
+        if let DataRenderType::CategoryBars(b) = &mut bars_series.render_type {
+            b.labels.contrast_ink = Some([Color::BLACK, Color::WHITE]);
+        }
+        assert_eq!(
+            validate_category_bar_series(&bars_series, &cats),
+            Err(crate::RuleKind::ContrastInkSeries)
+        );
     }
 
     #[test]

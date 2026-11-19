@@ -379,29 +379,41 @@ fn a_horizontal_histogram_takes_swapped_columns() {
     valid(&Config::default(), &bars);
 }
 
-/// The timeline helper (#357): `range_bars` with one Balanced colour per
-/// row, the cycle's first as the series colour, and flat bars with 3 px
-/// corners; every choice is a series field. `range_bars` keeps its look.
+/// The timeline helper (#357): `range_bars` with one muted colour per row,
+/// the first as the series colour, flat bars with 4 px corners, and labels
+/// inside or beside their bar in contrast ink; every choice is a series
+/// field. `with_progress` adds the host's progress column with the light
+/// remaining tint. `range_bars` keeps its look.
 #[test]
 fn timeline_bars_colour_each_row_and_draw_flat() {
-    use crate::preset::ColorCycle;
-    let bars = SeriesConfig::timeline_bars("t", "i", "start", "end");
+    use crate::data_config::{CategoryBarLabels, RangeProgress};
+    use crate::default::{TIMELINE_COLORS, TIMELINE_LABEL_INK, TIMELINE_REMAINING_OPACITY};
+    let bars = SeriesConfig::timeline_bars("t", "i", "start", "end").with_progress("done");
     let plain = SeriesConfig::range_bars("t", "i", "start", "end");
     let (DataRenderType::RangeBars(timeline), DataRenderType::RangeBars(range)) =
         (&bars.render_type, &plain.render_type)
     else {
         panic!("range bars");
     };
-    assert_eq!(timeline.color, ColorCycle::Balanced.color(0));
+    assert_eq!(timeline.color, TIMELINE_COLORS[0]);
     assert_eq!(
         timeline.color_by,
         RangeColor::ByRow {
-            colors: ColorCycle::Balanced.colors().to_vec()
+            colors: TIMELINE_COLORS.to_vec()
         }
     );
-    assert_eq!(timeline.style.corner_radius, 3.0);
+    assert_eq!(timeline.style.corner_radius, 4.0);
     assert_eq!(timeline.style.texture_strength, 0.0);
     assert_eq!(timeline.style.gloss, 0.0);
+    assert_eq!(timeline.labels.placement, CategoryBarLabels::InsideOrBeside);
+    assert_eq!(timeline.labels.contrast_ink, Some(TIMELINE_LABEL_INK));
+    assert_eq!(
+        timeline.progress,
+        Some(RangeProgress {
+            column: "done".into(),
+            remaining_opacity: TIMELINE_REMAINING_OPACITY,
+        })
+    );
     assert_eq!(
         (bars.x_column.as_str(), bars.y_column.as_str()),
         ("i", "end")
@@ -409,18 +421,21 @@ fn timeline_bars_colour_each_row_and_draw_flat() {
     assert_eq!(timeline.start, "start");
     assert_eq!(range.color_by, RangeColor::Single);
     assert_eq!(range.style, crate::defaults::category_bar_style());
+    assert_eq!(range.labels, crate::defaults::category_bar_series_labels());
+    assert_eq!(range.progress, None);
     let mut config = crate::default::default_timeline_config();
     config.left_y.categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
     valid(&config, &bars);
 }
 
-/// The timeline chart (#357): horizontal bars over 0.8 of a row's band,
-/// the first row at the top, value gridlines only, an open light frame
-/// without tick marks; every choice is a stored field, and a saved
-/// timeline reads back the same. The documented default is unchanged.
+/// The timeline chart (#357): horizontal bars over 0.6 of a row's band,
+/// the first row at the top, a faint band behind every other row, no row
+/// axis line, time gridlines only, no tick marks and a light top rule;
+/// every choice is a stored field, and a saved timeline reads back the
+/// same. The documented default is unchanged.
 #[test]
 fn the_timeline_config_puts_the_first_row_on_top_with_a_light_frame() {
-    use crate::config::TickVisibility;
+    use crate::config::{CategoryBandEvery, CategoryBands, TickVisibility};
     use crate::data_config::{BarGroups, CategoryBarDirection};
     let config = crate::default::default_timeline_config();
     let plain = crate::default::default_config();
@@ -428,21 +443,30 @@ fn the_timeline_config_puts_the_first_row_on_top_with_a_light_frame() {
         config.bar_groups,
         Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            group_width: 0.8,
+            group_width: 0.6,
             ..crate::defaults::bar_groups()
         })
     );
     assert!(config.left_y.inverted && !plain.left_y.inverted);
+    assert_eq!(
+        config.left_y.category_bands,
+        Some(CategoryBands {
+            fill: crate::Color::from_rgb8(247, 248, 250),
+            every: CategoryBandEvery::Alternate,
+        })
+    );
+    assert_eq!(plain.left_y.category_bands, None);
     // The row labels are the host's: the first default draw fits them.
     assert_eq!(config.layout_state, crate::config::LayoutState::NeedsFit);
     assert!(config.grid.show_major_x && !config.grid.show_major_y);
     assert!(!config.grid.show_minor_x && !config.grid.show_minor_y);
-    assert!(!config.top_x.line_visible && !config.right_y.line_visible);
+    assert!(config.top_x.line_visible && !config.right_y.line_visible);
+    assert!(!config.left_y.line_visible && !config.bottom_x.line_visible);
     for axis in [&config.bottom_x, &config.left_y] {
-        assert!(axis.line_visible);
         assert_eq!(axis.tick, TickVisibility::None);
-        assert_ne!(axis.line_color, plain.bottom_x.line_color);
+        assert_ne!(axis.label_style.color, plain.bottom_x.label_style.color);
     }
+    assert_ne!(config.top_x.line_color, plain.top_x.line_color);
     assert_eq!(plain, crate::defaults::config());
     #[cfg(feature = "serde")]
     {

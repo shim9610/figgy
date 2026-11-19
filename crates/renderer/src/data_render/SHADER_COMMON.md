@@ -1704,7 +1704,7 @@ group, and `category_lanes[k]` member `k`'s value column).
 
 | Binding | Contents |
 |---|---|
-| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 128 B) |
+| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 192 B) |
 | 5 | the atlas texture |
 | 6 | its filtering sampler |
 | 7 | `value_label_cells: array<vec4<f32>>`, read-only storage: one cell per label in each of `shape.w` blocks (one block but for a radar series, which has one per member of its label group), sized by the series' labels and its group and written straight into its mapping at prepare (`data_render::value_label_cells`, `create_value_label_data`); the cell widths are the atlas bake's |
@@ -1720,10 +1720,11 @@ the members.
 | `atlas` | the atlas geometry (§5.16) |
 | `shape` | `(kind, labels, rank, count)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; each block of binding 7 holds that many cells. For a radar series `rank` and `count` are its rank among the members of its label group (the panel's radar series that draw value labels, in series order) and their count (`RadarLabelGroup`, #272): binding 7 holds `count` blocks, block `rank` this series'. `0` and `1` for the other kinds |
 | `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10 logical px at the render scale; radar `max(4 logical px, 0.25 em)` past the vertex's marker), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
-| `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
+| `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, contrast, 0)` at the render scale, `contrast` 1 when the labels draw in contrast ink |
 | `radar` | a radar series' `(visual gap, 0, ray x, ray y)`: the visual gap two labels keep (the model's `visual_gap_for` of the label font, 2 px at 18 px, #272) in render pixels, and the radius axis' ray, a unit vector y down |
 | `ring` | a radar series' box of the drawn ring (radius) labels in the ray's frame from the polar centre, as fractions of the outer radius: `(along min, along max, across min, across max)`, across toward the ring labels' side; empty (`x > y`) without ring labels |
-| `value_label_cells[b * labels + i]` | label `i` of block `b`: `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2; for a radar label the reach of its vertex's marker in render pixels, `radar_marker_reach`: half a circle's size, half a square's diagonal, at least half the outline width) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down. A radar block `b` is member `b`'s own cells, written from its own atlas and strings |
+| `ink_dark`, `ink_light`, `ink_back`, `ink_base` | a range bar series' contrast ink (#357, `labels.contrast_ink`): the dark and the light ink, the plot background (`plot_background`, else `background`, else white) and the series colour, straight RGB with alpha 1; zero without contrast ink |
+| `value_label_cells[b * labels + i]` | label `i` of block `b`: `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2, `_INSIDE_OR_BESIDE` 3; for a radar label the reach of its vertex's marker in render pixels, `radar_marker_reach`: half a circle's size, half a square's diagonal, at least half the outline width) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down. A radar block `b` is member `b`'s own cells, written from its own atlas and strings |
 
 `value_label_place(row)` is the content box of label `row` in chart-area
 render pixels (y down), shared by the draw, the selection box and the
@@ -1737,6 +1738,8 @@ pick:
   bar (baseline `0.32` font sizes below the middle); `AUTO` is outside a
   grouped bar and inside a stack segment that fits it (`8` logical px
   narrower and `1.4` font sizes lower than the segment), else nothing;
+  `INSIDE_OR_BESIDE` (#357) is `INSIDE` on a bar that fits it by the same
+  measure and `OUTSIDE` otherwise, flip rule included;
 - a box's label (#272): beside its median line, `gap` past the side of
   the box's slot (`box_slot`, its full width before a violin narrows it)
   away from its group's centre, the right of a vertical box and above a
@@ -1794,6 +1797,20 @@ or inward along the radar spoke. The data area comes from the transform
 that `pixel_to_ndc` spans), so the rule reads only the uniform and the
 pool, and the pick sees it through the same `value_label_place`. What
 still overflows after the flip is clipped by the data-area scissor.
+
+**Contrast ink** (#357). A range bar series with `labels.contrast_ink`
+bakes its atlas in white, so the atlas' alpha is the glyph coverage, and
+`fs_value_label` paints each covered pixel in whichever of `ink_dark` and
+`ink_light` has the higher WCAG contrast ratio with what lies under that
+pixel (the dark one on a tie). The vertex stage passes the label's range
+bar (`range_bar`, its rect), the bar's fill under the series' colour mode
+(`range_fill`, from `ink_base` and the style slots) and its progress split
+(`range_progress`, the remaining opacity of `RANGE_SLOT_PROGRESS`); a pixel
+on the bar's rect reads the fill, past the split the fill at the remaining
+opacity over `ink_back`, and any other pixel `ink_back`. So a label across
+a split changes ink at the split, and a label beside its bar or dragged
+off it reads the plot. Every value is computed on every draw; nothing per
+label is stored.
 
 The box is then moved by the drag offset and its origin rounded to the
 pixel grid, so `label_quad` samples the atlas texel for texel

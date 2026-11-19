@@ -794,6 +794,8 @@ impl Config {
                 breaks: _,
                 // The hidden left axis prints no labels.
                 unit: _,
+                // Row striping, each chart's own style.
+                category_bands: _,
             } = left_y;
             let mut left = hidden_axis(followed_y, crate::defaults::axis_options_y());
             left.out_margin = *out_margin;
@@ -1073,6 +1075,8 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         breaks: _,
         // The hidden colourbar prints no labels.
         unit: _,
+        // Row striping, each chart's own style.
+        category_bands: _,
     } = axis;
     let mut hidden = crate::defaults::color_bar_options();
     hidden.visible = false;
@@ -1141,6 +1145,8 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         // The spacing is read in shown units (#273), so the unit travels
         // with it and the linked axes print the same ticks.
         unit,
+        // Row striping, each chart's own style.
+        category_bands: _,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -1221,6 +1227,8 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             breaks,
             // Printing only; it travels with the spacing (see above).
             unit: _,
+            // Row striping, each chart's own style.
+            category_bands: _,
         } = axis;
         (
             scale.clone(),
@@ -1285,6 +1293,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         breaks,
         // A hidden axis prints no labels.
         unit: _,
+        // A hidden axis draws no bands.
+        category_bands: _,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -1311,6 +1321,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         log_ticks,
         breaks: _,
         unit: _,
+        category_bands: _,
     } = template;
     let (min, max) = axis.data_range();
     with_hidden_text(AxisOptions {
@@ -1338,6 +1349,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         log_ticks,
         breaks: breaks.clone(),
         unit: None,
+        category_bands: None,
     })
 }
 

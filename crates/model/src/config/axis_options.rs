@@ -438,6 +438,49 @@ pub struct AxisOptions {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub unit: Option<AxisUnit>,
+
+    /// Bands across the plot behind alternate categories (#357), a
+    /// timeline's or a table's row striping. Drawn on a categorical
+    /// `bottom_x` or `left_y` of a rectangular chart, under the grid and the
+    /// data; any other axis draws none. `None` (the default, omitted from
+    /// JSON) draws no bands. Reads the categories only: every category
+    /// draws, with no count limit.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub category_bands: Option<CategoryBands>,
+}
+
+/// The bands of [`AxisOptions::category_bands`]: a fill across the plot
+/// over the slot of each category `every` picks, one category wide.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CategoryBands {
+    /// The band colour, every channel in `0..=1`; a translucent fill tints
+    /// the plot background.
+    pub fill: crate::color::Color,
+    /// Which categories carry a band.
+    pub every: CategoryBandEvery,
+}
+
+/// Which categories [`CategoryBands`] fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CategoryBandEvery {
+    /// Every other category, starting at the second (indices 1, 3, 5, …
+    /// of the axis' categories): the first row stays clear.
+    Alternate,
+}
+
+impl CategoryBandEvery {
+    /// Whether the category at `index` (its place in the axis'
+    /// categories) carries a band.
+    pub fn fills(self, index: usize) -> bool {
+        match self {
+            Self::Alternate => index % 2 == 1,
+        }
+    }
 }
 
 /// The affine unit an axis prints its values in ([`AxisOptions::unit`],

@@ -62,6 +62,7 @@ pub(crate) fn axis_options_colorbar() -> AxisOptions {
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
         unit: None,
+        category_bands: None,
     }
 }
 
@@ -93,6 +94,7 @@ pub(crate) fn axis_options_x() -> AxisOptions {
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
         unit: None,
+        category_bands: None,
     }
 }
 
@@ -124,6 +126,7 @@ pub(crate) fn axis_options_y() -> AxisOptions {
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
         unit: None,
+        category_bands: None,
     }
 }
 

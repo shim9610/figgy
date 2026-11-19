@@ -244,6 +244,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 - 축의 `unit`(#273)은 축이 값을 찍는 단위다. 예: `"unit": { "scale": 0.000152587890625, "offset": 0 }`(16비트 ADC 카운트를 볼트로), `"unit": { "scale": 1, "offset": -273.15 }`(켈빈을 섭씨로). 키가 없으면(기본값) 데이터 값을 찍으며 `get_config`도 이 키를 쓰지 않는다. 라벨은 `scale * value + offset`을 찍고, 눈금은 표시 단위로 고르므로 라벨이 딱 떨어지는 수이며, 각 눈금은 `(shown - offset) / scale` 위치에 놓인다. `major_spacing`은 표시 단위로 읽는다. `min`·`max`, 데이터, `breaks`, `cross_at`, 주석, 피킹 결과는 데이터 단위 그대로다. `scale`은 유한하고 0이 아니어야 하며(음수이면 축을 따라 값이 줄어든다) `offset`은 유한해야 한다. 로그축은 `offset` 0과 양수 `scale`만 받고, 확률 축, `Timestamp` 라벨 축, 범주형 축은 이 키를 거부한다. 연결된 서브플롯 축은 눈금 간격과 함께 대상 축의 값을 따른다. figgy-model 0.12.1 이하는 이 키를 무시한다.
 - 축의 `breaks`는 축에서 잘라낼 구간이다(#200). 키가 없으면(기본값) 축을 자르지 않으며, `get_config`도 이 키를 쓰지 않는다. 예: `"breaks": { "ranges": [{ "from": 15, "to": 85 }], "style": "Panels", "gap_px": 16 }`. 빠진 키는 기본값(`"style": "Continuous"`, `"gap_px": 8`, 축선 색의 6 px 빗금, 조각 테두리 `"frame_each_panel": true`)을 쓴다. 빗금의 `color`를 생략하면 축선 색으로 그린다. `ranges`는 데이터 단위로 정렬되어 겹치지 않아야 하고 최대 3개이며, `gap_px`는 빈칸 폭을 논리 픽셀로 나타내며 0~200이다(#249). 그래서 가로 빈칸과 세로 빈칸이 같은 폭으로 그려지고, 두 축이 모두 잘리면 빈칸이 십자 모양으로 만난다. `bottom_x`, `left_y`, 오버레이의 `y_axis`에만 지정할 수 있고, `top_x`·`right_y`는 짝이 되는 축의 구간을 같은 비율 위치로 따라 그린다. 극좌표·삼각좌표·3D·평행 좌표 차트와 색상 막대 축, 스트리밍 소스는 이 키를 거부한다. 빈칸 안에는 데이터·강조·주석을 그리지 않고, 빈칸을 가리킨 피킹은 아무것도 반환하지 않는다. figgy-model 0.12.1 이하는 이 키를 무시한다. `sizing`(#205)은 조각들이 축 길이를 나누는 방식이다. `"by_value"`(기본값, 생략)는 폭에 비례, `"equal"`은 같은 길이, `{ "weights": [1, 9] }`는 조각마다 하나씩(잘라낸 구간 수보다 하나 많게) 준 양수 가중치에 비례한다. `"equal"`과 `"weights"`에서는 조각마다 배율과 눈금 간격이 따로이며, `"style": "Panels"`와 함께 쓰면 거부한다.
 - 범주의 `rich_label`(#203)은 일반 `label` 대신 그리는 서식 있는 텍스트다. 키가 없으면 `label`을 그린다. 예: `{ "id": "3P*", "label": "3P*", "rich_label": { "segments": [...], ... } }`(TeX 수식으로 만든 항 기호 등).
+- 축의 `category_bands`(#357)는 범주형 `bottom_x`·`left_y`의 범주 하나 건너 하나(둘째 범주부터: 1, 3, 5, …)의 칸 뒤에 플롯을 가로지르는 띠를 그린다. 예: `"category_bands": { "fill": { "r": 0.97, "g": 0.97, "b": 0.98, "a": 1.0 }, "every": "Alternate" }`. 격자와 데이터 아래에 그리고, 범주 개수 상한은 없다. `fill`의 각 채널은 0~1이어야 한다(`CategoryBandsFill`). 수치 축과 `top_x`·`right_y`에서는 아무것도 그리지 않는다. 키가 없으면(기본값, 생략) 띠가 없다.
 - 축의 `category_groups`(#203)는 범주형 `bottom_x`·`top_x`의 이웃한 범주 묶음에 다는 그룹 머리글이다. 예: `"category_groups": { "groups": [{ "label": { ... }, "first": "1S", "last": "1F*", "bracket": true }] }`. `first`·`last`는 그 축의 범주 id여야 하고, 묶음은 축 순서대로 겹치지 않아야 하며 개수 상한은 없다. `offset`(생략하면 `[0, 0]`)은 머리글을 드래그한 거리다. 수치 축과 y축은 이 키를 거부한다.
 - 축의 `category_window`(#205)는 범주형 축이 보여 주는 칸의 범위 `[from, to]`다(범주 `i`의 칸은 `i - 0.5..i + 0.5`). 키가 없으면 모든 칸을 보여 주고, 그때 `get_config`도 이 키를 쓰지 않는다. `set_x_range` / `set_y_range`와 뷰 상태는 범주형 축에서 `min` / `max` 대신 이 값을 쓰며, `auto_fit_*`은 범주형 축을 바꾸지 않는다. 수치 축에서는 무시한다. 라벨이 겹치는 범주형 축은 라벨을 숨기지 않고 여러 줄로 엇갈려 그린다(#205).
 - 차트의 `plot_background`(#203)는 데이터 영역과 격자 아래를 채우는 색이다. 키가 없으면 투명하다. 부모 데이터 영역 안에 놓는 인셋 서브플롯에 지정해 부모의 격자와 데이터가 비치지 않게 한다.
@@ -1281,7 +1282,16 @@ bar's `selection_details()` carries `index`, `direction`, `position`, `end`,
 `start` and, when the series has them, `low`, `high`, `total` or `state` and
 `progress` (`null` for a NaN), with `category_id` and `category_label` on a
 categorical axis. `labels.text` holds one
-host string per row and `labels.offsets` their drag offsets.
+host string per row and `labels.offsets` their drag offsets. A timeline's
+labels name `"placement": "InsideOrBeside"` (inside the bar when the label
+fits, else beside its end) and `"contrast_ink": [{ "r": 0.12, "g": 0.16,
+"b": 0.22, "a": 1.0 }, { "r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0 }]` (dark,
+light; both opaque, omitted when unset): each label pixel takes the ink that
+contrasts more with what lies under it, the bar's fill, its unfinished part
+past the progress split or the plot background. Only range bar labels take
+`contrast_ink` (a category bar series refuses it with `ContrastInkSeries`).
+A timeline's `left_y` names `"category_bands": { "fill": { … }, "every":
+"Alternate" }`, a band behind every other row (see the axis keys).
 
 <a id="surface-render_type"></a>
 
