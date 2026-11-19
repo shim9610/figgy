@@ -68,6 +68,11 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
         return fail(crate::RuleKind::AxisCrossAt);
     }
+    if let crate::format::LabelFormat::Timestamp(format) = &axis.label_style.format
+        && let Err(reason) = format.validate()
+    {
+        return fail(reason);
+    }
     if axis.category_bands.is_some_and(|bands| {
         let c = bands.fill;
         ![c.r, c.g, c.b, c.a]

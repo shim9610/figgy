@@ -22,6 +22,7 @@ use crate::config::{
     TickVisibility,
 };
 use crate::data_config::{BarGroups, CategoryBarDirection, SeriesConfig};
+use crate::format::{CalendarStep, LabelFormat, TimestampLabelFormat, TimestampLabelMode, Weekday};
 use crate::parallel::ParallelOptions;
 use crate::preset::AxisPreset;
 
@@ -318,5 +319,45 @@ pub fn default_timeline_config() -> Config {
     grid.show_minor_y = false;
     grid.major_x_color = TIMELINE_GRID;
     config.layout_state = LayoutState::Fitted;
+    config
+}
+
+/// A timeline on a time axis (#357): [`default_timeline_config`] with a
+/// calendar header, for Unix seconds in UTC (a host with other timestamps
+/// sets the formats' `unit` and `timezone`):
+///
+/// - `bottom_x`: a tick and gridline at every Monday
+///   ([`CalendarStep::Week`]), labelled with its day of the month;
+/// - `top_x`: the month header over the top rule, each month's name and
+///   year (`"Mar 2026"`) centred on its part of the range
+///   ([`CalendarStep::Month`], `period_labels`), with no tick marks.
+///
+/// The renderer's `Chart::set_x_range` sets both axes'
+/// ranges, so the header follows the time axis. Every choice is a stored
+/// field.
+pub fn default_calendar_timeline_config() -> Config {
+    let mut config = default_timeline_config();
+    let calendar = |step: CalendarStep, pattern: &str, period_labels: bool| {
+        LabelFormat::Timestamp(TimestampLabelFormat {
+            label: TimestampLabelMode::Pattern(pattern.into()),
+            step: Some(step),
+            period_labels,
+            ..crate::defaults::timestamp_label_format()
+        })
+    };
+    config.bottom_x.label_style.format = calendar(
+        CalendarStep::Week {
+            start: Weekday::Monday,
+        },
+        "%d",
+        false,
+    );
+    let top = &mut config.top_x;
+    top.label_style.format = calendar(CalendarStep::Month, "%b %Y", true);
+    top.label_style.visible = true;
+    top.label_style.label_visible = true;
+    top.label_style.color = TIMELINE_ROW_INK;
+    top.tick = TickVisibility::None;
+    top.minor_count = 0;
     config
 }

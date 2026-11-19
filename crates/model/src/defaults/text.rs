@@ -64,6 +64,8 @@ pub(crate) fn timestamp_label_format() -> TimestampLabelFormat {
         label: timestamp_label_mode(),
         fractional: fractional_second_digits(),
         tick_policy: timestamp_tick_policy(),
+        step: None,
+        period_labels: false,
     }
 }
 

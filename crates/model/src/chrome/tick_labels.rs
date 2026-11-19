@@ -333,8 +333,12 @@ pub fn visible_timestamp_labels(
     };
     let labels: Vec<PlainTickLabel> =
         if let Some(plan) = timestamp_tick_plan(axis, side.clone(), plot, measure) {
-            plan.majors
+            // Each label at the value it is drawn at (a period's centre
+            // with `period_labels`, #357); a period with no string draws
+            // nothing.
+            plan.labels
                 .into_iter()
+                .filter(|tick| !tick.label.is_empty())
                 .map(|tick| PlainTickLabel {
                     value: tick.value,
                     text: tick.label,

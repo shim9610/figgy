@@ -118,7 +118,16 @@ UTC Unix seconds with `AutoCalendar` tick planning; use
 `LabelFormat::Timestamp(TimestampLabelFormat { unit: TimestampUnit::Milliseconds, ..Default::default() })`
 (types in `renderer::format`).
 `AutoCalendar` measures tick-label text and coarsens the calendar step so labels
-do not overlap. Use `Renderer::add_hilo_column` (native) or
+do not overlap. A forced `step: Some(CalendarStep::…)` (#357: `Day`,
+`Week { start: Weekday::Monday }`, `Month`, `Quarter`, `Year`) ticks every
+boundary of that unit at local midnight instead, and `period_labels: true`
+centres each label on its period (a month header). The label modes
+`TimestampLabelMode::Relative { origin, prefix }` ("Week 0", "Week 1", …,
+counted in the step from the period holding `origin`, a whole timestamp in
+the format's unit) and `Custom { origin, labels }` (the host's string for
+period `n`; a period past the list draws no label) need a step. `%b` prints
+the month's three-letter English name. `default::default_calendar_timeline_config()`
+puts a month header over Monday weeks on a timeline. Use `Renderer::add_hilo_column` (native) or
 `register_column_f64` / `update_register_column_f64` (web `Float64Array`) for
 high-resolution absolute Unix timestamps; those paths preserve sub-f32 deltas
 on the GPU as f32 hi/lo pairs.
