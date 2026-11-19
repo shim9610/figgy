@@ -435,10 +435,9 @@ const HIGH_CONTRAST: &[Color] = &[
 ];
 
 impl ColorCycle {
-    /// The cycle a series takes when the host leaves its colour unset: the
-    /// series constructors start in its first colour, and
-    /// [`Self::color_unset`] gives each series still in it the colour of its
-    /// place (#357).
+    /// The default palette (#357): the series constructors start in its
+    /// first colour, and the default flows apply it to the series list
+    /// ([`Config::apply_palette`]), so series `i` takes its colour `i`.
     pub const DEFAULT: Self = Self::Balanced;
 
     /// Every cycle, in declaration order.
@@ -533,84 +532,76 @@ impl ColorCycle {
             self.apply_to_series(s, i);
         }
     }
+}
 
-    /// Colour the series whose colour the host left unset, in series
-    /// order: series `i` takes `color(i)` when every part a palette colours
-    /// is still in [`ColorCycle::DEFAULT`]'s first colour, the colour the
-    /// series constructors start in (#357). A series coloured otherwise,
-    /// black included, keeps its colours, and so does a kind the
-    /// constructors leave uncoloured (a field fill, an RGB image, an
-    /// energy-level or a Feynman diagram). The colours are written into the
-    /// series, so the document says what is drawn; call this where the
-    /// series list is built, not on a loaded document.
-    pub fn color_unset(self, series: &mut [SeriesConfig]) {
-        let unset = Self::DEFAULT.color(0);
+impl Config {
+    /// Apply `palette` to this chart and `series`, its series list (#357):
+    /// series `i` takes `palette[i % palette.len()]` in every part its kind
+    /// draws in a palette colour (the parts [`ColorCycle::apply_to_series`]
+    /// writes), so a chart of many series draws each in its own colour. A
+    /// kind whose default ink is not a palette colour keeps its colours: a
+    /// field or mesh (its fill comes from the colour map and its contour
+    /// lines are dark ink), an RGB image, an energy-level diagram and a
+    /// Feynman diagram. Such a series still takes its index, so series `i`
+    /// always takes colour `i`.
+    ///
+    /// The colours are written into the series, so the document says what
+    /// is drawn: there is no unset colour and nothing is chosen at draw
+    /// time. The legends derived from the series (the base legend, each
+    /// overlay's and each subplot's) redraw their symbols from them
+    /// ([`crate::legend::update_legend_symbols_preserving_text`]); their
+    /// text, corner and offsets stay. Nothing else changes: the layout is
+    /// neither fitted nor marked. An empty palette changes nothing. The
+    /// default flows call it ([`crate::default::config_for_series`]); call
+    /// it again with another palette, such as [`ColorCycle::colors`] of a
+    /// preset, to recolour.
+    pub fn apply_palette(&mut self, series: &mut [SeriesConfig], palette: &[Color]) {
+        if palette.is_empty() {
+            return;
+        }
         for (i, s) in series.iter_mut().enumerate() {
-            if cycle_color(s) == Some(unset) {
-                recolor_series(s, self.color(i));
+            if takes_palette(s) {
+                recolor_series(s, palette[i % palette.len()]);
             }
         }
+        refresh_legend_symbols(self, series);
     }
 }
 
-/// The one colour every part a palette colours ([`recolor_series`]) holds,
-/// for the kinds the series constructors colour; `None` when the parts
-/// differ, the series has none, or it is a kind the constructors leave
-/// uncoloured.
-fn cycle_color(series: &SeriesConfig) -> Option<Color> {
-    let mut found: Option<Color> = None;
-    let mut same = true;
-    let mut see = |c: Color| match found {
-        None => found = Some(c),
-        Some(f) => same &= f == c,
-    };
-    match &series.render_type {
-        DataRenderType::Xy(xy) => {
-            if let Some(scatter) = &xy.scatter {
-                see(scatter.point_color);
-            }
-            if let Some(line) = &xy.line {
-                see(line.line_color);
-            }
-            if let Some(errors) = &xy.errors {
-                see(errors.style.error_bar_color);
-            }
-            if let Some(stem) = &xy.stem {
-                see(stem.color);
-            }
-        }
-        DataRenderType::Histogram(HistogramSeries { bar }) => see(bar.fill_color),
-        DataRenderType::Field(crate::data_config::FieldSeries {
-            contour: Some(contour),
-            ..
-        })
-        | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
-            contour: Some(contour),
-            ..
-        }) => see(contour.line.line_color),
-        DataRenderType::Vector(VectorSeries { style, .. }) => see(style.color),
-        DataRenderType::CategoryBars(CategoryBarSeries { color, .. })
-        | DataRenderType::BoxPlot(BoxSeries { color, .. })
-        | DataRenderType::RangeBars(RangeBarSeries { color, .. })
-        | DataRenderType::Radar(RadarPolygonSeries { color, .. }) => see(*color),
-        DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
-            if let Some(scatter) = scatter {
-                see(scatter.point_color);
-            }
-            if let Some(line) = line {
-                see(line.line_color);
-            }
-        }
-        DataRenderType::Streamlines(StreamlineSeries { line, .. })
-        | DataRenderType::Parallel(ParallelSeries { line, .. }) => see(line.line_color),
-        DataRenderType::MonotonicLine(monotonic) => see(monotonic.line.line_color),
+/// Whether [`Config::apply_palette`] colours `series`: every kind but the
+/// ones whose default ink is not a palette colour.
+fn takes_palette(series: &SeriesConfig) -> bool {
+    !matches!(
+        series.render_type,
         DataRenderType::Field(_)
-        | DataRenderType::TriMesh(_)
-        | DataRenderType::RgbImage(_)
-        | DataRenderType::EnergyLevels(_)
-        | DataRenderType::Feynman(_) => {}
+            | DataRenderType::TriMesh(_)
+            | DataRenderType::RgbImage(_)
+            | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_)
+    )
+}
+
+/// Redraw the symbols of every legend of `config` derived from `series`:
+/// the base legend, each overlay's and, recursively, each subplot's.
+fn refresh_legend_symbols(config: &mut Config, series: &[SeriesConfig]) {
+    let colormap = config.colorbar.as_ref().map(|bar| bar.colormap.clone());
+    crate::legend::update_legend_symbols_preserving_text(
+        &mut config.legend.content,
+        series,
+        colormap.as_ref(),
+    );
+    for overlay in &mut config.overlays {
+        if let Some(legend) = &mut overlay.legend {
+            crate::legend::update_legend_symbols_preserving_text(
+                &mut legend.content,
+                series,
+                colormap.as_ref(),
+            );
+        }
     }
-    found.filter(|_| same)
+    for subplot in &mut config.subplots {
+        refresh_legend_symbols(&mut subplot.config, series);
+    }
 }
 
 /// Give `series` the colour `c` where a palette colours it: the line,

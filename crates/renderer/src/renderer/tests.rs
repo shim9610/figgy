@@ -481,7 +481,7 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
     fitted.consume_data_dirty();
     fitted.consume_raster_dirty();
     assert!(matches!(
-        renderer.fit_ranges(&mut fitted, std::slice::from_ref(&series)),
+        renderer.fit_ranges(&mut fitted, std::slice::from_mut(&mut series.clone())),
         Err(FiggyError::ColumnNotResident { .. })
     ));
     assert_eq!(fitted.config(), &crate::default::default_config());

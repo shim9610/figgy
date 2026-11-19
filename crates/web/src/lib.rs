@@ -73,12 +73,16 @@ fn default_config_json() -> Result<String, String> {
 
 /// The JSON of [`renderer::default::config_for_series`] for the series
 /// list JSON `series_json`, what the `default_config_for_series` binding
-/// returns. The error is the JSON parse error.
+/// returns: the config alone, in the frame of the series' family. The
+/// series' palette colours are not returned; a browser chart colours its
+/// series as it adds them (`add_*_series`) or with `apply_color_cycle`.
+/// The error is the JSON parse error.
 #[cfg(any(target_arch = "wasm32", test))]
 fn default_config_for_series_json(series_json: &str) -> Result<String, String> {
-    let series: Vec<renderer::SeriesConfig> =
+    let mut series: Vec<renderer::SeriesConfig> =
         serde_json::from_str(series_json).map_err(|e| e.to_string())?;
-    serde_json::to_string(&renderer::default::config_for_series(&series)).map_err(|e| e.to_string())
+    serde_json::to_string(&renderer::default::config_for_series(&mut series))
+        .map_err(|e| e.to_string())
 }
 
 /// The normalized form of the config JSON `json`, what the
@@ -1838,8 +1842,13 @@ mod tests {
                     .unwrap();
             serde_json::from_str(&json).unwrap()
         };
+        // A new chart's config: its layout kept fitted (#357).
+        let unframed = || renderer::Config {
+            layout_state: renderer::LayoutState::Fitted,
+            ..renderer::default::default_config()
+        };
         let framed = |preset| {
-            let mut config = renderer::default::default_config();
+            let mut config = unframed();
             config.apply_axis_preset(preset);
             config
         };
@@ -1851,10 +1860,10 @@ mod tests {
         );
         assert_eq!(config(&[feynman]), framed(renderer::AxisPreset::Hidden));
         assert_eq!(config(&[levels]), framed(renderer::AxisPreset::Grotrian));
-        assert_eq!(config(&[]), renderer::default::default_config());
+        assert_eq!(config(&[]), unframed());
         assert_eq!(
             config(&[renderer::SeriesConfig::line("l", "x", "y")]),
-            renderer::default::default_config()
+            unframed()
         );
         assert!(super::default_config_for_series_json("{").is_err());
         // The returned config is a valid document.

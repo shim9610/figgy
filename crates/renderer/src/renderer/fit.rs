@@ -1407,7 +1407,12 @@ impl Renderer {
     /// call (#297): the x and y axes of the base chart, of each overlay
     /// layer and of each subplot and its overlays, and the z axis of a 3D
     /// chart. A chart starts at a `0..1` placeholder range; this is the
-    /// call that replaces it for a first plot.
+    /// call that replaces it for a first plot. Then, from the fitted data
+    /// area, the scale of every auto-scaled vector series
+    /// ([`Self::fit_vector_scales`], #357), which consumes its
+    /// `VectorStyle::auto_scale`: the series are written, so the SSOT says
+    /// how long the arrows draw. [`Self::register_chart`] runs this fit
+    /// once on a new chart.
     ///
     /// Each layer is fitted with
     /// [`Chart::auto_fit_layer_union`](crate::chart::Chart::auto_fit_layer_union)
@@ -1424,26 +1429,35 @@ impl Renderer {
     ///
     /// A layer without series, and an axis whose columns have no finite
     /// span, keep their ranges; a chart nothing moves is not marked
-    /// changed. On an error the chart is left as it was: a column that is
-    /// not registered is `UnknownColumn`, a streamed source is refused with
-    /// `ColumnNotResident` (rule 8), and a monotonic series with
-    /// `MonotonicMappingEdit`, since its x range is set by `set_monotonic`.
+    /// changed. On an error the chart and the series are left as they
+    /// were: a column that is not registered is `UnknownColumn`, a streamed
+    /// source is refused with `ColumnNotResident` (rule 8), and a monotonic
+    /// series with `MonotonicMappingEdit`, since its x range is set by
+    /// `set_monotonic`.
     pub fn fit_ranges(
         &self,
         chart: &mut crate::chart::Chart,
-        series: &[SeriesConfig],
+        series: &mut [SeriesConfig],
     ) -> Result<()> {
         let result = self.fit_ranges_unreported(chart, series);
         self.reported(result)
     }
 
-    fn fit_ranges_unreported(
+    pub(in crate::renderer) fn fit_ranges_unreported(
         &self,
         chart: &mut crate::chart::Chart,
-        series: &[SeriesConfig],
+        series: &mut [SeriesConfig],
     ) -> Result<()> {
         self.require_fit_series(series)?;
-        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)
+        // Every refusal comes before the first write.
+        for item in series.iter() {
+            if let Some(components) = auto_scaled_components(item) {
+                self.vector_arrow_count(components)?;
+            }
+        }
+        chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)?;
+        self.fit_vector_scales_unreported(chart.config(), series)?;
+        Ok(())
     }
 
     /// The series rules every whole-chart fit holds to: each series reads
@@ -1791,13 +1805,14 @@ impl Renderer {
     /// the scale [`Self::fit_vector_scale`] writes for the target
     /// `VectorStyle::auto_scale_target_px` chooses from its arrow count
     /// (its `u` columns' registered length) and `config`'s data area, and
-    /// keeps `auto_scale` on. Only those scale values change; the arrows
-    /// draw at the written scale, so the SSOT always says how long they
-    /// are. A `Data` scale is an explicit unit choice and stays, as does a
-    /// series whose components are all zero or a config whose layout is
-    /// infeasible. [`Self::commit_auto_fit_all`] runs this on the chart's
-    /// own series; a host that fits with [`Self::fit_ranges`] calls it
-    /// with the fitted config.
+    /// turns `auto_scale` off: the flag asks for one fit, and the first fit
+    /// consumes it, so the stored scale stays through later fits. Only
+    /// those values change; the arrows draw at the written scale, so the
+    /// SSOT always says how long they are. A `Data` scale is an explicit
+    /// unit choice and stays, as does a series whose components are all
+    /// zero (it keeps the flag: it had nothing to fit) or a config whose
+    /// layout is infeasible. [`Self::register_chart`],
+    /// [`Self::fit_ranges`] and [`Self::commit_auto_fit_all`] run it.
     ///
     /// Refused, leaving every series unchanged: a component column that is
     /// not registered (`UnknownColumn`) or streamed (`ColumnNotResident`,
@@ -1841,7 +1856,6 @@ impl Renderer {
             let Some(target) = style.auto_scale_target_px(arrows, width, height) else {
                 continue;
             };
-            let before = style.scale.clone();
             match self.fit_vector_scale_unreported(config, item, target) {
                 Ok(()) => {}
                 // A field of zero vectors has no scale to fit.
@@ -1851,11 +1865,9 @@ impl Renderer {
                 }) => continue,
                 Err(error) => return Err(error),
             }
-            if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut item.render_type {
-                // The explicit fit turned it off; this one is the automatic.
-                style.auto_scale = true;
-                changed |= style.scale != before;
-            }
+            // The fit wrote the scale and turned `auto_scale` off: the
+            // flag is consumed (#357).
+            changed = true;
         }
         Ok(changed)
     }

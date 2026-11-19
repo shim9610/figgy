@@ -230,7 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     renderer.add_column("x", &x)?;
     renderer.add_column("y", &y)?;
 
-    let series = [SeriesConfig::line("sine", "x", "y")
+    let mut series = [SeriesConfig::line("sine", "x", "y")
         .color(Color::from_rgb8(34, 104, 198))
         .width(2.5)];
     let mut chart = Chart::sized(960, 600)
@@ -239,7 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // A `$…$` span in a title is TeX.
         .with_y_title(r"$\sin(2\pi f t)$");
     // A chart starts at a 0..1 placeholder range: fit the axes to the data.
-    renderer.fit_ranges(&mut chart, &series)?;
+    renderer.fit_ranges(&mut chart, &mut series)?;
     chart.fit_layout();
 
     let output = std::env::args_os()

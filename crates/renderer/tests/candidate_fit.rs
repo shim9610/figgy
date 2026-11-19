@@ -98,7 +98,7 @@ fn layered() -> (Config, Vec<SeriesConfig>) {
 #[test]
 fn fit_config_is_the_fit_ranges_path() {
     let renderer = fit_renderer();
-    let (config, series) = layered();
+    let (config, mut series) = layered();
     let before = config.clone();
     let fitted = renderer
         .fit_config(&config, &series, FIT_RANGES_PADDING)
@@ -106,7 +106,7 @@ fn fit_config_is_the_fit_ranges_path() {
     assert_eq!(config, before, "the candidate is not changed");
 
     let mut chart = Chart::new(config.clone());
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     assert_eq!(&fitted, chart.config(), "one fit path");
     assert_range(&fitted.bottom_x, -0.5, 10.5);
     assert_range(&fitted.left_y, -1.1, 1.1);
@@ -124,10 +124,11 @@ fn fit_config_is_the_fit_ranges_path() {
     let none = renderer.fit_config(&config, &series, 0.0).unwrap();
     assert_range(&none.left_y, -1.0, 1.0);
 
-    // A registered chart is untouched by a candidate fit.
+    // A registered chart is untouched by a candidate fit (registered as
+    // given, without its one-time fit).
     let mut renderer = renderer;
     let id = renderer
-        .register_chart(config.clone(), series.clone())
+        .register_chart_as_given(config.clone(), series.clone())
         .unwrap();
     renderer.fit_config(&config, &series, 0.1).unwrap();
     assert_eq!(renderer.chart_config(id).unwrap(), &config);
@@ -410,10 +411,11 @@ fn style_of(series: &SeriesConfig) -> &renderer::data_config::VectorStyle {
 }
 
 // An auto-scaled vector series (the constructors' default, #357) fits its
-// longest vector to the spacing between its arrows over the data area; an
-// explicit scale, a data scale, zero vectors and other series stay. The fit
-// is idempotent, refuses streamed and unknown columns before any write, and
-// counts every column of a grid.
+// longest vector to the spacing between its arrows over the data area, and
+// the fit consumes its `auto_scale` flag; an explicit scale, a data scale,
+// zero vectors and other series stay. A second fit changes nothing, the fit
+// refuses streamed and unknown columns before any write, and it counts
+// every column of a grid.
 #[test]
 fn fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing() {
     let renderer = fit_renderer();
@@ -435,13 +437,15 @@ fn fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing() {
     let before = series.clone();
     renderer.fit_vector_scales(config, &mut series).unwrap();
     let style = style_of(&series[0]);
-    assert!(style.auto_scale);
+    assert!(!style.auto_scale, "the first fit consumes the flag");
     let target = style.auto_scale_target_px(11, width, height).unwrap();
     assert!((scale_of(&series[0]) - target / 30f64.hypot(1.0)).abs() < 1e-12);
     assert_eq!(series[1..], before[1..], "only the auto-scaled field moves");
     let once = series.clone();
     renderer.fit_vector_scales(config, &mut series).unwrap();
-    assert_eq!(series, once, "idempotent");
+    assert_eq!(series, once, "the stored scale stays");
+    // Zero vectors had nothing to fit: they keep the flag.
+    assert!(style_of(&series[3]).auto_scale);
 
     // A grid's arrows are every cell of its `u` columns.
     let mut grid = vec![SeriesConfig::vectors_grid(
@@ -474,7 +478,8 @@ fn fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing() {
 
 // The installed whole-chart fit (`commit_auto_fit_all`, the WASM
 // `auto_fit_all`) also sizes the chart's auto-scaled arrows, writing the
-// scale into the chart's series: the SSOT says how long they draw (#357).
+// scale into the chart's series and consuming the flag: the SSOT says how
+// long they draw (#357), and a second fit keeps the stored scale.
 #[test]
 fn the_installed_auto_fit_sizes_auto_scaled_arrows() {
     let mut renderer = fit_renderer();
@@ -485,11 +490,14 @@ fn the_installed_auto_fit_sizes_auto_scaled_arrows() {
             .vector_scale(VectorScale::Pixels { px_per_unit: 3.0 }),
     ];
     let id = renderer
-        .register_chart(Chart::sized(800, 600).config().clone(), series.clone())
+        .register_chart_as_given(Chart::sized(800, 600).config().clone(), series.clone())
         .unwrap();
-    let ticket = renderer.begin_auto_fit_all(id, 0.05).unwrap();
-    let resolved = ticket.resolve_blocking().unwrap();
-    renderer.commit_auto_fit_all(resolved).unwrap();
+    let fit = |renderer: &mut Renderer| {
+        let ticket = renderer.begin_auto_fit_all(id, 0.05).unwrap();
+        let resolved = ticket.resolve_blocking().unwrap();
+        renderer.commit_auto_fit_all(resolved).unwrap();
+    };
+    fit(&mut renderer);
     let mut expected = series;
     renderer
         .fit_vector_scales(renderer.chart_config(id).unwrap(), &mut expected)
@@ -497,7 +505,10 @@ fn the_installed_auto_fit_sizes_auto_scaled_arrows() {
     let installed = renderer.chart_series(id).unwrap().to_vec();
     assert_eq!(installed, expected);
     assert!(scale_of(&installed[0]) > 0.5, "{:?}", installed[0]);
+    assert!(!style_of(&installed[0]).auto_scale, "consumed");
     assert_eq!(scale_of(&installed[1]), 3.0);
+    fit(&mut renderer);
+    assert_eq!(renderer.chart_series(id).unwrap(), &installed[..]);
 
     // The registered chart draws what its SSOT says: its PNG export at 1x
     // and 2x is the export of its config and series held by the caller.
@@ -512,6 +523,82 @@ fn the_installed_auto_fit_sizes_auto_scaled_arrows() {
             .unwrap();
         assert_eq!(registered.rgba, own.rgba, "{scale}x");
     }
+}
+
+// One rule for every renderer-fitted value (#357): registering a new chart
+// (`LayoutState::Fitted`) fits its ranges, layout and vector scales once, by
+// the code `fit_ranges` runs, and stores them; nothing refits them on its
+// own. A `Fixed` document and `register_chart_as_given` are registered as
+// given, and a fit that cannot run refuses the registration.
+#[test]
+fn registration_fits_a_new_chart_once() {
+    let mut renderer = fit_renderer();
+    let series = vec![
+        SeriesConfig::line("l", "t", "b"),
+        SeriesConfig::vectors("v", "t", "a", "u", "a"),
+    ];
+    let config = Chart::sized(800, 600).config().clone();
+    assert!(config.layout_state.is_fitted());
+    let id = renderer
+        .register_chart(config.clone(), series.clone())
+        .unwrap();
+
+    // What the host's own fit gives: the same ranges, layout and scale.
+    let mut held = Chart::new(config.clone());
+    let mut expected = series.clone();
+    renderer.fit_ranges(&mut held, &mut expected).unwrap();
+    assert_eq!(renderer.chart_config(id).unwrap(), held.config());
+    assert_eq!(renderer.chart_series(id).unwrap(), &expected[..]);
+    assert_range(&held.config().bottom_x, -0.5, 10.5);
+    assert_range(&held.config().left_y, -11.05, 210.05);
+    assert!(!style_of(&expected[1]).auto_scale, "the flag is consumed");
+    assert!(scale_of(&expected[1]) > 0.0);
+
+    // Stored, not refitted: a config edit through the registry keeps the
+    // fitted ranges and scale, and the export draws them.
+    let mut edited = renderer.chart_config(id).unwrap().clone();
+    edited.chart_title.text.font_size += 2.0;
+    renderer.set_chart_config(id, edited).unwrap();
+    assert_range(&renderer.chart_config(id).unwrap().left_y, -11.05, 210.05);
+    assert_eq!(renderer.chart_series(id).unwrap(), &expected[..]);
+    let stored = Chart::as_given(renderer.chart_config(id).unwrap().clone());
+    for scale in [1.0, 2.0] {
+        let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+        let registered = renderer
+            .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
+            .unwrap();
+        let own = renderer
+            .export_rgba_blocking(renderer::ExportSource::chart(&stored, &expected), options)
+            .unwrap();
+        assert_eq!(registered.rgba, own.rgba, "{scale}x");
+    }
+
+    // The opt-outs: a `Fixed` document and `register_chart_as_given` keep
+    // the SSOT exactly as given, placeholder ranges and flag included.
+    let mut fixed = config.clone();
+    fixed.layout_state = renderer::LayoutState::Fixed;
+    let as_doc = renderer
+        .register_chart(fixed.clone(), series.clone())
+        .unwrap();
+    assert_eq!(renderer.chart_config(as_doc).unwrap(), &fixed);
+    assert_eq!(renderer.chart_series(as_doc).unwrap(), &series[..]);
+    let given = renderer
+        .register_chart_as_given(config.clone(), series.clone())
+        .unwrap();
+    assert_eq!(renderer.chart_config(given).unwrap(), &config);
+    assert_eq!(renderer.chart_series(given).unwrap(), &series[..]);
+    assert_eq!(Chart::as_given(config.clone()).config(), &config);
+
+    // A new chart over a streamed source cannot be fitted (rule 8): the
+    // registration is refused and nothing is registered; as given, it is.
+    let streamed = vec![SeriesConfig::line("s", "t", "streamed")];
+    let charts = renderer.chart_order().len();
+    assert!(matches!(
+        renderer.register_chart(config.clone(), streamed.clone()),
+        Err(FiggyError::ColumnNotResident { id }) if id == "streamed"
+    ));
+    assert_eq!(renderer.chart_order().len(), charts);
+    renderer.register_chart_as_given(config, streamed).unwrap();
 }
 
 // Column-backed series have no count limit (rule 10): a candidate with many
@@ -849,7 +936,7 @@ fn fit_config_scoped_refuses_what_it_cannot_fit() {
 
     // A registered chart is untouched by a scoped candidate fit.
     let id = renderer
-        .register_chart(config.clone(), series.clone())
+        .register_chart_as_given(config.clone(), series.clone())
         .unwrap();
     renderer
         .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Base, FitAxes::ALL))

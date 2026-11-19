@@ -97,6 +97,20 @@ at the display scale the style was built for); `prepare` does not rebuild it.
 Charts registered with `Renderer::register_chart` keep their own style cache,
 updated by `set_chart_config` / `set_chart_series`, and `prepare_registered`
 redraws the caller-owned `ChartView` from the stored chart and its selection.
+
+Every value the renderer fits is fitted once, where the renderer first holds
+the chart and its series ([#357](https://github.com/shim9610/figgy/issues/357)).
+`register_chart` with a new chart's config (`LayoutState::Fitted`:
+`Chart::sized`, `default::config_for_series`, the family presets) fits its
+axis ranges (the `fit_ranges` path), its layout and the scale of every
+auto-scaled vector series, and stores them in the chart's config and
+series; draws and exports read them as stored and nothing refits them on
+its own. A `Fixed` config, such as a loaded document, is registered as
+given. `register_chart_as_given(config, series)` registers any config
+without the fit, and `Chart::as_given(config)` makes a chart object
+without the layout fit `Chart::new` makes. A streamed source cannot be
+fitted (rule 8): `register_chart` refuses a new chart over one with
+`ColumnNotResident`; register it as given.
 See the [edit table and compiled example](API.md#cartesian-edits-update-the-derived-inputs-before-preparing).
 
 A redraw also reports tick settings the axis raster could not draw as written.
@@ -161,7 +175,7 @@ let mut chart = Chart::new(config)
     .with_y_title("sin(x)");
 
 // Series = SeriesConfig (declaration) + ChartStyle (GPU style auto-built from that declaration).
-let cfg = SeriesConfig {
+let mut cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
     x_column: "x".into(), y_column: "y".into(), z_column: None,
@@ -177,7 +191,7 @@ let cfg = SeriesConfig {
 // A chart starts at a 0..1 placeholder range: fit every axis the series use
 // to the registered columns (5% padding). For one axis or another padding,
 // use `chart.auto_fit_x(renderer.pool(), "x", 0.02)` and its family.
-renderer.fit_ranges(&mut chart, std::slice::from_ref(&cfg)).unwrap();
+renderer.fit_ranges(&mut chart, std::slice::from_mut(&mut cfg)).unwrap();
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
@@ -482,11 +496,11 @@ colour of the default cycle (`ColorCycle::DEFAULT`, the `Balanced` preset)
 until `.color(c)` or a theme's palette colours it
 ([#357](https://github.com/shim9610/figgy/issues/357); it started in black
 before). A constructor cannot know where its series will stand, so the
-series list gives the order: `ColorCycle::DEFAULT.color_unset(&mut series)`
-gives series `i` the cycle's colour `i` when the host left it in that
-starting colour, and keeps every colour the host set, black included. The
-colours are written into the series, so the document holds what is drawn
-(see [Palette presets](#palette-presets)). Matrices are
+series list gives the order: `config.apply_palette(&mut series, palette)`
+gives series `i` the palette's colour `i` in every part its kind draws in
+a palette colour, and `default::config_for_series(&mut series)` applies
+`ColorCycle::DEFAULT` that way. The colours are written into the series,
+so the document holds what is drawn (see [Palette presets](#palette-presets)). Matrices are
 named with `MatrixRef::columns_are_x` or `columns_are_y` (and
 `with_layout`). A family that needs its chart set up (a category axis,
 polar, ternary or parallel axes) still validates against that chart.
@@ -1145,13 +1159,16 @@ ColorBrewer colour schemes are licensed under the Apache License, Version
 ```rust
 use renderer::{ColorCycle, SeriesConfig, theme::{ChartKind, ThemeFamily}};
 
-// Series the host leaves uncoloured take the default cycle in order.
+// The default flow gives series `i` the default palette's colour `i`.
 let mut series = [
     SeriesConfig::line("a", "x", "ya"),
     SeriesConfig::line("b", "x", "yb"),
-    SeriesConfig::line("ref", "x", "yr").color(renderer::Color::BLACK), // stays black
 ];
-ColorCycle::DEFAULT.color_unset(&mut series);
+let mut config = renderer::default::config_for_series(&mut series);
+// Another palette: the same method with a preset's colours (or any list).
+config.apply_palette(&mut series, ColorCycle::Tableau10.colors());
+// A colour the host wants for one series is set after the palette.
+series[1] = series[1].clone().color(renderer::Color::BLACK);
 
 // A family's look with a preset's colours.
 let theme = ThemeFamily::Gallery.theme(ChartKind::Line).with_palette(ColorCycle::Set2);
@@ -1162,11 +1179,22 @@ Where the colour is assigned matters for the document. A series' colour is
 a plain value in the SSOT and the renderer draws exactly that value; there
 is no "unset" colour in the model, and neither loading nor drawing a
 document recolours it. So a document saved by an earlier release, with its
-black series, reads back and draws the same. The default cycle is applied
-only where a series is created: the constructors' starting colour,
-`color_unset` on the list the host builds, and in the browser
-`add_line_series`, whose new series take the next colour of the chart's
-cycle (now `Balanced`; it was `Classic`, which starts in black).
+black series, reads back and draws the same. A palette is applied only by
+an explicit call where the chart is built: the constructors' starting
+colour, `Config::apply_palette` (which `default::config_for_series` calls)
+on the list the host builds, and in the browser `add_line_series`, whose
+new series take the next colour of the chart's cycle (now `Balanced`; it
+was `Classic`, which starts in black), and `apply_color_cycle`, which
+applies a cycle through the same method.
+
+`Config::apply_palette` writes colours only: series `i` takes colour
+`i % len` in its line, markers, error bars, stems, fill or series colour,
+and the legends derived from the series (the base chart's, each overlay's
+and each subplot's) redraw their symbols. A field or mesh (its fill comes
+from the colour map, its contour lines are dark ink), an RGB image, an
+energy-level diagram and a Feynman diagram keep their colours but still
+take their index. The layout is not touched. An empty palette changes
+nothing.
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -1333,6 +1361,15 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 `refresh_axis_with_selection`)는 래스터를 직접 다시 그리려는 호스트가 쓴다. 시리즈의
 모양·매핑 스타일·식별자를 바꿨다면 `create_style_for_series`로 `ChartStyle`을 다시 만든다.
 특정 표시 배율로 만든 스타일은 같은 배율로 `create_style_for_series_scaled`를 호출한다.
+렌더러가 맞추는 값은 렌더러가 차트와 시리즈를 처음 함께 받을 때 한 번만 맞춘다(#357). 새 차트
+설정(`LayoutState::Fitted`: `Chart::sized`, `default::config_for_series`, 계열 프리셋)을 받은
+`register_chart`는 축 범위(`fit_ranges` 경로), 레이아웃, 자동 배율 벡터 시리즈의 배율을 맞춰 차트의
+설정과 시리즈에 저장한다. 그리기와 내보내기는 저장된 값을 읽고, 저절로 다시 맞추지 않는다. 불러온
+문서처럼 `Fixed`인 설정은 받은 그대로 등록한다. `register_chart_as_given(config, series)`는 어떤 설정이든
+맞추지 않고 등록하고, `Chart::as_given(config)`는 `Chart::new`의 레이아웃 맞춤 없이 차트 객체를 만든다.
+스트리밍 소스는 맞출 수 없으므로(규칙 8) 그 위의 새 차트는 `register_chart`가 `ColumnNotResident`로
+거부한다. 이때는 그대로 등록한다.
+
 `prepare`는 스타일을 다시 만들지 않는다. `Renderer::register_chart`로 등록한 차트는 자체
 스타일 캐시를 두고 `set_chart_config` / `set_chart_series`로 갱신하며, `prepare_registered`가
 저장된 차트와 그 선택 상태로 호출자의 `ChartView`를 다시 그린다.
@@ -1395,7 +1432,7 @@ let mut chart = Chart::new(config)
     .with_y_title("sin(x)");
 
 // 시리즈 = SeriesConfig (선언) + ChartStyle (그 선언에서 자동 빌드된 GPU 스타일).
-let cfg = SeriesConfig {
+let mut cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
     x_column: "x".into(), y_column: "y".into(), z_column: None,
@@ -1410,7 +1447,7 @@ let cfg = SeriesConfig {
 };
 // 새 차트의 범위는 0..1 자리표시자다. 시리즈가 쓰는 모든 축을 등록된 컬럼에 맞춘다(여백 5%).
 // 축 하나만 맞추거나 여백을 바꾸려면 `chart.auto_fit_x(renderer.pool(), "x", 0.02)` 계열을 쓴다.
-renderer.fit_ranges(&mut chart, std::slice::from_ref(&cfg)).unwrap();
+renderer.fit_ranges(&mut chart, std::slice::from_mut(&mut cfg)).unwrap();
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
@@ -1639,8 +1676,10 @@ let series = [
 `monotonic_line`. 그 밖의 `DataRenderType`은 `of_kind`로 만든다. 생성 함수 이름은 종류 이름과 같고
 색을 인자로 받지 않는다. 시리즈는 `.color(c)`나 테마 팔레트가 색을 정하기 전까지 기본 색 순환
 (`ColorCycle::DEFAULT`, `Balanced` 프리셋)의 첫 색이다(#357, 이전에는 검은색). 생성 함수는 시리즈의
-순서를 모르므로 순서는 시리즈 목록이 정한다. `ColorCycle::DEFAULT.color_unset(&mut series)`는 처음 색
-그대로인 시리즈 `i`에 순환의 `i`번째 색을 주고, 호스트가 정한 색(검은색 포함)은 그대로 둔다. 색은
+순서를 모르므로 순서는 시리즈 목록이 정한다. `config.apply_palette(&mut series, palette)`는 시리즈
+`i`가 팔레트 색으로 그리는 모든 부분에 팔레트의 `i`번째 색을 쓰고, `default::config_for_series(&mut series)`는
+이 방법으로 `ColorCycle::DEFAULT`를 적용한다. 필드·메시, RGB 이미지, 에너지 준위 도표, 파인만 도표는 제
+색을 유지하고, 시리즈에서 파생된 범례는 기호를 다시 그린다. 레이아웃은 건드리지 않는다. 색은
 시리즈에 값으로 써 넣으므로 문서가 그려지는 색을 그대로 담는다. 프리셋과 출처는 영문 절의
 [Palette presets](#palette-presets)에 있다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
 지정한다(`with_layout`도 있다). 차트 설정이 필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그

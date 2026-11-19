@@ -233,7 +233,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     // The default config in the frame of a Feynman chart: no axes, ticks,
     // tick labels or grid (#357).
-    let mut chart = Chart::new(default::config_for_series(&specs))
+    let mut chart = Chart::new(default::config_for_series(&mut specs))
         .with_area(0, 0, SIZE.0, SIZE.1)
         .with_title("Feynman diagrams / six processes");
     chart.set_x_range(0., 3.);

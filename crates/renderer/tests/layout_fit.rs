@@ -245,7 +245,12 @@ fn a_registered_chart_is_fitted_when_registered_and_edited_never_when_drawn() {
     unfitted.layout_state = LayoutState::Fitted;
     let id = r.register_chart(unfitted.clone(), series.to_vec()).unwrap();
     let laid = r.chart_config(id).unwrap().clone();
-    assert_eq!(laid, fitted(&unfitted), "registration fits");
+    // Registration fits the new chart once: its ranges, then its layout to
+    // them, as the host's own `fit_ranges` on the chart object does.
+    let mut held = Chart::new(unfitted.clone());
+    r.fit_ranges(&mut held, &mut series.clone()).unwrap();
+    assert_eq!(&laid, held.config(), "registration fits");
+    assert_eq!(laid, fitted(&laid), "with its layout fitted");
 
     // Draws and exports draw it as stored.
     let stamp = r.chart_render_stamp(id).unwrap();
@@ -289,7 +294,10 @@ fn a_registered_chart_is_fitted_when_registered_and_edited_never_when_drawn() {
 #[test]
 fn an_identical_config_changes_nothing() {
     let mut r = renderer();
-    let (chart, series) = audit_chart(&mut r);
+    let (mut chart, mut series) = audit_chart(&mut r);
+    // Ranges and layout already fitted: the registration's one-time fit
+    // finds nothing to change.
+    r.fit_ranges(&mut chart, &mut series).unwrap();
     let id = r
         .register_chart(chart.config().clone(), series.to_vec())
         .unwrap();
