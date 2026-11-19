@@ -48,7 +48,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         z_column: None,
         render_type: DataRenderType::Feynman(diagram),
     };
-    let mut chart = Chart::new(default::default_config());
+    // The default config without axes, the frame of a Feynman chart.
+    let mut chart = Chart::new(default::config_for_series(std::slice::from_ref(&series)));
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
     let id = renderer.register_chart(chart.config().clone(), vec![series])?;
@@ -99,9 +100,14 @@ such a diagram.
 
 A diagram is usually drawn without axes: `Config::apply_axis_preset(AxisPreset::Hidden)`
 switches off the axis lines, ticks, tick labels and grid and keeps the
-layout, so the diagram's data units stay where they were. A chart does not
-pick this frame by itself: the host applies the preset, or a theme does
-(`FeynmanTheme::axis_preset`).
+layout, so the diagram's data units stay where they were.
+`default::config_for_series(&series)` starts a chart in that frame: it is
+`default::default_config()` with `AxisPreset::Hidden` applied when the
+series draw a Feynman diagram ([#357](https://github.com/shim9610/figgy/issues/357)).
+The frame is chosen there, once, never at draw time, so axes the host turns
+back on (`Config::apply_axis_preset`, then the grid flags) stay on. A theme
+sets the same frame (`FeynmanTheme::axis_preset`). In the browser,
+`default_config_for_series(seriesJson)` returns the same config as JSON.
 
 Committing the layout works like an auto-fit: the renderer writes the
 positions into the registered series, and the host reads them back

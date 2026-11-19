@@ -1661,15 +1661,30 @@ impl Theme {
     /// The frame of the chart `layer` names: a family's own frame when the
     /// chart draws one, the chrome's otherwise.
     fn frame_for(&self, config: &Config, series: &[SeriesConfig], layer: LayerRef) -> AxisPreset {
+        self.family_frame(config, series, layer)
+            .unwrap_or(self.chrome.axis_preset)
+    }
+
+    /// The frame of a family that draws one of its own, when the chart
+    /// `layer` names draws it: the first Feynman or energy-level series
+    /// drawn there decides (`series.feynman.axis_preset`,
+    /// `series.energy_levels.axis_preset`). `None` for every other chart.
+    /// Shared by [`Self::apply`] and [`crate::default::config_for_series`].
+    pub(crate) fn family_frame(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+        layer: LayerRef,
+    ) -> Option<AxisPreset> {
         let on_layer = |item: &&SeriesConfig| drawn_on(config, layer, &item.series_id);
-        for item in series.iter().filter(on_layer) {
-            match item.render_type {
-                DataRenderType::Feynman(_) => return self.series.feynman.axis_preset,
-                DataRenderType::EnergyLevels(_) => return self.series.energy_levels.axis_preset,
-                _ => {}
-            }
-        }
-        self.chrome.axis_preset
+        series
+            .iter()
+            .filter(on_layer)
+            .find_map(|item| match item.render_type {
+                DataRenderType::Feynman(_) => Some(self.series.feynman.axis_preset),
+                DataRenderType::EnergyLevels(_) => Some(self.series.energy_levels.axis_preset),
+                _ => None,
+            })
     }
 
     /// The chrome of one chart: its own axes, titles, grid, legend,

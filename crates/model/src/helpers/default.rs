@@ -17,6 +17,7 @@
 //! match the host viewport).
 
 use crate::config::{AxisOptions, ColorBarOptions, Config, Legend};
+use crate::data_config::SeriesConfig;
 
 /// X axis options. Range is a 0..1 placeholder — replace with
 /// `Chart::set_x_range` or `auto_fit_x`.
@@ -56,4 +57,94 @@ pub fn default_legend() -> Legend {
 /// - `chart_title`: title band reserved; text empty until `Chart::with_title`.
 pub fn default_config() -> Config {
     crate::defaults::config()
+}
+
+/// The default config for a chart of `series`: [`default_config`] in the
+/// frame its family draws by default (#357). A chart that draws a Feynman
+/// series is drawn without axes ([`crate::preset::AxisPreset::Hidden`]),
+/// one that draws an energy-level series in the Grotrian frame
+/// ([`crate::preset::AxisPreset::Grotrian`]); every other chart, and a
+/// chart without series, gets [`default_config`] unchanged. The first
+/// Feynman or energy-level series decides, as a theme's frame does
+/// (`FeynmanTheme::axis_preset`, `EnergyLevelTheme::axis_preset` of the
+/// documented look).
+///
+/// The frame is written into the returned config, a plain document: it is
+/// chosen once, where the chart is made, never at draw time, so a host
+/// that turns the axes back on (`Config::apply_axis_preset`) keeps them.
+pub fn config_for_series(series: &[SeriesConfig]) -> Config {
+    let mut config = default_config();
+    let frame = crate::helpers::theme::Theme::default().family_frame(
+        &config,
+        series,
+        crate::layer::LayerRef::Base,
+    );
+    if let Some(preset) = frame {
+        config.apply_axis_preset(preset);
+    }
+    config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preset::AxisPreset;
+
+    fn framed(preset: AxisPreset) -> Config {
+        let mut config = default_config();
+        config.apply_axis_preset(preset);
+        config
+    }
+
+    fn feynman() -> SeriesConfig {
+        SeriesConfig::feynman("d", crate::defaults::feynman_series())
+    }
+
+    fn levels() -> SeriesConfig {
+        SeriesConfig::energy_levels("e", crate::defaults::energy_level_series())
+    }
+
+    #[test]
+    fn a_chart_takes_the_frame_of_its_family() {
+        assert_eq!(config_for_series(&[feynman()]), framed(AxisPreset::Hidden));
+        assert_eq!(config_for_series(&[levels()]), framed(AxisPreset::Grotrian));
+        assert_eq!(config_for_series(&[]), default_config());
+        let line = SeriesConfig::line("l", "x", "y");
+        assert_eq!(config_for_series(&[line.clone()]), default_config());
+        // The first framed family decides, as a theme's frame does.
+        assert_eq!(
+            config_for_series(&[line, feynman(), levels()]),
+            framed(AxisPreset::Hidden)
+        );
+        let hidden = config_for_series(&[feynman()]);
+        assert!(!hidden.bottom_x.line_visible && !hidden.left_y.line_visible);
+        assert!(!hidden.grid.show_major_x && !hidden.grid.show_major_y);
+    }
+
+    #[test]
+    fn the_axes_turn_back_on_explicitly() {
+        // The frame is plain document data: nothing re-applies it.
+        let mut config = config_for_series(&[feynman()]);
+        config.apply_axis_preset(AxisPreset::BoxedInward);
+        assert!(config.bottom_x.line_visible && config.left_y.line_visible);
+        assert!(
+            config.bottom_x.label_style.label_visible && config.left_y.label_style.label_visible
+        );
+        // A preset only switches the grid off; the host turns it back on.
+        config.grid.show_major_x = true;
+        config.grid.show_major_y = true;
+        assert_eq!(config, default_config());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_framed_config_round_trips() {
+        for series in [vec![feynman()], vec![levels()], vec![]] {
+            let config = config_for_series(&series);
+            let json = serde_json::to_string(&config).unwrap();
+            let back: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, config);
+            assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        }
+    }
 }
