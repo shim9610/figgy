@@ -210,6 +210,8 @@ mod legend_update_tests {
     }
 
     // Both rules of a line-and-marker mark take the series stroke width.
+    // The scatter style's `Default` lives in `helpers`.
+    #[cfg(feature = "helpers")]
     #[test]
     fn line_and_marker_rules_take_the_series_stroke_width() {
         let mut cfg = line_cfg(Color::BLACK, LineStylePreset::Solid);
