@@ -256,8 +256,12 @@ fn figgy_zero_workgroup(local_index: u32) {
     }
 }
 
+// The validity tests below use the non-short-circuit `&` / `|`: each test
+// is pure, so the result is the `&&` / `||` chain's, but straight-line code,
+// which software compilers (SwiftShader) compile far faster once inlined
+// into the exact pass's loop (#363).
 fn pick_is_finite(v: f32) -> bool {
-    return v == v && abs(v) <= PICK_F32_MAX;
+    return (v == v) & (abs(v) <= PICK_F32_MAX);
 }
 
 fn pick_read_pair(base: u32, point_index: u32) -> vec2<f32> {
@@ -273,13 +277,13 @@ fn pick_source_row(local_index: u32) -> u32 {
 }
 
 fn pick_pair_is_valid(v: vec2<f32>) -> bool {
-    return pick_is_finite(v.x) && pick_is_finite(v.y) && pick_is_finite(v.x + v.y);
+    return pick_is_finite(v.x) & pick_is_finite(v.y) & pick_is_finite(v.x + v.y);
 }
 
 fn pick_coordinate_is_valid(v: vec2<f32>, axis: u32) -> bool {
     return pick_pair_is_valid(v)
-        && (pick_query_params.transform.scale_log[axis] == 0.0 || v.x + v.y > 0.0)
-        && (pick_query_params.transform.scale_prob[axis] < 0.5 || prob_in_domain(v));
+        & ((pick_query_params.transform.scale_log[axis] == 0.0) | (v.x + v.y > 0.0))
+        & ((pick_query_params.transform.scale_prob[axis] < 0.5) | prob_in_domain(v));
 }
 
 fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {

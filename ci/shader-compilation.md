@@ -133,6 +133,62 @@ matrix. The dispatch split does not change Metal precision. Renderer 0.14.0 fixe
 coordinate-rounding boundaries and midpoint picking in shared WGSL; see
 [backend results and fixes](STATUS.md).
 
+## Exact point picker compilation (#363)
+
+The exact pick pipeline (`pick_exact_candidates`, label `figgy GPU pick exact
+candidate pipeline`) is created on a series' first pick (#299, #332). On
+Chromium's SwiftShader its compile time tracked two things, found by stubbing
+one helper at a time in the assembled WGSL:
+
+- **The number of inlined copies of the projection and validity helpers.**
+  Time grew about linearly with them; neither the 32-point loop nor its trip
+  count was a multiplier (a one-iteration loop or a dynamic bound measured
+  the same). The area fill alone projected up to ten `data_to_ndc` copies
+  per piece (four corners, `axis_baseline_ndc` holding one per axis) and
+  called `sample_valid` four times; the error bar, stem, category jitter and
+  path arrows held their own copies. The `PICK_VARIANT` override does not
+  remove a disabled path's code in SwiftShader: a radar compiles the error
+  bar path it never runs.
+- **Long short-circuit `&&` / `||` chains.** Each becomes nested branches.
+  One variant (line module, basic set, dash + styled line + fill) took
+  230.9 s, of which 230 s went away when `sample_valid` used `&` / `|`.
+
+The fix keeps every helper call and argument and therefore every value:
+the helpers that were inlined several times are called once inside a short
+loop over the corners, ends, quads or axes (`area_corner_ndc`,
+`area_segment_drawn`, `axis_baseline_ndc`, `stem_end_ndc`, the stroke's
+ends, the error bar's quads, the category slot and the arrowhead
+Jacobian), and the validity tests (`sample_valid`, `pick_is_finite`,
+`pick_coordinate_is_valid`) use the non-short-circuit `&` / `|` on pure
+operands. The shared fragments change for the draw entries as well, with
+the same values. No pipeline, module, cache or variant is added, and the
+exact pipelines stay lazy.
+
+Measured on 2026-11-19 with Playwright 1.63.0's headless Chromium
+157.0.8103.78 (`--enable-unsafe-webgpu`, SwiftShader adapter) on a 4-core
+Linux container. Each row is one `createComputePipelineAsync` in a fresh
+browser, with the descriptor and explicit layout from the native capture:
+
+| Exact variant (module, set, `PICK_VARIANT`, shape) | Before | After |
+| --- | ---: | ---: |
+| Marker, basic, 0, fixed | 612 ms | 550 ms |
+| Marker, full, all paths, any | 4,770 ms | 2,652 ms |
+| Marker-line, basic, 0, fixed | 1,341 ms | 850 ms |
+| **Marker-line, full, area + polar, fixed (radar)** | **9,807 ms** | **2,685 ms** |
+| Marker-line, full, all paths, any | 13,294 ms | 5,424 ms |
+| Line, basic, 0 | 784 ms | 582 ms |
+| Line, full, area + polar (radar without markers) | 7,210 ms | 2,008 ms |
+| Line, basic, dash + styled line + area | 230,923 ms | 799 ms |
+| Line, full, all paths | 8,481 ms | 3,045 ms |
+| Vector, full, all paths | 1,185 ms | 1,098 ms |
+| Radar, 40 render pipelines compiling first | 16,331 ms | 8,129 ms |
+| Radar, all 339 captured render pipelines compiling first | 148,136 ms | 149,577 ms |
+
+In the last row the exact pipeline finished after every background render
+pipeline in both runs: it waited in the browser's compile queue, so its
+own size no longer decides the time. These are single local runs on a
+software adapter, not physical-GPU results.
+
 ## 한국어 요약
 
 등고선 위치 계산은 기존과 똑같이 네 번 보정한다. 다만 복잡한 필드 검색을 감싼 반복문을
@@ -143,3 +199,9 @@ coordinate-rounding boundaries and midpoint picking in shared WGSL; see
 생성 함수가 관계없는 셰이더까지 읽던 부분도 제거했다. 컴파일 전용 검사는 모든 셰이더와
 진입점을 확인하며, 기존 렌더링·픽셀 검사는 별도로 유지한다. 위 수치는 이 Linux 소프트웨어
 GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀도 개선을 보장하는 수치는 아니다.
+
+정확 점 선택(exact pick) 파이프라인은 같은 투영·유효성 함수를 여러 번 인라인하던 자리에서 짧은
+반복문 안의 한 번 호출로 바꾸고, 긴 `&&` 체인을 `&`로 바꿨다(#363). 호출 함수와 인자가
+같으므로 결과값은 그대로다. SwiftShader에서 레이더 변형은 9.8초에서 2.7초로, 가장 느리던
+변형은 230.9초에서 0.8초로 줄었다. 렌더 파이프라인 339개가 먼저 큐에 있으면 대기 시간이
+지배해 약 150초로 변하지 않는다.

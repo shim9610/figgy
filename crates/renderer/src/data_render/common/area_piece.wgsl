@@ -16,16 +16,21 @@ const AREA_FILL_TO_SERIES: u32 = 16u;
 // where it breaks the line) or the baseline is finite.
 fn area_segment_drawn(t: Transform, xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>,
     base_a: vec2<f32>, base_b: vec2<f32>, to_series: bool, baseline: vec2<f32>) -> bool {
-    if (!sample_valid(t, xa, ya) || !sample_valid(t, xb, yb)) {
-        return false;
+    // One `sample_valid` call in a loop over the samples, the base's two
+    // after the line's when the base is a series: a software GPU compiler
+    // pays for every inlined copy of it (#363). The tests are pure, so this
+    // is the conjunction of the four.
+    var drawn = true;
+    let samples = select(2u, 4u, to_series);
+    for (var i = 0u; i < samples; i = i + 1u) {
+        let at_b = (i & 1u) != 0u;
+        let y = select(select(ya, yb, at_b), select(base_a, base_b, at_b), i >= 2u);
+        drawn = drawn & sample_valid(t, select(xa, xb, at_b), y);
     }
-    if (to_series && (!sample_valid(t, xa, base_a) || !sample_valid(t, xb, base_b))) {
-        return false;
+    if (!to_series) {
+        drawn = drawn & sample_finite(baseline.x) & sample_finite(baseline.y);
     }
-    if (!to_series && (!sample_finite(baseline.x) || !sample_finite(baseline.y))) {
-        return false;
-    }
-    return true;
+    return drawn;
 }
 
 // Piece `k` of the fill under segment a → b: the line's piece on top and the
@@ -59,16 +64,15 @@ fn area_corner_ndc(t: Transform, piece: AreaPiece, at_b: bool, on_base: bool, to
     let x = select(piece.top.x0, piece.top.x1, at_b);
     let y_top = select(piece.top.y0, piece.top.y1, at_b);
     let y_base = select(piece.bottom.y0, piece.bottom.y1, at_b);
-    var ndc = data_to_ndc(t, x, y_top);
-    if (on_base) {
-        // A polar baseline is a ring (the inner ring at or below the axis
-        // start, which is the centre when `inner_radius_fraction` is 0), so
-        // the base corner projects like a sample at the same angle.
-        if (to_series || t.polar_angle.x > 0.5) {
-            ndc = data_to_ndc(t, x, y_base);
-        } else {
-            ndc.y = area_baseline_ndc_y(t, y_base);
-        }
+    // A polar baseline is a ring (the inner ring at or below the axis
+    // start, which is the centre when `inner_radius_fraction` is 0), so the
+    // base corner projects like a sample at the same angle; so does a base
+    // series. One `data_to_ndc` call takes whichever y the corner projects
+    // (a software GPU compiler pays for every inlined copy, #363).
+    let projects_base = to_series || t.polar_angle.x > 0.5;
+    var ndc = data_to_ndc(t, x, select(y_top, y_base, on_base && projects_base));
+    if (on_base && !projects_base) {
+        ndc.y = area_baseline_ndc_y(t, y_base);
     }
     return ndc;
 }
