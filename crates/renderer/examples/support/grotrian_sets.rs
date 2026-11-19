@@ -18,8 +18,10 @@
 //!
 //! The host chooses the columns, the labels and the lines; the renderer
 //! draws them. The host also writes them in physics notation (#357): a
-//! term symbol such as NIST's `1P*` as ¹P°, a configuration such as `1s2`
-//! as 1s², and it finds where its levels leave the energy axis empty and
+//! term symbol such as NIST's `1P*` as `$^{1}$P°`, a configuration such as
+//! `1s2` as `1s$^{2}$`, TeX script spans drawn as script segments (no
+//! Unicode script characters), and it finds where its levels leave the
+//! energy axis empty and
 //! writes that range as the axis break ([`derived_break`]). Every colour,
 //! width and text size is the gallery family's energy-level member's
 //! (#295): a builder gives each text its content and applies the theme
@@ -47,8 +49,11 @@ fn theme() -> Result<Theme> {
 }
 
 /// A text of the diagram: its content, in the look the theme gives it.
+/// `$…$` spans are TeX, so a script is written `$^{2}$` or `$_{3/2}$` and
+/// drawn as a script segment: the examples write no Unicode script
+/// characters (#357), which figgy maps only for hosts that send them.
 fn plain(text: &str) -> RichText {
-    RichText::plain(text, Color::BLACK, 16.0, "")
+    RichText::from_label(text, Color::BLACK, 16.0, "")
 }
 
 /// A bundled NIST export, embedded so every crate that includes this
@@ -68,30 +73,28 @@ fn data(name: &str) -> Result<String> {
     .to_string())
 }
 
-/// `digits` as Unicode superscripts, which every text draws as raised
-/// digits (#353).
+/// `digits` raised: a TeX superscript span ([`plain`] draws it as a
+/// superscript segment).
 fn superscript(digits: &str) -> String {
-    digits.chars().map(|c| shifted(c, "⁰¹²³⁴⁵⁶⁷⁸⁹")).collect()
+    if digits.is_empty() {
+        return String::new();
+    }
+    format!("$^{{{digits}}}$")
 }
 
-/// `digits` as Unicode subscripts, lowered digits (#353): a J value such
-/// as `3/2` reads ₃/₂.
+/// `digits` lowered: a TeX subscript span, so a J value such as `3/2`
+/// reads as a subscript 3/2.
 pub fn subscript(digits: &str) -> String {
-    digits.chars().map(|c| shifted(c, "₀₁₂₃₄₅₆₇₈₉")).collect()
-}
-
-/// The digit `c` from `forms`, the ten forms of 0–9; any other character
-/// as it is.
-fn shifted(c: char, forms: &str) -> char {
-    c.to_digit(10)
-        .and_then(|d| forms.chars().nth(d as usize))
-        .unwrap_or(c)
+    if digits.is_empty() {
+        return String::new();
+    }
+    format!("$_{{{digits}}}$")
 }
 
 /// A NIST term in physics notation: the leading multiplicity raised and
-/// the odd-parity `*` written as °, so `1P*` reads ¹P° and the jK term
-/// `2[3/2]*` reads ²[3/2]°. The host writes the notation; the renderer
-/// draws the characters it is given.
+/// the odd-parity `*` written as °, so `1P*` reads as P° with a raised 1
+/// and the jK term `2[3/2]*` as [3/2]° with a raised 2. The host writes
+/// the notation as TeX script spans; the renderer draws the segments.
 pub fn term_symbol(term: &str) -> String {
     let digits = term.chars().take_while(char::is_ascii_digit).count();
     let (multiplicity, rest) = term.split_at(digits);
@@ -103,7 +106,8 @@ pub fn term_symbol(term: &str) -> String {
 }
 
 /// A NIST configuration in physics notation: each subshell's occupancy
-/// raised, so `1s2` reads 1s², `3p6` 3p⁶ and `3d10.4s` 3d¹⁰4s. A subshell
+/// raised, so `1s2` reads as 1s with a raised 2 and `3d10.4s` as 3d with
+/// a raised 10, then 4s. A subshell
 /// is its principal number, its letter and its occupancy; parenthesized
 /// parent terms are left as written.
 pub fn configuration(text: &str) -> String {
@@ -285,16 +289,25 @@ fn band(series: &mut EnergyLevelSeries, column: &str, low: f64, high: f64, label
     });
 }
 
-/// A term column: its NIST id (`1P*`), named by its term symbol (¹P°) as
-/// both its plain label and the rich label the theme styles as a header
-/// (#357). The `gap` spacer has no name.
+/// A term column: its NIST id (`1P*`), named by its term symbol as the
+/// rich label the theme styles as a header, scripts as segments (#357),
+/// and by the symbol's characters as its plain label. The `gap` spacer
+/// has no name.
 fn column(id: &str) -> Category {
     if id == "gap" {
         return Category::new(id, "");
     }
-    let symbol = term_symbol(id);
-    let mut category = Category::new(id, symbol.as_str());
-    category.rich_label = Some(plain(&symbol));
+    named(id, &term_symbol(id))
+}
+
+/// Column `id` named `text` (TeX script spans as segments): the rich label
+/// the theme styles as a header, and the segments' characters as the
+/// plain label.
+fn named(id: &str, text: &str) -> Category {
+    let rich = plain(text);
+    let name: String = rich.segments.iter().map(|s| s.text).collect();
+    let mut category = Category::new(id, name.as_str());
+    category.rich_label = Some(rich);
     category
 }
 
@@ -589,9 +602,10 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
         );
     }
     for l in &limits {
-        series
-            .limits
-            .push(limit(l, &format!("Ar II ²P°₃/₂  {:.3} eV", l.energy)));
+        series.limits.push(limit(
+            l,
+            &format!("Ar II $^{{2}}$P°$_{{3/2}}$  {:.3} eV", l.energy),
+        ));
     }
     series.transitions = strongest(
         &lines,
@@ -612,17 +626,15 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
                 "ground" => configuration("3p6"),
                 id => id.replace('\'', "′"),
             };
-            let mut c = Category::new(*id, name.as_str());
-            c.rich_label = Some(plain(&name));
-            c
+            named(id, &name)
         })
         .collect();
     let mut c = grotrian("Ar I", "Energy (eV)", categories);
     groups(
         &mut c,
         &[
-            ("3p⁵ ²P°₃/₂ core", "4s", "5p"),
-            ("3p⁵ ²P°₁/₂ core", "4s'", "5p'"),
+            ("3p$^{5}$ $^{2}$P°$_{3/2}$ core", "4s", "5p"),
+            ("3p$^{5}$ $^{2}$P°$_{1/2}$ core", "4s'", "5p'"),
         ],
     );
     energy_axis(&mut c, &series, -0.2, 16.0);
@@ -661,9 +673,10 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
         series.levels.push(l);
     }
     for l in &limits {
-        series
-            .limits
-            .push(limit(l, &format!("Ar II ²P°₃/₂  {:.3} eV", l.energy)));
+        series.limits.push(limit(
+            l,
+            &format!("Ar II $^{{2}}$P°$_{{3/2}}$  {:.3} eV", l.energy),
+        ));
     }
     // As a paper draws them: the Rydberg members from n = 8 up to the
     // limit, one band per column, and the low members labelled (#205).
@@ -702,7 +715,7 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
                 Some(term) => format!("{}′", term_symbol(term)),
                 None => term_symbol(id),
             };
-            Category::new(id.as_str(), label)
+            named(id, &label)
         })
         .collect();
     let mut c = grotrian("Ar I, all levels", "Energy (eV)", categories);
@@ -745,19 +758,24 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
         series.levels.push(level(row, &row.term, Some(label)));
     }
     // The 3d⁹4s4p quartets as bands, one per term.
-    for (column, name) in [("4P*", "⁴P°"), ("4D*", "⁴D°"), ("4F*", "⁴F°")] {
+    for (column, name) in [
+        ("4P*", "$^{4}$P°"),
+        ("4D*", "$^{4}$D°"),
+        ("4F*", "$^{4}$F°"),
+    ] {
         band(
             &mut series,
             column,
             f64::MIN,
             f64::MAX,
-            &format!("3d⁹4s4p {name}"),
+            &format!("3d$^{{9}}$4s4p {name}"),
         );
     }
     for l in &limits {
-        series
-            .limits
-            .push(limit(l, &format!("Cu II 3d¹⁰ ¹S  {:.3} eV", l.energy)));
+        series.limits.push(limit(
+            l,
+            &format!("Cu II 3d$^{{10}}$ $^{{1}}$S  {:.3} eV", l.energy),
+        ));
     }
     let classic = [324.754, 327.396, 510.554, 578.213];
     let mut transitions = strongest(&lines, &series, |_| true, 10);
@@ -781,7 +799,7 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
         &mut c,
         &[
             ("Doublets", "2S", "2F*"),
-            ("Quartets (3d⁹4s4p)", "4P*", "4F*"),
+            ("Quartets (3d$^{9}$4s4p)", "4P*", "4F*"),
         ],
     );
     // The levels leave no gap wide enough to break: `derived_break` finds
@@ -816,9 +834,10 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
     // The unassigned even J = 6 levels above 23 000 cm⁻¹ as one band.
     band(&mut series, "e6", 23_000.0, 27_000.0, "6 even levels");
     for l in &limits {
-        series
-            .limits
-            .push(limit(l, &format!("U II ⁴I°₉/₂  {:.1} cm⁻¹", l.energy)));
+        series.limits.push(limit(
+            l,
+            &format!("U II $^{{4}}$I°$_{{9/2}}$  {:.1} cm$^{{-1}}$", l.energy),
+        ));
     }
     // Lines computed from level pairs: the ground J = 6 and the 620 cm⁻¹
     // J = 5 levels to the even levels E1 selection allows.
@@ -886,7 +905,7 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
         .cloned()
         .unwrap_or_default();
     let last_even = order.last().cloned().unwrap_or_default();
-    let mut c = grotrian("U I", "Energy (cm⁻¹)", categories);
+    let mut c = grotrian("U I", "Energy (cm$^{-1}$)", categories);
     c.config_mut().bottom_x.title_option.visible = true;
     c.config_mut().bottom_x.title_option.text = plain("J");
     groups(

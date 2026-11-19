@@ -221,14 +221,15 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
 
-    // '₀' (U+2080) renders as a subscript segment; plain '0' would not.
+    // `$…$` spans are TeX: `V_0` draws a subscript 0 and `e^{-t}` a
+    // superscript, as script segments.
     let series = vec![
         SeriesConfig::line("charge", "rc_t", "rc_charge")
-            .label("Charging V₀(1−e⁻ᵗ)")
+            .label("Charging $V_0(1-e^{-t})$")
             .color(Color::from_rgb8(220, 90, 60))
             .width(2.0),
         SeriesConfig::line("discharge", "rc_t", "rc_discharge")
-            .label("Discharging V₀·e⁻ᵗ")
+            .label("Discharging $V_0 e^{-t}$")
             .color(Color::from_rgb8(60, 130, 210))
             .width(2.0),
     ];

@@ -2620,7 +2620,7 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     }
     let mut config = base_config(
         "Offset spectra: band drift with temperature",
-        "Raman shift (cm⁻¹)",
+        "Raman shift (cm$^{-1}$)",
         "Intensity (offset)",
     );
     config.line_offsets = Some(renderer::data_config::LineOffsets {
@@ -5106,7 +5106,9 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, LevelView, Transition,
     };
     let ink = Color::from_rgb8(70, 76, 90);
-    let label = |text: &str| Some(RichText::plain(text, ink, 11.0, ""));
+    // `$…$` spans are TeX: scripts are written as script segments, not as
+    // Unicode script characters (#357).
+    let label = |text: &str| Some(RichText::from_label(text, ink, 11.0, ""));
     let level = |id: &str, column: &str, energy: f64, text: Option<&str>| EnergyLevel {
         id: id.into(),
         column: column.into(),
@@ -5136,7 +5138,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ..level(id, "3P*", energy, None)
     };
     let levels = vec![
-        level("1s2", "1S", 0.0, Some("1s²")),
+        level("1s2", "1S", 0.0, Some("1s$^{2}$")),
         level("2s1S", "1S", 20.615_774_823, Some("2s")),
         level("3s1S", "1S", 22.920_317_359, Some("3s")),
         level("4s1S", "1S", 23.673_570_590, Some("4s")),
@@ -5186,8 +5188,8 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         limits: vec![IonizationLimit {
             id: "He II".into(),
             energy: 24.587_389_011,
-            label: Some(RichText::plain(
-                "He II 1s ²S  24.587 eV",
+            label: Some(RichText::from_label(
+                "He II 1s $^{2}$S  24.587 eV",
                 Color::from_rgb8(40, 50, 120),
                 11.0,
                 "",
