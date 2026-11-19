@@ -718,6 +718,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                     head_width_px: 4.0,
                     min_length_px: 0.0,
                     color_map: Some(VectorColorMap::Column("m".into())),
+                    auto_scale: false,
                 },
             }),
         ),

@@ -37,6 +37,7 @@ impl SeriesConfig {
                 style: VectorStyle::default(),
             }),
         )
+        .color(super::series::SERIES_INK)
     }
 
     /// Arrows in a 3D box: one per sample at `(x, y, z)` with the
@@ -64,6 +65,7 @@ impl SeriesConfig {
             }),
         )
         .z(z)
+        .color(super::series::SERIES_INK)
     }
 
     // Lines.

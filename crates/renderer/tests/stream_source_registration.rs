@@ -3,8 +3,6 @@
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::OnceLock;
-
 use renderer::default::default_config;
 use renderer::{
     Column, DataRenderType, DataScatterStyleConfig, FiggyError, LogicalColumn, Renderer,
@@ -13,13 +11,9 @@ use renderer::{
 };
 
 fn renderer() -> Renderer {
-    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = GPU.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
+    let (device, queue) = test_gpu::shared_device();
     Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )

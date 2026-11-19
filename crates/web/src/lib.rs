@@ -3849,6 +3849,7 @@ mod web {
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map,
+                auto_scale: false,
             };
             let matrix = |ids: &[&str], grid_layout| MatrixRef {
                 columns: ids.iter().map(|id| id.to_string()).collect(),

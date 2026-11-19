@@ -402,6 +402,118 @@ fn fit_vector_scale_targets_the_longest_vector() {
     ));
 }
 
+fn style_of(series: &SeriesConfig) -> &renderer::data_config::VectorStyle {
+    match &series.render_type {
+        DataRenderType::Vector(VectorSeries { style, .. }) => style,
+        other => panic!("not a vector field: {other:?}"),
+    }
+}
+
+// An auto-scaled vector series (the constructors' default, #357) fits its
+// longest vector to the spacing between its arrows over the data area; an
+// explicit scale, a data scale, zero vectors and other series stay. The fit
+// is idempotent, refuses streamed and unknown columns before any write, and
+// counts every column of a grid.
+#[test]
+fn fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing() {
+    let renderer = fit_renderer();
+    let chart = Chart::sized(800, 600);
+    let config = chart.config();
+    let area = config.data_area().unwrap().0;
+    let (width, height) = (f64::from(area.width), f64::from(area.height));
+    let mut series = vec![
+        SeriesConfig::vectors("auto", "t", "a", "u", "a"),
+        SeriesConfig::vectors("fixed", "t", "a", "u", "a")
+            .vector_scale(VectorScale::Pixels { px_per_unit: 3.0 }),
+        SeriesConfig::vectors("data", "t", "a", "u", "a")
+            .style_vectors(|style| style.scale = VectorScale::Data { factor: 1.0 }),
+        SeriesConfig::vectors("zero", "t", "a", "zero", "zero"),
+        SeriesConfig::line("l", "t", "a"),
+    ];
+    assert!(style_of(&series[0]).auto_scale, "on by default");
+    assert!(!style_of(&series[1]).auto_scale, "an explicit scale");
+    let before = series.clone();
+    renderer.fit_vector_scales(config, &mut series).unwrap();
+    let style = style_of(&series[0]);
+    assert!(style.auto_scale);
+    let target = style.auto_scale_target_px(11, width, height).unwrap();
+    assert!((scale_of(&series[0]) - target / 30f64.hypot(1.0)).abs() < 1e-12);
+    assert_eq!(series[1..], before[1..], "only the auto-scaled field moves");
+    let once = series.clone();
+    renderer.fit_vector_scales(config, &mut series).unwrap();
+    assert_eq!(series, once, "idempotent");
+
+    // A grid's arrows are every cell of its `u` columns.
+    let mut grid = vec![SeriesConfig::vectors_grid(
+        "g",
+        "pair",
+        "t",
+        MatrixRef::columns_are_x(["a", "b"]),
+        MatrixRef::columns_are_x(["t", "u"]),
+    )];
+    renderer.fit_vector_scales(config, &mut grid).unwrap();
+    let target = style_of(&grid[0])
+        .auto_scale_target_px(22, width, height)
+        .unwrap();
+    assert!((scale_of(&grid[0]) - target / 200f64.hypot(30.0)).abs() < 1e-12);
+
+    // Refusals change no series, not even the ones before the refused.
+    for bad in ["streamed", "nowhere"] {
+        let mut series = vec![
+            SeriesConfig::vectors("auto", "t", "a", "u", "a"),
+            SeriesConfig::vectors("bad", "t", "a", bad, "a"),
+        ];
+        let kept = series.clone();
+        assert!(matches!(
+            renderer.fit_vector_scales(config, &mut series),
+            Err(FiggyError::ColumnNotResident { .. } | FiggyError::UnknownColumn { .. })
+        ));
+        assert_eq!(series, kept, "{bad}");
+    }
+}
+
+// The installed whole-chart fit (`commit_auto_fit_all`, the WASM
+// `auto_fit_all`) also sizes the chart's auto-scaled arrows, writing the
+// scale into the chart's series: the SSOT says how long they draw (#357).
+#[test]
+fn the_installed_auto_fit_sizes_auto_scaled_arrows() {
+    let mut renderer = fit_renderer();
+    renderer.ensure_errorbar_extent_engine_blocking().unwrap();
+    let series = vec![
+        SeriesConfig::vectors("auto", "t", "a", "u", "a"),
+        SeriesConfig::vectors("fixed", "t", "a", "u", "a")
+            .vector_scale(VectorScale::Pixels { px_per_unit: 3.0 }),
+    ];
+    let id = renderer
+        .register_chart(Chart::sized(800, 600).config().clone(), series.clone())
+        .unwrap();
+    let ticket = renderer.begin_auto_fit_all(id, 0.05).unwrap();
+    let resolved = ticket.resolve_blocking().unwrap();
+    renderer.commit_auto_fit_all(resolved).unwrap();
+    let mut expected = series;
+    renderer
+        .fit_vector_scales(renderer.chart_config(id).unwrap(), &mut expected)
+        .unwrap();
+    let installed = renderer.chart_series(id).unwrap().to_vec();
+    assert_eq!(installed, expected);
+    assert!(scale_of(&installed[0]) > 0.5, "{:?}", installed[0]);
+    assert_eq!(scale_of(&installed[1]), 3.0);
+
+    // The registered chart draws what its SSOT says: its PNG export at 1x
+    // and 2x is the export of its config and series held by the caller.
+    let held = Chart::new(renderer.chart_config(id).unwrap().clone());
+    for scale in [1.0, 2.0] {
+        let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+        let registered = renderer
+            .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
+            .unwrap();
+        let own = renderer
+            .export_rgba_blocking(renderer::ExportSource::chart(&held, &installed), options)
+            .unwrap();
+        assert_eq!(registered.rgba, own.rgba, "{scale}x");
+    }
+}
+
 // Column-backed series have no count limit (rule 10): a candidate with many
 // series and overlay members fits them all.
 #[test]

@@ -2647,6 +2647,76 @@ fn a_theme_applies_to_the_charts_of_its_kind() {
     assert_eq!((&config, &series), (&declared, &declared_series));
 }
 
+// A contour without a fill is drawn on the plot background, so the
+// gallery's field theme inks its isolines and labels dark there and keeps
+// the white ink over a fill (#357). A mesh without a fill takes the dark
+// isolines too. The designed field themes draw labels without a plate; the
+// documented look puts a translucent plate behind its black labels.
+#[test]
+fn an_unfilled_contour_takes_the_themes_ink_for_the_paper() {
+    use crate::data_config::ContourLabelConfig;
+    let contours = |filled: bool| {
+        let series = SeriesConfig::contours("a", "x", "y", grid("z"), vec![0.25, 0.5])
+            .contour_labels(ContourLabelConfig::default());
+        if filled { series.filled() } else { series }
+    };
+    let theme = named(ChartKind::Field, "gallery");
+    let fields = &theme.series.fields;
+    assert_eq!(fields.contour_label_background, None);
+    let (mut filled, mut lines) = (contours(true), contours(false));
+    theme.style_series(&mut filled, 0);
+    theme.style_series(&mut lines, 0);
+    let (filled, lines) = (field_contour(&filled), field_contour(&lines));
+    assert_eq!(Some(filled.line.line_color), fields.contour_color);
+    assert_eq!(filled.labels.as_ref().unwrap().color, Color::WHITE);
+    assert_eq!(filled.labels.as_ref().unwrap().bg_color, None);
+    let dark = fields.unfilled_contour_color.expect("a dark isoline ink");
+    assert_eq!(lines.line.line_color, dark);
+    assert!(dark.r < 0.2 && dark.g < 0.2 && dark.b < 0.3 && dark.a > 0.5);
+    let label = lines.labels.as_ref().unwrap();
+    assert_eq!(Some(label.color), fields.unfilled_contour_label_color);
+    assert_eq!(label.bg_color, None);
+    assert_eq!(lines.line.line_width, filled.line.line_width);
+
+    // A theme without an unfilled ink inks both alike.
+    let midnight = named(ChartKind::Field, "midnight");
+    let (mut filled, mut lines) = (contours(true), contours(false));
+    midnight.style_series(&mut filled, 0);
+    midnight.style_series(&mut lines, 0);
+    assert_eq!(field_contour(&filled), field_contour(&lines));
+
+    // The gallery's mesh: white isolines over a fill, dark ones without.
+    let mesh_theme = named(ChartKind::TriMesh, "gallery");
+    let mesh_fields = &mesh_theme.series.fields;
+    assert!(mesh_fields.unfilled_contour_color.is_some());
+    assert_eq!(mesh_fields.contour_color, None);
+
+    // Every designed field theme draws its labels without a plate.
+    for kind in [
+        ChartKind::Field,
+        ChartKind::Polar,
+        ChartKind::TriMesh,
+        ChartKind::Surface3d,
+    ] {
+        for family in ThemeFamily::ALL {
+            let theme = family.theme(kind);
+            assert_eq!(
+                theme.series.fields.contour_label_background, None,
+                "{family:?} {kind}"
+            );
+        }
+    }
+
+    // The documented look: black labels on the default translucent plate.
+    let documented = named(ChartKind::Field, "default");
+    let mut lines = contours(false);
+    documented.style_series(&mut lines, 0);
+    assert_eq!(
+        field_contour(&lines).labels,
+        Some(ContourLabelConfig::default())
+    );
+}
+
 // A theme and its parts serialize behind the `serde` feature, for a host
 // that edits a theme as JSON (the browser's `theme(name)`): every member
 // and the documented looks read back equal. A kind serializes as its name.
@@ -2715,4 +2785,86 @@ fn a_theme_missing_fields_parses() {
         serde_json::from_str::<RadialTheme>("{}").unwrap(),
         RadialTheme::documented()
     );
+}
+
+/// Whether `palette` holds no colour twice.
+fn all_distinct(palette: &[Color]) -> bool {
+    palette
+        .iter()
+        .enumerate()
+        .all(|(i, a)| palette[i + 1..].iter().all(|b| a != b))
+}
+
+#[test]
+fn every_member_palette_has_eight_distinct_colours() {
+    // #357: no colour repeats within a chart of up to eight series, states
+    // or regions. An empty palette keeps the series' own colours.
+    for kind in ChartKind::ALL {
+        for (i, theme) in themes(kind).into_iter().enumerate() {
+            for (part, palette) in [
+                ("palette", &theme.series.palette),
+                ("states", &theme.series.range_bars.states),
+                ("regions", &theme.series.ternary.regions),
+            ] {
+                if palette.is_empty() && part != "palette" {
+                    continue;
+                }
+                assert!(
+                    palette.len() >= 8,
+                    "{kind:?} theme {i} {part} has {} colours",
+                    palette.len()
+                );
+                assert!(all_distinct(palette), "{kind:?} theme {i} {part} repeats");
+            }
+        }
+    }
+    for (name, theme) in radial_themes() {
+        if name == "default" {
+            // The documented radial look keeps every slice's own colour.
+            assert!(theme.palette.is_empty());
+            continue;
+        }
+        assert!(theme.palette.len() >= 8, "{name} radial palette is short");
+        assert!(
+            all_distinct(&theme.palette),
+            "{name} radial palette repeats"
+        );
+    }
+}
+
+#[test]
+fn filled_palettes_keep_the_designed_colours_first() {
+    // The Gallery line chart was designed with three colours: they keep
+    // their places, so one to three series look as they did.
+    let line = ThemeFamily::Gallery.theme(ChartKind::Line);
+    let designed = [
+        Color::from_rgb8(34, 104, 198),
+        Color::from_rgb8(225, 81, 79),
+        Color::from_rgb8(224, 123, 38),
+    ];
+    assert_eq!(&line.series.palette[..3], &designed);
+    let error_bars = ThemeFamily::Gallery.theme(ChartKind::ErrorBars);
+    assert_eq!(&error_bars.series.palette[..2], &[designed[0], designed[2]]);
+}
+
+#[test]
+fn with_palette_selects_a_preset() {
+    for cycle in crate::preset::ColorCycle::PRESETS {
+        let theme = ThemeFamily::Gallery
+            .theme(ChartKind::Line)
+            .with_palette(cycle);
+        assert_eq!(theme.series.palette, cycle.colors());
+        let mut series = [
+            SeriesConfig::line("a", "x", "y"),
+            SeriesConfig::line("b", "x", "y"),
+        ];
+        let mut config = crate::defaults::config();
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        let DataRenderType::Xy(xy) = &series[1].render_type else {
+            panic!("a line series");
+        };
+        assert_eq!(xy.line.as_ref().unwrap().line_color, cycle.color(1));
+    }
 }
