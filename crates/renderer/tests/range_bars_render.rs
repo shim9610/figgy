@@ -358,7 +358,7 @@ fn rows_take_their_colours_and_keep_every_interaction() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -393,7 +393,7 @@ fn rows_take_their_colours_and_keep_every_interaction() {
         chart.config_mut().picked_data = Some(selection("one", 1));
         let outlined = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -432,7 +432,7 @@ fn rows_take_their_colours_and_keep_every_interaction() {
     *fields(&mut plain).1 = RangeColor::ByRow { colors: Vec::new() };
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, std::slice::from_ref(&plain)),
+            renderer::ExportSource::chart(&chart, std::slice::from_ref(&plain)),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -444,14 +444,14 @@ fn rows_take_their_colours_and_keep_every_interaction() {
     // The SVG and the PDF embed the drawn data image.
     let svg = r
         .export_svg_blocking(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .unwrap();
     assert!(svg.contains("<image"), "the SVG embeds the data image");
     let pdf = r
         .export_pdf_blocking(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .unwrap();

@@ -117,7 +117,7 @@ build a timeline in the look of the common web timelines (#357):
 | Corner radius | 3 px, flat, no texture or gloss | Plotly and Vega-Lite square, Google Charts slightly rounded |
 | Gridlines | value gridlines only, pale grey | Vega-Lite and Google Charts grid the time axis only |
 | Frame | the open frame (`AxisPreset::OpenOutward`), light grey axis lines, no tick marks | Vega-Lite and Google Charts draw no box; the gridlines carry the values |
-| Layout | `LayoutState::NeedsFit`: the first default draw fits the margins to the row labels | every reference sizes the label band to its labels |
+| Layout | `LayoutState::Fitted`: the chart is created with its margins fitted to the row labels | every reference sizes the label band to its labels |
 
 Every choice is a stored field, so a saved timeline reads back with the
 same look, and the documented defaults (`SeriesConfig::range_bars`,

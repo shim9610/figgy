@@ -243,9 +243,10 @@ const TIMELINE_GRID: Color = Color::from_rgb8(225, 228, 233);
 ///   gridlines;
 /// - the open frame ([`AxisPreset::OpenOutward`]) with its axis lines in a
 ///   light grey and no tick marks: the gridlines carry the values;
-/// - `layout_state` is [`LayoutState::NeedsFit`], as a new chart's is: the
+/// - `layout_state` is [`LayoutState::Fitted`], as a new chart's is: the
 ///   row labels on the left are as wide as the host's task names, so the
-///   first default draw fits the layout to them.
+///   chart made from the config is created with its layout fitted to them,
+///   and its edits keep it fitted.
 ///
 /// Every choice is a stored field, so a saved timeline reads back with the
 /// same look; the documented default ([`default_config`]) is unchanged.
@@ -267,6 +268,6 @@ pub fn default_timeline_config() -> Config {
     grid.show_minor_x = false;
     grid.show_minor_y = false;
     grid.major_x_color = TIMELINE_GRID;
-    config.layout_state = LayoutState::NeedsFit;
+    config.layout_state = LayoutState::Fitted;
     config
 }
