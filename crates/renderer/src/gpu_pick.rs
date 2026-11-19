@@ -46,7 +46,7 @@ use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_
 pub(crate) use id_pass::{ID_PICK_MODULE, ID_PICK_VECTOR_MODULE, IdPickPipelines};
 pub use id_pass::{IdPickGeometry, IdPickHit, IdPickTicket};
 pub(crate) use nearest_pass::{NEAREST_PICK_MODULE, NearestPickPipelines};
-pub use nearest_pass::{NearestDatum, NearestPick, NearestPickTicket};
+pub use nearest_pass::{NearestDatum, NearestPick, NearestPickTicket, PICK_NEAREST_K};
 #[cfg(test)]
 use registry::GpuPickSeriesId;
 pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};

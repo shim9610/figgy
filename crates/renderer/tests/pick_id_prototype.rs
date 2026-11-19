@@ -28,6 +28,7 @@ mod scenes;
 
 use std::time::{Duration, Instant};
 
+use renderer::DataRenderType;
 use renderer::layout::Rect;
 use renderer::monotonic::MonotonicSlices;
 use renderer::renderer::{MonotonicChartId, MonotonicRange};
@@ -404,28 +405,30 @@ fn nearest_pick(
     }
 }
 
-/// The nearest-datum rule (#381, the maintainer's compute direction)
-/// against the exact picker on the gallery scenes: the series owning the
-/// datum nearest to the cursor within the reach, and that datum. Where they
-/// differ is reported by case, not failed:
-/// - `exact only`: the exact picker hits drawn ink with no datum within the
-///   reach (a line between its points, the rim of a big marker, an area, an
-///   error bar or a stem away from its anchor);
-/// - `nearest only`: a datum within the reach where nothing is drawn under
-///   the cursor within it (a dash gap, a hidden or clipped marker);
-/// - `series`: both answer, different series (a line under the cursor over
-///   another series' nearer point);
-/// - `index`: same series, another index.
+/// The maintainer's rule (#381) against today's picker on the gallery
+/// scenes. Today a click hits when the exact picker finds the cursor inside
+/// a drawn shape (`max_distance_px` 0). Under the rule, the cursor hits when
+/// the drawn pixel under it has data ink, and the hit is the nearest datum
+/// (the first of the [`renderer::PICK_NEAREST_K`] the kernel returns, with
+/// no reach), whichever series it belongs to. Data ink here is the export
+/// with the scene's series against the export without them (a channel
+/// difference of at least 6), which stands in for the panel's resolved
+/// data pixels. Only the point picker's families count as ink (the other
+/// families keep today's typed data picks), and 3D charts are skipped: this
+/// kernel places data with the 2D projection only. Reported, not failed:
+/// - hit/no-hit agreement with today;
+/// - where both hit, how often the nearest datum's series differs from
+///   today's series, and how often the same series answers another index.
 #[test]
 #[ignore = "measurement (#381): run in release with --ignored"]
-fn nearest_datum_vs_exact_picker_on_gallery_scenes() {
+fn nearest_k_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
     let step = env_f32("FIGGY_PICK_ID_STEP", 6.0);
-    let reach = env_f32("FIGGY_PICK_ID_REACH", 4.0);
     let mut rows = Vec::new();
+    let mut total = [0usize; 8];
     println!(
-        "| scene | positions | exact hits | agree | exact only | nearest only | series | index | exact ms | nearest ms |"
+        "| scene | positions | today hits | ink hits | hit/no-hit agree | ink only | today only | both: other series | both: same series, other index | K returned (min) | today ms | nearest ms |"
     );
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for kind in SceneKind::ALL {
         if skipped(kind).is_some() {
             continue;
@@ -433,72 +436,142 @@ fn nearest_datum_vs_exact_picker_on_gallery_scenes() {
         let mut r: Renderer = renderer();
         let scene = scenes::build(&mut r, kind, BIG_DATA_POINTS)
             .unwrap_or_else(|error| panic!("{}: {error}", kind.label()));
+        let chart = renderer::Chart::new(scene.config.clone());
+        let export = |r: &mut Renderer,
+                      series: &[renderer::SeriesConfig],
+                      monotonic: &[scenes::MonotonicData]| {
+            scenes::export_scene(r, &chart, series, monotonic, |r, source| {
+                r.export_rgba_blocking(source, renderer::ExportOptions::document(1.0))
+            })
+            .unwrap_or_else(|error| panic!("{}: {error}", kind.label()))
+        };
+        if scene.config.view_3d().is_some() {
+            println!(
+                "| {} | skipped: 3D (this kernel places data in 2D only) | | | | | | | | | | |",
+                kind.label()
+            );
+            continue;
+        }
+        // Data ink of the point picker's families only: the export without
+        // them keeps every other series (fields, bars, boxes, levels...),
+        // which today's typed data picks answer.
+        let point_family = |s: &renderer::SeriesConfig| {
+            matches!(
+                s.render_type,
+                DataRenderType::Xy(_)
+                    | DataRenderType::Radar(_)
+                    | DataRenderType::Ternary(_)
+                    | DataRenderType::Streamlines(_)
+                    | DataRenderType::MonotonicLine(_)
+                    | DataRenderType::Vector(_)
+            )
+        };
+        if !scene.series.iter().any(point_family) {
+            continue;
+        }
+        let others: Vec<renderer::SeriesConfig> = scene
+            .series
+            .iter()
+            .filter(|s| !point_family(s))
+            .cloned()
+            .collect();
+        let with = export(&mut r, &scene.series, &scene.monotonic);
+        let without = export(&mut r, &others, &[]);
         let target = register(&mut r, &scene);
         r.enable_gpu_picking().expect("picking");
         let document = scene.config.document_area();
+        assert_eq!(
+            (with.width, with.height),
+            (document.width, document.height),
+            "{}: the export covers the document",
+            kind.label()
+        );
         let Ok(area) = scene.config.data_area() else {
             continue;
         };
         let area: Rect = area.0;
-        let request = |x: f32, y: f32| GpuPickRequest {
+        let ink = |x: f32, y: f32| {
+            let px = (x - document.x as f32).floor() as u32;
+            let py = (y - document.y as f32).floor() as u32;
+            if px >= with.width || py >= with.height {
+                return false;
+            }
+            let i = ((py * with.width + px) * 4) as usize;
+            (0..4).any(|c| with.rgba[i + c].abs_diff(without.rgba[i + c]) >= 6)
+        };
+        let request = |x: f32, y: f32, reach: f32| GpuPickRequest {
             canvas_position_px: [x, y],
             display_panel_px: document,
             display_scale: 1.0,
             max_distance_px: reach,
         };
-        // positions, exact hits, agree, exact only, nearest only, series, index
-        let mut t = [0usize; 7];
-        let (mut exact_time, mut nearest_time) = (Duration::ZERO, Duration::ZERO);
+        // positions, today hits, ink hits, agree, ink only, today only,
+        // other series, other index
+        let mut t = [0usize; 8];
+        let mut min_k = usize::MAX;
+        let (mut today_time, mut nearest_time) = (Duration::ZERO, Duration::ZERO);
         let mut y = area.y as f32 + 0.5;
         while y < (area.y + area.height) as f32 {
             let mut x = area.x as f32 + 0.5;
             while x < (area.x + area.width) as f32 {
                 let started = Instant::now();
-                let exact = exact_pick(&mut r, target, request(x, y));
-                exact_time += started.elapsed();
-                let Ok(exact) = exact else {
+                let today = exact_pick(&mut r, target, request(x, y, 0.0));
+                today_time += started.elapsed();
+                let Ok(today) = today else {
                     x += step;
                     continue;
                 };
                 let started = Instant::now();
-                let nearest = nearest_pick(&mut r, target, request(x, y))
+                let nearest = nearest_pick(&mut r, target, request(x, y, 0.0))
                     .unwrap_or_else(|error| panic!("{}: {error}", kind.label()))
                     .nearest;
                 nearest_time += started.elapsed();
+                min_k = min_k.min(nearest.len());
+                let hit = ink(x, y);
                 t[0] += 1;
-                t[1] += usize::from(exact.is_some());
-                let case = match (&exact, &nearest) {
-                    (None, None) => 2,
-                    (Some(e), Some(n)) if e.series_id == n.series_id => {
-                        if e.point_index == n.point_index { 2 } else { 6 }
+                t[1] += usize::from(today.is_some());
+                t[2] += usize::from(hit);
+                match (&today, hit) {
+                    (None, false) => t[3] += 1,
+                    (None, true) => t[4] += 1,
+                    (Some(_), false) => t[5] += 1,
+                    (Some(e), true) => {
+                        t[3] += 1;
+                        match nearest.first() {
+                            Some(n) if n.series_id != e.series_id => t[6] += 1,
+                            Some(n) if n.point_index != e.point_index => t[7] += 1,
+                            Some(_) => {}
+                            None => t[6] += 1,
+                        }
                     }
-                    (Some(_), Some(_)) => 5,
-                    (Some(_), None) => 3,
-                    (None, Some(_)) => 4,
-                };
-                t[case] += 1;
+                }
                 x += step;
             }
             y += step;
         }
+        for (sum, value) in total.iter_mut().zip(t) {
+            *sum += value;
+        }
         let per = |time: Duration| time.as_secs_f64() * 1e3 / t[0].max(1) as f64;
-        if t[1] > 0 {
+        if t[1] + t[2] > 0 {
             println!(
-                "| {} | {} | {} | {:.2}% | {} | {} | {} | {} | {:.3} | {:.3} |",
+                "| {} | {} | {} | {} | {:.2}% | {} | {} | {} | {} | {} | {:.3} | {:.3} |",
                 kind.label(),
                 t[0],
                 t[1],
-                t[2] as f64 * 100.0 / t[0].max(1) as f64,
-                t[3],
+                t[2],
+                t[3] as f64 * 100.0 / t[0].max(1) as f64,
                 t[4],
                 t[5],
                 t[6],
-                per(exact_time),
+                t[7],
+                if min_k == usize::MAX { 0 } else { min_k },
+                per(today_time),
                 per(nearest_time),
             );
         }
         rows.push(format!(
-            "{},{},{},{},{},{},{},{},{:.4},{:.4}",
+            "{},{},{},{},{},{},{},{},{},{},{:.4},{:.4}",
             kind.label().replace(',', ";"),
             t[0],
             t[1],
@@ -507,20 +580,30 @@ fn nearest_datum_vs_exact_picker_on_gallery_scenes() {
             t[4],
             t[5],
             t[6],
-            per(exact_time),
+            t[7],
+            if min_k == usize::MAX { 0 } else { min_k },
+            per(today_time),
             per(nearest_time)
         ));
-        println!(
-            "  nearest-datum pipelines created: {}",
-            r.pick_nearest_pipelines_created()
-        );
     }
+    println!(
+        "TOTAL positions {} today hits {} ink hits {} agree {} ({:.2}%) ink only {} today only {} other series {} other index {}",
+        total[0],
+        total[1],
+        total[2],
+        total[3],
+        total[3] as f64 * 100.0 / total[0].max(1) as f64,
+        total[4],
+        total[5],
+        total[6],
+        total[7]
+    );
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ci-results");
     std::fs::create_dir_all(&out).ok();
     std::fs::write(
-        out.join("pick_nearest_agreement.csv"),
+        out.join("pick_nearest_k_agreement.csv"),
         format!(
-            "scene,positions,exact_hits,agree,exact_only,nearest_only,series,index,exact_ms,nearest_ms\n{}\n",
+            "scene,positions,today_hits,ink_hits,agree,ink_only,today_only,other_series,other_index,min_k,today_ms,nearest_ms\n{}\n",
             rows.join("\n")
         ),
     )

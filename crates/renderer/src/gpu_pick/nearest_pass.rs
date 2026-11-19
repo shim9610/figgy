@@ -1,20 +1,31 @@
-//! The nearest-datum pick (#381 prototype, the maintainer's compute
-//! direction): one compute kernel per column kind that places each datum
-//! with the draw's projection and reduces to the nearest one within the pick
-//! reach, per series and over the panel.
+//! The nearest-datum pick (#381 prototype, the maintainer's decision): the
+//! [`PICK_NEAREST_K`] data nearest to the cursor over every series of the
+//! panel, with no pick reach.
 //!
 //! The kernel (`gpu_pick/nearest_entry.wgsl`, the xy column kind) is
 //! spliced from the point picker's core and the shared projection
 //! fragments only: no marker shape, stroke, dash or style, so it has no
-//! variant. It runs in the exact pass's slot (the registry's dispatch and
-//! per-workgroup candidates) and its result goes through the point picker's
-//! per-series and cross-series reductions into storage buffers: no render
-//! target, so neither MSAA nor integer formats are involved. The readback
-//! holds the panel's nearest datum and each series' own nearest one.
+//! variant. It runs in the exact pass's dispatch layout; each workgroup
+//! keeps its K nearest (a per-workgroup top-K merged in shared memory) in a
+//! per-pick scratch buffer of K candidates per workgroup, and one merge
+//! dispatch folds every series' lists into the K nearest, sorted. Results
+//! live in storage buffers: no render target, so neither MSAA nor integer
+//! formats are involved, and no atomic serialises on one slot.
+//!
+//! Whether the cursor hits is not decided here: the maintainer's rule (#381)
+//! is the drawn pixel under the cursor (ink means a hit, and the hit is the
+//! first of the K); without ink there is no hit, and the K nearest are still
+//! returned.
 
-use super::engine::create_buffer_checked;
+use super::engine::{create_bind_group_checked, create_buffer_checked};
 use super::*;
 use crate::shader_assembly::{AssembledBySet, ShaderSet, assembled_by_set};
+
+/// How many nearest data a pick returns: the result size the maintainer
+/// chose (#381), not a cap on any data count. Every datum is measured; fewer
+/// come back only when fewer exist. `PICK_NEAREST_K` in
+/// `gpu_pick/nearest_entry.wgsl`.
+pub const PICK_NEAREST_K: usize = 10;
 
 /// The xy column kind's nearest-datum module.
 pub(crate) const NEAREST_PICK_MODULE: (&str, AssembledBySet) = (
@@ -28,17 +39,18 @@ pub(crate) const NEAREST_PICK_MODULE: (&str, AssembledBySet) = (
     ),
 );
 
-/// The nearest-datum pipeline of one shader set, created on first use.
+/// The nearest-datum pipelines of one shader set, created on first use:
+/// the per-series scan and the merge.
 pub struct NearestPickPipelines {
     set: ShaderSet,
-    pipeline: Option<wgpu::ComputePipeline>,
+    pipelines: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
 }
 
 impl NearestPickPipelines {
     pub(crate) fn new(set: ShaderSet) -> Self {
         Self {
             set,
-            pipeline: None,
+            pipelines: None,
         }
     }
 
@@ -46,14 +58,18 @@ impl NearestPickPipelines {
         self.set
     }
 
-    /// How many pipelines have been created (0 or 1: one per column kind).
+    /// How many pipelines have been created: the scan and the merge of the
+    /// one column kind.
     pub fn created(&self) -> usize {
-        usize::from(self.pipeline.is_some())
+        if self.pipelines.is_some() { 2 } else { 0 }
     }
 
-    pub(crate) fn ensure(&mut self, bundle: &PickPipelineBundle) -> &wgpu::ComputePipeline {
+    pub(crate) fn ensure(
+        &mut self,
+        bundle: &PickPipelineBundle,
+    ) -> &(wgpu::ComputePipeline, wgpu::ComputePipeline) {
         let set = self.set;
-        self.pipeline.get_or_insert_with(|| {
+        self.pipelines.get_or_insert_with(|| {
             let device = &bundle.device;
             let module = crate::gpu_compile::shader_module(
                 device,
@@ -63,25 +79,40 @@ impl NearestPickPipelines {
                 },
             );
             let base = crate::gpu_compile::workgroup_options(device);
-            crate::gpu_compile::compute_pipeline(
+            let options = || wgpu::PipelineCompilationOptions {
+                constants: &[],
+                zero_initialize_workgroup_memory: base.zero_initialize_workgroup_memory,
+            };
+            let scan = crate::gpu_compile::compute_pipeline(
                 device,
                 &wgpu::ComputePipelineDescriptor {
                     label: Some("figgy GPU pick nearest-datum pipeline"),
                     layout: Some(&bundle.exact_layout),
                     module: &module,
                     entry_point: Some("pick_nearest_points"),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[],
-                        zero_initialize_workgroup_memory: base.zero_initialize_workgroup_memory,
-                    },
+                    compilation_options: options(),
                     cache: None,
                 },
-            )
+            );
+            // The merge binds only the lists and the result (group 0,
+            // bindings 2 and 3), so its layout is the module's own.
+            let merge = crate::gpu_compile::compute_pipeline(
+                device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy GPU pick nearest-datum merge pipeline"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("pick_nearest_merge"),
+                    compilation_options: options(),
+                    cache: None,
+                },
+            );
+            (scan, merge)
         })
     }
 }
 
-/// One series' nearest datum within the reach.
+/// One of the nearest data.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NearestDatum {
     pub source_id: Option<String>,
@@ -91,19 +122,17 @@ pub struct NearestDatum {
     pub distance_px: f32,
 }
 
-/// A resolved nearest-datum pick: the panel's nearest datum (ties to the
-/// series drawn on top) and every series' own nearest one, in draw order.
+/// A resolved nearest-datum pick: up to [`PICK_NEAREST_K`] data, nearest
+/// first (an exact tie to the series drawn later, then the later index).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NearestPick {
-    pub nearest: Option<NearestDatum>,
-    pub per_series: Vec<NearestDatum>,
+    pub nearest: Vec<NearestDatum>,
 }
 
 /// A pending nearest-datum pick.
 pub struct NearestPickTicket {
     readback: Option<GpuReadback>,
     identities: Arc<[PickIdentity]>,
-    series: usize,
     pub(crate) monotonic: Vec<crate::renderer::MonotonicPickRows>,
     _charge: Option<GpuByteCharge>,
 }
@@ -113,7 +142,6 @@ impl NearestPickTicket {
         Self {
             readback: None,
             identities: Arc::from([]),
-            series: 0,
             monotonic: Vec::new(),
             _charge: None,
         }
@@ -137,28 +165,23 @@ impl NearestPickTicket {
     }
 
     fn finish(&mut self) -> Result<NearestPick, GpuPickError> {
-        let series = self.series;
         let Some(readback) = self.readback.as_mut() else {
             return Ok(NearestPick::default());
         };
         let size = CANDIDATE_BYTES as usize;
-        let mut decoded = Vec::new();
-        decoded
-            .try_reserve_exact(series + 1)
+        let mut decoded = [<PickCandidateGpu as bytemuck::Zeroable>::zeroed(); PICK_NEAREST_K];
+        readback.finish_checked(|mapped| {
+            for (index, slot) in decoded.iter_mut().enumerate() {
+                *slot = *bytemuck::from_bytes::<PickCandidateGpu>(&mapped[index * size..][..size]);
+            }
+        })?;
+        let mut nearest = Vec::new();
+        nearest
+            .try_reserve_exact(PICK_NEAREST_K)
             .map_err(|_| GpuPickError::AllocationFailed {
                 resource: "nearest pick result",
             })?;
-        readback.finish_checked(|mapped| {
-            for index in 0..=series {
-                decoded.push(*bytemuck::from_bytes::<PickCandidateGpu>(
-                    &mapped[index * size..][..size],
-                ));
-            }
-        })?;
-        let datum = |candidate: &PickCandidateGpu| -> Result<Option<NearestDatum>, GpuPickError> {
-            if candidate.valid != 1 {
-                return Ok(None);
-            }
+        for candidate in decoded.iter().filter(|c| c.valid == 1) {
             let identity = self
                 .identities
                 .get(candidate.series_order as usize)
@@ -170,41 +193,26 @@ impl NearestPickTicket {
             {
                 Some(rows) => match rows.logical(candidate.point_index as usize) {
                     Some(index) => index,
-                    None => return Ok(None),
+                    None => continue,
                 },
                 None => candidate.point_index as usize,
             };
-            Ok(Some(NearestDatum {
+            nearest.push(NearestDatum {
                 source_id: identity.source_id.clone(),
                 series_id: identity.series_id.clone(),
                 point_index,
                 distance_px: candidate.distance_px,
-            }))
-        };
-        let nearest = datum(&decoded[0])?;
-        let mut per_series = Vec::new();
-        per_series
-            .try_reserve_exact(series)
-            .map_err(|_| GpuPickError::AllocationFailed {
-                resource: "nearest pick result",
-            })?;
-        for candidate in &decoded[1..] {
-            if let Some(found) = datum(candidate)? {
-                per_series.push(found);
-            }
+            });
         }
-        Ok(NearestPick {
-            nearest,
-            per_series,
-        })
+        Ok(NearestPick { nearest })
     }
 }
 
 impl GpuPickEngine {
-    /// The nearest-datum pick of the registered series at `query`'s cursor,
-    /// within `query.max_distance_px`: the checks and query parameters of
-    /// [`Self::pick_with_arcs`], then the nearest-datum kernel in place of
-    /// the gate and exact passes, and the same reductions.
+    /// The [`PICK_NEAREST_K`] data nearest to `query`'s cursor over the
+    /// registered series, with no reach: the checks and query parameters of
+    /// [`Self::pick_with_arcs`], then the nearest-datum scan per series and
+    /// one merge.
     pub(crate) fn pick_nearest(
         &self,
         pipelines: &mut NearestPickPipelines,
@@ -220,14 +228,7 @@ impl GpuPickEngine {
             || display_scale <= 0.0
             || !cursor_x.is_finite()
             || !cursor_y.is_finite()
-            || !query.max_distance_px.is_finite()
-            || query.max_distance_px < 0.0
             || !(chart_width > 0.0 && chart_height > 0.0)
-        {
-            return Ok(NearestPickTicket::none());
-        }
-        if let Some([x, y, width, height]) = query.data_area_px
-            && !(cursor_x >= x && cursor_x <= x + width && cursor_y >= y && cursor_y <= y + height)
         {
             return Ok(NearestPickTicket::none());
         }
@@ -246,9 +247,15 @@ impl GpuPickEngine {
                 column_id: first.gpu.x_column.clone(),
             });
         }
-        let pipeline = pipelines.ensure(&self.bundle).clone();
+        let device = &self.bundle.device;
+        let (scan, merge) = pipelines.ensure(&self.bundle).clone();
         let members = members.min(self.registry.slots.len());
         let first_member = self.registry.slots.len() - members;
+        // Each series' lists: K candidates per workgroup, at an offset the
+        // device can bind.
+        let align = u64::from(device.limits().min_storage_buffer_offset_alignment);
+        let k = PICK_NEAREST_K as u64;
+        let mut scratch_bytes = 0u64;
         for (series_order, slot) in self.registry.slots.iter().enumerate() {
             Self::validate_series_columns(pool, slot)?;
             let series = &slot.gpu;
@@ -273,94 +280,130 @@ impl GpuPickEngine {
             self.bundle
                 .queue
                 .write_buffer(&series.query_params, 0, bytemuck::bytes_of(&params));
+            let groups = u64::from(series.gate_word_count.div_ceil(GPU_PICK_WORKGROUP_SIZE));
+            scratch_bytes =
+                scratch_bytes.div_ceil(align) * align + groups.max(1) * k * CANDIDATE_BYTES;
         }
-        let series_count = self.registry.slots.len();
         let tally = ChargeTally::new();
+        // Zeroed at creation: the alignment gaps read as no candidate.
+        let lists = create_buffer_checked(
+            &tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy GPU pick nearest-datum lists"),
+                size: scratch_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            },
+            "nearest pick lists",
+        )?;
+        let result = create_buffer_checked(
+            &tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("figgy GPU pick nearest-datum result"),
+                size: k * CANDIDATE_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+            "nearest pick result",
+        )?;
         let readback = create_buffer_checked(
             &tally,
-            &self.bundle.device,
+            device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick nearest-datum readback"),
-                size: CANDIDATE_BYTES * (1 + series_count as u64),
+                size: k * CANDIDATE_BYTES,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
             "nearest pick readback",
         )?;
-        let mut encoder =
-            self.bundle
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("figgy GPU pick nearest-datum encoder"),
-                });
-        encoder.clear_buffer(&self.registry.reduce.candidates, 0, None);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("figgy GPU pick nearest-datum encoder"),
+        });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("figgy GPU pick nearest-datum scan"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(&scan);
             pass.set_bind_group(2, &self.bundle.arc_placeholder, &[]);
+            let mut offset = 0u64;
             for slot in &self.registry.slots {
                 let series = &slot.gpu;
-                pass.set_bind_group(0, &series.query_data_bg, &[]);
+                offset = offset.div_ceil(align) * align;
+                let groups = u64::from(series.gate_word_count.div_ceil(GPU_PICK_WORKGROUP_SIZE));
+                let size = groups.max(1) * k * CANDIDATE_BYTES;
+                let data_bg = create_bind_group_checked(
+                    device,
+                    &wgpu::BindGroupDescriptor {
+                        label: Some("figgy GPU pick nearest-datum data bg"),
+                        layout: &self.bundle.query_data_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: pool.buffer().as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: series.gate_masks.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: &lists,
+                                    offset,
+                                    size: std::num::NonZeroU64::new(size),
+                                }),
+                            },
+                        ],
+                    },
+                    "nearest pick data bind group",
+                )?;
+                pass.set_bind_group(0, &data_bg, &[]);
                 pass.set_bind_group(1, &series.query_work_bg, &[]);
                 pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
+                offset += size;
             }
         }
         {
+            let merge_bg = create_bind_group_checked(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("figgy GPU pick nearest-datum merge bg"),
+                    layout: &merge.get_bind_group_layout(0),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: result.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: lists.as_entire_binding(),
+                        },
+                    ],
+                },
+                "nearest pick merge bind group",
+            )?;
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("figgy GPU pick nearest-datum per-series reduction"),
+                label: Some("figgy GPU pick nearest-datum merge"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.bundle.reduce);
-            for slot in &self.registry.slots {
-                pass.set_bind_group(0, &slot.gpu.reduce_bg, &[]);
-                pass.dispatch_workgroups(1, 1, 1);
-            }
-        }
-        for (index, slot) in self.registry.slots.iter().enumerate() {
-            encoder.copy_buffer_to_buffer(
-                &slot.gpu.result,
-                0,
-                &self.registry.reduce.candidates,
-                index as u64 * CANDIDATE_BYTES,
-                CANDIDATE_BYTES,
-            );
-            encoder.copy_buffer_to_buffer(
-                &slot.gpu.result,
-                0,
-                &readback,
-                (1 + index as u64) * CANDIDATE_BYTES,
-                CANDIDATE_BYTES,
-            );
-        }
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("figgy GPU pick nearest-datum cross-series reduction"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.bundle.reduce);
-            pass.set_bind_group(0, &self.registry.reduce.bind_group, &[]);
+            pass.set_pipeline(&merge);
+            pass.set_bind_group(0, &merge_bg, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(
-            &self.registry.reduce.final_result,
-            0,
-            &readback,
-            0,
-            CANDIDATE_BYTES,
-        );
+        encoder.copy_buffer_to_buffer(&result, 0, &readback, 0, k * CANDIDATE_BYTES);
         self.bundle.queue.submit(std::iter::once(encoder.finish()));
         Ok(NearestPickTicket {
             readback: Some(GpuReadback::map(
-                &self.bundle.device,
+                device,
                 &self.bundle.health,
                 &readback,
                 None,
             )),
             identities: Arc::clone(&self.registry.identities),
-            series: series_count,
             monotonic: Vec::new(),
             _charge: Some(tally.into_charge(&self.bundle.ledger, GpuResourceKind::Readback)),
         })
@@ -547,6 +590,7 @@ mod scale_tests {
                         .resolve_blocking()
                         .unwrap()
                         .nearest
+                        .first()
                         .map(|d| (d.point_index, d.distance_px));
                 };
                 let nearest_first = time(&mut nearest);
@@ -666,6 +710,7 @@ mod scale_tests {
             serde_json::to_vec(&serde_json::json!({
                 "source": NEAREST_PICK_MODULE.1.basic.source,
                 "candidate_bytes": CANDIDATE_BYTES,
+                "k": PICK_NEAREST_K,
                 "cases": cases,
             }))
             .unwrap(),

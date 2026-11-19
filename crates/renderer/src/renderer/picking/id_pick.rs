@@ -29,9 +29,10 @@ impl Renderer {
     }
 
     /// [`Self::pick_chart`] through the nearest-datum kernel (#381
-    /// prototype): the datum nearest to the cursor within
-    /// `request.max_distance_px`, by the draw's projection alone, and each
-    /// series' own nearest datum.
+    /// prototype): the [`crate::gpu_pick::PICK_NEAREST_K`] data nearest to
+    /// the cursor over the panel's series, placed by the draw's projection
+    /// alone, with no reach (`request.max_distance_px` is not used). Whether
+    /// the cursor hits is the drawn pixel's to decide, not this pick's.
     #[doc(hidden)]
     pub fn pick_chart_nearest_prototype(
         &mut self,
@@ -51,7 +52,7 @@ impl Renderer {
     }
 
     /// How many nearest-datum pipelines this renderer has created (#381
-    /// prototype): one per column kind.
+    /// prototype): the scan and the merge of the one column kind.
     #[doc(hidden)]
     pub fn pick_nearest_pipelines_created(&self) -> usize {
         self.picker
