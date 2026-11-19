@@ -83,13 +83,29 @@ and radar documents' `text_sizes`) are additive.
     along both sides of its arrow would be clipped; before, "728.1" in the
     He I diagram at 800 × 600 was cut at the left edge. Labels stay
     horizontal, as they always were.
+  - **A crowded fan's wavelength labels stand in one aligned column.**
+    Where every spot along a fan of transitions lies on another arrow or
+    label (the Ar I 1s4/1s5 → 2p fan), the labels move out of the fan
+    into one column beside it: one x, left-aligned, evenly spaced, in the
+    order of their arrows from the top. Each label is joined to the middle
+    of its own arrow by a thin leader in the arrow's colour. Before, the
+    labels sat at different stops along the steep arrows and read as a
+    slanted staircase on the arrows' ink. The column takes the side of
+    the fan, and the height within it, where it and its leaders lie on
+    the fewest strokes, labels and arrows, and only when that beats the
+    labels' places along the arrows. The leader is part of its label: the
+    label hits, selects and drags as before, and the leader follows it.
+    A dragged label keeps its place in the column, moved by its offset.
+    PNG, SVG and PDF draw the leader. No serialized field: a document
+    draws its labels at the new places and reads back unchanged.
   - Tests: `contours_draw_in_dark_ink` (`helpers/series.rs`),
     `the_host_default_separates_segments_and_rings`,
     `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
     `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`),
     `transition_labels_stay_inside_the_plot_and_off_other_labels` (He, Ar
     and Cu at their own size and at 800 × 600 in the Gallery theme, 1x and
-    2x; `tests/energy_levels_render.rs`) and
+    2x), `a_crowded_fan_sets_its_labels_in_a_column_with_leaders`
+    (`tests/energy_levels_render.rs`) and
     `crowded_radial_labels_prepare_and_remain_in_the_hit_map` (crowded
     inside labels move outside and stay hit and draggable at 1x and 2x)
     and `inner_sunburst_labels_read_upright_or_hide`

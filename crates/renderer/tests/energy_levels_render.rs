@@ -2577,3 +2577,111 @@ fn transition_labels_stay_inside_the_plot_and_off_other_labels() {
     }
     assert!(all.is_empty(), "{all:#?}");
 }
+
+// #357: the steep 1s4/1s5 fan of Ar I sets its wavelength labels in one
+// aligned column beside it: one x, even spacing, no two meeting, each with
+// a leader from its own arrow to its label. A label in the column picks as
+// itself, and dragged, it and its leader move together while the rest of
+// the column stays.
+#[test]
+fn a_crowded_fan_sets_its_labels_in_a_column_with_leaders() {
+    use renderer::energy_levels::{LabelPart, LevelHit};
+    use renderer::sink::{DrawnPart, Parts};
+    let mut r = renderer();
+    let scene = scenes::build(&mut r, scenes::SceneKind::EnergyLevelsAr, 1_000).expect("scene");
+    let mut checked = false;
+    each_level_panel(
+        &scene.config,
+        &scene.series,
+        |placement, levels, records, measure| {
+            let style = &levels.style;
+            let rects = |records: &EnergyLevelSeries| -> Vec<Option<renderer::layout::RectF>> {
+                let layout = placement.layout(records, style, measure);
+                (0..records.transitions.len())
+                    .map(|i| {
+                        placement
+                            .label(records, style, &layout, LabelPart::Transition, i, measure)
+                            .map(|t| t.rect())
+                    })
+                    .collect()
+            };
+            let leaders = |records: &EnergyLevelSeries| {
+                let mut segments = Vec::new();
+                let mut sink = Parts(&mut |part| {
+                    if let DrawnPart::Segment { a, b, width } = part
+                        && (width - 0.6).abs() < 1e-6
+                    {
+                        segments.push((a, b));
+                    }
+                });
+                placement.emit(records, style, measure, &mut sink);
+                segments
+            };
+            // A leader ends just off its label's near edge, at its middle.
+            let ends_at = |rect: renderer::layout::RectF, p: [f32; 2]| {
+                let mid = rect.y + rect.height / 2.0;
+                (p[1] - mid).abs() < 0.01
+                    && ((p[0] - (rect.x - 1.0)).abs() < 0.01
+                        || (p[0] - (rect.x + rect.width + 1.0)).abs() < 0.01)
+            };
+            let placed = rects(records);
+            // The column: the labels that share one left edge.
+            let mut by_x: Vec<(i64, usize)> = placed
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.map(|r| ((r.x * 10.0).round() as i64, i)))
+                .collect();
+            by_x.sort();
+            let Some(column) = by_x
+                .chunk_by(|a, b| a.0 == b.0)
+                .map(|run| run.iter().map(|(_, i)| *i).collect::<Vec<_>>())
+                .max_by_key(Vec::len)
+            else {
+                return;
+            };
+            if column.len() < 4 {
+                return;
+            }
+            checked = true;
+            let mut tops: Vec<f32> = column.iter().map(|&i| placed[i].unwrap().y).collect();
+            tops.sort_by(f32::total_cmp);
+            let steps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
+            assert!(
+                steps.iter().all(|s| (s - steps[0]).abs() < 1.0 && *s > 0.0),
+                "evenly spaced: {steps:?}"
+            );
+            let segments = leaders(records);
+            for &i in &column {
+                let rect = placed[i].unwrap();
+                assert!(
+                    segments.iter().any(|(_, b)| ends_at(rect, *b)),
+                    "transition {i} has a leader to its label"
+                );
+                let centre = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+                let hit = placement.pick(records, style, measure, centre, 4.0);
+                assert_eq!(
+                    hit.map(|h| h.0),
+                    Some(LevelHit::Label(LabelPart::Transition, i))
+                );
+            }
+            // Dragged, one label moves with its leader; the column stays.
+            let moved = column[1];
+            let mut dragged = records.clone();
+            dragged.drag_label(LabelPart::Transition, moved, 6.0, -5.0);
+            let after = rects(&dragged);
+            let (a, b) = (placed[moved].unwrap(), after[moved].unwrap());
+            assert!(
+                (b.x - a.x - 6.0).abs() < 0.01 && (b.y - a.y + 5.0).abs() < 0.01,
+                "{a:?} {b:?}"
+            );
+            for &i in column.iter().filter(|&&i| i != moved) {
+                assert_eq!(after[i], placed[i], "the rest of the column stays");
+            }
+            assert!(
+                leaders(&dragged).iter().any(|(_, p)| ends_at(b, *p)),
+                "the leader follows its label"
+            );
+        },
+    );
+    assert!(checked, "the Ar fan sets a column");
+}

@@ -36,6 +36,11 @@ pub(super) const MAX_LABEL_SHIFT: f32 = 1.5;
 /// ends spread over, and the most room between two of them, pixels.
 pub(super) const ARROW_SPREAD: f32 = 0.6;
 pub(super) const ARROW_STEP: f32 = 12.0;
+/// The weights a fan's label column is scored by (#357): a label or leader
+/// on a stroke or another label, and an arrow through a label.
+const HIT: usize = 100;
+const CROSS: usize = 3;
+
 /// Where along its arrow a transition label is tried, from the middle out
 /// in steps of a twentieth.
 pub(super) const LABEL_STOPS: [f32; 17] = [
@@ -66,6 +71,9 @@ pub struct LevelLayout {
     /// labels, which a bracket joins.
     brackets: Vec<(usize, usize)>,
     transition_spot: Vec<Option<([f32; 2], LevelLabelSide)>>,
+    /// Per transition: the point on its arrow a leader joins to its label
+    /// when the label stands in a fan's column (#357), else `None`.
+    transition_leader: Vec<Option<[f32; 2]>>,
     /// Per transition: the label [`Transition::drawn_label`] formatted
     /// from its wavelength this draw (#258), `None` for a host label or no
     /// label. The label text the raster builds, dropped with the layout.
@@ -457,7 +465,7 @@ impl LevelPlacement<'_> {
                 &mut level_side,
             );
         }
-        let transition_spot = self.place_transition_labels(
+        let (transition_spot, transition_leader) = self.place_transition_labels(
             records,
             &formatted,
             measure,
@@ -476,6 +484,7 @@ impl LevelPlacement<'_> {
             hidden,
             brackets,
             transition_spot,
+            transition_leader,
             formatted,
         }
     }
@@ -1111,7 +1120,10 @@ impl LevelPlacement<'_> {
         level_shift: &[[f32; 2]],
         level_side: &[LevelLabelSide],
         rect_of: &dyn Fn(usize, [f32; 2], LevelLabelSide) -> Option<crate::layout::RectF>,
-    ) -> Vec<Option<([f32; 2], LevelLabelSide)>> {
+    ) -> (
+        Vec<Option<([f32; 2], LevelLabelSide)>>,
+        Vec<Option<[f32; 2]>>,
+    ) {
         let items = records.levels.len() + records.bands.len();
         for index in (0..items).filter(|i| !hidden[*i]) {
             if let Some(rect) = rect_of(index, level_shift[index], level_side[index]) {
@@ -1130,6 +1142,12 @@ impl LevelPlacement<'_> {
             &obstacles[from..to.max(from)]
         };
         let mut transition_spot = vec![None; records.transitions.len()];
+        // Per transition: its label's rect and whether its spot of least
+        // cost still lies on another arrow or label (a crowded fan).
+        let mut placed_rect: Vec<Option<crate::layout::RectF>> =
+            vec![None; records.transitions.len()];
+        let mut crowded = vec![false; records.transitions.len()];
+        let plot = self.space.plot_rect();
         for (index, transition) in records.transitions.iter().enumerate() {
             let (Some(text), Some((tail, tip))) =
                 (transition_text(records, formatted, index), arrows[index])
@@ -1142,16 +1160,18 @@ impl LevelPlacement<'_> {
                     tail[1] + (tip[1] - tail[1]) * t,
                 ]
             };
+            // The label's own place along its arrow, before the host's
+            // offset: the search and the fan's column read it, so a label
+            // the host drags keeps the place it was dragged from.
             let block = |t: f32, side: LevelLabelSide| {
                 let p = at(t);
-                Self::label_block(text, measure, p, p[0], side, transition.label_offset).rect()
+                Self::label_block(text, measure, p, p[0], side, [0.0; 2]).rect()
             };
             // The cost of a spot: a label or stroke it overlaps weighs more
             // than every arrow it crosses together, so a crowded bundle
             // still keeps its labels apart. The first spot of least cost
             // wins; a label the host moved stays at the middle.
             let host_placed = transition.label_offset != [0.0; 2];
-            let plot = self.space.plot_rect();
             let cost = |t: f32, side: LevelLabelSide| -> usize {
                 let rect = block(t, side);
                 // A spot that the plot's edge would clip is taken only when
@@ -1182,21 +1202,22 @@ impl LevelPlacement<'_> {
                     .count();
                 hits * (arrows.len() + 1) + crossings
             };
-            let spot = if host_placed {
-                (at(0.5), LevelLabelSide::Right)
-            } else {
-                let mut best = (usize::MAX, 0.5, LevelLabelSide::Right);
-                'search: for &t in &LABEL_STOPS {
-                    for side in [LevelLabelSide::Right, LevelLabelSide::Left] {
-                        let c = cost(t, side);
-                        if c < best.0 {
-                            best = (c, t, side);
-                            if c == 0 {
-                                break 'search;
-                            }
+            let mut best = (usize::MAX, 0.5, LevelLabelSide::Right);
+            'search: for &t in &LABEL_STOPS {
+                for side in [LevelLabelSide::Right, LevelLabelSide::Left] {
+                    let c = cost(t, side);
+                    if c < best.0 {
+                        best = (c, t, side);
+                        if c == 0 {
+                            break 'search;
                         }
                     }
                 }
+            }
+            crowded[index] = best.0 != 0;
+            let spot = if host_placed {
+                (at(0.5), LevelLabelSide::Right)
+            } else {
                 (at(best.1), best.2)
             };
             let rect = {
@@ -1204,9 +1225,317 @@ impl LevelPlacement<'_> {
                 Self::label_block(text, measure, p, p[0], spot.1, transition.label_offset).rect()
             };
             placed_labels.push(rect);
+            placed_rect[index] = Some(rect);
             transition_spot[index] = Some(spot);
         }
-        transition_spot
+        let transition_leader = self.column_crowded_labels(
+            records,
+            formatted,
+            measure,
+            arrows,
+            &obstacles,
+            plot,
+            &crowded,
+            &mut placed_rect,
+            &mut transition_spot,
+        );
+        (transition_spot, transition_leader)
+    }
+
+    /// The labels of a crowded fan in one aligned column beside it (#357):
+    /// the transitions whose every spot along their arrow lies on another
+    /// arrow or label, grouped by the fans their arrows form, each group of
+    /// two or more stood in a column beside its fan, at one x, left-aligned,
+    /// evenly spaced and in the order of their arrows, each joined to its
+    /// own arrow by a leader. The column takes the side of the fan where it
+    /// lies inside the plot and on the fewest strokes, labels and arrows,
+    /// and only when that is fewer than the labels had along their arrows.
+    /// Writes the moved labels' spots and rects; returns, per transition,
+    /// the point on its arrow its leader starts from. A display parameter:
+    /// the labels' text and the arrows do not change.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    fn column_crowded_labels(
+        &self,
+        records: &EnergyLevelSeries,
+        formatted: &[Option<RichText>],
+        measure: &dyn crate::text::MeasureText,
+        arrows: &[Option<([f32; 2], [f32; 2])>],
+        obstacles: &[crate::layout::RectF],
+        plot: crate::layout::RectF,
+        crowded: &[bool],
+        placed_rect: &mut [Option<crate::layout::RectF>],
+        transition_spot: &mut [Option<([f32; 2], LevelLabelSide)>],
+    ) -> Vec<Option<[f32; 2]>> {
+        let n = records.transitions.len();
+        let mut leaders = vec![None; n];
+        // A label in a column the host dragged stays in it, moved by its
+        // offset: membership reads the labels' own places only.
+        let candidate = |i: usize| {
+            crowded[i] && arrows[i].is_some() && transition_text(records, formatted, i).is_some()
+        };
+        let bbox = |i: usize| {
+            arrows[i].map(|(a, b)| crate::layout::RectF {
+                x: a[0].min(b[0]),
+                y: a[1].min(b[1]),
+                width: (a[0] - b[0]).abs(),
+                height: (a[1] - b[1]).abs(),
+            })
+        };
+        let union = |a: crate::layout::RectF, b: crate::layout::RectF| {
+            let x = a.x.min(b.x);
+            let y = a.y.min(b.y);
+            crate::layout::RectF {
+                x,
+                y,
+                width: (a.x + a.width).max(b.x + b.width) - x,
+                height: (a.y + a.height).max(b.y + b.height) - y,
+            }
+        };
+        // The fans: crowded transitions whose arrows' boxes meet, grouped
+        // by a union over their indices.
+        let mut group: Vec<usize> = (0..n).collect();
+        let find = |group: &mut Vec<usize>, mut i: usize| {
+            while group[i] != i {
+                group[i] = group[group[i]];
+                i = group[i];
+            }
+            i
+        };
+        for i in (0..n).filter(|&i| candidate(i)) {
+            for j in (i + 1..n).filter(|&j| candidate(j)) {
+                if let (Some(a), Some(b)) = (bbox(i), bbox(j))
+                    && overlaps(a, b)
+                {
+                    let (ri, rj) = (find(&mut group, i), find(&mut group, j));
+                    group[rj] = ri;
+                }
+            }
+        }
+        for root in 0..n {
+            let mut members: Vec<usize> = (0..n)
+                .filter(|&i| candidate(i) && find(&mut group, i) == root)
+                .collect();
+            if members.len() < 2 {
+                continue;
+            }
+            let Some(fan) = members.iter().filter_map(|&i| bbox(i)).reduce(union) else {
+                continue;
+            };
+            // Each leader starts at the middle of its arrow, where the
+            // label stood along it; the labels take the order of those
+            // points from the top, so no two leaders cross.
+            let attach = |i: usize| {
+                arrows[i].map_or([0.0; 2], |(a, b)| {
+                    [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]
+                })
+            };
+            members.sort_by(|&a, &b| {
+                attach(a)[1]
+                    .total_cmp(&attach(b)[1])
+                    .then(attach(a)[0].total_cmp(&attach(b)[0]))
+            });
+            let mid_y = members.iter().map(|&i| attach(i)[1]).sum::<f32>() / members.len() as f32;
+            let sizes: Vec<crate::text::TextExtents> = members
+                .iter()
+                .filter_map(|&i| transition_text(records, formatted, i))
+                .map(|text| measure.measure_rich(text))
+                .collect();
+            if sizes.len() != members.len() {
+                continue;
+            }
+            let row = sizes
+                .iter()
+                .map(|e| e.ascent + e.descent)
+                .fold(0.0f32, f32::max)
+                + LABEL_STACK_GAP
+                + 1.0;
+            let width = sizes.iter().map(|e| e.width).fold(0.0f32, f32::max);
+            let height = row * members.len() as f32;
+            // The column stays within the fan's own height (a row past it
+            // at most) and inside the plot: below a fan may lie an axis
+            // break, where nothing is drawn.
+            let low = (fan.y - row).max(plot.y);
+            let high = (fan.y + fan.height + row).min(plot.y + plot.height) - height;
+            let clamp_top = |top: f32| top.min(high).max(low);
+            let others: Vec<crate::layout::RectF> = (0..n)
+                .filter(|i| !members.contains(i))
+                .filter_map(|i| placed_rect[i])
+                .collect();
+            // The rects of the column with its labels' left edge at `x` and
+            // its top at `top`.
+            let column = |x: f32, top: f32| -> Vec<crate::layout::RectF> {
+                sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(k, e)| crate::layout::RectF {
+                        x: x + LABEL_GAP,
+                        y: top + row * k as f32 + (row - e.ascent - e.descent) / 2.0,
+                        width: e.width,
+                        height: e.ascent + e.descent,
+                    })
+                    .collect()
+            };
+            // A label or leader on a stroke or label weighs far more than an
+            // arrow a label crosses.
+            let cost_of = |rects: &[crate::layout::RectF]| -> Option<usize> {
+                let mut cost = 0;
+                // A leader that crosses a stroke or a label weighs as much
+                // as a label on one.
+                for (&i, rect) in members.iter().zip(rects) {
+                    let from = attach(i);
+                    let mid = rect.y + rect.height / 2.0;
+                    let to = if from[0] <= rect.x {
+                        [rect.x - 1.0, mid]
+                    } else {
+                        [rect.x + rect.width + 1.0, mid]
+                    };
+                    cost += obstacles
+                        .iter()
+                        .chain(&others)
+                        .filter(|o| crosses(from, to, **o))
+                        .count()
+                        * HIT;
+                }
+                for rect in rects {
+                    if rect.x < plot.x - 0.5 || rect.x + rect.width > plot.x + plot.width + 0.5 {
+                        return None;
+                    }
+                    if rect.y < low - 0.5 || rect.y + rect.height > high + height + 0.5 {
+                        return None;
+                    }
+                    cost += obstacles.iter().filter(|o| overlaps(**o, *rect)).count() * HIT;
+                    cost += others.iter().filter(|o| overlaps(**o, *rect)).count() * HIT;
+                    cost += arrows
+                        .iter()
+                        .flatten()
+                        .filter(|(a, b)| crosses(*a, *b, *rect))
+                        .count()
+                        * CROSS;
+                }
+                Some(cost)
+            };
+            // Nearest first: beside the fan on its right then its left,
+            // centred on it, then moved up and down by whole rows, then
+            // further out past what the column met. The first place of
+            // least cost wins.
+            let near_x = [
+                fan.x + fan.width + LEADER_RUN,
+                fan.x - LEADER_RUN - LABEL_GAP * 2.0 - width,
+            ];
+            // The place of least score: its cost, then one point per row
+            // it lies from the fan's middle and per step further out, so a
+            // near column with an arrow through it beats a far clear one.
+            let mut best: Option<(usize, usize, f32, f32)> = None;
+            let consider =
+                |x: f32, top: f32, far: usize, best: &mut Option<(usize, usize, f32, f32)>| {
+                    if let Some(c) = cost_of(&column(x, top)) {
+                        let score = c + far;
+                        if best.is_none_or(|(b, _, _, _)| score < b) {
+                            *best = Some((score, c, x, top));
+                        }
+                    }
+                };
+            let centred = clamp_top(mid_y - height / 2.0);
+            let steps = 2 * members.len();
+            for step in 0..=steps {
+                let dy = row * step.div_ceil(2) as f32 * if step % 2 == 0 { 1.0 } else { -1.0 };
+                for (side, x) in near_x.into_iter().enumerate() {
+                    consider(
+                        x,
+                        clamp_top(centred + dy),
+                        step.div_ceil(2) + side,
+                        &mut best,
+                    );
+                }
+            }
+            // Past the strokes and labels the nearest columns met.
+            for x0 in near_x {
+                let met = column(x0, centred)
+                    .iter()
+                    .flat_map(|rect| {
+                        obstacles
+                            .iter()
+                            .chain(&others)
+                            .filter(move |o| overlaps(**o, *rect))
+                    })
+                    .map(|o| (o.x, o.x + o.width))
+                    .fold(None, |acc: Option<(f32, f32)>, (l, r)| {
+                        Some(acc.map_or((l, r), |(a, b)| (a.min(l), b.max(r))))
+                    });
+                if let Some((l, r)) = met {
+                    let x = if x0 > fan.x {
+                        r + LABEL_GAP
+                    } else {
+                        l - LABEL_GAP * 3.0 - width
+                    };
+                    for step in 0..=steps {
+                        let dy =
+                            row * step.div_ceil(2) as f32 * if step % 2 == 0 { 1.0 } else { -1.0 };
+                        consider(x, clamp_top(centred + dy), step.div_ceil(2) + 2, &mut best);
+                    }
+                }
+            }
+            let best = best.map(|(_, c, x, top)| (c, x, top));
+            let Some((cost, x, top)) = best else {
+                continue;
+            };
+            let before: usize = members
+                .iter()
+                .filter_map(|&i| placed_rect[i])
+                .map(|rect| {
+                    obstacles.iter().filter(|o| overlaps(**o, rect)).count() * HIT
+                        + arrows
+                            .iter()
+                            .flatten()
+                            .filter(|(a, b)| crosses(*a, *b, rect))
+                            .count()
+                            * CROSS
+                })
+                .sum();
+            if cost >= before {
+                continue;
+            }
+            for (k, (&i, rect)) in members.iter().zip(column(x, top)).enumerate() {
+                let y = top + row * k as f32 + row / 2.0;
+                transition_spot[i] = Some(([x, y], LevelLabelSide::Right));
+                placed_rect[i] = Some(rect);
+                leaders[i] = Some(attach(i));
+            }
+        }
+        leaders
+    }
+
+    /// The leader of transition row `index`'s label in `layout` (#357):
+    /// from the point on its arrow to the near edge of the label as drawn,
+    /// so it follows the label when the host drags it; `None` for a label
+    /// beside its arrow.
+    fn transition_leader(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        layout: &LevelLayout,
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let from = layout.transition_leader.get(index).copied().flatten()?;
+        let rect = self
+            .label(
+                records,
+                style,
+                layout,
+                LabelPart::Transition,
+                index,
+                measure,
+            )?
+            .rect();
+        let mid = rect.y + rect.height / 2.0;
+        let to = if from[0] <= rect.x {
+            [rect.x - 1.0, mid]
+        } else {
+            [rect.x + rect.width + 1.0, mid]
+        };
+        Some((from, to))
     }
 
     /// The arrow of transition row `index` in `layout`: its tail and its
@@ -1560,6 +1889,23 @@ impl LevelPlacement<'_> {
                         [base[0] - nx, base[1] - ny],
                     ],
                     color,
+                );
+            }
+        }
+        // The leaders of a fan's column of transition labels (#357), in
+        // each arrow's colour.
+        for (index, transition) in records.transitions.iter().enumerate() {
+            if let Some((a, b)) = self.transition_leader(records, style, &layout, index, measure) {
+                sink.stroke(
+                    slot,
+                    a,
+                    b,
+                    &StrokeStyle {
+                        width: 0.6,
+                        color: self.transition_color(style, transition),
+                        dash: &[],
+                        tag: "energy_transition_leader",
+                    },
                 );
             }
         }
