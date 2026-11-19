@@ -203,6 +203,69 @@ impl NearestPickTicket {
     }
 }
 
+/// The nearest-datum picks of every drawn layer at the cursor, in drawing
+/// order (#381): resolved into one [`NearestPick`] whose `per_series` lists
+/// every layer's series and whose `nearest` is the nearest of all, an exact
+/// tie going to the layer drawn later (on top).
+pub struct NearestLayersTicket {
+    layers: Vec<NearestPickTicket>,
+}
+
+impl NearestLayersTicket {
+    pub(crate) fn new(layers: Vec<NearestPickTicket>) -> Self {
+        Self { layers }
+    }
+
+    fn merge(
+        picks: impl Iterator<Item = Result<NearestPick, GpuPickError>>,
+    ) -> Result<NearestPick, GpuPickError> {
+        let mut merged = NearestPick::default();
+        for pick in picks {
+            let pick = pick?;
+            if let Some(found) = pick.nearest
+                && merged
+                    .nearest
+                    .as_ref()
+                    .is_none_or(|best| found.distance_px <= best.distance_px)
+            {
+                merged.nearest = Some(found);
+            }
+            merged
+                .per_series
+                .try_reserve(pick.per_series.len())
+                .map_err(|_| GpuPickError::AllocationFailed {
+                    resource: "nearest pick result",
+                })?;
+            merged.per_series.extend(pick.per_series);
+        }
+        Ok(merged)
+    }
+
+    /// Wait for every layer's pick, then merge them.
+    pub async fn resolve(self) -> Result<NearestPick, GpuPickError> {
+        let mut picks = Vec::new();
+        picks
+            .try_reserve_exact(self.layers.len())
+            .map_err(|_| GpuPickError::AllocationFailed {
+                resource: "nearest pick layers",
+            })?;
+        for ticket in self.layers {
+            picks.push(ticket.resolve().await);
+        }
+        Self::merge(picks.into_iter())
+    }
+
+    /// [`Self::resolve`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(self) -> Result<NearestPick, GpuPickError> {
+        Self::merge(
+            self.layers
+                .into_iter()
+                .map(NearestPickTicket::resolve_blocking),
+        )
+    }
+}
+
 impl GpuPickEngine {
     /// The nearest-datum pick of the registered series at `query`'s cursor,
     /// with no reach (`query.max_distance_px` is not used): the checks and

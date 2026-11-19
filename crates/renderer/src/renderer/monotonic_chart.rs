@@ -299,6 +299,18 @@ impl MonotonicChart<'_> {
             .pick_chart_id_prototype(self.id, request, geometry)
     }
 
+    /// [`Self::pick`] through the nearest-datum kernel over every drawn
+    /// layer at the cursor (#381 prototype).
+    #[doc(hidden)]
+    pub fn pick_nearest_layers_prototype(
+        &mut self,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::NearestLayersTicket, crate::gpu_pick::GpuPickError>
+    {
+        self.renderer
+            .pick_chart_nearest_layers_prototype(self.id, request)
+    }
+
     /// [`Self::pick`] through the nearest-datum kernel (#381 prototype).
     #[doc(hidden)]
     pub fn pick_nearest_prototype(

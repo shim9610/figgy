@@ -395,12 +395,12 @@ fn nearest_pick(
 ) -> Result<renderer::NearestPick, renderer::GpuPickError> {
     match target {
         Target::Chart(id) => r
-            .pick_chart_nearest_prototype(id, request)?
+            .pick_chart_nearest_layers_prototype(id, request)?
             .resolve_blocking(),
         Target::Monotonic(id) => r
             .monotonic_chart(id)
             .expect("monotonic chart")
-            .pick_nearest_prototype(request)?
+            .pick_nearest_layers_prototype(request)?
             .resolve_blocking(),
     }
 }
@@ -409,8 +409,9 @@ fn nearest_pick(
 /// scenes. Today a click hits when the exact picker finds the cursor inside
 /// a drawn shape (`max_distance_px` 0). Under the rule, the cursor hits when
 /// the drawn pixel under it has data ink, and the hit is the nearest datum
-/// over every series (each series' nearest, with no reach, then the
-/// nearest of those), whichever series it belongs to. Data ink here is the export
+/// over every series of every drawn layer at the cursor (overlays
+/// included: each series' nearest, with no reach, then the nearest of
+/// those), whichever series it belongs to. Data ink here is the export
 /// with the scene's series against the export without them (a channel
 /// difference of at least 6), which stands in for the panel's resolved
 /// data pixels. Only the point picker's families count as ink (the other

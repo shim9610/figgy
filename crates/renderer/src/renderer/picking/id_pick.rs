@@ -18,7 +18,7 @@ impl Renderer {
         geometry: crate::gpu_pick::IdPickGeometry,
     ) -> std::result::Result<crate::gpu_pick::IdPickTicket, crate::gpu_pick::GpuPickError> {
         let result = self
-            .pick_chart_prototype_unreported(id, request, PrototypePick::Id(geometry))
+            .pick_chart_prototype_unreported(id, request, PrototypePick::Id(geometry), None)
             .and_then(|ticket| match ticket {
                 PrototypeTicket::Id(ticket) => Ok(ticket),
                 PrototypeTicket::Nearest(_) => Err(crate::gpu_pick::GpuPickError::Internal(
@@ -41,7 +41,7 @@ impl Renderer {
     ) -> std::result::Result<crate::gpu_pick::NearestPickTicket, crate::gpu_pick::GpuPickError>
     {
         let result = self
-            .pick_chart_prototype_unreported(id, request, PrototypePick::Nearest)
+            .pick_chart_prototype_unreported(id, request, PrototypePick::Nearest, None)
             .and_then(|ticket| match ticket {
                 PrototypeTicket::Nearest(ticket) => Ok(ticket),
                 PrototypeTicket::Id(_) => Err(crate::gpu_pick::GpuPickError::Internal(
@@ -49,6 +49,81 @@ impl Renderer {
                 )),
             });
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    /// [`Self::pick_chart_nearest_prototype`] over every drawn pickable
+    /// layer at the cursor (#381, the maintainer's answer): the base layer
+    /// and its overlays, or, over a subplot, the subplot and its overlays,
+    /// each with its own axes. The ink a user sees is the composite of
+    /// those layers, so the nearest datum is searched in all of them. The
+    /// tickets are in drawing order; [`crate::gpu_pick::NearestLayersTicket`]
+    /// merges them (an exact tie to the layer drawn later, on top).
+    #[doc(hidden)]
+    pub fn pick_chart_nearest_layers_prototype(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::NearestLayersTicket, crate::gpu_pick::GpuPickError>
+    {
+        let result = self.pick_chart_nearest_layers_unreported(id, request);
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    fn pick_chart_nearest_layers_unreported(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::NearestLayersTicket, crate::gpu_pick::GpuPickError>
+    {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        let displayed = place_document(
+            &state.config,
+            request.display_scale,
+            request.display_panel_px,
+        );
+        let group = subplot_route(&state.config, &displayed, request.canvas_position_px)
+            .map_or_else(
+                || state.config.active_layer(),
+                |config| config.active_layer(),
+            );
+        let (first, overlays, subplot) = match group {
+            crate::LayerRef::Subplot(index) | crate::LayerRef::SubplotOverlay(index, _) => (
+                crate::LayerRef::Subplot(index),
+                state.config.subplots[index].config.overlays.len(),
+                Some(index),
+            ),
+            _ => (crate::LayerRef::Base, state.config.overlays.len(), None),
+        };
+        let mut tickets = Vec::new();
+        tickets.try_reserve_exact(1 + overlays).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "nearest pick layers",
+            }
+        })?;
+        for k in 0..=overlays {
+            let layer = match (k, subplot) {
+                (0, _) => first,
+                (k, Some(index)) => crate::LayerRef::SubplotOverlay(index, k - 1),
+                (k, None) => crate::LayerRef::Overlay(k - 1),
+            };
+            match self.pick_chart_prototype_unreported(
+                id,
+                request,
+                PrototypePick::Nearest,
+                Some(layer),
+            )? {
+                PrototypeTicket::Nearest(ticket) => tickets.push(ticket),
+                PrototypeTicket::Id(_) => {
+                    return Err(crate::gpu_pick::GpuPickError::Internal(
+                        "a nearest-datum pick returns a nearest-datum ticket",
+                    ));
+                }
+            }
+        }
+        Ok(crate::gpu_pick::NearestLayersTicket::new(tickets))
     }
 
     /// How many nearest-datum pipelines this renderer has created (#381
@@ -76,6 +151,7 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
         mode: PrototypePick,
+        layer: Option<crate::LayerRef>,
     ) -> std::result::Result<PrototypeTicket, crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
         self.admit_chart_shaders(id);
@@ -88,7 +164,16 @@ impl Renderer {
             request.display_scale,
             request.display_panel_px,
         );
-        let routed = subplot_route(&state.config, &displayed, request.canvas_position_px);
+        // A given layer is picked as if it were the active one; otherwise
+        // the active layer, routed to the subplot under the cursor.
+        let routed = match layer {
+            Some(layer) => {
+                let mut config = state.config.clone();
+                config.set_active_layer(layer);
+                Some(config)
+            }
+            None => subplot_route(&state.config, &displayed, request.canvas_position_px),
+        };
         if let Some(config) = &routed {
             displayed.active_layer = config.active_layer;
         }
