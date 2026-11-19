@@ -469,9 +469,10 @@ mod tests {
         bar.gap_px + bar.thickness_px + bar.axis.out_margin + bar.axis.major_tick_length
     }
 
-    // data_area() must be fully contained inside chart_area on success.
+    // data_area() must be fully contained inside chart_area on success, and
+    // all margin-contribution fields must be non-negative.
     #[test]
-    fn data_area_contained_in_chart_area() {
+    fn data_area_contained_in_chart_area_and_margins_non_negative() {
         let cfg = crate::defaults::config();
         let da = cfg.data_area().unwrap();
         let ca = &cfg.chart_area;
@@ -479,12 +480,7 @@ mod tests {
         assert!(da.y >= ca.y);
         assert!(da.x + da.width <= ca.x + ca.width);
         assert!(da.y + da.height <= ca.y + ca.height);
-    }
 
-    // All margin-contribution fields must be non-negative.
-    #[test]
-    fn margins_non_negative() {
-        let cfg = crate::defaults::config();
         let m = cfg.margins();
         assert!(m.top >= 0.0);
         assert!(m.bottom >= 0.0);
