@@ -492,8 +492,12 @@ fn a_family_with_its_own_frame_keeps_it() {
     theme
         .apply(&mut config, &mut series, ThemeScope::All)
         .unwrap();
-    assert!(config.bottom_x.line_visible && config.top_x.line_visible);
-    assert_eq!(config.bottom_x.tick, TickVisibility::Outside);
+    // The Grotrian frame (#357): the energy axis alone, the term columns
+    // named without a line or ticks.
+    assert!(config.left_y.line_visible && !config.top_x.line_visible);
+    assert!(!config.bottom_x.line_visible && config.bottom_x.label_style.label_visible);
+    assert_eq!(config.left_y.tick, TickVisibility::Outside);
+    assert_eq!(config.bottom_x.tick, TickVisibility::None);
     let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
         panic!("an energy-level series");
     };
@@ -501,6 +505,58 @@ fn a_family_with_its_own_frame_keeps_it() {
         levels.style.transition.color,
         theme.series.energy_levels.transition_color
     );
+}
+
+// #357: every Grotrian member draws its lines and arrowheads at one weight
+// and its texts on one scale; the documented look keeps each series' own
+// arrowheads.
+#[test]
+fn the_grotrian_members_share_their_weights_and_text_scale() {
+    for family in ThemeFamily::ALL {
+        let theme = family.theme(ChartKind::EnergyLevels);
+        let energy = theme.series.energy_levels;
+        let name = family.name();
+        assert_eq!(energy.level_width, 3.0, "{name}");
+        assert_eq!(energy.transition_width, 2.2, "{name}");
+        assert_eq!(
+            (energy.head_length, energy.head_width),
+            (Some(13.0), Some(10.0)),
+            "{name}"
+        );
+        assert_eq!(theme.chrome.tick_label_size, 20.0, "{name}");
+        let size = |look: Option<TextLook>| look.map(|look| look.size);
+        assert_eq!(size(energy.level_labels), Some(20.0), "{name}");
+        assert_eq!(size(energy.column_labels), Some(24.0), "{name}");
+        assert_eq!(size(energy.transition_labels), Some(18.0), "{name}");
+        let mut series = [SeriesConfig::energy_levels(
+            "e",
+            crate::defaults::energy_level_series(),
+        )];
+        theme
+            .apply(&mut Config::default(), &mut series, ThemeScope::All)
+            .unwrap();
+        let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
+            panic!("an energy-level series");
+        };
+        let arrow = &levels.style.transition;
+        assert_eq!(
+            (arrow.head_length, arrow.head_width),
+            (13.0, 10.0),
+            "{name}"
+        );
+    }
+    let documented = named(ChartKind::EnergyLevels, "default");
+    assert_eq!(documented.series.energy_levels.head_length, None);
+    let mut own = crate::defaults::energy_level_series();
+    own.style.transition.head_length = 21.0;
+    let mut series = [SeriesConfig::energy_levels("e", own)];
+    documented
+        .apply(&mut Config::default(), &mut series, ThemeScope::All)
+        .unwrap();
+    let DataRenderType::EnergyLevels(levels) = &series[0].render_type else {
+        panic!("an energy-level series");
+    };
+    assert_eq!(levels.style.transition.head_length, 21.0);
 }
 
 // A chart without a selection gets the highlight look only when it differs
@@ -869,6 +925,71 @@ fn the_range_bar_family_recolours_directions_and_states() {
         assert_eq!(style.color, states[k % states.len()]);
     }
     assert_eq!(progress.as_ref().unwrap().remaining_opacity, 0.35);
+}
+
+// A series coloured by row (#357) takes the palette as its row colours,
+// every family and the documented look alike; the colouring stays by row.
+#[test]
+fn a_series_coloured_by_row_takes_the_palette() {
+    for theme in themes(ChartKind::RangeBars) {
+        let mut series =
+            SeriesConfig::range_bars("a", "i", "start", "end").range_colors(RangeColor::ByRow {
+                colors: vec![Color::BLACK],
+            });
+        theme.style_series(&mut series, 0);
+        let DataRenderType::RangeBars(RangeBarSeries {
+            color_by: RangeColor::ByRow { colors },
+            ..
+        }) = &series.render_type
+        else {
+            panic!("the colouring stays by row");
+        };
+        assert_eq!(colors, &theme.series.palette);
+    }
+}
+
+// A range bar theme draws no gridlines along a categorical position axis
+// (they would cross the bars' middles) and keeps the value gridlines; a
+// numeric position axis (a candlestick's time) keeps its gridlines.
+#[test]
+fn range_bar_themes_keep_only_the_value_gridlines_on_a_category_axis() {
+    use crate::data_config::{BarGroups, CategoryBarDirection};
+    let horizontal = BarGroups {
+        direction: CategoryBarDirection::Horizontal,
+        ..crate::defaults::bar_groups()
+    };
+    for theme in themes(ChartKind::RangeBars) {
+        // A timeline: rows on `left_y`.
+        let mut config = Config::default();
+        config.bar_groups = Some(horizontal);
+        config.left_y.categories = categorical().bottom_x.categories;
+        let mut series = [SeriesConfig::range_bars("a", "i", "start", "end")];
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        assert!(!config.grid.show_major_y && !config.grid.show_minor_y);
+        assert_eq!(config.grid.show_major_x, theme.chrome.grid.major_x.show);
+        // A waterfall: steps on `bottom_x`.
+        let mut config = categorical();
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        assert!(!config.grid.show_major_x && !config.grid.show_minor_x);
+        assert_eq!(config.grid.show_major_y, theme.chrome.grid.major_y.show);
+        // Candles on a time axis keep the theme's grid.
+        let mut config = Config::default();
+        let mut candles = [SeriesConfig::range_bars("a", "i", "start", "end")
+            .style_range_bars(|bars| bars.slot_width = Some(1.0))];
+        theme
+            .apply(&mut config, &mut candles, ThemeScope::All)
+            .unwrap();
+        assert_eq!(config.grid.show_major_x, theme.chrome.grid.major_x.show);
+        assert_eq!(config.grid.show_major_y, theme.chrome.grid.major_y.show);
+    }
+    // The gallery's range bars: the open frame without tick marks.
+    let theme = named(ChartKind::RangeBars, "gallery");
+    assert_eq!(theme.chrome.axis_preset, AxisPreset::OpenOutward);
+    assert!(!theme.chrome.ticks);
 }
 
 // The document base: a transparent background, an open frame without tick
@@ -1252,9 +1373,28 @@ fn a_parallel_chart_frames_its_axes_and_sizes_their_names() {
     let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series[0].render_type else {
         panic!("a parallel series");
     };
-    assert_eq!(line.line_color, palette_color(&theme, 0));
+    // The rows at half opacity, each tick label on a box of the paper
+    // colour, a colourbar long enough to read (#357).
+    assert_eq!(
+        line.line_color,
+        Color {
+            a: 0.5,
+            ..palette_color(&theme, 0)
+        }
+    );
     assert_eq!(line.line_width, 1.2);
+    let paper = theme.chrome.background.unwrap();
+    assert_eq!(
+        config.parallel().unwrap().label_backdrop,
+        Some(Color { a: 0.8, ..paper })
+    );
+    assert_eq!(theme.chrome.colorbar.length, 0.6);
     valid_on(&config, &series);
+    for family in ["gallery", "cool-slate", "warm-paper"] {
+        let part = named(ChartKind::Parallel, family).series.parallel;
+        assert_eq!(part.line_opacity, Some(0.5), "{family}");
+        assert!(part.label_backdrop.is_some(), "{family}");
+    }
 
     // The documented look changes nothing on a default parallel chart.
     let mut config = categorical();
@@ -1734,8 +1874,26 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
         children: vec![slice("child")],
         ..slice("root")
     }];
-    ThemeFamily::Gallery.radial().apply(&mut chart);
+    let midnight = ThemeFamily::Midnight.radial();
+    assert_eq!(midnight.child_tint, None);
+    midnight.apply(&mut chart);
     assert_eq!(chart.slices[0].children[0].color, Color::BLACK);
+    // The gallery's children follow their branch's colour, paler (#357):
+    // a recoloured branch no longer keeps children in the host's colours.
+    let mut chart = crate::defaults::radial_chart();
+    chart.slices = vec![RadialSlice {
+        children: vec![slice("child")],
+        ..slice("root")
+    }];
+    let gallery = ThemeFamily::Gallery.radial();
+    gallery.apply(&mut chart);
+    let (root, child) = (chart.slices[0].color, chart.slices[0].children[0].color);
+    assert_eq!(root, gallery.palette[0]);
+    assert!(light(child) > light(root));
+    assert!(
+        child.b > child.r,
+        "the child keeps the branch's hue: {child:?}"
+    );
     // A sunburst draws flat, so it keeps its top view under a tilted theme
     // and stays a valid document under every theme.
     for (name, theme) in radial_themes() {
@@ -2739,6 +2897,26 @@ fn a_theme_round_trips_through_json() {
         let back: RadialTheme = serde_json::from_str(&json).unwrap();
         assert_eq!(back, theme, "radial {name}");
     }
+}
+
+// #357: an energy-level theme saved before the arrowhead fields reads them
+// as `None`, so it keeps each series' own arrowheads as it did.
+#[cfg(feature = "serde")]
+#[test]
+fn an_energy_level_theme_without_arrowheads_keeps_the_series_own() {
+    let member = ThemeFamily::Gallery.theme(ChartKind::EnergyLevels);
+    let mut json = serde_json::to_value(&member).unwrap();
+    let energy = json["series"]["energy_levels"].as_object_mut().unwrap();
+    assert!(energy.remove("head_length").is_some() && energy.remove("head_width").is_some());
+    let back: Theme = serde_json::from_value(json).unwrap();
+    assert_eq!(back.series.energy_levels.head_length, None);
+    assert_eq!(back.series.energy_levels.head_width, None);
+    let documented = serde_json::to_value(named(ChartKind::EnergyLevels, "default")).unwrap();
+    assert!(
+        documented["series"]["energy_levels"]
+            .get("head_length")
+            .is_none()
+    );
 }
 
 // A theme object saved before a field was added still parses: every field

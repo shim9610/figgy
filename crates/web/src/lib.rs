@@ -71,6 +71,16 @@ fn default_config_json() -> Result<String, String> {
     serde_json::to_string(&renderer::default::default_config()).map_err(|e| e.to_string())
 }
 
+/// The JSON of [`renderer::default::config_for_series`] for the series
+/// list JSON `series_json`, what the `default_config_for_series` binding
+/// returns. The error is the JSON parse error.
+#[cfg(any(target_arch = "wasm32", test))]
+fn default_config_for_series_json(series_json: &str) -> Result<String, String> {
+    let series: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(series_json).map_err(|e| e.to_string())?;
+    serde_json::to_string(&renderer::default::config_for_series(&series)).map_err(|e| e.to_string())
+}
+
 /// The normalized form of the config JSON `json`, what the
 /// `normalize_config` binding returns: the config read and written back, so
 /// every optional field it omits takes its documented default and every
@@ -1818,6 +1828,40 @@ mod tests {
         let report: serde_json::Value =
             serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
         assert_eq!(report, serde_json::json!({ "valid": true, "errors": [] }));
+    }
+
+    #[test]
+    fn default_config_for_series_json_frames_each_family() {
+        let config = |series: &[renderer::SeriesConfig]| -> renderer::Config {
+            let json =
+                super::default_config_for_series_json(&serde_json::to_string(series).unwrap())
+                    .unwrap();
+            serde_json::from_str(&json).unwrap()
+        };
+        let framed = |preset| {
+            let mut config = renderer::default::default_config();
+            config.apply_axis_preset(preset);
+            config
+        };
+        let feynman =
+            renderer::SeriesConfig::feynman("d", renderer::feynman::FeynmanSeries::default());
+        let levels = renderer::SeriesConfig::energy_levels(
+            "e",
+            renderer::energy_levels::EnergyLevelSeries::default(),
+        );
+        assert_eq!(config(&[feynman]), framed(renderer::AxisPreset::Hidden));
+        assert_eq!(config(&[levels]), framed(renderer::AxisPreset::Grotrian));
+        assert_eq!(config(&[]), renderer::default::default_config());
+        assert_eq!(
+            config(&[renderer::SeriesConfig::line("l", "x", "y")]),
+            renderer::default::default_config()
+        );
+        assert!(super::default_config_for_series_json("{").is_err());
+        // The returned config is a valid document.
+        let json = super::default_config_for_series_json("[]").unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
+        assert_eq!(report["valid"], true);
     }
 
     #[test]
@@ -3914,6 +3958,8 @@ mod web {
                 config.left_y.max = 1.0;
                 config.left_y.categories = None;
                 config.set_parallel(Some(ParallelOptions {
+                    names_on_top: false,
+                    label_backdrop: None,
                     axes: (0..AXES).map(|_| ParallelAxis::new(0.0, 10.0)).collect(),
                 }));
             }
@@ -4179,6 +4225,40 @@ mod web {
                         "progress",
                         "category_id",
                     ]),
+                },
+                SelectionScene {
+                    name: "row-coloured range bars",
+                    columns: vec![
+                        column("rpos", &[0.0, 1.0, 2.0]),
+                        column("rend", &[4.0, 5.0, 6.0]),
+                        column("rstart", &[1.0, 2.0, 3.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: three_categories,
+                    series: series(
+                        "rows",
+                        "rpos",
+                        "rend",
+                        DataRenderType::RangeBars(RangeBarSeries {
+                            color: Color::from_rgb8(40, 120, 200),
+                            style: bar_style(),
+                            start: "rstart".into(),
+                            whiskers: None,
+                            color_by: RangeColor::ByRow {
+                                colors: vec![
+                                    Color::from_rgb8(40, 120, 200),
+                                    Color::from_rgb8(200, 80, 40),
+                                ],
+                            },
+                            progress: None,
+                            connector: None,
+                            slot_width: None,
+                            labels: CategoryBarSeriesLabels::default(),
+                        }),
+                    ),
+                    pick: bin("rows", 2),
+                    keys: keys(&["position", "end", "start", "category_id"]),
                 },
                 SelectionScene {
                     name: "box record with every field",
@@ -4497,6 +4577,15 @@ mod web {
                         ("progress", 0.5),
                     ] {
                         assert_eq!(details[role], value, "{role}");
+                    }
+                }
+                // Colour by row (#357) reads no column: no colour role.
+                if scene.name.starts_with("row-coloured") {
+                    for (role, value) in [("position", 2.0), ("end", 6.0), ("start", 3.0)] {
+                        assert_eq!(details[role], value, "{role}");
+                    }
+                    for absent in ["state", "total"] {
+                        assert!(details.get(absent).is_none(), "{absent}");
                     }
                 }
                 if scene.name.starts_with("parallel") {

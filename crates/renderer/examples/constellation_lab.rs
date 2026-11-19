@@ -224,7 +224,7 @@ impl CallbackTrait for LabCallback {
             let series = build_series(&state.series, &state.styles);
             let mut items = [ChartDrawItem {
                 view: &mut state.view,
-                chart: &state.chart,
+                chart: &mut state.chart,
                 series: &series,
             }];
             state.renderer.prepare(&mut items)

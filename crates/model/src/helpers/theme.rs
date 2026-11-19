@@ -40,8 +40,8 @@ use crate::config::{
 use crate::data_config::{
     BoxPlotOverride, BoxPlotTarget, BoxPoints, BoxSeries, CategoryBarDirection,
     CategoryBarOverride, CategoryBarSeries, CategoryBarTarget, DataRenderType, FieldSeries,
-    HistogramSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, SeriesConfig, TernarySeries,
-    VectorSeries, Violin, ViolinBody, ViolinHalf,
+    HistogramSeries, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, SeriesConfig,
+    TernarySeries, VectorSeries, Violin, ViolinBody, ViolinHalf,
 };
 use crate::feynman::{ParticleLine, Wiggle};
 use crate::layer::LayerRef;
@@ -357,7 +357,8 @@ pub struct RadarTheme {
 /// are the colours that carry a bar's meaning, the whiskers, the connector
 /// and the unfinished part of a bar with progress. The theme never chooses
 /// how a series is coloured ([`crate::data_config::RangeColor`]): it
-/// recolours the colouring the series has.
+/// recolours the colouring the series has. A series coloured by row takes
+/// the theme's [`SeriesTheme::palette`] as its row colours.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -405,6 +406,14 @@ pub struct TernaryTheme {
 pub struct ParallelTheme {
     /// The size of the axis names, the labels of the category axis.
     pub name_size: f32,
+    /// The box behind every parallel axis's tick label
+    /// ([`crate::parallel::ParallelOptions::label_backdrop`]); `None` draws
+    /// none.
+    pub label_backdrop: Option<Color>,
+    /// The opacity of every row in its colour; `None` keeps each row's own
+    /// alpha. A row coloured through the colourbar takes its alpha from the
+    /// map.
+    pub line_opacity: Option<f32>,
 }
 
 /// 3D surfaces and their lighting response.
@@ -436,6 +445,12 @@ pub struct EnergyLevelTheme {
     pub limit_width: f32,
     pub transition_color: Color,
     pub transition_width: f32,
+    /// The transition arrowheads' length and width, logical pixels (#357);
+    /// `None` keeps each series' own.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub head_length: Option<f32>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub head_width: Option<f32>,
     pub band_fill: Color,
     /// The level labels; `None`, here and below, keeps each text's own
     /// colour and size.
@@ -477,6 +492,10 @@ pub struct FeynmanTheme {
     pub head_length: f32,
     pub head_width: f32,
     pub dot_radius: f32,
+    /// The factor the labels are drawn at (`FeynmanStyle::label_scale`):
+    /// the label looks below give the stored size, and the series draws it
+    /// this much larger, as it draws a label the host adds later.
+    pub label_scale: f32,
     /// The colour of photon and graviton lines; `None`, here and below,
     /// keeps each line's own colour.
     pub photon: Option<Color>,
@@ -1068,6 +1087,8 @@ impl Theme {
                 },
                 parallel: ParallelTheme {
                     name_size: config.bottom_x.label_style.font_size,
+                    label_backdrop: crate::defaults::parallel_options().label_backdrop,
+                    line_opacity: None,
                 },
                 surfaces: SurfaceTheme {
                     material: surface.material,
@@ -1083,6 +1104,8 @@ impl Theme {
                     limit_width: levels.limit.width,
                     transition_color: levels.transition.color,
                     transition_width: levels.transition.width,
+                    head_length: None,
+                    head_width: None,
                     band_fill: levels.band.fill,
                     level_labels: None,
                     transition_labels: None,
@@ -1100,6 +1123,7 @@ impl Theme {
                     head_length: feynman.head_length,
                     head_width: feynman.head_width,
                     dot_radius: feynman.dot_radius,
+                    label_scale: feynman.label_scale,
                     photon: None,
                     gluon: None,
                     boson: None,
@@ -1506,6 +1530,12 @@ impl Theme {
                 style.limit.width = energy.limit_width;
                 style.transition.color = energy.transition_color;
                 style.transition.width = energy.transition_width;
+                if let Some(length) = energy.head_length {
+                    style.transition.head_length = length;
+                }
+                if let Some(width) = energy.head_width {
+                    style.transition.head_width = width;
+                }
                 style.band.fill = energy.band_fill;
                 if let (Some(look), Some(labels)) =
                     (energy.transition_labels, &mut style.wavelength_labels)
@@ -1545,6 +1575,7 @@ impl Theme {
                 style.head_length = feynman.head_length;
                 style.head_width = feynman.head_width;
                 style.dot_radius = feynman.dot_radius;
+                style.label_scale = feynman.label_scale;
                 if let Some(look) = feynman.vertex_labels {
                     for label in (diagram.vertices.iter_mut()).filter_map(|v| v.label.as_mut()) {
                         self.style_text(label, look.color, look.size);
@@ -1576,9 +1607,15 @@ impl Theme {
             }
             // The line width is set above; a streamline's arrowheads keep
             // their size, which follows its spacing.
+            // The rows' opacity in their colour (#357); a row coloured
+            // through the colour column takes the map's alpha.
+            DataRenderType::Parallel(ParallelSeries { line, .. }) => {
+                if let Some(opacity) = theme.parallel.line_opacity {
+                    line.line_color.a = opacity;
+                }
+            }
             DataRenderType::Streamlines(_)
             | DataRenderType::MonotonicLine(_)
-            | DataRenderType::Parallel(_)
             | DataRenderType::RgbImage(_) => {}
         }
         if let DataRenderType::RangeBars(RangeBarSeries {
@@ -1608,6 +1645,12 @@ impl Theme {
                         for (k, style) in styles.iter_mut().enumerate() {
                             style.color = range.states[k % range.states.len()];
                         }
+                    }
+                }
+                // One colour per row: the rows take the palette.
+                RangeColor::ByRow { colors } => {
+                    if !theme.palette.is_empty() {
+                        colors.clone_from(&theme.palette);
                     }
                 }
             }
@@ -1689,15 +1732,30 @@ impl Theme {
     /// The frame of the chart `layer` names: a family's own frame when the
     /// chart draws one, the chrome's otherwise.
     fn frame_for(&self, config: &Config, series: &[SeriesConfig], layer: LayerRef) -> AxisPreset {
+        self.family_frame(config, series, layer)
+            .unwrap_or(self.chrome.axis_preset)
+    }
+
+    /// The frame of a family that draws one of its own, when the chart
+    /// `layer` names draws it: the first Feynman or energy-level series
+    /// drawn there decides (`series.feynman.axis_preset`,
+    /// `series.energy_levels.axis_preset`). `None` for every other chart.
+    /// Shared by [`Self::apply`] and [`crate::default::config_for_series`].
+    pub(crate) fn family_frame(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+        layer: LayerRef,
+    ) -> Option<AxisPreset> {
         let on_layer = |item: &&SeriesConfig| drawn_on(config, layer, &item.series_id);
-        for item in series.iter().filter(on_layer) {
-            match item.render_type {
-                DataRenderType::Feynman(_) => return self.series.feynman.axis_preset,
-                DataRenderType::EnergyLevels(_) => return self.series.energy_levels.axis_preset,
-                _ => {}
-            }
-        }
-        self.chrome.axis_preset
+        series
+            .iter()
+            .filter(on_layer)
+            .find_map(|item| match item.render_type {
+                DataRenderType::Feynman(_) => Some(self.series.feynman.axis_preset),
+                DataRenderType::EnergyLevels(_) => Some(self.series.energy_levels.axis_preset),
+                _ => None,
+            })
     }
 
     /// The chrome of one chart: its own axes, titles, grid, legend,
@@ -1752,6 +1810,9 @@ impl Theme {
             names.line_visible = config.top_x.line_visible;
             names.tick = config.top_x.tick.clone();
             names.label_style.font_size = self.series.parallel.name_size;
+            if let Some(parallel) = config.parallel_mut() {
+                parallel.label_backdrop = self.series.parallel.label_backdrop;
+            }
         }
         // An energy-level chart names its term columns on `bottom_x`.
         if self.kind == ChartKind::EnergyLevels {
@@ -1772,6 +1833,9 @@ impl Theme {
         }
         self.style_text(&mut config.chart_title.text, chrome.ink, chrome.title_size);
         self.style_grid(&mut config.grid);
+        if self.kind == ChartKind::RangeBars {
+            hide_category_grid(config);
+        }
         let colormap = match &mut config.colorbar {
             Some(bar) => {
                 bar.colormap = self.series.fields.colormap.clone();
@@ -2002,6 +2066,21 @@ impl RadialTheme {
             );
             self.tint_children(&mut child.children, child.color, tint);
         }
+    }
+}
+
+/// A range bar chart's gridlines along a categorical position axis are
+/// off: they would run through the bars' middles (a timeline's rows, a
+/// waterfall's steps). The value axis keeps its gridlines.
+fn hide_category_grid(config: &mut Config) {
+    let horizontal = config.effective_bar_groups().direction == CategoryBarDirection::Horizontal;
+    let grid = &mut config.grid;
+    if horizontal && config.left_y.categories.is_some() {
+        grid.show_major_y = false;
+        grid.show_minor_y = false;
+    } else if !horizontal && config.bottom_x.categories.is_some() {
+        grid.show_major_x = false;
+        grid.show_minor_x = false;
     }
 }
 

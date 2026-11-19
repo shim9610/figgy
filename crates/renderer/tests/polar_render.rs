@@ -644,7 +644,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
 fn unsupported_series_and_overlays_are_explicit_errors() {
     let mut renderer = renderer();
     upload(&mut renderer, vec![0.0, 90.0, 180.0], vec![0.2, 0.6, 1.0]);
-    let chart = bare_chart(PolarOptions::default());
+    let mut chart = bare_chart(PolarOptions::default());
     let histogram = SeriesConfig {
         series_id: "bins".into(),
         source_id: None,
@@ -667,7 +667,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     };
     match renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[histogram]),
+            renderer::ExportSource::chart(&mut chart, &[histogram]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -684,14 +684,14 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     }
     let mut stepped = line_style(2.0);
     stepped.interpolation = LineInterpolation::StepPost;
-    let arc = bare_chart(PolarOptions {
+    let mut arc = bare_chart(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 4 },
         ..PolarOptions::default()
     });
     assert!(matches!(
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&arc, &[line("step", stepped)]),
+                renderer::ExportSource::chart(&mut arc, &[line("step", stepped)]),
                 renderer::ExportOptions::panel(1.0)
             )
             .block_on(),
@@ -701,7 +701,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     overlay.config_mut().overlays.push(OverlayLayer::default());
     match renderer
         .export_rgba(
-            renderer::ExportSource::chart(&overlay, &[scatter("points", 4.0)]),
+            renderer::ExportSource::chart(&mut overlay, &[scatter("points", 4.0)]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -716,7 +716,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     assert!(matches!(
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&log_angle, &[scatter("points", 4.0)]),
+                renderer::ExportSource::chart(&mut log_angle, &[scatter("points", 4.0)]),
                 renderer::ExportOptions::panel(1.0)
             )
             .block_on(),
@@ -726,7 +726,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     assert!(
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[scatter("points", 4.0)]),
+                renderer::ExportSource::chart(&mut chart, &[scatter("points", 4.0)]),
                 renderer::ExportOptions::panel(1.0)
             )
             .block_on()
@@ -764,7 +764,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
     let series = [scatter("points", 8.0), polar_points];
     let document = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&parent, &series),
+            renderer::ExportSource::chart(&mut parent, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -869,7 +869,7 @@ fn grid_axes_and_labels_draw_rings_spokes_and_angle_formats_at_both_scales() {
     // The 2x export doubles every position.
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1196,7 +1196,10 @@ fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
     // 2x: the same rings, at twice the pixels.
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&adaptive, &series),
+            renderer::ExportSource::chart(
+                &mut renderer::Chart::new(adaptive.config().clone()),
+                &series,
+            ),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()

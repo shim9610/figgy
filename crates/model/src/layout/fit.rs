@@ -164,6 +164,9 @@ impl Config {
         for (side, comps) in new_components.iter() {
             write_side(self, side, comps);
         }
+        // The data area is placed where the caller put it: a later draw
+        // keeps it (#357).
+        self.layout_state = crate::config::LayoutState::Fixed;
         Ok(())
     }
 

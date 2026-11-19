@@ -697,12 +697,12 @@ fn a_polar_subplot_draws_its_own_rose() {
         marker: None,
         text_scale: Default::default(),
     });
-    let chart = Chart::new(parent);
+    let mut chart = Chart::new(parent);
     let series = [bars("one", RED), bars("two", BLUE)];
     for scale in [1.0, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -770,7 +770,7 @@ fn a_horizontal_group_on_a_polar_chart_is_refused() {
     );
     assert!(
         r.export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0)
         )
         .block_on()

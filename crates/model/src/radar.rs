@@ -223,6 +223,17 @@ pub struct RadarChart {
     pub font_family: String,
     /// Base font size of labels, in logical pixels.
     pub font_size: f32,
+    /// The text sizes by role (#357, [`crate::DocumentTextSizes`]): the
+    /// title, the axis titles, the tick labels and the legend. `None` (key
+    /// absent in JSON, every document written before the field) draws every
+    /// text at `font_size` and the title half as large again; the Rust
+    /// `Default` sets the documented Cartesian chart's sizes
+    /// ([`crate::DocumentTextSizes::CARTESIAN`]).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text_sizes: Option<crate::DocumentTextSizes>,
     /// Colour of every text.
     pub text_color: Color,
     /// The frame's clear colour.
@@ -238,12 +249,20 @@ impl RadarChart {
     }
     /// The title to draw: `chart_title`, or the legacy `title` in the chart
     /// font and colour.
+    /// The text sizes the document draws with (#357): `text_sizes`, or every
+    /// role at `font_size` with the title half as large again
+    /// ([`crate::DocumentTextSizes::resolved`]).
+    pub fn resolved_text_sizes(&self) -> crate::DocumentTextSizes {
+        crate::DocumentTextSizes::resolved(self.text_sizes.as_ref(), self.font_size)
+    }
+
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
         crate::BoundedTitleOptions::resolved(
             self.chart_title.as_ref(),
             &self.title,
             &self.font_family,
             self.font_size,
+            self.text_sizes.as_ref(),
             self.text_color,
         )
     }
@@ -308,7 +327,8 @@ impl RadarChart {
         {
             return Err(crate::RuleKind::RadarChartSeriesStyle);
         }
-        if !range(self.font_size, 8.0, 32.0)
+        if !(range(self.font_size, 8.0, 32.0)
+            && self.text_sizes.is_none_or(|sizes| sizes.is_valid()))
             || !color(self.text_color)
             || !color(self.background)
             || self.label_decimals > 6
@@ -454,7 +474,20 @@ mod tests {
                 "series":[{"id":"s","label":"S","values":[1,2,3],"color":{"r":1,"g":1,"b":1,"a":1}}]}"#,
         )
         .unwrap();
-        assert_eq!(minimal, chart());
+        // A document without `text_sizes` keeps the legacy single size
+        // (#357); the Rust default carries the Cartesian sizes.
+        assert_eq!(minimal.text_sizes, None);
+        assert_eq!(
+            chart().text_sizes,
+            Some(crate::DocumentTextSizes::CARTESIAN)
+        );
+        assert_eq!(
+            minimal,
+            RadarChart {
+                text_sizes: None,
+                ..chart()
+            }
+        );
         let series_target = serde_json::to_string(&RadarTarget::series("s")).unwrap();
         assert_eq!(series_target, r#"{"series_id":"s"}"#);
     }

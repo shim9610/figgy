@@ -47,6 +47,9 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         line_offsets,
         plot_background,
         background,
+        // Who owns the layout: the margins it chose are drawn through the
+        // axes, the title and the legend above; the state draws nothing.
+        layout_state: _,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x

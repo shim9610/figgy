@@ -339,7 +339,7 @@ fn bar_labels_sit_at_the_bar_ends_as_the_former_chart_placed_them() {
         CategoryBarDirection::Vertical,
         CategoryBarDirection::Horizontal,
     ] {
-        let chart = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
+        let mut chart = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
         let series = [
             bars("one", RED, direction, CategoryBarLabels::Outside, &one),
             bars("two", BLUE, direction, CategoryBarLabels::Outside, &two),
@@ -347,7 +347,7 @@ fn bar_labels_sit_at_the_bar_ends_as_the_former_chart_placed_them() {
         for scale in SCALES {
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -402,7 +402,7 @@ fn bar_labels_sit_at_the_bar_ends_as_the_former_chart_placed_them() {
     }
     // A stack's segments that fit their labels show them inside, in white.
     let direction = CategoryBarDirection::Vertical;
-    let chart = bar_chart(CategoryBarMode::Stacked, direction, (0.0, 50.0));
+    let mut chart = bar_chart(CategoryBarMode::Stacked, direction, (0.0, 50.0));
     let series = [
         bars("one", RED, direction, CategoryBarLabels::Auto, &one),
         bars("two", BLUE, direction, CategoryBarLabels::Auto, &two),
@@ -410,7 +410,7 @@ fn bar_labels_sit_at_the_bar_ends_as_the_former_chart_placed_them() {
     for scale in SCALES {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -458,7 +458,7 @@ fn bar_labels_sit_at_the_bar_ends_as_the_former_chart_placed_them() {
 fn a_label_draws_its_own_string_and_an_empty_one_draws_nothing() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
+    let mut chart = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
     let series = [bars(
         "two",
         BLUE,
@@ -470,7 +470,7 @@ fn a_label_draws_its_own_string_and_an_empty_one_draws_nothing() {
     for scale in SCALES {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -521,7 +521,7 @@ fn a_label_draws_its_own_string_and_an_empty_one_draws_nothing() {
 fn a_dragged_label_moves_by_its_offset_at_1x_and_2x() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
+    let mut chart = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
     let still = [bars(
         "two",
         BLUE,
@@ -538,14 +538,14 @@ fn a_dragged_label_moves_by_its_offset_at_1x_and_2x() {
     for scale in SCALES {
         let before = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &still),
+                renderer::ExportSource::chart(&mut chart, &still),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let after = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &dragged),
+                renderer::ExportSource::chart(&mut chart, &dragged),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -656,7 +656,7 @@ fn box_labels_sit_beside_the_median() {
         for scale in SCALES {
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -718,7 +718,7 @@ fn box_labels_sit_beside_the_median() {
         // (left, or above), the second one's after it, away from the
         // group's centre. The middle category keeps both off the data
         // area's edges.
-        let chart = box_chart(direction);
+        let mut chart = box_chart(direction);
         let mut first = boxes(direction, &["", "30", ""]);
         first.series_id = "box-a".into();
         let mut second = boxes(direction, &["", "31", ""]);
@@ -737,7 +737,7 @@ fn box_labels_sit_beside_the_median() {
         }
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[first, second]),
+                renderer::ExportSource::chart(&mut chart, &[first, second]),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -902,12 +902,12 @@ fn radar_label_near(
 #[test]
 fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
     let mut r = renderer();
-    let chart = radar_chart();
+    let mut chart = radar_chart();
     let series = [radar(RadarLabels::Values)];
     for scale in SCALES {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -938,7 +938,7 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
     let all = (0, 0, WIDTH, HEIGHT);
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &emphasized),
+            renderer::ExportSource::chart(&mut chart, &emphasized),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -955,7 +955,7 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
     });
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&selected, &emphasized),
+            renderer::ExportSource::chart(&mut selected, &emphasized),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -964,7 +964,7 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
     emphasized[0].series_id = "other".into();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&selected, &emphasized),
+            renderer::ExportSource::chart(&mut selected, &emphasized),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1028,7 +1028,7 @@ enum Spot {
 #[test]
 fn radar_labels_of_two_series_move_only_where_they_touch() {
     let mut r = renderer();
-    let chart = radar_chart();
+    let mut chart = radar_chart();
     let values = [RADAR, RADAR_B];
     let ids = ["radar", "radar.b"];
     // Per series and spoke: top, right, bottom, left.
@@ -1045,7 +1045,7 @@ fn radar_labels_of_two_series_move_only_where_they_touch() {
                 let series = only_label(&two_radars(), k, i);
                 let img = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportSource::chart(&mut chart, &series),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
@@ -1130,7 +1130,7 @@ fn a_moved_radar_label_is_outlined_where_it_is_drawn() {
             chart.config_mut().picked_data = None;
             let plain = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1146,7 +1146,7 @@ fn a_moved_radar_label_is_outlined_where_it_is_drawn() {
             });
             let selected = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1173,14 +1173,14 @@ fn twenty_labelled_radar_series_keep_their_labels_next_to_their_vertices() {
         r.add_column(&id, &col(vec![value(k); 4])).unwrap();
         series.push(radar_series(&id, &id, &[value(k); 4], RadarLabels::Values));
     }
-    let chart = radar_chart();
+    let mut chart = radar_chart();
     for scale in SCALES {
         for k in [0, 10, M - 1] {
             for i in 0..4 {
                 let only = only_label(&series, k, i);
                 let img = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &only),
+                        renderer::ExportSource::chart(&mut chart, &only),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
@@ -1222,7 +1222,7 @@ fn the_selected_label_is_outlined_by_its_frame() {
         chart.config_mut().picked_data = None;
         let plain = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1238,7 +1238,7 @@ fn the_selected_label_is_outlined_by_its_frame() {
         });
         let selected = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1387,7 +1387,7 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
     for scale in SCALES {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportSource::chart(&mut parent, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1461,7 +1461,7 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
 fn a_label_picks_with_its_series_and_category_over_the_data_under_it() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = bar_chart(CategoryBarMode::Stacked, direction, (0.0, 40.0));
+    let mut chart = bar_chart(CategoryBarMode::Stacked, direction, (0.0, 40.0));
     let one = ["10", "20", "5"];
     let series = [
         bars("one", RED, direction, CategoryBarLabels::Inside, &one),
@@ -1476,7 +1476,7 @@ fn a_label_picks_with_its_series_and_category_over_the_data_under_it() {
     for scale in SCALES {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1623,9 +1623,9 @@ fn an_edge_bar_label_flips_inside_its_end() {
         CategoryBarDirection::Vertical,
         CategoryBarDirection::Horizontal,
     ] {
-        let roomy = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 40.0));
+        let mut roomy = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 40.0));
         // `20` ends a few pixels short of the edge; `10` and `15` have room.
-        let edge = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 21.0));
+        let mut edge = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 21.0));
         let series = [bars(
             "two",
             BLUE,
@@ -1637,7 +1637,7 @@ fn an_edge_bar_label_flips_inside_its_end() {
             let case = format!("{direction:?} {scale}x");
             let roomy_img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&roomy, &series),
+                    renderer::ExportSource::chart(&mut roomy, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1646,7 +1646,7 @@ fn an_edge_bar_label_flips_inside_its_end() {
                 .expect("the label with room");
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&edge, &series),
+                    renderer::ExportSource::chart(&mut edge, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1721,7 +1721,7 @@ fn an_edge_box_label_flips_to_the_other_side() {
             let everywhere = |img: &RasterImage| (0, 0, img.width, img.height);
             let roomy_img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&roomy, &series),
+                    renderer::ExportSource::chart(&mut roomy, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1730,7 +1730,7 @@ fn an_edge_box_label_flips_to_the_other_side() {
                 bbox(&roomy_img, everywhere(&roomy_img), is_ink_core).expect("the label with room");
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&edge, &series),
+                    renderer::ExportSource::chart(&mut edge, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1797,7 +1797,7 @@ fn an_edge_radar_label_flips_inward() {
     // right one at its middle, its label well inside the ring.
     const EDGE: [f64; 4] = [0.7, 0.35, 0.7, 0.4];
     r.add_column("radar.edge", &col(EDGE.to_vec())).unwrap();
-    let roomy = radar_chart();
+    let mut roomy = radar_chart();
     let mut edge = radar_chart();
     edge.set_y_range(0.0, 0.7);
     let series = [radar(RadarLabels::Values)];
@@ -1806,14 +1806,14 @@ fn an_edge_radar_label_flips_inward() {
     for scale in SCALES {
         let roomy_img = r
             .export_rgba(
-                renderer::ExportSource::chart(&roomy, &series),
+                renderer::ExportSource::chart(&mut roomy, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&edge, &edge_series),
+                renderer::ExportSource::chart(&mut edge, &edge_series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1938,7 +1938,10 @@ fn three_hundred_value_labels_draw_pick_and_drag() {
     for scale in SCALES {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &still),
+                renderer::ExportSource::chart(
+                    &mut renderer::Chart::new(chart.config().clone()),
+                    &still,
+                ),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1988,14 +1991,20 @@ fn three_hundred_value_labels_draw_pick_and_drag() {
     for scale in SCALES {
         let before = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &still),
+                renderer::ExportSource::chart(
+                    &mut renderer::Chart::new(chart.config().clone()),
+                    &still,
+                ),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let after = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &dragged),
+                renderer::ExportSource::chart(
+                    &mut renderer::Chart::new(chart.config().clone()),
+                    &dragged,
+                ),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()

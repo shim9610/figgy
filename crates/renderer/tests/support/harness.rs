@@ -507,7 +507,7 @@ pub fn at(centre: (f64, f64), a: f64, r: f64) -> (f64, f64) {
 
 pub fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
     r.export_rgba(
-        ::renderer::ExportSource::chart(chart, series),
+        ::renderer::ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
         ::renderer::ExportOptions::panel(scale),
     )
     .block_on()

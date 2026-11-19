@@ -160,8 +160,15 @@ ring. `children` is omitted from JSON when it is empty.
 - `Outside` labels are placed only on the outermost ring (stacked left and
   right as on a pie, with the connector starting at 1.015 times the outer
   radius). `Outside` on an inner ring is drawn as an inside label within its
-  own band. Inside labels sit at the band's middle radius and shrink to fit
-  the band's thickness and arc length.
+  own band. Inside labels sit at the band's middle radius. They shrink to
+  fit the sector in its own frame
+  ([#357](https://github.com/shim9610/figgy/issues/357)):
+  - the label's extent along the bisector is held to the band's thickness;
+  - its extent across the bisector is held to the arc through its centre;
+  - its outer corners stay inside the rim.
+
+  So a horizontal label at the top or bottom of a thin ring keeps its size,
+  and one at the ring's side is held to the thickness.
 - Sunbursts are drawn flat only. A nonzero `tilt_degrees` or `depth` in the
   chart style or a node style is rejected
   (`"a sunburst draws flat: no tilt or depth"`). A sunburst cannot be used
@@ -172,6 +179,13 @@ ring. `children` is omitted from JSON when it is empty.
   `"a sunburst has at most 8 rings"`, `"a sunburst ring has at most 64 nodes"`.
 - Picking, emphasis, hover and materials (with a different grain per ring)
   all work as for slices.
+- `RadialStyle::sunburst()` is the flat look of web sunburst charts: no
+  depth, gap or rounded corners, and a 1 px white rim and separators. The
+  white line separates every node from its siblings and every ring from the
+  next, even when a whole branch shares one colour. On another background,
+  set `outline.color` to it. A theme with `child_tint` (the Gallery and
+  cool slate members) colours each branch from its top-level slice, each
+  ring paler.
 
 ```rust
 use renderer::radial::*;
@@ -799,7 +813,10 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
   모든 고리의 `text`를 쓴다.
 - `Outside` 라벨은 가장 바깥 고리에만 놓인다(파이와 같은 좌우 쌓기, 바깥 반지름의 1.015 지점에서
   연결선 시작). 안쪽 고리의 `Outside`는 자기 띠 안에 내부 라벨로 그린다. 내부 라벨은 띠의 가운데
-  반지름에 놓이고 띠의 두께와 호 길이에 맞춰 줄어든다.
+  반지름에 놓인다. 크기는 조각 자신의 좌표계에서 맞춘다(#357). 이등분선 방향 길이는 띠 두께 안에,
+  그와 수직인 방향 길이는 라벨 중심을 지나는 호 안에 들어가야 하고, 바깥 모서리는 테두리 안에 있어야
+  한다. 그래서 얇은 고리의 위나 아래에 놓인 가로 라벨은 원래 크기를 지키고, 옆에 놓인 라벨은 두께에
+  맞춰 줄어든다.
 - 평면에서만 그린다. 차트 스타일이나 노드 스타일의 `tilt_degrees`·`depth`가 0이 아니면
   거부한다(`"a sunburst draws flat: no tilt or depth"`). `split`과 함께 쓸 수 없다
   (`"a sunburst has no detail circle"`).
@@ -807,6 +824,10 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
   (`MAX_RADIAL_SLICES`)다. 그 밖의 거부 사유: `"a node's children sum to at most its value"`,
   `"a sunburst has at most 8 rings"`, `"a sunburst ring has at most 64 nodes"`.
 - 피킹·강조·호버·재질(고리마다 다른 결)은 모두 조각과 같다.
+- `RadialStyle::sunburst()`는 웹 선버스트 차트의 평면 모양이다. 깊이·간격·둥근 모서리가 없고,
+  1px 흰색 테두리와 구분선을 그린다. 그래서 한 가지가 같은 색이어도 노드와 고리가 서로 구분된다.
+  배경이 흰색이 아니면 `outline.color`를 배경색으로 바꾼다. `child_tint`가 있는 테마(Gallery,
+  cool slate)는 가지마다 맨 위 조각의 색을 쓰고, 바깥 고리로 갈수록 옅게 칠한다.
 
 ```rust
 use renderer::radial::*;

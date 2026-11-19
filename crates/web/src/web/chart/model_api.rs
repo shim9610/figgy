@@ -77,6 +77,21 @@ pub fn default_config() -> Result<String, JsValue> {
     crate::default_config_json().map_err(js_err)
 }
 
+/// The default config for a chart of the series list JSON `series_json`
+/// (`default::config_for_series`, #357) as JSON: `default_config()` in the
+/// frame the series' family draws by default. A chart that draws a Feynman
+/// series has no axes, grid or tick labels (`AxisPreset::Hidden`), one that
+/// draws an energy-level series takes the Grotrian frame, and every other
+/// list gives `default_config()`. The frame is chosen here, once: an
+/// `apply_axis_preset` or `set_config` afterwards keeps the host's choice.
+/// Throws for a series list that does not parse.
+///
+/// JS: `const config = JSON.parse(default_config_for_series(JSON.stringify(series)));`
+#[wasm_bindgen(unchecked_return_type = "FiggyJson")]
+pub fn default_config_for_series(series_json: &str) -> Result<String, JsValue> {
+    crate::default_config_for_series_json(series_json).map_err(js_err)
+}
+
 /// Check a config JSON and, when given, a series list JSON against the
 /// chart rules (`Config::validate_chart`, then `Config::validate_series`)
 /// without a chart. Returns `{"valid": bool, "errors": [..]}`; it does not

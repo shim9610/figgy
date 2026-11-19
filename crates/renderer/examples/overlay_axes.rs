@@ -126,7 +126,7 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
     // Overlay layers are part of the document, not the base panel.
     chart.fit_layout();
     let image = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportSource::chart(&mut chart, &specs),
         renderer::ExportOptions::document(1.).with_clear(bg),
     )?;
     save(&image, bg, &out.join("gallery-twin-axes.png"))

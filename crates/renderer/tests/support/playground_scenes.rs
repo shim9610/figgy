@@ -503,7 +503,10 @@ pub fn export_scene<T>(
     export: impl FnOnce(&mut Renderer, ExportSource<'_>) -> Result<T, FiggyError>,
 ) -> Result<T, FiggyError> {
     if monotonic.is_empty() {
-        return export(r, ExportSource::chart(chart, series));
+        return export(
+            r,
+            ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
+        );
     }
     let views: Vec<Vec<&[f64]>> = monotonic
         .iter()
@@ -4721,6 +4724,8 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.grid.show_minor_y = false;
     // Each axis spans its measurement with a little room past the data.
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: ranges
             .iter()
             .map(|(lo, hi)| {

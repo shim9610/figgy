@@ -195,10 +195,10 @@ fn every_bin_draws_and_its_height_follows_its_count() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
-    let (chart, series) = vertical_fixture(&mut renderer);
+    let (mut chart, series) = vertical_fixture(&mut renderer);
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -254,7 +254,7 @@ fn selected_bin_outline_uses_the_exact_bar_instance() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -287,10 +287,10 @@ fn bars_draw_their_border_in_the_border_colour() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
-    let (chart, series) = vertical_fixture(&mut renderer);
+    let (mut chart, series) = vertical_fixture(&mut renderer);
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -316,7 +316,7 @@ fn bars_draw_their_border_in_the_border_colour() {
     });
     let plain = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &no_border),
+            renderer::ExportSource::chart(&mut chart, &no_border),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -359,7 +359,7 @@ fn the_gap_separates_neighbouring_bars() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &wide_gap),
+            renderer::ExportSource::chart(&mut chart, &wide_gap),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -394,7 +394,7 @@ fn the_gap_separates_neighbouring_bars() {
     )];
     let squeezed = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &closed),
+            renderer::ExportSource::chart(&mut chart, &closed),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -439,7 +439,7 @@ fn subpixel_bins_survive_a_one_pixel_gap_in_both_orientations() {
         let series = vec![histogram(x, y, orientation.clone(), 1.0, 0.0)];
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -453,7 +453,7 @@ fn subpixel_bins_survive_a_one_pixel_gap_in_both_orientations() {
             let stroked = vec![histogram(x, y, orientation.clone(), 1.0, 1.0)];
             let img = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &stroked),
+                    renderer::ExportSource::chart(&mut chart, &stroked),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -530,7 +530,7 @@ fn subpixel_envelope_keeps_maxima_without_repeated_alpha_blending() {
             let dense = renderer
                 .export_rgba(
                     renderer::ExportSource::chart(
-                        &chart,
+                        &mut chart,
                         &[make("envelope_edges", "envelope_counts", 1.0)],
                     ),
                     renderer::ExportOptions::panel(scale),
@@ -540,7 +540,7 @@ fn subpixel_envelope_keeps_maxima_without_repeated_alpha_blending() {
             let reference = renderer
                 .export_rgba(
                     renderer::ExportSource::chart(
-                        &chart,
+                        &mut chart,
                         &[make("reference_edges", "reference_counts", 0.0)],
                     ),
                     renderer::ExportOptions::panel(scale),
@@ -613,7 +613,7 @@ fn envelope_uses_winner_style_bar_baseline_and_keeps_tiny_edges() {
     }]);
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportSource::chart(&mut chart, &[series]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -638,7 +638,7 @@ fn width_ratio_centres_a_narrower_bar_inside_each_bin() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
-    let (chart, mut series) = vertical_fixture(&mut renderer);
+    let (mut chart, mut series) = vertical_fixture(&mut renderer);
     let DataRenderType::Histogram(HistogramSeries { bar }) = &mut series[0].render_type else {
         unreachable!()
     };
@@ -648,7 +648,7 @@ fn width_ratio_centres_a_narrower_bar_inside_each_bin() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -697,7 +697,7 @@ fn one_bin_override_controls_fill_outline_width_and_selection_geometry() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -737,7 +737,7 @@ fn one_bin_override_controls_fill_outline_width_and_selection_geometry() {
     });
     let selected = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -849,7 +849,7 @@ fn selected_override_bin_outline_is_exactly_its_painted_bar() {
                 chart.config_mut().picked_data = None;
                 let painted = renderer
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportSource::chart(&mut chart, &series),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
@@ -889,7 +889,7 @@ fn selected_override_bin_outline_is_exactly_its_painted_bar() {
                 });
                 let outlined = renderer
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportSource::chart(&mut chart, &series),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
@@ -941,7 +941,7 @@ fn horizontal_bars_run_along_x() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -991,7 +991,7 @@ fn horizontal_log_count_axis_clips_zero_baseline_and_preserves_endpoints() {
     for scale in [1.0, 1.5, 2.0] {
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1046,7 +1046,7 @@ fn horizontal_signed_bars_keep_bin_override_and_selected_width() {
     let series = [s];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1085,7 +1085,7 @@ fn horizontal_signed_bars_keep_bin_override_and_selected_width() {
     });
     let selected = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1131,7 +1131,7 @@ fn a_short_count_column_draws_fewer_bars_and_says_so() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1184,7 +1184,7 @@ fn a_logarithmic_count_axis_still_draws_every_bar() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()

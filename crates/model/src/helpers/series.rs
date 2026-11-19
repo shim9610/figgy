@@ -18,8 +18,8 @@ use crate::data_config::{
     BoxSeries, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig,
     DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef, FieldFillConfig, FieldSeries,
     GridLayout, HistogramSeries, LineFill, MatrixOrientation, MatrixRef, ParallelSeries,
-    RadarPolygonSeries, RangeBarSeries, RgbImageSeries, ScatterShape, SeriesConfig, Stem,
-    StreamlineSeries, TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
+    RadarPolygonSeries, RangeBarSeries, RangeColor, RgbImageSeries, ScatterShape, SeriesConfig,
+    Stem, StreamlineSeries, TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
 };
 use crate::line::LineStylePreset;
 use crate::preset::ColorCycle;
@@ -66,6 +66,10 @@ impl MatrixRef {
 /// [`ColorCycle::DEFAULT`] until [`SeriesConfig::color`], a theme's palette
 /// or [`ColorCycle::color_unset`] sets it (#357). It was black before.
 pub(super) const SERIES_INK: Color = ColorCycle::DEFAULT.color(0);
+
+/// The corner radius of [`SeriesConfig::timeline_bars`], logical pixels:
+/// the slight rounding of a web timeline's bars.
+const TIMELINE_CORNER_RADIUS: f32 = 3.0;
 
 impl SeriesConfig {
     /// A series of `render_type` over the `x` and `y` columns, unlabelled
@@ -394,6 +398,35 @@ impl SeriesConfig {
         )
     }
 
+    /// Timeline (Gantt) bars: [`Self::range_bars`] in the timeline look of
+    /// the common web timelines (#357). Each row takes its own colour from
+    /// [`ColorCycle::Balanced`] ([`RangeColor::ByRow`]; the series colour,
+    /// the legend swatch, is the cycle's first), and the bars are flat with
+    /// 3 px corners, without texture or gloss. Pair it with
+    /// [`crate::default::default_timeline_config`] for the chart: the first
+    /// row at the top, value gridlines only and a light open frame. Every
+    /// choice is a field of the series, so a theme or an edit can change
+    /// it; [`Self::range_bars`] keeps the documented look for waterfalls
+    /// and candlesticks.
+    pub fn timeline_bars(
+        id: impl Into<String>,
+        positions: impl Into<ColumnId>,
+        start: impl Into<ColumnId>,
+        end: impl Into<ColumnId>,
+    ) -> Self {
+        let cycle = ColorCycle::Balanced;
+        Self::range_bars(id, positions, start, end)
+            .color(cycle.color(0))
+            .style_range_bars(|bars| {
+                bars.color_by = RangeColor::ByRow {
+                    colors: cycle.colors().to_vec(),
+                };
+                bars.style.corner_radius = TIMELINE_CORNER_RADIUS;
+                bars.style.texture_strength = 0.0;
+                bars.style.gloss = 0.0;
+            })
+    }
+
     /// A radar polygon: `categories` holds `0, 1, ..., n - 1` and `values`
     /// one value per category on the radius axis. In the default cycle's
     /// first colour until [`Self::color`] or a theme's palette colours it.
@@ -438,7 +471,13 @@ impl SeriesConfig {
 
     /// One polyline per row across the parallel axes, one column per axis
     /// in the axes' order. The first two also name the series' `x_column`
-    /// and `y_column`, as the variant requires.
+    /// and `y_column`, as the variant requires. The rows draw 1 px wide in
+    /// the series ink, opaque, so [`ColorCycle::color_unset`] still finds
+    /// them unset; a theme's `ParallelTheme::line_opacity` or the host's
+    /// alpha makes many rows read as a density (#357), and a colour column
+    /// ([`Self::color_by`]) colours them through the chart's colourbar.
+    ///
+    /// [`ColorCycle::color_unset`]: crate::preset::ColorCycle::color_unset
     pub fn parallel<I, C>(id: impl Into<String>, columns: I) -> Self
     where
         I: IntoIterator<Item = C>,
@@ -746,6 +785,44 @@ mod tests {
 
     fn grid(prefix: &str) -> MatrixRef {
         MatrixRef::columns_are_x((0..3).map(|i| format!("{prefix}{i}")))
+    }
+
+    /// The parallel rows draw 1 px in the opaque series ink, which the colour
+    /// cycle recognises as unset (#357), and the parallel
+    /// preset is a valid chart once the host writes its axes and names, and
+    /// reads back unchanged.
+    #[test]
+    fn the_parallel_helpers_are_a_light_valid_chart() {
+        let series = SeriesConfig::parallel("rows", ["a", "b", "c"]);
+        let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series.render_type else {
+            panic!("a parallel series");
+        };
+        assert_eq!((line.line_width, line.line_color), (1.0, SERIES_INK));
+        let mut config = crate::helpers::default::default_parallel_config();
+        let options = config.parallel().unwrap();
+        assert!(options.names_on_top);
+        assert_eq!(options.label_backdrop.unwrap().a, 0.8);
+        assert_eq!((config.left_y.min, config.left_y.max), (0.0, 1.0));
+        assert_eq!(config.left_y.minor_count, 0);
+        assert!(!config.top_x.line_visible && !config.right_y.line_visible);
+        assert!(!config.grid.show_major_x && !config.grid.show_major_y);
+        // A new chart's layout: the first default draw fits it.
+        assert_eq!(config.layout_state, crate::config::LayoutState::NeedsFit);
+        config.bottom_x.categories = Some(
+            ["a", "b", "c"]
+                .map(|id| Category::new(id, id.to_uppercase()))
+                .to_vec(),
+        );
+        config.parallel_mut().unwrap().axes =
+            vec![crate::parallel::ParallelAxis::new(0.0, 10.0); 3];
+        assert_eq!(config.validate_parallel(), Ok(()));
+        valid_on(&config, &[series]);
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_string(&config).unwrap();
+            let back: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, config);
+        }
     }
 
     fn valid_on(config: &Config, series: &[SeriesConfig]) {
