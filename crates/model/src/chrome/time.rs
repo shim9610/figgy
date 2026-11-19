@@ -87,7 +87,7 @@ where
         if !matches!(axis.scale, AxisScale::Linear) || !crate::tick::walkable_range(axis) {
             return None;
         }
-        return forced_step_plan(axis, cfg, step);
+        return forced_step_plan(axis, cfg, step, axis_len_px, &mut measure_extent_px);
     }
     if !uses_calendar_ticks(axis, cfg) || !crate::tick::walkable_range(axis) {
         return None;
@@ -652,13 +652,17 @@ fn period_text(value: f64, cfg: &TimestampLabelFormat) -> Option<String> {
 
 /// The plan of a forced calendar step (#357): a major at every period
 /// start inside the axis range and a label per period, on its start or
-/// centred on its part inside the range (`period_labels`). Like the
-/// planner, a range holding more than [`MAX_TIME_TICKS`] periods draws no
-/// ticks: a tick plan is not a data count.
+/// centred on its part inside the range (`period_labels`). A period label
+/// wider than that part (`measure_extent_px` over `axis_len_px`), such as
+/// a month cut to its last two days at the range's edge, is not drawn.
+/// Like the planner, a range holding more than [`MAX_TIME_TICKS`] periods
+/// draws no ticks: a tick plan is not a data count.
 fn forced_step_plan(
     axis: &AxisOptions,
     cfg: &TimestampLabelFormat,
     step: CalendarStep,
+    axis_len_px: f32,
+    measure_extent_px: &mut dyn FnMut(&str) -> f32,
 ) -> Option<TimestampTickPlan> {
     let (min, max) = (axis.min, axis.max);
     let eps = range_epsilon(min, max);
@@ -690,7 +694,9 @@ fn forced_step_plan(
         }
         let label_at = if cfg.period_labels {
             let (lo, hi) = (at.max(min), next.min(max));
-            (hi > lo + eps).then_some(0.5 * (lo + hi))
+            let span_px = ((hi - lo) / (max - min)) as f32 * axis_len_px;
+            let fits = text.is_empty() || measure_extent_px(&text) <= span_px;
+            (hi > lo + eps && fits).then_some(0.5 * (lo + hi))
         } else {
             on_tick.then_some(at)
         };
@@ -978,8 +984,8 @@ mod tests {
     }
 
     fn plan(axis: &AxisOptions) -> TimestampTickPlan {
-        // Labels measure wide: a forced step keeps every boundary anyway.
-        build_timestamp_tick_plan(axis, 100.0, 8.0, |_| 1000.0).unwrap()
+        // Labels measure nothing: every period label fits its period.
+        build_timestamp_tick_plan(axis, 100.0, 8.0, |_| 0.0).unwrap()
     }
 
     fn texts(ticks: &[TimestampTick]) -> Vec<&str> {
@@ -1024,6 +1030,17 @@ mod tests {
         assert_eq!(at[0], 0.5 * (min + utc(2026, 4, 1)));
         assert_eq!(at[1], 0.5 * (utc(2026, 4, 1) + utc(2026, 5, 1)));
         assert_eq!(at[3], 0.5 * (utc(2026, 6, 1) + max));
+        // A period cut too short for its label at the range's edge draws
+        // none: over 100 px for Mar 1 .. Jun 4, June's three days are about
+        // 3 px, too narrow for a 20 px label; the full months fit.
+        let wide = calendar(
+            CalendarStep::Month,
+            TimestampLabelMode::Pattern("%b".into()),
+            true,
+        );
+        let edge = axis(utc(2026, 3, 1), utc(2026, 6, 4), wide);
+        let narrow = build_timestamp_tick_plan(&edge, 100.0, 8.0, |_| 20.0).unwrap();
+        assert_eq!(texts(&narrow.labels), ["Mar", "Apr", "May"]);
     }
 
     /// Weeks start on the chosen weekday at local midnight, in UTC and in a

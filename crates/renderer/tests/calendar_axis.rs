@@ -19,7 +19,7 @@ use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side, axis_fraction}
 use renderer::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use renderer::{
     AxisLabelElement, Chart, Color, ColorBarOptions, Config, CpuTextMeasure, Draggable, HitMap,
-    Renderer, RendererDevice, Selectable, SeriesConfig,
+    Renderer, RendererDevice, Selectable, SelectionGeometry, SeriesConfig,
 };
 
 const WIDTH: u32 = 960;

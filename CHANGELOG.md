@@ -389,7 +389,7 @@ and radar documents' `text_sizes`) are additive.
 
 - **Calendar header for time axes** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). `TimestampLabelFormat` gains two serde-defaulted fields, omitted when unset:
   - `step: Option<CalendarStep>`: `Day`, `Week { start: Weekday }`, `Month`, `Quarter` or `Year`. The ticks fall at every boundary of the unit at local midnight in the format's time zone. `tick_policy` and `major_spacing` are not read, and a range of more than 1000 periods draws no ticks, as the planner's.
-  - `period_labels: bool`: each label is centred on its period's part of the range, with the partial periods at both ends included. Ticks and gridlines stay on the boundaries.
+  - `period_labels: bool`: each label is centred on its period's part of the range, with the partial periods at both ends included. A label wider than that part (a month cut to its last days at the range's edge) is not drawn. Ticks and gridlines stay on the boundaries.
 
   `TimestampLabelMode` gains `Relative { origin: i64, prefix }` (`"{prefix}{n}"`, where `n` counts whole periods from the one holding `origin`, negative before it) and `Custom { origin: i64, labels }` (`labels[n]`; a period with no string draws no label, keeps its tick, and is not an error). Custom labels have no count limit.
 

@@ -121,7 +121,8 @@ UTC Unix seconds with `AutoCalendar` tick planning; use
 do not overlap. A forced `step: Some(CalendarStep::…)` (#357: `Day`,
 `Week { start: Weekday::Monday }`, `Month`, `Quarter`, `Year`) ticks every
 boundary of that unit at local midnight instead, and `period_labels: true`
-centres each label on its period (a month header). The label modes
+centres each label on its period (a month header), and leaves out a label
+wider than its period's part of the range. The label modes
 `TimestampLabelMode::Relative { origin, prefix }` ("Week 0", "Week 1", …,
 counted in the step from the period holding `origin`, a whole timestamp in
 the format's unit) and `Custom { origin, labels }` (the host's string for
