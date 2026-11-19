@@ -181,7 +181,13 @@ ring. `children` is omitted from JSON when it is empty.
     circle makes room for it as for any outside label, and it is hit,
     selected and dragged as one. On an inner sunburst ring, where no
     leader reaches past the outer rings, it is hidden: not drawn and not
-    hit.
+    hit. With `inner_label_fallback: InnerLabelFallback::Outside` it is
+    pulled outside instead: its leader starts just past its own ring's rim
+    and crosses the outer rings to the elbow beside the circle, and it is
+    stacked with the outermost ring's outside labels in angle order, so no
+    two meet. It is then an outside label in every respect: hover, click
+    selection, the part-by-part outline, drag (the leader follows), PNG,
+    SVG and PDF, serde (the key is omitted while `Hide`) and WASM.
 - Sunbursts are drawn flat only. A nonzero `tilt_degrees` or `depth` in the
   chart style or a node style is rejected
   (`"a sunburst draws flat: no tilt or depth"`). A sunburst cannot be used
@@ -840,7 +846,11 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
   라벨은 12 논리 픽셀(차트의 `font_size`가 더 작으면 그 값)보다 작아지지 않는다. 그보다 작아져야 하는
   라벨은 조각이 가장 바깥 고리(또는 파이·도넛)에 있으면 연결선과 함께 바깥으로 옮긴다. 원은 다른 바깥
   라벨처럼 자리를 내주고, 그 라벨은 바깥 라벨과 똑같이 맞히고 선택하고 끌 수 있다. 연결선이 바깥 고리를
-  넘어갈 수 없는 안쪽 선버스트 고리에서는 숨긴다. 그리지도 맞히지도 않는다.
+  넘어갈 수 없는 안쪽 선버스트 고리에서는 숨긴다. 그리지도 맞히지도 않는다. `inner_label_fallback`을
+  `InnerLabelFallback::Outside`로 두면 숨기지 않고 바깥으로 꺼낸다. 연결선은 자기 고리 테두리 바로 바깥에서
+  시작해 바깥 고리들을 가로질러 원 옆의 꺾임점까지 가고, 라벨은 가장 바깥 고리의 바깥 라벨과 각도 순으로
+  함께 쌓여 서로 겹치지 않는다. 그다음부터는 호버, 클릭 선택, 부분별 윤곽선, 드래그(연결선이 따라감),
+  PNG·SVG·PDF, serde(`Hide`이면 키 생략), WASM 모두 바깥 라벨과 같다.
 - 평면에서만 그린다. 차트 스타일이나 노드 스타일의 `tilt_degrees`·`depth`가 0이 아니면
   거부한다(`"a sunburst draws flat: no tilt or depth"`). `split`과 함께 쓸 수 없다
   (`"a sunburst has no detail circle"`).

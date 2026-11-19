@@ -1105,6 +1105,9 @@ fn radial_ssot_fields_are_explicit() {
         font_size: _,
         label_color: _,
         background: _,
+        // Moves inner-ring labels too small to read outside (#357); part of
+        // the frame key, so an edit redraws the frame.
+        inner_label_fallback: _,
     } = RadialChart::default();
     // Independent title fields are covered by the three CPU layout/pixel tests.
     // Keep this exhaustive so additions require an explicit editing/cache review.

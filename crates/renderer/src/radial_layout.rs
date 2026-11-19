@@ -163,11 +163,33 @@ struct Circle<'a> {
     /// The inner radius of the band as a fraction of `radius`.
     hole: f32,
     max_explode: f32,
-    /// The ring whose inside labels may move outside, and those that did
-    /// (#357): an inside label too small to read on it is drawn outside
-    /// with a leader.
+    /// The ring whose inside labels move outside when too small to read,
+    /// and, per ring, the labels that did (#357): on the outermost ring (or
+    /// a pie or donut) always, on an inner sunburst ring only with
+    /// `InnerLabelFallback::Outside`.
     eligible: usize,
-    demoted: [bool; MAX_RADIAL_SLICES],
+    demoted: Demoted,
+}
+
+/// Per ring and node, whether its inside label moved outside (#357). Sized
+/// by the approved sunburst limits (`MAX_SUNBURST_DEPTH` rings of
+/// `MAX_RADIAL_SLICES` nodes).
+type Demoted = [[bool; MAX_RADIAL_SLICES]; model::radial::MAX_SUNBURST_DEPTH];
+
+/// The outside labels of one side of a circle, at most every node of every
+/// ring: each one's leader anchor, ring and node.
+type SideLabels = (
+    [((f32, f32), usize, usize); MAX_RADIAL_SLICES * model::radial::MAX_SUNBURST_DEPTH],
+    usize,
+);
+
+/// Whether `demoted` moves node `index` of ring `group` outside.
+fn is_demoted(demoted: &Demoted, group: usize, index: usize) -> bool {
+    demoted
+        .get(group)
+        .and_then(|ring| ring.get(index))
+        .copied()
+        .unwrap_or(false)
 }
 impl<'a> Circle<'a> {
     fn len(&self) -> usize {
@@ -199,7 +221,7 @@ impl<'a> Circle<'a> {
     /// `Outside` for an inside label too small to read that moved outside
     /// (#357).
     fn placement(&self, index: usize, slice: &RadialSlice) -> RadialLabels {
-        if self.group == self.eligible && self.demoted.get(index).copied().unwrap_or(false) {
+        if is_demoted(&self.demoted, self.group, index) {
             return RadialLabels::Outside;
         }
         placement(
@@ -310,9 +332,9 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
     };
     // The outer radius of the whole circle for the inside labels that
     // `demoted` moves outside: the outside labels need a margin beside it.
-    let full_radius = |demoted: &[bool; MAX_RADIAL_SLICES]| -> f32 {
+    let full_radius = |demoted: &Demoted| -> f32 {
         let effective = |target: RadialTarget, p: RadialLabels| {
-            if target.group == eligible && demoted.get(target.index).copied().unwrap_or(false) {
+            if is_demoted(demoted, target.group, target.index) {
                 RadialLabels::Outside
             } else {
                 p
@@ -345,58 +367,68 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
     // readable minimum moves outside with a leader (#357); the outside
     // labels' margin shrinks the circle, so the test runs again until no
     // more labels move. Each pass moves at least one label or stops.
-    let mut demoted = [false; MAX_RADIAL_SLICES];
+    let mut demoted: Demoted = [[false; MAX_RADIAL_SLICES]; model::radial::MAX_SUNBURST_DEPTH];
     let mut radius = full_radius(&demoted);
     let eligible_start = if sunburst || g == 0 {
         chart.start_angle_degrees.rem_euclid(360.0).to_radians()
     } else {
         start
     };
-    let (band_inner, band_outer) = if sunburst {
-        ring_band(kind.inner_radius(), eligible, chart.group_count())
+    // The rings whose small labels move outside: the eligible one, and on
+    // a sunburst that asks for it every inner ring too.
+    let pull_inner =
+        sunburst && chart.inner_label_fallback == model::radial::InnerLabelFallback::Outside;
+    let rings = if pull_inner {
+        0..chart.group_count()
     } else {
-        (kind.inner_radius(), 1.0)
+        eligible..eligible + 1
     };
     loop {
         let mut moved = demoted;
-        for index in 0..chart.group_len(eligible).min(MAX_RADIAL_SLICES) {
-            let target = RadialTarget {
-                group: eligible,
-                index,
+        for ring in rings.clone().take(model::radial::MAX_SUNBURST_DEPTH) {
+            let (band_inner, band_outer) = if sunburst {
+                ring_band(kind.inner_radius(), ring, chart.group_count())
+            } else {
+                (kind.inner_radius(), 1.0)
             };
-            let Some(slice) = (match slices {
-                Some(slices) if eligible == g => slices.get(index),
-                _ => chart.slice(target),
-            }) else {
-                continue;
-            };
-            if moved[index]
-                || slice.value <= 0.0
-                || placement(chart, target, slice) != RadialLabels::Inside
-            {
-                continue;
-            }
-            let Some((from, to)) = chart.node_span(target) else {
-                continue;
-            };
-            let tilt = slice
-                .style
-                .as_ref()
-                .unwrap_or(&chart.style)
-                .tilt_degrees
-                .to_radians();
-            let outer = radius * band_outer;
-            let hole = band_inner / band_outer;
-            let band = Band {
-                outer,
-                inner: outer * hole,
-                centre: outer * ((hole + 1.0) * 0.5).max(0.6),
-                start: eligible_start + from as f32 * TAU,
-                span: (to - from) as f32 * TAU,
-                tilt,
-            };
-            if !label_fits(chart, slice, band, 1.0) {
-                moved[index] = true;
+            for index in 0..chart.group_len(ring).min(MAX_RADIAL_SLICES) {
+                let target = RadialTarget { group: ring, index };
+                let Some(slice) = (match slices {
+                    Some(slices) if ring == g => slices.get(index),
+                    _ => chart.slice(target),
+                }) else {
+                    continue;
+                };
+                // An inner ring's `Outside` draws inside its band (#140),
+                // so its effective placement is the one tested.
+                if moved[ring][index]
+                    || slice.value <= 0.0
+                    || placement(chart, target, slice) != RadialLabels::Inside
+                {
+                    continue;
+                }
+                let Some((from, to)) = chart.node_span(target) else {
+                    continue;
+                };
+                let tilt = slice
+                    .style
+                    .as_ref()
+                    .unwrap_or(&chart.style)
+                    .tilt_degrees
+                    .to_radians();
+                let outer = radius * band_outer;
+                let hole = band_inner / band_outer;
+                let band = Band {
+                    outer,
+                    inner: outer * hole,
+                    centre: outer * ((hole + 1.0) * 0.5).max(0.6),
+                    start: eligible_start + from as f32 * TAU,
+                    span: (to - from) as f32 * TAU,
+                    tilt,
+                };
+                if !label_fits(chart, slice, band, 1.0) {
+                    moved[ring][index] = true;
+                }
             }
         }
         if moved == demoted {
@@ -888,42 +920,73 @@ fn emit_inside(
 /// anchor's height, ties in slice order. At most [`MAX_RADIAL_SLICES`].
 fn side_labels(
     chart: &RadialChart,
+    area: RectF,
     c: &Circle<'_>,
     g: usize,
     left_side: bool,
     scale: f32,
-) -> ([((f32, f32), usize); MAX_RADIAL_SLICES], usize) {
-    let mut labels = [((0.0, 0.0), 0); MAX_RADIAL_SLICES];
+) -> SideLabels {
+    let mut labels = [((0.0, 0.0), 0, 0); MAX_RADIAL_SLICES * model::radial::MAX_SUNBURST_DEPTH];
     let mut n = 0;
-    for index in 0..c.len() {
-        let Some(slice) = c.node(index) else {
-            continue;
-        };
-        if c.placement(index, slice) != RadialLabels::Outside {
-            continue;
-        }
-        let Some(s) = sector(chart, c, g, index, scale) else {
-            continue;
-        };
-        let mid = s.arc[0] + s.arc[1] * 0.5;
-        if (mid.cos() < 0.0) != left_side {
-            continue;
-        }
-        let mut anchor = projected(&s, mid, 1.015);
-        // The front silhouette is the bottom of the extruded wall, not the
-        // top rim: leaders must not cross the visible face.
-        if mid.sin() > 0.0 {
-            anchor.1 += s.arc[3] * s.arc[2].sin() * s.geometry[2];
-        }
-        // A validated chart has at most `MAX_RADIAL_SLICES` slices per
-        // circle; the write stays total for any other chart.
-        let Some(slot) = labels.get_mut(n) else {
-            break;
-        };
-        *slot = (anchor, index);
-        n += 1;
+    // A sunburst stacks every ring's outside labels with the outermost
+    // ring's (#357): an inner ring has no stack of its own.
+    let sunburst = chart.is_sunburst();
+    if sunburst && g != c.eligible {
+        return (labels, 0);
     }
-    labels[..n].sort_unstable_by(|a, b| a.0.1.total_cmp(&b.0.1).then(a.1.cmp(&b.1)));
+    let rings = if sunburst {
+        0..chart.group_count()
+    } else {
+        g..g + 1
+    };
+    for ring in rings {
+        let own;
+        let rc = if ring == g {
+            c
+        } else {
+            let Ok(other) = circle(chart, area, ring) else {
+                continue;
+            };
+            own = other;
+            &own
+        };
+        for index in 0..rc.len() {
+            let Some(slice) = rc.node(index) else {
+                continue;
+            };
+            if rc.placement(index, slice) != RadialLabels::Outside {
+                continue;
+            }
+            let Some(s) = sector(chart, rc, ring, index, scale) else {
+                continue;
+            };
+            let mid = s.arc[0] + s.arc[1] * 0.5;
+            if (mid.cos() < 0.0) != left_side {
+                continue;
+            }
+            // The leader starts just past the node's own rim: an inner
+            // ring's leader crosses the outer rings (#357).
+            let mut anchor = projected(&s, mid, 1.015);
+            // The front silhouette is the bottom of the extruded wall, not the
+            // top rim: leaders must not cross the visible face.
+            if mid.sin() > 0.0 {
+                anchor.1 += s.arc[3] * s.arc[2].sin() * s.geometry[2];
+            }
+            // A validated chart has at most `MAX_RADIAL_SLICES` nodes per
+            // ring; the write stays total for any other chart.
+            let Some(slot) = labels.get_mut(n) else {
+                break;
+            };
+            *slot = (anchor, ring, index);
+            n += 1;
+        }
+    }
+    labels[..n].sort_unstable_by(|a, b| {
+        a.0.1
+            .total_cmp(&b.0.1)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
     (labels, n)
 }
 
@@ -946,11 +1009,11 @@ fn emit_outside(
     c: &Circle<'_>,
     g: usize,
     left_side: bool,
-    only: Option<usize>,
+    only: Option<RadialTarget>,
     sink: &mut dyn Sink,
 ) {
     let scale = f.scale;
-    let (labels, n) = side_labels(chart, c, g, left_side, scale);
+    let (labels, n) = side_labels(chart, f.area, c, g, left_side, scale);
     let labels = &labels[..n];
     let (top, bottom) = (f.area.y, f.area.y + f.area.height);
     let intervals = n.saturating_sub(1) as f32;
@@ -960,9 +1023,9 @@ fn emit_outside(
     let min = top * scale + fs;
     let max = (bottom * scale - fs * 1.4).max(min);
     let step = (fs * 2.7).min((max - min) / intervals.max(1.));
-    let mut ys = [0.0f32; MAX_RADIAL_SLICES];
+    let mut ys = [0.0f32; MAX_RADIAL_SLICES * model::radial::MAX_SUNBURST_DEPTH];
     let mut prev = min - step;
-    for ((anchor, _), y) in labels.iter().zip(&mut ys) {
+    for ((anchor, _, _), y) in labels.iter().zip(&mut ys) {
         *y = anchor.1.clamp(min, max).max(prev + step);
         prev = *y;
     }
@@ -986,16 +1049,21 @@ fn emit_outside(
         tag: "radial_leader",
     };
     let logical = |x: f32, y: f32| [x / scale, y / scale];
-    for ((anchor, index), y) in labels.iter().zip(ys) {
-        if only.is_some_and(|only| only != *index) {
+    for ((anchor, ring, index), y) in labels.iter().zip(ys) {
+        let target = RadialTarget {
+            group: *ring,
+            index: *index,
+        };
+        if only.is_some_and(|only| only != target) {
             continue;
         }
-        let Some(slice) = c.node(*index) else {
-            continue;
+        let slice = if *ring == g {
+            c.node(*index)
+        } else {
+            chart.slice(target)
         };
-        let target = RadialTarget {
-            group: g,
-            index: *index,
+        let Some(slice) = slice else {
+            continue;
         };
         let tx = elbow + if left_side { -8.0 * scale } else { 8.0 * scale };
         let offset = chart
@@ -1080,7 +1148,13 @@ pub(super) fn emit_decoration(
                         return true;
                     };
                     let left = (s.arc[0] + s.arc[1] * 0.5).cos() < 0.0;
-                    emit_outside(chart, &f, &c, t.group, left, Some(t.index), sink);
+                    // A sunburst's outside labels are stacked on its
+                    // outermost ring, an inner ring's pulled-out ones too.
+                    if c.group == c.eligible {
+                        emit_outside(chart, &f, &c, t.group, left, Some(*t), sink);
+                    } else if let Ok(outer) = circle(chart, f.area, c.eligible) {
+                        emit_outside(chart, &f, &outer, c.eligible, left, Some(*t), sink);
+                    }
                 }
                 RadialLabels::None => {}
             }
@@ -1415,12 +1489,12 @@ pub(super) fn layout(
             if let Some(paint) = paint.as_deref_mut() {
                 emit_outside(chart, &f, &c, g, left_side, None, paint);
             }
-            let (labels, n) = side_labels(chart, &c, g, left_side, scale);
-            for (_, index) in &labels[..n] {
+            let (labels, n) = side_labels(chart, f.area, &c, g, left_side, scale);
+            for (_, ring, index) in &labels[..n] {
                 register(
                     &mut out.decorations,
                     DecorationId::RadialLabel(RadialTarget {
-                        group: g,
+                        group: *ring,
                         index: *index,
                     }),
                 );

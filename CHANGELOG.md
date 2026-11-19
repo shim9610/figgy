@@ -73,6 +73,15 @@ and radar documents' `text_sizes`) are additive.
     read one placement. Before, labels such as "Oil 8%" were drawn at
     about 7 px. Documents written before draw their inside labels at the
     new places and sizes.
+  - **Pulling inner-ring labels out of a sunburst.** New
+    `RadialChart::inner_label_fallback: InnerLabelFallback` (`Hide`, the
+    default, or `Outside`; omitted from JSON while `Hide`). With `Outside`,
+    an inner-ring inside label too small to read is drawn outside instead
+    of hidden: its leader crosses the outer rings, and it stacks with the
+    outermost ring's outside labels in angle order without meeting them.
+    It is a normal outside label for hover, selection, its outline, drag,
+    export, serde and WASM. Migration: an exhaustive Rust literal of
+    `RadialChart` names the field (or uses `..Default::default()`).
   - **Grotrian ionisation-limit labels.** A limit's label sits above its
     line, right-aligned. When that would leave the plot (a limit near the
     top of the energy range), it is placed just below the line, so it is
@@ -108,8 +117,11 @@ and radar documents' `text_sizes`) are additive.
     (`tests/energy_levels_render.rs`) and
     `crowded_radial_labels_prepare_and_remain_in_the_hit_map` (crowded
     inside labels move outside and stay hit and draggable at 1x and 2x)
-    and `inner_sunburst_labels_read_upright_or_hide`
-    (`tests/radial_label_layout.rs`).
+    `inner_sunburst_labels_read_upright_or_hide`,
+    `pulled_out_inner_labels_are_full_outside_labels`
+    (`tests/radial_label_layout.rs`) and
+    `the_inner_label_fallback_round_trips_and_is_omitted_while_hidden`
+    (`radial.rs`).
   - **Migration:** a host that relied on `RadialChart::default()` drawing
     no outline sets `style.outline = RadialOutline::default()`.
 - **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),

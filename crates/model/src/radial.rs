@@ -628,6 +628,37 @@ pub struct RadialChart {
     pub font_size: f32,
     pub label_color: Color,
     pub background: Color,
+    /// What a sunburst does with an inside label on an inner ring that
+    /// cannot be drawn at the readable minimum (#357). Outermost-ring, pie
+    /// and donut labels always move outside with a leader; this governs
+    /// only the inner rings, whose leaders would cross the outer rings.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "InnerLabelFallback::is_hide")
+    )]
+    pub inner_label_fallback: InnerLabelFallback,
+}
+
+/// What a sunburst does with an inside label on an inner ring too small to
+/// read (#357, [`RadialChart::inner_label_fallback`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum InnerLabelFallback {
+    /// Not drawn and not hit (the default).
+    #[default]
+    Hide,
+    /// Drawn outside the circle with the outermost ring's outside labels,
+    /// its leader running from the node's own rim across the outer rings
+    /// to the elbow beside the circle. It is an outside label in every
+    /// respect: hover, selection, its outline, drag and export.
+    Outside,
+}
+
+impl InnerLabelFallback {
+    /// Whether this is the default, [`Self::Hide`].
+    pub fn is_hide(&self) -> bool {
+        *self == Self::Hide
+    }
 }
 
 /// The document form a [`RadialChart`] is read from: its own fields, and
@@ -669,6 +700,8 @@ mod radial_wire {
         font_size: f32,
         label_color: Color,
         background: Color,
+        #[serde(default)]
+        inner_label_fallback: InnerLabelFallback,
     }
 
     impl From<RadialChartWire> for RadialChart {
@@ -693,6 +726,7 @@ mod radial_wire {
                 font_size,
                 label_color,
                 background,
+                inner_label_fallback,
             } = wire;
             let mut chart = RadialChart {
                 decorations,
@@ -713,6 +747,7 @@ mod radial_wire {
                 font_size,
                 label_color,
                 background,
+                inner_label_fallback,
             };
             // The legacy title was drawn only without a rich one, in the
             // chart's font as the document set it.
@@ -1272,6 +1307,24 @@ mod tests {
             },
             crate::defaults::radial_chart()
         );
+    }
+
+    /// The inner-ring fallback (#357) is omitted while `Hide` (the value a
+    /// document without it reads) and round-trips as `Outside`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_inner_label_fallback_round_trips_and_is_omitted_while_hidden() {
+        let mut chart = crate::defaults::radial_chart();
+        let json = serde_json::to_value(&chart).unwrap();
+        assert!(json.get("inner_label_fallback").is_none());
+        let back: RadialChart = serde_json::from_value(json).unwrap();
+        assert_eq!(back.inner_label_fallback, InnerLabelFallback::Hide);
+        chart.inner_label_fallback = InnerLabelFallback::Outside;
+        let json = serde_json::to_string(&chart).unwrap();
+        assert!(json.contains(r#""inner_label_fallback":"Outside""#));
+        let back: RadialChart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, chart);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     #[cfg(feature = "serde")]
