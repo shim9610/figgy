@@ -17,8 +17,9 @@ impl Renderer {
     /// [`Self::create_chart_view`] for a `chart` whose pixel values carry
     /// the display or export `scale` (#205): the view's rasters snap a
     /// broken axis' piece frames to whole logical pixels, then scale, so a
-    /// 2x raster is the 1x raster doubled. The view keeps the scale for
-    /// [`Self::refresh_axis`] and [`Self::refresh_axis_with_selection`].
+    /// 2x raster is the 1x raster doubled, and its text is hinted only at
+    /// 1x (#357). The view keeps the scale for [`Self::refresh_axis`] and
+    /// [`Self::refresh_axis_with_selection`].
     pub fn create_chart_view_at(
         &self,
         chart: &Chart,
