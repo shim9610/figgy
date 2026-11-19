@@ -53,7 +53,11 @@ fn theme() -> Result<Theme> {
 /// drawn as a script segment: the examples write no Unicode script
 /// characters (#357), which figgy maps only for hosts that send them.
 fn plain(text: &str) -> RichText {
-    RichText::from_label(text, Color::BLACK, 16.0, "")
+    if text.contains('$') {
+        RichText::from_label(text, Color::BLACK, 16.0, "")
+    } else {
+        RichText::plain(text, Color::BLACK, 16.0, "")
+    }
 }
 
 /// A bundled NIST export, embedded so every crate that includes this
@@ -706,7 +710,10 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
         }
     }
     columns.sort();
-    // Each column named by its jK term symbol, primed for the ²P°₁/₂ core.
+    // Each column named by its jK term symbol, primed for the ²P°₁/₂ core,
+    // its multiplicity raised as a script segment. The twenty-five columns
+    // are named at the energy axis' 20 px tick size, a size each segment
+    // states, rather than at the column headings' size.
     let categories = columns
         .iter()
         .map(|id| {
@@ -715,7 +722,13 @@ pub fn argon_all() -> Result<(Chart, Vec<SeriesConfig>)> {
                 Some(term) => format!("{}′", term_symbol(term)),
                 None => term_symbol(id),
             };
-            named(id, &label)
+            let mut column = named(id, &label);
+            if let Some(rich) = column.rich_label.as_mut() {
+                for segment in &mut rich.segments {
+                    segment.font_size = Some(20.0);
+                }
+            }
+            column
         })
         .collect();
     let mut c = grotrian("Ar I, all levels", "Energy (eV)", categories);
