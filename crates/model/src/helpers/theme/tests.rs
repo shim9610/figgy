@@ -927,6 +927,71 @@ fn the_range_bar_family_recolours_directions_and_states() {
     assert_eq!(progress.as_ref().unwrap().remaining_opacity, 0.35);
 }
 
+// A series coloured by row (#357) takes the palette as its row colours,
+// every family and the documented look alike; the colouring stays by row.
+#[test]
+fn a_series_coloured_by_row_takes_the_palette() {
+    for theme in themes(ChartKind::RangeBars) {
+        let mut series =
+            SeriesConfig::range_bars("a", "i", "start", "end").range_colors(RangeColor::ByRow {
+                colors: vec![Color::BLACK],
+            });
+        theme.style_series(&mut series, 0);
+        let DataRenderType::RangeBars(RangeBarSeries {
+            color_by: RangeColor::ByRow { colors },
+            ..
+        }) = &series.render_type
+        else {
+            panic!("the colouring stays by row");
+        };
+        assert_eq!(colors, &theme.series.palette);
+    }
+}
+
+// A range bar theme draws no gridlines along a categorical position axis
+// (they would cross the bars' middles) and keeps the value gridlines; a
+// numeric position axis (a candlestick's time) keeps its gridlines.
+#[test]
+fn range_bar_themes_keep_only_the_value_gridlines_on_a_category_axis() {
+    use crate::data_config::{BarGroups, CategoryBarDirection};
+    let horizontal = BarGroups {
+        direction: CategoryBarDirection::Horizontal,
+        ..crate::defaults::bar_groups()
+    };
+    for theme in themes(ChartKind::RangeBars) {
+        // A timeline: rows on `left_y`.
+        let mut config = Config::default();
+        config.bar_groups = Some(horizontal);
+        config.left_y.categories = categorical().bottom_x.categories;
+        let mut series = [SeriesConfig::range_bars("a", "i", "start", "end")];
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        assert!(!config.grid.show_major_y && !config.grid.show_minor_y);
+        assert_eq!(config.grid.show_major_x, theme.chrome.grid.major_x.show);
+        // A waterfall: steps on `bottom_x`.
+        let mut config = categorical();
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        assert!(!config.grid.show_major_x && !config.grid.show_minor_x);
+        assert_eq!(config.grid.show_major_y, theme.chrome.grid.major_y.show);
+        // Candles on a time axis keep the theme's grid.
+        let mut config = Config::default();
+        let mut candles = [SeriesConfig::range_bars("a", "i", "start", "end")
+            .style_range_bars(|bars| bars.slot_width = Some(1.0))];
+        theme
+            .apply(&mut config, &mut candles, ThemeScope::All)
+            .unwrap();
+        assert_eq!(config.grid.show_major_x, theme.chrome.grid.major_x.show);
+        assert_eq!(config.grid.show_major_y, theme.chrome.grid.major_y.show);
+    }
+    // The gallery's range bars: the open frame without tick marks.
+    let theme = named(ChartKind::RangeBars, "gallery");
+    assert_eq!(theme.chrome.axis_preset, AxisPreset::OpenOutward);
+    assert!(!theme.chrome.ticks);
+}
+
 // The document base: a transparent background, an open frame without tick
 // marks in the text colour, and the value grid only.
 #[test]

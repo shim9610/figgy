@@ -18,8 +18,9 @@
 
 use crate::Color;
 use crate::config::{AxisOptions, ColorBarOptions, Config, LayoutState, Legend, TickVisibility};
-use crate::data_config::SeriesConfig;
+use crate::data_config::{BarGroups, CategoryBarDirection, SeriesConfig};
 use crate::parallel::ParallelOptions;
+use crate::preset::AxisPreset;
 
 /// X axis options. Range is a 0..1 placeholder — replace with
 /// `Chart::set_x_range` or `auto_fit_x`.
@@ -217,5 +218,55 @@ pub fn default_parallel_config() -> Config {
         }),
     }));
     config.layout_state = LayoutState::Fitted;
+    config
+}
+
+/// The share of a row's band a timeline's bars cover: between Plotly's
+/// (0.8, `bargap` 0.2) and Vega-Lite's (0.9, band padding 0.1).
+const TIMELINE_GROUP_WIDTH: f32 = 0.8;
+
+/// The light grey of a timeline's axis lines.
+const TIMELINE_FRAME: Color = Color::from_rgb8(160, 166, 176);
+
+/// The pale grey of a timeline's value gridlines.
+const TIMELINE_GRID: Color = Color::from_rgb8(225, 228, 233);
+
+/// A timeline (Gantt) chart in the look of the common web timelines
+/// (#357), for [`crate::data_config::SeriesConfig::timeline_bars`]:
+/// [`default_config`] with
+///
+/// - horizontal bars covering 0.8 of each row's band
+///   ([`Config::bar_groups`]);
+/// - the first row at the top: `left_y` is inverted, so its first category
+///   (or the smallest position on a numeric axis) sits at the top;
+/// - gridlines along the value axis only, in a pale grey, and no minor
+///   gridlines;
+/// - the open frame ([`AxisPreset::OpenOutward`]) with its axis lines in a
+///   light grey and no tick marks: the gridlines carry the values;
+/// - `layout_state` is [`LayoutState::NeedsFit`], as a new chart's is: the
+///   row labels on the left are as wide as the host's task names, so the
+///   first default draw fits the layout to them.
+///
+/// Every choice is a stored field, so a saved timeline reads back with the
+/// same look; the documented default ([`default_config`]) is unchanged.
+pub fn default_timeline_config() -> Config {
+    let mut config = default_config();
+    config.apply_axis_preset(AxisPreset::OpenOutward);
+    config.bar_groups = Some(BarGroups {
+        direction: CategoryBarDirection::Horizontal,
+        group_width: TIMELINE_GROUP_WIDTH,
+        ..crate::defaults::bar_groups()
+    });
+    config.left_y.inverted = true;
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.tick = TickVisibility::None;
+        axis.line_color = TIMELINE_FRAME;
+    }
+    let grid = &mut config.grid;
+    grid.show_major_y = false;
+    grid.show_minor_x = false;
+    grid.show_minor_y = false;
+    grid.major_x_color = TIMELINE_GRID;
+    config.layout_state = LayoutState::NeedsFit;
     config
 }

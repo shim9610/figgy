@@ -333,7 +333,7 @@ A `DataRenderType::RangeBars` series (§5.18) reads the category bar lanes
 of §2.4 for its bodies: its look is a `CategoryBarStyle`, so the CPU
 writer is `style.rs::PrimitiveStyle::from_category_bars` with the series
 colour. `color_premul` is the fill under `RangeColor::Single` (and the
-fallback of a part or a state with no colour of its own). The part
+fallback of a part, a state or a row with no colour of its own). The part
 colours and widths are not `Style` lanes but the series' bar style slots
 (§5.18), which the pick reads too. The selected bar's highlight
 (`vs_range_bar_selection`) reads a per-selection `Style` built from the
@@ -1832,8 +1832,8 @@ as follows (CPU writer: `renderer/series.rs::range_bar_params`;
 | `RANGE_LANE_LOW` (2), `RANGE_LANE_HIGH` (3) | the whiskers' low and high columns, `BOX_LANE_ABSENT` without whiskers |
 | `RANGE_LANE_COLOR` (4) | the total flag column of `RangeColor::Direction` or the state column of `RangeColor::State`, `BOX_LANE_ABSENT` without one |
 | `RANGE_LANE_PROGRESS` (5) | the progress column, `BOX_LANE_ABSENT` without progress |
-| `RANGE_LANE_COLOR_MODE` (6) | `RANGE_COLOR_SINGLE` (0), `_DIRECTION` (1) or `_STATE` (2) |
-| `RANGE_LANE_STATES` (7) | the number of state styles: style slots `RANGE_SLOT_STATES..` |
+| `RANGE_LANE_COLOR_MODE` (6) | `RANGE_COLOR_SINGLE` (0), `_DIRECTION` (1), `_STATE` (2) or `_ROW` (3) |
+| `RANGE_LANE_STATES` (7) | the number of state styles, or of row colours under `RANGE_COLOR_ROW`: style slots `RANGE_SLOT_STATES..` |
 
 | Member of `CategoryBarParams` | Meaning for a range bar series |
 |---|---|
@@ -1846,7 +1846,8 @@ as follows (CPU writer: `renderer/series.rs::range_bar_params`;
 
 The part colours are the series' bar style map's slots (group 2,
 bindings 5–7; CPU writer `renderer/style.rs::range_bar_style_map`, written
-straight into the slot buffer's mapping, sized by the states); range bars
+straight into the slot buffer's mapping, sized by the states or row
+colours); range bars
 have no per-bar overrides. A slot with a zero mask sets nothing:
 
 | Slot | Lanes |
@@ -1855,7 +1856,7 @@ have no per-bar overrides. A slot with a zero mask sets nothing:
 | `RANGE_SLOT_CONNECTOR` (1) | fill = the connector colour, gap = its width px |
 | `RANGE_SLOT_UP` (2), `_DOWN` (3), `_TOTAL` (4) | fill = the direction and total colours of `RangeColor::Direction` |
 | `RANGE_SLOT_PROGRESS` (5) | width ratio = the remaining opacity of `RangeProgress` |
-| `RANGE_SLOT_STATES + k` | fill = the colour of state `k` of `RangeColor::State` |
+| `RANGE_SLOT_STATES + k` | fill = the colour of state `k` of `RangeColor::State`, or row colour `k` of `RangeColor::ByRow` |
 
 One instance draws `RANGE_BAR_VERTICES` (18): three quads in paint order,
 the whisker (a flat stroke rect from the low to the high value at the
@@ -1869,10 +1870,12 @@ parts. The body's fill follows the colour mode: the series colour; the
 up colour when the end pair is at least the start pair (compared high word
 first) and the down colour otherwise, the total colour where the flag
 reads 1; or the style of the state `round(v)`, the series colour past the
-styles. With progress, the body past `start + p · (end − start)` (`p`
+styles; or row colour `row % count` of `RangeColor::ByRow` (the series
+colour without row colours). With progress, the body past `start + p · (end − start)` (`p`
 clamped to `0..=1`, the difference taken on the pairs so a time axis keeps
 its precision; a NaN `p` draws the bar whole) is drawn at the remaining
-opacity. The renderer compares the given ends and maps a given state.
+opacity. The renderer compares the given ends, maps a given state and
+maps the row index to a colour.
 
 `vs_range_bar_selection` / `fs_range_bar_selection` draw the picked bar's
 body ring and emphasis as a category bar's (one quad, the body). The

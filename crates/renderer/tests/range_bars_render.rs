@@ -5,7 +5,8 @@
 //! whiskers, connectors and progress, missing rows, a numeric (time)
 //! position axis with a slot width, the value-axis and position-axis fit,
 //! the picked highlight and the pick of every part, value labels, column
-//! replacement, the streaming rejection and overlays and subplots.
+//! replacement, the streaming rejection, overlays and subplots, and a
+//! timeline's row colours with its first row at the top.
 //!
 //! Every part has its own pure colour, all flat with no outline, so a
 //! colour predicate attributes every pixel to one part. Expected extents
@@ -334,6 +335,148 @@ fn direction_total_and_state_colour_each_bar() {
     assert!(bbox(&img, slot(&chart, direction, 0, 1.0), is_blue).is_some());
     assert!(bbox(&img, slot(&chart, direction, 1, 1.0), is_green).is_some());
     assert!(bbox(&img, slot(&chart, direction, 2, 1.0), is_red).is_some());
+}
+
+/// A timeline's row colours (#357): row `i` takes colour `i % count` with
+/// the first row at the top of an inverted axis, at 1x and 2x; no colours
+/// draw the series colour; the highlight traces the picked row's body and
+/// the pick answers its row; the vector exports embed the same data; and
+/// a serde round trip draws the same pixels.
+#[test]
+fn rows_take_their_colours_and_keep_every_interaction() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let mut chart = chart(direction);
+    chart.config_mut().left_y.inverted = true;
+    let mut series = ranges("one", RED);
+    *fields(&mut series).1 = RangeColor::ByRow {
+        colors: vec![GREEN, BLUE],
+    };
+    let series = [series];
+    // The axis is inverted: row `k` sits in the bottom-up slot `2 - k`.
+    let row = |chart: &Chart, k: usize, scale: f32| slot(chart, direction, 2 - k, scale);
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(
+            bbox(&img, row(&chart, 0, scale), is_green).is_some(),
+            "{scale}x row 0"
+        );
+        assert!(
+            bbox(&img, row(&chart, 1, scale), is_blue).is_some(),
+            "{scale}x row 1"
+        );
+        assert!(
+            bbox(&img, row(&chart, 2, scale), is_green).is_some(),
+            "{scale}x row 2"
+        );
+        assert_eq!(bbox(&img, row(&chart, 1, scale), is_green), None);
+        assert_eq!(bbox(&img, (0, 0, img.width, img.height), is_red), None);
+        // The bars stand where their values are, whatever their colour.
+        let body = bbox(&img, row(&chart, 1, scale), is_blue).unwrap();
+        let (lo, hi) = value_span(body, direction);
+        let (a, b) = (
+            value_px(&chart, direction, END[1], scale),
+            value_px(&chart, direction, START[1], scale),
+        );
+        assert!(
+            (lo - a).abs() <= 1.5 && (hi - b).abs() <= 1.5,
+            "{scale}x {body:?}"
+        );
+
+        // The picked row's highlight traces its body; the pick answers it.
+        chart.config_mut().picked_data = Some(selection("one", 1));
+        let outlined = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let ring = bbox(
+            &outlined,
+            (0, 0, outlined.width, outlined.height),
+            is_magenta,
+        )
+        .expect("the selected bar is outlined");
+        assert!(
+            [
+                (ring.0, body.0),
+                (ring.1, body.1),
+                (ring.2, body.2),
+                (ring.3, body.3)
+            ]
+            .iter()
+            .all(|(a, b)| a.abs_diff(*b) <= 1),
+            "{scale}x: the outline {ring:?} does not trace the body {body:?}"
+        );
+        chart.config_mut().picked_data = None;
+        let centre = (
+            (body.0 + body.2) as f32 / 2.0,
+            (body.1 + body.3) as f32 / 2.0,
+        );
+        assert_eq!(
+            registered_pick(&mut r, &chart, &series, scale, centre, 0.0),
+            Some(("one".into(), 1)),
+            "{scale}x"
+        );
+    }
+
+    // No row colours: every bar in the series colour.
+    let mut plain = series[0].clone();
+    *fields(&mut plain).1 = RangeColor::ByRow { colors: Vec::new() };
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&mut chart, std::slice::from_ref(&plain)),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    for k in 0..3 {
+        assert!(bbox(&img, row(&chart, k, 1.0), is_red).is_some(), "row {k}");
+    }
+
+    // The SVG and the PDF embed the drawn data image.
+    let svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(svg.contains("<image"), "the SVG embeds the data image");
+    let pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+
+    // A document saved and read back draws the same pixels.
+    #[cfg(feature = "serde")]
+    {
+        let draw = |r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig]| {
+            r.export_rgba(
+                renderer::ExportSource::chart(chart, series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba
+        };
+        let before = draw(&mut r, &mut chart, &series);
+        let json = serde_json::to_string(&(chart.config(), &series)).unwrap();
+        let (config, again): (renderer::config::Config, Vec<SeriesConfig>) =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!(again.as_slice(), &series);
+        let mut again_chart = Chart::new(config);
+        assert_eq!(draw(&mut r, &mut again_chart, &again), before);
+    }
 }
 
 /// The whisker runs from the low to the high value at the bar's middle,
@@ -861,10 +1004,19 @@ fn overlays_and_subplots_draw_their_own_range_groups() {
         marker: None,
         text_scale: Default::default(),
     });
+    // The overlay and the subplot colour their bars by row (#357), each
+    // over a series colour of its own that must not show.
+    let by_row = |id: &str, color: Color| {
+        let mut series = ranges(id, YELLOW);
+        *fields(&mut series).1 = RangeColor::ByRow {
+            colors: vec![color],
+        };
+        series
+    };
     let series = [
         ranges("one", RED),
-        ranges("two", BLUE),
-        ranges("below", GREEN),
+        by_row("two", BLUE),
+        by_row("below", GREEN),
     ];
     for scale in [1.0f32, 2.0] {
         let img = r
@@ -884,6 +1036,7 @@ fn overlays_and_subplots_draw_their_own_range_groups() {
         );
         let green = bbox(&img, (first.0, h / 2, first.2, h), is_green).expect("the subplot's");
         assert_eq!(bbox(&img, (0, 0, w, h / 2), is_green), None);
+        assert_eq!(bbox(&img, (0, 0, w, h), is_yellow), None);
         r.enable_gpu_picking().unwrap();
         let id = r
             .register_chart(parent.config().clone(), series.to_vec())
@@ -1000,7 +1153,11 @@ fn three_thousand_rows_draw_pick_and_highlight() {
     config.bottom_x.max = N as f64 - 0.5;
     config.bar_groups.as_mut().unwrap().bar_gap = 0.0;
     config.bar_groups.as_mut().unwrap().group_width = 0.95;
-    let mut bars = ranges("one", RED);
+    // Seven row colours cycle over every row: no row is left uncoloured.
+    let mut bars = ranges("one", BLUE);
+    *fields(&mut bars).1 = RangeColor::ByRow {
+        colors: vec![RED; 7],
+    };
     bars.x_column = "n.pos".into();
     bars.y_column = "n.end".into();
     if let DataRenderType::RangeBars(RangeBarSeries {
