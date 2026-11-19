@@ -189,6 +189,65 @@ pipeline in both runs: it waited in the browser's compile queue, so its
 own size no longer decides the time. These are single local runs on a
 software adapter, not physical-GPU results.
 
+## Exact pick variant table (#363)
+
+`crates/renderer/tests/support/pick_variants.csv` lists every exact pick pipeline a
+chart can reach, one row per key: the module, the shader set, the `PICK_VARIANT`
+bits by name, the marker shape (or `any`), the override constants the browser
+compiles, the series families that produce the key, the first producing case and the
+number of producing cases, and the measured SwiftShader compile time with its budget.
+
+- **Rows.** The renderer's `pick_variant_table_matches_the_picker` test
+  (`renderer/picking/variant_table_tests.rs`) builds every series family that
+  reaches the point picker (xy markers, lines, error bars, stems and fills, radar,
+  ternary markers, lines and regions, streamlines, point vectors and box plot points)
+  over every combination of the options that feed the exact variant (marker shapes
+  and style maps, line dashes, fills, cartesian and polar axes, every draw style).
+  It registers each chart, prepares its pick as `pick_chart` does and reads the keys
+  from the picker: `exact_variants`, and `stream_exact_variants` where every series
+  of the chart may stream. A chart that does not need the full shader set lists its
+  keys for both sets. Options that do not feed the variant (colours, sizes, step
+  interpolation, size and colour maps, axis scales and breaks, subplots, overlays and
+  line offsets) are held at one value. The test fails when the reachable keys differ
+  from the file, when a row has no time or budget, or when the module hashes below
+  are stale.
+- **Hashes.** The table's header records `wgsl_hash`, a 64-bit FNV-1a hash over every
+  WGSL file of the renderer (each crate-relative path, a NUL, the bytes, a NUL, in
+  path order), and `module_hash` lines, the hash of each exact module's assembled
+  source per shader set. `ci/test_pick_variants.py`, which `python3 ci/verify.py
+  static` runs, recomputes `wgsl_hash` and checks every row's budget, so any shader
+  change fails the static stage until the table is regenerated and re-measured.
+- **Runner.** `node ci/shader_compile.cjs --pick-variants <capture> <table>` finds
+  each row's assembled module in the native capture by its `module_hash`, and
+  compiles `pick_exact_candidates` with `createComputePipelineAsync`, the capture's
+  explicit layout and the row's constants, on a fresh device per row (a fresh
+  browser every 100 rows). It fails a row over its budget. `--update` writes the
+  measured times and budgets back; `--missing` measures only rows without a time.
+  `FIGGY_SHADER_COMPILE_TIMEOUT_MS` (default 90,000) bounds one row.
+- **Budget rule.** `budget_ms = max(3 x measured_ms, 2000)`, rounded up to the next
+  100 ms. Three times the measured time absorbs run-to-run and machine variance on a
+  software adapter; the floor keeps short compiles from failing on noise.
+
+After a shader change:
+
+```sh
+# 1. The capture the runner reads (see ci/README.md).
+FIGGY_SHADER_COMPILE_REPORT="$PWD/target/ci-results/shader-compilation-native.json" \
+  cargo test --locked -p figgy-renderer --lib \
+  all_shader_compilation_times_and_entry_coverage -- --test-threads=1
+# 2. The rows and hashes; measured times are kept only for unchanged shaders.
+FIGGY_UPDATE_PICK_VARIANTS=1 cargo test -p figgy-renderer --lib \
+  pick_variant_table_matches_the_picker
+# 3. Measure every row (about 1.5 hours on a 4-core Linux container).
+node ci/shader_compile.cjs --pick-variants \
+  target/ci-results/shader-compilation-native.json \
+  crates/renderer/tests/support/pick_variants.csv --update
+```
+
+Without `--update` the runner checks every row against its committed budget. Like
+the rest of this script it needs a WebGPU-capable Chromium and is not part of the
+three-OS matrix.
+
 ## 한국어 요약
 
 등고선 위치 계산은 기존과 똑같이 네 번 보정한다. 다만 복잡한 필드 검색을 감싼 반복문을
@@ -205,3 +264,7 @@ GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀�
 같으므로 결과값은 그대로다. SwiftShader에서 레이더 변형은 9.8초에서 2.7초로, 가장 느리던
 변형은 230.9초에서 0.8초로 줄었다. 렌더 파이프라인 339개가 먼저 큐에 있으면 대기 시간이
 지배해 약 150초로 변하지 않는다.
+
+`crates/renderer/tests/support/pick_variants.csv`에는 차트가 도달할 수 있는 모든 exact pick
+파이프라인 키와 SwiftShader 컴파일 시간·예산이 있다(#363). 행은 실제 픽 경로에서 자동 생성되고,
+셰이더가 바뀌면 `verify.py static`이 실패하므로 표를 다시 만들고 다시 측정해야 한다.

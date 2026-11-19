@@ -255,7 +255,9 @@ node ci/shader_compile.cjs \
 ```
 
 This script compiles every captured descriptor, then repeats each creation to
-measure cache reuse. Shader errors, device loss, missing measurements, budget
+measure cache reuse. With `--pick-variants <capture> <table>` it instead compiles
+every row of the exact pick variant table and checks each against its budget; see
+[the variant table](shader-compilation.md#exact-pick-variant-table-363). Shader errors, device loss, missing measurements, budget
 overruns and operation timeouts fail the check. Partial measurements survive a
 failure. `FIGGY_SHADER_COMPILE_TIMEOUT_MS` defaults to 90,000 ms. Driver selection
 is left to the browser/environment; SwiftShader is not forced on hardware machines.
