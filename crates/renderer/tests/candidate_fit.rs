@@ -934,12 +934,15 @@ fn fit_config_scoped_refuses_what_it_cannot_fit() {
     );
     assert_eq!(config, before);
 
-    // A registered chart is untouched by a scoped candidate fit.
+    // A registered chart is untouched by a scoped candidate fit. The
+    // registration fits the layout of the config it is given (#357), so
+    // the chart is compared with itself before the candidate fit.
     let id = renderer
         .register_chart_as_given(config.clone(), series.clone())
         .unwrap();
+    let registered = renderer.chart_config(id).unwrap().clone();
     renderer
         .fit_config_scoped(&config, &series, 0.05, &scope(LayerRef::Base, FitAxes::ALL))
         .unwrap();
-    assert_eq!(renderer.chart_config(id).unwrap(), &config);
+    assert_eq!(renderer.chart_config(id).unwrap(), &registered);
 }

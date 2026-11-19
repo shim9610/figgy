@@ -1842,7 +1842,7 @@ mod tests {
                     .unwrap();
             serde_json::from_str(&json).unwrap()
         };
-        // A new chart's config: its layout kept fitted (#357).
+        // The default config as a new chart's: its layout kept fitted (#357).
         let unframed = || renderer::Config {
             layout_state: renderer::LayoutState::Fitted,
             ..renderer::default::default_config()
