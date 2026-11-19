@@ -1411,8 +1411,11 @@ impl Renderer {
     /// area, the scale of every auto-scaled vector series
     /// ([`Self::fit_vector_scales`], #357), which consumes its
     /// `VectorStyle::auto_scale`: the series are written, so the SSOT says
-    /// how long the arrows draw. [`Self::register_chart`] runs this fit
-    /// once on a new chart.
+    /// how long the arrows draw. Then the stroke share of every
+    /// energy-level series' column slots (`LevelStrokeStyle::slot_fraction`,
+    /// #357): narrowed, never widened, to the share whose level labels fit
+    /// their own lane best, and kept on a second fit.
+    /// [`Self::register_chart`] runs this fit once on a new chart.
     ///
     /// Each layer is fitted with
     /// [`Chart::auto_fit_layer_union`](crate::chart::Chart::auto_fit_layer_union)
@@ -1457,6 +1460,7 @@ impl Renderer {
         }
         chart.auto_fit_every_layer(&self.pool, series, FIT_RANGES_PADDING)?;
         self.fit_vector_scales_unreported(chart.config(), series)?;
+        fit_level_slots(chart.config(), series);
         Ok(())
     }
 
@@ -1904,6 +1908,54 @@ impl Renderer {
             return Err(FiggyError::ColumnNotResident { id: id.to_owned() });
         }
         crate::chart::Chart::slot_extent(&self.pool, id)
+    }
+}
+
+/// Narrows each energy-level series' stroke share of its column slots so
+/// its level labels fit before the next column's strokes (#357), over the
+/// panel `config` draws the series in: a display parameter chosen once by
+/// the fit and written to the SSOT (`style.level.slot_fraction`). A second
+/// fit over the same document keeps the value. A series whose records or
+/// panel cannot be placed keeps its own.
+fn fit_level_slots(config: &crate::Config, series: &mut [SeriesConfig]) {
+    if !series
+        .iter()
+        .any(|item| item.render_type.energy_levels().is_some())
+    {
+        return;
+    }
+    let Ok(expansion) = config.expand() else {
+        return;
+    };
+    for index in 0..series.len() {
+        let fitted = {
+            let item = &series[index];
+            let Some(levels) = item.render_type.energy_levels() else {
+                continue;
+            };
+            let Some(records) = crate::renderer::energy_level_records(levels, series) else {
+                continue;
+            };
+            let layer = config.layer_of_series(&item.series_id);
+            let Some(panel) = expansion.panels.iter().find(|panel| panel.layer == layer) else {
+                continue;
+            };
+            let panel = &panel.config;
+            let space = crate::annotation::pixel_space_for_config(panel);
+            let placement = crate::energy_levels::LevelPlacement {
+                space: &space,
+                categories: panel.bottom_x.categories.as_deref().unwrap_or(&[]),
+                view: levels.show,
+                colorbar: panel.colorbar.as_ref(),
+                picked: None,
+            };
+            let policy = crate::text_render::FontPolicy::for_style(&panel.draw_style);
+            let measure = crate::text_render::CpuTextMeasure::with_policy(policy);
+            placement.fitted_slot_fraction(records, &levels.style, &measure)
+        };
+        if let DataRenderType::EnergyLevels(levels) = &mut series[index].render_type {
+            levels.style.level.slot_fraction = fitted;
+        }
     }
 }
 

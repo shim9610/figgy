@@ -102,8 +102,10 @@ Every value the renderer fits is fitted once, where the renderer first holds
 the chart and its series ([#357](https://github.com/shim9610/figgy/issues/357)).
 `register_chart` with a new chart's config (`LayoutState::Fitted`:
 `Chart::sized`, `default::config_for_series`, the family presets) fits its
-axis ranges (the `fit_ranges` path), its layout and the scale of every
-auto-scaled vector series, and stores them in the chart's config and
+axis ranges (the `fit_ranges` path), its layout, the scale of every
+auto-scaled vector series and the stroke share of every energy-level
+series' column slots (`slot_fraction`, narrowed so the level labels fit
+their own lane), and stores them in the chart's config and
 series; draws and exports read them as stored and nothing refits them on
 its own. A `Fixed` config, such as a loaded document, is registered as
 given. `register_chart_as_given(config, series)` registers any config
@@ -1363,7 +1365,7 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 특정 표시 배율로 만든 스타일은 같은 배율로 `create_style_for_series_scaled`를 호출한다.
 렌더러가 맞추는 값은 렌더러가 차트와 시리즈를 처음 함께 받을 때 한 번만 맞춘다(#357). 새 차트
 설정(`LayoutState::Fitted`: `Chart::sized`, `default::config_for_series`, 계열 프리셋)을 받은
-`register_chart`는 축 범위(`fit_ranges` 경로), 레이아웃, 자동 배율 벡터 시리즈의 배율을 맞춰 차트의
+`register_chart`는 축 범위(`fit_ranges` 경로), 레이아웃, 자동 배율 벡터 시리즈의 배율, 에너지 준위 시리즈의 칸 폭 비율(`slot_fraction`, 준위 레이블이 제 칸에 들어가도록 좁힘)을 맞춰 차트의
 설정과 시리즈에 저장한다. 그리기와 내보내기는 저장된 값을 읽고, 저절로 다시 맞추지 않는다. 불러온
 문서처럼 `Fixed`인 설정은 받은 그대로 등록한다. `register_chart_as_given(config, series)`는 어떤 설정이든
 맞추지 않고 등록하고, `Chart::as_given(config)`는 `Chart::new`의 레이아웃 맞춤 없이 차트 객체를 만든다.

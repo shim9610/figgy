@@ -71,7 +71,9 @@ and radar documents' `text_sizes`) are additive.
     `default::config_for_series`, the family presets) fits once:
     1. the axis ranges, by the `fit_ranges` path;
     2. the layout;
-    3. the scale of every auto-scaled vector series.
+    3. the scale of every auto-scaled vector series;
+    4. the stroke share of every energy-level series' column slots
+       (`LevelStrokeStyle::slot_fraction`).
 
     The results are stored in the chart's config and series, and nothing
     refits them on its own. A `Fixed` config, such as every stored
@@ -85,6 +87,20 @@ and radar documents' `text_sizes`) are additive.
     every auto-scaled vector series from the fitted data area, so the
     default flow (`fit_ranges`, then export) draws visible arrows. The
     browser `fit_ranges()` stores the rescaled series.
+  - **Grotrian slots.** The fit narrows an energy-level series'
+    `style.level.slot_fraction`, never below 0.35 and never wider than
+    stored, so its level labels fit their own column's lane instead of
+    moving into the neighbour's. It lays the labels out at the stored
+    share and at each twentieth below it, down to the share that leaves
+    the widest fitting label room before the next column's strokes. It
+    keeps the share with the fewest labels on another column's ink, a
+    limit line or another label, then the fewest labels moved to the other
+    side or onto a leader, then the widest. A second fit keeps the result.
+    He I at 800 × 600 with the Gallery sizes and Cu I at its own size draw
+    every label beside its own column; Cu I at 800 × 600 keeps 0.7, where
+    any narrower share draws more labels on other ink. A `Fixed` document
+    and `register_chart_as_given` keep the stored share, and
+    `fit_ranges` applies the same fit.
   - `VectorStyle::auto_scale` is consumed by the first fit.
     `fit_vector_scales`, and through it `register_chart`, `fit_ranges` and
     `commit_auto_fit_all`, turns it off after writing the scale, so the
@@ -114,8 +130,9 @@ and radar documents' `text_sizes`) are additive.
     `fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing`,
     `the_installed_auto_fit_sizes_auto_scaled_arrows`
     (`tests/candidate_fit.rs`), `fit_ranges_sizes_auto_scaled_arrows`
-    (`tests/helpers.rs`), and `palette_presets.rs` through the default
-    flow.
+    (`tests/helpers.rs`), `registration_fits_the_level_slots_once`
+    (`tests/energy_levels_render.rs`), and `palette_presets.rs` through the
+    default flow.
 - **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),
   items 8 and 9). Appearance only; no value, position or pick moves.
   - `ParallelOptions` gains `names_on_top` (the axis names above the plot)
