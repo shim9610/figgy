@@ -278,6 +278,30 @@ pub fn tick_text(
         let text = format_tick_power(shown, ls.significant_digits, ls);
         let metrics = measure.measure_rich(&text);
         (NumericTickText::Power(text), metrics)
+    } else if let LabelFormat::Auto(auto) = &ls.format
+        && auto.notation == crate::format::ExponentNotation::Power
+    {
+        // The automatic form's exponent ticks typeset as `Power` does
+        // (#357); its plain ticks stay plain text.
+        let (min, max) = axis.shown_range();
+        let written = format_tick_auto(
+            shown,
+            auto,
+            ls.significant_digits,
+            &axis.scale,
+            effective_major_spacing(axis),
+            min,
+            max,
+        );
+        if written.exponent.is_some() {
+            let text = format_tick_auto_power(&written, ls);
+            let metrics = measure.measure_rich(&text);
+            (NumericTickText::Power(text), metrics)
+        } else {
+            let text = written.mantissa;
+            let metrics = measure.measure_plain(&text, &ls.label_font, ls.font_size);
+            (NumericTickText::Plain(text), metrics)
+        }
     } else {
         let (min, max) = axis.shown_range();
         let text = format_tick_value(

@@ -410,7 +410,9 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 /// - **Label format.** An axis whose labels are `Decimal` or `Plain` and not
 ///   categorical switches to `LabelFormat::Power` when a drawn label prints
 ///   more than five digits (`0.00300`) or is wider than five ems of its font
-///   size. Other formats are left alone, and a format never switches back.
+///   size. Other formats are left alone (`Auto` already switches to an
+///   exponent form by its own limits, #357), and a format never switches
+///   back.
 /// - **`out_margin`.** The band of each side is set to exactly what it
 ///   holds, smaller or larger than it was: the reach of its labels past the
 ///   tick, the title gap, the title's thickness and an edge padding to the

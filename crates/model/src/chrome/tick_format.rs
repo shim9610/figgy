@@ -2,6 +2,7 @@
 //! timestamp forms, and the power form with its superscript exponent.
 
 use super::*;
+use crate::format::{AutoNumberFormat, AutoTickText};
 use crate::text::{MathKind, MathNode, MathSlot};
 
 /// Minimum shared decimal count that keeps adjacent ticks distinguishable.
@@ -47,6 +48,18 @@ pub fn format_tick_value(
     if let AxisScale::Probability(_) = scale {
         return format_probability_tick(value, format, sig);
     }
+    if let LabelFormat::Auto(auto) = format {
+        return format_tick_auto(
+            value,
+            auto,
+            sig_digits,
+            scale,
+            major_spacing,
+            range_min,
+            range_max,
+        )
+        .to_ascii();
+    }
     if matches!(scale, AxisScale::Logarithmic) {
         if value == 0.0 {
             return "0".into();
@@ -75,8 +88,9 @@ pub fn format_tick_value(
                     .unwrap_or(percent);
                 format!("{rounded}%")
             }
-            // Returned above; the arm keeps the match exhaustive.
+            // Returned above; the arms keep the match exhaustive.
             LabelFormat::Plain(plain) => plain.format(value),
+            LabelFormat::Auto(auto) => auto.log_tick(value, sig_digits).to_ascii(),
         };
     }
 
@@ -116,8 +130,38 @@ pub fn format_tick_value(
             );
             format!("{:.*}%", decimals, value * 100.0)
         }
-        // Returned above; the arm keeps the match exhaustive.
+        // Returned above; the arms keep the match exhaustive.
         LabelFormat::Plain(plain) => plain.format(value),
+        LabelFormat::Auto(auto) => auto
+            .linear_tick(value, major_spacing, range_min, range_max)
+            .to_ascii(),
+    }
+}
+
+/// A tick written in [`LabelFormat::Auto`] (#357): on a linear axis with the
+/// decimals the step needs, on a logarithmic one at `sig_digits`, and on a
+/// probability axis as [`LabelFormat::Decimal`] writes it, with the digits
+/// each tail needs.
+pub fn format_tick_auto(
+    value: f64,
+    auto: &AutoNumberFormat,
+    sig_digits: u8,
+    scale: &AxisScale,
+    major_spacing: f64,
+    range_min: f64,
+    range_max: f64,
+) -> AutoTickText {
+    match scale {
+        AxisScale::Linear => auto.linear_tick(value, major_spacing, range_min, range_max),
+        AxisScale::Logarithmic => auto.log_tick(value, sig_digits),
+        AxisScale::Probability(_) => AutoTickText {
+            mantissa: format_probability_tick(
+                value,
+                &LabelFormat::Decimal,
+                usize::from(sig_digits.clamp(1, 15)),
+            ),
+            exponent: None,
+        },
     }
 }
 
@@ -148,7 +192,7 @@ fn format_probability_tick(value: f64, format: &LabelFormat, sig: usize) -> Stri
         LabelFormat::Timestamp(_) => format!("{}", value),
         LabelFormat::Radians => format_radians(value, sig),
         LabelFormat::Plain(plain) => plain.format(value),
-        LabelFormat::Decimal | LabelFormat::Power | LabelFormat::Degrees => {
+        LabelFormat::Decimal | LabelFormat::Power | LabelFormat::Degrees | LabelFormat::Auto(_) => {
             let text = format!("{:.*}", probability_decimals(value, 0.0, sig), value);
             if matches!(format, LabelFormat::Degrees) {
                 format!("{text}°")
@@ -216,16 +260,8 @@ pub fn trim_trailing_fraction_zeros(s: &str) -> String {
 /// `superscript` segments did, so the pixels, bounds and parts are the same;
 /// nothing here restates the script size or shift.
 pub fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
-    let style_from = |segments: Vec<RichSegment>| RichText {
-        segments,
-        color: ls.color,
-        font_size: ls.font_size,
-        font: ls.label_font.clone(),
-        align: TextAlign::Left,
-    };
-
     if value == 0.0 {
-        return style_from(vec![plain_seg('0')]);
+        return power_label(vec![plain_seg('0')], ls);
     }
 
     let abs = value.abs();
@@ -233,19 +269,47 @@ pub fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichTex
     let mantissa = value / 10f64.powi(exp);
     let mantissa_close_to_one = (mantissa.abs() - 1.0).abs() < 1e-9;
 
-    let mut segs: Vec<RichSegment> = Vec::new();
-
-    if mantissa_close_to_one {
-        if mantissa < 0.0 {
-            segs.push(plain_seg('-'));
-        }
+    let lead = if mantissa_close_to_one {
+        if mantissa < 0.0 { "-" } else { "" }.to_owned()
     } else {
         let sig = sig_digits.max(1) as usize;
         let raw = format!("{:.*}", sig.saturating_sub(1), mantissa);
-        let trimmed = trim_trailing_fraction_zeros(&raw);
-        for c in trimmed.chars() {
-            segs.push(plain_seg(c));
-        }
+        trim_trailing_fraction_zeros(&raw)
+    };
+    power_label(power_segments(&lead, exp), ls)
+}
+
+/// A [`LabelFormat::Auto`] tick in its typographic exponent form (#357):
+/// `2×10⁹`, `1.5×10⁻⁶`, and `10⁹` for a mantissa that prints `1`. A plain
+/// number keeps its text.
+pub fn format_tick_auto_power(text: &AutoTickText, ls: &LabelStyle) -> RichText {
+    let Some(exponent) = text.exponent else {
+        return power_label(text.mantissa.chars().map(plain_seg).collect(), ls);
+    };
+    let lead = match text.mantissa.as_str() {
+        "1" => "",
+        "-1" => "-",
+        mantissa => mantissa,
+    };
+    power_label(power_segments(lead, exponent), ls)
+}
+
+/// `segments` in the label style's colour, size and font.
+fn power_label(segments: Vec<RichSegment>, ls: &LabelStyle) -> RichText {
+    RichText {
+        segments,
+        color: ls.color,
+        font_size: ls.font_size,
+        font: ls.label_font.clone(),
+        align: TextAlign::Left,
+    }
+}
+
+/// `lead × 10^exp`: `lead` and a `×` before the power, only a sign when
+/// `lead` is `-`, and the bare power when `lead` is empty.
+fn power_segments(lead: &str, exp: i32) -> Vec<RichSegment> {
+    let mut segs: Vec<RichSegment> = lead.chars().map(plain_seg).collect();
+    if !(lead.is_empty() || lead == "-") {
         segs.push(plain_seg('×'));
     }
 
@@ -268,6 +332,5 @@ pub fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichTex
     for c in exp_str.chars() {
         segs.push(slot(1, c));
     }
-
-    style_from(segs)
+    segs
 }

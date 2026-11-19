@@ -54,10 +54,16 @@ pub(crate) fn apply_axis_range(
             axis.label_style.format = LabelFormat::Percent;
             axis.label_style.significant_digits = 1;
         }
+        // #357: a linear axis prints clean numbers (`0.8`, `-3`, `10`); an
+        // automatic format's own options and a timestamp format are kept.
         AxisScale::Linear => {
             axis.minor_count = 4;
-            if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
-                axis.label_style.format = LabelFormat::Decimal;
+            if !matches!(
+                axis.label_style.format,
+                LabelFormat::Timestamp(_) | LabelFormat::Auto(_)
+            ) {
+                axis.label_style.format =
+                    LabelFormat::Auto(crate::format::AutoNumberFormat::DEFAULT);
             }
             axis.label_style.significant_digits = 3;
         }
@@ -1932,6 +1938,29 @@ mod tests {
         assert_eq!(c.config().top_x.max, 100.0);
     }
 
+    // #357: a range helper gives a linear axis the automatic label format,
+    // and keeps one the axis already has with its own options.
+    #[test]
+    fn range_helpers_give_linear_axes_the_automatic_label_format() {
+        use crate::format::{AutoNumberFormat, ExponentNotation};
+        let mut axis = dummy_config().bottom_x;
+        axis.label_style.format = LabelFormat::Scientific;
+        apply_axis_range(&mut axis, 0.0, 1.0, &AxisScale::Linear);
+        assert_eq!(
+            axis.label_style.format,
+            LabelFormat::Auto(AutoNumberFormat::DEFAULT)
+        );
+        let engineering = LabelFormat::Auto(AutoNumberFormat {
+            notation: ExponentNotation::Engineering,
+            ..AutoNumberFormat::DEFAULT
+        });
+        axis.label_style.format = engineering.clone();
+        apply_axis_range(&mut axis, 0.0, 2.0, &AxisScale::Linear);
+        assert_eq!(axis.label_style.format, engineering);
+        apply_axis_range(&mut axis, 1.0, 100.0, &AxisScale::Logarithmic);
+        assert_eq!(axis.label_style.format, LabelFormat::Power);
+    }
+
     #[test]
     fn direct_range_edits_preserve_custom_ticks_and_other_config() {
         for scale in [AxisScale::Linear, AxisScale::Logarithmic] {
@@ -2102,7 +2131,8 @@ mod tests {
             AxisScale::Linear => (
                 crate::tick::axis_major_spacing(&AxisScale::Linear, 1.0, 1000.0),
                 4,
-                LabelFormat::Decimal,
+                // #357: the range helpers give a linear axis clean labels.
+                LabelFormat::Auto(crate::format::AutoNumberFormat::DEFAULT),
             ),
             AxisScale::Logarithmic => (1.0, 8, LabelFormat::Power),
             AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
