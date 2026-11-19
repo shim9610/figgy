@@ -322,8 +322,8 @@ pub(crate) struct VectorSink<'a> {
     origin: [f32; 2],
     scale: f32,
     /// The scale the emitted document's pixel values already carry (1 for
-    /// a logical document): with `scale` it gives a glyph's logical size,
-    /// from which its hinting is decided (#357).
+    /// a logical document): with `scale` it gives the drawing's pixel
+    /// scale, from which its glyphs' hinting is decided (#357).
     carried: f32,
     /// The rectangle the raster's texture covers: a ramp image is cut to it.
     clip: Rect,
@@ -356,8 +356,8 @@ impl<'a> VectorSink<'a> {
     }
 
     /// The sink for a document whose pixel values already carry `scale`
-    /// (an export's scaled document): its glyphs are hinted as at their
-    /// logical sizes (#357).
+    /// (an export's scaled document): its glyphs are hinted only when the
+    /// export is at 1x (#357).
     pub(crate) fn carrying(self, scale: f32) -> Self {
         Self {
             carried: scale,
@@ -653,8 +653,8 @@ impl GlyphSink for VectorSink<'_> {
         color: &Color,
     ) {
         let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
-        let logical = size / (self.scale * self.carried);
-        let hint = crate::text_render::glyph_hinting(font, logical, script);
+        let pixel_scale = self.scale * self.carried;
+        let hint = crate::text_render::glyph_hinting(font, size, pixel_scale, script);
         self.out.glyph(font, glyph, size, hint, pen, *color);
     }
 

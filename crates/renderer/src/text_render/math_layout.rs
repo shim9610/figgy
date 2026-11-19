@@ -1704,17 +1704,25 @@ mod tests {
                     let m = measure_rich_text(&rt, policy);
                     let (rgba, w, h, (ox, oy)) = draw(&rt, policy);
                     let (x0, y0, x1, y1) = ink_box(&rgba, w, h).expect("a formula has ink");
+                    // Vertical slack: the envelope is measured on unhinted
+                    // outlines at fractional offsets (#357), while the 1x
+                    // raster snaps each glyph's baseline to a pixel and
+                    // grid-fits it, so the ink may reach half a pixel more.
+                    const SLACK: f32 = 1.5;
                     assert!(x0 as f32 >= ox - 1.0 && (x1 + 1) as f32 <= ox + m.width + 1.0);
                     assert!(
-                        y0 as f32 >= oy - m.ascent - 1.0,
+                        y0 as f32 >= oy - m.ascent - SLACK,
                         "{size}: top {y0} vs {m:?}"
                     );
                     assert!(
-                        (y1 + 1) as f32 <= oy + m.descent + 1.0,
+                        (y1 + 1) as f32 <= oy + m.descent + SLACK,
                         "{size}: {y1} vs {m:?}"
                     );
                     // The envelope is tight: the ink reaches its top.
-                    assert!((y0 as f32 - (oy - m.ascent)).abs() <= 1.0, "{size}: {m:?}");
+                    assert!(
+                        (y0 as f32 - (oy - m.ascent)).abs() <= SLACK,
+                        "{size}: {m:?}"
+                    );
                     let mut canvas = Canvas::new(w, h).unwrap();
                     let drawn = place_cell(
                         &mut CanvasSink::at(&mut canvas, 1.0),
@@ -1940,10 +1948,17 @@ mod tests {
             let (_, top, _, bottom) = ink_box(&rgba, w, h).unwrap();
             // The limits are inside the measured box: the ink reaches its
             // top (`n`) and its bottom (`i=1`), more than a nominal line.
-            assert!((top as f32 - (oy - m.ascent)).abs() <= 1.0, "{m:?}");
+            // Slack: the envelope is measured on unhinted outlines at
+            // fractional offsets (#357), while the 1x raster snaps each
+            // glyph's baseline to a pixel, so the ink may sit half a pixel
+            // further than the anti-aliasing pixel alone.
+            const SLACK: f32 = 1.5;
+            let top_off = top as f32 - (oy - m.ascent);
+            let bottom_off = (bottom + 1) as f32 - (oy + m.descent);
+            assert!(top_off.abs() <= SLACK, "{policy:?}: top {top_off} {m:?}");
             assert!(
-                ((bottom + 1) as f32 - (oy + m.descent)).abs() <= 1.0,
-                "{m:?}"
+                bottom_off.abs() <= SLACK,
+                "{policy:?}: bottom {bottom_off} {m:?}"
             );
             assert!(m.ascent + m.descent > size * 1.15);
             // Two lines: the rows of ink below the sum's lower limit start

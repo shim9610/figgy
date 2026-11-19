@@ -33,8 +33,8 @@ pub(crate) struct CanvasSink<'a> {
     origin: [f32; 2],
     scale: f32,
     /// The scale the emitted config's pixel values already carry (1 for a
-    /// logical config): with `scale` it gives a glyph's logical size, from
-    /// which its hinting is decided (#357).
+    /// logical config): with `scale` it gives the drawing's pixel scale,
+    /// from which its glyphs' hinting is decided (#357).
     carried: f32,
     /// The first text that could not be drawn (a glyph above
     /// `MAX_GLYPH_PX`); [`Self::finish`] returns it. Later parts still
@@ -76,8 +76,8 @@ impl<'a> CanvasSink<'a> {
     }
 
     /// The sink for a config whose pixel values already carry `scale` (a
-    /// display's or export's scaled config): its glyphs are hinted as at
-    /// their logical sizes (#357).
+    /// display's or export's scaled config): its glyphs are hinted only when
+    /// the drawing is at 1x (#357).
     pub(crate) fn carrying(self, scale: f32) -> Self {
         Self {
             carried: scale,

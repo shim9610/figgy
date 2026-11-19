@@ -756,25 +756,30 @@ fn font_hinting(font: FontRef<'static>, size: f32) -> bool {
     !is_handwritten(font) && size <= HINT_MAX_SIZE_PX
 }
 
-/// Whether a glyph of `font` whose logical size is `logical_size` is
-/// hinted when painted (#357): the one decision every raster and outline
-/// of a glyph reads. It is made from the logical size, the size the glyph
-/// has at 1x, so a glyph is hinted at every display and export scale or at
-/// none: the painting sink divides the drawn size by its pixel scale.
-/// Base text keeps its grid fit up to [`HINT_MAX_SIZE_PX`]
-/// ([`font_hinting`]); a glyph at a script position (`script`: a
-/// superscript or subscript segment, or a math leaf in script or
-/// scriptscript style) is never hinted. Hinting changes pixels only:
-/// every measurement the layout reads (advances and ink extents) is
-/// unhinted ([`glyph_extents_id`]), so positions do not depend on scale.
-pub(crate) fn glyph_hinting(font: FontRef<'static>, logical_size: f32, script: bool) -> bool {
-    let size = logical_size;
+/// Whether a glyph of `font` drawn at `size` pixels, in a drawing of
+/// `pixel_scale` pixels per logical pixel, is hinted when painted (#357):
+/// the one decision every raster and outline of a glyph reads. Grid
+/// fitting is per pixel grid, so a glyph hinted at two scales snaps
+/// differently at each and a 2x drawing would not be the 1x drawing
+/// scaled. Glyphs are therefore hinted only in a 1x drawing: base text up
+/// to [`HINT_MAX_SIZE_PX`] ([`font_hinting`]); a glyph at a script
+/// position (`script`: a superscript or subscript segment, or a math leaf
+/// in script or scriptscript style) never. Every other scale draws
+/// unhinted outlines. Hinting changes pixels only: every measurement the
+/// layout reads (advances and ink extents) is unhinted
+/// ([`glyph_extents_id`]), so positions are the same at every scale.
+pub(crate) fn glyph_hinting(
+    font: FontRef<'static>,
+    size: f32,
+    pixel_scale: f32,
+    script: bool,
+) -> bool {
     // The tolerance test draws the earlier, hinted scripts beside these.
     #[cfg(test)]
     if tests::SCRIPTS_HINTED.with(std::cell::Cell::get) {
         return font_hinting(font, size);
     }
-    !script && font_hinting(font, size)
+    pixel_scale == 1.0 && !script && font_hinting(font, size)
 }
 
 /// Synthetic embolden strength (px) for the handwritten face — ~2% of the
@@ -1152,7 +1157,7 @@ pub(crate) trait GlyphSink {
     fn paints(&self) -> bool;
     /// Glyph `glyph` of `font` at `size`, its pen at `pen` (left, baseline).
     /// `script` says whether it sits at a script position; a painting sink
-    /// decides its hinting from it and the glyph's logical size
+    /// decides its hinting from it, the glyph's size and its own pixel scale
     /// ([`glyph_hinting`]).
     fn glyph(
         &mut self,
@@ -1216,7 +1221,7 @@ impl GlyphSink for CanvasSink<'_> {
         if self.1.is_some() {
             return;
         }
-        let hint = glyph_hinting(font, size / self.2, script);
+        let hint = glyph_hinting(font, size, self.2, script);
         if let Err(error) = draw_glyph(self.0, font, size, glyph, hint, pen.0, pen.1, color) {
             self.1 = Some(error);
         }
@@ -1715,9 +1720,9 @@ pub fn draw_rich_text(
 }
 
 /// [`draw_rich_text`] for a text whose sizes carry `pixel_scale` pixels
-/// per logical pixel (a display or export scale): each glyph is hinted as
-/// at its logical size, so the text is hinted at every scale or at none
-/// (#357).
+/// per logical pixel (a display or export scale): its glyphs are hinted
+/// only at 1x, so every other scale draws the 1x layout unhinted (#357,
+/// [`glyph_hinting`]).
 pub(crate) fn draw_rich_text_at(
     canvas: &mut Canvas,
     rt: &RichText,
@@ -2042,8 +2047,7 @@ pub fn draw_plain_text(
 }
 
 /// [`draw_plain_text`] for a text whose size carries `pixel_scale` pixels
-/// per logical pixel: hinted as at its logical size (#357,
-/// [`draw_rich_text_at`]).
+/// per logical pixel: hinted only at 1x (#357, [`draw_rich_text_at`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_plain_text_at(
     canvas: &mut Canvas,
@@ -2292,7 +2296,7 @@ mod tests {
             for size in [12.0_f32, 24.0, 32.0, 33.0, 40.0, 51.0, 64.0, 102.0] {
                 let font = glyph_font(FontPolicy::Standard, "", false, false, ch);
                 let mut seen = None;
-                let hint = glyph_hinting(font, size, false);
+                let hint = glyph_hinting(font, size, 1.0, false);
                 with_glyph_mask_id(font, size, font.charmap().map(ch), 0, hint, |m| {
                     seen = Some((m.width, m.height))
                 })

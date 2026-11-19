@@ -123,11 +123,13 @@ and radar documents' `text_sizes`) are additive.
   text was hinted or not by its pixel size, and the layout read the
   hinted outlines, so the same label sat and snapped differently at 1x
   and 2x. Appearance only; no value, data position or pick moves.
-  - Hinting is decided once per glyph from its logical size: text up to
-    32 logical pixels is hinted at every scale, larger text at none, and
-    a glyph at a script position (a superscript or subscript segment, a
-    Unicode script character, a math leaf in script style) is never
-    hinted. One decision (`glyph_hinting`) serves the canvas, SVG and PDF.
+  - Glyphs are hinted only in a 1x drawing: base text up to 32 px there,
+    and never a glyph at a script position (a superscript or subscript
+    segment, a Unicode script character, a math leaf in script style).
+    Every other display or export scale draws unhinted outlines: grid
+    fitting snaps a glyph differently on each pixel grid, so hinting at
+    two scales could not keep 2x the 1x drawing scaled. One decision
+    (`glyph_hinting`) serves the canvas, SVG and PDF.
   - The layout measures unhinted outlines (advances, ascent, descent and
     ink extents), so label, title and band positions do not depend on the
     scale; hinting changes pixels only.
@@ -137,8 +139,9 @@ and radar documents' `text_sizes`) are additive.
   - The segment font sizes of category labels and group headers now scale
     with an export or display scale, as every other rich text does.
   - What moves in pixels, documents written by earlier releases included:
-    text in exports and displays above 1x is now hinted up to 32 logical
-    pixels, scripts render slightly softer (on the affected labels a mean
+    text in displays and exports at other scales than 1x is drawn
+    unhinted (before, up to 32 drawn pixels was hinted), scripts render
+    slightly softer (on the affected labels a mean
     colour difference over the inked pixels of at most 25 of 255, the 99th
     percentile at most 186, the script edges moving within a pixel), and
     labels whose position follows their ink extents move by a fraction of
