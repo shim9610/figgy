@@ -1321,7 +1321,7 @@ impl LevelPlacement<'_> {
             }
             // A label too wide for the narrowest strokes is left to the
             // stack and the other side: it does not narrow the rest.
-            let needed = 1.0 - (label.width + 2.0 * LABEL_GAP) / slot;
+            let needed = 1.0 - (label.width + 3.0 * LABEL_GAP) / slot;
             if needed >= floor {
                 fraction = fraction.min(needed);
             }
@@ -1352,8 +1352,9 @@ impl LevelPlacement<'_> {
     }
 
     /// How well `style`'s layout keeps the level and band labels, lower is
-    /// better: the labels on another column's stroke or fill, on a limit
-    /// line or on another label, then the labels moved off their own place.
+    /// better: the labels on (or within a label gap of) another column's
+    /// stroke or fill, on a limit line or on another label, then the labels
+    /// moved off their own place.
     fn label_cost(
         &self,
         records: &EnergyLevelSeries,
@@ -1418,9 +1419,16 @@ impl LevelPlacement<'_> {
                 moved += 1;
             }
             let column = Self::item_column(records, item);
+            // Another column's ink counts within a label gap of the label,
+            // so a label never ends flush against the next stroke.
+            let clear = RectF {
+                x: label.x - LABEL_GAP,
+                width: label.width + 2.0 * LABEL_GAP,
+                ..label
+            };
             let on_ink = (0..items).any(|other| {
                 Self::item_column(records, other) != column
-                    && inks[other].is_some_and(|r| overlap(label, r))
+                    && inks[other].is_some_and(|r| overlap(clear, r))
             });
             let on_label =
                 (item + 1..items).any(|other| labels[other].is_some_and(|r| overlap(label, r)));

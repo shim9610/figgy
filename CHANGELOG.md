@@ -93,12 +93,15 @@ and radar documents' `text_sizes`) are additive.
     moving into the neighbour's. It lays the labels out at the stored
     share and at each twentieth below it, down to the share that leaves
     the widest fitting label room before the next column's strokes. It
-    keeps the share with the fewest labels on another column's ink, a
-    limit line or another label, then the fewest labels moved to the other
-    side or onto a leader, then the widest. A second fit keeps the result.
-    He I at 800 × 600 with the Gallery sizes and Cu I at its own size draw
-    every label beside its own column; Cu I at 800 × 600 keeps 0.7, where
-    any narrower share draws more labels on other ink. A `Fixed` document
+    keeps the share with the fewest labels on (or within a label gap of)
+    another column's ink, on a limit line or on another label, then the
+    fewest labels moved to the other side or onto a leader, then the
+    widest. A second fit keeps the result. He I (0.65 at its own size, 0.5
+    at 800 × 600 with the Gallery sizes) and Cu I at its own size (0.5)
+    draw every level label beside its own stroke with room before the next
+    one; Cu I at 800 × 600 keeps 0.7, where its widest ²P° labels do not
+    fit the gap at any share and a narrower one draws more labels on
+    other ink. A `Fixed` document
     and `register_chart_as_given` keep the stored share, and
     `fit_ranges` applies the same fit.
   - `VectorStyle::auto_scale` is consumed by the first fit.
