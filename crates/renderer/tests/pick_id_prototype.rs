@@ -413,10 +413,10 @@ fn nearest_pick(
 /// included: each series' nearest, with no reach, then the nearest of
 /// those), whichever series it belongs to. Data ink here is the export
 /// with the scene's series against the export without them (a channel
-/// difference of at least 6), which stands in for the panel's resolved
-/// data pixels. Only the point picker's families count as ink (the other
-/// families keep today's typed data picks), and 3D charts are skipped: this
-/// kernel places data with the 2D projection only. Reported, not failed:
+/// difference of at least `FIGGY_PICK_INK`, default 1: the antialiased
+/// fringe counts), which stands in for the composited panel pixel. Only the
+/// point picker's families count as ink (the other families keep today's
+/// typed data picks). 3D charts pick through the kernel's 3D projection. Reported, not failed:
 /// - hit/no-hit agreement with today;
 /// - where both hit, how often the nearest datum's series differs from
 ///   today's series, and how often the same series answers another index.
@@ -424,6 +424,10 @@ fn nearest_pick(
 #[ignore = "measurement (#381): run in release with --ignored"]
 fn nearest_per_series_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
     let step = env_f32("FIGGY_PICK_ID_STEP", 6.0);
+    // Ink: any channel off the export without the point families by at
+    // least this many levels (default 1: alpha over the background above
+    // 1/255, so the antialiased fringe counts).
+    let ink_threshold = env_f32("FIGGY_PICK_INK", 1.0) as u8;
     let mut rows = Vec::new();
     let mut total = [0usize; 8];
     println!(
@@ -446,13 +450,6 @@ fn nearest_per_series_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
             })
             .unwrap_or_else(|error| panic!("{}: {error}", kind.label()))
         };
-        if scene.config.view_3d().is_some() {
-            println!(
-                "| {} | skipped: 3D (this kernel places data in 2D only) | | | | | | | | | | |",
-                kind.label()
-            );
-            continue;
-        }
         // Data ink of the point picker's families only: the export without
         // them keeps every other series (fields, bars, boxes, levels...),
         // which today's typed data picks answer.
@@ -498,7 +495,7 @@ fn nearest_per_series_with_ink_hit_vs_exact_picker_on_gallery_scenes() {
                 return false;
             }
             let i = ((py * with.width + px) * 4) as usize;
-            (0..4).any(|c| with.rgba[i + c].abs_diff(without.rgba[i + c]) >= 6)
+            (0..4).any(|c| with.rgba[i + c].abs_diff(without.rgba[i + c]) >= ink_threshold)
         };
         let request = |x: f32, y: f32, reach: f32| GpuPickRequest {
             canvas_position_px: [x, y],

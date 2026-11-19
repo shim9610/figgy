@@ -57,7 +57,8 @@ impl Renderer {
     /// each with its own axes. The ink a user sees is the composite of
     /// those layers, so the nearest datum is searched in all of them. The
     /// tickets are in drawing order; [`crate::gpu_pick::NearestLayersTicket`]
-    /// merges them (an exact tie to the layer drawn later, on top).
+    /// merges them: the nearest datum wins whatever its layer, an exact
+    /// tie goes to the active layer, then to the layer drawn later.
     #[doc(hidden)]
     pub fn pick_chart_nearest_layers_prototype(
         &mut self,
@@ -115,7 +116,7 @@ impl Renderer {
                 PrototypePick::Nearest,
                 Some(layer),
             )? {
-                PrototypeTicket::Nearest(ticket) => tickets.push(ticket),
+                PrototypeTicket::Nearest(ticket) => tickets.push((layer, ticket)),
                 PrototypeTicket::Id(_) => {
                     return Err(crate::gpu_pick::GpuPickError::Internal(
                         "a nearest-datum pick returns a nearest-datum ticket",
@@ -123,7 +124,7 @@ impl Renderer {
                 }
             }
         }
-        Ok(crate::gpu_pick::NearestLayersTicket::new(tickets))
+        Ok(crate::gpu_pick::NearestLayersTicket::new(tickets, group))
     }
 
     /// How many nearest-datum pipelines this renderer has created (#381
@@ -300,6 +301,38 @@ impl Renderer {
             max_distance_px: request.max_distance_px,
             draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
         };
+        // A 3D chart: the draw's camera mapped onto the cursor's pixel (the
+        // 3D ID pick's construction) and each slot's height column.
+        let camera = display_config.view_3d().and_then(|_| {
+            let (px, py) = (
+                f64::from(request.canvas_position_px[0]),
+                f64::from(request.canvas_position_px[1]),
+            );
+            let target = ((px - 0.5, py - 0.5), (1.0, 1.0));
+            data_render::surface_mesh::view3d_gpu(display_config, target, target)
+        });
+        let mut heights: Vec<Option<(u32, u32)>> = Vec::new();
+        if camera.is_some() {
+            heights.try_reserve_exact(slots.len()).map_err(|_| {
+                crate::gpu_pick::GpuPickError::AllocationFailed {
+                    resource: "nearest pick heights",
+                }
+            })?;
+            for series_id in slots.series_ids() {
+                let lanes = layer_series
+                    .iter()
+                    .find(|series| series.series_id == series_id)
+                    .and_then(|series| display_config.drawn_z_column(series))
+                    .and_then(|z| self.pool.handle_for(z))
+                    .and_then(|handle| {
+                        Some((
+                            u32::try_from(handle.offset / 4).ok()?,
+                            u32::try_from(handle.len_values).ok()?,
+                        ))
+                    });
+                heights.push(lanes);
+            }
+        }
         let device = self.device.clone();
         let picker = &mut self.picker;
         let active = picker
@@ -327,6 +360,10 @@ impl Renderer {
                     request.display_scale,
                     inputs.member_count(),
                     &|member| inputs.member_transform(member),
+                    camera.map(|camera| crate::gpu_pick::NearestPick3d {
+                        camera,
+                        heights: &heights,
+                    }),
                 )?;
                 ticket.monotonic = monotonic_rows;
                 return Ok(PrototypeTicket::Nearest(ticket));

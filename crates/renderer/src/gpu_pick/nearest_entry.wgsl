@@ -1,11 +1,13 @@
 // The nearest-datum pick (#381 prototype, the maintainer's decision: one
 // nearest datum per series, no reach): one compute kernel for every series
 // whose data are (x, y) columns (markers, lines, point vectors, stems and
-// error bars anchored at their points). Each datum is placed with the
-// draw's own projection (`pick_data_px`, the shared transform and
-// projection fragments); its screen distance to the cursor is the pick
-// distance. There is no shape, stroke, dash or style, and no reach: every
-// datum the draw places is a candidate.
+// error bars anchored at their points). Each datum is placed by the
+// projection fragment spliced before this one (`nearest_project_2d.wgsl`
+// or `nearest_project_3d.wgsl`: `pick_nearest_offset`, the datum's screen
+// offset from the cursor in pixels, through the draw's own shared
+// projection); its length is the pick distance. There is no shape,
+// stroke, dash or style, and no reach: every datum the draw places is a
+// candidate.
 //
 // The layout is the exact pass's (`exact_entry.wgsl`): one workgroup of
 // `PICK_WORKGROUP_SIZE` invocations per `PICK_GATE_WORD_POINTS` × that many
@@ -18,22 +20,11 @@
 
 fn pick_nearest_candidate(i: u32) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    let x = pick_read_pair(pick_query_params.data.y, i);
-    let y = pick_read_pair(pick_query_params.data.z, i);
-    var p = vec2<f32>(0.0);
-    if pick_ternary() {
-        if !pick_ternary_valid(i, x, y) {
-            return pick_invalid_candidate(series_order);
-        }
-        p = pick_ternary_px(i, x, y);
-    } else {
-        if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u)
-            || !polar_sample_valid(pick_query_params.transform, x, y) {
-            return pick_invalid_candidate(series_order);
-        }
-        p = pick_data_px(x, y);
+    let offset = pick_nearest_offset(i);
+    if offset.z == 0.0 {
+        return pick_invalid_candidate(series_order);
     }
-    let d = pick_cursor_px() - p;
+    let d = offset.xy;
     let distance_sq = dot(d, d);
     if !pick_is_finite(distance_sq) {
         return pick_invalid_candidate(series_order);

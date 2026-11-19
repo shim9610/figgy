@@ -310,6 +310,7 @@ pub const MODULES_BY_SET: &[(&str, AssembledBySet)] = &[
     ("pick_id", crate::gpu_pick::ID_PICK_MODULE.1),
     ("pick_id_vector", crate::gpu_pick::ID_PICK_VECTOR_MODULE.1),
     ("pick_nearest", crate::gpu_pick::NEAREST_PICK_MODULE.1),
+    ("pick_nearest_3d", crate::gpu_pick::NEAREST_PICK_3D_MODULE.1),
 ];
 
 /// The source of the module called `name` in [`MODULES_BY_SET`] assembled

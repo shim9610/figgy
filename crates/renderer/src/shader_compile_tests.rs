@@ -80,7 +80,9 @@ fn all_shader_compilation_times_and_entry_coverage() {
             crate::gpu_pick::IdPickPipelines::new(&device, set).ensure_all(&device);
             // The nearest-datum kernel of the xy column kind (#381
             // prototype).
-            crate::gpu_pick::NearestPickPipelines::new(set).ensure(&bundle);
+            let mut nearest = crate::gpu_pick::NearestPickPipelines::new(set);
+            nearest.ensure(&bundle);
+            nearest.ensure_3d(&bundle);
         }
         data_render::stream_field::Pipelines::new(
             &device,

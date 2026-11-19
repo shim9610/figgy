@@ -45,7 +45,9 @@ use engine::{GPU_PICK_DIRECT_SCAN_POINTS, GPU_PICK_WORKGROUP_SIZE, GpuPickTicket
 use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_base};
 pub(crate) use id_pass::{ID_PICK_MODULE, ID_PICK_VECTOR_MODULE, IdPickPipelines};
 pub use id_pass::{IdPickGeometry, IdPickHit, IdPickTicket};
-pub(crate) use nearest_pass::{NEAREST_PICK_MODULE, NearestPickPipelines};
+pub(crate) use nearest_pass::{
+    NEAREST_PICK_3D_MODULE, NEAREST_PICK_MODULE, NearestPick3d, NearestPickPipelines,
+};
 pub use nearest_pass::{NearestDatum, NearestLayersTicket, NearestPick, NearestPickTicket};
 #[cfg(test)]
 use registry::GpuPickSeriesId;

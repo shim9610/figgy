@@ -15,11 +15,12 @@
 //! target, so neither MSAA nor integer formats are involved. The readback
 //! holds the panel's nearest datum and each series' own nearest one.
 
-use super::engine::create_buffer_checked;
+use super::engine::{create_bind_group_checked, create_buffer_checked};
 use super::*;
 use crate::shader_assembly::{AssembledBySet, ShaderSet, assembled_by_set};
 
-/// The xy column kind's nearest-datum module.
+/// The xy column kind's nearest-datum module on a flat chart: the 2D
+/// placement (`nearest_project_2d.wgsl`) and the kernel.
 pub(crate) const NEAREST_PICK_MODULE: (&str, AssembledBySet) = (
     "figgy GPU pick nearest-datum shader",
     assembled_by_set!(
@@ -27,21 +28,54 @@ pub(crate) const NEAREST_PICK_MODULE: (&str, AssembledBySet) = (
         set,
         "data_render/common/projection.wgsl",
         "data_render/common/sample_validity.wgsl",
+        "gpu_pick/nearest_project_2d.wgsl",
         "gpu_pick/nearest_entry.wgsl",
     ),
 );
 
-/// The nearest-datum pipeline of one shader set, created on first use.
+/// The same kernel on a 3D chart: the shared 3D projection
+/// (`common/project_3d.wgsl`) and the 3D placement
+/// (`nearest_project_3d.wgsl`). The column kind's second projection, not a
+/// style variant.
+pub(crate) const NEAREST_PICK_3D_MODULE: (&str, AssembledBySet) = (
+    "figgy GPU pick nearest-datum 3D shader",
+    assembled_by_set!(
+        "gpu_pick/core.wgsl",
+        set,
+        "data_render/common/projection.wgsl",
+        "data_render/common/sample_validity.wgsl",
+        "data_render/common/project_3d.wgsl",
+        "gpu_pick/nearest_project_3d.wgsl",
+        "gpu_pick/nearest_entry.wgsl",
+    ),
+);
+
+/// Group 3 of the 3D kernel: the camera (`project_3d.wgsl`, binding 4).
+const VIEW3D_ENTRIES: [wgpu::BindGroupLayoutEntry; 1] = [wgpu::BindGroupLayoutEntry {
+    binding: 4,
+    visibility: wgpu::ShaderStages::COMPUTE,
+    ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    },
+    count: None,
+}];
+
+/// The nearest-datum pipelines of one shader set, each created on first
+/// use: the flat and the 3D projection of the xy column kind.
 pub struct NearestPickPipelines {
     set: ShaderSet,
-    pipeline: Option<wgpu::ComputePipeline>,
+    flat: Option<wgpu::ComputePipeline>,
+    view3d: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
 }
 
 impl NearestPickPipelines {
     pub(crate) fn new(set: ShaderSet) -> Self {
         Self {
             set,
-            pipeline: None,
+            flat: None,
+            view3d: None,
         }
     }
 
@@ -49,44 +83,100 @@ impl NearestPickPipelines {
         self.set
     }
 
-    /// How many pipelines have been created (0 or 1: one per column kind).
+    /// How many pipelines have been created: one per projection used.
     pub fn created(&self) -> usize {
-        usize::from(self.pipeline.is_some())
+        usize::from(self.flat.is_some()) + usize::from(self.view3d.is_some())
     }
 
+    fn create(
+        bundle: &PickPipelineBundle,
+        set: ShaderSet,
+        module: (&str, AssembledBySet),
+        layout: &wgpu::PipelineLayout,
+    ) -> wgpu::ComputePipeline {
+        let device = &bundle.device;
+        let shader = crate::gpu_compile::shader_module(
+            device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some(module.0),
+                source: wgpu::ShaderSource::Wgsl(module.1.of(set).source.into()),
+            },
+        );
+        let base = crate::gpu_compile::workgroup_options(device);
+        crate::gpu_compile::compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("figgy GPU pick nearest-datum pipeline"),
+                layout: Some(layout),
+                module: &shader,
+                entry_point: Some("pick_nearest_points"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[],
+                    zero_initialize_workgroup_memory: base.zero_initialize_workgroup_memory,
+                },
+                cache: None,
+            },
+        )
+    }
+
+    /// The flat chart's pipeline.
     pub(crate) fn ensure(&mut self, bundle: &PickPipelineBundle) -> &wgpu::ComputePipeline {
         let set = self.set;
-        self.pipeline.get_or_insert_with(|| {
+        self.flat.get_or_insert_with(|| {
+            Self::create(bundle, set, NEAREST_PICK_MODULE, &bundle.exact_layout)
+        })
+    }
+
+    /// The 3D chart's pipeline and its camera group layout.
+    pub(crate) fn ensure_3d(
+        &mut self,
+        bundle: &PickPipelineBundle,
+    ) -> &(wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+        let set = self.set;
+        self.view3d.get_or_insert_with(|| {
             let device = &bundle.device;
-            let module = crate::gpu_compile::shader_module(
+            let view_bgl = crate::gpu_compile::bind_group_layout(
                 device,
-                wgpu::ShaderModuleDescriptor {
-                    label: Some(NEAREST_PICK_MODULE.0),
-                    source: wgpu::ShaderSource::Wgsl(NEAREST_PICK_MODULE.1.of(set).source.into()),
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("figgy GPU pick nearest-datum camera bgl"),
+                    entries: &VIEW3D_ENTRIES,
                 },
             );
-            let base = crate::gpu_compile::workgroup_options(device);
-            crate::gpu_compile::compute_pipeline(
+            let layout = crate::gpu_compile::pipeline_layout(
                 device,
-                &wgpu::ComputePipelineDescriptor {
-                    label: Some("figgy GPU pick nearest-datum pipeline"),
-                    layout: Some(&bundle.exact_layout),
-                    module: &module,
-                    entry_point: Some("pick_nearest_points"),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[],
-                        zero_initialize_workgroup_memory: base.zero_initialize_workgroup_memory,
-                    },
-                    cache: None,
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some("figgy GPU pick nearest-datum 3D layout"),
+                    bind_group_layouts: &[
+                        Some(&bundle.query_data_bgl),
+                        Some(&bundle.query_work_bgl),
+                        Some(&bundle.arc_bgl),
+                        Some(&view_bgl),
+                    ],
+                    immediate_size: 0,
                 },
+            );
+            (
+                Self::create(bundle, set, NEAREST_PICK_3D_MODULE, &layout),
+                view_bgl,
             )
         })
     }
 }
 
-/// One series' nearest datum within the reach.
+/// The camera and the height columns of a 3D chart's nearest-datum pick:
+/// the draw's camera premultiplied by the map from the cursor's pixel onto
+/// clip space, and each registered series' height column as (f32-lane
+/// base, length), by registry position.
+pub(crate) struct NearestPick3d<'a> {
+    pub(crate) camera: crate::data_render::surface_mesh::View3dGpu,
+    pub(crate) heights: &'a [Option<(u32, u32)>],
+}
+
+/// One series' nearest datum.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NearestDatum {
+    /// The layer the series is drawn on (`Base` for a pick of one layer).
+    pub layer: crate::LayerRef,
     pub source_id: Option<String>,
     pub series_id: String,
     /// The logical index (a monotonic series' sample index).
@@ -178,6 +268,7 @@ impl NearestPickTicket {
                 None => candidate.point_index as usize,
             };
             Ok(Some(NearestDatum {
+                layer: crate::LayerRef::Base,
                 source_id: identity.source_id.clone(),
                 series_id: identity.series_id.clone(),
                 point_index,
@@ -205,30 +296,44 @@ impl NearestPickTicket {
 
 /// The nearest-datum picks of every drawn layer at the cursor, in drawing
 /// order (#381): resolved into one [`NearestPick`] whose `per_series` lists
-/// every layer's series and whose `nearest` is the nearest of all, an exact
-/// tie going to the layer drawn later (on top).
+/// every layer's series with its layer, and whose `nearest` is the nearest
+/// of all, whatever its layer. The maintainer's rule: an exact distance tie
+/// goes to the active layer, then to the layer drawn later (on top).
 pub struct NearestLayersTicket {
-    layers: Vec<NearestPickTicket>,
+    layers: Vec<(crate::LayerRef, NearestPickTicket)>,
+    active: crate::LayerRef,
 }
 
 impl NearestLayersTicket {
-    pub(crate) fn new(layers: Vec<NearestPickTicket>) -> Self {
-        Self { layers }
+    pub(crate) fn new(
+        layers: Vec<(crate::LayerRef, NearestPickTicket)>,
+        active: crate::LayerRef,
+    ) -> Self {
+        Self { layers, active }
     }
 
     fn merge(
-        picks: impl Iterator<Item = Result<NearestPick, GpuPickError>>,
+        active: crate::LayerRef,
+        picks: impl Iterator<Item = (crate::LayerRef, Result<NearestPick, GpuPickError>)>,
     ) -> Result<NearestPick, GpuPickError> {
         let mut merged = NearestPick::default();
-        for pick in picks {
-            let pick = pick?;
-            if let Some(found) = pick.nearest
-                && merged
-                    .nearest
-                    .as_ref()
-                    .is_none_or(|best| found.distance_px <= best.distance_px)
-            {
-                merged.nearest = Some(found);
+        for (layer, pick) in picks {
+            let mut pick = pick?;
+            for datum in pick.nearest.iter_mut().chain(pick.per_series.iter_mut()) {
+                datum.layer = layer;
+            }
+            if let Some(found) = pick.nearest {
+                let better = match merged.nearest.as_ref() {
+                    None => true,
+                    Some(best) if found.distance_px != best.distance_px => {
+                        found.distance_px < best.distance_px
+                    }
+                    // An exact tie: the active layer, then the later layer.
+                    Some(best) => best.layer != active || found.layer == active,
+                };
+                if better {
+                    merged.nearest = Some(found);
+                }
             }
             merged
                 .per_series
@@ -249,19 +354,21 @@ impl NearestLayersTicket {
             .map_err(|_| GpuPickError::AllocationFailed {
                 resource: "nearest pick layers",
             })?;
-        for ticket in self.layers {
-            picks.push(ticket.resolve().await);
+        for (layer, ticket) in self.layers {
+            picks.push((layer, ticket.resolve().await));
         }
-        Self::merge(picks.into_iter())
+        Self::merge(self.active, picks.into_iter())
     }
 
     /// [`Self::resolve`], polling the device on this thread.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn resolve_blocking(self) -> Result<NearestPick, GpuPickError> {
+        let active = self.active;
         Self::merge(
+            active,
             self.layers
                 .into_iter()
-                .map(NearestPickTicket::resolve_blocking),
+                .map(|(layer, ticket)| (layer, ticket.resolve_blocking())),
         )
     }
 }
@@ -280,6 +387,7 @@ impl GpuPickEngine {
         display_scale: f32,
         members: usize,
         member_transform: &dyn Fn(usize) -> ScatterTransform,
+        view3d: Option<NearestPick3d<'_>>,
     ) -> Result<NearestPickTicket, GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
         let [_, _, chart_width, chart_height] = query.chart_rect_px;
@@ -306,7 +414,36 @@ impl GpuPickEngine {
                 column_id: first.gpu.x_column.clone(),
             });
         }
-        let pipeline = pipelines.ensure(&self.bundle).clone();
+        let (pipeline, camera_bg) = match &view3d {
+            None => (pipelines.ensure(&self.bundle).clone(), None),
+            Some(view) => {
+                let (pipeline, view_bgl) = pipelines.ensure_3d(&self.bundle).clone();
+                let tally = ChargeTally::new();
+                let buffer = charged_buffer_init(
+                    &tally,
+                    &self.bundle.device,
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("figgy GPU pick nearest-datum camera"),
+                        contents: bytemuck::bytes_of(&view.camera),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    },
+                )
+                .map_err(|error| GpuPickError::from_figgy(error))?;
+                let bind_group = create_bind_group_checked(
+                    &self.bundle.device,
+                    &wgpu::BindGroupDescriptor {
+                        label: Some("figgy GPU pick nearest-datum camera bg"),
+                        layout: &view_bgl,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: buffer.as_entire_binding(),
+                        }],
+                    },
+                    "nearest pick camera bind group",
+                )?;
+                (pipeline, Some(bind_group))
+            }
+        };
         let members = members.min(self.registry.slots.len());
         let first_member = self.registry.slots.len() - members;
         for (series_order, slot) in self.registry.slots.iter().enumerate() {
@@ -329,6 +466,18 @@ impl GpuPickEngine {
             );
             if let Some(member) = series_order.checked_sub(first_member) {
                 params.transform = member_transform(member);
+            }
+            // A 3D chart's heights, where the 2D kernel reads a ternary
+            // series' third component (a 3D chart is never ternary).
+            if let Some(view) = &view3d {
+                let (base, len) = view
+                    .heights
+                    .get(series_order)
+                    .copied()
+                    .flatten()
+                    .unwrap_or((0, 0));
+                params.size_map[2] = base;
+                params.size_map[3] = len;
             }
             self.bundle
                 .queue
@@ -361,6 +510,9 @@ impl GpuPickEngine {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(2, &self.bundle.arc_placeholder, &[]);
+            if let Some(bind_group) = &camera_bg {
+                pass.set_bind_group(3, bind_group, &[]);
+            }
             for slot in &self.registry.slots {
                 let series = &slot.gpu;
                 pass.set_bind_group(0, &series.query_data_bg, &[]);
@@ -602,7 +754,15 @@ mod scale_tests {
                 let mut nearest_answer = None;
                 let mut nearest = || {
                     nearest_answer = engine
-                        .pick_nearest(&mut pipelines, &pool, query, 1.0, 0, &|_| query.transform)
+                        .pick_nearest(
+                            &mut pipelines,
+                            &pool,
+                            query,
+                            1.0,
+                            0,
+                            &|_| query.transform,
+                            None,
+                        )
                         .unwrap()
                         .resolve_blocking()
                         .unwrap()

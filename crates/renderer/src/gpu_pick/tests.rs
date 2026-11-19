@@ -3524,6 +3524,7 @@ fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
         super::ID_PICK_MODULE,
         super::ID_PICK_VECTOR_MODULE,
         super::NEAREST_PICK_MODULE,
+        super::NEAREST_PICK_3D_MODULE,
     ] {
         let fragments = by_set.full.fragments;
         assert_eq!(fragments[0], "gpu_pick/core.wgsl", "{label}");
