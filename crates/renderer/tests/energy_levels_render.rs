@@ -1068,7 +1068,7 @@ fn a_crowd_collapses_instead_of_fanning_out() {
     for k in 0..12 {
         levels
             .levels
-            .push(labelled(&format!("c{k}"), "b", 20.0 + 4.0 * k as f64));
+            .push(labelled(&format!("c{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     levels.levels.push(labelled("alone", "b", 92.0));
     let (space, measure) = layout_of(&chart, &levels);
@@ -1130,7 +1130,7 @@ fn crowded_labels_stack_apart_and_dense_runs_collapse() {
     for k in 0..5 {
         levels
             .levels
-            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.0 * k as f64));
+            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     for k in 0..20 {
         levels

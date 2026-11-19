@@ -743,43 +743,17 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
 ];
 
 /// Rows only the `auto_layout` sweep has, which it must still find.
-const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
-    Exclusion {
-        scene: "EnergyLevelsU",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I6,
-        detail: "bounds * after the drag, * expected",
-        reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
+const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[Exclusion {
+    scene: "EnergyLevelsU",
+    layer: "annotations",
+    element: "annotation_0",
+    inv: Inv::I6,
+    detail: "bounds * after the drag, * expected",
+    reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
                  plot's edge, so a drag down moves only its lower edge: its bounds grow \
                  instead of moving",
-        issue: "#205",
-    },
-    // The `Annotations` scene's arrow past its tip (the shared exclusions'
-    // rows) at the data area the exact bands give it, with the chart title
-    // band holding the font's line (#270): 2 points and 2 pixels at 1x and
-    // at 2x where the shared rows have 4, 2 points after the drag. The
-    // points are the shaft's grab band left of the head's tip, over the
-    // span.
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_3",
-        inv: Inv::I2,
-        detail: "2 points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_3",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_3: 2 points of stroke outlines*",
-        reason: "the arrow shaft past the tip, as in I2",
-        issue: "#47",
-    },
-];
+    issue: "#205",
+}];
 
 /// Which documents a sweep checks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
