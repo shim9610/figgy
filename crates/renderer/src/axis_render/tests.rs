@@ -2645,7 +2645,7 @@ const ADAPTIVE_LABEL_TABLE: &str = r#"1e-9..1e9 @120 Bottom | Power: 10^-9 10^-3
 1e0..1e2 @960 Bottom | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
 1e0..1e2 @960 Left | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
 3e3..8e5 @120 Bottom | Power: 10^4 10^5 | Sci: 1e4 1e5 | Dec: 10000 100000 | Plain: 10000 100000
-3e3..8e5 @120 Left | Power: 10^4 10^5 | Sci: 1e4 1e5 | Dec: 10000 100000 | Plain: 10000 100000
+3e3..8e5 @120 Left | Power: 10^4 10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
 3e3..8e5 @240 Bottom | Power: 10^4 10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 10000 100000 | Plain: 10000 100000
 3e3..8e5 @240 Left | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
 3e3..8e5 @480 Bottom | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
@@ -2678,16 +2678,12 @@ const ADAPTIVE_LABEL_TABLE: &str = r#"1e-9..1e9 @120 Bottom | Power: 10^-9 10^-3
 2.1e4..2.9e4 @960 Left | Power:  | Sci:  | Dec:  | Plain: 
 "#;
 
-/// The cells whose labels differ at 2x: the digit box of a plain label is
-/// 9 px tall at 12 px and 17 px at 24 px (glyph metrics do not scale
-/// linearly), so the 5e3 and 1e4 labels of a 120 px axis are 5.9 px apart
-/// against the half-em 6 px at 1x and clear it at 2x. The half-em rule and
-/// the measurement are the stride's, unchanged by the ladder.
-const ADAPTIVE_2X_EXCEPTIONS: [&str; 3] = [
-    "3e3..8e5 @120 Left Sci",
-    "3e3..8e5 @120 Left Dec",
-    "3e3..8e5 @120 Left Plain",
-];
+/// The cells whose labels differ at 2x: none. The layout measures unhinted
+/// glyph metrics, which scale linearly (#357), so a 120 px axis keeps the
+/// same labels at 1x and 2x. (Hinted metrics made the digit box of a plain
+/// label 9 px tall at 12 px and 17 px at 24 px, so three cells of the
+/// 3e3..8e5 range at 120 px once dropped labels at 1x only.)
+const ADAPTIVE_2X_EXCEPTIONS: [&str; 0] = [];
 
 /// Whatever the pixels, the labels kept are a ladder's labels or every n-th
 /// of them, with half an em between neighbours, on every side, inverted and
