@@ -3892,7 +3892,21 @@ mod range_bar_tests {
     }
 
     fn links() -> SeriesConfig {
-        SeriesConfig::range_links("deps", "one", "deps.from", "deps.to")
+        SeriesConfig {
+            series_id: "deps".into(),
+            source_id: None,
+            label: None,
+            x_column: "deps.from".into(),
+            y_column: "deps.to".into(),
+            z_column: None,
+            render_type: DataRenderType::RangeLinks(RangeLinkSeries {
+                bars: "one".into(),
+                color: Color::from_rgb8(212, 162, 76),
+                width: 1.5,
+                head: 6.0,
+                inset: 6.0,
+            }),
+        }
     }
 
     fn style(l: &mut SeriesConfig) -> &mut RangeLinkSeries {
