@@ -36,7 +36,7 @@ pub struct Config {
     pub line_offsets: Option<LineOffsets>,   // offset spectra: line series drawn stacked by a step; None = every series where its values are
     pub plot_background: Option<Color>,      // a fill under the data area and grid (#203); None = transparent
     pub background: Option<Color>,           // a fill over the whole chart area, under everything else (#265); None = transparent
-    pub layout_state: LayoutState,           // Fixed (default: drawn as stored) | Fitted (the chart object keeps the layout fitted: fitted when created and on chart edits, never by a draw) (#357)
+    pub layout_state: LayoutState,           // Fixed (default: drawn as stored) | Fitted (a new chart: the chart object keeps the layout fitted, fitted when created and on chart edits, never by a draw; `register_chart` also fits its ranges and vector scales once) (#357)
 }
 ```
 
@@ -842,7 +842,7 @@ for picks, selection and export.
 
 An energy-level (Grotrian) diagram ([#203](https://github.com/shim9610/figgy/issues/203)) is a DataLess series: its records follow the NIST Atomic Spectra Database exports and live in the chart's configuration, serialized with the document. The host parses the exports (the `nist_grotrian` example shows a std-only parser) and supplies every value, such as a multiplet's g-weighted centroid.
 
-`default::config_for_series(&series)` ([#357](https://github.com/shim9610/figgy/issues/357)) returns the default config in the Grotrian frame (`AxisPreset::Grotrian`) for a chart that draws an energy-level series; the frame is chosen once, where the chart is made, and the host can apply another preset afterwards.
+`default::config_for_series(&mut series)` ([#357](https://github.com/shim9610/figgy/issues/357)) returns the default config in the Grotrian frame (`AxisPreset::Grotrian`) for a chart that draws an energy-level series; the frame is chosen once, where the chart is made, and the host can apply another preset afterwards.
 
 | Field | Type | Description |
 |---|---|---|
@@ -866,7 +866,7 @@ There is no count limit on any list. The chart needs a categorical `bottom_x` on
 
 A Feynman diagram ([#234](https://github.com/shim9610/figgy/issues/234)) is a DataLess series whose data is the topology: which particles meet at which vertex. Every value lives in the chart's configuration and is serialized with the document; `x_column` and `y_column` stay empty and nothing is registered. A vertex position is optional: an unplaced vertex is drawn where the automatic layout puts it, and `place_feynman_vertices` writes that place into `at`. See [Feynman diagrams](FEYNMAN.md).
 
-`default::config_for_series(&series)` ([#357](https://github.com/shim9610/figgy/issues/357)) returns the default config without axes, ticks, tick labels or grid (`AxisPreset::Hidden`) for a chart that draws a Feynman series; the frame is chosen once, where the chart is made, and the host can turn the axes back on with another preset.
+`default::config_for_series(&mut series)` ([#357](https://github.com/shim9610/figgy/issues/357)) returns the default config without axes, ticks, tick labels or grid (`AxisPreset::Hidden`) for a chart that draws a Feynman series; the frame is chosen once, where the chart is made, and the host can turn the axes back on with another preset.
 
 | Field | Type | Description |
 |---|---|---|
@@ -1017,14 +1017,16 @@ An upserted value column restyles the points on the next draw.
   `VectorStyle::fit_scale(u_bounds, v_bounds, target_px_or_units)` writes it
   from statistics the host already has, the way `PointSizeMap::fit_domain`
   writes a domain, so appending a sample never rescales the others.
-- `auto_scale` (#357): whether a whole-chart fit may rewrite a `Pixels`
-  scale so the longest vector draws about as long as the spacing between
-  arrows, `VectorStyle::auto_scale_target_px` (`sqrt(data area / arrows)`
-  times 0.9, at least the head length). `Renderer::commit_auto_fit_all` (the
-  browser `auto_fit_all`) runs `Renderer::fit_vector_scales` on the chart's
-  series and stores the result in `scale`; a host that fits with
-  `fit_ranges` calls `fit_vector_scales` itself. The arrows always draw at
-  the stored `scale`. The series constructors turn it on; `fit_scale`,
+- `auto_scale` (#357): whether the next fit writes a `Pixels` scale so the
+  longest vector draws about as long as the spacing between arrows,
+  `VectorStyle::auto_scale_target_px` (`sqrt(data area / arrows)` times
+  0.9, at least the head length). The fit runs once: `Renderer::register_chart`
+  on a new chart (`LayoutState::Fitted`), `Renderer::fit_ranges`, and
+  `Renderer::commit_auto_fit_all` (the browser `auto_fit_all`) run
+  `Renderer::fit_vector_scales`, which stores the result in `scale` and
+  turns `auto_scale` off, so the stored scale stays through later fits. A
+  field of zero vectors keeps the flag. The arrows always draw at the
+  stored `scale`. The series constructors turn it on; `fit_scale`,
   `fit_scale_3d` and the `vector_scale` builder, explicit scales, turn it
   off. Omitted from JSON while `false`, which a document without it reads.
 - `pivot`: `Tail` (default, the anchor is the tail), `Middle` or `Tip`.
@@ -1556,7 +1558,7 @@ pub struct Config {
     pub line_offsets: Option<LineOffsets>,   // 오프셋 스펙트럼: 선 시리즈를 일정 간격씩 밀어 쌓아 그린다. None이면 모든 시리즈를 값 그대로 그린다
     pub plot_background: Option<Color>,      // 데이터 영역과 격자 아래를 채우는 색(#203). None이면 투명하다
     pub background: Option<Color>,           // 차트 영역 전체를 다른 모든 요소 아래에서 채우는 색(#265). None이면 투명하다
-    pub layout_state: LayoutState,           // Fixed(기본값, 저장된 그대로 그린다) | Fitted(차트 객체가 레이아웃을 맞춘 상태로 유지한다. 만들 때와 차트 편집 때 맞추고, 그리기는 맞추지 않는다) (#357)
+    pub layout_state: LayoutState,           // Fixed(기본값, 저장된 그대로 그린다) | Fitted(새 차트. 차트 객체가 레이아웃을 맞춘 상태로 유지한다. 만들 때와 차트 편집 때 맞추고, 그리기는 맞추지 않는다. `register_chart`는 범위와 벡터 배율도 한 번 맞춘다) (#357)
 }
 ```
 
@@ -1994,7 +1996,7 @@ pub struct Config {
 
 에너지 준위(그로트리안) 도표([#203](https://github.com/shim9610/figgy/issues/203))는 DataLess 시리즈다. 레코드는 NIST 원자 스펙트럼 데이터베이스 내보내기 형식을 따르고 차트 설정에 들어 있어 문서와 함께 직렬화된다. 내보내기 파일은 호스트가 읽고(`nist_grotrian` 예제가 표준 라이브러리만 쓰는 파서를 보여 준다), 다중선의 g 가중 평균 같은 값도 모두 호스트가 정한다.
 
-`default::config_for_series(&series)`([#357](https://github.com/shim9610/figgy/issues/357))는 에너지 준위 시리즈를 그리는 차트에 그로트리안 틀(`AxisPreset::Grotrian`)을 적용한 기본 설정을 돌려준다. 틀은 차트를 만들 때 한 번 정해지고, 호스트는 그 뒤에 다른 프리셋을 적용할 수 있다.
+`default::config_for_series(&mut series)`([#357](https://github.com/shim9610/figgy/issues/357))는 에너지 준위 시리즈를 그리는 차트에 그로트리안 틀(`AxisPreset::Grotrian`)을 적용한 기본 설정을 돌려준다. 틀은 차트를 만들 때 한 번 정해지고, 호스트는 그 뒤에 다른 프리셋을 적용할 수 있다.
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
@@ -2018,7 +2020,7 @@ pub struct Config {
 
 파인만 도표([#234](https://github.com/shim9610/figgy/issues/234))는 위상, 즉 어떤 입자가 어느 꼭짓점에서 만나는지가 데이터인 DataLess 시리즈다. 모든 값이 차트 설정에 있어 문서와 함께 직렬화되고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 꼭짓점 위치는 선택 사항이다. 위치가 없는 꼭짓점은 자동 배치가 정한 자리에 그리고, `place_feynman_vertices`가 그 자리를 `at`에 기록한다. 자세한 내용은 [파인만 도표](FEYNMAN.md)를 참고한다.
 
-`default::config_for_series(&series)`([#357](https://github.com/shim9610/figgy/issues/357))는 파인만 시리즈를 그리는 차트에 축·눈금·눈금 라벨·격자가 없는 기본 설정(`AxisPreset::Hidden`)을 돌려준다. 틀은 차트를 만들 때 한 번 정해지고, 호스트는 다른 프리셋으로 축을 다시 켤 수 있다.
+`default::config_for_series(&mut series)`([#357](https://github.com/shim9610/figgy/issues/357))는 파인만 시리즈를 그리는 차트에 축·눈금·눈금 라벨·격자가 없는 기본 설정(`AxisPreset::Hidden`)을 돌려준다. 틀은 차트를 만들 때 한 번 정해지고, 호스트는 다른 프리셋으로 축을 다시 켤 수 있다.
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
@@ -2110,7 +2112,7 @@ pub struct Config {
 
 - `color`는 `color_map`이 없을 때의 화살표 색이다. `width_px`(몸통 두께), `head_length_px`, `head_width_px`는 `point_size`와 같은 논리 픽셀이며 출력 배율이 적용되고, 유한한 0 이상의 값이어야 한다. 화살표가 머리보다 짧으면 머리를 화살표 길이에 맞춰 줄인다.
 - `scale`: `VectorScale::Pixels { px_per_unit }`는 `px_per_unit * |(u, v)|` 픽셀 길이로 그리며, 방향은 두 축의 단위당 픽셀 비율을 따른다. 그래서 (1, 1) 벡터는 데이터 영역의 가로세로 비율만큼 기운다. `VectorScale::Data { factor }`는 축 변환을 거쳐 끝점을 데이터 좌표 `anchor + factor * (u, v)`에 두므로, 화살표가 뒤집힌 축이나 로그축을 따르고 끝점도 자동 범위 맞춤에 들어간다. 배율은 유한하고 0이 아니어야 한다. `VectorStyle::fit_scale(u_bounds, v_bounds, target)`은 호스트가 이미 가진 성분 통계로, 그 범위에서 가능한 가장 긴 벡터가 `target`(`Pixels`는 논리 픽셀, `Data`는 데이터 단위)이 되도록 배율만 쓴다. 따라서 표본을 추가해도 다른 화살표의 길이가 바뀌지 않는다.
-- `auto_scale`(#357): 차트 전체 맞춤이 `Pixels` 배율을 다시 쓸지 정한다. 다시 쓰면 가장 긴 벡터가 화살표 간격만큼(`VectorStyle::auto_scale_target_px`: `sqrt(데이터 영역 / 화살표 수)`의 0.9배, 머리 길이 이상) 그려진다. `Renderer::commit_auto_fit_all`(웹 `auto_fit_all`)은 차트의 시리즈에 `Renderer::fit_vector_scales`를 실행해 결과를 `scale`에 저장하고, `fit_ranges`로 맞추는 호스트는 `fit_vector_scales`를 직접 부른다. 화살표는 항상 저장된 `scale`로 그린다. 시리즈 생성자는 이 값을 켜고, 명시적 배율인 `fit_scale`, `fit_scale_3d`, `vector_scale` 빌더는 끈다. `false`이면 JSON에서 생략하며, 이 키가 없는 문서는 `false`로 읽는다.
+- `auto_scale`(#357): 다음 맞춤이 `Pixels` 배율을 쓸지 정한다. 쓰면 가장 긴 벡터가 화살표 간격만큼(`VectorStyle::auto_scale_target_px`: `sqrt(데이터 영역 / 화살표 수)`의 0.9배, 머리 길이 이상) 그려진다. 맞춤은 한 번만 한다. 새 차트(`LayoutState::Fitted`)의 `Renderer::register_chart`, `Renderer::fit_ranges`, `Renderer::commit_auto_fit_all`(웹 `auto_fit_all`)이 `Renderer::fit_vector_scales`를 실행해 결과를 `scale`에 저장하고 `auto_scale`을 끈다. 그래서 이후 맞춤에서도 저장된 배율이 유지된다. 성분이 모두 0인 필드는 이 값을 그대로 둔다. 화살표는 항상 저장된 `scale`로 그린다. 시리즈 생성자는 이 값을 켜고, 명시적 배율인 `fit_scale`, `fit_scale_3d`, `vector_scale` 빌더는 끈다. `false`이면 JSON에서 생략하며, 이 키가 없는 문서는 `false`로 읽는다.
 - `pivot`: `Tail`(기본값, 기준점이 꼬리), `Middle`, `Tip`.
 - `min_length_px`: 배율을 적용한 길이가 이보다 짧은 화살표는 그리지 않는다. 0 벡터와 유한하지 않은 성분이나 기준점도 그리지 않는다.
 - `color_map: Option<VectorColorMap>`: 점 형식에는 `Column(id)`, 격자 형식에는 `Grid(MatrixRef)`를 쓰며 성분 형식과 맞아야 한다. 값은 히트맵 셀이나 `point_color_map` 마커와 똑같이 `Config.colorbar`로 색이 정해지며, 색상 막대가 없으면 시리즈를 거부한다.

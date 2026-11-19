@@ -1873,6 +1873,119 @@ fn scene_level_labels_stay_off_other_columns() {
     assert!(all.is_empty(), "{all:#?}");
 }
 
+/// Every level and band label of the series in `config` that lies on a
+/// stroke or fill of its own column's neighbours, on a limit line or on
+/// another label, described per `name`.
+fn scene_collisions(name: &str, config: &renderer::Config, series: &[SeriesConfig]) -> Vec<String> {
+    let mut found = Vec::new();
+    each_level_panel(config, series, |placement, levels, records, measure| {
+        found.extend(
+            labels_on_other_columns(placement, records, &levels.style, measure)
+                .into_iter()
+                .map(|f| format!("{name}: {f}")),
+        );
+    });
+    found
+}
+
+fn slot_fractions(series: &[SeriesConfig]) -> Vec<f32> {
+    series
+        .iter()
+        .filter_map(|s| s.render_type.energy_levels())
+        .map(|l| l.style.level.slot_fraction)
+        .collect()
+}
+
+// #357: registration narrows each Grotrian series' strokes once so its level
+// labels fit before the next column, at the scene's size and in an 800x600
+// chart; the value is written to the SSOT, a second fit keeps it, and the
+// `as_given` opt-out and a `Fixed` document keep the stored share. The
+// registered chart exports at 1x and 2x as its stored document does.
+#[test]
+fn registration_fits_the_level_slots_once() {
+    let mut r = renderer();
+    let mut all = Vec::new();
+    let mut narrowed = 0;
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        for size in [None, Some((800, 600))] {
+            let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+            // A new document keeps its layout fitted, as the gallery's do.
+            let mut config = scene.config.clone();
+            config.layout_state = renderer::LayoutState::Fitted;
+            let mut chart = Chart::new(config);
+            if let Some((w, h)) = size {
+                chart.set_area(0, 0, w, h);
+                chart.fit_layout();
+            }
+            let name = format!("{kind:?} {size:?}");
+            let given = slot_fractions(&scene.series);
+            let id = r
+                .register_chart(chart.config().clone(), scene.series.clone())
+                .expect("register");
+            let config = r.chart_config(id).unwrap().clone();
+            let series = r.chart_series(id).unwrap().to_vec();
+            let fitted = slot_fractions(&series);
+            for (g, f) in given.iter().zip(&fitted) {
+                assert!(f <= g && *f >= 0.35f32.min(*g), "{name}: {g} -> {f}");
+                if f < g {
+                    narrowed += 1;
+                }
+            }
+            all.extend(scene_collisions(&name, &config, &series));
+
+            // A second fit keeps the stored share.
+            let mut held = Chart::new(config.clone());
+            let mut again = series.clone();
+            r.fit_ranges(&mut held, &mut again).unwrap();
+            assert_eq!(slot_fractions(&again), fitted, "{name}: refit");
+
+            // The opt-outs keep the share as given.
+            let as_given = r
+                .register_chart_as_given(chart.config().clone(), scene.series.clone())
+                .expect("register as given");
+            assert_eq!(
+                slot_fractions(r.chart_series(as_given).unwrap()),
+                given,
+                "{name}: as given"
+            );
+            let mut fixed = chart.config().clone();
+            fixed.layout_state = renderer::LayoutState::Fixed;
+            let fixed = r.register_chart(fixed, scene.series.clone()).unwrap();
+            assert_eq!(
+                slot_fractions(r.chart_series(fixed).unwrap()),
+                given,
+                "{name}: fixed"
+            );
+
+            if size.is_some() {
+                let stored = Chart::as_given(config.clone());
+                for scale in [1.0, 2.0] {
+                    let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+                    let registered = r
+                        .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
+                        .unwrap();
+                    let own = r
+                        .export_rgba_blocking(
+                            renderer::ExportSource::chart(&stored, &series),
+                            options,
+                        )
+                        .unwrap();
+                    assert_eq!(registered.rgba, own.rgba, "{name} {scale}x");
+                }
+            }
+            for chart in [id, as_given, fixed] {
+                r.remove_chart(chart).unwrap();
+            }
+        }
+    }
+    assert!(narrowed > 0, "some scene is narrowed");
+    assert!(all.is_empty(), "{all:#?}");
+}
+
 // Wavelength labels and the corner note (#258) -------------------------
 
 const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
