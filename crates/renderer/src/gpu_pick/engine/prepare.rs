@@ -90,7 +90,7 @@ impl GpuPickEngine {
     pub(in crate::gpu_pick) fn prepare_series_buffer(
         &self,
         buffer: &wgpu::Buffer,
-        mut descriptor: GpuPickSeriesDescriptor<'_>,
+        descriptor: GpuPickSeriesDescriptor<'_>,
         columns: GpuStreamPickColumns,
         resident: Option<&ColumnPool>,
     ) -> Result<PickSeriesSlot, GpuPickError> {
@@ -206,6 +206,223 @@ impl GpuPickEngine {
             }
         }
 
+        let (descriptor, mut flags, vector_handles, vector_epochs, vector_base, vector_count) =
+            Self::prepare_vector_arrows(descriptor, columns, resident, paired_len, flags)?;
+
+        let (descriptor, bar_slots, bar_overrides, errorbar, area, stem, ternary) =
+            Self::prepare_resident_inputs(
+                descriptor,
+                buffer,
+                resident,
+                paired_len,
+                marker_slots,
+                marker_overrides,
+            )?;
+
+        let line_half_width_px = descriptor
+            .line_width_px
+            .map(|width| nonnegative(width) * 0.5)
+            .unwrap_or(0.0);
+        if descriptor.line_width_px.is_some() {
+            flags |= FLAG_LINE;
+            max_extent_px = max_extent_px.max(line_half_width_px);
+        }
+        let line_step_mode = crate::line_step::step_mode(descriptor.line_interpolation);
+        let mut line_dash = [0.0f32; 8];
+        let pattern = descriptor.line_style.pattern();
+        for (slot, length) in line_dash.iter_mut().zip(pattern) {
+            *slot = *length;
+        }
+        let line_dash_len = pattern.len().min(line_dash.len()) as u32;
+        // A region fill is picked by the crossings of the cursor's ray with
+        // the polygons' edges, placed as the draw places them.
+        let region = descriptor.ternary_region && ternary.is_some();
+        if region {
+            flags |= FLAG_REGION;
+        }
+        if flags & (FLAG_SCATTER | FLAG_LINE | FLAG_REGION) == 0 {
+            return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
+        }
+
+        lane_base(x_handle, &descriptor.series_id)?;
+        lane_base(y_handle, &descriptor.series_id)?;
+        let (gate_word_count, workgroup_count, dispatch_x, dispatch_y) =
+            gate_dispatch_layout(point_count, limits.max_compute_workgroups_per_dimension)?;
+        // An arrow reaches as far from its anchor as its component says, an
+        // error bar as far as its error and a fill to its base, so no
+        // per-axis gate bounds them: such a series scans every point.
+        // A closed line's closing segment joins its last word to its first,
+        // which the per-word gates do not see: it scans every point too.
+        // A ternary placement is not axis-separable either: the gates see
+        // one axis at a time.
+        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS
+            || flags & FLAG_VECTOR != 0
+            || errorbar.is_some()
+            || stem.is_some()
+            || area.is_some()
+            || ternary.is_some()
+            || descriptor.line_closed;
+        // A region series' exact pass writes a region entry (its crossing
+        // parity) per workgroup after the best candidates.
+        let candidate_slots = if region { 2 } else { 1 };
+        let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
+        let gate_mask_bytes = u64::from(allocated_gate_words)
+            .checked_mul(GATE_MASK_BYTES)
+            .ok_or(GpuPickError::DeviceLimit {
+                resource: "GPU pick gate-mask buffer",
+                requested: u64::MAX,
+                limit: limits.max_buffer_size,
+            })?;
+        let workgroup_candidate_bytes = u64::from(workgroup_count)
+            .checked_mul(CANDIDATE_BYTES * candidate_slots)
+            .ok_or(GpuPickError::DeviceLimit {
+                resource: "GPU pick workgroup-candidate buffer",
+                requested: u64::MAX,
+                limit: limits.max_buffer_size,
+            })?;
+        let storage_limit = limits.max_storage_buffer_binding_size;
+        if gate_mask_bytes > limits.max_buffer_size || gate_mask_bytes > storage_limit {
+            return Err(GpuPickError::DeviceLimit {
+                resource: "GPU pick gate-mask buffer",
+                requested: gate_mask_bytes,
+                limit: limits.max_buffer_size.min(storage_limit),
+            });
+        }
+        if workgroup_candidate_bytes > limits.max_buffer_size
+            || workgroup_candidate_bytes > storage_limit
+        {
+            return Err(GpuPickError::DeviceLimit {
+                resource: "GPU pick workgroup-candidate buffer",
+                requested: workgroup_candidate_bytes,
+                limit: limits.max_buffer_size.min(storage_limit),
+            });
+        }
+
+        let (
+            series_tally,
+            gate_masks,
+            workgroup_candidates,
+            query_params,
+            result,
+            query_data_bg,
+            query_work_bg,
+            reduce_bg,
+        ) = self.create_slot_resources(
+            buffer,
+            gate_mask_bytes,
+            workgroup_candidate_bytes,
+            marker_slots,
+            bar_slots,
+            marker_overrides,
+            bar_overrides,
+        )?;
+
+        let identity = PickIdentity {
+            source_id: descriptor.source_id,
+            series_id: descriptor.series_id,
+        };
+        // One charge for the whole slot: the style rows and params live inside
+        // the bind groups above, so per-buffer tracking cannot see them. The
+        // tally already holds the sizes the device was handed, so there is no
+        // second list of terms to keep in step with the creations.
+        Ok(PickSeriesSlot {
+            identity,
+            gpu: PickSeriesGpu {
+                _charge: shared_charge(
+                    series_tally,
+                    &self.bundle.ledger,
+                    GpuResourceKind::PickScratch,
+                ),
+                pool_identity: resident.map(ColumnPool::identity),
+                x_column: descriptor.x_column,
+                y_column: descriptor.y_column,
+                style_index_column,
+                x_handle,
+                y_handle,
+                style_index_handle,
+                pool_layout_generation: resident.map_or(0, ColumnPool::layout_generation),
+                x_allocation_epoch,
+                y_allocation_epoch,
+                style_index_allocation_epoch,
+                size_column,
+                size_handle,
+                size_allocation_epoch,
+                vector: descriptor.vector,
+                vector_handles,
+                vector_epochs,
+                vector_base,
+                vector_count,
+                size_base,
+                size_len,
+                size_domain,
+                size_px,
+                query_params,
+                gate_masks,
+                workgroup_candidates,
+                query_data_bg,
+                query_work_bg,
+                reduce_bg,
+                result,
+                point_count,
+                gate_word_count,
+                dispatch_x,
+                dispatch_y,
+                direct_scan,
+                flags,
+                base_radius_px,
+                base_shape_id,
+                line_half_width_px,
+                line_step_mode,
+                line_closed: descriptor.line_closed && descriptor.line_width_px.is_some(),
+                path_arrows: descriptor
+                    .path_arrows
+                    .filter(|_| descriptor.line_width_px.is_some()),
+                line_dash,
+                line_dash_len,
+                max_extent_px,
+                style_count,
+                override_count,
+                style_index_base,
+                style_index_len,
+                exact_key: series_exact_key(
+                    flags,
+                    line_dash_len,
+                    base_shape_id,
+                    errorbar.is_some() || stem.is_some(),
+                    area.is_some(),
+                    descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
+                    descriptor.category_jitter.is_some() && descriptor.scatter.is_some(),
+                    ternary.is_some(),
+                ),
+                errorbar,
+                area,
+                stem,
+                category_jitter: descriptor
+                    .category_jitter
+                    .filter(|_| descriptor.scatter.is_some()),
+                ternary,
+            },
+        })
+    }
+
+    /// [`Self::prepare_series_buffer`]'s point vector arrows.
+    fn prepare_vector_arrows<'a>(
+        descriptor: GpuPickSeriesDescriptor<'a>,
+        columns: GpuStreamPickColumns,
+        resident: Option<&ColumnPool>,
+        paired_len: usize,
+        mut flags: u32,
+    ) -> Result<
+        (
+            GpuPickSeriesDescriptor<'a>,
+            u32,
+            [Option<ColumnHandle>; 3],
+            [Option<u64>; 3],
+            [u32; 2],
+            u32,
+        ),
+        GpuPickError,
+    > {
         // A point vector's arrows: every component column is resident and
         // the arrow count is the shortest column the vector shader reads.
         let mut vector_handles = [None; 3];
@@ -242,7 +459,37 @@ impl GpuPickEngine {
             }
             vector_count = u32::try_from(count).unwrap_or(u32::MAX);
         }
+        Ok((
+            descriptor,
+            flags,
+            vector_handles,
+            vector_epochs,
+            vector_base,
+            vector_count,
+        ))
+    }
 
+    /// [`Self::prepare_series_buffer`]'s resident-only inputs: the error bars,
+    /// the line's fill, the stems and a ternary series' third component.
+    fn prepare_resident_inputs<'a>(
+        mut descriptor: GpuPickSeriesDescriptor<'a>,
+        buffer: &wgpu::Buffer,
+        resident: Option<&ColumnPool>,
+        paired_len: usize,
+        marker_slots: &[ScatterStyleSlotGpu],
+        marker_overrides: &[ScatterStyleOverrideGpu],
+    ) -> Result<
+        (
+            GpuPickSeriesDescriptor<'a>,
+            &'a [ScatterStyleSlotGpu],
+            &'a [ScatterStyleOverrideGpu],
+            Option<PickErrorBarGpu>,
+            Option<PickAreaGpu>,
+            Option<GpuPickStem>,
+            Option<PickTernaryGpu>,
+        ),
+        GpuPickError,
+    > {
         // The error bars and the line's fill read pool columns: resident
         // series only. A streamed chunk does not carry them (streaming is not
         // extended, rule 8; `encode_chunk_impl` drops them).
@@ -412,86 +659,41 @@ impl GpuPickEngine {
             }
             None => None,
         };
+        Ok((
+            descriptor,
+            bar_slots,
+            bar_overrides,
+            errorbar,
+            area,
+            stem,
+            ternary,
+        ))
+    }
 
-        let line_half_width_px = descriptor
-            .line_width_px
-            .map(|width| nonnegative(width) * 0.5)
-            .unwrap_or(0.0);
-        if descriptor.line_width_px.is_some() {
-            flags |= FLAG_LINE;
-            max_extent_px = max_extent_px.max(line_half_width_px);
-        }
-        let line_step_mode = crate::line_step::step_mode(descriptor.line_interpolation);
-        let mut line_dash = [0.0f32; 8];
-        let pattern = descriptor.line_style.pattern();
-        for (slot, length) in line_dash.iter_mut().zip(pattern) {
-            *slot = *length;
-        }
-        let line_dash_len = pattern.len().min(line_dash.len()) as u32;
-        // A region fill is picked by the crossings of the cursor's ray with
-        // the polygons' edges, placed as the draw places them.
-        let region = descriptor.ternary_region && ternary.is_some();
-        if region {
-            flags |= FLAG_REGION;
-        }
-        if flags & (FLAG_SCATTER | FLAG_LINE | FLAG_REGION) == 0 {
-            return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
-        }
-
-        lane_base(x_handle, &descriptor.series_id)?;
-        lane_base(y_handle, &descriptor.series_id)?;
-        let (gate_word_count, workgroup_count, dispatch_x, dispatch_y) =
-            gate_dispatch_layout(point_count, limits.max_compute_workgroups_per_dimension)?;
-        // An arrow reaches as far from its anchor as its component says, an
-        // error bar as far as its error and a fill to its base, so no
-        // per-axis gate bounds them: such a series scans every point.
-        // A closed line's closing segment joins its last word to its first,
-        // which the per-word gates do not see: it scans every point too.
-        // A ternary placement is not axis-separable either: the gates see
-        // one axis at a time.
-        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS
-            || flags & FLAG_VECTOR != 0
-            || errorbar.is_some()
-            || stem.is_some()
-            || area.is_some()
-            || ternary.is_some()
-            || descriptor.line_closed;
-        // A region series' exact pass writes a region entry (its crossing
-        // parity) per workgroup after the best candidates.
-        let candidate_slots = if region { 2 } else { 1 };
-        let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
-        let gate_mask_bytes = u64::from(allocated_gate_words)
-            .checked_mul(GATE_MASK_BYTES)
-            .ok_or(GpuPickError::DeviceLimit {
-                resource: "GPU pick gate-mask buffer",
-                requested: u64::MAX,
-                limit: limits.max_buffer_size,
-            })?;
-        let workgroup_candidate_bytes = u64::from(workgroup_count)
-            .checked_mul(CANDIDATE_BYTES * candidate_slots)
-            .ok_or(GpuPickError::DeviceLimit {
-                resource: "GPU pick workgroup-candidate buffer",
-                requested: u64::MAX,
-                limit: limits.max_buffer_size,
-            })?;
-        let storage_limit = limits.max_storage_buffer_binding_size;
-        if gate_mask_bytes > limits.max_buffer_size || gate_mask_bytes > storage_limit {
-            return Err(GpuPickError::DeviceLimit {
-                resource: "GPU pick gate-mask buffer",
-                requested: gate_mask_bytes,
-                limit: limits.max_buffer_size.min(storage_limit),
-            });
-        }
-        if workgroup_candidate_bytes > limits.max_buffer_size
-            || workgroup_candidate_bytes > storage_limit
-        {
-            return Err(GpuPickError::DeviceLimit {
-                resource: "GPU pick workgroup-candidate buffer",
-                requested: workgroup_candidate_bytes,
-                limit: limits.max_buffer_size.min(storage_limit),
-            });
-        }
-
+    /// [`Self::prepare_series_buffer`]'s owned buffers and bind groups.
+    #[allow(clippy::too_many_arguments)]
+    fn create_slot_resources(
+        &self,
+        buffer: &wgpu::Buffer,
+        gate_mask_bytes: u64,
+        workgroup_candidate_bytes: u64,
+        marker_slots: &[ScatterStyleSlotGpu],
+        bar_slots: &[ScatterStyleSlotGpu],
+        marker_overrides: &[ScatterStyleOverrideGpu],
+        bar_overrides: &[ScatterStyleOverrideGpu],
+    ) -> Result<
+        (
+            ChargeTally,
+            wgpu::Buffer,
+            wgpu::Buffer,
+            wgpu::Buffer,
+            wgpu::Buffer,
+            wgpu::BindGroup,
+            wgpu::BindGroup,
+            wgpu::BindGroup,
+        ),
+        GpuPickError,
+    > {
         // Every buffer this slot owns is tallied by the creation helpers, so the
         // charge below cannot disagree with what was allocated.
         let series_tally = ChargeTally::new();
@@ -628,92 +830,15 @@ impl GpuPickEngine {
             },
             "per-series reduction bind group",
         )?;
-
-        let identity = PickIdentity {
-            source_id: descriptor.source_id,
-            series_id: descriptor.series_id,
-        };
-        // One charge for the whole slot: the style rows and params live inside
-        // the bind groups above, so per-buffer tracking cannot see them. The
-        // tally already holds the sizes the device was handed, so there is no
-        // second list of terms to keep in step with the creations.
-        Ok(PickSeriesSlot {
-            identity,
-            gpu: PickSeriesGpu {
-                _charge: shared_charge(
-                    series_tally,
-                    &self.bundle.ledger,
-                    GpuResourceKind::PickScratch,
-                ),
-                pool_identity: resident.map(ColumnPool::identity),
-                x_column: descriptor.x_column,
-                y_column: descriptor.y_column,
-                style_index_column,
-                x_handle,
-                y_handle,
-                style_index_handle,
-                pool_layout_generation: resident.map_or(0, ColumnPool::layout_generation),
-                x_allocation_epoch,
-                y_allocation_epoch,
-                style_index_allocation_epoch,
-                size_column,
-                size_handle,
-                size_allocation_epoch,
-                vector: descriptor.vector,
-                vector_handles,
-                vector_epochs,
-                vector_base,
-                vector_count,
-                size_base,
-                size_len,
-                size_domain,
-                size_px,
-                query_params,
-                gate_masks,
-                workgroup_candidates,
-                query_data_bg,
-                query_work_bg,
-                reduce_bg,
-                result,
-                point_count,
-                gate_word_count,
-                dispatch_x,
-                dispatch_y,
-                direct_scan,
-                flags,
-                base_radius_px,
-                base_shape_id,
-                line_half_width_px,
-                line_step_mode,
-                line_closed: descriptor.line_closed && descriptor.line_width_px.is_some(),
-                path_arrows: descriptor
-                    .path_arrows
-                    .filter(|_| descriptor.line_width_px.is_some()),
-                line_dash,
-                line_dash_len,
-                max_extent_px,
-                style_count,
-                override_count,
-                style_index_base,
-                style_index_len,
-                exact_key: series_exact_key(
-                    flags,
-                    line_dash_len,
-                    base_shape_id,
-                    errorbar.is_some() || stem.is_some(),
-                    area.is_some(),
-                    descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
-                    descriptor.category_jitter.is_some() && descriptor.scatter.is_some(),
-                    ternary.is_some(),
-                ),
-                errorbar,
-                area,
-                stem,
-                category_jitter: descriptor
-                    .category_jitter
-                    .filter(|_| descriptor.scatter.is_some()),
-                ternary,
-            },
-        })
+        Ok((
+            series_tally,
+            gate_masks,
+            workgroup_candidates,
+            query_params,
+            result,
+            query_data_bg,
+            query_work_bg,
+            reduce_bg,
+        ))
     }
 }
