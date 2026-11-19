@@ -2395,7 +2395,7 @@ fn prepare_preflights_hidden_invalid_spacing_before_gpu_mutation() {
         return;
     };
     add_state_test_contour_grid(&mut renderer);
-    let chart = state_test_contour_chart(
+    let mut chart = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -2416,7 +2416,7 @@ fn prepare_preflights_hidden_invalid_spacing_before_gpu_mutation() {
         .unwrap();
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     let before = renderer
@@ -2438,7 +2438,7 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
         return;
     };
     add_state_test_contour_grid(&mut renderer);
-    let chart = state_test_contour_chart(
+    let mut chart = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -2458,7 +2458,7 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
     assert_contour_spacing_error(
         renderer
             .export_rgba(
-                crate::ExportSource::chart(&chart, &automatic),
+                crate::ExportSource::chart(&mut chart, &automatic),
                 crate::ExportOptions::panel(scale),
             )
             .block_on(),
@@ -2481,7 +2481,7 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
     let explicit = [state_test_labelled_contour(huge, vec![anchor])];
     renderer
         .export_rgba(
-            crate::ExportSource::chart(&chart, &explicit),
+            crate::ExportSource::chart(&mut chart, &explicit),
             crate::ExportOptions::panel(scale),
         )
         .block_on()
@@ -2491,7 +2491,7 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
     state_test_contour_labels_mut(&mut hidden).visible = false;
     renderer
         .export_rgba(
-            crate::ExportSource::chart(&chart, &[hidden]),
+            crate::ExportSource::chart(&mut chart, &[hidden]),
             crate::ExportOptions::panel(scale),
         )
         .block_on()
@@ -2500,7 +2500,7 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
     assert!(matches!(
         renderer
             .export_rgba(
-                crate::ExportSource::chart(&chart, &explicit),
+                crate::ExportSource::chart(&mut chart, &explicit),
                 crate::ExportOptions::panel(f32::INFINITY)
             )
             .block_on(),
@@ -2514,7 +2514,7 @@ fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
         return;
     };
     add_state_test_contour_grid(&mut renderer);
-    let chart = state_test_contour_chart(
+    let mut chart = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -2534,7 +2534,7 @@ fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
         .unwrap();
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
 
@@ -2698,7 +2698,7 @@ fn contour_level_validation_is_identical_for_contour_and_heatmap_contour() {
 #[test]
 fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
     for heatmap in [false, true] {
-        let Some((mut renderer, chart, _)) = field_prepare_fixture() else {
+        let Some((mut renderer, mut chart, _)) = field_prepare_fixture() else {
             return;
         };
         let mut view = renderer
@@ -2719,7 +2719,7 @@ fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
         }];
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &series,
         }];
         drop(renderer.prepare(&mut items).unwrap());
@@ -2744,7 +2744,7 @@ fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
         }];
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &series,
         }];
         assert_contour_limit_error(renderer.prepare(&mut items));
@@ -2762,7 +2762,7 @@ fn direct_prepare_covers_both_contour_variants_at_the_level_boundary() {
 #[test]
 fn direct_export_covers_both_contour_variants_at_the_level_boundary() {
     for heatmap in [false, true] {
-        let Some((mut renderer, chart, _)) = field_prepare_fixture() else {
+        let Some((mut renderer, mut chart, _)) = field_prepare_fixture() else {
             return;
         };
         let accepted = [state_test_contour_variant(
@@ -2775,7 +2775,7 @@ fn direct_export_covers_both_contour_variants_at_the_level_boundary() {
         )];
         let image = renderer
             .export_rgba(
-                crate::ExportSource::chart(&chart, &accepted),
+                crate::ExportSource::chart(&mut chart, &accepted),
                 crate::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -2797,7 +2797,7 @@ fn direct_export_covers_both_contour_variants_at_the_level_boundary() {
         assert_contour_limit_error(
             renderer
                 .export_rgba(
-                    crate::ExportSource::chart(&chart, &rejected),
+                    crate::ExportSource::chart(&mut chart, &rejected),
                     crate::ExportOptions::panel(1.0),
                 )
                 .block_on(),
@@ -3568,7 +3568,7 @@ fn prepared_frame_keeps_style_charge_after_style_owner_is_dropped() {
     };
     add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
     let cfg = state_test_scatter("point", None, "x", "y");
-    let chart = Chart::new(crate::default::default_config());
+    let mut chart = Chart::new(crate::default::default_config());
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -3582,7 +3582,7 @@ fn prepared_frame_keeps_style_charge_after_style_owner_is_dropped() {
         renderer
             .prepare(&mut [ChartDrawItem {
                 view: &mut view,
-                chart: &chart,
+                chart: &mut chart,
                 series: &series,
             }])
             .unwrap()
@@ -5125,7 +5125,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
 
 fn empty_chart_items<'a>(
     renderer: &Renderer,
-    chart: &'a Chart,
+    chart: &'a mut Chart,
     view: &'a mut ChartView,
 ) -> [ChartDrawItem<'a>; 1] {
     let _ = renderer;
@@ -5148,11 +5148,11 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
         width: 320,
         height: 240,
     });
-    let chart = Chart::new(config);
+    let mut chart = Chart::new(config);
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    let mut items = empty_chart_items(&renderer, &chart, &mut view);
+    let mut items = empty_chart_items(&renderer, &mut chart, &mut view);
     renderer.prepare(&mut items).unwrap();
 
     assert!(renderer.pipelines.precise(PrecisePipeline::Line).is_none());
@@ -5333,7 +5333,7 @@ fn histogram_prepare_compiles_only_the_bar_pipeline() {
         width: 320,
         height: 240,
     });
-    let chart = Chart::new(config);
+    let mut chart = Chart::new(config);
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -5350,7 +5350,7 @@ fn histogram_prepare_compiles_only_the_bar_pipeline() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
@@ -5520,7 +5520,7 @@ fn line_prepare_compiles_only_the_line_pipeline() {
         width: 320,
         height: 240,
     });
-    let chart = Chart::new(config);
+    let mut chart = Chart::new(config);
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -5532,7 +5532,7 @@ fn line_prepare_compiles_only_the_line_pipeline() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
@@ -5585,7 +5585,7 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
         width: 320,
         height: 240,
     });
-    let chart = Chart::new(config);
+    let mut chart = Chart::new(config);
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -5610,7 +5610,7 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
@@ -5663,7 +5663,7 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
         width: 320,
         height: 240,
     });
-    let chart = Chart::new(config);
+    let mut chart = Chart::new(config);
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -5694,7 +5694,7 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     renderer.prepare(&mut items).unwrap();
@@ -5827,7 +5827,7 @@ fn point_constellation_scatterline_exports() {
     }];
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -5928,7 +5928,7 @@ fn all_scatter_shapes_export_visible_markers() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -5961,7 +5961,7 @@ fn xy_errorbar_does_not_require_zero_column() {
     r.add_column("ex", &col_f64(vec![0.1, 0.2, 0.1])).unwrap();
     r.add_column("ey", &col_f64(vec![0.3, 0.1, 0.2])).unwrap();
 
-    let chart = basic_errorbar_chart();
+    let mut chart = basic_errorbar_chart();
     let series = [SeriesConfig {
         series_id: "xy".into(),
         source_id: None,
@@ -5986,7 +5986,7 @@ fn xy_errorbar_does_not_require_zero_column() {
     }];
 
     r.export_rgba(
-        crate::ExportSource::chart(&chart, &series),
+        crate::ExportSource::chart(&mut chart, &series),
         crate::ExportOptions::panel(1.0),
     )
     .block_on()
@@ -6049,7 +6049,7 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -6083,7 +6083,7 @@ fn errorbar_style_index_colors_points_independently() {
     r.add_column("ey", &col_f64(vec![1.0, 1.0])).unwrap();
     r.add_column("err_style", &col_f64(vec![0.0, 1.0])).unwrap();
 
-    let chart = basic_errorbar_chart();
+    let mut chart = basic_errorbar_chart();
     let mut scatter = test_scatter_style();
     scatter.point_size = 0.0;
     let series = [SeriesConfig {
@@ -6126,7 +6126,7 @@ fn errorbar_style_index_colors_points_independently() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -6323,9 +6323,10 @@ fn render_mapped_style_case(
             .zip(styles.iter())
             .map(|(cfg, style)| Series { config: cfg, style })
             .collect();
+        let mut drawn = Chart::new(chart.config().clone());
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut drawn,
             series: &series,
         }];
         let prepared = renderer.prepare(&mut items).unwrap();
@@ -6352,7 +6353,7 @@ fn render_mapped_style_case(
     };
     let export = renderer
         .export_rgba(
-            crate::ExportSource::chart(chart, series_cfgs),
+            crate::ExportSource::chart(&mut crate::Chart::new(chart.config().clone()), series_cfgs),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -6686,7 +6687,7 @@ fn size_mapped_scatter_scales_with_the_export_multiplier() {
     renderer.add_column("x", &col_f64(vec![2.0])).unwrap();
     renderer.add_column("y", &col_f64(vec![2.5])).unwrap();
     renderer.add_column("s", &col_f64(vec![10.0])).unwrap();
-    let chart = basic_errorbar_chart();
+    let mut chart = basic_errorbar_chart();
     let series = [value_mapped_scatter_series(
         "smap",
         None,
@@ -6694,14 +6695,14 @@ fn size_mapped_scatter_scales_with_the_export_multiplier() {
     )];
     let one = renderer
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let two = renderer
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -6873,7 +6874,7 @@ fn value_map_columns_must_cover_every_point() {
         .add_column("y", &col_f64(vec![2.5, 2.5, 2.5]))
         .unwrap();
     renderer.add_column("s", &col_f64(vec![1.0])).unwrap();
-    let chart = basic_errorbar_chart();
+    let mut chart = basic_errorbar_chart();
     let series = [value_mapped_scatter_series(
         "short",
         None,
@@ -6889,7 +6890,7 @@ fn value_map_columns_must_cover_every_point() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &drawn,
     }];
     assert!(matches!(
@@ -7876,7 +7877,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
     r.add_column("y", &col_f64(vec![1.0, 3.0, 2.0])).unwrap();
     r.add_column("ey", &col_f64(vec![0.3, 0.1, 0.2])).unwrap();
 
-    let chart = basic_errorbar_chart();
+    let mut chart = basic_errorbar_chart();
     let series_configs = [SeriesConfig {
         series_id: "y".into(),
         source_id: None,
@@ -7909,7 +7910,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
             .unwrap();
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &drawable,
         }];
         r.prepare(&mut items)
@@ -7934,7 +7935,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
         .unwrap();
     let image = export_renderer
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series_configs),
+            crate::ExportSource::chart(&mut chart, &series_configs),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -7970,8 +7971,8 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
         .add_column("long_ex", &col_f64(vec![0.25; 9]))
         .unwrap();
 
-    let chart_a = basic_errorbar_chart();
-    let chart_b = basic_errorbar_chart();
+    let mut chart_a = basic_errorbar_chart();
+    let mut chart_b = basic_errorbar_chart();
     let config_a = SeriesConfig {
         series_id: "short-y-error".into(),
         source_id: None,
@@ -8039,14 +8040,14 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
     let prepared_a = renderer
         .prepare(&mut [ChartDrawItem {
             view: &mut view_a,
-            chart: &chart_a,
+            chart: &mut chart_a,
             series: &series_a,
         }])
         .unwrap();
     let prepared_b = renderer
         .prepare(&mut [ChartDrawItem {
             view: &mut view_b,
-            chart: &chart_b,
+            chart: &mut chart_b,
             series: &series_b,
         }])
         .unwrap();
@@ -8122,7 +8123,7 @@ fn two_line_series_both_render() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -8221,7 +8222,7 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
         let series = [line_cfg(id, x, y)];
         let img = r
             .export_rgba(
-                crate::ExportSource::chart(&chart, &series),
+                crate::ExportSource::chart(&mut chart, &series),
                 crate::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -8325,7 +8326,7 @@ fn milkyway_stars_draw_past_two_million_arc_slots() {
     let mut right_ink = |series: &[SeriesConfig]| -> usize {
         let img = r
             .export_rgba(
-                crate::ExportSource::chart(&chart, series),
+                crate::ExportSource::chart(&mut chart, series),
                 crate::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -8468,12 +8469,12 @@ fn milkyway_export_zero_dust_zero_nebula_has_plain_background() {
         glow: 0.0,
         ..Default::default()
     });
-    let chart = Chart::new(config);
+    let mut chart = Chart::new(config);
 
     for scale in [1.0, 2.0] {
         let img = r
             .export_rgba(
-                crate::ExportSource::chart(&chart, &[]),
+                crate::ExportSource::chart(&mut chart, &[]),
                 crate::ExportOptions::panel(scale),
             )
             .block_on()
@@ -9026,14 +9027,18 @@ fn arc_results_reuse_only_exact_compute_keys() {
     let mut view_b = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
+    // Each draw item lends its chart mutably (#357): view B draws a chart of
+    // the same document.
+    let chart_config = chart.config().clone();
+    let mut chart_b = Chart::new(chart_config.clone());
     let mut items_a = [ChartDrawItem {
         view: &mut view_a,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     let mut items_b = [ChartDrawItem {
         view: &mut view_b,
-        chart: &chart,
+        chart: &mut chart_b,
         series: &series,
     }];
 
@@ -9065,7 +9070,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
     );
     drop((p1, a1, p2, a2));
 
-    let base_transform = data_render::scatter_transform_from_config(chart.config());
+    let base_transform = data_render::scatter_transform_from_config(&chart_config);
     let mut changed_transform = base_transform;
     changed_transform.pixel_to_ndc[0] *= 0.5;
     let changed = r
@@ -9252,7 +9257,7 @@ fn contour_projection_matches_fixed_four_step_gpu_oracle() {
                 .unwrap();
             let mut items = [ChartDrawItem {
                 view: &mut view,
-                chart: &chart,
+                chart: &mut chart,
                 series: &series,
             }];
             let prepared = renderer.prepare(&mut items).unwrap();
@@ -9308,7 +9313,7 @@ fn render_labelled_contour_for_test(
     for (id, values) in columns {
         renderer.add_column(*id, &col_f64(values.clone())).unwrap();
     }
-    let chart = state_test_contour_chart(
+    let mut chart = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -9341,7 +9346,7 @@ fn render_labelled_contour_for_test(
         .unwrap();
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     let prepared = renderer.prepare(&mut items).unwrap();
@@ -9439,7 +9444,7 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
         return;
     };
     add_state_test_contour_grid(&mut renderer);
-    let chart_a = state_test_contour_chart(
+    let mut chart_a = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -9448,7 +9453,7 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
         },
         (0.0, 1.0),
     );
-    let chart_b = state_test_contour_chart(
+    let mut chart_b = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -9477,12 +9482,12 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
         .unwrap();
     let mut items_a = [ChartDrawItem {
         view: &mut view_a,
-        chart: &chart_a,
+        chart: &mut chart_a,
         series: &series_a,
     }];
     let mut items_b = [ChartDrawItem {
         view: &mut view_b,
-        chart: &chart_b,
+        chart: &mut chart_b,
         series: &series_b,
     }];
     let placement_of = |prepared: &PreparedFrame| {
@@ -9550,7 +9555,7 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
     let mut pixels_c = None;
     for key in 0..9 {
         let min = -1.0 - f64::from(key) * 0.125;
-        let chart_c = state_test_contour_chart(
+        let mut chart_c = state_test_contour_chart(
             Rect {
                 x: 0,
                 y: 0,
@@ -9564,7 +9569,7 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
             .unwrap();
         let mut items_c = [ChartDrawItem {
             view: &mut view_c,
-            chart: &chart_c,
+            chart: &mut chart_c,
             series: &series_a,
         }];
         let prepared = renderer.prepare(&mut items_c).unwrap();
@@ -9628,12 +9633,12 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
     }];
     let mut explicit_a = [ChartDrawItem {
         view: &mut view_a,
-        chart: &chart_a,
+        chart: &mut chart_a,
         series: &explicit_series,
     }];
     let mut explicit_b = [ChartDrawItem {
         view: &mut view_b,
-        chart: &chart_b,
+        chart: &mut chart_b,
         series: &explicit_series,
     }];
     let first = renderer.prepare(&mut explicit_a).unwrap();
@@ -9661,7 +9666,7 @@ fn automatic_contour_label_indirect_count_is_exactly_1024() {
         return;
     };
     add_state_test_contour_grid(&mut renderer);
-    let chart = state_test_contour_chart(
+    let mut chart = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -9691,7 +9696,7 @@ fn automatic_contour_label_indirect_count_is_exactly_1024() {
         .unwrap();
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
 
@@ -9709,7 +9714,7 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
         return;
     };
     add_state_test_contour_grid(&mut renderer);
-    let chart = state_test_contour_chart(
+    let mut chart = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -9729,7 +9734,7 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
         .unwrap();
     let mut old_items = [ChartDrawItem {
         view: &mut old_view,
-        chart: &chart,
+        chart: &mut chart,
         series: &old_series,
     }];
     let placement_of = |prepared: &PreparedFrame| {
@@ -9770,7 +9775,7 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
         .unwrap();
     let mut replacement_items = [ChartDrawItem {
         view: &mut replacement_view,
-        chart: &chart,
+        chart: &mut chart,
         series: &replacement_series,
     }];
     let replacement_prepared = renderer.prepare(&mut replacement_items).unwrap();
@@ -9853,7 +9858,7 @@ fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
     add_state_test_contour_grid(&mut renderer);
     let (panel_w, panel_h) = (320, 240);
     let target_w = panel_w * 2;
-    let chart_a = state_test_contour_chart(
+    let mut chart_a = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -9862,7 +9867,7 @@ fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
         },
         (0.0, 1.0),
     );
-    let chart_b = state_test_contour_chart(
+    let mut chart_b = state_test_contour_chart(
         Rect {
             x: panel_w,
             y: 0,
@@ -9871,7 +9876,7 @@ fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
         },
         (-0.5, 1.5),
     );
-    let chart_c = state_test_contour_chart(
+    let mut chart_c = state_test_contour_chart(
         Rect {
             x: 0,
             y: 0,
@@ -9910,18 +9915,18 @@ fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
     let mut multi_items = [
         ChartDrawItem {
             view: &mut view_a,
-            chart: &chart_a,
+            chart: &mut chart_a,
             series: &series_a,
         },
         ChartDrawItem {
             view: &mut view_b,
-            chart: &chart_b,
+            chart: &mut chart_b,
             series: &series_b,
         },
     ];
     let mut interleaved_items = [ChartDrawItem {
         view: &mut view_c,
-        chart: &chart_c,
+        chart: &mut chart_c,
         series: &series_c,
     }];
 
@@ -9935,7 +9940,7 @@ fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
 
     let mut only_a = [ChartDrawItem {
         view: &mut view_a,
-        chart: &chart_a,
+        chart: &mut chart_a,
         series: &series_a,
     }];
     let prepared_a = renderer.prepare(&mut only_a).unwrap();
@@ -9943,7 +9948,7 @@ fn multi_panel_contour_labels_survive_interleaved_prepare_and_repeat_paint() {
     drop(prepared_a);
     let mut only_b = [ChartDrawItem {
         view: &mut view_b,
-        chart: &chart_b,
+        chart: &mut chart_b,
         series: &series_b,
     }];
     let prepared_b = renderer.prepare(&mut only_b).unwrap();
@@ -10575,7 +10580,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     let prepared = {
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &series_ab,
         }];
         let p = r.prepare(&mut items).unwrap();
@@ -10613,7 +10618,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     let first_view_token = {
         let mut items = [ChartDrawItem {
             view: &mut view_reuse,
-            chart: &chart,
+            chart: &mut chart,
             series: &series_ab,
         }];
         r.prepare(&mut items).unwrap()
@@ -10621,7 +10626,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     let second_view_token = {
         let mut items = [ChartDrawItem {
             view: &mut view_reuse,
-            chart: &chart,
+            chart: &mut chart,
             series: &series_ab,
         }];
         r.prepare(&mut items).unwrap()
@@ -10680,7 +10685,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     let prepared_dash = {
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &series_dash,
         }];
         r.prepare(&mut items).unwrap()
@@ -10708,7 +10713,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     let prepared_target = {
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &series_ab,
         }];
         r.prepare(&mut items).unwrap()
@@ -10802,12 +10807,12 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
         .unwrap();
     let mut items_a = [ChartDrawItem {
         view: &mut view_a,
-        chart: &chart_a,
+        chart: &mut chart_a,
         series: &series,
     }];
     let mut items_b = [ChartDrawItem {
         view: &mut view_b,
-        chart: &chart_b,
+        chart: &mut chart_b,
         series: &series,
     }];
 
@@ -10836,7 +10841,7 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
             .unwrap();
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &series,
         }];
         let prepared = r.prepare(&mut items).unwrap();
@@ -10994,7 +10999,7 @@ fn auto_fit_margins_are_uniform_on_all_sides() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -11120,7 +11125,7 @@ fn precise_zoom_keeps_connections_to_distant_endpoints() {
                     chart.set_y_range(shift, 1.0 + shift);
                     let image = r
                         .export_rgba(
-                            crate::ExportSource::chart(&chart, &series),
+                            crate::ExportSource::chart(&mut chart, &series),
                             crate::ExportOptions::panel(1.0),
                         )
                         .block_on()
@@ -11220,7 +11225,7 @@ fn dense_line_has_no_gaps() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -11325,7 +11330,7 @@ fn solid_line_exports_analytic_aa_fringe() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -11438,7 +11443,7 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
     let series = [line_cfg("gap", "gx", "gy")];
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -11486,7 +11491,7 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
     let series2 = [line_cfg("loop", "mx", "my")];
     let img2 = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series2),
+            crate::ExportSource::chart(&mut chart, &series2),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -11579,7 +11584,7 @@ fn dashed_curve_runs_match_pattern() {
 
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -11730,7 +11735,7 @@ fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
     }];
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -12098,7 +12103,7 @@ fn prepared_view_keeps_panel_charges_after_chart_view_drop() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
-    let chart = Chart::new(panel_config(320, 240));
+    let mut chart = Chart::new(panel_config(320, 240));
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -12109,7 +12114,7 @@ fn prepared_view_keeps_panel_charges_after_chart_view_drop() {
     let prepared = {
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &chart,
+            chart: &mut chart,
             series: &series,
         }];
         renderer.prepare(&mut items).unwrap()
@@ -12344,7 +12349,7 @@ fn the_default_pool_grows_to_hold_and_draw_a_column_past_its_capacity() {
     }];
     let img = r
         .export_rgba(
-            crate::ExportSource::chart(&chart, &series),
+            crate::ExportSource::chart(&mut chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -12491,7 +12496,7 @@ fn a_renderer_batch_rolled_back_by_a_picker_failure_publishes_no_column() {
 /// kilobytes, so a steady frame must rebuild **none** of it.
 #[test]
 fn a_steady_field_frame_rebuilds_no_group_two_buffers() {
-    let Some((mut renderer, chart, series_cfg)) = field_prepare_fixture() else {
+    let Some((mut renderer, mut chart, series_cfg)) = field_prepare_fixture() else {
         return;
     };
     let mut view = renderer
@@ -12504,7 +12509,7 @@ fn a_steady_field_frame_rebuilds_no_group_two_buffers() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
 
@@ -12547,7 +12552,7 @@ fn a_steady_field_frame_rebuilds_no_group_two_buffers() {
 /// grid the data no longer has.
 #[test]
 fn a_replaced_grid_column_stales_the_token_and_rebuilds_the_scratch() {
-    let Some((mut renderer, chart, series_cfg)) = field_prepare_fixture() else {
+    let Some((mut renderer, mut chart, series_cfg)) = field_prepare_fixture() else {
         return;
     };
     let mut view = renderer
@@ -12560,7 +12565,7 @@ fn a_replaced_grid_column_stales_the_token_and_rebuilds_the_scratch() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
 
@@ -12628,7 +12633,7 @@ fn a_growth_makes_a_live_prepared_frame_stale_and_the_next_one_valid() {
     renderer.set_pool_growth_policy(data_render::GrowthPolicy::OnAllocFailure);
     renderer.add_column("lx", &col_f64(vec![0.0, 1.0])).unwrap();
     renderer.add_column("ly", &col_f64(vec![0.0, 1.0])).unwrap();
-    let chart = Chart::new(panel_config(320, 240));
+    let mut chart = Chart::new(panel_config(320, 240));
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -12640,7 +12645,7 @@ fn a_growth_makes_a_live_prepared_frame_stale_and_the_next_one_valid() {
     }];
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &series,
     }];
     let prepared = renderer.prepare(&mut items).unwrap();
@@ -15302,11 +15307,11 @@ fn three_hundred_colour_mapped_scatters_in_one_frame_all_draw() {
             s
         })
         .collect();
-    let chart = crate::Chart::new(config);
+    let mut chart = crate::Chart::new(config);
     for _ in 0..2 {
         renderer
             .export_rgba(
-                crate::ExportSource::chart(&chart, &series),
+                crate::ExportSource::chart(&mut chart, &series),
                 crate::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -15961,11 +15966,11 @@ fn export_frames_hold_one_item_per_panel() {
         }
     }
     let (config, series) = &documents[2];
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     for scale in [1.0f32, 2.0] {
         let svg = renderer
             .export_svg(
-                crate::ExportSource::chart(&chart, series),
+                crate::ExportSource::chart(&mut chart, series),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
@@ -15973,7 +15978,7 @@ fn export_frames_hold_one_item_per_panel() {
         assert!(svg.ends_with("</svg>\n"));
         let pdf = renderer
             .export_pdf(
-                crate::ExportSource::chart(&chart, series),
+                crate::ExportSource::chart(&mut chart, series),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
@@ -15981,7 +15986,7 @@ fn export_frames_hold_one_item_per_panel() {
         assert!(pdf.ends_with(b"%%EOF\n"));
         let png = renderer
             .export_rgba(
-                crate::ExportSource::chart(&chart, series),
+                crate::ExportSource::chart(&mut chart, series),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
@@ -15989,7 +15994,7 @@ fn export_frames_hold_one_item_per_panel() {
         assert_eq!(png.rgba.len(), (png.width * png.height * 4) as usize);
         let panel = renderer
             .export_rgba(
-                crate::ExportSource::chart(&chart, series),
+                crate::ExportSource::chart(&mut chart, series),
                 crate::ExportOptions::panel(scale),
             )
             .block_on()

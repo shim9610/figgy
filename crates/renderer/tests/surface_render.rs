@@ -115,7 +115,7 @@ fn ridge(x: f64, y: f64) -> f64 {
 
 fn export(r: &mut Renderer, config: &Config, series: &[SeriesConfig], scale: f32) -> RasterImage {
     r.export_rgba(
-        renderer::ExportSource::chart(&Chart::new(config.clone()), series),
+        renderer::ExportSource::chart(&mut Chart::new(config.clone()), series),
         renderer::ExportOptions::panel(scale),
     )
     .block_on()
@@ -463,7 +463,7 @@ fn a_translucent_surface_shows_its_floor_contours() {
 /// Paint `config` with `series` on the screen path (prepare, then paint
 /// into a target, through the resident panel composite) and read it back.
 fn paint_screen(r: &mut Renderer, config: &Config, series: &[SeriesConfig]) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let rect = config.chart_area.0;
     let mut view = r.create_chart_view(&chart, rect).unwrap();
     let styles: Vec<_> = series
@@ -477,7 +477,7 @@ fn paint_screen(r: &mut Renderer, config: &Config, series: &[SeriesConfig]) -> R
         .collect();
     let mut items = [renderer::ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &drawn,
     }];
     let prepared = r.prepare(&mut items).unwrap();
@@ -1406,7 +1406,7 @@ fn a_3d_series_height_column_is_enumerated_with_its_columns() {
     .unwrap();
     let refused = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(config), &[dots("st_z")]),
+            renderer::ExportSource::chart(&mut Chart::new(config), &[dots("st_z")]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1970,7 +1970,7 @@ fn a_3d_subplot_draws_arrows_beside_a_flat_panel() {
     for scale in [1.0f32, 2.0] {
         let document = r
             .export_rgba(
-                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportSource::chart(&mut parent, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -2185,7 +2185,7 @@ fn a_3d_arrow_reads_its_height_and_z_component() {
     .unwrap();
     let refused = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(config), &[with_w("st_w")]),
+            renderer::ExportSource::chart(&mut Chart::new(config), &[with_w("st_w")]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -2742,7 +2742,7 @@ fn a_3d_subplot_draws_a_mesh_surface_beside_a_flat_panel() {
     for scale in [1.0f32, 2.0] {
         let document = r
             .export_rgba(
-                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportSource::chart(&mut parent, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()

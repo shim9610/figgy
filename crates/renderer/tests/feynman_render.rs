@@ -322,12 +322,12 @@ fn fit_ranges_fits_the_vertices() {
 #[test]
 fn svg_and_pdf_carry_the_diagram_as_vector_curves() {
     let mut r = renderer();
-    let chart = chart();
+    let mut chart = chart();
     let list = [series("d", s_channel())];
     for scale in [1.0f32, 2.0] {
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -341,7 +341,7 @@ fn svg_and_pdf_carry_the_diagram_as_vector_curves() {
         assert!(photon.matches('C').count() > 10, "{scale}x: {photon}");
         let pdf = r
             .export_pdf(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1203,13 +1203,13 @@ fn bent_scalar() -> FeynmanSeries {
 #[test]
 fn a_bent_scalar_is_one_dashed_curve_in_every_output() {
     let mut r = renderer();
-    let chart = chart();
+    let mut chart = chart();
     let list = [series("d", bent_scalar())];
     for scale in [1.0f32, 2.0] {
         // SVG: one path, cubic segments, one dash pattern along it.
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1225,7 +1225,7 @@ fn a_bent_scalar_is_one_dashed_curve_in_every_output() {
         // PDF: the same curve, read back as one curved stroke.
         let pdf = r
             .export_pdf(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1314,7 +1314,7 @@ fn the_vector_parts_are_clipped_to_each_break_piece() {
     for scale in [1.0f32, 2.0] {
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1635,9 +1635,9 @@ fn labels_draw_pick_drag_and_export_at_the_label_scale() {
     // SVG writes the glyphs at the scaled size: the block spans three
     // times as far; PDF writes a different page.
     for scale in [1.0f32, 2.0] {
-        let svg = |diagram: &FeynmanSeries, r: &mut Renderer| {
+        let mut svg = |diagram: &FeynmanSeries, r: &mut Renderer| {
             r.export_svg(
-                renderer::ExportSource::chart(&chart, &[series("d", diagram.clone())]),
+                renderer::ExportSource::chart(&mut chart, &[series("d", diagram.clone())]),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1645,9 +1645,9 @@ fn labels_draw_pick_drag_and_export_at_the_label_scale() {
         };
         let ratio = glyph_span(&svg(&large, &mut r)) / glyph_span(&svg(&small, &mut r));
         assert!((ratio - 3.0).abs() < 0.05, "{scale}x: {ratio}");
-        let pdf = |diagram: &FeynmanSeries, r: &mut Renderer| {
+        let mut pdf = |diagram: &FeynmanSeries, r: &mut Renderer| {
             r.export_pdf(
-                renderer::ExportSource::chart(&chart, &[series("d", diagram.clone())]),
+                renderer::ExportSource::chart(&mut chart, &[series("d", diagram.clone())]),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1759,7 +1759,7 @@ fn literal_unicode_charges_draw_as_superscript_signs() {
 
         let mut svg = |list: &[SeriesConfig]| {
             r.export_svg(
-                renderer::ExportSource::chart(&chart, list),
+                renderer::ExportSource::chart(&mut chart, list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1770,7 +1770,7 @@ fn literal_unicode_charges_draw_as_superscript_signs() {
         assert_ne!(literal_svg, svg(&boxed), "{scale}x SVG");
         let mut pdf = |list: &[SeriesConfig]| {
             r.export_pdf(
-                renderer::ExportSource::chart(&chart, list),
+                renderer::ExportSource::chart(&mut chart, list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()

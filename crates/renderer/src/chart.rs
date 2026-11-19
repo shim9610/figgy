@@ -736,6 +736,41 @@ impl Chart {
         self.raster_stamp = issue_raster_stamp();
     }
 
+    /// The document was edited from a layout in state `before`:
+    /// [`Self::mark_raster`], and a fitted layout the edit kept `Fitted`
+    /// needs a fit again (#357, [`crate::LayoutState::after_edit`]). An edit
+    /// that set `layout_state` itself keeps its value.
+    fn mark_edited_from(&mut self, before: crate::LayoutState) {
+        self.mark_raster();
+        self.config.layout_state = before.after_edit(self.config.layout_state);
+    }
+
+    /// [`Self::mark_edited_from`] the current state: an edit that leaves
+    /// the state as it found it.
+    fn mark_edited(&mut self) {
+        self.mark_edited_from(self.config.layout_state);
+    }
+
+    /// Fit the layout when it waits for its fit
+    /// ([`crate::LayoutState::NeedsFit`], #357): the fit
+    /// [`Self::fit_layout`] makes, written into the config, which is then
+    /// `Fitted`. Returns whether it fitted. A default draw or export calls
+    /// it before drawing ([`crate::Renderer::prepare`],
+    /// [`crate::Renderer::export_rgba`]); the `as_stored` calls do not.
+    pub fn fit_pending_layout(&mut self) -> bool {
+        if !self.config.layout_state.needs_fit() {
+            return false;
+        }
+        let measure = CpuTextMeasure::for_style(&self.config.draw_style);
+        let fitted = crate::layout::auto_layout(&self.config, &measure);
+        if fitted != self.config {
+            self.config = fitted;
+            self.data_dirty = true;
+            self.mark_raster();
+        }
+        true
+    }
+
     /// The stamp of the chart's current raster content; `None` when the
     /// stamp counter is exhausted.
     pub(crate) fn raster_stamp(&self) -> Option<u64> {
@@ -774,9 +809,14 @@ impl Chart {
     /// when the kind of change is known.
     /// Only the caller's assignments change the config: this accessor does
     /// not fit ranges, choose ticks or fit the title band.
+    ///
+    /// A [`crate::LayoutState::Fitted`] layout is marked `NeedsFit` before
+    /// the caller's assignments (#357): the next default draw fits the
+    /// edited content. Assign `layout_state = LayoutState::Fixed` to keep
+    /// margins set here.
     pub fn config_mut(&mut self) -> &mut Config {
         self.data_dirty = true;
-        self.mark_raster();
+        self.mark_edited();
         &mut self.config
     }
 
@@ -787,9 +827,10 @@ impl Chart {
     /// this accessor performs no coupled config adjustments. Change both axes
     /// of a pair explicitly when they should share the new range.
     pub fn with_axis_range_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
+        let before = self.config.layout_state;
         f(&mut self.config);
         self.data_dirty = true;
-        self.mark_raster();
+        self.mark_edited_from(before);
     }
 
     /// Decoration-only change (titles, colors, margins, …): raster only.
@@ -797,8 +838,9 @@ impl Chart {
     /// title segments here keeps `top_margin`; [`Self::with_title`] also fits
     /// that band. The caller still refreshes the view before preparing.
     pub fn with_decoration_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
+        let before = self.config.layout_state;
         f(&mut self.config);
-        self.mark_raster();
+        self.mark_edited_from(before);
     }
 
     // Dirty-flag interface.
@@ -841,7 +883,7 @@ impl Chart {
     pub fn with_title(mut self, text: &str) -> Self {
         fill_label_segments(&mut self.config.chart_title.text, text);
         self.fit_chart_title_margin();
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 
@@ -861,14 +903,14 @@ impl Chart {
     /// Set the bottom X axis title text, a label with `$…$` spans as TeX.
     pub fn with_x_title(mut self, text: &str) -> Self {
         fill_label_segments(&mut self.config.bottom_x.title_option.text, text);
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 
     /// Set the left Y axis title text, a label with `$…$` spans as TeX.
     pub fn with_y_title(mut self, text: &str) -> Self {
         fill_label_segments(&mut self.config.left_y.title_option.text, text);
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 
@@ -895,7 +937,7 @@ impl Chart {
             rich_segments_from_label(label),
         );
         self.config.legend.visible = true;
-        self.mark_raster();
+        self.mark_edited();
         self
     }
 

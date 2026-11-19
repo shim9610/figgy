@@ -124,7 +124,9 @@ pub use annotation::{
 pub use chart::{Chart, FitAxes, FitAxis, FitAxisRef, FitExtent, FitScope, LinkedFitData};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
-pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
+pub use config::{
+    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, LayoutState, PickedDataRef,
+};
 pub use data::{
     Column, ColumnLanes, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
     StreamColumnSource,
@@ -168,12 +170,12 @@ pub use render_warning::{
 pub use renderer::{
     AxisViewState, ChartColumnsReplacement, ChartDrawItem, ChartId, ChartRenderStamp,
     ChartSourcesReplacement, ChartStyle, ChartView, ChartViewLayerStamps, ChartViewState,
-    ColumnUpload, ExportOptions, ExportScope, ExportSource, FIT_RANGES_PADDING, FitCommitToken,
-    GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart, MonotonicChartDrawItem, MonotonicChartId,
-    PipelineCounts, PipelineFailure, PipelineFailureKind, PipelinePreparation, PipelineReadiness,
-    PipelineStatus, PreparationFeature, PreparedFrame, PreparedPipelines, RasterImage,
-    ReadinessError, ReadinessStatus, RegisteredChartDrawItem, RenderRevision, Renderer,
-    RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
+    ColumnUpload, DrawLayout, ExportOptions, ExportScope, ExportSource, FIT_RANGES_PADDING,
+    FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, MonotonicChart, MonotonicChartDrawItem,
+    MonotonicChartId, PipelineCounts, PipelineFailure, PipelineFailureKind, PipelinePreparation,
+    PipelineReadiness, PipelineStatus, PreparationFeature, PreparedFrame, PreparedPipelines,
+    RasterImage, ReadinessError, ReadinessStatus, RegisteredChartDrawItem, RenderRevision,
+    Renderer, RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
     StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer, clamp_export_scale,
     display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
     energy_level_records, fit_display_panel, place_document,

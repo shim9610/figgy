@@ -209,12 +209,12 @@ fn bars_span_their_values_in_every_mode_direction_and_scale() {
                 CategoryBarMode::Stacked => (0.0, 40.0),
                 CategoryBarMode::PercentStacked => (0.0, 100.0),
             };
-            let chart = chart(mode, direction, range);
+            let mut chart = chart(mode, direction, range);
             let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
             for scale in [1.0f32, 2.0] {
                 let img = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportSource::chart(&mut chart, &series),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
@@ -292,11 +292,11 @@ fn signed_stacks_and_missing_values_follow_the_stack_rules() {
     let two = [-5.0, 10.0, -5.0];
     let mut r = renderer(&one, &two);
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(CategoryBarMode::Stacked, direction, (-20.0, 20.0));
+    let mut chart = chart(CategoryBarMode::Stacked, direction, (-20.0, 20.0));
     let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -336,7 +336,7 @@ fn with_overrides(mut s: SeriesConfig, overrides: Vec<CategoryBarOverride>) -> S
 fn overrides_and_materials_restyle_only_their_bars() {
     let mut r = renderer(&ONE, &TWO);
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
+    let mut chart = chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
     let plain = [bars("one", RED, direction), bars("two", BLUE, direction)];
     let mut overridden = plain.clone();
     overridden[0] = with_overrides(
@@ -352,14 +352,14 @@ fn overrides_and_materials_restyle_only_their_bars() {
     for scale in [1.0f32, 2.0] {
         let before = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &plain),
+                renderer::ExportSource::chart(&mut chart, &plain),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let after = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &overridden),
+                renderer::ExportSource::chart(&mut chart, &overridden),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -412,14 +412,14 @@ fn overrides_and_materials_restyle_only_their_bars() {
     }
     let flat = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &plain),
+            renderer::ExportSource::chart(&mut chart, &plain),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let grained = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &matte),
+            renderer::ExportSource::chart(&mut chart, &matte),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -452,7 +452,7 @@ fn overrides_and_materials_restyle_only_their_bars() {
     );
     let restyled = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &styled),
+            renderer::ExportSource::chart(&mut chart, &styled),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -501,7 +501,7 @@ fn the_selection_outline_traces_an_overridden_bar() {
             chart.config_mut().picked_data = None;
             let painted = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -523,7 +523,7 @@ fn the_selection_outline_traces_an_overridden_bar() {
             });
             let outlined = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -740,11 +740,11 @@ fn a_percent_stack_with_a_negative_value_is_refused() {
     let mut r = renderer(&[10.0, 20.0, 5.0], &[20.0, -10.0, 15.0]);
     let direction = CategoryBarDirection::Vertical;
     let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
-    let percent = chart(CategoryBarMode::PercentStacked, direction, (0.0, 100.0));
+    let mut percent = chart(CategoryBarMode::PercentStacked, direction, (0.0, 100.0));
     for scale in [1.0f32, 2.0] {
         match r
             .export_rgba(
-                renderer::ExportSource::chart(&percent, &series),
+                renderer::ExportSource::chart(&mut percent, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -763,10 +763,10 @@ fn a_percent_stack_with_a_negative_value_is_refused() {
             Ok(_) => panic!("{scale}x: a negative value in a percent stack drew"),
         }
     }
-    let stacked = chart(CategoryBarMode::Stacked, direction, (-20.0, 40.0));
+    let mut stacked = chart(CategoryBarMode::Stacked, direction, (-20.0, 40.0));
     let image = r
         .export_rgba(
-            renderer::ExportSource::chart(&stacked, &series),
+            renderer::ExportSource::chart(&mut stacked, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -815,14 +815,14 @@ fn a_categorical_document_draws_as_category_bars() {
     for scale in [1.0f32, 2.0] {
         let with = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let without = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportSource::chart(&mut chart, &[]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -873,7 +873,7 @@ fn the_category_axis_line_crosses_the_value_axis_at_zero() {
     chart.config_mut().bottom_x.cross_at = None;
     let edge = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -883,7 +883,7 @@ fn the_category_axis_line_crosses_the_value_axis_at_zero() {
     chart.config_mut().bottom_x.cross_at = Some(0.0);
     let crossed = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -957,7 +957,7 @@ fn overlays_and_subplots_draw_their_own_bar_groups() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportSource::chart(&mut parent, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1047,14 +1047,14 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
     for scale in [1.0f32, 2.0] {
         let a = r
             .export_rgba(
-                renderer::ExportSource::chart(&upright, &series),
+                renderer::ExportSource::chart(&mut upright, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let b = r
             .export_rgba(
-                renderer::ExportSource::chart(&inverted, &series),
+                renderer::ExportSource::chart(&mut inverted, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1099,7 +1099,7 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
     });
     let outlined = r
         .export_rgba(
-            renderer::ExportSource::chart(&inverted, &series),
+            renderer::ExportSource::chart(&mut inverted, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1118,7 +1118,7 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
         .unwrap();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&inverted, &series),
+            renderer::ExportSource::chart(&mut inverted, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1166,18 +1166,18 @@ fn a_2x_export_is_the_1x_layout_doubled() {
                 CategoryBarMode::PercentStacked => (0.0, 100.0),
                 _ => (0.0, 40.0),
             };
-            let chart = chart(mode, direction, value);
+            let mut chart = chart(mode, direction, value);
             let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
             let one = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()
                 .unwrap();
             let two = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(2.0),
                 )
                 .block_on()
@@ -1258,7 +1258,7 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1296,7 +1296,7 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
     // At 2x, where a bar is wide enough for a solid outline.
     let outlined = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1311,7 +1311,7 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
         .unwrap();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1437,7 +1437,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&stacked, &series),
+                renderer::ExportSource::chart(&mut stacked, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1464,7 +1464,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     }
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&stacked, &series),
+            renderer::ExportSource::chart(&mut stacked, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1494,7 +1494,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     });
     let outlined = r
         .export_rgba(
-            renderer::ExportSource::chart(&stacked, &series),
+            renderer::ExportSource::chart(&mut stacked, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1503,11 +1503,11 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     assert_eq!(bbox(&outlined, region(&stacked, 0, 2.0), is_magenta), None);
 
     // Grouped: series 39 is the last bar of its group.
-    let grouped = wide_chart(CategoryBarMode::Grouped, (0.0, 2.0));
+    let mut grouped = wide_chart(CategoryBarMode::Grouped, (0.0, 2.0));
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&grouped, &series),
+                renderer::ExportSource::chart(&mut grouped, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1536,7 +1536,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     }
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&grouped, &series),
+            renderer::ExportSource::chart(&mut grouped, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1553,12 +1553,12 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     );
 
     // The cost grows with the group; it is measured, never capped.
-    let stacked = wide_chart(CategoryBarMode::Stacked, (0.0, 41.0));
+    let mut stacked = wide_chart(CategoryBarMode::Stacked, (0.0, 41.0));
     for members in [4, M] {
         let group = &series[..members];
         let _ = r
             .export_rgba(
-                renderer::ExportSource::chart(&stacked, group),
+                renderer::ExportSource::chart(&mut stacked, group),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1566,7 +1566,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
         let start = std::time::Instant::now();
         let _ = r
             .export_rgba(
-                renderer::ExportSource::chart(&stacked, group),
+                renderer::ExportSource::chart(&mut stacked, group),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()

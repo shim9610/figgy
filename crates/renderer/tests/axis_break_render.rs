@@ -102,9 +102,9 @@ fn export(
     series: &[SeriesConfig],
     scale: f32,
 ) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportSource::chart(&mut chart, series),
         renderer::ExportOptions::panel(scale),
     )
     .block_on()
@@ -588,7 +588,7 @@ fn a_panels_pick_hits_what_each_piece_draws() {
 /// `paint_prepared` into a target of the chart's size, through the resident
 /// composite and the live picked slot.
 fn screen(r: &mut Renderer, config: &renderer::Config, series: &[SeriesConfig]) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let rect = config.chart_area.0;
     let mut view = r.create_chart_view(&chart, rect).unwrap();
     let styles: Vec<_> = series
@@ -602,7 +602,7 @@ fn screen(r: &mut Renderer, config: &renderer::Config, series: &[SeriesConfig]) 
         .collect();
     let mut items = [renderer::ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &drawn,
     }];
     let prepared = r.prepare(&mut items).unwrap();
@@ -888,11 +888,11 @@ fn overlays_subplots_and_line_offsets_draw_their_pieces() {
             line_markers("lo0", "lx", "ly", MAGENTA),
             line_markers("lo1", "lx", "ly", CYAN),
         ];
-        let chart = Chart::new(document.clone());
+        let mut chart = Chart::new(document.clone());
         for scale in [1.0f32, 2.0] {
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
@@ -1410,9 +1410,9 @@ fn export_document(
     config: &renderer::Config,
     series: &[SeriesConfig],
 ) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportSource::chart(&mut chart, series),
         renderer::ExportOptions::document(1.0),
     )
     .block_on()

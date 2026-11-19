@@ -238,11 +238,11 @@ fn a_contour_traces_one_unbroken_isoline_and_nothing_else() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -299,7 +299,7 @@ fn each_level_draws_in_its_own_colour() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![contour_only(
         &["p0", "p1", "p2"],
         vec![1.0, 3.0],
@@ -307,7 +307,7 @@ fn each_level_draws_in_its_own_colour() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -339,7 +339,7 @@ fn a_1024_level_draw_preserves_duplicate_order_across_lookup_blocks() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let lower = Color {
         r: 1.0,
         g: 0.0,
@@ -362,7 +362,7 @@ fn a_1024_level_draw_preserves_duplicate_order_across_lookup_blocks() {
     let expanded = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
             ),
             renderer::ExportOptions::panel(1.0),
@@ -372,7 +372,7 @@ fn a_1024_level_draw_preserves_duplicate_order_across_lookup_blocks() {
     let reference = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     vec![2.0, 2.0],
@@ -393,7 +393,7 @@ fn level_1023_keeps_its_declared_colour_and_numeric_lookup_index() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let marker = Color {
         r: 0.0,
         g: 1.0,
@@ -408,7 +408,7 @@ fn level_1023_keeps_its_declared_colour_and_numeric_lookup_index() {
     let expanded = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
             ),
             renderer::ExportOptions::panel(1.0),
@@ -418,7 +418,7 @@ fn level_1023_keeps_its_declared_colour_and_numeric_lookup_index() {
     let reference = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     vec![2.0],
@@ -439,7 +439,7 @@ fn non_finite_levels_never_draw_contour_lines() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let finite = Color {
         r: 0.0,
         g: 0.0,
@@ -449,7 +449,7 @@ fn non_finite_levels_never_draw_contour_lines() {
     let expanded = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 2.0],
@@ -463,7 +463,7 @@ fn non_finite_levels_never_draw_contour_lines() {
     let reference = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     vec![2.0],
@@ -508,7 +508,7 @@ fn finite_corners_whose_derivatives_overflow_draw_no_contour_or_anchor() {
             ),
         ])
         .expect("overflow grid upload");
-    let chart = bare_chart(colorbar(-1.0, 1.0));
+    let mut chart = bare_chart(colorbar(-1.0, 1.0));
     let mut series = contour_only(&["overflow_z0", "overflow_z1"], vec![0.0], None);
     series.x_column = "overflow_x".into();
     series.y_column = "overflow_y".into();
@@ -523,7 +523,7 @@ fn finite_corners_whose_derivatives_overflow_draw_no_contour_or_anchor() {
     }
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportSource::chart(&mut chart, &[series]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -545,7 +545,7 @@ fn all_1024_reachable_candidates_are_composited() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let layer = Color {
         r: 0.8,
         g: 0.2,
@@ -555,7 +555,7 @@ fn all_1024_reachable_candidates_are_composited() {
     let expanded = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     vec![2.0; renderer::MAX_CONTOUR_LEVELS],
@@ -591,7 +591,7 @@ fn all_1024_reachable_candidates_are_composited() {
     let reference = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     vec![2.0],
@@ -605,7 +605,7 @@ fn all_1024_reachable_candidates_are_composited() {
     let under_composited = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     vec![2.0],
@@ -634,7 +634,7 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let sorted: Vec<f64> = (0..renderer::MAX_CONTOUR_LEVELS)
         .map(|index| 0.01 + 3.98 * index as f64 / (renderer::MAX_CONTOUR_LEVELS - 1) as f64)
         .collect();
@@ -642,7 +642,7 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
     let expected = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     sorted.clone(),
@@ -659,7 +659,7 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
     let actual = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(
                     &["p0", "p1", "p2"],
                     reversed,
@@ -681,7 +681,7 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
     let actual = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(&["p0", "p1", "p2"], shuffled, Some(colors))],
             ),
             renderer::ExportOptions::panel(1.0),
@@ -697,7 +697,7 @@ fn the_last_1024_level_label_cell_and_manual_index_draw() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let mut levels = vec![99.0; renderer::MAX_CONTOUR_LEVELS];
     levels[renderer::MAX_CONTOUR_LEVELS - 1] = 2.0;
     let series = [labelled(
@@ -707,7 +707,7 @@ fn the_last_1024_level_label_cell_and_manual_index_draw() {
     )];
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -727,12 +727,12 @@ fn a_level_outside_the_data_draws_nothing() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     for levels in [vec![], vec![99.0]] {
         let series = vec![contour_only(&["p0", "p1", "p2"], levels.clone(), None)];
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -750,11 +750,11 @@ fn contour_lines_land_on_top_of_the_field() {
     };
     plane_fixture(&mut renderer);
     let bar = colorbar(0.0, 4.0);
-    let chart = bare_chart(bar.clone());
+    let mut chart = bare_chart(bar.clone());
     let series = vec![heatmap_contour(&["p0", "p1", "p2"], vec![2.0])];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -833,12 +833,12 @@ fn the_stroke_is_as_wide_as_it_is_declared() {
         return;
     };
     flat_y_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 2.0));
-    let run = |renderer: &mut Renderer, width: f32| {
+    let mut chart = bare_chart(colorbar(0.0, 2.0));
+    let mut run = |renderer: &mut Renderer, width: f32| {
         let series = vec![flat_y_series(vec![1.0], width)];
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -887,7 +887,7 @@ fn a_dense_grid_draws_an_unbroken_isoline() {
     }
     renderer.add_columns(&batch).expect("dense grid upload");
 
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![SeriesConfig {
         series_id: "dense".into(),
         source_id: None,
@@ -908,7 +908,7 @@ fn a_dense_grid_draws_an_unbroken_isoline() {
     }];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -959,7 +959,7 @@ fn a_saddle_needs_no_tie_break() {
     }
     renderer.add_columns(&batch).expect("saddle grid upload");
 
-    let chart = bare_chart(colorbar(-1.0, 1.0));
+    let mut chart = bare_chart(colorbar(-1.0, 1.0));
     let series = vec![SeriesConfig {
         series_id: "saddle".into(),
         source_id: None,
@@ -976,7 +976,7 @@ fn a_saddle_needs_no_tie_break() {
     }];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1111,7 +1111,7 @@ fn the_isoline_lands_on_its_level_at_tight_curvature() {
         }];
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1256,7 +1256,7 @@ fn a_contour_label_draws_at_its_anchor() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     // z = 0.8 at (0.4, 0.4), so the level-2 isoline is nowhere near: blue ink
     // there is the label and cannot be the line.
     let series = vec![labelled(
@@ -1266,7 +1266,7 @@ fn a_contour_label_draws_at_its_anchor() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1281,7 +1281,7 @@ fn a_contour_label_draws_at_its_anchor() {
     let bare = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
     let without = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &bare),
+            renderer::ExportSource::chart(&mut chart, &bare),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1300,7 +1300,7 @@ fn a_label_rotates_along_its_tangent() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     // Two digits, so the mark is clearly longer than it is tall when upright.
     let mut measure = |tx: f64, ty: f64| {
         let series = vec![labelled(
@@ -1310,7 +1310,7 @@ fn a_label_rotates_along_its_tangent() {
         )];
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1338,12 +1338,12 @@ fn an_invisible_label_draws_nothing() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let labels = label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], false);
     let series = vec![labelled(vec![2.0], None, labels)];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1362,7 +1362,7 @@ fn an_anchor_naming_a_missing_level_is_skipped() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![labelled(
         vec![2.0],
         None,
@@ -1378,7 +1378,7 @@ fn an_anchor_naming_a_missing_level_is_skipped() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1401,14 +1401,14 @@ fn all_stale_anchors_fall_back_to_automatic_placement() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let mut labels = label_config(vec![anchor(7, 0.3, 1.0, 1.0, 0.0)], true);
     labels.bg_color = Some(LABEL_BG);
     labels.bg_padding_px = 3.0;
     let series = vec![labelled(vec![2.0], None, labels)];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1429,7 +1429,7 @@ fn explicit_anchors_draw_up_to_1024_and_reject_more() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let filler = || (0..1023).map(|_| anchor(0, 0.3, 0.3, 1.0, 0.0));
     let last_1024th = || std::iter::once(anchor(0, 1.0, 0.7, 1.0, 0.0));
     let series_with = |anchors: Vec<_>| {
@@ -1442,7 +1442,7 @@ fn explicit_anchors_draw_up_to_1024_and_reject_more() {
     let full = series_with(filler().chain(last_1024th()).collect());
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &full),
+            renderer::ExportSource::chart(&mut chart, &full),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1460,7 +1460,7 @@ fn explicit_anchors_draw_up_to_1024_and_reject_more() {
     );
     let result = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &over),
+            renderer::ExportSource::chart(&mut chart, &over),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on();
@@ -1483,11 +1483,11 @@ fn automatic_labels_keep_all_1024_levels() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let all_levels: Vec<f64> = (0..renderer::MAX_CONTOUR_LEVELS)
         .map(|index| 0.1 + 3.8 * index as f64 / (renderer::MAX_CONTOUR_LEVELS - 1) as f64)
         .collect();
-    let render = |renderer: &mut Renderer, levels: Vec<f64>| {
+    let mut render = |renderer: &mut Renderer, levels: Vec<f64>| {
         let count = levels.len();
         let transparent = Color::new(0.0, 0.0, 0.0, 0.0);
         let mut labels = auto_label_config(2000.0);
@@ -1497,7 +1497,7 @@ fn automatic_labels_keep_all_1024_levels() {
         let series = [labelled(levels, Some(vec![transparent; count]), labels)];
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1524,7 +1524,7 @@ fn a_label_color_is_independent_of_per_level_stroke_colors() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let mut labels = label_config(
         vec![anchor(0, 1.6, 0.2, 1.0, 0.0), anchor(1, 0.3, 0.3, 1.0, 0.0)],
         true,
@@ -1537,7 +1537,7 @@ fn a_label_color_is_independent_of_per_level_stroke_colors() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1563,8 +1563,8 @@ fn a_label_reads_its_level_value() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(-4.0, 4.0));
-    let width_of = |renderer: &mut Renderer, level: f64| {
+    let mut chart = bare_chart(colorbar(-4.0, 4.0));
+    let mut width_of = |renderer: &mut Renderer, level: f64| {
         let series = vec![labelled(
             vec![level],
             None,
@@ -1572,7 +1572,7 @@ fn a_label_reads_its_level_value() {
         )];
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1617,11 +1617,11 @@ fn an_automatic_anchor_lands_on_its_isoline() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![labelled(vec![2.0], None, auto_label_config(2000.0))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1784,12 +1784,12 @@ fn spacing_px_separates_automatic_labels() {
         return;
     };
     let ids = fine_plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
-    let clusters = |renderer: &mut Renderer, spacing: f32| {
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
+    let mut clusters = |renderer: &mut Renderer, spacing: f32| {
         let series = vec![fine_labelled(&ids, vec![2.0], auto_label_config(spacing))];
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1839,7 +1839,7 @@ fn explicit_anchors_override_the_automatic_pass_and_paint_bg_color() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let at = data_to_px(&chart, 0.4, 0.4);
 
     let mut with_bg = auto_label_config(2000.0);
@@ -1848,7 +1848,7 @@ fn explicit_anchors_override_the_automatic_pass_and_paint_bg_color() {
     let series = vec![labelled(vec![2.0], None, with_bg)];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1871,7 +1871,7 @@ fn explicit_anchors_override_the_automatic_pass_and_paint_bg_color() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1894,13 +1894,13 @@ fn contour_line_is_interrupted_under_a_transparent_label() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let at = data_to_px(&chart, 1.0, 1.0); // z = 2, exactly on the isoline.
 
     let baseline = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[contour_only(&["p0", "p1", "p2"], vec![2.0], None)],
             ),
             renderer::ExportOptions::panel(1.0),
@@ -1917,7 +1917,7 @@ fn contour_line_is_interrupted_under_a_transparent_label() {
     labels.bg_padding_px = 3.0;
     let labelled = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[labelled(vec![2.0], None, labels)]),
+            renderer::ExportSource::chart(&mut chart, &[labelled(vec![2.0], None, labels)]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1988,7 +1988,7 @@ fn a_rotated_label_gap_lies_inside_its_quad() {
         return;
     };
     hundreds_plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 400.0));
+    let mut chart = bare_chart(colorbar(0.0, 400.0));
     let series = |line: Color, labels: Option<ContourLabelConfig>| {
         let mut cfg = contour_only(&["h0", "h1", "h2"], vec![200.0], None);
         if let DataRenderType::Field(renderer::data_config::FieldSeries {
@@ -2016,7 +2016,7 @@ fn a_rotated_label_gap_lies_inside_its_quad() {
         let mut export = |line: Color, labels: Option<ContourLabelConfig>| {
             renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &[series(line, labels)]),
+                    renderer::ExportSource::chart(&mut chart, &[series(line, labels)]),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -2106,7 +2106,7 @@ fn automatic_label_placement_is_deterministic() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let build = || {
         vec![labelled(
             vec![1.0, 2.0, 3.0],
@@ -2116,14 +2116,14 @@ fn automatic_label_placement_is_deterministic() {
     };
     let first = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &build()),
+            renderer::ExportSource::chart(&mut chart, &build()),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let second = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &build()),
+            renderer::ExportSource::chart(&mut chart, &build()),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -2150,11 +2150,11 @@ fn re_dispatching_anchors_allocates_nothing() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let build = || vec![labelled(vec![2.0], None, auto_label_config(120.0))];
     let _ = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &build()),
+            renderer::ExportSource::chart(&mut chart, &build()),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -2165,7 +2165,7 @@ fn re_dispatching_anchors_allocates_nothing() {
     for _ in 0..3 {
         let _ = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &build()),
+                renderer::ExportSource::chart(&mut chart, &build()),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -2286,7 +2286,7 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
     }];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -2350,7 +2350,7 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
     contour.labels = None;
     let plain = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &unlabelled),
+            renderer::ExportSource::chart(&mut chart, &unlabelled),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -2407,7 +2407,7 @@ fn three_hundred_contours_in_one_frame_all_draw() {
         return;
     };
     plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
+    let mut chart = bare_chart(colorbar(0.0, 4.0));
     let series: Vec<SeriesConfig> = (0..300)
         .map(|k| {
             let mut s = contour_only(&["p0", "p1", "p2"], vec![2.0], None);
@@ -2418,7 +2418,7 @@ fn three_hundred_contours_in_one_frame_all_draw() {
     for _ in 0..2 {
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()

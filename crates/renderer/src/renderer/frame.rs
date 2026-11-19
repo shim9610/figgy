@@ -66,13 +66,17 @@ impl SpaceBgKey {
 
 /// One chart to prepare: its view, the chart itself and its series.
 ///
-/// [`Renderer::prepare`] redraws the view's text and axis raster first when
-/// the view is stale: the chart changed since the view was drawn (its
-/// raster stamp), or the font generation moved. The raster draws the
-/// selection the chart holds ([`Chart::selected`]).
+/// [`Renderer::prepare`] fits the chart's layout first when it waits for its
+/// fit ([`crate::LayoutState::NeedsFit`], [`Chart::fit_pending_layout`],
+/// #357), writing the fit into the chart, so `chart` is lent mutably;
+/// [`Renderer::prepare_as_stored`] draws it as stored. It then redraws the
+/// view's text and axis raster when the view is stale: the chart changed
+/// since the view was drawn (its raster stamp), or the font generation
+/// moved. The raster draws the selection the chart holds
+/// ([`Chart::selected`]).
 pub struct ChartDrawItem<'a> {
     pub view: &'a mut ChartView,
-    pub chart: &'a Chart,
+    pub chart: &'a mut Chart,
     pub series: &'a [Series<'a>],
 }
 

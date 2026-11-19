@@ -139,7 +139,7 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     });
     themed(&mut chart, &theme, &mut specs)?;
     let image = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportSource::chart(&mut chart, &specs),
         renderer::ExportOptions::document(1.).with_clear(bg),
     )?;
     save(&image, bg, &out.join("gallery-probability.png"))

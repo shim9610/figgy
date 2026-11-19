@@ -185,7 +185,7 @@ let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).u
 let series = [Series { config: &cfg, style: &style }];
 let mut items = [ChartDrawItem {
     view: &mut view,
-    chart: &chart,
+    chart: &mut chart,
     series: &series,
 }];
 renderer.draw(Color::WHITE, &mut items).unwrap();   // acquire surface frame → prepare (redraws a stale raster) → encoder → pass → paint_prepared → submit → present
@@ -599,7 +599,7 @@ constructors too, and `Chart` takes them in a chain:
 use renderer::{Annotation, AnnotationAxis, Chart, color::Color, config::AxisOptions};
 
 let red = Color::from_rgb8(200, 60, 50);
-let chart = Chart::sized(960, 600)
+let mut chart = Chart::sized(960, 600)
     .with_overlay(AxisOptions::overlay_y("Pressure (kPa)", red), &["pressure"])
     .with_annotation(Annotation::reference_line(AnnotationAxis::Y, 0.0, Color::BLACK, 1.0))
     .with_annotation(Annotation::span(AnnotationAxis::X, 2.0, 3.5, red.with_alpha(0.15)))
@@ -640,7 +640,7 @@ degrees Celsius, seconds as milliseconds.
 let mut chart = Chart::sized(960, 600);
 chart.set_x_range(250.0, 350.0);
 chart.set_y_range(0.0, 32768.0);
-let chart = chart
+let mut chart = chart
     .with_x_unit(1.0, -273.15)                         // kelvin printed as °C
     .with_y_unit(5.0 / 32768.0, 0.0);                  // counts printed as V
 ```
@@ -691,7 +691,7 @@ not parse.
 use renderer::{Chart, SeriesConfig, color::Color, text::RichText};
 
 let fit = SeriesConfig::line("fit", "t", "fit").label(r"$\hat y \pm 1.96\sigma$");
-let chart = Chart::sized(960, 600)
+let mut chart = Chart::sized(960, 600)
     .with_x_title("Time (s)")
     .with_y_title(r"$\sin(2\pi f t)$")
     .with_legend_from(&[fit]);
@@ -898,7 +898,7 @@ renderer.add_column("y", &ys)?;
 let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
 chart.fit_layout();                                       // margins fitted to the labels
-let source = ExportSource::Chart { chart: &chart, series: &series };
+let source = ExportSource::Chart { chart: &mut chart, series: &series };
 renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // or .svg / .pdf
 ```
 
@@ -919,6 +919,15 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // o
   that chart area; `with_legend_from(&series)` adds one legend entry per
   labelled series with the series' own symbol; `fit_layout()` fits the axis
   bands and margins to their labels (`layout::auto_layout`).
+- A chart made by `Chart::sized` has `layout_state: NeedsFit` (#357): its
+  first default draw or export fits the bands to what the chart holds then
+  and writes the fit into the config (`Fitted`), so calling `fit_layout()`
+  first is optional. An edit of a `Fitted` chart fits again on the next
+  draw; a drag or a placed data area sets `Fixed`, which no draw changes.
+  `ExportOptions::as_stored()`, `Renderer::prepare_as_stored` and
+  `WindowedRenderer::draw_as_stored` draw the config exactly as stored.
+  The draw lends the chart mutably (`ExportSource::chart(&mut chart, …)`,
+  `ChartDrawItem { chart: &mut chart, … }`) because it may write the fit.
 - `RadialRenderer::headless_blocking()` makes a radial renderer the same way,
   `RadialChart::with_title(text)` gives the chart a title in its own font and
   label colour, and `RasterImage::save_png(path)` writes an `export_rgba`
@@ -1165,13 +1174,13 @@ cycle (now `Balanced`; it was `Classic`, which starts in black).
 
 ```rust
 let bytes = renderer
-    .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
+    .export_png(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // or clipboard / network / wherever.
 
 // If you only need RGBA:
 let img = renderer
-    .export_rgba(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
+    .export_rgba(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, length = w * h * 4)
 ```
@@ -1198,10 +1207,10 @@ higher pixel density (or a lower one below 1.0).
 
 ```rust
 let svg: String = renderer
-    .export_svg(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .export_svg(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 let pdf: Vec<u8> = renderer
-    .export_pdf(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .export_pdf(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 std::fs::write("/tmp/out.svg", svg)?;
 std::fs::write("/tmp/out.pdf", pdf)?;
@@ -1411,7 +1420,7 @@ let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).u
 let series = [Series { config: &cfg, style: &style }];
 let mut items = [ChartDrawItem {
     view: &mut view,
-    chart: &chart,
+    chart: &mut chart,
     series: &series,
 }];
 renderer.draw(Color::WHITE, &mut items).unwrap();   // surface frame 획득 → prepare(오래된 래스터를 다시 그림) → encoder → pass → paint_prepared → submit → present
@@ -1731,7 +1740,7 @@ let commute = SeriesConfig::box_plot("commute", "pos", "record")
 use renderer::{Annotation, AnnotationAxis, Chart, color::Color, config::AxisOptions};
 
 let red = Color::from_rgb8(200, 60, 50);
-let chart = Chart::sized(960, 600)
+let mut chart = Chart::sized(960, 600)
     .with_overlay(AxisOptions::overlay_y("Pressure (kPa)", red), &["pressure"])
     .with_annotation(Annotation::reference_line(AnnotationAxis::Y, 0.0, Color::BLACK, 1.0))
     .with_annotation(Annotation::span(AnnotationAxis::X, 2.0, 3.5, red.with_alpha(0.15)))
@@ -1762,7 +1771,7 @@ let chart = Chart::sized(960, 600)
 let mut chart = Chart::sized(960, 600);
 chart.set_x_range(250.0, 350.0);
 chart.set_y_range(0.0, 32768.0);
-let chart = chart
+let mut chart = chart
     .with_x_unit(1.0, -273.15)                         // 켈빈을 섭씨로
     .with_y_unit(5.0 / 32768.0, 0.0);                  // 카운트를 볼트로
 ```
@@ -1805,7 +1814,7 @@ chart.set_y_range(0.0, 32768.0);                       // 0, 1, 2, 3, 4, 5 V에 
 use renderer::{Chart, SeriesConfig, color::Color, text::RichText};
 
 let fit = SeriesConfig::line("fit", "t", "fit").label(r"$\hat y \pm 1.96\sigma$");
-let chart = Chart::sized(960, 600)
+let mut chart = Chart::sized(960, 600)
     .with_x_title("Time (s)")
     .with_y_title(r"$\sin(2\pi f t)$")
     .with_legend_from(&[fit]);
@@ -1980,7 +1989,7 @@ renderer.add_column("y", &ys)?;
 let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
 let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
 chart.fit_layout();                                       // 여백을 라벨에 맞춘다
-let source = ExportSource::Chart { chart: &chart, series: &series };
+let source = ExportSource::Chart { chart: &mut chart, series: &series };
 renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .svg, .pdf도 된다
 ```
 
@@ -2148,13 +2157,13 @@ chart.apply_custom_theme(&theme, &mut series)?;
 
 ```rust
 let bytes = renderer
-    .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
+    .export_png(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // 클립보드나 네트워크로 보내도 된다.
 
 // RGBA만 필요하면:
 let img = renderer
-    .export_rgba(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
+    .export_rgba(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, 길이 = w * h * 4)
 ```
@@ -2176,10 +2185,10 @@ let img = renderer
 
 ```rust
 let svg: String = renderer
-    .export_svg(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .export_svg(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 let pdf: Vec<u8> = renderer
-    .export_pdf(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .export_pdf(renderer::ExportSource::chart(&mut chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 std::fs::write("/tmp/out.svg", svg)?;
 std::fs::write("/tmp/out.pdf", pdf)?;
