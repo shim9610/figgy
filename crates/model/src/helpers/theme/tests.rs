@@ -1252,9 +1252,28 @@ fn a_parallel_chart_frames_its_axes_and_sizes_their_names() {
     let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series[0].render_type else {
         panic!("a parallel series");
     };
-    assert_eq!(line.line_color, palette_color(&theme, 0));
+    // The rows at half opacity, each tick label on a box of the paper
+    // colour, a colourbar long enough to read (#357).
+    assert_eq!(
+        line.line_color,
+        Color {
+            a: 0.5,
+            ..palette_color(&theme, 0)
+        }
+    );
     assert_eq!(line.line_width, 1.2);
+    let paper = theme.chrome.background.unwrap();
+    assert_eq!(
+        config.parallel().unwrap().label_backdrop,
+        Some(Color { a: 0.8, ..paper })
+    );
+    assert_eq!(theme.chrome.colorbar.length, 0.6);
     valid_on(&config, &series);
+    for family in ["gallery", "cool-slate", "warm-paper"] {
+        let part = named(ChartKind::Parallel, family).series.parallel;
+        assert_eq!(part.line_opacity, Some(0.5), "{family}");
+        assert!(part.label_backdrop.is_some(), "{family}");
+    }
 
     // The documented look changes nothing on a default parallel chart.
     let mut config = categorical();

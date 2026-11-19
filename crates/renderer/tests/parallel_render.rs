@@ -174,6 +174,8 @@ fn bare_config() -> Config {
     config.left_y.max = 1.0;
     config.left_y.major_spacing = 0.25;
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: RANGES
             .iter()
             .map(|(min, max)| ParallelAxis::new(*min, *max))
@@ -847,6 +849,95 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     let _ = Side::Left;
 }
 
+/// The axis names above the plot (`names_on_top`) and the tick labels'
+/// backdrop boxes (`label_backdrop`, #357) draw at 1x and 2x, and are hit
+/// and dragged where they are drawn: the names as `bottom_x`'s labels, each
+/// box with its axis's labels.
+#[test]
+fn names_on_top_and_label_backdrops_draw_hit_and_drag() {
+    let mut r = renderer();
+    let mut config = dressed_config();
+    config.bottom_x.label_style.visible = true;
+    config.bottom_x.label_style.label_visible = true;
+    // A backdrop no row or label is drawn in.
+    let backdrop = Color::from_rgb8(250, 230, 120);
+    let options = config.parallel_mut().unwrap();
+    options.names_on_top = true;
+    options.label_backdrop = Some(backdrop);
+    // The names need a top band: the fit makes room for them.
+    config = renderer::layout::auto_layout(&config, &CpuTextMeasure::for_style(&config.draw_style));
+    let columns = upload(&mut r, "rows", &ROWS);
+    let series = [series("rows", &columns, RED, None)];
+    let chart = Chart::new(config.clone());
+    let da = config.data_area().unwrap();
+    let want = [250u8, 230, 120];
+    let mut boxed = [0usize; 2];
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        save(&format!("parallel-names-on-top-{scale}x"), &img);
+        boxed[k] = img.rgba.chunks_exact(4).filter(|p| p[..3] == want).count();
+        let background = pixel(&img, (2.0, 2.0));
+        // A name is inked above the data area over axis 1, none below it.
+        let (x, _) = point_px(&config, 1, 50.0, f64::from(scale));
+        let s = f64::from(scale);
+        let top = f64::from(da.y) * s;
+        let bottom = f64::from(da.y + da.height) * s;
+        let above = (2..(30.0 * s) as i32)
+            .any(|dy| !is_background(pixel(&img, (x, top - f64::from(dy))), background));
+        assert!(above, "{scale}x: the name is drawn above its axis");
+        let below = (4..(30.0 * s) as i32)
+            .any(|dy| !is_background(pixel(&img, (x, bottom + f64::from(dy))), background));
+        assert!(!below, "{scale}x: nothing is drawn under the axes");
+    }
+    assert!(boxed[0] > 100, "the backdrops are drawn: {boxed:?}");
+    // The 2x boxes cover about four times the 1x pixels.
+    let ratio = boxed[1] as f64 / boxed[0] as f64;
+    assert!((3.0..5.0).contains(&ratio), "{boxed:?}");
+
+    let measure = CpuTextMeasure::for_style(&config.draw_style);
+    let map = HitMap::for_active_layer(&config);
+    let hit = |config: &Config, map: &HitMap, x: f32, y: f32| {
+        map.hit_test(config, &measure, x, y)
+            .and_then(|id| map.get(id))
+            .map(|e| e.element_id())
+    };
+    // The names are hit above the data area, as the bottom axis's labels.
+    let (x, _) = point_px(&config, 1, 50.0, 1.0);
+    let name_at = (1..30)
+        .map(|dy| (x as f32, da.y as f32 - dy as f32))
+        .find(|at| hit(&config, &map, at.0, at.1).as_deref() == Some("tick_labels_bottom"))
+        .expect("a name is hit above the plot");
+    // A drag moves them by the stored offset, and they are hit there.
+    let mut moved = config.clone();
+    assert_eq!(
+        moved.nudge(Element::AxisLabel(Side::Bottom), &measure, 0.0, -5.0),
+        NudgeResult::Moved
+    );
+    assert_eq!(moved.bottom_x.label_style.label_offset_y, -5.0);
+    let moved_map = HitMap::for_active_layer(&moved);
+    assert_eq!(
+        hit(&moved, &moved_map, name_at.0, name_at.1 - 5.0).as_deref(),
+        Some("tick_labels_bottom")
+    );
+    // A backdrop box is hit as its axis's labels: some point just outside
+    // a label's text, inside its box, answers the axis.
+    let (x, _) = point_px(&config, 2, 500.0, 1.0);
+    let top = da.y;
+    let found = (0..da.height)
+        .flat_map(|dy| (2..60).map(move |d| (x - f64::from(d), f64::from(top + dy) + 0.5)))
+        .any(|at| {
+            hit(&config, &map, at.0 as f32, at.1 as f32).as_deref()
+                == Some("parallel_axis_labels_2")
+        });
+    assert!(found, "axis 2's labels are hit");
+}
+
 /// Registration names each rule: the axis count, a series that is not
 /// parallel on a parallel chart, a parallel series on a plain chart, a
 /// colour column without a colourbar, a polar chart, a 3D chart and a
@@ -1075,6 +1166,8 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
             .collect(),
     );
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: (0..axes).map(|_| ParallelAxis::new(0.0, 100.0)).collect(),
     }));
     let series = SeriesConfig {

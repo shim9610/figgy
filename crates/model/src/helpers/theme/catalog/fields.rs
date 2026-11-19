@@ -1,6 +1,6 @@
 //! Field, vector, 3D, mesh, polar, radar, parallel and ternary themes.
 
-use super::super::{ChartKind, Theme, ThemeFamily};
+use super::super::{ChartKind, ParallelTheme, Theme, ThemeFamily};
 use super::{
     GALLERY_INK, alpha, colormap, covered, document, family_chrome, gallery, gridded, inked_scene,
     mark_colormap, palette, ramp, rgb,
@@ -277,15 +277,17 @@ fn parallel_midnight() -> Theme {
     let bg = rgb(15, 18, 30);
     let ink = rgb(186, 194, 216);
     let mut theme = covered(inked_scene(ChartKind::Parallel, bg, ink, bg));
+    let paper = bg;
     let chrome = &mut theme.chrome;
     chrome.axis_preset = AxisPreset::OpenOutward;
     chrome.frame_ink = rgb(96, 104, 130);
     chrome.tick_label_size = 16.0;
-    chrome.colorbar.thickness = 12.0;
-    chrome.colorbar.length = 0.3;
+    chrome.colorbar.thickness = 14.0;
+    chrome.colorbar.length = 0.6;
     chrome.colorbar.gap = 16.0;
     chrome.colorbar.title_size = 19.0;
     theme.series.parallel.name_size = 20.0;
+    theme.series.parallel = parallel_rows(theme.series.parallel, paper);
     theme.series.palette = vec![ink];
     theme.series.lines.line_width = 1.2;
     theme.series.fields.colormap = ramp([
@@ -480,6 +482,7 @@ fn radar(family: ThemeFamily) -> Theme {
 fn parallel(family: ThemeFamily) -> Theme {
     let mut theme = covered(family_chrome(family, ChartKind::Parallel));
     let ink = theme.chrome.ink;
+    let paper = theme.chrome.background.unwrap_or(Color::WHITE);
     let chrome = &mut theme.chrome;
     chrome.axis_preset = AxisPreset::OpenOutward;
     chrome.frame_ink = match family {
@@ -488,15 +491,26 @@ fn parallel(family: ThemeFamily) -> Theme {
         _ => rgb(150, 156, 174),
     };
     chrome.tick_label_size = 16.0;
-    chrome.colorbar.thickness = 12.0;
-    chrome.colorbar.length = 0.3;
+    chrome.colorbar.thickness = 14.0;
+    chrome.colorbar.length = 0.6;
     chrome.colorbar.gap = 16.0;
     chrome.colorbar.title_size = 19.0;
     theme.series.parallel.name_size = 20.0;
+    theme.series.parallel = parallel_rows(theme.series.parallel, paper);
     theme.series.palette = vec![ink];
     theme.series.lines.line_width = 1.2;
     theme.series.fields.colormap = mark_colormap(family);
     theme
+}
+
+/// The rows and tick labels of a family's parallel chart (#357): rows at
+/// half opacity, so many rows read as a density instead of a solid block,
+/// and each tick label on a box of the paper colour at 0.8, so it stays
+/// readable over the rows it sits on.
+fn parallel_rows(mut part: ParallelTheme, paper: Color) -> ParallelTheme {
+    part.line_opacity = Some(0.5);
+    part.label_backdrop = Some(Color { a: 0.8, ..paper });
+    part
 }
 
 /// A family's ternary chart (gallery, cool slate, midnight): twelve

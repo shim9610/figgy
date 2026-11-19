@@ -108,6 +108,8 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         ..ParallelAxis::new(min, max)
     };
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: vec![
             log(1e-4, 1e-1),
             log(10., 1000.),

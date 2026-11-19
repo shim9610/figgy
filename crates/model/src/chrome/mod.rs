@@ -93,8 +93,17 @@ pub fn emit_chart_chrome(
         // draws its own line, ticks and labels at its category. No grid:
         // the axes are the structure, and `left_y` is the normalized band,
         // not drawn (#141).
+        // The names may sit above the plot (`names_on_top`, #357): the
+        // bottom axis then draws its line and ticks at the bottom and its
+        // labels at the top.
+        let names = parallel::names_side(config);
         for (axis, side) in [(&config.top_x, Side::Top), (&config.bottom_x, Side::Bottom)] {
             let cross = crate::layout::axis_cross(config, &side);
+            if side == Side::Bottom && names != Side::Bottom {
+                emit_axis_strokes(axis, side, &plot, cross, None, measure, sink, scale);
+                emit_axis_tick_labels(axis, names.clone(), &plot, measure, sink);
+                continue;
+            }
             emit_axis(
                 axis,
                 side,
@@ -249,13 +258,13 @@ pub fn emit_part_of(
         // `right_y` are not drawn (#141).
         Element::AxisLabel(side) if config.parallel().is_some() => match side {
             Side::Top | Side::Bottom => {
-                emit_axis_tick_labels(
-                    axis_of(side),
-                    side.clone(),
-                    &data_area_rect(&da),
-                    measure,
-                    sink,
-                );
+                // `bottom_x` names the axes, on the side `names_on_top`
+                // chooses (#357).
+                let placed = match side {
+                    Side::Bottom => parallel::names_side(config),
+                    _ => side.clone(),
+                };
+                emit_axis_tick_labels(axis_of(side), placed, &data_area_rect(&da), measure, sink);
             }
             Side::Left | Side::Right => {}
         },

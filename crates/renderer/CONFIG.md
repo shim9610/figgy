@@ -385,6 +385,27 @@ Each axis draws its own line, major and minor ticks and tick labels in
 (`Element::ParallelAxisLabel(i)`, hit id `parallel_axis_labels_{i}`),
 dragged into the axis's `label_offset`.
 
+Two look fields ([#357](https://github.com/shim9610/figgy/issues/357)),
+both omitted from JSON at their defaults:
+- `names_on_top` (default `false`) places the names, `bottom_x`'s labels
+  (hit id `tick_labels_bottom`), above the plot. `bottom_x`'s line, ticks
+  and title stay at the bottom, and the layout fit sizes the top band for
+  the names.
+- `label_backdrop` (default `None`) fills a box in its colour behind every
+  parallel tick label. The box is the label grown by 0.15 of its font
+  size (`parallel::LABEL_BACKDROP_PAD`), and it is part of the axis's
+  label element, so it is hit, selected and dragged with the labels.
+
+`default::default_parallel_config()` is the preset for a new chart:
+- the names on top, and a white backdrop at 0.8;
+- `left_y` over `0..1` with its title hidden, a grey line and outward major
+  ticks without minors, and 14 px tick labels;
+- `bottom_x` with no line and no ticks;
+- no grid, and no frame.
+
+The host then writes `parallel_mut().axes` and `bottom_x.categories`.
+`SeriesConfig::parallel` rows draw 1 px at 0.4 opacity.
+
 Validation (`Config::validate_parallel`, reported as `InvalidConfig { field:
 "parallel" }` where the chart is drawn): at least two axes, each with a
 finite range whose `min` is smaller than `max` (positive when

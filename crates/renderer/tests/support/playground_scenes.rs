@@ -4718,6 +4718,8 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.grid.show_minor_y = false;
     // Each axis spans its measurement with a little room past the data.
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: ranges
             .iter()
             .map(|(lo, hi)| {
