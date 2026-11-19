@@ -334,7 +334,17 @@ impl PrepareContext<'_> {
                 });
                 continue;
             }
-            let x_h = match lookup(&cfg.x_column) {
+            // Range links read no column (#357): they route from their
+            // bars' group 3, so the generic handles are the bars' own.
+            let columns = rt
+                .range_links()
+                .and_then(|links| {
+                    series_specs
+                        .iter()
+                        .find(|s| s.config.series_id == links.bars)
+                })
+                .map_or(cfg, |bars| bars.config);
+            let x_h = match lookup(&columns.x_column) {
                 // A monotonic series before its group's first full call has
                 // no envelope columns: it draws nothing (#271).
                 Err(FiggyError::UnknownColumn { .. }) if cfg.monotonic().is_some() => {
@@ -363,7 +373,7 @@ impl PrepareContext<'_> {
             let y_h = if rt.box_plot().is_some() {
                 x_h
             } else {
-                lookup(&cfg.y_column)?
+                lookup(&columns.y_column)?
             };
             // A radar polygon has one vertex per category: its columns are
             // data, so their lengths are checked here against the pool.

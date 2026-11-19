@@ -830,6 +830,7 @@ mod serde_tests {
         super::radar_tests::radar_series_round_trip_and_omit_their_defaults();
         super::streamline_tests::streamlines_round_trip();
         super::range_bar_tests::range_bars_round_trip_and_omit_unset_options();
+        super::range_bar_tests::range_links_round_trip();
         a_hexagonal_grid_round_trips_and_counts_a_cell_per_coordinate();
         an_image_parses_with_its_defaults_and_round_trips();
     }
@@ -3547,6 +3548,7 @@ mod range_bar_tests {
         labels.placement = CategoryBarLabels::Outside;
         labels.text = vec!["+1".into(), "-2".into(), "3".into()];
         labels.offsets = vec![[0.0, 0.0], [1.0, -2.0], [0.0, 0.0]];
+        labels.contrast_ink = Some([Color::from_rgb8(20, 20, 20), Color::WHITE]);
     }
 
     #[test]
@@ -3849,6 +3851,228 @@ mod range_bar_tests {
         let len = |c: &str| matches!(c, "pos" | "one.end" | "one.start").then_some(5);
         assert_eq!(config.step_selection(&[rows], 4, 0, len), Ok(true));
         assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(4));
+    }
+
+    /// Contrast ink and the inside-or-beside placement (#357): opaque inks
+    /// on a range bar series validate, a translucent one is refused, and a
+    /// category bar series refuses contrast ink (only range bars draw it)
+    /// but takes the placement.
+    #[test]
+    fn contrast_ink_is_opaque_and_only_on_range_bars() {
+        let config = chart();
+        let with_ink = |inks: [Color; 2]| {
+            let mut s = ranges("one");
+            let DataRenderType::RangeBars(RangeBarSeries { labels, .. }) = edit(&mut s) else {
+                unreachable!()
+            };
+            labels.placement = CategoryBarLabels::InsideOrBeside;
+            labels.contrast_ink = Some(inks);
+            s
+        };
+        let ok = with_ink([Color::BLACK, Color::WHITE]);
+        assert_eq!(config.validate_range_bars(&[ok]), Ok(()));
+        let translucent = with_ink([Color::BLACK, Color::new(1.0, 1.0, 1.0, 0.5)]);
+        assert_eq!(
+            config.validate_range_bars(&[translucent]),
+            Err(crate::RuleKind::RangeBarContrastInk)
+        );
+        let cats = [Category::new("a", "A"), Category::new("b", "B")];
+        let mut bars_series = super::category_bar_tests::bars("a");
+        if let DataRenderType::CategoryBars(b) = &mut bars_series.render_type {
+            b.labels.placement = CategoryBarLabels::InsideOrBeside;
+        }
+        assert_eq!(validate_category_bar_series(&bars_series, &cats), Ok(()));
+        if let DataRenderType::CategoryBars(b) = &mut bars_series.render_type {
+            b.labels.contrast_ink = Some([Color::BLACK, Color::WHITE]);
+        }
+        assert_eq!(
+            validate_category_bar_series(&bars_series, &cats),
+            Err(crate::RuleKind::ContrastInkSeries)
+        );
+    }
+
+    fn links() -> SeriesConfig {
+        SeriesConfig {
+            series_id: "deps".into(),
+            source_id: None,
+            label: None,
+            x_column: String::new().into(),
+            y_column: String::new().into(),
+            z_column: None,
+            render_type: DataRenderType::RangeLinks(RangeLinkSeries {
+                bars: "one".into(),
+                color: Color::from_rgb8(212, 162, 76),
+                width: 1.5,
+                head: 6.0,
+                inset: 6.0,
+                // 3000 links: no cap (rule 10).
+                links: (0..3000u32).map(|i| RangeLink::new(i, i + 1)).collect(),
+            }),
+        }
+    }
+
+    fn style(l: &mut SeriesConfig) -> &mut RangeLinkSeries {
+        match &mut l.render_type {
+            DataRenderType::RangeLinks(links) => links,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Dependency links (#357): they name a range bar series in their own
+    /// layer, read two distinct row columns, keep their stroke, head and
+    /// exit inset in range, take any colour with channels in `0..=1` (a
+    /// translucent one too, as a connector does), and refuse polar axes.
+    #[test]
+    fn range_links_name_bars_in_their_layer_and_validate_their_style() {
+        let mut config = chart();
+        let series = [ranges("one"), links()];
+        assert_eq!(config.validate_range_links(&series), Ok(()));
+        let refused = |edit: fn(&mut SeriesConfig)| {
+            let mut l = links();
+            edit(&mut l);
+            chart().validate_range_links(&[ranges("one"), l])
+        };
+        assert_eq!(
+            refused(|l| style(l).bars = "missing".into()),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        assert_eq!(
+            config.validate_range_links(&[links()]),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        // DataLess: a link series names no column.
+        assert_eq!(
+            refused(|l| l.x_column = "from".into()),
+            Err(crate::RuleKind::RangeLinkColumns)
+        );
+        assert_eq!(
+            refused(|l| l.y_column = "to".into()),
+            Err(crate::RuleKind::RangeLinkColumns)
+        );
+        for edit in [
+            (|l: &mut SeriesConfig| style(l).width = -1.0) as fn(&mut SeriesConfig),
+            |l| style(l).width = f32::NAN,
+            |l| style(l).head = 33.0,
+            |l| style(l).inset = 65.0,
+            |l| style(l).links[3].exit_offset = Some(-1.0),
+            |l| style(l).links[3].exit_offset = Some(f32::INFINITY),
+            |l| style(l).color = Color::new(2.0, 0.0, 0.0, 1.0),
+        ] {
+            assert_eq!(refused(edit), Err(crate::RuleKind::RangeLinkStyle));
+        }
+        // The bars in an overlay and the links in the base layer differ.
+        config.overlays.push(OverlayLayer {
+            series: vec!["one".into()],
+            ..crate::defaults::overlay_layer()
+        });
+        assert_eq!(
+            config.validate_range_links(&series),
+            Err(crate::RuleKind::RangeLinkBars)
+        );
+        config.overlays[0].series.push("deps".into());
+        assert_eq!(config.validate_range_links(&series), Ok(()));
+        // A polar chart refuses them.
+        let mut polar = chart();
+        polar.coordinates =
+            crate::coordinates::Coordinates::Polar(crate::defaults::polar_options());
+        assert_eq!(
+            polar.validate_series_on_polar(&links()),
+            Err(crate::RuleKind::PolarRangeLinks)
+        );
+    }
+
+    /// Links step along their own rows, bounded by the shorter row column,
+    /// and stay in their series.
+    #[test]
+    fn step_selection_walks_range_links_by_row() {
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
+        let mut config = chart();
+        let series = [ranges("one"), links()];
+        let pick = |row: usize| PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "deps".into(),
+            bin_index: row,
+            half: None,
+        };
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![pick(0)],
+            ..crate::defaults::data_selections_config()
+        });
+        let len = |c: &str| matches!(c, "pos" | "one.end" | "one.start").then_some(5);
+        assert_eq!(config.step_selection(&series, 1, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(1));
+        assert_eq!(config.step_selection(&series, 0, 1, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(2));
+        assert_eq!(config.step_selection(&series, 5000, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(2999));
+    }
+
+    /// The exit offset helpers (#357): `set_link_exit_offset` writes one
+    /// link's offset, clearing it for 0 or a non-finite value and refusing a
+    /// negative one or an index past the links; `drag_link_exit` moves the
+    /// exit of every link sharing the picked link's trunk, snaps to the
+    /// default within 3 px and stops half a pixel in from the bar's start.
+    #[test]
+    fn link_exit_offsets_set_drag_snap_and_share_their_trunk() {
+        let mut series = links();
+        let l = style(&mut series);
+        assert!(l.set_link_exit_offset(5, Some(20.0)));
+        assert_eq!(l.links[5].exit_offset, Some(20.0));
+        assert!(l.set_link_exit_offset(5, Some(0.0)));
+        assert_eq!(l.links[5].exit_offset, None);
+        assert!(l.set_link_exit_offset(5, Some(f32::NAN)));
+        assert_eq!(l.links[5].exit_offset, None);
+        assert!(!l.set_link_exit_offset(5, Some(-2.0)));
+        assert!(!l.set_link_exit_offset(3000, Some(2.0)));
+        // Two more links leave row 5's bar: one sharing its trunk, one moved.
+        l.links.push(RangeLink::new(5, 9));
+        l.links.push(RangeLink {
+            exit_offset: Some(40.0),
+            ..RangeLink::new(5, 8)
+        });
+        use crate::layout::NudgeResult;
+        assert_eq!(l.drag_link_exit(5, 14.0), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(20.0));
+        assert_eq!(l.links[3000].exit_offset, Some(20.0), "the shared trunk");
+        assert_eq!(l.links[3001].exit_offset, Some(40.0), "its own exit");
+        assert_eq!(l.links[4].exit_offset, None, "another bar's link");
+        // Back within 3 px of the default (6): the entries clear.
+        assert_eq!(l.drag_link_exit(5, -12.0), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, None);
+        assert_eq!(l.links[3000].exit_offset, None);
+        // Before the bar's start: stops half a pixel in (0 is the default).
+        assert_eq!(l.drag_link_exit(3001, -100.0), NudgeResult::Moved);
+        assert_eq!(l.links[3001].exit_offset, Some(0.5));
+        assert_ne!(l.drag_link_exit(9999, 1.0), NudgeResult::Moved);
+        assert_ne!(l.drag_link_exit(5, f32::NAN), NudgeResult::Moved);
+    }
+
+    /// Run by `serde_tests`' one test.
+    #[cfg(feature = "serde")]
+    pub(super) fn range_links_round_trip() {
+        let mut original = links();
+        style(&mut original).links[1].exit_offset = Some(12.5);
+        let json = serde_json::to_value(&original).unwrap();
+        let fields = json["render_type"]["RangeLinks"].as_object().unwrap();
+        for key in ["bars", "color", "width", "head", "inset", "links"] {
+            assert!(fields.contains_key(key), "{key}");
+        }
+        // An unset offset is omitted; a set one is written.
+        assert!(fields["links"][0].get("exit_offset").is_none());
+        assert_eq!(fields["links"][1]["exit_offset"], 12.5);
+        // No links: the key is omitted and reads back empty.
+        let mut empty = links();
+        style(&mut empty).links.clear();
+        let bare = serde_json::to_value(&empty).unwrap();
+        assert!(bare["render_type"]["RangeLinks"].get("links").is_none());
+        assert_eq!(serde_json::from_value::<SeriesConfig>(bare).unwrap(), empty);
+        let parsed: SeriesConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, original);
+        let again = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SeriesConfig>(&again).unwrap(),
+            original
+        );
     }
 
     #[test]

@@ -107,6 +107,7 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::CategoryBars(_)
         | DataRenderType::BoxPlot(_)
         | DataRenderType::RangeBars(_)
+        | DataRenderType::RangeLinks(_)
         | DataRenderType::Radar(_)
         | DataRenderType::Streamlines(_)
         | DataRenderType::Ternary(_)
@@ -799,6 +800,17 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::RangeBars(_) => Ok(&[]),
+        // Nor to range links (#357, rule 8): a link reads its bars' rows,
+        // which a stream has not placed. A backstop to the rejection before
+        // a cursor exists.
+        DataRenderType::RangeLinks(_) if primitives.range_links => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: crate::RuleKind::StreamedRangeLinks,
+            }
+            .into())
+        }
+        DataRenderType::RangeLinks(_) => Ok(&[]),
         // Nor to radar series: a polygon closes on its first vertex. Rejected
         // before a cursor exists; this is a backstop.
         DataRenderType::Radar(_) if primitives.line || primitives.scatter => {

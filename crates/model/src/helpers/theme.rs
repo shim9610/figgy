@@ -1616,7 +1616,8 @@ impl Theme {
             }
             DataRenderType::Streamlines(_)
             | DataRenderType::MonotonicLine(_)
-            | DataRenderType::RgbImage(_) => {}
+            | DataRenderType::RgbImage(_)
+            | DataRenderType::RangeLinks(_) => {}
         }
         if let DataRenderType::RangeBars(RangeBarSeries {
             whiskers,

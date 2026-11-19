@@ -9,8 +9,15 @@
 //!   down colours read from the given ends, and the host's 20-day moving average
 //!   as a line.
 //! - `gantt` writes `gallery-gantt.png`: a release plan as horizontal bars on a
-//!   date axis, a state column choosing each task's colour and a progress
-//!   column shading the finished part.
+//!   date axis, a state column choosing each task's colour, a progress
+//!   column shading the finished part, and dependency links between the
+//!   tasks (`SeriesConfig::range_links`).
+//! - `timeline` writes `timeline.png` and `timeline@2x.png`: the default
+//!   timeline look (#357) without a theme, `SeriesConfig::timeline_bars` on
+//!   `default::default_calendar_timeline_config` (a month header over Monday
+//!   weeks), with the recipes a web Gantt chart
+//!   reads by: a progress column, milestones as filled diamonds, a today
+//!   line and finish-to-start dependency links (`SeriesConfig::range_links`).
 //!
 //! The example computes the running totals, the prices, the moving average,
 //! the dates and the progress; the renderer draws the columns it is given.
@@ -25,7 +32,7 @@ mod styled;
 use gallery::Result;
 use renderer::theme::ThemeFamily;
 use renderer::{
-    Category, Color, Renderer, SeriesConfig,
+    Category, Chart, Color, Renderer, SeriesConfig,
     config::LegendCorner,
     data_config::{
         BarGroups, CategoryBarDirection, CategoryBarLabels, DataRenderType, RangeBarSeries,
@@ -247,7 +254,8 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
 }
 
 // A Gantt chart: tasks on workstream rows over a date axis, coloured by a
-// state column, their finished part shaded by a progress column.
+// state column, their finished part shaded by a progress column, joined by
+// their dependency links.
 fn gantt(r: &mut Renderer, out: &Path) -> Result {
     let theme = ThemeFamily::CoolSlate.theme(ChartKind::RangeBars);
     let bg = background(&theme);
@@ -329,7 +337,21 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         ..TimestampLabelFormat::default()
     });
     chart.set_x_range(T0 - 2.0 * DAY, T0 + 66.0 * DAY);
-    let mut specs = [bars];
+    // Finish-to-start dependencies between the tasks above (rows of the
+    // task columns), routed between the bars on every draw (#357). Listed
+    // before the bars, so the bars cover the link ends.
+    let links = [
+        (0, 2),
+        (2, 3),
+        (2, 4),
+        (4, 5),
+        (4, 6),
+        (6, 7),
+        (6, 8),
+        (8, 9),
+    ];
+    let dependencies = SeriesConfig::range_links("links", "tasks", links);
+    let mut specs = [dependencies, bars];
     themed(&mut chart, &theme, &mut specs)?;
     for (label, color) in states.iter().zip(&theme.series.range_bars.states) {
         chart = chart.with_legend_swatch(label, *color);
@@ -339,10 +361,100 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
     save(&image, bg, &out.join("gallery-gantt.png"))
 }
 
+// The default timeline look (#357), no theme: muted row colours, labels
+// inside or beside their bars in contrast ink, banded rows, and the host's
+// progress, milestones, today line and links. The host computes every
+// value: dates, progress, which rows link and where today is.
+fn timeline(r: &mut Renderer, out: &Path) -> Result {
+    use renderer::annotation::{Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle};
+    use renderer::{ScatterShape, line::LineStylePreset, text::RichText};
+    const T0: f64 = 1_772_409_600.0; // Monday 2026-03-02T00:00:00Z
+    // (id, task, start day, days, progress, label); no days is a milestone.
+    let tasks = [
+        ("interviews", "User interviews", 0.0, 9.0, 1.0, "Done"),
+        ("survey", "Survey", 6.0, 8.0, 1.0, "Done"),
+        ("brief", "Product brief", 14.0, 5.0, 1.0, "Done"),
+        ("design", "Visual design", 19.0, 14.0, 0.8, "80%"),
+        ("api", "API", 22.0, 18.0, 0.55, "55%"),
+        ("web", "Web app", 35.0, 18.0, 0.2, "20%"),
+        ("beta", "Beta", 53.0, 0.0, 0.0, ""),
+        ("qa", "Test pass", 53.0, 10.0, 0.0, "Not started"),
+        ("docs", "Docs", 56.0, 9.0, 0.0, "Not started"),
+        ("release", "Release", 70.0, 0.0, 0.0, ""),
+    ];
+    // Finish-to-start links, by row: the host's dependencies. Test pass to
+    // Docs runs backward (Docs starts first) and takes the S route.
+    let links = [(0, 1), (0, 2), (2, 3), (3, 5), (4, 5), (7, 8)];
+    let today = T0 + 37.5 * DAY;
+    let column = |f: &dyn Fn(&(&str, &str, f64, f64, f64, &str)) -> f64| -> Vec<f64> {
+        tasks.iter().map(f).collect()
+    };
+    let bar = |t: &(&str, &str, f64, f64, f64, &str), v: f64| if t.3 > 0.0 { v } else { f64::NAN };
+    let mark = |t: &(&str, &str, f64, f64, f64, &str), v: f64| if t.3 > 0.0 { f64::NAN } else { v };
+    r.add_column(
+        "tl-row",
+        &column(&|t| tasks.iter().position(|u| u.0 == t.0).unwrap() as f64),
+    )?;
+    r.add_hilo_column("tl-start", &column(&|t| bar(t, T0 + t.2 * DAY)))?;
+    r.add_hilo_column("tl-end", &column(&|t| bar(t, T0 + (t.2 + t.3) * DAY)))?;
+    r.add_column("tl-done", &column(&|t| t.4))?;
+    r.add_hilo_column("tl-mark", &column(&|t| mark(t, T0 + t.2 * DAY)))?;
+
+    // The calendar header: Monday weeks below, the months above.
+    let mut config = renderer::default::default_calendar_timeline_config();
+    config.left_y.categories = Some(tasks.iter().map(|t| Category::new(t.0, t.1)).collect());
+    let ink = Color::from_rgb8(55, 65, 81);
+    let line = |color: Color, width: f32| AnnotationLineStyle {
+        color,
+        width,
+        style: LineStylePreset::Solid,
+    };
+    let font = config.left_y.label_style.label_font.clone();
+    let items = &mut config.annotations.items;
+    let red = Color::from_rgb8(220, 68, 55);
+    items.push(Annotation::new(AnnotationKind::ReferenceLine {
+        axis: AnnotationAxis::X,
+        value: today,
+        style: line(red, 1.5),
+        label: Some(RichText::plain("Today", red, 14.0, font)),
+    }));
+
+    let mut chart = Chart::sized(1200, 640).with_title("Release plan");
+    *chart.config_mut() = renderer::Config {
+        chart_area: chart.config().chart_area.clone(),
+        ..config
+    };
+    chart.set_x_range(T0 - 2.0 * DAY, T0 + 74.0 * DAY);
+    chart = chart.with_title("Release plan");
+    let mut bars = SeriesConfig::timeline_bars("tasks", "tl-row", "tl-start", "tl-end")
+        .with_progress("tl-done");
+    if let DataRenderType::RangeBars(RangeBarSeries { labels, .. }) = &mut bars.render_type {
+        labels.text = tasks.iter().map(|t| t.5.to_string()).collect();
+    }
+    let milestones = SeriesConfig::scatter("milestones", "tl-mark", "tl-row")
+        .marker(ScatterShape::DiamondFilled, 16.0)
+        .color(ink);
+    // The links route between the bars on every draw (#357).
+    let dependencies = SeriesConfig::range_links("links", "tasks", links);
+    // Listed before the bars, so the bars cover the link ends.
+    let specs = [dependencies, bars, milestones];
+    for (scale, name) in [(1.0, "timeline.png"), (2.0, "timeline@2x.png")] {
+        chart.fit_layout();
+        let image = r.export_rgba_blocking(
+            renderer::ExportSource::chart(&mut chart, &specs),
+            renderer::ExportOptions::panel(scale).with_clear(Color::WHITE),
+        )?;
+        std::fs::write(out.join(name), renderer::encode_png(&image)?)?;
+        println!("{}", out.join(name).display());
+    }
+    Ok(())
+}
+
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
     waterfall(r, out)?;
     candlestick(r, out)?;
-    gantt(r, out)
+    gantt(r, out)?;
+    timeline(r, out)
 }
 
 fn main() -> Result {

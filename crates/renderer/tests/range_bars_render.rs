@@ -1267,3 +1267,869 @@ fn three_thousand_rows_draw_pick_and_highlight() {
     eprintln!("range bars over {BIG} rows: export {draw:?}, pick {pick:?}");
     r.remove_chart(id).unwrap();
 }
+
+/// A dark navy, a pale cream and the dark label ink of the contrast tests.
+const NAVY: Color = Color::from_rgb8(20, 30, 90);
+const CREAM: Color = Color::from_rgb8(250, 240, 200);
+const INK: Color = Color::from_rgb8(20, 20, 20);
+
+fn is_navy(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] < 40 && p[1] < 50 && (70..110).contains(&p[2])
+}
+
+fn is_cream(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] > 240 && (230..250).contains(&p[1]) && (185..215).contains(&p[2])
+}
+
+/// Label ink in white, over any fill.
+fn is_light_ink(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] > 235 && p[1] > 235 && p[2] > 235
+}
+
+/// Label ink in the dark ink, over any fill.
+fn is_dark_ink(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] < 45 && p[1] < 45 && p[2] < 45
+}
+
+/// Three rows labelled inside or beside their bar in contrast ink (#357):
+/// row 0 dark navy, rows 1 and 2 pale cream, row 1's label too long for
+/// its bar.
+fn contrast_series() -> SeriesConfig {
+    let mut series = ranges("one", RED);
+    let (_, color_by, _, _, labels) = fields(&mut series);
+    *color_by = RangeColor::ByRow {
+        colors: vec![NAVY, CREAM, CREAM],
+    };
+    labels.placement = CategoryBarLabels::InsideOrBeside;
+    labels.contrast_ink = Some([INK, Color::WHITE]);
+    labels.text = vec!["Alpha".into(), "Beside its bar".into(), "Gamma".into()];
+    series
+}
+
+/// Inside-or-beside labels with contrast ink (#357): a label that fits sits
+/// inside its bar in the ink that contrasts more with the bar (white on
+/// navy, dark on cream), one that does not sits beside the bar's end in the
+/// ink that contrasts with the plot; the ink is chosen per pixel, so a
+/// label across a progress split is white over the finished part and dark
+/// over the light unfinished part. The labels pick, outline and drag where
+/// they are drawn at 1x and 2x, the vector exports embed them, and a saved
+/// document draws the same.
+#[test]
+fn inside_or_beside_labels_take_contrast_ink_and_keep_every_interaction() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let mut chart = chart(direction);
+    let series = [contrast_series()];
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let row = |k: usize| slot(&chart, direction, k, scale);
+        // Row 0: white ink inside the navy bar.
+        let navy = bbox(&img, row(0), is_navy).expect("row 0's bar");
+        let inside = (navy.0, navy.1, navy.2 + 1, navy.3 + 1);
+        let white = bbox(&img, inside, is_light_ink).expect("white ink on navy");
+        assert_eq!(bbox(&img, inside, is_dark_ink), None, "{scale}x row 0");
+        // Row 2: dark ink inside its cream bar.
+        let cream = bbox(&img, row(2), is_cream).expect("row 2's bar");
+        let cream_box = (cream.0, cream.1, cream.2 + 1, cream.3 + 1);
+        let dark = bbox(&img, cream_box, is_dark_ink).expect("dark ink on cream");
+        assert_eq!(bbox(&img, cream_box, is_light_ink), None, "{scale}x row 2");
+        // Row 1: the long label sits beside the falling bar's end (its
+        // smaller value, on the left), dark on the plot, none inside.
+        let short = bbox(&img, row(1), is_cream).expect("row 1's bar");
+        let short_box = (short.0, short.1, short.2 + 1, short.3 + 1);
+        assert_eq!(bbox(&img, short_box, is_dark_ink), None, "{scale}x row 1");
+        assert_eq!(bbox(&img, short_box, is_light_ink), None, "{scale}x row 1");
+        let r1 = row(1);
+        let left = (r1.0, r1.1, short.0, r1.3);
+        let beside = bbox(&img, left, is_dark_ink).expect("the long label beside its bar");
+        assert!(beside.2 < short.0, "{scale}x {beside:?} {short:?}");
+
+        // Each label picks where it is drawn, inside or beside.
+        let centre = |b: Region| ((b.0 + b.2) as f32 / 2.0, (b.1 + b.3) as f32 / 2.0);
+        r.enable_gpu_picking().unwrap();
+        let id = r
+            .register_chart(chart.config().clone(), series.to_vec())
+            .unwrap();
+        for (k, ink) in [(0, white), (1, beside), (2, dark)] {
+            let request = renderer::GpuPickRequest {
+                canvas_position_px: [centre(ink).0, centre(ink).1],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: img.width,
+                    height: img.height,
+                },
+                display_scale: scale,
+                max_distance_px: 0.0,
+            };
+            match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+                Some(renderer::PickedData::ValueLabel {
+                    series_id,
+                    category_index,
+                    ..
+                }) => assert_eq!((series_id.as_str(), category_index), ("one", k)),
+                other => panic!("{scale}x label {k} picked {other:?}"),
+            }
+        }
+        r.remove_chart(id).unwrap();
+
+        // The selected label is outlined around where it is drawn.
+        chart.config_mut().picked_data = Some(DataSelectionsConfig {
+            refs: vec![PickedDataRef::ValueLabel {
+                source_id: None,
+                series_id: "one".into(),
+                category_index: 1,
+                part: None,
+            }],
+            ..DataSelectionsConfig::default()
+        });
+        let selected = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        chart.config_mut().picked_data = None;
+        let changed = (r1.1..r1.3.min(img.height))
+            .flat_map(|y| (r1.0..short.0).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(&img, x, y) != pixel(&selected, x, y))
+            .count();
+        assert!(changed > 0, "{scale}x: the selected label is outlined");
+
+        // A dragged label moves by its offset.
+        let mut dragged = series.clone();
+        fields(&mut dragged[0]).4.offsets = vec![[0.0, 0.0], [0.0, -12.0], [0.0, 0.0]];
+        let moved = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &dragged),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let near = (
+            beside.0 - 2,
+            beside.1 - (20.0 * scale) as u32,
+            short.0,
+            beside.3 + 1,
+        );
+        let after = bbox(&moved, near, is_dark_ink).expect("the dragged label");
+        assert!(
+            (beside.1 as f32 - after.1 as f32 - 12.0 * scale).abs() <= 1.5,
+            "{scale}x {beside:?} -> {after:?}"
+        );
+        // A label dragged off its navy bar reads the plot under it: dark,
+        // never white on white.
+        let mut off_bar = series.clone();
+        fields(&mut off_bar[0]).4.offsets = vec![[0.0, 60.0], [0.0, 0.0], [0.0, 0.0]];
+        let off = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &off_bar),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let below = (navy.0, navy.3 + 1, navy.2 + 1, img.height);
+        assert!(
+            bbox(&off, below, is_dark_ink).is_some(),
+            "{scale}x off its bar"
+        );
+        assert_eq!(
+            bbox(&off, below, is_light_ink),
+            None,
+            "{scale}x off its bar"
+        );
+    }
+
+    // Across a progress split: white over the finished navy part, dark over
+    // its light unfinished part.
+    let mut split = series.clone();
+    *fields(&mut split[0]).2 = Some(RangeProgress {
+        column: "progress".into(),
+        remaining_opacity: 0.2,
+    });
+    fields(&mut split[0]).4.text[0] = "Alpha beta gamma".into();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&mut chart, &split),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let at = value_px(&chart, direction, 0.5 * (START[0] + END[0]), 1.0) as u32;
+    let row0 = slot(&chart, direction, 0, 1.0);
+    // From the bar's start: the tick marks left of the plot are dark too.
+    let row0 = (
+        value_px(&chart, direction, START[0], 1.0) as u32 + 1,
+        row0.1,
+        row0.2,
+        row0.3,
+    );
+    assert!(
+        bbox(&img, (row0.0, row0.1, at, row0.3), is_light_ink).is_some(),
+        "white ink before the split"
+    );
+    assert!(
+        bbox(&img, (at + 1, row0.1, row0.2, row0.3), is_dark_ink).is_some(),
+        "dark ink past the split"
+    );
+    assert_eq!(
+        bbox(
+            &img,
+            (row0.0, row0.1, at.saturating_sub(1), row0.3),
+            is_dark_ink
+        ),
+        None,
+        "no dark ink before the split"
+    );
+
+    // The SVG and the PDF embed the drawn data image, labels included.
+    let svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(svg.contains("<image"));
+    let pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+
+    // A document saved and read back draws the same pixels.
+    #[cfg(feature = "serde")]
+    {
+        let before = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba;
+        let json = serde_json::to_string(&(chart.config(), &series)).unwrap();
+        assert!(json.contains("contrast_ink") && json.contains("InsideOrBeside"));
+        let (config, again): (renderer::config::Config, Vec<SeriesConfig>) =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!(again.as_slice(), &series);
+        let after = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut Chart::new(config), &again),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba;
+        assert_eq!(after, before);
+    }
+}
+
+/// Rule 10: inside-or-beside labels in contrast ink on 3000 rows all draw,
+/// with no cap on rows or labels.
+#[test]
+fn contrast_labels_draw_on_every_row() {
+    let mut r = renderer();
+    let n = 3000usize;
+    r.add_column("many-pos", &col((0..n).map(|i| i as f64).collect()))
+        .unwrap();
+    r.add_column("many-start", &col(vec![0.0; n])).unwrap();
+    r.add_column("many-end", &col(vec![100.0; n])).unwrap();
+    let mut series = contrast_series();
+    series.x_column = "many-pos".into();
+    series.y_column = "many-end".into();
+    if let DataRenderType::RangeBars(bars) = &mut series.render_type {
+        bars.start = "many-start".into();
+        bars.slot_width = Some(1.0);
+        bars.labels.text = (0..n).map(|i| format!("{i}")).collect();
+        bars.color_by = RangeColor::ByRow { colors: vec![NAVY] };
+    }
+    let mut chart = chart(CategoryBarDirection::Horizontal);
+    let config = chart.config_mut();
+    config.left_y.categories = None;
+    config.left_y.min = n as f64 - 3.5;
+    config.left_y.max = n as f64 - 0.5;
+    config.left_y.major_spacing = 1.0;
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&mut chart, std::slice::from_ref(&series)),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    // The last rows, past any former cap, draw their bars and white labels.
+    let whole = (0, 0, img.width, img.height);
+    let navy = bbox(&img, whole, is_navy).expect("the last rows draw");
+    let inside = (navy.0, navy.1, navy.2 + 1, navy.3 + 1);
+    assert!(bbox(&img, inside, is_light_ink).is_some(), "labels draw");
+}
+
+/// The timeline row band colour of `default_timeline_config` (#357).
+fn is_row_band(p: &[u8]) -> bool {
+    p[3] == 255 && (245..=249).contains(&p[0]) && (246..=250).contains(&p[1]) && p[2] >= 248
+}
+
+/// The timeline look (#357): `timeline_bars` on `default_timeline_config`
+/// draws a faint band behind every other row, under the bars, at 1x and
+/// 2x; the first row (at the top) stays clear; a bar over a band still
+/// picks; a subplot of the same look draws its own bands; and the saved
+/// document draws the same.
+#[test]
+fn the_timeline_look_bands_every_other_row_under_the_bars() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let timeline = |y: u32| {
+        let mut config = renderer::default::default_timeline_config();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y,
+            width: WIDTH,
+            height: HEIGHT,
+        });
+        config.legend.visible = false;
+        config.chart_title.visible = false;
+        config.left_y.categories = Some(vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]);
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 100.0);
+        chart.fit_layout();
+        chart
+    };
+    let mut chart = timeline(0);
+    let series = [SeriesConfig::timeline_bars("one", "pos", "start", "end")];
+    // The axis is inverted: row `k` sits in the bottom-up slot `2 - k`.
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let row = |k: usize| slot(&chart, direction, 2 - k, scale);
+        assert_eq!(bbox(&img, row(0), is_row_band), None, "{scale}x row 0");
+        let band = bbox(&img, row(1), is_row_band).expect("row 1's band");
+        let r1 = row(1);
+        assert!(
+            band.0.abs_diff(r1.0) <= 1 && band.2.abs_diff(r1.2 - 1) <= 1,
+            "{scale}x: the band spans the plot: {band:?} {r1:?}"
+        );
+        assert_eq!(bbox(&img, row(2), is_row_band), None, "{scale}x row 2");
+        // The bar over the band picks.
+        let x = value_px(&chart, direction, 0.5 * (START[1] + END[1]), scale);
+        let y = (r1.1 + r1.3) as f32 / 2.0;
+        assert_eq!(
+            registered_pick(&mut r, &chart, &series, scale, (x, y), 0.0),
+            Some(("one".into(), 1)),
+            "{scale}x"
+        );
+    }
+
+    // A subplot of the same look draws its own bands.
+    let mut parent = timeline(0);
+    let sub = timeline(HEIGHT).config().clone();
+    parent.config_mut().subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["below".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    });
+    let both = [
+        SeriesConfig::timeline_bars("one", "pos", "start", "end"),
+        SeriesConfig::timeline_bars("below", "pos", "start", "end"),
+    ];
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&mut parent, &both),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let (w, h) = (img.width, img.height);
+    assert!(
+        bbox(&img, (0, 0, w, h / 2), is_row_band).is_some(),
+        "the parent's"
+    );
+    assert!(
+        bbox(&img, (0, h / 2, w, h), is_row_band).is_some(),
+        "the subplot's"
+    );
+
+    #[cfg(feature = "serde")]
+    {
+        let draw = |r: &mut Renderer, chart: &mut Chart| {
+            r.export_rgba(
+                renderer::ExportSource::chart(chart, &series),
+                renderer::ExportOptions::panel(2.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba
+        };
+        let before = draw(&mut r, &mut chart);
+        let json = serde_json::to_string(chart.config()).unwrap();
+        let config: renderer::config::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(&config, chart.config());
+        assert_eq!(draw(&mut r, &mut Chart::new(config)), before);
+    }
+}
+
+/// Dependency links (#357, item 14 D) over the three test bars, SSOT only:
+/// link 0 from row 0 to row 2, link 1 from row 0 to row 1, link 2 naming
+/// row 7, past the bars (it draws and picks nothing), stroked in orange
+/// 2 px wide with an 8 px chevron, 10 px in from the predecessor's start.
+fn links_series() -> SeriesConfig {
+    let mut links = SeriesConfig::range_links("links", "bars", [(0, 2), (0, 1), (7, 1)]);
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 2.0;
+        l.head = 8.0;
+        l.inset = 10.0;
+    }
+    links
+}
+
+/// Links route between the bars they join on every draw, at 1x and 2x: ink
+/// leaves the predecessor's edge and reaches the successor's start; a link
+/// past the bars draws nothing and is reported as truncated. A link picks as a histogram bin of its row, its
+/// highlight traces it, `step_selection` walks the links, the vector
+/// exports embed it, a saved document draws the same, and 3000 links draw
+/// with no cap (rule 10).
+#[test]
+fn range_links_route_between_their_bars_and_keep_every_interaction() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let mut chart = chart(direction);
+    let bars = ranges("bars", GREEN);
+    let links = links_series();
+    let series = [bars, links];
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let whole = (0, 0, img.width, img.height);
+        let ink = bbox(&img, whole, is_orange).expect("the links draw");
+        // Both links leave row 0's edge near its start (20), the one to
+        // row 2 (start 30) moved back to leave room for its head, and reach
+        // row 1's start (70, a bar running back) and row 2's: the ink starts
+        // within a head and an inset of 20 and never runs to row 0's end.
+        let (x20, x70) = (
+            value_px(&chart, direction, 20.0, scale),
+            value_px(&chart, direction, 70.0, scale),
+        );
+        assert!(
+            (ink.0 as f32) <= x20 + 10.0 * scale
+                && (ink.0 as f32) >= x20 - 20.0 * scale
+                && (ink.2 as f32) >= x70 - 1.0,
+            "{scale}x {ink:?}"
+        );
+        // Ink in the successors' slots and in the predecessor's.
+        for k in 0..3 {
+            assert!(
+                bbox(&img, slot(&chart, direction, k, scale), is_orange).is_some(),
+                "{scale}x slot {k}"
+            );
+        }
+        // The arrowhead of link 1 sits at row 1's start, inside the gap
+        // left of nothing: orange within its head length of x = 70.
+        let r1 = slot(&chart, direction, 1, scale);
+        let head = bbox(
+            &img,
+            (
+                (x70 - 12.0 * scale).max(0.0) as u32,
+                r1.1,
+                (x70 + 14.0 * scale) as u32,
+                r1.3,
+            ),
+            is_orange,
+        );
+        assert!(head.is_some(), "{scale}x: link 1 reaches row 1's start");
+
+        // A link pixel picks its link; the highlight is drawn over it.
+        r.enable_gpu_picking().unwrap();
+        let id = r
+            .register_chart(chart.config().clone(), series.to_vec())
+            .unwrap();
+        let mut picked = None;
+        'scan: for y in ink.1..=ink.3 {
+            for x in ink.0..=ink.2 {
+                if is_orange(pixel(&img, x, y)) {
+                    let request = renderer::GpuPickRequest {
+                        canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+                        display_panel_px: Rect {
+                            x: 0,
+                            y: 0,
+                            width: img.width,
+                            height: img.height,
+                        },
+                        display_scale: scale,
+                        max_distance_px: 0.0,
+                    };
+                    if let Some(renderer::PickedData::HistogramBin {
+                        series_id,
+                        bin_index,
+                        ..
+                    }) = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve())
+                        .unwrap()
+                    {
+                        if series_id == "links" {
+                            picked = Some(bin_index);
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+        }
+        r.remove_chart(id).unwrap();
+        let picked = picked.expect("a link pixel picks its link");
+        assert!(picked < 2, "{scale}x picked {picked}");
+        chart.config_mut().picked_data = Some(selection("links", picked));
+        let outlined = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        chart.config_mut().picked_data = None;
+        assert!(
+            bbox(&outlined, whole, is_magenta).is_some(),
+            "{scale}x: the picked link is highlighted"
+        );
+    }
+
+    // step_selection walks the SSOT links.
+    let mut config = chart.config().clone();
+    config.picked_data = Some(selection("links", 0));
+    let len = |_: &str| Some(3);
+    assert_eq!(config.step_selection(&series, 1, 0, len), Ok(true));
+    match &config.picked_data.as_ref().unwrap().refs[0] {
+        PickedDataRef::HistogramBin {
+            series_id,
+            bin_index,
+            ..
+        } => {
+            assert_eq!((series_id.as_str(), *bin_index), ("links", 1));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // The vector exports embed the data image; a saved document draws the same.
+    let svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(svg.contains("<image"));
+    let pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+    #[cfg(feature = "serde")]
+    {
+        let draw = |r: &mut Renderer, chart: &Chart, series: &[SeriesConfig]| {
+            r.export_rgba(
+                renderer::ExportSource::chart(chart, series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba
+        };
+        let before = draw(&mut r, &chart, &series);
+        let json = serde_json::to_string(&series).unwrap();
+        assert!(json.contains("RangeLinks"));
+        let again: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(again.as_slice(), &series);
+        assert_eq!(
+            draw(&mut r, &Chart::new(chart.config().clone()), &again),
+            before
+        );
+    }
+}
+
+/// Links draw next to their bars in an overlay and in a subplot, at 1x
+/// and 2x, and pick as their own series there (vertical bars: an overlay
+/// takes no horizontal range bars).
+#[test]
+fn range_links_draw_on_overlays_and_subplots() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Vertical;
+    let mut parent = chart(direction);
+    let mut overlay = renderer::OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 100.0;
+    overlay.y_axis.major_spacing = 20.0;
+    overlay.series = vec!["over".into(), "over-links".into()];
+    let mut sub = chart(direction).config().clone();
+    sub.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    let config = parent.config_mut();
+    config.overlays.push(overlay);
+    config.subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["below".into(), "below-links".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    });
+    let links = links_series();
+    let named = |id: &str, bars: &str| {
+        let mut l = links.clone();
+        l.series_id = id.into();
+        if let DataRenderType::RangeLinks(fields) = &mut l.render_type {
+            fields.bars = bars.into();
+        }
+        l
+    };
+    let series = [
+        ranges("over", GREEN),
+        named("over-links", "over"),
+        ranges("below", GREEN),
+        named("below-links", "below"),
+    ];
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let (w, h) = (img.width, img.height);
+        // Each layer routes over its own bars (the subplot's plot area is
+        // its own, so the routes need not line up).
+        assert!(
+            bbox(&img, (0, 0, w, h / 2), is_orange).is_some(),
+            "{scale}x: the overlay's links"
+        );
+        assert!(
+            bbox(&img, (0, h / 2, w, h), is_orange).is_some(),
+            "{scale}x: the subplot's links"
+        );
+        r.enable_gpu_picking().unwrap();
+        let id = r
+            .register_chart(parent.config().clone(), series.to_vec())
+            .unwrap();
+        let mut found = Vec::new();
+        for (region, layer, want) in [
+            ((0, h / 2), renderer::LayerRef::Overlay(0), "over-links"),
+            ((h / 2, h), renderer::LayerRef::Subplot(0), "below-links"),
+        ] {
+            r.set_active_layer(id, layer).unwrap();
+            'scan: for y in region.0..region.1 {
+                for x in 0..w {
+                    if !is_orange(pixel(&img, x, y)) {
+                        continue;
+                    }
+                    let request = renderer::GpuPickRequest {
+                        canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+                        display_panel_px: Rect {
+                            x: 0,
+                            y: 0,
+                            width: w,
+                            height: h,
+                        },
+                        display_scale: scale,
+                        max_distance_px: 0.0,
+                    };
+                    if let Some(renderer::PickedData::HistogramBin { series_id, .. }) =
+                        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve())
+                            .unwrap()
+                    {
+                        if series_id == want {
+                            found.push(want);
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+        }
+        r.remove_chart(id).unwrap();
+        assert_eq!(found, ["over-links", "below-links"], "{scale}x");
+    }
+}
+
+/// Dragging a link's exit (#357): the SSOT `exit_offset` moves where the
+/// trunk leaves its predecessor, for every link on a shared trunk, on a
+/// registered chart edited in place (SSOT invalidation) and in exports at
+/// 1x and 2x; the moved link still picks; a drag back within 3 px snaps to
+/// the default and draws the default image again; the offset round-trips.
+#[test]
+fn dragged_link_exits_move_the_trunk_and_snap_back() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let chart = chart(direction);
+    let series = [links_series(), ranges("bars", GREEN)];
+    let draw = |r: &mut Renderer, id, scale: f32| {
+        r.export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::panel(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    assert!(
+        r.series_draw_info(id, "links").unwrap().truncated,
+        "link 2 names a row past the bars"
+    );
+    let before: Vec<_> = [1.0f32, 2.0].map(|s| draw(&mut r, id, s)).into();
+    // Drag link 1's exit 30 px toward row 0's end: link 0 shares its trunk.
+    let mut edited = series.to_vec();
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    assert_eq!(
+        links.drag_link_exit(1, 30.0),
+        renderer::layout::NudgeResult::Moved
+    );
+    assert_eq!(links.links[0].exit_offset, Some(40.0));
+    assert_eq!(links.links[1].exit_offset, Some(40.0));
+    r.set_chart_series(id, edited.clone()).unwrap();
+    // The reference: the same links with their default exit at 40 px.
+    let mut reference = series.to_vec();
+    reference[0].render_type.range_links_mut().unwrap().inset = 40.0;
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        let after = draw(&mut r, id, scale);
+        let expected = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &reference),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert_eq!(
+            after.rgba, expected.rgba,
+            "{scale}x: the exit moved to 40 px"
+        );
+        assert_ne!(after.rgba, before[k].rgba, "{scale}x: the trunk moved");
+        // The moved link picks where the new trunk has ink the old lacks.
+        let (w, h) = (after.width, after.height);
+        let new_ink = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .find(|&(x, y)| is_orange(pixel(&after, x, y)) && !is_orange(pixel(&before[k], x, y)))
+            .expect("ink of the moved trunk");
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [new_ink.0 as f32 + 0.5, new_ink.1 as f32 + 0.5],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            },
+            display_scale: scale,
+            max_distance_px: 1.0,
+        };
+        let picked = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        assert!(
+            matches!(&picked, Some(renderer::PickedData::HistogramBin { series_id, .. }) if series_id == "links"),
+            "{scale}x picked {picked:?}"
+        );
+    }
+    #[cfg(feature = "serde")]
+    {
+        let json = serde_json::to_string(&edited).unwrap();
+        assert!(json.contains("\"exit_offset\":40.0"), "{json}");
+        let again: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(again, edited);
+    }
+    // Back to 2 px from the default: it snaps, and the image is the default.
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    links.drag_link_exit(0, -28.0);
+    assert_eq!(links.links[0].exit_offset, None);
+    assert_eq!(links.links[1].exit_offset, None);
+    r.set_chart_series(id, edited).unwrap();
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        assert_eq!(draw(&mut r, id, scale).rgba, before[k].rgba, "{scale}x");
+    }
+    r.remove_chart(id).unwrap();
+}
+
+/// Rule 10: 3749 links over 3000 rows all route and draw, with no cap and
+/// none truncated. The cost is one 6-vertex instance and one pick candidate
+/// per link, and 12 bytes of lane table rebuilt when the series is prepared.
+#[test]
+fn three_thousand_links_draw_and_pick() {
+    let mut r = renderer();
+    let n = 3000usize;
+    r.add_column("lk-pos", &col((0..n).map(|i| i as f64).collect()))
+        .unwrap();
+    r.add_column(
+        "lk-start",
+        &col((0..n).map(|i| (i % 10) as f64 * 9.0).collect()),
+    )
+    .unwrap();
+    r.add_column(
+        "lk-end",
+        &col((0..n).map(|i| (i % 10) as f64 * 9.0 + 6.0).collect()),
+    )
+    .unwrap();
+    let mut bars = ranges("lk-bars", GREEN);
+    bars.x_column = "lk-pos".into();
+    bars.y_column = "lk-end".into();
+    if let DataRenderType::RangeBars(b) = &mut bars.render_type {
+        b.start = "lk-start".into();
+        b.slot_width = Some(1.0);
+    }
+    // Every bar links to the next, and every fourth to the one after.
+    let chain = (0..n as u32 - 1).map(|i| (i, i + 1));
+    let skips = (0..n as u32 - 2).step_by(4).map(|i| (i, i + 2));
+    let mut links = SeriesConfig::range_links("lk", "lk-bars", chain.chain(skips));
+    if let DataRenderType::RangeLinks(l) = &mut links.render_type {
+        l.color = ORANGE;
+        l.width = 3.0;
+    }
+    let mut chart = chart(CategoryBarDirection::Horizontal);
+    let config = chart.config_mut();
+    config.left_y.categories = None;
+    config.left_y.min = n as f64 - 4.5;
+    config.left_y.max = n as f64 - 0.5;
+    config.left_y.major_spacing = 1.0;
+    let series = [bars, links];
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let info = r.series_draw_info(id, "lk").unwrap();
+    assert_eq!(info.drawn_count, (n - 1 + (n - 2).div_ceil(4)) as u64);
+    assert!(!info.truncated);
+    r.remove_chart(id).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    assert!(
+        bbox(&img, (0, 0, img.width, img.height), is_orange).is_some(),
+        "the last links draw"
+    );
+}

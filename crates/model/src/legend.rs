@@ -572,6 +572,10 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
+        // A dependency link reads as the line it is drawn with (#357).
+        DataRenderType::RangeLinks(links) => {
+            line_symbol(links.color, LineStylePreset::Solid, None, Some(links.width))
+        }
         // A radar series reads as the line it is drawn with: its outline
         // over its fill band, with its vertex marker when it has one.
         DataRenderType::Radar(radar) => {

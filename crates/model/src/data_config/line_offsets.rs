@@ -91,6 +91,7 @@ impl DataRenderType {
             | DataRenderType::CategoryBars(_)
             | DataRenderType::BoxPlot(_)
             | DataRenderType::RangeBars(_)
+            | DataRenderType::RangeLinks(_)
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)

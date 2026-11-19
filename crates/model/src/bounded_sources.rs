@@ -894,6 +894,7 @@ impl Config {
                         value_suffix: chart.value_suffix.clone(),
                         text: Vec::new(),
                         offsets: Vec::new(),
+                        contrast_ink: None,
                     },
                     label_format: chart.label_format,
                     overrides: (!overrides.is_empty()).then_some(overrides),

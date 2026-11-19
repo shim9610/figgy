@@ -598,6 +598,31 @@ fn category_edits() -> Vec<Edit> {
         Prefix,
         Changed
     );
+    // Row striping (#357): chrome under the grid, drawn on a categorical
+    // bottom or left axis only, so a top axis' bands redo the raster with
+    // unchanged pixels.
+    category!(
+        "bottom_x.category_bands",
+        |c| {
+            c.bottom_x.category_bands = Some(crate::config::CategoryBands {
+                fill: crate::Color::from_rgb8(200, 210, 230),
+                every: crate::config::CategoryBandEvery::Alternate,
+            })
+        },
+        Prefix,
+        Changed
+    );
+    category!(
+        "top_x.category_bands",
+        |c| {
+            c.top_x.category_bands = Some(crate::config::CategoryBands {
+                fill: crate::Color::from_rgb8(200, 210, 230),
+                every: crate::config::CategoryBandEvery::Alternate,
+            })
+        },
+        Prefix,
+        Unchanged
+    );
     category!(
         "bottom_x.categories[1].label",
         |c| c.bottom_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
@@ -2122,6 +2147,7 @@ fn config_fields_are_classified() {
         log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
         breaks: _, // breaks (None -> Some) + break_edits(): ranges/style/gap Packed, mark/frames Prefix
         unit: _,   // axis!(...).unit + bar!/overlay! + log_unit_edits(): Prefix
+        category_bands: _, // category_edits(): bottom Changed, top Unchanged
     } = top_x;
     let LabelStyle {
         visible: _,

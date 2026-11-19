@@ -58,6 +58,7 @@ To change shared shader code:
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
+| `range_links.wgsl` (§5.18) | bar |
 | `violin.wgsl` (§2.5, §5.19) | bar |
 | `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh, triangle surface |
 | `surface_mesh/surface_params.wgsl`, `surface_mesh/surface_entry.wgsl` (§5.21) | surface mesh (with `surface_input_grid.wgsl`), triangle surface (with `tri_mesh/mesh_input.wgsl` and `surface_input_mesh.wgsl`) |
@@ -1704,7 +1705,7 @@ group, and `category_lanes[k]` member `k`'s value column).
 
 | Binding | Contents |
 |---|---|
-| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 128 B) |
+| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 192 B) |
 | 5 | the atlas texture |
 | 6 | its filtering sampler |
 | 7 | `value_label_cells: array<vec4<f32>>`, read-only storage: one cell per label in each of `shape.w` blocks (one block but for a radar series, which has one per member of its label group), sized by the series' labels and its group and written straight into its mapping at prepare (`data_render::value_label_cells`, `create_value_label_data`); the cell widths are the atlas bake's |
@@ -1720,10 +1721,11 @@ the members.
 | `atlas` | the atlas geometry (§5.16) |
 | `shape` | `(kind, labels, rank, count)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; each block of binding 7 holds that many cells. For a radar series `rank` and `count` are its rank among the members of its label group (the panel's radar series that draw value labels, in series order) and their count (`RadarLabelGroup`, #272): binding 7 holds `count` blocks, block `rank` this series'. `0` and `1` for the other kinds |
 | `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10 logical px at the render scale; radar `max(4 logical px, 0.25 em)` past the vertex's marker), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
-| `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
+| `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, contrast, 0)` at the render scale, `contrast` 1 when the labels draw in contrast ink |
 | `radar` | a radar series' `(visual gap, 0, ray x, ray y)`: the visual gap two labels keep (the model's `visual_gap_for` of the label font, 2 px at 18 px, #272) in render pixels, and the radius axis' ray, a unit vector y down |
 | `ring` | a radar series' box of the drawn ring (radius) labels in the ray's frame from the polar centre, as fractions of the outer radius: `(along min, along max, across min, across max)`, across toward the ring labels' side; empty (`x > y`) without ring labels |
-| `value_label_cells[b * labels + i]` | label `i` of block `b`: `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2; for a radar label the reach of its vertex's marker in render pixels, `radar_marker_reach`: half a circle's size, half a square's diagonal, at least half the outline width) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down. A radar block `b` is member `b`'s own cells, written from its own atlas and strings |
+| `ink_dark`, `ink_light`, `ink_back`, `ink_base` | a range bar series' contrast ink (#357, `labels.contrast_ink`): the dark and the light ink, the plot background (`plot_background`, else `background`, else white) and the series colour, straight RGB with alpha 1; zero without contrast ink |
+| `value_label_cells[b * labels + i]` | label `i` of block `b`: `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2, `_INSIDE_OR_BESIDE` 3; for a radar label the reach of its vertex's marker in render pixels, `radar_marker_reach`: half a circle's size, half a square's diagonal, at least half the outline width) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down. A radar block `b` is member `b`'s own cells, written from its own atlas and strings |
 
 `value_label_place(row)` is the content box of label `row` in chart-area
 render pixels (y down), shared by the draw, the selection box and the
@@ -1737,6 +1739,8 @@ pick:
   bar (baseline `0.32` font sizes below the middle); `AUTO` is outside a
   grouped bar and inside a stack segment that fits it (`8` logical px
   narrower and `1.4` font sizes lower than the segment), else nothing;
+  `INSIDE_OR_BESIDE` (#357) is `INSIDE` on a bar that fits it by the same
+  measure and `OUTSIDE` otherwise, flip rule included;
 - a box's label (#272): beside its median line, `gap` past the side of
   the box's slot (`box_slot`, its full width before a violin narrows it)
   away from its group's centre, the right of a vertical box and above a
@@ -1794,6 +1798,20 @@ or inward along the radar spoke. The data area comes from the transform
 that `pixel_to_ndc` spans), so the rule reads only the uniform and the
 pool, and the pick sees it through the same `value_label_place`. What
 still overflows after the flip is clipped by the data-area scissor.
+
+**Contrast ink** (#357). A range bar series with `labels.contrast_ink`
+bakes its atlas in white, so the atlas' alpha is the glyph coverage, and
+`fs_value_label` paints each covered pixel in whichever of `ink_dark` and
+`ink_light` has the higher WCAG contrast ratio with what lies under that
+pixel (the dark one on a tie). The vertex stage passes the label's range
+bar (`range_bar`, its rect), the bar's fill under the series' colour mode
+(`range_fill`, from `ink_base` and the style slots) and its progress split
+(`range_progress`, the remaining opacity of `RANGE_SLOT_PROGRESS`); a pixel
+on the bar's rect reads the fill, past the split the fill at the remaining
+opacity over `ink_back`, and any other pixel `ink_back`. So a label across
+a split changes ink at the split, and a label beside its bar or dragged
+off it reads the plot. Every value is computed on every draw; nothing per
+label is stored.
 
 The box is then moved by the drag offset and its origin rounded to the
 pixel grid, so `label_quad` samples the atlas texel for texel
@@ -1888,6 +1906,64 @@ row; a connector is a candidate of the bar it leaves. A bar's value label
 category bar rule, a range bar counting as grouped. Nothing per bar is
 stored anywhere; the CPU keeps the lane bases, the part colours of the
 configuration and the columns' scalar statistics (the fit).
+
+#### Dependency links
+
+The links of a `DataRenderType::RangeLinks` series (#357) are drawn by
+[`common/range_links.wgsl`](common/range_links.wgsl), spliced right after
+`range_bars.wgsl`. A link series binds the group 3 of the range bar series
+it names: that series' `CategoryBarParams` at binding 9 and its lane table
+at binding 10, extended by a fixed head of four entries (`RANGE_LINK_LANES`,
+12) and then three entries per SSOT link (`RANGE_LINK_STRIDE`). The CPU
+writer `renderer/series.rs::range_link_data` writes the table straight into
+the mapped buffer when the series is prepared, on an SSOT change. The links
+take no pool column (the series is DataLess), and `range_bar(row)` is
+exactly the bar that series draws.
+
+| Entry of `category_lanes` | Meaning for a link series |
+|---|---|
+| 0 to 7 | the bars' own, as above |
+| `RANGE_LANE_LINK_COUNT` (8) | the link count, any number |
+| `RANGE_LANE_LINK_WIDTH` (9), `_HEAD` (10), `_INSET` (11) | the stroke width, the chevron's length and the default exit inset in render pixels, as f32 bits |
+| `RANGE_LINK_LANES + i · RANGE_LINK_STRIDE` (12 + 3i) .. +2 | link `i`: its `from` row, its `to` row, and its exit offset in render pixels as f32 bits (NaN for the default) |
+
+The geometry sits in the lane table rather than `Style` because the pick
+compute binds no `Style`; the draw, the highlight and the pick read one
+route. One instance is one link and draws `RANGE_LINK_VERTICES` (6): one
+quad over the route's bounding box, whose fragments rebuild the route from
+the link's index and cover by distance to its centre line (half the
+stroke, antialiased over one pixel), so overlapping parts never blend
+twice. The route follows the web Gantt convention and is built on every
+draw from the two bars, with the value axis signed so the successor runs
+forward:
+
+- The exit is on the predecessor's edge facing the successor's row, the
+  link's exit offset (or `inset`) in from the predecessor's first end, kept
+  on the bar. When the successor starts too
+  soon for the last leg and its head, the exit moves back to
+  `successor start − head − 4 px`, so a route never turns back through a
+  bar.
+- The first leg runs across to the successor's centre line. It turns
+  through one quarter arc of 4 logical pixels, fitted to both legs.
+- The last leg runs along the centre line to 1.5 px before the successor's
+  start.
+- The head is an open chevron of two arms `head` pixels long.
+
+Links leaving one bar share their trunk. Bars on one centre line (tasks on
+one row) get a straight link out of the predecessor's last end, so no
+stroke runs inside a bar whose unfinished part is translucent. A row that is NaN, negative or
+past the bars' row count, or a bar that draws nothing, draws no link. The
+colour is the series' `Style` colour; nothing per link is stored. A link
+draws in its series' place in the list, so a host lists the links before
+their bars to have the bars cover the link ends.
+
+`vs_range_link_selection` / `fs_range_link_selection` draw the picked
+link's route in the selection colour, its stroke widened by the
+selection's width on each side. The compute entry `pick_range_links`
+answers the nearest point of the route (legs, corner or chevron) within half the stroke plus the pick
+distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
+link's row. The route is appearance: it reads the values the bars are
+drawn from, and the user reads no value computed from them.
 
 ### 5.19 Violins and raw points (group 3, bindings 8 to 10)
 

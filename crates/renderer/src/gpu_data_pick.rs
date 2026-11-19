@@ -136,6 +136,13 @@ pub(crate) enum GpuDataPickGeometry {
     RangeBars {
         data: crate::data_render::CategoryBarData,
     },
+    /// A range link series' links (#357), picked by the range link entry
+    /// (`pick_range_links`) over the group 3 of the bars they join, at the
+    /// pick's display scale: a link's segments and head answer it as a
+    /// histogram bin whose index is its row.
+    RangeLinks {
+        data: crate::data_render::CategoryBarData,
+    },
     /// A box plot series' violins, picked by the violin entry
     /// (`pick_violin`) over the violin draw's group 3 and style map at the
     /// pick's display scale: one test per category and half, answering the
@@ -486,6 +493,7 @@ pub(crate) enum DataPickKernel {
     CategoryBar,
     BoxPlot,
     RangeBar,
+    RangeLink,
     Violin,
     Parallel,
     TriMesh,
@@ -497,7 +505,7 @@ pub(crate) enum DataPickKernel {
 }
 
 impl DataPickKernel {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::Histogram,
         Self::FieldContour,
         Self::FieldCell,
@@ -505,6 +513,7 @@ impl DataPickKernel {
         Self::CategoryBar,
         Self::BoxPlot,
         Self::RangeBar,
+        Self::RangeLink,
         Self::Violin,
         Self::Parallel,
         Self::TriMesh,
@@ -528,6 +537,7 @@ impl DataPickKernel {
             Self::CategoryBar => "pick_category_bar",
             Self::BoxPlot => "pick_box_plot",
             Self::RangeBar => "pick_range_bar",
+            Self::RangeLink => "pick_range_links",
             Self::Violin => "pick_violin",
             Self::Parallel => "pick_parallel",
             Self::TriMesh => "pick_tri_mesh",
@@ -547,6 +557,7 @@ impl DataPickKernel {
             Self::CategoryBar => "figgy category bar data pick pipeline",
             Self::BoxPlot => "figgy box plot data pick pipeline",
             Self::RangeBar => "figgy range bar data pick pipeline",
+            Self::RangeLink => "figgy range link data pick pipeline",
             Self::Violin => "figgy violin data pick pipeline",
             Self::Parallel => "figgy parallel data pick pipeline",
             Self::TriMesh => "figgy triangle mesh data pick pipeline",
@@ -564,6 +575,7 @@ impl DataPickKernel {
             | Self::CategoryBar
             | Self::BoxPlot
             | Self::RangeBar
+            | Self::RangeLink
             | Self::Violin
             | Self::ValueLabels => crate::data_render::BAR_SHADER_BY_SET.of(set).source,
             Self::FieldContour | Self::FieldCell => {
@@ -659,6 +671,7 @@ impl DataPickKernels {
                 DataPickKernel::CategoryBar
                 | DataPickKernel::BoxPlot
                 | DataPickKernel::RangeBar
+                | DataPickKernel::RangeLink
                 | DataPickKernel::Violin => (&bundle.category_layout, &bundle.bar),
                 DataPickKernel::Parallel => (&bundle.parallel_layout, &bundle.line),
                 DataPickKernel::TriMesh => (
@@ -1249,6 +1262,16 @@ impl DataPickPipelineBundle {
                         PreparedKind::RangeBars(data),
                     )
                 }
+                GpuDataPickGeometry::RangeLinks { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::RangeLinks(data),
+                    )
+                }
                 GpuDataPickGeometry::Violin { data } => {
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
@@ -1389,6 +1412,7 @@ impl DataPickPipelineBundle {
                 PreparedKind::CategoryBars(_) => DataPickKernel::CategoryBar,
                 PreparedKind::BoxPlot(_) => DataPickKernel::BoxPlot,
                 PreparedKind::RangeBars(_) => DataPickKernel::RangeBar,
+                PreparedKind::RangeLinks(_) => DataPickKernel::RangeLink,
                 PreparedKind::Violin(_) => DataPickKernel::Violin,
                 PreparedKind::ValueLabels(_) => DataPickKernel::ValueLabels,
                 PreparedKind::Parallel(_) => DataPickKernel::Parallel,
@@ -1445,6 +1469,7 @@ impl DataPickPipelineBundle {
                     PreparedKind::CategoryBars(data)
                     | PreparedKind::BoxPlot(data)
                     | PreparedKind::RangeBars(data)
+                    | PreparedKind::RangeLinks(data)
                     | PreparedKind::Violin(data)
                     | PreparedKind::ValueLabels(data) => {
                         pass.set_bind_group(2, &data.style_map, &[]);
@@ -1484,6 +1509,7 @@ enum PreparedKind {
     CategoryBars(crate::data_render::CategoryBarData),
     BoxPlot(crate::data_render::CategoryBarData),
     RangeBars(crate::data_render::CategoryBarData),
+    RangeLinks(crate::data_render::CategoryBarData),
     Violin(crate::data_render::CategoryBarData),
     ValueLabels(crate::data_render::CategoryBarData),
     Parallel(crate::data_render::ParallelData),

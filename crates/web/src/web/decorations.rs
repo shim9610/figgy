@@ -561,6 +561,7 @@ impl FiggyChart {
                 | DataRenderType::CategoryBars(_)
                 | DataRenderType::BoxPlot(_)
                 | DataRenderType::RangeBars(_)
+                | DataRenderType::RangeLinks(_)
                 | DataRenderType::Radar(_)
                 | DataRenderType::Ternary(TernarySeries { scatter: None, .. }) => {}
             }

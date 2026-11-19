@@ -39,6 +39,11 @@ pub enum CategoryBarLabels {
     Outside,
     /// Outside grouped bars, inside stacked ones.
     Auto,
+    /// Inside the bar, centred, when the label fits with the bar label
+    /// padding on each side and its height; otherwise beside the bar's end,
+    /// as `Outside` places it (#357, a timeline's task names). Decided on
+    /// every draw from the drawn bar and the measured label: appearance.
+    InsideOrBeside,
 }
 
 /// What a bar's value label says.
@@ -315,6 +320,20 @@ pub struct CategoryBarSeriesLabels {
     /// ([`SeriesConfig::drag_value_label`]).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub offsets: Vec<[f32; 2]>,
+    /// Contrast ink (#357): `[dark, light]`. When set, each label of a
+    /// range bar series is drawn in whichever of the two contrasts more
+    /// with what lies under it, chosen per pixel on every draw: the bar's
+    /// fill (the finished or the unfinished part of a bar with progress)
+    /// for a label inside its bar, the plot background for one beside it.
+    /// Nothing is stored per label. `None` (the default, omitted from JSON)
+    /// draws every label in the value axis' tick label colour. Only range
+    /// bar series take it ([`crate::RuleKind::ContrastInkSeries`]); both
+    /// colours are opaque.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub contrast_ink: Option<[Color; 2]>,
 }
 
 /// How the [`DataRenderType::CategoryBars`] series of one layer share their
@@ -425,6 +444,9 @@ pub fn validate_category_bar_series(
     bars.style.validate()?;
     if bars.labels.decimals > 6 || !single_line_within(&bars.labels.value_suffix, 24) {
         return Err(crate::RuleKind::BarLabelFormat);
+    }
+    if bars.labels.contrast_ink.is_some() {
+        return Err(crate::RuleKind::ContrastInkSeries);
     }
     if !bars.labels.text.is_empty() && bars.labels.text.len() != categories.len() {
         return Err(crate::RuleKind::BarLabelTextCount);

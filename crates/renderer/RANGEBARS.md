@@ -34,7 +34,7 @@ series:
 | `connector` | `RangeConnector { color, width }`: a line at each bar's end value, from its edge to the next row's bar (a waterfall) |
 | `slot_width` | the slot of one row in data units on a numeric position axis (a time axis); `None` on a categorical axis, where the slot is one category |
 | `style` | a `CategoryBarStyle`: material, corner radius (both ends of a floating bar are rounded), outline, texture, gloss and the brightness of a picked bar |
-| `labels` | `CategoryBarSeriesLabels`: the host's strings, one per row (`text`), their placement (`Outside`, `Inside`, `Auto` = outside, `None`) and drag offsets; `decimals` and `value_suffix` are not read |
+| `labels` | `CategoryBarSeriesLabels`: the host's strings, one per row (`text`), their placement (`Outside`, `Inside`, `Auto` = outside, `InsideOrBeside`: inside when the label fits with the bar padding, else beside the bar's end, `None`), drag offsets and `contrast_ink: Option<[dark, light]>` (each label pixel in the ink that contrasts more with what lies under it, chosen on every draw: the bar's fill, its unfinished part past a progress split, or the plot background off the bar); `decimals` and `value_suffix` are not read |
 
 Every column holds one value per row of the positions; a column of another
 length is an error naming it. A row with a NaN position, start or end, or
@@ -111,13 +111,24 @@ build a timeline in the look of the common web timelines (#357):
 
 | Choice | Value | References |
 |---|---|---|
-| Category order | the first row at the top: `left_y.inverted` | Vega-Lite and Google Charts list the first row at the top; Plotly's `px.timeline` needs `autorange="reversed"` for it |
-| Colour | one colour per row from `ColorCycle::Balanced` (`RangeColor::ByRow`); the series colour is the cycle's first | Google Charts colours each bar; Plotly and Vega-Lite take one palette colour |
-| Bar thickness | 0.8 of the row's band (`bar_groups.group_width`) | Plotly 0.8 (`bargap` 0.2), Vega-Lite 0.9 (band padding 0.1) |
-| Corner radius | 3 px, flat, no texture or gloss | Plotly and Vega-Lite square, Google Charts slightly rounded |
-| Gridlines | value gridlines only, pale grey | Vega-Lite and Google Charts grid the time axis only |
-| Frame | the open frame (`AxisPreset::OpenOutward`), light grey axis lines, no tick marks | Vega-Lite and Google Charts draw no box; the gridlines carry the values |
+| Category order | the first row at the top: `left_y.inverted` | Vega-Lite, Google Charts, Frappe and DHTMLX list the first row at the top; Plotly's `px.timeline` needs `autorange="reversed"` for it |
+| Rows | a faint band behind every other row (`left_y.category_bands`, `#F7F8FA`), no row axis line, task names in dark slate (`#374151`) | Google Charts' `alternatingRowStyle` (on by default); the project tools draw rows as a table |
+| Colour | one muted colour per row (`RangeColor::ByRow` over `default::TIMELINE_COLORS`: soft blue, teal, violet, amber, rose, slate, green, sky); the series colour is the first | Google Charts colours each bar; no reference uses a saturated categorical cycle per row |
+| Bar thickness | 0.6 of the row's band (`bar_groups.group_width`) | Frappe, DHTMLX and the project tools fill about 60 % of a row |
+| Corner radius | 4 px, flat, no texture or gloss | the web Gantt libraries round 3 to 6 px |
+| Labels | inside the bar when they fit, else beside its end (`InsideOrBeside`), in dark slate or white, whichever contrasts more (`contrast_ink`, `default::TIMELINE_LABEL_INK`) | Frappe, DHTMLX and Bryntum put the task name in the bar and outside a short one |
+| Progress | `SeriesConfig::with_progress(column)`: the host's share, the unfinished part at 0.4 opacity (`default::TIMELINE_REMAINING_OPACITY`) | the same hue, lighter past the done share |
+| Gridlines | time gridlines only, pale grey (`#E8EBF0`), no tick marks, the time labels in muted grey (`#6B7280`), no bottom axis line | every reference grids the time axis only |
+| Frame | a light top rule (`#D1D5DB`), no other frame | the web Gantt charts draw no box |
 | Layout | `LayoutState::Fitted`: the chart is created with its margins fitted to the row labels | every reference sizes the label band to its labels |
+
+A web Gantt's other elements are the host's, with existing parts: a
+milestone is a `ScatterShape::DiamondFilled` scatter series on the bars'
+layer (positions the row index, x the date; no row of the bars needs a
+value), today is an `AnnotationKind::ReferenceLine` on `X` at the time
+the host passes (the renderer never reads a clock), and finish-to-start
+links are a `RangeLinks` series (below). The `timeline` scene of
+`examples/range_bars.rs` draws all of them.
 
 Every choice is a stored field, so a saved timeline reads back with the
 same look, and the documented defaults (`SeriesConfig::range_bars`,
@@ -135,7 +146,53 @@ config.left_y.categories = Some(vec![
     Category::new("build", "Build"),
 ]);
 let chart = Chart::new(config).with_area(0, 0, 800, 600);
+let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_progress("done");
+```
+
+### Dependency links
+
+`SeriesConfig::range_links(id, bars, [(from, to), …])` adds a
+`DataRenderType::RangeLinks` series: each `RangeLink { from, to,
+exit_offset }` joins the bar of row `from` to the bar of row `to` of the
+range bar series `bars`, finish to start. The series is DataLess: the links
+are SSOT (`links`), like annotations, and it reads no column (`x_column`
+and `y_column` empty, `RuleKind::RangeLinkColumns`). There is no cap on
+links; each costs one 6-vertex instance and one pick candidate per draw,
+and 12 bytes of the lane table the series uploads when it is prepared
+(`three_thousand_links_draw_and_pick` draws 3749). The renderer routes each link on every draw from
+the two bars as they are drawn, in the web Gantt convention (Frappe Gantt):
+the link leaves the predecessor's edge facing the successor's row, a small
+inset from its start, runs across to the successor's centre line, turns
+through one rounded corner and ends in an open chevron just before the
+successor's start. When the successor starts before that exit, the exit
+moves back to leave room for the head, so a link never turns back through
+a bar. Links leaving one bar share their trunk, and a link between two
+tasks on one row runs straight from the first's end. A link naming a row
+past the bars' rows draws and picks nothing, and `series_draw_info`
+reports the series as `truncated`. List the links before their
+bars: a series draws in its place in the list, so the bars then cover the
+link ends.
+
+| Field | Default (`range_links`) | Range |
+|---|---|---|
+| `bars` | the bars' `series_id` | a range bar series in the same layer (`RuleKind::RangeLinkBars`) |
+| `color` | amber `#D4A24C` | channels in `0..=1`; a theme keeps it, since the waterfall connector's thin dark line does not read as a dependency |
+| `width` | 1.5 px | `0..=24` |
+| `head` | 6 px open chevron | `0..=32` |
+| `inset` | 6 px from the predecessor's start: the default exit | `0..=64` |
+| `links[i].exit_offset` | `None`: the default exit | finite, not negative; `Some(0)` is the default |
+
+The style ranges are `RuleKind::RangeLinkStyle`. Polar charts refuse links
+(`RuleKind::PolarRangeLinks`), and a streamed source is refused
+(`RuleKind::StreamedRangeLinks`). The legend draws a link series as a line.
+
+```rust
+use renderer::SeriesConfig;
+
 let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end");
+let links = SeriesConfig::range_links("links", "tasks", [(0, 1), (1, 2), (1, 3)]);
+// Links first, so the bars cover their ends.
+let series = [links, tasks];
 ```
 
 ## Interaction
@@ -153,8 +210,29 @@ the shortest of the series' columns. The web wrapper's
 `category_label` on a categorical axis. It reports no difference or
 duration: those are the host's to derive.
 
+A link picks as `PickedData::HistogramBin` with its own series and its
+index in `links`, wherever its stroke or head is painted; the picked link
+is redrawn in the selection colour with a wider stroke, and
+`step_selection` moves along the links by `dx + dy`, staying in the
+series. `selection_details()` reports `index`, `from`, `to` and
+`exit_offset`. Links draw on overlays and subplots next to their bars and
+export with them.
+
+A link's exit is draggable. `RangeLinkSeries::drag_link_exit(index,
+along)` moves it along the predecessor's edge: every link that leaves the
+same bar at the same exit moves with it, so a shared trunk moves as one,
+and an exit within 3 px of the default snaps back to it (`None`). The draw
+keeps a dragged exit on the bar. `set_link_exit_offset(index, offset)`
+sets one link's offset directly. In the browser, `press_range_link(series_id,
+index)` after a `pick_data` hit starts the drag, `on_move` moves the exit
+along the value axis and `on_release` ends it; `set_link_exit_offset` is the
+twin of the Rust helper.
+
 Value labels are picked, selected and dragged as a category bar's are
-(`labels.offsets`), one per row. Range bars draw on overlays and subplots
+(`labels.offsets`), one per row, wherever their placement puts them
+(inside, beside, or flipped back over the bar at the plot's edge); a
+label in contrast ink keeps reading what lies under each of its pixels
+after a drag. Range bars draw on overlays and subplots
 with groups of their own, export to PNG at any scale and to SVG and PDF,
 and serialize with every unset option omitted.
 

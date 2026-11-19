@@ -895,6 +895,7 @@ fn prepare_demo_declarations(
                 DataRenderType::CategoryBars(CategoryBarSeries { color, .. }) => *color,
                 DataRenderType::BoxPlot(BoxSeries { color, .. }) => *color,
                 DataRenderType::RangeBars(RangeBarSeries { color, .. }) => *color,
+                DataRenderType::RangeLinks(links) => links.color,
                 DataRenderType::Radar(RadarPolygonSeries { color, .. }) => *color,
                 DataRenderType::Field(renderer::data_config::FieldSeries {
                     contour: Some(contour),
@@ -1871,6 +1872,125 @@ mod tests {
         let report: serde_json::Value =
             serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
         assert_eq!(report["valid"], true);
+    }
+
+    /// The timeline look (#357) reaches the browser as document JSON: the
+    /// timeline config with its row bands and a timeline series with its
+    /// inside-or-beside labels in contrast ink validate, normalize
+    /// unchanged, and a refused band fill or ink names its rule.
+    #[test]
+    fn timeline_documents_validate_and_normalize() {
+        let mut config = renderer::default::default_timeline_config();
+        config.left_y.categories = Some(vec![
+            renderer::Category::new("a", "A"),
+            renderer::Category::new("b", "B"),
+        ]);
+        let series = [
+            renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end").with_progress("done"),
+        ];
+        let config_json = serde_json::to_string(&config).unwrap();
+        let series_json = serde_json::to_string(&series).unwrap();
+        assert!(config_json.contains("category_bands"));
+        assert!(series_json.contains("contrast_ink") && series_json.contains("InsideOrBeside"));
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&config_json, Some(&series_json)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], true, "{report}");
+        assert_eq!(
+            super::normalize_config_json(&config_json).unwrap(),
+            config_json
+        );
+        let mut refused = config.clone();
+        if let Some(bands) = refused.left_y.category_bands.as_mut() {
+            bands.fill.r = 2.0;
+        }
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&serde_json::to_string(&refused).unwrap(), None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(report.to_string().contains("CategoryBandsFill"), "{report}");
+    }
+
+    /// The calendar header (#357, item 14 B) reaches the browser as
+    /// document JSON: the calendar timeline validates and normalizes
+    /// unchanged, and a relative label without a step names its rule.
+    #[test]
+    fn calendar_formats_validate_and_normalize() {
+        let config = renderer::default::default_calendar_timeline_config();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"step\"") && json.contains("period_labels"));
+        let report: serde_json::Value =
+            serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
+        assert_eq!(report["valid"], true, "{report}");
+        assert_eq!(super::normalize_config_json(&json).unwrap(), json);
+        let mut refused = config.clone();
+        if let renderer::format::LabelFormat::Timestamp(format) =
+            &mut refused.bottom_x.label_style.format
+        {
+            format.step = None;
+            format.label = renderer::format::TimestampLabelMode::Relative {
+                origin: 0,
+                prefix: "Week ".into(),
+            };
+        }
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&serde_json::to_string(&refused).unwrap(), None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(
+            report.to_string().contains("TimestampStepRequired"),
+            "{report}"
+        );
+    }
+    /// Dependency links (#357, item 14 D) reach the browser as series
+    /// JSON: links naming the timeline bars validate, and links naming no
+    /// range bar series name their rule.
+    #[test]
+    fn range_links_validate_in_the_browser() {
+        let mut config = renderer::default::default_timeline_config();
+        config.left_y.categories = Some(vec![
+            renderer::Category::new("a", "A"),
+            renderer::Category::new("b", "B"),
+        ]);
+        let config_json = serde_json::to_string(&config).unwrap();
+        let report = |series: &[renderer::SeriesConfig]| -> serde_json::Value {
+            let series_json = serde_json::to_string(series).unwrap();
+            serde_json::from_str(
+                &super::validate_config_json(&config_json, Some(&series_json)).unwrap(),
+            )
+            .unwrap()
+        };
+        let bars = renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end");
+        let links = renderer::SeriesConfig::range_links("deps", "t", [(0, 1)]);
+        let ok = report(&[bars, links.clone()]);
+        assert_eq!(ok["valid"], true, "{ok}");
+        let refused = report(std::slice::from_ref(&links));
+        assert_eq!(refused["valid"], false);
+        assert!(refused.to_string().contains("RangeLinkBars"), "{refused}");
+        // A dragged exit is SSOT: it validates and normalizes unchanged; a
+        // negative one names its rule.
+        let mut dragged = links;
+        dragged
+            .render_type
+            .range_links_mut()
+            .unwrap()
+            .set_link_exit_offset(0, Some(24.0));
+        let bars = renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end");
+        let ok = report(&[bars.clone(), dragged.clone()]);
+        assert_eq!(ok["valid"], true, "{ok}");
+        let json = serde_json::to_string(&dragged).unwrap();
+        assert!(json.contains("\"exit_offset\":24.0"), "{json}");
+        if let Some(l) = dragged.render_type.range_links_mut() {
+            l.links[0].exit_offset = Some(-1.0);
+        }
+        let negative = report(&[bars, dragged]);
+        assert!(
+            negative.to_string().contains("RangeLinkStyle"),
+            "{negative}"
+        );
     }
 
     #[test]

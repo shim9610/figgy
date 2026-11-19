@@ -51,8 +51,8 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// An axis range's own rules: categories well formed, a finite crossing, and
-/// for a value axis finite, increasing bounds that are positive on a
+/// An axis range's own rules: categories well formed, a finite crossing, a
+/// category band fill with channels in `0..=1`, and for a value axis finite, increasing bounds that are positive on a
 /// logarithmic scale.
 fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), ConfigError> {
     let fail = |reason| Err(ConfigError::chart(field, reason));
@@ -67,6 +67,19 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     }
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
         return fail(crate::RuleKind::AxisCrossAt);
+    }
+    if let crate::format::LabelFormat::Timestamp(format) = &axis.label_style.format
+        && let Err(reason) = format.validate()
+    {
+        return fail(reason);
+    }
+    if axis.category_bands.is_some_and(|bands| {
+        let c = bands.fill;
+        ![c.r, c.g, c.b, c.a]
+            .into_iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+    }) {
+        return fail(crate::RuleKind::CategoryBandsFill);
     }
     // A categorical axis maps its category range; `min` / `max` are ignored
     // there.
@@ -292,10 +305,11 @@ impl Config {
             })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), crate::RuleKind>;
-        let rules: [(&'static str, Rule); 14] = [
+        let rules: [(&'static str, Rule); 15] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
             ("range_bars", Config::validate_range_bars),
+            ("range_links", Config::validate_range_links),
             ("radar", Config::validate_radar),
             ("ternary", Config::validate_ternary_series),
             ("parallel", Config::validate_parallel_series),
@@ -389,6 +403,9 @@ impl Config {
             }
             DataRenderType::RangeBars(_) => {
                 return Err(crate::RuleKind::PolarRangeBars);
+            }
+            DataRenderType::RangeLinks(_) => {
+                return Err(crate::RuleKind::PolarRangeLinks);
             }
             DataRenderType::Streamlines(_) => {
                 return Err(crate::RuleKind::PolarStreamlines);
