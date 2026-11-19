@@ -270,7 +270,11 @@ impl Chart {
         series: &mut [SeriesConfig],
         scope: ThemeScope,
     ) -> Result<(), ThemeError> {
-        Theme::apply_named(name, self.config_mut(), series, scope)?;
+        // Written into the chart only once the theme is taken: a refused
+        // theme changes nothing, the layout's state included (#357).
+        let mut themed = self.config().clone();
+        Theme::apply_named(name, &mut themed, series, scope)?;
+        *self.config_mut() = themed;
         self.fit_layout();
         Ok(())
     }
@@ -352,7 +356,10 @@ impl Chart {
         scope: ThemeScope,
     ) -> Result<(), ThemeError> {
         check_theme_draw_style(theme, self.config(), series, scope)?;
-        theme.apply(self.config_mut(), series, scope)?;
+        // As in `apply_theme_to`: a refused theme changes nothing.
+        let mut themed = self.config().clone();
+        theme.apply(&mut themed, series, scope)?;
+        *self.config_mut() = themed;
         self.fit_layout();
         Ok(())
     }
