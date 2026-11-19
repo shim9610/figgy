@@ -1267,3 +1267,422 @@ fn three_thousand_rows_draw_pick_and_highlight() {
     eprintln!("range bars over {BIG} rows: export {draw:?}, pick {pick:?}");
     r.remove_chart(id).unwrap();
 }
+
+/// A dark navy, a pale cream and the dark label ink of the contrast tests.
+const NAVY: Color = Color::from_rgb8(20, 30, 90);
+const CREAM: Color = Color::from_rgb8(250, 240, 200);
+const INK: Color = Color::from_rgb8(20, 20, 20);
+
+fn is_navy(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] < 40 && p[1] < 50 && (70..110).contains(&p[2])
+}
+
+fn is_cream(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] > 240 && (230..250).contains(&p[1]) && (185..215).contains(&p[2])
+}
+
+/// Label ink in white, over any fill.
+fn is_light_ink(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] > 235 && p[1] > 235 && p[2] > 235
+}
+
+/// Label ink in the dark ink, over any fill.
+fn is_dark_ink(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] < 45 && p[1] < 45 && p[2] < 45
+}
+
+/// Three rows labelled inside or beside their bar in contrast ink (#357):
+/// row 0 dark navy, rows 1 and 2 pale cream, row 1's label too long for
+/// its bar.
+fn contrast_series() -> SeriesConfig {
+    let mut series = ranges("one", RED);
+    let (_, color_by, _, _, labels) = fields(&mut series);
+    *color_by = RangeColor::ByRow {
+        colors: vec![NAVY, CREAM, CREAM],
+    };
+    labels.placement = CategoryBarLabels::InsideOrBeside;
+    labels.contrast_ink = Some([INK, Color::WHITE]);
+    labels.text = vec!["Alpha".into(), "Beside its bar".into(), "Gamma".into()];
+    series
+}
+
+/// Inside-or-beside labels with contrast ink (#357): a label that fits sits
+/// inside its bar in the ink that contrasts more with the bar (white on
+/// navy, dark on cream), one that does not sits beside the bar's end in the
+/// ink that contrasts with the plot; the ink is chosen per pixel, so a
+/// label across a progress split is white over the finished part and dark
+/// over the light unfinished part. The labels pick, outline and drag where
+/// they are drawn at 1x and 2x, the vector exports embed them, and a saved
+/// document draws the same.
+#[test]
+fn inside_or_beside_labels_take_contrast_ink_and_keep_every_interaction() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let mut chart = chart(direction);
+    let series = [contrast_series()];
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let row = |k: usize| slot(&chart, direction, k, scale);
+        // Row 0: white ink inside the navy bar.
+        let navy = bbox(&img, row(0), is_navy).expect("row 0's bar");
+        let inside = (navy.0, navy.1, navy.2 + 1, navy.3 + 1);
+        let white = bbox(&img, inside, is_light_ink).expect("white ink on navy");
+        assert_eq!(bbox(&img, inside, is_dark_ink), None, "{scale}x row 0");
+        // Row 2: dark ink inside its cream bar.
+        let cream = bbox(&img, row(2), is_cream).expect("row 2's bar");
+        let cream_box = (cream.0, cream.1, cream.2 + 1, cream.3 + 1);
+        let dark = bbox(&img, cream_box, is_dark_ink).expect("dark ink on cream");
+        assert_eq!(bbox(&img, cream_box, is_light_ink), None, "{scale}x row 2");
+        // Row 1: the long label sits beside the falling bar's end (its
+        // smaller value, on the left), dark on the plot, none inside.
+        let short = bbox(&img, row(1), is_cream).expect("row 1's bar");
+        let short_box = (short.0, short.1, short.2 + 1, short.3 + 1);
+        assert_eq!(bbox(&img, short_box, is_dark_ink), None, "{scale}x row 1");
+        assert_eq!(bbox(&img, short_box, is_light_ink), None, "{scale}x row 1");
+        let r1 = row(1);
+        let left = (r1.0, r1.1, short.0, r1.3);
+        let beside = bbox(&img, left, is_dark_ink).expect("the long label beside its bar");
+        assert!(beside.2 < short.0, "{scale}x {beside:?} {short:?}");
+
+        // Each label picks where it is drawn, inside or beside.
+        let centre = |b: Region| ((b.0 + b.2) as f32 / 2.0, (b.1 + b.3) as f32 / 2.0);
+        r.enable_gpu_picking().unwrap();
+        let id = r
+            .register_chart(chart.config().clone(), series.to_vec())
+            .unwrap();
+        for (k, ink) in [(0, white), (1, beside), (2, dark)] {
+            let request = renderer::GpuPickRequest {
+                canvas_position_px: [centre(ink).0, centre(ink).1],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: img.width,
+                    height: img.height,
+                },
+                display_scale: scale,
+                max_distance_px: 0.0,
+            };
+            match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+                Some(renderer::PickedData::ValueLabel {
+                    series_id,
+                    category_index,
+                    ..
+                }) => assert_eq!((series_id.as_str(), category_index), ("one", k)),
+                other => panic!("{scale}x label {k} picked {other:?}"),
+            }
+        }
+        r.remove_chart(id).unwrap();
+
+        // The selected label is outlined around where it is drawn.
+        chart.config_mut().picked_data = Some(DataSelectionsConfig {
+            refs: vec![PickedDataRef::ValueLabel {
+                source_id: None,
+                series_id: "one".into(),
+                category_index: 1,
+                part: None,
+            }],
+            ..DataSelectionsConfig::default()
+        });
+        let selected = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        chart.config_mut().picked_data = None;
+        let changed = (r1.1..r1.3.min(img.height))
+            .flat_map(|y| (r1.0..short.0).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(&img, x, y) != pixel(&selected, x, y))
+            .count();
+        assert!(changed > 0, "{scale}x: the selected label is outlined");
+
+        // A dragged label moves by its offset.
+        let mut dragged = series.clone();
+        fields(&mut dragged[0]).4.offsets = vec![[0.0, 0.0], [0.0, -12.0], [0.0, 0.0]];
+        let moved = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &dragged),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let near = (
+            beside.0 - 2,
+            beside.1 - (20.0 * scale) as u32,
+            short.0,
+            beside.3 + 1,
+        );
+        let after = bbox(&moved, near, is_dark_ink).expect("the dragged label");
+        assert!(
+            (beside.1 as f32 - after.1 as f32 - 12.0 * scale).abs() <= 1.5,
+            "{scale}x {beside:?} -> {after:?}"
+        );
+        // A label dragged off its navy bar reads the plot under it: dark,
+        // never white on white.
+        let mut off_bar = series.clone();
+        fields(&mut off_bar[0]).4.offsets = vec![[0.0, 60.0], [0.0, 0.0], [0.0, 0.0]];
+        let off = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &off_bar),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let below = (navy.0, navy.3 + 1, navy.2 + 1, img.height);
+        assert!(
+            bbox(&off, below, is_dark_ink).is_some(),
+            "{scale}x off its bar"
+        );
+        assert_eq!(
+            bbox(&off, below, is_light_ink),
+            None,
+            "{scale}x off its bar"
+        );
+    }
+
+    // Across a progress split: white over the finished navy part, dark over
+    // its light unfinished part.
+    let mut split = series.clone();
+    *fields(&mut split[0]).2 = Some(RangeProgress {
+        column: "progress".into(),
+        remaining_opacity: 0.2,
+    });
+    fields(&mut split[0]).4.text[0] = "Alpha beta gamma".into();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&mut chart, &split),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let at = value_px(&chart, direction, 0.5 * (START[0] + END[0]), 1.0) as u32;
+    let row0 = slot(&chart, direction, 0, 1.0);
+    // From the bar's start: the tick marks left of the plot are dark too.
+    let row0 = (
+        value_px(&chart, direction, START[0], 1.0) as u32 + 1,
+        row0.1,
+        row0.2,
+        row0.3,
+    );
+    assert!(
+        bbox(&img, (row0.0, row0.1, at, row0.3), is_light_ink).is_some(),
+        "white ink before the split"
+    );
+    assert!(
+        bbox(&img, (at + 1, row0.1, row0.2, row0.3), is_dark_ink).is_some(),
+        "dark ink past the split"
+    );
+    assert_eq!(
+        bbox(
+            &img,
+            (row0.0, row0.1, at.saturating_sub(1), row0.3),
+            is_dark_ink
+        ),
+        None,
+        "no dark ink before the split"
+    );
+
+    // The SVG and the PDF embed the drawn data image, labels included.
+    let svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(svg.contains("<image"));
+    let pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+
+    // A document saved and read back draws the same pixels.
+    #[cfg(feature = "serde")]
+    {
+        let before = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba;
+        let json = serde_json::to_string(&(chart.config(), &series)).unwrap();
+        assert!(json.contains("contrast_ink") && json.contains("InsideOrBeside"));
+        let (config, again): (renderer::config::Config, Vec<SeriesConfig>) =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!(again.as_slice(), &series);
+        let after = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut Chart::new(config), &again),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba;
+        assert_eq!(after, before);
+    }
+}
+
+/// Rule 10: inside-or-beside labels in contrast ink on 3000 rows all draw,
+/// with no cap on rows or labels.
+#[test]
+fn contrast_labels_draw_on_every_row() {
+    let mut r = renderer();
+    let n = 3000usize;
+    r.add_column("many-pos", &col((0..n).map(|i| i as f64).collect()))
+        .unwrap();
+    r.add_column("many-start", &col(vec![0.0; n])).unwrap();
+    r.add_column("many-end", &col(vec![100.0; n])).unwrap();
+    let mut series = contrast_series();
+    series.x_column = "many-pos".into();
+    series.y_column = "many-end".into();
+    if let DataRenderType::RangeBars(bars) = &mut series.render_type {
+        bars.start = "many-start".into();
+        bars.slot_width = Some(1.0);
+        bars.labels.text = (0..n).map(|i| format!("{i}")).collect();
+        bars.color_by = RangeColor::ByRow { colors: vec![NAVY] };
+    }
+    let mut chart = chart(CategoryBarDirection::Horizontal);
+    let config = chart.config_mut();
+    config.left_y.categories = None;
+    config.left_y.min = n as f64 - 3.5;
+    config.left_y.max = n as f64 - 0.5;
+    config.left_y.major_spacing = 1.0;
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&mut chart, std::slice::from_ref(&series)),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    // The last rows, past any former cap, draw their bars and white labels.
+    let whole = (0, 0, img.width, img.height);
+    let navy = bbox(&img, whole, is_navy).expect("the last rows draw");
+    let inside = (navy.0, navy.1, navy.2 + 1, navy.3 + 1);
+    assert!(bbox(&img, inside, is_light_ink).is_some(), "labels draw");
+}
+
+/// The timeline row band colour of `default_timeline_config` (#357).
+fn is_row_band(p: &[u8]) -> bool {
+    p[3] == 255 && (245..=249).contains(&p[0]) && (246..=250).contains(&p[1]) && p[2] >= 248
+}
+
+/// The timeline look (#357): `timeline_bars` on `default_timeline_config`
+/// draws a faint band behind every other row, under the bars, at 1x and
+/// 2x; the first row (at the top) stays clear; a bar over a band still
+/// picks; a subplot of the same look draws its own bands; and the saved
+/// document draws the same.
+#[test]
+fn the_timeline_look_bands_every_other_row_under_the_bars() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let timeline = |y: u32| {
+        let mut config = renderer::default::default_timeline_config();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y,
+            width: WIDTH,
+            height: HEIGHT,
+        });
+        config.legend.visible = false;
+        config.chart_title.visible = false;
+        config.left_y.categories = Some(vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]);
+        let mut chart = Chart::new(config);
+        chart.set_x_range(0.0, 100.0);
+        chart.fit_layout();
+        chart
+    };
+    let mut chart = timeline(0);
+    let series = [SeriesConfig::timeline_bars("one", "pos", "start", "end")];
+    // The axis is inverted: row `k` sits in the bottom-up slot `2 - k`.
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        let row = |k: usize| slot(&chart, direction, 2 - k, scale);
+        assert_eq!(bbox(&img, row(0), is_row_band), None, "{scale}x row 0");
+        let band = bbox(&img, row(1), is_row_band).expect("row 1's band");
+        let r1 = row(1);
+        assert!(
+            band.0.abs_diff(r1.0) <= 1 && band.2.abs_diff(r1.2 - 1) <= 1,
+            "{scale}x: the band spans the plot: {band:?} {r1:?}"
+        );
+        assert_eq!(bbox(&img, row(2), is_row_band), None, "{scale}x row 2");
+        // The bar over the band picks.
+        let x = value_px(&chart, direction, 0.5 * (START[1] + END[1]), scale);
+        let y = (r1.1 + r1.3) as f32 / 2.0;
+        assert_eq!(
+            registered_pick(&mut r, &chart, &series, scale, (x, y), 0.0),
+            Some(("one".into(), 1)),
+            "{scale}x"
+        );
+    }
+
+    // A subplot of the same look draws its own bands.
+    let mut parent = timeline(0);
+    let sub = timeline(HEIGHT).config().clone();
+    parent.config_mut().subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["below".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+        text_scale: Default::default(),
+    });
+    let both = [
+        SeriesConfig::timeline_bars("one", "pos", "start", "end"),
+        SeriesConfig::timeline_bars("below", "pos", "start", "end"),
+    ];
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&mut parent, &both),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let (w, h) = (img.width, img.height);
+    assert!(
+        bbox(&img, (0, 0, w, h / 2), is_row_band).is_some(),
+        "the parent's"
+    );
+    assert!(
+        bbox(&img, (0, h / 2, w, h), is_row_band).is_some(),
+        "the subplot's"
+    );
+
+    #[cfg(feature = "serde")]
+    {
+        let draw = |r: &mut Renderer, chart: &mut Chart| {
+            r.export_rgba(
+                renderer::ExportSource::chart(chart, &series),
+                renderer::ExportOptions::panel(2.0),
+            )
+            .block_on()
+            .unwrap()
+            .rgba
+        };
+        let before = draw(&mut r, &mut chart);
+        let json = serde_json::to_string(chart.config()).unwrap();
+        let config: renderer::config::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(&config, chart.config());
+        assert_eq!(draw(&mut r, &mut Chart::new(config)), before);
+    }
+}

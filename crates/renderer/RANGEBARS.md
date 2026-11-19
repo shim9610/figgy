@@ -34,7 +34,7 @@ series:
 | `connector` | `RangeConnector { color, width }`: a line at each bar's end value, from its edge to the next row's bar (a waterfall) |
 | `slot_width` | the slot of one row in data units on a numeric position axis (a time axis); `None` on a categorical axis, where the slot is one category |
 | `style` | a `CategoryBarStyle`: material, corner radius (both ends of a floating bar are rounded), outline, texture, gloss and the brightness of a picked bar |
-| `labels` | `CategoryBarSeriesLabels`: the host's strings, one per row (`text`), their placement (`Outside`, `Inside`, `Auto` = outside, `None`) and drag offsets; `decimals` and `value_suffix` are not read |
+| `labels` | `CategoryBarSeriesLabels`: the host's strings, one per row (`text`), their placement (`Outside`, `Inside`, `Auto` = outside, `InsideOrBeside`: inside when the label fits with the bar padding, else beside the bar's end, `None`), drag offsets and `contrast_ink: Option<[dark, light]>` (each label pixel in the ink that contrasts more with what lies under it, chosen on every draw: the bar's fill, its unfinished part past a progress split, or the plot background off the bar); `decimals` and `value_suffix` are not read |
 
 Every column holds one value per row of the positions; a column of another
 length is an error naming it. A row with a NaN position, start or end, or
@@ -111,13 +111,25 @@ build a timeline in the look of the common web timelines (#357):
 
 | Choice | Value | References |
 |---|---|---|
-| Category order | the first row at the top: `left_y.inverted` | Vega-Lite and Google Charts list the first row at the top; Plotly's `px.timeline` needs `autorange="reversed"` for it |
-| Colour | one colour per row from `ColorCycle::Balanced` (`RangeColor::ByRow`); the series colour is the cycle's first | Google Charts colours each bar; Plotly and Vega-Lite take one palette colour |
-| Bar thickness | 0.8 of the row's band (`bar_groups.group_width`) | Plotly 0.8 (`bargap` 0.2), Vega-Lite 0.9 (band padding 0.1) |
-| Corner radius | 3 px, flat, no texture or gloss | Plotly and Vega-Lite square, Google Charts slightly rounded |
-| Gridlines | value gridlines only, pale grey | Vega-Lite and Google Charts grid the time axis only |
-| Frame | the open frame (`AxisPreset::OpenOutward`), light grey axis lines, no tick marks | Vega-Lite and Google Charts draw no box; the gridlines carry the values |
+| Category order | the first row at the top: `left_y.inverted` | Vega-Lite, Google Charts, Frappe and DHTMLX list the first row at the top; Plotly's `px.timeline` needs `autorange="reversed"` for it |
+| Rows | a faint band behind every other row (`left_y.category_bands`, `#F7F8FA`), no row axis line, task names in dark slate (`#374151`) | Google Charts' `alternatingRowStyle` (on by default); the project tools draw rows as a table |
+| Colour | one muted colour per row (`RangeColor::ByRow` over `default::TIMELINE_COLORS`: soft blue, teal, violet, amber, rose, slate, green, sky); the series colour is the first | Google Charts colours each bar; no reference uses a saturated categorical cycle per row |
+| Bar thickness | 0.6 of the row's band (`bar_groups.group_width`) | Frappe, DHTMLX and the project tools fill about 60 % of a row |
+| Corner radius | 4 px, flat, no texture or gloss | the web Gantt libraries round 3 to 6 px |
+| Labels | inside the bar when they fit, else beside its end (`InsideOrBeside`), in dark slate or white, whichever contrasts more (`contrast_ink`, `default::TIMELINE_LABEL_INK`) | Frappe, DHTMLX and Bryntum put the task name in the bar and outside a short one |
+| Progress | `SeriesConfig::with_progress(column)`: the host's share, the unfinished part at 0.4 opacity (`default::TIMELINE_REMAINING_OPACITY`) | the same hue, lighter past the done share |
+| Gridlines | time gridlines only, pale grey (`#E8EBF0`), no tick marks, the time labels in muted grey (`#6B7280`), no bottom axis line | every reference grids the time axis only |
+| Frame | a light top rule (`#D1D5DB`), no other frame | the web Gantt charts draw no box |
 | Layout | `LayoutState::Fitted`: the chart is created with its margins fitted to the row labels | every reference sizes the label band to its labels |
+
+A web Gantt's other elements are the host's, with existing parts: a
+milestone is a `ScatterShape::DiamondFilled` scatter series on the bars'
+layer (positions the row index, x the date; no row of the bars needs a
+value), today is an `AnnotationKind::ReferenceLine` on `X` at the time
+the host passes (the renderer never reads a clock), and a finish-to-start
+link is drawn as an elbow of `AnnotationKind::Arrow` segments until the
+link series lands. The `timeline` scene of `examples/range_bars.rs` draws
+all of them.
 
 Every choice is a stored field, so a saved timeline reads back with the
 same look, and the documented defaults (`SeriesConfig::range_bars`,
@@ -135,7 +147,7 @@ config.left_y.categories = Some(vec![
     Category::new("build", "Build"),
 ]);
 let chart = Chart::new(config).with_area(0, 0, 800, 600);
-let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end");
+let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_progress("done");
 ```
 
 ## Interaction
@@ -154,7 +166,10 @@ the shortest of the series' columns. The web wrapper's
 duration: those are the host's to derive.
 
 Value labels are picked, selected and dragged as a category bar's are
-(`labels.offsets`), one per row. Range bars draw on overlays and subplots
+(`labels.offsets`), one per row, wherever their placement puts them
+(inside, beside, or flipped back over the bar at the plot's edge); a
+label in contrast ink keeps reading what lies under each of its pixels
+after a drag. Range bars draw on overlays and subplots
 with groups of their own, export to PNG at any scale and to SVG and PDF,
 and serialize with every unset option omitted.
 

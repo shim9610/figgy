@@ -19,7 +19,10 @@
 //! match the host viewport).
 
 use crate::Color;
-use crate::config::{AxisOptions, ColorBarOptions, Config, LayoutState, Legend, TickVisibility};
+use crate::config::{
+    AxisOptions, CategoryBandEvery, CategoryBands, ColorBarOptions, Config, LayoutState, Legend,
+    TickVisibility,
+};
 use crate::data_config::{BarGroups, CategoryBarDirection, SeriesConfig};
 use crate::format::{AutoNumberFormat, LabelFormat};
 use crate::parallel::ParallelOptions;
@@ -293,28 +296,63 @@ pub fn default_parallel_config() -> Config {
     config
 }
 
-/// The share of a row's band a timeline's bars cover: between Plotly's
-/// (0.8, `bargap` 0.2) and Vega-Lite's (0.9, band padding 0.1).
-const TIMELINE_GROUP_WIDTH: f32 = 0.8;
+/// The share of a row's band a timeline's bars cover: the bars of the
+/// common web timelines fill about 60 % of a row (#357).
+const TIMELINE_GROUP_WIDTH: f32 = 0.6;
 
-/// The light grey of a timeline's axis lines.
-const TIMELINE_FRAME: Color = Color::from_rgb8(160, 166, 176);
+/// The dark slate of a timeline's task names.
+const TIMELINE_ROW_INK: Color = Color::from_rgb8(55, 65, 81);
 
-/// The pale grey of a timeline's value gridlines.
-const TIMELINE_GRID: Color = Color::from_rgb8(225, 228, 233);
+/// The muted grey of a timeline's time labels.
+const TIMELINE_TIME_INK: Color = Color::from_rgb8(107, 114, 128);
+
+/// The light grey of the rule along a timeline's top edge.
+const TIMELINE_FRAME: Color = Color::from_rgb8(209, 213, 219);
+
+/// The pale grey of a timeline's time gridlines.
+const TIMELINE_GRID: Color = Color::from_rgb8(232, 235, 240);
+
+/// The faint band behind every other row of a timeline.
+const TIMELINE_ROW_BAND: Color = Color::from_rgb8(247, 248, 250);
+
+/// The row colours of [`SeriesConfig::timeline_bars`](crate::data_config::SeriesConfig::timeline_bars) (#357): a muted
+/// palette, softer than a categorical cycle, as web timelines colour their
+/// tasks: soft blue, teal, violet, amber, rose, slate, green and sky.
+pub const TIMELINE_COLORS: [Color; 8] = [
+    Color::from_rgb8(91, 141, 239),
+    Color::from_rgb8(38, 166, 154),
+    Color::from_rgb8(149, 117, 205),
+    Color::from_rgb8(240, 173, 78),
+    Color::from_rgb8(229, 115, 136),
+    Color::from_rgb8(120, 144, 156),
+    Color::from_rgb8(102, 187, 106),
+    Color::from_rgb8(79, 195, 247),
+];
+
+/// The contrast ink of a timeline's labels (#357): a dark slate and white.
+pub const TIMELINE_LABEL_INK: [Color; 2] = [Color::from_rgb8(31, 41, 55), Color::WHITE];
+
+/// The opacity of a timeline bar's unfinished part
+/// ([`SeriesConfig::with_progress`](crate::data_config::SeriesConfig::with_progress)): the light tint of the bar's colour
+/// web timelines draw past the done share.
+pub const TIMELINE_REMAINING_OPACITY: f32 = 0.4;
 
 /// A timeline (Gantt) chart in the look of the common web timelines
 /// (#357), for [`crate::data_config::SeriesConfig::timeline_bars`]:
 /// [`default_config`] with
 ///
-/// - horizontal bars covering 0.8 of each row's band
+/// - horizontal bars covering 0.6 of each row's band
 ///   ([`Config::bar_groups`]);
 /// - the first row at the top: `left_y` is inverted, so its first category
 ///   (or the smallest position on a numeric axis) sits at the top;
-/// - gridlines along the value axis only, in a pale grey, and no minor
-///   gridlines;
-/// - the open frame ([`AxisPreset::OpenOutward`]) with its axis lines in a
-///   light grey and no tick marks: the gridlines carry the values;
+/// - rows as a table: a faint band behind every other row
+///   ([`AxisOptions::category_bands`] on `left_y`, drawn once `left_y` holds
+///   the host's categories), no `left_y` line and the task names in a dark
+///   slate;
+/// - time gridlines in a pale grey along the value axis only, no minor
+///   gridlines and no tick marks; the time labels in a muted grey, without
+///   a bottom axis line;
+/// - a light rule along the top edge, the base of a period header;
 /// - `layout_state` is [`LayoutState::Fitted`], as a new chart's is: the
 ///   row labels on the left are as wide as the host's task names, so the
 ///   chart made from the config is created with its layout fitted to them,
@@ -330,11 +368,22 @@ pub fn default_timeline_config() -> Config {
         group_width: TIMELINE_GROUP_WIDTH,
         ..crate::defaults::bar_groups()
     });
-    config.left_y.inverted = true;
-    for axis in [&mut config.bottom_x, &mut config.left_y] {
-        axis.tick = TickVisibility::None;
-        axis.line_color = TIMELINE_FRAME;
-    }
+    let rows = &mut config.left_y;
+    rows.inverted = true;
+    rows.tick = TickVisibility::None;
+    rows.line_visible = false;
+    rows.label_style.color = TIMELINE_ROW_INK;
+    rows.category_bands = Some(CategoryBands {
+        fill: TIMELINE_ROW_BAND,
+        every: CategoryBandEvery::Alternate,
+    });
+    let time = &mut config.bottom_x;
+    time.tick = TickVisibility::None;
+    time.line_visible = false;
+    time.label_style.color = TIMELINE_TIME_INK;
+    let top = &mut config.top_x;
+    top.line_visible = true;
+    top.line_color = TIMELINE_FRAME;
     let grid = &mut config.grid;
     grid.show_major_y = false;
     grid.show_minor_x = false;

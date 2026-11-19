@@ -15,11 +15,12 @@
 use crate::color::Color;
 use crate::data::ColumnId;
 use crate::data_config::{
-    BoxSeries, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig,
-    DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef, FieldFillConfig, FieldSeries,
-    GridLayout, HistogramSeries, LineFill, MatrixOrientation, MatrixRef, ParallelSeries,
-    RadarPolygonSeries, RangeBarSeries, RangeColor, RgbImageSeries, ScatterShape, SeriesConfig,
-    Stem, StreamlineSeries, TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
+    BoxSeries, CategoryBarLabels, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef,
+    FieldFillConfig, FieldSeries, GridLayout, HistogramSeries, LineFill, MatrixOrientation,
+    MatrixRef, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, RangeProgress,
+    RgbImageSeries, ScatterShape, SeriesConfig, Stem, StreamlineSeries, TernarySeries,
+    VectorComponents, VectorSeries, VectorStyle, XySeries,
 };
 use crate::line::LineStylePreset;
 use crate::preset::ColorCycle;
@@ -74,8 +75,8 @@ pub(super) const SERIES_INK: Color = ColorCycle::DEFAULT.color(0);
 pub(super) const CONTOUR_INK: Color = Color::from_rgb8(0x26, 0x26, 0x26);
 
 /// The corner radius of [`SeriesConfig::timeline_bars`], logical pixels:
-/// the slight rounding of a web timeline's bars.
-const TIMELINE_CORNER_RADIUS: f32 = 3.0;
+/// the rounding of a web timeline's bars.
+const TIMELINE_CORNER_RADIUS: f32 = 4.0;
 
 impl SeriesConfig {
     /// A series of `render_type` over the `x` and `y` columns, unlabelled
@@ -409,31 +410,49 @@ impl SeriesConfig {
 
     /// Timeline (Gantt) bars: [`Self::range_bars`] in the timeline look of
     /// the common web timelines (#357). Each row takes its own colour from
-    /// [`ColorCycle::Balanced`] ([`RangeColor::ByRow`]; the series colour,
-    /// the legend swatch, is the cycle's first), and the bars are flat with
-    /// 3 px corners, without texture or gloss. Pair it with
-    /// [`crate::default::default_timeline_config`] for the chart: the first
-    /// row at the top, value gridlines only and a light open frame. Every
-    /// choice is a field of the series, so a theme or an edit can change
-    /// it; [`Self::range_bars`] keeps the documented look for waterfalls
-    /// and candlesticks.
+    /// the muted [`crate::default::TIMELINE_COLORS`] ([`RangeColor::ByRow`]; the series
+    /// colour, the legend swatch, is the first), and the bars are flat with
+    /// 4 px corners, without texture or gloss. A label the host writes
+    /// (`labels.text`) sits inside its bar when it fits and beside the bar's
+    /// end otherwise ([`CategoryBarLabels::InsideOrBeside`]), in the dark or
+    /// light [`crate::default::TIMELINE_LABEL_INK`], whichever contrasts more with what lies
+    /// under it. Pair it with [`crate::default::default_timeline_config`]
+    /// for the chart, and [`Self::with_progress`] for a progress column.
+    /// Every choice is a field of the series, so a theme or an edit can
+    /// change it; [`Self::range_bars`] keeps the documented look for
+    /// waterfalls and candlesticks.
     pub fn timeline_bars(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
         start: impl Into<ColumnId>,
         end: impl Into<ColumnId>,
     ) -> Self {
-        let cycle = ColorCycle::Balanced;
         Self::range_bars(id, positions, start, end)
-            .color(cycle.color(0))
+            .color(super::default::TIMELINE_COLORS[0])
             .style_range_bars(|bars| {
                 bars.color_by = RangeColor::ByRow {
-                    colors: cycle.colors().to_vec(),
+                    colors: super::default::TIMELINE_COLORS.to_vec(),
                 };
                 bars.style.corner_radius = TIMELINE_CORNER_RADIUS;
                 bars.style.texture_strength = 0.0;
                 bars.style.gloss = 0.0;
+                bars.labels.placement = CategoryBarLabels::InsideOrBeside;
+                bars.labels.contrast_ink = Some(super::default::TIMELINE_LABEL_INK);
             })
+    }
+
+    /// A range bar series' progress (#357): each bar is drawn whole up to
+    /// its share in `column` (`0..=1`, the host's) and in the light tint of
+    /// [`crate::default::TIMELINE_REMAINING_OPACITY`] past it ([`RangeProgress`]). No effect
+    /// on any other kind of series.
+    pub fn with_progress(self, column: impl Into<ColumnId>) -> Self {
+        let column = column.into();
+        self.style_range_bars(|bars| {
+            bars.progress = Some(RangeProgress {
+                column,
+                remaining_opacity: super::default::TIMELINE_REMAINING_OPACITY,
+            });
+        })
     }
 
     /// A radar polygon: `categories` holds `0, 1, ..., n - 1` and `values`

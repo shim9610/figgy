@@ -209,7 +209,8 @@ pub const MAX_RANGE_STROKE_WIDTH: f32 = 24.0;
 /// remaining opacity in `0..=1`, label decimals `0..=6` and a one-line
 /// value suffix of at most 24 characters, `labels.text` of one-line strings
 /// of at most [`MAX_CATEGORY_BAR_LABEL_CHARS`] characters, and
-/// `labels.offsets` empty or one per string of `labels.text`.
+/// `labels.offsets` empty or one per string of `labels.text`, and opaque
+/// `labels.contrast_ink` colours.
 pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::RuleKind> {
     let Some(bars) = series.render_type.range_bars() else {
         return Ok(());
@@ -278,6 +279,12 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
         .any(|text| !single_line_within(text, MAX_CATEGORY_BAR_LABEL_CHARS))
     {
         return Err(crate::RuleKind::RangeBarLabel);
+    }
+    if labels
+        .contrast_ink
+        .is_some_and(|inks| !inks.iter().all(|c| valid_bar_color(*c, true)))
+    {
+        return Err(crate::RuleKind::RangeBarContrastInk);
     }
     validate_value_label_offsets(&labels.offsets, labels.text.len())?;
     Ok(())

@@ -121,6 +121,7 @@ pub(crate) fn category_bar_series_labels() -> CategoryBarSeriesLabels {
         value_suffix: String::new(),
         text: Vec::new(),
         offsets: Vec::new(),
+        contrast_ink: None,
     }
 }
 

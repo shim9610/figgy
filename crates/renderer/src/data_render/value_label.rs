@@ -32,6 +32,8 @@ pub(crate) const VALUE_LABEL_KIND_RANGE: u32 = 3;
 pub(crate) const VALUE_LABEL_OUTSIDE: u32 = 0;
 pub(crate) const VALUE_LABEL_INSIDE: u32 = 1;
 pub(crate) const VALUE_LABEL_AUTO: u32 = 2;
+/// Inside the bar when the label fits, else beside its end (#357).
+pub(crate) const VALUE_LABEL_INSIDE_OR_BESIDE: u32 = 3;
 
 /// Logical pixels between a bar's value end and its outside label's
 /// baseline (or text top below a falling end), as the former categorical
@@ -112,9 +114,30 @@ pub struct ValueLabelParamsGpu {
     pub radar: [f32; 4],
     /// A radar series' ring label band ([`RadarLabelGroup::ring`]).
     pub ring: [f32; 4],
+    /// Contrast ink ([`ValueLabelInk`]; `selection[2]` is 1 when on): the
+    /// dark ink, the light ink, the plot background and the series colour,
+    /// straight RGB with alpha 1; zero when off.
+    pub ink_dark: [f32; 4],
+    pub ink_light: [f32; 4],
+    pub ink_back: [f32; 4],
+    pub ink_base: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 128);
+const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 192);
+
+/// The contrast ink of a range bar series' labels (#357,
+/// `CategoryBarSeriesLabels::contrast_ink`): the shader draws each label
+/// pixel in whichever ink contrasts more with what lies under it, on every
+/// draw. Configuration only: the two inks, the plot background a label
+/// beside its bar sits on, and the series colour a bar's fill falls back
+/// to.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ValueLabelInk {
+    pub dark: crate::Color,
+    pub light: crate::Color,
+    pub back: crate::Color,
+    pub base: crate::Color,
+}
 
 /// One series' baked value label atlas on the GPU: the texture its labels
 /// sample, its cell geometry, and each string's measured cell width.
@@ -230,6 +253,7 @@ fn label_placement(render_type: &DataRenderType, category_id: Option<&str>) -> O
         CategoryBarLabels::Inside => Some(VALUE_LABEL_INSIDE),
         CategoryBarLabels::Outside => Some(VALUE_LABEL_OUTSIDE),
         CategoryBarLabels::Auto => Some(VALUE_LABEL_AUTO),
+        CategoryBarLabels::InsideOrBeside => Some(VALUE_LABEL_INSIDE_OR_BESIDE),
     };
     match render_type {
         DataRenderType::RangeBars(RangeBarSeries { labels, .. }) => bar_placement(labels.placement),
@@ -292,7 +316,8 @@ pub(crate) fn value_label_count(
 /// The value label uniform of one series: the atlas geometry, its kind and
 /// its label count ([`value_label_count`]) at `scale` render pixels per
 /// logical pixel, and for a radar series its label group (`group`,
-/// [`RadarLabelGroup::NONE`] for the other kinds). The labels' cells are
+/// [`RadarLabelGroup::NONE`] for the other kinds) and its contrast ink
+/// (`ink`, `None` for labels in their baked colour). The labels' cells are
 /// [`value_label_cells`], one block per member of the group.
 pub(crate) fn value_label_params(
     kind: u32,
@@ -301,7 +326,12 @@ pub(crate) fn value_label_params(
     font_px: f32,
     scale: f32,
     group: &RadarLabelGroup,
+    ink: Option<ValueLabelInk>,
 ) -> ValueLabelParamsGpu {
+    let opaque = |c: crate::Color| [c.r, c.g, c.b, 1.0];
+    let inks = ink.map_or([[0.0; 4]; 4], |ink| {
+        [ink.dark, ink.light, ink.back, ink.base].map(opaque)
+    });
     let gap = match kind {
         VALUE_LABEL_KIND_BARS | VALUE_LABEL_KIND_RANGE => BAR_LABEL_GAP * scale,
         VALUE_LABEL_KIND_BOXES => BOX_LABEL_GAP * scale,
@@ -318,9 +348,13 @@ pub(crate) fn value_label_params(
         ],
         metrics: [gap, atlas.baseline_px, font_px, scale],
         selection_color: color,
-        selection: [stroke, padding, 0.0, 0.0],
+        selection: [stroke, padding, if ink.is_some() { 1.0 } else { 0.0 }, 0.0],
         radar: [group.visual_gap, 0.0, group.ray[0], group.ray[1]],
         ring: group.ring,
+        ink_dark: inks[0],
+        ink_light: inks[1],
+        ink_back: inks[2],
+        ink_base: inks[3],
     }
 }
 

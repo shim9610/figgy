@@ -1873,6 +1873,45 @@ mod tests {
         assert_eq!(report["valid"], true);
     }
 
+    /// The timeline look (#357) reaches the browser as document JSON: the
+    /// timeline config with its row bands and a timeline series with its
+    /// inside-or-beside labels in contrast ink validate, normalize
+    /// unchanged, and a refused band fill or ink names its rule.
+    #[test]
+    fn timeline_documents_validate_and_normalize() {
+        let mut config = renderer::default::default_timeline_config();
+        config.left_y.categories = Some(vec![
+            renderer::Category::new("a", "A"),
+            renderer::Category::new("b", "B"),
+        ]);
+        let series = [
+            renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end").with_progress("done"),
+        ];
+        let config_json = serde_json::to_string(&config).unwrap();
+        let series_json = serde_json::to_string(&series).unwrap();
+        assert!(config_json.contains("category_bands"));
+        assert!(series_json.contains("contrast_ink") && series_json.contains("InsideOrBeside"));
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&config_json, Some(&series_json)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], true, "{report}");
+        assert_eq!(
+            super::normalize_config_json(&config_json).unwrap(),
+            config_json
+        );
+        let mut refused = config.clone();
+        if let Some(bands) = refused.left_y.category_bands.as_mut() {
+            bands.fill.r = 2.0;
+        }
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&serde_json::to_string(&refused).unwrap(), None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(report.to_string().contains("CategoryBandsFill"), "{report}");
+    }
+
     #[test]
     fn validate_config_json_names_the_refused_field() {
         let report = |config: &str, series: Option<&str>| -> serde_json::Value {

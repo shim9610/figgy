@@ -37,7 +37,7 @@ chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
 breaks' `sizing`, the energy-level `bands` and `band` style, a
 subplot's `marker`, the energy-level `wavelength_labels`, a text
-annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
+annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `category_bands`, the range bar labels' `contrast_ink`, the
 `MonotonicLine` series kind, a subplot's `text_scale`, a radial slice's
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
@@ -591,6 +591,30 @@ and radar documents' `text_sizes`) are additive.
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
+
+- **Timeline look, round 2** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). The timeline helpers now draw in the look of the web Gantt charts. `default_timeline_config()`:
+  - bars over 0.6 of a row (was 0.8);
+  - a faint band behind every other row;
+  - no `left_y` or `bottom_x` axis line;
+  - task names in dark slate and time labels in muted grey;
+  - pale time gridlines and a light top rule.
+
+  `SeriesConfig::timeline_bars()`:
+  - colours each row from the muted `default::TIMELINE_COLORS` (was `ColorCycle::Balanced`);
+  - rounds corners by 4 px (was 3);
+  - places labels with `CategoryBarLabels::InsideOrBeside`, in `default::TIMELINE_LABEL_INK` contrast ink.
+
+  New:
+  - `AxisOptions::category_bands: Option<CategoryBands { fill, every: CategoryBandEvery::Alternate }>`, a fill across the plot behind every other category of a categorical `bottom_x` or `left_y`, under the grid, for any number of categories. A fill channel outside `0..=1` is refused (`RuleKind::CategoryBandsFill`).
+  - `CategoryBarLabels::InsideOrBeside`: inside the bar when the label fits with the bar padding, else beside its end.
+  - `CategoryBarSeriesLabels::contrast_ink: Option<[Color; 2]>` (dark, light). Each range bar label pixel takes the ink that contrasts more with what lies under it. The colours are opaque (`RuleKind::RangeBarContrastInk`), and a category bar series refuses the field (`RuleKind::ContrastInkSeries`).
+  - `SeriesConfig::with_progress(column)`: `RangeProgress` at `default::TIMELINE_REMAINING_OPACITY` (0.4).
+
+  The new fields are serde-defaulted and omitted when unset. Documents written before parse, read back and draw the same. `range_bars`, `default_config` and every serde default are unchanged.
+
+  Migration: an `AxisOptions { .. }` or `CategoryBarSeriesLabels { .. }` struct literal that lists every field adds `category_bands: None` or `contrast_ink: None`. An exhaustive `match` on `CategoryBarLabels` adds an `InsideOrBeside` arm.
+
+  Tests: `every_other_row_gets_a_band_across_the_plot`, `bands_cover_every_category_with_no_limit`, `bands_round_trip_and_older_documents_have_none`, `a_band_fill_outside_the_colour_range_is_refused` (`chrome/grid.rs`); `contrast_ink_is_opaque_and_only_on_range_bars`; the updated `timeline_bars_colour_each_row_and_draw_flat` and `the_timeline_config_puts_the_first_row_on_top_with_a_light_frame`.
 
 - **Clean tick labels by default** ([#357](https://github.com/shim9610/figgy/issues/357)). A new chart labelled its ticks `0.800`, `-3.00` and `10.0` beside a bare `0`: the helpers gave every linear axis `LabelFormat::Decimal`, whose decimals follow the significant digits. New: `LabelFormat::Auto(AutoNumberFormat { uniform_decimals, notation, exponent_low, exponent_high })` chooses the decimals from the major spacing, the fewest that write the step exactly (at most two past its first digit), the same on every tick of the axis: `0.0`, `0.2` … `1.0`; `0.00`, `0.25`, `0.50`; `-3` … `3`; `0`, `2000` … `10000`. `uniform_decimals: false` trims each tick instead (`0`, `0.5`, `1`). An axis whose largest end has an order of magnitude at most `exponent_low` (-5) or at least `exponent_high` (6), the limits of matplotlib's `ScalarFormatter`, writes each tick with its own exponent in `notation`: `ExponentNotation::Power` (`2×10⁹`, `8×10⁻⁶`, the default), `Scientific` (`2e9`) or `Engineering` (`20e-6`). A logarithmic axis rounds each tick to `significant_digits` in the same window, and a probability axis writes as `Decimal` with each tail's digits (#209). `AutoNumberFormat::DEFAULT` and `default::default_label_format()` give the default; `chrome::format_tick_auto` and `format_tick_auto_power` write a tick. Every numeric tick label goes through it: Cartesian and overlay axes, the colourbar, polar, ternary, parallel, 3D box and probability axes, in drawing, hit testing, auto layout and the PNG / SVG / PDF exports. Contour level labels, which carry their own format, are unchanged.
   - **What gets it.** The helpers: `Config::default()`, `default::default_config()`, `default_axis_options_x` / `_y`, `default_colorbar_options`, `ColorBarOptions::default()`, `AxisOptions::overlay_x` / `overlay_y` and so `Chart::sized` / `placed`, and the browser `default_config`. The renderer's range and fit helpers (`set_x_range`, `auto_fit_*`, `fit_ranges` and the rest) now reset a linear axis to `Auto` where they reset it to `Decimal`; an axis already on `Auto` keeps its options, and `Timestamp` is kept as before.
@@ -2110,6 +2134,13 @@ and radar documents' `text_sizes`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Row bands and contrast-ink labels for timelines** ([#357](https://github.com/shim9610/figgy/issues/357), item 14).
+  - **Category bands.** The grid emitter draws `category_bands` as plot-wide rectangles under the grid lines, in the same sink, so PNG at any scale, SVG, PDF, subplots and the hit-free chrome all follow.
+  - **Inside-or-beside placement.** The value label shader places `InsideOrBeside` labels with the bar rule (the same fit test as `Auto`), and the draw, the selection box and the pick share that placement.
+  - **Contrast ink.** For a range bar series with contrast ink, the atlas is baked in white (alpha as coverage). `fs_value_label` paints each pixel in whichever ink has the higher WCAG contrast with what lies under it, computed on every draw from the bar's rect, `range_fill` and the progress split; nothing per label is stored. The value label uniform grows from 128 to 192 B (`ink_dark`, `ink_light`, `ink_back`, `ink_base`).
+  - **Example.** `examples/range_bars.rs` gains a `timeline` scene: the default look with progress, `DiamondFilled` milestones, a today `ReferenceLine` and `Arrow` elbows for links.
+  - Tests: `inside_or_beside_labels_take_contrast_ink_and_keep_every_interaction` (placement, per-pixel ink across a progress split, pick, outline and drag at 1x and 2x, SVG, PDF, serde round trip), `contrast_labels_draw_on_every_row` (3000 rows), `the_timeline_look_bands_every_other_row_under_the_bars` (1x, 2x, pick over a band, a subplot, serde), and the `category_bands` cases of the SSOT invalidation table.
+
 - **Range bars coloured by row** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). The range bar shader draws `RangeColor::ByRow`: a fourth colour mode (`RANGE_COLOR_ROW`) whose row colours fill the state style slots, written straight into the mapped slot buffer, and `range_fill` takes slot `row % count` on every draw. Picks, the picked highlight, `step_selection`, the legend swatch (the series colour), PNG at any scale and the SVG and PDF exports work as for the other colour modes. No other pixel changes. Test: `rows_take_their_colours_and_keep_every_interaction` (`range_bars_render.rs`); `overlays_and_subplots_draw_their_own_range_groups` and `three_thousand_rows_draw_pick_and_highlight` now colour by row.
 
 - **Feynman labels drawn at the style's label scale.** The canvas, SVG and PDF sinks draw a `TextRef::ScaledRich` label at its scale times the export scale, so a Feynman series' `style.label_scale` (default `1.5`, see the model entry) applies on screen, in PNG export at any scale and in vector export. Diagrams without a style draw with the new, larger default look. Tests: `labels_draw_pick_drag_and_export_at_the_label_scale`, `a_document_with_a_label_scale_round_trips_and_draws_the_same` (`feynman_render.rs`).
@@ -3600,6 +3631,8 @@ and radar documents' `text_sizes`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Timeline documents** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). A document may name `"category_bands"` on an axis and `"placement": "InsideOrBeside"` and `"contrast_ink"` in a range bar series' labels; `validate_config` and `normalize_config` take them, and `selection_details()` is unchanged. Test: `timeline_documents_validate_and_normalize`.
 
 - **Range bars coloured by row** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). A document's range bar series may name `"color_by": { "ByRow": { "colors": [...] } }`; `selection_details()` of such a bar reports `position`, `end`, `start` and its category, with no colour role, since the mode reads no column. Test: the `row-coloured range bars` scene of `selection_details_answers_every_branch`.
 
