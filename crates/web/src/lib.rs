@@ -1912,6 +1912,39 @@ mod tests {
         assert!(report.to_string().contains("CategoryBandsFill"), "{report}");
     }
 
+    /// The calendar header (#357, item 14 B) reaches the browser as
+    /// document JSON: the calendar timeline validates and normalizes
+    /// unchanged, and a relative label without a step names its rule.
+    #[test]
+    fn calendar_formats_validate_and_normalize() {
+        let config = renderer::default::default_calendar_timeline_config();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"step\"") && json.contains("period_labels"));
+        let report: serde_json::Value =
+            serde_json::from_str(&super::validate_config_json(&json, None).unwrap()).unwrap();
+        assert_eq!(report["valid"], true, "{report}");
+        assert_eq!(super::normalize_config_json(&json).unwrap(), json);
+        let mut refused = config.clone();
+        if let renderer::format::LabelFormat::Timestamp(format) =
+            &mut refused.bottom_x.label_style.format
+        {
+            format.step = None;
+            format.label = renderer::format::TimestampLabelMode::Relative {
+                origin: 0,
+                prefix: "Week ".into(),
+            };
+        }
+        let report: serde_json::Value = serde_json::from_str(
+            &super::validate_config_json(&serde_json::to_string(&refused).unwrap(), None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(
+            report.to_string().contains("TimestampStepRequired"),
+            "{report}"
+        );
+    }
+
     #[test]
     fn validate_config_json_names_the_refused_field() {
         let report = |config: &str, series: Option<&str>| -> serde_json::Value {

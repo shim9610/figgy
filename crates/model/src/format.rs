@@ -400,8 +400,77 @@ pub enum TimestampZone {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampLabelMode {
     Auto,
-    /// Minimal strftime-like pattern: %Y %m %d %H %M %S %f and %%.
+    /// Minimal strftime-like pattern: %Y %m %d %H %M %S %f, %b (the month's
+    /// English three-letter name, `Jan` to `Dec`, #357) and %%.
     Pattern(String),
+    /// `"{prefix}{n}"` (#357): `n` counts whole periods of the format's
+    /// [`TimestampLabelFormat::step`] from the period holding `origin` to
+    /// the period starting at the tick, in the format's time zone; negative
+    /// before it. "Day 0 … Day N", "Sprint 3". `origin` is a whole timestamp
+    /// in the format's `unit`. Needs a `step`
+    /// ([`crate::RuleKind::TimestampStepRequired`]); `prefix` is one line of
+    /// at most 24 characters ([`crate::RuleKind::TimestampRelativePrefix`]).
+    Relative {
+        origin: i64,
+        prefix: String,
+    },
+    /// The host's string for each period (#357): the period of index `n`
+    /// (counted as [`Self::Relative`] counts it) reads `labels[n]`. A
+    /// period with no string (`n < 0` or past the list) draws no label;
+    /// its tick and gridline still draw, and unused strings are never
+    /// reached. Any number of strings, each one line of at most
+    /// [`crate::data_config::MAX_CATEGORY_BAR_LABEL_CHARS`] characters
+    /// ([`crate::RuleKind::TimestampCustomLabel`]). Needs a `step`.
+    Custom {
+        origin: i64,
+        labels: Vec<String>,
+    },
+}
+
+/// A calendar unit of ticks (#357, [`TimestampLabelFormat::step`]): a tick
+/// at every boundary of the unit, at local midnight in the format's time
+/// zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CalendarStep {
+    /// Every midnight.
+    Day,
+    /// Every midnight on `start`.
+    Week { start: Weekday },
+    /// The 1st of every month.
+    Month,
+    /// The 1st of January, April, July and October.
+    Quarter,
+    /// The 1st of January.
+    Year,
+}
+
+/// A day of the week, for [`CalendarStep::Week`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Weekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl Weekday {
+    /// Monday 0 to Sunday 6.
+    pub fn index(self) -> i64 {
+        match self {
+            Self::Monday => 0,
+            Self::Tuesday => 1,
+            Self::Wednesday => 2,
+            Self::Thursday => 3,
+            Self::Friday => 4,
+            Self::Saturday => 5,
+            Self::Sunday => 6,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,6 +501,58 @@ pub struct TimestampLabelFormat {
     pub label: TimestampLabelMode,
     pub fractional: FractionalSecondDigits,
     pub tick_policy: TimestampTickPolicy,
+    /// The calendar unit of the ticks (#357): a tick at every boundary of
+    /// it inside the range, whatever fits, `tick_policy` and
+    /// `major_spacing` not read. `None` (the default, omitted from JSON)
+    /// keeps the planner, which picks the finest step whose labels fit.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub step: Option<CalendarStep>,
+    /// Centre each label on its period (#357), the part of it from its
+    /// tick to the next boundary that lies in the range, rather than on
+    /// its tick: a period header. The partial periods at both ends of the
+    /// range get one too. Ticks and gridlines stay on the boundaries.
+    /// Needs a `step`. `false` (the default) is omitted from JSON.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub period_labels: bool,
+}
+
+impl TimestampLabelFormat {
+    /// The rules of a timestamp format (#357): a `step` for relative or
+    /// custom labels and for period labels, a one-line relative prefix of
+    /// at most 24 characters, and one-line custom strings of at most
+    /// [`crate::data_config::MAX_CATEGORY_BAR_LABEL_CHARS`] characters.
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
+        let needs_step = self.period_labels
+            || matches!(
+                self.label,
+                TimestampLabelMode::Relative { .. } | TimestampLabelMode::Custom { .. }
+            );
+        if needs_step && self.step.is_none() {
+            return Err(crate::RuleKind::TimestampStepRequired);
+        }
+        let one_line = |text: &str, max: usize| {
+            text.chars().count() <= max && !text.chars().any(char::is_control)
+        };
+        match &self.label {
+            TimestampLabelMode::Relative { prefix, .. } if !one_line(prefix, 24) => {
+                Err(crate::RuleKind::TimestampRelativePrefix)
+            }
+            TimestampLabelMode::Custom { labels, .. }
+                if labels.iter().any(|text| {
+                    !one_line(text, crate::data_config::MAX_CATEGORY_BAR_LABEL_CHARS)
+                }) =>
+            {
+                Err(crate::RuleKind::TimestampCustomLabel)
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 fn auto_sig_linear(min: f64, max: f64, step: f64) -> u8 {
@@ -535,6 +656,8 @@ mod tests {
             label: TimestampLabelMode::Pattern("%Y-%m-%d %H:%M:%S.%f".into()),
             fractional: FractionalSecondDigits::Fixed(3),
             tick_policy: TimestampTickPolicy::NumericSpacing,
+            step: None,
+            period_labels: false,
         });
         let json = serde_json::to_string(&fmt).unwrap();
         let got: LabelFormat = serde_json::from_str(&json).unwrap();

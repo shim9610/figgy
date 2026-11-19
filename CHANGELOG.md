@@ -592,6 +592,25 @@ and radar documents' `text_sizes`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Calendar header for time axes** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). `TimestampLabelFormat` gains two serde-defaulted fields, omitted when unset:
+  - `step: Option<CalendarStep>`: `Day`, `Week { start: Weekday }`, `Month`, `Quarter` or `Year`. The ticks fall at every boundary of the unit at local midnight in the format's time zone. `tick_policy` and `major_spacing` are not read, and a range of more than 1000 periods draws no ticks, as the planner's.
+  - `period_labels: bool`: each label is centred on its period's part of the range, with the partial periods at both ends included. A label wider than that part (a month cut to its last days at the range's edge) is not drawn. Ticks and gridlines stay on the boundaries.
+
+  `TimestampLabelMode` gains `Relative { origin: i64, prefix }` (`"{prefix}{n}"`, where `n` counts whole periods from the one holding `origin`, negative before it) and `Custom { origin: i64, labels }` (`labels[n]`; a period with no string draws no label, keeps its tick, and is not an error). Custom labels have no count limit.
+
+  `Pattern` gains `%b`, the English three-letter month name. A pattern that held a literal `%b` now prints the month.
+
+  New `TimestampLabelFormat::validate` and rules:
+  - relative, custom and period labels need a step (`RuleKind::TimestampStepRequired`);
+  - a prefix is one line of at most 24 characters (`TimestampRelativePrefix`);
+  - a custom string is one line of at most 160 characters (`TimestampCustomLabel`).
+
+  `validate_chart` applies them on every axis. New helper `default::default_calendar_timeline_config()`: the timeline with Monday weeks on `bottom_x` (`%d`) and a month header on `top_x` (`%b %Y`, period labels) for Unix seconds in UTC. `default_timeline_config` keeps number-neutral axes.
+
+  Migration: a `TimestampLabelFormat { .. }` literal that lists every field adds `step: None, period_labels: false`, and an exhaustive `match` on `TimestampLabelMode` adds the two variants. Documents written before parse, read back and draw the same.
+
+  Tests (`chrome/time.rs`): `a_month_step_ticks_every_first_and_centres_its_periods`, `every_step_walks_its_local_boundaries`, `relative_and_custom_labels_count_periods_from_the_origin`, `custom_labels_have_no_count_limit`, `b_prints_the_month_name`, `relative_custom_and_period_labels_need_a_step`, `calendar_formats_round_trip_and_older_ones_read_unchanged`.
+
 - **Timeline look, round 2** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). The timeline helpers now draw in the look of the web Gantt charts. `default_timeline_config()`:
   - bars over 0.6 of a row (was 0.8);
   - a faint band behind every other row;
@@ -2134,6 +2153,8 @@ and radar documents' `text_sizes`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Calendar headers** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). The tick-label emit places a timestamp axis' labels at the plan's label positions, so period labels and the host's relative or custom strings draw, hit, select and drag as the axis' tick-label element, in PNG at any scale and in SVG and PDF. No shader or new path changes. The `timeline` scene of `examples/range_bars.rs` uses the calendar header. Tests (`tests/calendar_axis.rs`): `the_month_header_centres_each_month_and_the_weeks_start_on_monday`, `period_labels_hit_select_and_drag_as_tick_labels`, `relative_and_custom_labels_follow_the_origin` (10 000 custom strings), `the_header_draws_at_1x_and_2x_and_round_trips`.
+
 - **Row bands and contrast-ink labels for timelines** ([#357](https://github.com/shim9610/figgy/issues/357), item 14).
   - **Category bands.** The grid emitter draws `category_bands` as plot-wide rectangles under the grid lines, in the same sink, so PNG at any scale, SVG, PDF, subplots and the hit-free chrome all follow.
   - **Inside-or-beside placement.** The value label shader places `InsideOrBeside` labels with the bar rule (the same fit test as `Auto`), and the draw, the selection box and the pick share that placement.
@@ -3631,6 +3652,8 @@ and radar documents' `text_sizes`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Calendar headers** ([#357](https://github.com/shim9610/figgy/issues/357), item 14 B). A `Timestamp` format may name `"step"`, `"period_labels"` and the `"Relative"` and `"Custom"` label modes; `validate_config` reports their rules. Test: `calendar_formats_validate_and_normalize`.
 
 - **Timeline documents** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). A document may name `"category_bands"` on an axis and `"placement": "InsideOrBeside"` and `"contrast_ink"` in a range bar series' labels; `validate_config` and `normalize_config` take them, and `selection_details()` is unchanged. Test: `timeline_documents_validate_and_normalize`.
 

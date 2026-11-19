@@ -138,7 +138,9 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `format` (LabelFormat) | `"Decimal"` `"Scientific"` `"Power"` `{ "Timestamp": { ... } }` `"Degrees"` `"Radians"` `"Percent"` `{ "Plain": {} }` `{ "Plain": { "decimals": 1, "trim_zeros": true } }` `{ "Auto": {} }` `{ "Auto": { "uniform_decimals": false, "notation": "Scientific", "exponent_low": -5, "exponent_high": 6 } }` |
 | `unit` (TimestampUnit) | `"Seconds"` `"Milliseconds"` `"Microseconds"` `"Nanoseconds"` |
 | `timezone` (TimestampZone) | `"Utc"` `{ "FixedOffsetMinutes": 540 }` |
-| `label` (TimestampLabelMode) | `"Auto"` `{ "Pattern": "%Y-%m-%d %H:%M:%S.%f" }` |
+| `label` (TimestampLabelMode) | `"Auto"` `{ "Pattern": "%Y-%m-%d %H:%M:%S.%f" }` (`%b`: `Jan`…`Dec`, #357) `{ "Relative": { "origin": 1772409600, "prefix": "Week " } }` `{ "Custom": { "origin": 1772409600, "labels": ["Kickoff", "Sprint 1"] } }` (#357; both need `step`; `origin` is a whole timestamp in `unit`; a period past `labels` draws no label) |
+| `step` (CalendarStep, #357, 생략하면 없음) | `"Day"` `{ "Week": { "start": "Monday" } }` `"Month"` `"Quarter"` `"Year"` |
+| `period_labels` (bool, #357, `false`이면 생략) | `true`: 라벨을 기간 가운데에 둔다(`step` 필요) |
 | `fractional` (FractionalSecondDigits) | `"Auto"` `{ "Fixed": 3 }` |
 | `tick_policy` (TimestampTickPolicy) | `"AutoCalendar"` `"NumericSpacing"` |
 | `interpolation` (LineInterpolation) | `"Linear"` `"StepPre"` `"StepPost"` `"StepMid"` |

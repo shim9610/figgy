@@ -359,6 +359,9 @@ rule_kinds! {
         RangeBarContrastInk => "a range bar's contrast ink colours must be opaque",
         ContrastInkSeries => "only range bar labels take contrast ink",
         CategoryBandsFill => "a category band fill has every channel in 0..=1",
+        TimestampStepRequired => "relative, custom and period timestamp labels need a calendar step",
+        TimestampRelativePrefix => "a relative timestamp label prefix is one line of at most 24 characters",
+        TimestampCustomLabel => "a custom timestamp label is one line of at most 160 characters",
         RangeBarsWithOtherBars => "a layer draws either category bars, box plots or range bars",
         RangeBarsStacked => "range bars stand side by side: their bar_groups mode must be Grouped, not Stacked or PercentStacked",
         HorizontalRangeBarsOnOverlay => "horizontal range bars cannot sit on an overlay layer: its own axis is a value axis on y",
@@ -2112,6 +2115,18 @@ mod tests {
             (
                 RuleKind::CategoryBandsFill,
                 "a category band fill has every channel in 0..=1",
+            ),
+            (
+                RuleKind::TimestampStepRequired,
+                "relative, custom and period timestamp labels need a calendar step",
+            ),
+            (
+                RuleKind::TimestampRelativePrefix,
+                "a relative timestamp label prefix is one line of at most 24 characters",
+            ),
+            (
+                RuleKind::TimestampCustomLabel,
+                "a custom timestamp label is one line of at most 160 characters",
             ),
             (
                 RuleKind::RangeBarsWithOtherBars,

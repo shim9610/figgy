@@ -1493,6 +1493,8 @@ mod axis_unit_tests {
                     label: TimestampLabelMode::Pattern("%H:%M".into()),
                     fractional: FractionalSecondDigits::Fixed(0),
                     tick_policy: TimestampTickPolicy::NumericSpacing,
+                    step: None,
+                    period_labels: false,
                 })
             },
             "left_y",

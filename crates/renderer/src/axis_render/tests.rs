@@ -1101,6 +1101,14 @@ fn fitted_numeric_labels_fit_default_title_and_colorbar_bands() {
                     axis.major_tick_length,
                     (ls.label_offset_x, ls.label_offset_y),
                     metrics,
+                    measure_plain_text(
+                        crate::layout::TICK_ROW_REFERENCE,
+                        &ls.label_font,
+                        ls.font_size,
+                        false,
+                        false,
+                        fp,
+                    ),
                 ),
                 metrics,
             )

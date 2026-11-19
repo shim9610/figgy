@@ -13,7 +13,8 @@
 //!   column shading the finished part.
 //! - `timeline` writes `timeline.png` and `timeline@2x.png`: the default
 //!   timeline look (#357) without a theme, `SeriesConfig::timeline_bars` on
-//!   `default::default_timeline_config`, with the recipes a web Gantt chart
+//!   `default::default_calendar_timeline_config` (a month header over Monday
+//!   weeks), with the recipes a web Gantt chart
 //!   reads by: a progress column, milestones as filled diamonds, a today
 //!   line and finish-to-start links as elbow arrows.
 //!
@@ -384,12 +385,9 @@ fn timeline(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("tl-done", &column(&|t| t.4))?;
     r.add_hilo_column("tl-mark", &column(&|t| mark(t, T0 + t.2 * DAY)))?;
 
-    let mut config = renderer::default::default_timeline_config();
+    // The calendar header: Monday weeks below, the months above.
+    let mut config = renderer::default::default_calendar_timeline_config();
     config.left_y.categories = Some(tasks.iter().map(|t| Category::new(t.0, t.1)).collect());
-    config.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat {
-        label: TimestampLabelMode::Pattern("%m/%d".into()),
-        ..TimestampLabelFormat::default()
-    });
     let ink = Color::from_rgb8(55, 65, 81);
     let line = |color: Color, width: f32| AnnotationLineStyle {
         color,
