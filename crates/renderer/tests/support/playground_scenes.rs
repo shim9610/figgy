@@ -2098,6 +2098,13 @@ fn long_labels(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.set_y_range(0.0, 0.003);
     chart.auto_fit_colorbar_union(r.pool(), &["ll_albedo"], 0.0)?;
     let mut config = chart.config().clone();
+    // The scene shows the long `Decimal` labels (`0.00300`) that auto
+    // layout switches to powers of ten; the helpers now give `Auto` (#357).
+    config.left_y.label_style.format = LabelFormat::Decimal;
+    config.right_y.label_style.format = LabelFormat::Decimal;
+    if let Some(bar) = config.colorbar.as_mut() {
+        bar.axis.label_style.format = LabelFormat::Decimal;
+    }
 
     // A second Y scale on the right: the same depths as a negative forcing.
     let right = &mut config.right_y;
