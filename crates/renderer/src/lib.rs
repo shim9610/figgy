@@ -203,9 +203,9 @@ pub use text_render::{CpuTextMeasure, FontPolicy};
 pub use model::Material;
 pub use model::categorical::*;
 pub use radial::{
-    RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
-    RadialLabels, RadialOutline, RadialPickTicket, RadialRenderer, RadialSlice, RadialSplit,
-    RadialStyle, RadialTarget,
+    InnerLabelFallback, RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind,
+    RadialLabelFormat, RadialLabels, RadialOutline, RadialPickTicket, RadialRenderer, RadialSlice,
+    RadialSplit, RadialStyle, RadialTarget,
 };
 
 pub use model::boxplot::*;

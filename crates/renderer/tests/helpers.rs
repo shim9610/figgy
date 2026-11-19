@@ -165,12 +165,12 @@ fn assert_range(axis: &renderer::config::AxisOptions, min: f64, max: f64) {
 #[test]
 fn fit_ranges_fits_the_base_chart_and_marks_it_changed() {
     let renderer = fit_renderer();
-    let series = [SeriesConfig::line("a", "t", "a")];
+    let mut series = [SeriesConfig::line("a", "t", "a")];
     let mut chart = Chart::sized(480, 320);
     assert_range(&chart.config().bottom_x, 0.0, 1.0);
     chart.consume_data_dirty();
     chart.consume_raster_dirty();
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     assert_range(&chart.config().bottom_x, -0.5, 10.5);
     assert_range(&chart.config().top_x, -0.5, 10.5);
     assert_range(&chart.config().left_y, -1.1, 1.1);
@@ -191,24 +191,24 @@ fn fit_ranges_fits_the_base_chart_and_marks_it_changed() {
     chart.consume_data_dirty();
     chart.consume_raster_dirty();
     let fitted = chart.config().clone();
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     assert_eq!(chart.config(), &fitted, "idempotent");
     assert!(!chart.data_dirty() && !chart.raster_dirty());
 
     // A column that was never registered, and a monotonic series.
-    let missing = [
+    let mut missing = [
         SeriesConfig::line("a", "t", "b"),
         SeriesConfig::line("m", "t", "nowhere"),
     ];
-    let error = renderer.fit_ranges(&mut chart, &missing).unwrap_err();
+    let error = renderer.fit_ranges(&mut chart, &mut missing).unwrap_err();
     assert!(
         matches!(&error, renderer::FiggyError::UnknownColumn { id } if id == "nowhere"),
         "{error}"
     );
     assert!(error.to_string().contains("add_column"), "{error}");
-    let monotonic = [SeriesConfig::monotonic_line("m", "daq", 0)];
+    let mut monotonic = [SeriesConfig::monotonic_line("m", "daq", 0)];
     assert!(matches!(
-        renderer.fit_ranges(&mut chart, &monotonic),
+        renderer.fit_ranges(&mut chart, &mut monotonic),
         Err(renderer::FiggyError::InvalidSeriesConfig {
             kind: renderer::RuleKind::MonotonicMappingEdit,
             ..
@@ -232,7 +232,7 @@ fn fit_ranges_without_series_changes_nothing() {
     let before = chart.config().clone();
     chart.consume_data_dirty();
     chart.consume_raster_dirty();
-    renderer.fit_ranges(&mut chart, &[]).unwrap();
+    renderer.fit_ranges(&mut chart, &mut []).unwrap();
     assert_eq!(chart.config(), &before);
     assert!(!chart.data_dirty() && !chart.raster_dirty());
 }
@@ -242,13 +242,13 @@ fn fit_ranges_without_series_changes_nothing() {
 #[test]
 fn fit_ranges_fits_an_overlay_layer() {
     let renderer = fit_renderer();
-    let series = [
+    let mut series = [
         SeriesConfig::line("a", "t", "a"),
         SeriesConfig::line("b", "u", "b"),
     ];
     let axis = renderer::config::AxisOptions::overlay_y("B", Color::BLACK);
     let mut chart = Chart::sized(480, 320).with_overlay(axis, &["b"]);
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     let config = chart.config();
     // The shared x axis holds `t` (0..10) and `u` (20..30).
     assert_range(&config.bottom_x, -1.5, 31.5);
@@ -261,7 +261,7 @@ fn fit_ranges_fits_an_overlay_layer() {
 #[test]
 fn fit_ranges_fits_every_subplot() {
     let renderer = fit_renderer();
-    let series = [
+    let mut series = [
         SeriesConfig::line("a", "t", "a"),
         SeriesConfig::scatter("b", "u", "b"),
         SeriesConfig::line("z", "t", "z"),
@@ -277,7 +277,7 @@ fn fit_ranges_fits_every_subplot() {
     let mut chart = Chart::sized(320, 240)
         .with_subplot(renderer::Subplot::new(cell(320), &["b"]))
         .with_subplot(renderer::Subplot::new(inner, &["z"]));
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     let config = chart.config();
     assert_range(&config.bottom_x, -0.5, 10.5);
     assert_range(&config.left_y, -1.1, 1.1);
@@ -297,36 +297,100 @@ fn fit_ranges_fits_every_subplot() {
 #[test]
 fn fit_ranges_fits_the_z_axis_of_a_3d_chart() {
     let renderer = fit_renderer();
-    let series = [SeriesConfig::scatter("p", "t", "a").z("z")];
+    let mut series = [SeriesConfig::scatter("p", "t", "a").z("z")];
     let mut chart = Chart::sized(480, 320);
     chart
         .config_mut()
         .set_view_3d(Some(renderer::View3d::default()));
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     let config = chart.config();
     assert_range(&config.bottom_x, -0.5, 10.5);
     assert_range(&config.left_y, -1.1, 1.1);
     assert_range(&config.right_y, 4.75, 10.25);
 }
 
+// `fit_ranges` also sizes every auto-scaled vector series to the spacing
+// of its arrows over the fitted data area (#357), writing the scale into
+// the series and consuming `auto_scale`: the default flow (fit, export)
+// draws arrows, not specks, a second fit keeps the stored scale, the export
+// draws the series as stored at 1x and 2x, and a refused fit writes no
+// series.
+#[test]
+fn fit_ranges_sizes_auto_scaled_arrows() {
+    use renderer::data_config::{VectorScale, VectorSeries};
+    let mut renderer = fit_renderer();
+    let scale_of = |series: &SeriesConfig| match &series.render_type {
+        renderer::DataRenderType::Vector(VectorSeries { style, .. }) => {
+            let VectorScale::Pixels { px_per_unit } = style.scale else {
+                panic!("a pixel scale");
+            };
+            (px_per_unit, style.auto_scale)
+        }
+        _ => panic!("a vector series"),
+    };
+    let mut series = [
+        SeriesConfig::vectors("v", "t", "a", "u", "a"),
+        SeriesConfig::line("l", "t", "a"),
+    ];
+    let before = scale_of(&series[0]);
+    assert!(before.1, "the constructor asks for a fit");
+    let mut chart = Chart::sized(480, 320);
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
+    assert_range(&chart.config().bottom_x, -0.5, 10.5);
+    let mut expected = [SeriesConfig::vectors("v", "t", "a", "u", "a")];
+    renderer
+        .fit_vector_scales(chart.config(), &mut expected)
+        .unwrap();
+    assert_eq!(series[0], expected[0], "the fitted data area's scale");
+    let (scale, flag) = scale_of(&series[0]);
+    assert!(!flag, "consumed");
+    assert!(scale > before.0 * 2.0, "{scale} draws arrows, not specks");
+
+    let stored = series.clone();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
+    assert_eq!(series, stored, "the stored scale stays");
+    let held = Chart::as_given(chart.config().clone());
+    for scale in [1.0, 2.0] {
+        let options = ExportOptions::panel(scale).with_clear(Color::WHITE);
+        let fitted = renderer
+            .export_rgba_blocking(ExportSource::chart(&chart, &series), options)
+            .unwrap();
+        let own = renderer
+            .export_rgba_blocking(ExportSource::chart(&held, &stored), options)
+            .unwrap();
+        assert_eq!(fitted.rgba, own.rgba, "{scale}x");
+    }
+
+    let mut refused = [
+        SeriesConfig::vectors("v", "t", "a", "u", "a"),
+        SeriesConfig::vectors("w", "t", "a", "nowhere", "a"),
+    ];
+    let kept = refused.clone();
+    let fitted = chart.config().clone();
+    assert!(renderer.fit_ranges(&mut chart, &mut refused).is_err());
+    assert_eq!(refused, kept);
+    assert_eq!(chart.config(), &fitted);
+}
+
 // The fit is an SSOT edit: an export after it draws the new ranges, the
 // same image as a chart given those ranges by hand, and a registered chart
-// that adopts the fitted config needs its raster and its draw again.
+// that adopts the fitted config needs its raster and its draw again. (The
+// chart is registered as given: `register_chart` would fit it once itself.)
 #[test]
 fn a_chart_redraws_with_the_fitted_ranges() {
     let mut renderer = fit_renderer();
-    let series = [SeriesConfig::line("a", "t", "a").width(2.0)];
+    let mut series = [SeriesConfig::line("a", "t", "a").width(2.0)];
     let mut chart = Chart::sized(320, 200);
     let options = ExportOptions::document(1.0);
     let id = renderer
-        .register_chart(chart.config().clone(), series.to_vec())
+        .register_chart_as_given(chart.config().clone(), series.to_vec())
         .unwrap();
     let stamp = renderer.chart_render_stamp(id).unwrap();
     let placeholder = renderer
         .export_png_blocking(ExportSource::chart(&chart, &series), options)
         .unwrap();
 
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     for scale in [1.0, 2.0] {
         let options = ExportOptions::document(scale);
         let fitted = renderer
@@ -360,7 +424,7 @@ fn a_chart_redraws_with_the_fitted_ranges() {
 #[test]
 fn a_fitted_chart_round_trips() {
     let renderer = fit_renderer();
-    let series = [
+    let mut series = [
         SeriesConfig::line("a", "t", "a"),
         SeriesConfig::line("b", "u", "b"),
     ];
@@ -372,7 +436,7 @@ fn a_fitted_chart_round_trips() {
             &[],
         ));
     let untouched = series.clone();
-    renderer.fit_ranges(&mut chart, &series).unwrap();
+    renderer.fit_ranges(&mut chart, &mut series).unwrap();
     assert_eq!(series, untouched);
     let json = serde_json::to_string(chart.config()).unwrap();
     let back: renderer::config::Config = serde_json::from_str(&json).unwrap();
