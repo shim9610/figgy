@@ -260,6 +260,26 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 <a id="picked_data--typed-data-selection-overlay-config-선택-키"></a>
 
+## Layout state (`layout_state`)
+
+`layout_state` (#357) says who owns the layout: the axis bands
+(`out_margin`), the axis title offsets across them, the chart title band and
+the legend clearance that `layout::auto_layout` writes.
+
+| Value | Meaning |
+|---|---|
+| `"fixed"` (default, key absent) | Drawn exactly as stored; never fitted on its own. Every document written before the key reads as `"fixed"`. A drag or resize of a decoration or of the plot area sets it. |
+| `"needs_fit"` | The next `frame()` or export fits the layout, writes it here and sets `"fitted"`. `frame_as_stored()` and the `*_as_stored` exports leave it. A new `FiggyChart` starts with it. |
+| `"fitted"` | The layout is the fit of what the chart held. Any edit through `set_config` (or another edit call) that keeps `"fitted"` marks it `"needs_fit"` again; to keep margins set by hand, send `"fixed"` with them. |
+
+The categorical, box plot and radar documents (`set_categorical_document`,
+`set_boxplot_document`, `set_radar_document`) take an optional
+`"text_sizes": { "title": 28, "axis_title": 22, "tick_label": 18, "legend": 14 }`
+(each 8 to 64 px). Without it every text is drawn at the document's
+`font_size` and the title at 1.5 × it, as before; with it the converted chart
+draws those sizes and fits its layout on its first frame unless the document
+has an explicit `decorations.data_area`.
+
 ## 데이터 종류별 선택 표시(`picked_data`)
 
 `Config.picked_data`는 `pick_data` 결과의 식별자만 보관한다. `set_picked_data(json)`은 이 필드만 교체하고 JSON `null`이면 표시를 지운다. 차트의 선택은 이 필드 하나뿐이다.

@@ -190,10 +190,34 @@ impl FiggyChart {
 
     /// Process pending pool maintenance and draw only when visual state is
     /// dirty. A clean rAF tick returns before touching the pool or surface.
+    ///
+    /// A layout waiting for its fit (`layout_state: "needs_fit"` in
+    /// `get_config`) is fitted first and the fit is stored (#357):
+    /// `get_config` then reads `"fitted"` with the fitted margins. A chart
+    /// shown from a stream, and a monotonic chart, are drawn as stored.
+    /// `frame_as_stored` draws without fitting.
     pub fn frame(&mut self) -> Result<(), JsValue> {
+        self.frame_with(renderer::DrawLayout::FitPending)
+    }
+
+    /// `frame`, drawing the document exactly as stored (#357): a layout
+    /// waiting for its fit is drawn with the margins it holds and stays
+    /// `"needs_fit"`.
+    pub fn frame_as_stored(&mut self) -> Result<(), JsValue> {
+        self.frame_with(renderer::DrawLayout::AsStored)
+    }
+}
+
+impl FiggyChart {
+    fn frame_with(&mut self, layout: renderer::DrawLayout) -> Result<(), JsValue> {
         self.renderer
             .sync_external_invalidations()
             .map_err(js_err)?;
+        if layout == renderer::DrawLayout::FitPending && self.monotonic.is_none() {
+            self.renderer
+                .fit_pending_layout_for_draw(self.chart_id)
+                .map_err(js_err)?;
+        }
         let current_stamp = self.render_stamp()?;
         let renderer_dirty = current_stamp.needs_draw_since(self.last_presented_stamp.as_ref());
         let raster_dirty = current_stamp.needs_raster_since(self.last_presented_stamp.as_ref());
@@ -261,7 +285,9 @@ impl FiggyChart {
                     view: &mut self.view,
                 }],
             ),
-            None => self.renderer.draw_registered(
+            // The layout was settled above: the draw shows the chart as
+            // stored either way.
+            None => self.renderer.draw_registered_as_stored(
                 self.clear_color,
                 &mut [RegisteredChartDrawItem {
                     chart_id: self.chart_id,
@@ -279,7 +305,10 @@ impl FiggyChart {
         self.last_presented_stamp = Some(current_stamp);
         Ok(())
     }
+}
 
+#[wasm_bindgen]
+impl FiggyChart {
     /// Set the WebGPU surface clear color used behind the chart panel.
     /// Components are linear 0..1 RGBA floats. This is host/app state:
     /// it does not change the chart Config JSON.

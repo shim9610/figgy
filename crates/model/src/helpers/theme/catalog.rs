@@ -208,8 +208,9 @@ fn scene(kind: ChartKind, bg: Color, ink: Color, grid: Color) -> Theme {
 /// The legacy documents' chrome (`Config::from_categorical`,
 /// `Config::from_boxplot`) in `text`: a transparent background, the left
 /// and bottom axis lines in the text colour without ticks, every text in
-/// the text colour at 18 px with a title half as large again, and a pale
-/// horizontal grid.
+/// the text colour at the gallery's sizes ([`gallery`]: a 26 px title,
+/// 18 px axis titles, 16 px tick labels and the documented 14 px legend,
+/// #357), and a pale horizontal grid.
 fn document(kind: ChartKind, text: Color) -> Theme {
     let mut theme = Theme::documented(kind);
     let chrome = &mut theme.chrome;
@@ -221,10 +222,12 @@ fn document(kind: ChartKind, text: Color) -> Theme {
     chrome.ink = text;
     chrome.frame_ink = text;
     chrome.label_ink = text;
-    chrome.title_size = 27.0;
-    chrome.axis_title_size = 18.0;
-    chrome.tick_label_size = 18.0;
-    chrome.legend_size = 18.0;
+    // The gallery chrome's text sizes, as every other gallery member's.
+    let sizes = gallery(kind).chrome;
+    chrome.title_size = sizes.title_size;
+    chrome.axis_title_size = sizes.axis_title_size;
+    chrome.tick_label_size = sizes.tick_label_size;
+    chrome.legend_size = sizes.legend_size;
     let grid = &mut chrome.grid;
     grid.major_x.show = false;
     grid.major_x.color = rgb(224, 229, 235);

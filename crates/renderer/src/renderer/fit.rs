@@ -819,6 +819,10 @@ impl Renderer {
         crate::chart::apply_auto_fit_all(&mut state.config, x_extent, y_extent, padding);
         // Subplots linked to the parent's axes follow the fitted range.
         state.config.sync_subplot_links(None);
+        // New ranges are new tick labels: a fitted layout asks for its fit
+        // again (#357).
+        let layout = state.config.layout_state;
+        state.config.layout_state = layout.after_edit(layout);
         state.revisions.desired = desired;
         state.revisions.config = config;
         state.revisions.view = view;

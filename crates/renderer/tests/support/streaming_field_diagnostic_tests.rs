@@ -382,7 +382,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         if std::env::var_os("FIGGY_FIELD_DIAGNOSTIC_PASS_ONLY").is_some() {
             for scale in [1.0, 2.0] {
                 let expected = crate::test_gpu::block_on(resident.export_rgba(
-                    crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+                    crate::ExportSource::chart(&mut Chart::new(config.clone()), &series),
                     crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
                 ))
                 .unwrap();
@@ -454,7 +454,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         finish_display(&mut f);
         for scale in [1.0, 2.0] {
             let expected = crate::test_gpu::block_on(resident.export_rgba(
-                crate::ExportSource::chart(&f.chart, &f.series),
+                crate::ExportSource::chart(&mut f.chart, &f.series),
                 crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
             ))
             .unwrap();

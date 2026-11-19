@@ -6,7 +6,11 @@ use crate::{Chart, SeriesConfig};
 
 impl Chart {
     /// A chart of the documented default look whose chart area is `width` ×
-    /// `height` logical pixels at the origin.
+    /// `height` logical pixels at the origin. Its layout is
+    /// [`crate::LayoutState::NeedsFit`]: the first default draw or export
+    /// fits the margins to the titles, labels and legend it holds then and
+    /// writes them into the config (#357); [`Self::fit_layout`] fits it
+    /// earlier.
     pub fn sized(width: u32, height: u32) -> Self {
         let mut config = crate::config::Config::default();
         config.chart_area = crate::layout::ChartArea(crate::layout::Rect {
@@ -15,6 +19,9 @@ impl Chart {
             width,
             height,
         });
+        // A new chart's layout is fitted by its first default draw or
+        // export, to the text it holds by then (#357).
+        config.layout_state = crate::LayoutState::NeedsFit;
         Self::new(config)
     }
 
@@ -387,6 +394,9 @@ impl Chart {
     /// Fit the axis bands and margins to their labels and titles
     /// ([`crate::layout::auto_layout`]), measured with the font the chart's
     /// draw style renders.
+    ///
+    /// A layout waiting for its fit ([`crate::LayoutState::NeedsFit`]) is
+    /// `Fitted` afterwards; a `Fixed` or `Fitted` one keeps its state.
     pub fn fit_layout(&mut self) {
         let measure = crate::CpuTextMeasure::for_style(&self.config().draw_style);
         let fitted = crate::layout::auto_layout(self.config(), &measure);

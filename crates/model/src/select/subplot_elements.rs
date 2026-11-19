@@ -66,6 +66,9 @@ impl SubplotElement {
                 line_offsets,
                 plot_background,
                 background,
+                // A subplot's layout is the document's: the drag fixes the
+                // document's below.
+                layout_state: _,
             } = chart;
             *stored = Config {
                 chart_area,
@@ -91,7 +94,11 @@ impl SubplotElement {
                 line_offsets,
                 plot_background,
                 background,
+                layout_state: stored.layout_state,
             };
+            // The user moved part of the document's layout: a later draw
+            // keeps it (#357).
+            cfg.layout_state = crate::config::LayoutState::Fixed;
         }
         result
     }

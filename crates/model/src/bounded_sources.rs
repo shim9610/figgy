@@ -483,14 +483,23 @@ fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
 /// explicit data area into it ([`Config::fit_legacy_data_area`]) once the
 /// rest of the layout is in place, or, when the layout cannot hold it, keep
 /// the automatic layout and note the field as dropped with the reason.
+///
+/// A document with `text_sizes`, which no release before #357 wrote, and no
+/// explicit data area (or one the layout cannot hold) converts to a layout
+/// that fits on its first draw ([`crate::config::LayoutState::NeedsFit`]);
+/// every other document draws its layout as converted.
 fn legacy_data_area(
     notes: &mut Notes,
     config: &mut Config,
     decorations: &crate::DecorationLayout,
     chart_area: Option<&ChartArea>,
+    sized: bool,
 ) {
     if let Some(chart_area) = chart_area {
         config.chart_area = chart_area.clone();
+    }
+    if sized {
+        config.layout_state = crate::config::LayoutState::NeedsFit;
     }
     let Some(area) = &decorations.data_area else {
         return;
@@ -821,7 +830,7 @@ impl Config {
             value_title: &chart.value_title,
             category_title: &chart.category_title,
             font_family: &chart.font_family,
-            font_size: chart.font_size,
+            sizes: chart.resolved_text_sizes(),
             text_color: chart.text_color,
             grid: chart.grid,
             title: chart.resolved_title(),
@@ -838,11 +847,12 @@ impl Config {
             },
         )
         .cross_at = Some(0.0);
+        let sizes = chart.resolved_text_sizes();
         let text = |s: &str| {
             RichText::plain(
                 s,
                 chart.text_color,
-                chart.font_size,
+                sizes.legend,
                 chart.font_family.as_str(),
             )
         };
@@ -911,7 +921,11 @@ impl Config {
             &mut config,
             &series,
             chart.legend,
-            (&chart.font_family, chart.font_size, chart.text_color),
+            (
+                &chart.font_family,
+                chart.resolved_text_sizes().legend,
+                chart.text_color,
+            ),
             |id| {
                 chart
                     .series
@@ -936,7 +950,13 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
-        legacy_data_area(notes, &mut config, &chart.decorations, chart_area);
+        legacy_data_area(
+            notes,
+            &mut config,
+            &chart.decorations,
+            chart_area,
+            chart.text_sizes.is_some(),
+        );
         (config, series, uploads)
     }
 }
@@ -949,7 +969,8 @@ struct LegacyChrome<'a> {
     value_title: &'a str,
     category_title: &'a str,
     font_family: &'a str,
-    font_size: f32,
+    /// The text sizes by role ([`DocumentTextSizes::resolved`]).
+    sizes: crate::DocumentTextSizes,
     text_color: Color,
     grid: bool,
     title: crate::BoundedTitleOptions,
@@ -966,11 +987,17 @@ struct LegacyChrome<'a> {
 /// the active layer and the annotations.
 fn legacy_config(chrome: &LegacyChrome<'_>) -> Config {
     let horizontal = chrome.horizontal;
-    let text =
-        |s: &str| RichText::plain(s, chrome.text_color, chrome.font_size, chrome.font_family);
+    let text = |s: &str| {
+        RichText::plain(
+            s,
+            chrome.text_color,
+            chrome.sizes.axis_title,
+            chrome.font_family,
+        )
+    };
     let style_axis = |axis: &mut AxisOptions, title: &str| {
         axis.label_style.color = chrome.text_color;
-        axis.label_style.font_size = chrome.font_size;
+        axis.label_style.font_size = chrome.sizes.tick_label;
         axis.label_style.label_font = chrome.font_family.to_owned();
         axis.tick = TickVisibility::None;
         axis.title_option = AxisTitleOptions {
@@ -1255,7 +1282,7 @@ impl Config {
             value_title: &chart.value_title,
             category_title: &chart.category_title,
             font_family: &chart.font_family,
-            font_size: chart.font_size,
+            sizes: chart.resolved_text_sizes(),
             text_color: chart.text_color,
             grid: chart.grid,
             title: chart.resolved_title(),
@@ -1296,11 +1323,12 @@ impl Config {
             group_width: chart.group_width,
             bar_gap: chart.box_gap,
         });
+        let sizes = chart.resolved_text_sizes();
         let text = |s: &str| {
             RichText::plain(
                 s,
                 chart.text_color,
-                chart.font_size,
+                sizes.legend,
                 chart.font_family.as_str(),
             )
         };
@@ -1364,7 +1392,11 @@ impl Config {
             &mut config,
             &series,
             chart.legend,
-            (&chart.font_family, chart.font_size, chart.text_color),
+            (
+                &chart.font_family,
+                chart.resolved_text_sizes().legend,
+                chart.text_color,
+            ),
             |id| {
                 chart
                     .series
@@ -1389,7 +1421,13 @@ impl Config {
             chart.overrides.iter().map(|o| o.target.series_id.as_str()),
             |id| chart.series.iter().any(|s| s.id == id),
         );
-        legacy_data_area(notes, &mut config, &chart.decorations, chart_area);
+        legacy_data_area(
+            notes,
+            &mut config,
+            &chart.decorations,
+            chart_area,
+            chart.text_sizes.is_some(),
+        );
         (config, series, uploads)
     }
 }
@@ -1473,17 +1511,18 @@ impl Config {
             );
         }
         let mut config = crate::defaults::config();
+        let sizes = chart.resolved_text_sizes();
         let text = |s: &str| {
             RichText::plain(
                 s,
                 chart.text_color,
-                chart.font_size,
+                sizes.legend,
                 chart.font_family.as_str(),
             )
         };
         let style_axis = |axis: &mut AxisOptions| {
             axis.label_style.color = chart.text_color;
-            axis.label_style.font_size = chart.font_size;
+            axis.label_style.font_size = sizes.tick_label;
             axis.label_style.label_font = chart.font_family.clone();
             axis.tick = TickVisibility::None;
             axis.title_option = AxisTitleOptions {
@@ -1619,7 +1658,11 @@ impl Config {
             &mut config,
             &series,
             chart.legend,
-            (&chart.font_family, chart.font_size, chart.text_color),
+            (
+                &chart.font_family,
+                chart.resolved_text_sizes().legend,
+                chart.text_color,
+            ),
             |id| {
                 chart
                     .series
@@ -1708,7 +1751,13 @@ impl Config {
             }
         }
         legacy_label_offsets(&mut series, notes, &chart.categories, &chart.decorations);
-        legacy_data_area(notes, &mut config, &chart.decorations, chart_area);
+        legacy_data_area(
+            notes,
+            &mut config,
+            &chart.decorations,
+            chart_area,
+            chart.text_sizes.is_some(),
+        );
         (config, series, uploads)
     }
 }
@@ -2028,9 +2077,99 @@ mod tests {
         assert!(!config.chart_title.visible);
     }
 
+    // #357: the text sizes by role. A document without them draws every
+    // text at `font_size` and the title half as large again, exactly as
+    // before; one with them (the Rust default) draws the Cartesian sizes,
+    // and its layout fits on its first draw unless it holds a data area.
+    #[test]
+    fn text_sizes_set_each_role_and_their_absence_keeps_the_legacy_size() {
+        use crate::DocumentTextSizes;
+        let legacy = CategoricalChart {
+            text_sizes: None,
+            ..chart()
+        };
+        let (config, _, _) = Config::from_categorical(&legacy);
+        assert_eq!(config.chart_title.text.font_size, 21.0);
+        for axis in [&config.bottom_x, &config.left_y] {
+            assert_eq!(axis.label_style.font_size, 14.0);
+            assert_eq!(axis.title_option.text.font_size, 14.0);
+        }
+        assert_eq!(config.legend.content.font_size, 14.0);
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fixed);
+
+        let sized = chart();
+        assert_eq!(sized.text_sizes, Some(DocumentTextSizes::CARTESIAN));
+        let (config, _, _) = Config::from_categorical(&sized);
+        let cartesian = crate::defaults::config();
+        assert_eq!(
+            config.chart_title.text.font_size,
+            cartesian.chart_title.text.font_size
+        );
+        for axis in [&config.bottom_x, &config.left_y] {
+            assert_eq!(
+                axis.label_style.font_size,
+                cartesian.left_y.label_style.font_size
+            );
+            assert_eq!(
+                axis.title_option.text.font_size,
+                cartesian.left_y.title_option.text.font_size
+            );
+        }
+        assert_eq!(
+            config.legend.content.font_size,
+            cartesian.legend.content.font_size
+        );
+        assert_eq!(config.layout_state, crate::config::LayoutState::NeedsFit);
+
+        // An explicit data area is drawn where the document puts it.
+        let mut placed = chart();
+        placed.decorations.data_area = Some(crate::layout::RectF {
+            x: 80.0,
+            y: 70.0,
+            width: 420.0,
+            height: 260.0,
+        });
+        let (config, _, _) = Config::from_categorical(&placed);
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fixed);
+
+        // Out of range sizes are refused.
+        let mut wrong = chart();
+        wrong.text_sizes = Some(DocumentTextSizes {
+            title: 80.0,
+            ..DocumentTextSizes::CARTESIAN
+        });
+        assert!(wrong.validate().is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn text_sizes_are_absent_from_older_documents_and_round_trip() {
+        let older: CategoricalChart = serde_json::from_value(serde_json::json!({
+            "categories": [{"id": "a", "label": "A"}],
+            "series": [{"id": "s", "label": "S", "values": [1.0],
+                        "color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}]
+        }))
+        .unwrap();
+        assert_eq!(older.text_sizes, None);
+        assert!(
+            !serde_json::to_string(&older)
+                .unwrap()
+                .contains("text_sizes")
+        );
+        let sized = chart();
+        let json = serde_json::to_string(&sized).unwrap();
+        assert!(json.contains("\"text_sizes\""));
+        assert_eq!(
+            serde_json::from_str::<CategoricalChart>(&json).unwrap(),
+            sized
+        );
+    }
+
     #[test]
     fn the_font_and_text_colour_style_both_axes_and_the_legend() {
         let mut c = chart();
+        // A document without `text_sizes`: one size for every text (#357).
+        c.text_sizes = None;
         c.font_family = "Serif".into();
         c.font_size = 18.0;
         c.text_color = Color::from_rgb8(10, 20, 30);

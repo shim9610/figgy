@@ -500,53 +500,53 @@ fn document_export_composites_every_layer() {
         .unwrap();
     let mut r = renderer();
     let series = three_series();
-    let plain = Chart::new(base_config());
+    let mut plain = Chart::new(base_config());
     let plain_document = r
         .export_rgba(
-            crate::ExportSource::chart(&plain, &series),
+            crate::ExportSource::chart(&mut plain, &series),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let plain_panel = r
         .export_rgba(
-            crate::ExportSource::chart(&plain, &series),
+            crate::ExportSource::chart(&mut plain, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
-    let layered = Chart::new(two_overlay_config());
+    let mut layered = Chart::new(two_overlay_config());
     let document = r
         .export_rgba(
-            crate::ExportSource::chart(&layered, &series),
+            crate::ExportSource::chart(&mut layered, &series),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let panel = r
         .export_rgba(
-            crate::ExportSource::chart(&layered, &series),
+            crate::ExportSource::chart(&mut layered, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let large = r
         .export_rgba(
-            crate::ExportSource::chart(&layered, &series),
+            crate::ExportSource::chart(&mut layered, &series),
             crate::ExportOptions::document(2.0),
         )
         .block_on()
         .unwrap();
     let large_panel = r
         .export_rgba(
-            crate::ExportSource::chart(&layered, &series),
+            crate::ExportSource::chart(&mut layered, &series),
             crate::ExportOptions::panel(2.0),
         )
         .block_on()
         .unwrap();
     let png = r
         .export_png(
-            crate::ExportSource::chart(&layered, &series),
+            crate::ExportSource::chart(&mut layered, &series),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
@@ -664,26 +664,26 @@ fn an_adaptive_log_axis_replans_on_every_zoom() {
     for axis in [&mut decades_config.left_y, &mut decades_config.right_y] {
         axis.log_ticks = LogTickPolicy::Decades;
     }
-    let decades = Chart::new(decades_config);
+    let mut decades = Chart::new(decades_config);
     let mut exports = Vec::new();
     for scale in [1.0f32, 2.0] {
         let image = r
             .export_rgba(
-                crate::ExportSource::chart(&adaptive, &series),
+                crate::ExportSource::chart(&mut adaptive, &series),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
             .unwrap();
         let other = r
             .export_rgba(
-                crate::ExportSource::chart(&decades, &series),
+                crate::ExportSource::chart(&mut decades, &series),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
             .unwrap();
         let png = r
             .export_png(
-                crate::ExportSource::chart(&adaptive, &series),
+                crate::ExportSource::chart(&mut adaptive, &series),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
@@ -898,34 +898,34 @@ fn offset_lines_export_at_1x_and_2x() {
         .lock()
         .unwrap();
     let mut r = offset_renderer();
-    let offset = Chart::new(offset_config());
-    let host = Chart::new(base_config());
+    let mut offset = Chart::new(offset_config());
+    let mut host = Chart::new(base_config());
     let mut results = Vec::new();
     for scale in [1.0f32, 2.0] {
         let drawn = r
             .export_rgba(
-                crate::ExportSource::chart(&offset, &offset_series(false)),
+                crate::ExportSource::chart(&mut offset, &offset_series(false)),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
             .unwrap();
         let expected = r
             .export_rgba(
-                crate::ExportSource::chart(&host, &offset_series(true)),
+                crate::ExportSource::chart(&mut host, &offset_series(true)),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
             .unwrap();
         let unshifted = r
             .export_rgba(
-                crate::ExportSource::chart(&host, &offset_series(false)),
+                crate::ExportSource::chart(&mut host, &offset_series(false)),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
             .unwrap();
         let png = r
             .export_png(
-                crate::ExportSource::chart(&offset, &offset_series(false)),
+                crate::ExportSource::chart(&mut offset, &offset_series(false)),
                 crate::ExportOptions::document(scale),
             )
             .block_on()
@@ -1030,14 +1030,14 @@ fn offset_members_shift_on_their_overlay_axis() {
     assert!(!panels[3].right_y.line_visible);
     let drawn = r
         .export_rgba(
-            crate::ExportSource::chart(&Chart::new(config.clone()), &series(false)),
+            crate::ExportSource::chart(&mut Chart::new(config.clone()), &series(false)),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let expected = r
         .export_rgba(
-            crate::ExportSource::chart(&Chart::new(layered(false)), &series(true)),
+            crate::ExportSource::chart(&mut Chart::new(layered(false)), &series(true)),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1081,21 +1081,27 @@ fn offset_line_ring_sits_on_the_shifted_point() {
     };
     let drawn = r
         .export_rgba(
-            crate::ExportSource::chart(&Chart::new(select(offset_config())), &offset_series(false)),
+            crate::ExportSource::chart(
+                &mut Chart::new(select(offset_config())),
+                &offset_series(false),
+            ),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let unselected = r
         .export_rgba(
-            crate::ExportSource::chart(&Chart::new(offset_config()), &offset_series(false)),
+            crate::ExportSource::chart(&mut Chart::new(offset_config()), &offset_series(false)),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let expected = r
         .export_rgba(
-            crate::ExportSource::chart(&Chart::new(select(base_config())), &offset_series(true)),
+            crate::ExportSource::chart(
+                &mut Chart::new(select(base_config())),
+                &offset_series(true),
+            ),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
