@@ -520,10 +520,12 @@ pub(super) fn box_plot_style_map(
 /// and width, the connector's colour and width, the up, down and total
 /// fills of [`RangeColor::Direction`](crate::data_config::RangeColor), the
 /// remaining opacity of the progress, then one fill per state of
-/// [`RangeColor::State`](crate::data_config::RangeColor). A part the series
-/// does not draw has a zero mask. The slots are written straight into the
-/// mapped slot buffer, sized by the series' states, so any number of states
-/// stages nothing on the CPU; range bars have no per-bar overrides.
+/// [`RangeColor::State`](crate::data_config::RangeColor) or per row colour
+/// of [`RangeColor::ByRow`](crate::data_config::RangeColor). A part the
+/// series does not draw has a zero mask. The slots are written straight
+/// into the mapped slot buffer, sized by the series' states or row colours,
+/// so any number of them stages nothing on the CPU; range bars have no
+/// per-bar overrides.
 pub(super) fn range_bar_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -554,9 +556,13 @@ pub(super) fn range_bar_style_map(
     let none: BarStyleSlotGpu = bytemuck::Zeroable::zeroed();
     let states: &[crate::data_config::RangeStateStyle] = match &bars.color_by {
         RangeColor::State { styles, .. } => styles,
-        RangeColor::Single | RangeColor::Direction { .. } => &[],
+        RangeColor::Single | RangeColor::Direction { .. } | RangeColor::ByRow { .. } => &[],
     };
-    let slot_count = RANGE_SLOT_STATES as usize + states.len();
+    let rows: &[Color] = match &bars.color_by {
+        RangeColor::ByRow { colors } => colors,
+        RangeColor::Single | RangeColor::Direction { .. } | RangeColor::State { .. } => &[],
+    };
+    let slot_count = RANGE_SLOT_STATES as usize + states.len() + rows.len();
     let mut parts = [none; RANGE_SLOT_STATES as usize];
     parts[RANGE_SLOT_WHISKER as usize] = bars
         .whiskers
@@ -587,6 +593,9 @@ pub(super) fn range_bar_style_map(
         }
         for state in states {
             push(&fill(state.color));
+        }
+        for color in rows {
+            push(&fill(*color));
         }
     };
     data_render::create_bar_style_map_written(device, layout, slot_count, write_slots, 0, |_| {})

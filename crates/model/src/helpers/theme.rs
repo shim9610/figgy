@@ -344,7 +344,8 @@ pub struct RadarTheme {
 /// are the colours that carry a bar's meaning, the whiskers, the connector
 /// and the unfinished part of a bar with progress. The theme never chooses
 /// how a series is coloured ([`crate::data_config::RangeColor`]): it
-/// recolours the colouring the series has.
+/// recolours the colouring the series has. A series coloured by row takes
+/// the theme's [`SeriesTheme::palette`] as its row colours.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -1587,6 +1588,12 @@ impl Theme {
                         }
                     }
                 }
+                // One colour per row: the rows take the palette.
+                RangeColor::ByRow { colors } => {
+                    if !theme.palette.is_empty() {
+                        colors.clone_from(&theme.palette);
+                    }
+                }
             }
             if let (Some(opacity), Some(progress)) = (range.remaining_opacity, progress) {
                 progress.remaining_opacity = opacity;
@@ -1738,6 +1745,9 @@ impl Theme {
         }
         self.style_text(&mut config.chart_title.text, chrome.ink, chrome.title_size);
         self.style_grid(&mut config.grid);
+        if self.kind == ChartKind::RangeBars {
+            hide_category_grid(config);
+        }
         let colormap = match &mut config.colorbar {
             Some(bar) => {
                 bar.colormap = self.series.fields.colormap.clone();
@@ -1961,6 +1971,21 @@ impl RadialTheme {
             );
             self.tint_children(&mut child.children, child.color, tint);
         }
+    }
+}
+
+/// A range bar chart's gridlines along a categorical position axis are
+/// off: they would run through the bars' middles (a timeline's rows, a
+/// waterfall's steps). The value axis keeps its gridlines.
+fn hide_category_grid(config: &mut Config) {
+    let horizontal = config.effective_bar_groups().direction == CategoryBarDirection::Horizontal;
+    let grid = &mut config.grid;
+    if horizontal && config.left_y.categories.is_some() {
+        grid.show_major_y = false;
+        grid.show_minor_y = false;
+    } else if !horizontal && config.bottom_x.categories.is_some() {
+        grid.show_major_x = false;
+        grid.show_minor_x = false;
     }
 }
 

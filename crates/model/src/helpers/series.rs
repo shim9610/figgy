@@ -18,10 +18,11 @@ use crate::data_config::{
     BoxSeries, CategoryBarSeries, DataBarStyleConfig, DataErrorBarStyleConfig, DataLineStyleConfig,
     DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef, FieldFillConfig, FieldSeries,
     GridLayout, HistogramSeries, LineFill, MatrixOrientation, MatrixRef, ParallelSeries,
-    RadarPolygonSeries, RangeBarSeries, RgbImageSeries, ScatterShape, SeriesConfig, Stem,
-    StreamlineSeries, TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
+    RadarPolygonSeries, RangeBarSeries, RangeColor, RgbImageSeries, ScatterShape, SeriesConfig,
+    Stem, StreamlineSeries, TernarySeries, VectorComponents, VectorSeries, VectorStyle, XySeries,
 };
 use crate::line::LineStylePreset;
+use crate::preset::ColorCycle;
 use crate::text::RichText;
 
 impl MatrixRef {
@@ -64,6 +65,10 @@ impl MatrixRef {
 /// ink a line or a marker starts in: black until [`SeriesConfig::color`]
 /// or a theme's palette sets it.
 const SERIES_INK: Color = Color::BLACK;
+
+/// The corner radius of [`SeriesConfig::timeline_bars`], logical pixels:
+/// the slight rounding of a web timeline's bars.
+const TIMELINE_CORNER_RADIUS: f32 = 3.0;
 
 impl SeriesConfig {
     /// A series of `render_type` over the `x` and `y` columns, unlabelled
@@ -385,6 +390,35 @@ impl SeriesConfig {
                 labels: crate::defaults::category_bar_series_labels(),
             }),
         )
+    }
+
+    /// Timeline (Gantt) bars: [`Self::range_bars`] in the timeline look of
+    /// the common web timelines (#357). Each row takes its own colour from
+    /// [`ColorCycle::Balanced`] ([`RangeColor::ByRow`]; the series colour,
+    /// the legend swatch, is the cycle's first), and the bars are flat with
+    /// 3 px corners, without texture or gloss. Pair it with
+    /// [`crate::default::default_timeline_config`] for the chart: the first
+    /// row at the top, value gridlines only and a light open frame. Every
+    /// choice is a field of the series, so a theme or an edit can change
+    /// it; [`Self::range_bars`] keeps the documented look for waterfalls
+    /// and candlesticks.
+    pub fn timeline_bars(
+        id: impl Into<String>,
+        positions: impl Into<ColumnId>,
+        start: impl Into<ColumnId>,
+        end: impl Into<ColumnId>,
+    ) -> Self {
+        let cycle = ColorCycle::Balanced;
+        Self::range_bars(id, positions, start, end)
+            .color(cycle.color(0))
+            .style_range_bars(|bars| {
+                bars.color_by = RangeColor::ByRow {
+                    colors: cycle.colors().to_vec(),
+                };
+                bars.style.corner_radius = TIMELINE_CORNER_RADIUS;
+                bars.style.texture_strength = 0.0;
+                bars.style.gloss = 0.0;
+            })
     }
 
     /// A radar polygon: `categories` holds `0, 1, ..., n - 1` and `values`

@@ -3760,6 +3760,52 @@ mod range_bar_tests {
         assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick("two", 3));
     }
 
+    /// Row colours (#357): opaque colours pass, a translucent one is
+    /// refused, any number of rows takes any number of colours (the list
+    /// cycles; nothing caps the rows), the mode reads no column, and the
+    /// selection walks the rows as it does in every other mode.
+    #[test]
+    fn row_colours_validate_read_no_column_and_step_by_row() {
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
+        let mut config = chart();
+        let by_row = |colors: Vec<Color>| {
+            let mut s = ranges("one");
+            let DataRenderType::RangeBars(RangeBarSeries { color_by, .. }) = edit(&mut s) else {
+                unreachable!()
+            };
+            *color_by = RangeColor::ByRow { colors };
+            s
+        };
+        let rows = by_row(vec![Color::from_rgb8(1, 2, 3), Color::from_rgb8(4, 5, 6)]);
+        assert_eq!(
+            config.validate_range_bars(std::slice::from_ref(&rows)),
+            Ok(())
+        );
+        assert_eq!(config.validate_range_bars(&[by_row(Vec::new())]), Ok(()));
+        let many = by_row((0..1000).map(|k| Color::from_rgb8(k as u8, 0, 0)).collect());
+        assert_eq!(config.validate_range_bars(&[many]), Ok(()));
+        let translucent = by_row(vec![Color::new(1.0, 0.0, 0.0, 0.5)]);
+        assert_eq!(
+            config.validate_range_bars(&[translucent]),
+            Err(crate::RuleKind::RangeBarStateColors)
+        );
+        let bars = rows.render_type.range_bars().unwrap();
+        assert_eq!(bars.extra_columns().collect::<Vec<_>>(), ["one.start"]);
+        let pick = |row: usize| PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "one".into(),
+            bin_index: row,
+            half: None,
+        };
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![pick(0)],
+            ..crate::defaults::data_selections_config()
+        });
+        let len = |c: &str| matches!(c, "pos" | "one.end" | "one.start").then_some(5);
+        assert_eq!(config.step_selection(&[rows], 4, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(4));
+    }
+
     #[test]
     fn value_labels_drag_by_row() {
         let mut s = ranges("one");
@@ -3811,6 +3857,25 @@ mod range_bar_tests {
             serde_json::from_str::<SeriesConfig>(&again).unwrap(),
             parsed
         );
+        // Row colours (#357) round-trip under their own tag.
+        let mut rows = ranges("one");
+        let DataRenderType::RangeBars(RangeBarSeries { color_by, .. }) = edit(&mut rows) else {
+            unreachable!()
+        };
+        *color_by = RangeColor::ByRow {
+            colors: vec![
+                Color::from_rgb8(31, 119, 180),
+                Color::from_rgb8(255, 127, 14),
+            ],
+        };
+        let json = serde_json::to_value(&rows).unwrap();
+        assert_eq!(
+            json["render_type"]["RangeBars"]["color_by"]["ByRow"]["colors"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(serde_json::from_value::<SeriesConfig>(json).unwrap(), rows);
     }
 }
 

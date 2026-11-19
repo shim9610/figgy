@@ -1252,7 +1252,10 @@ side by side under `bar_groups` (`mode` `"Grouped"`).
 
 A Gantt chart names `"color_by": { "State": { "column": "state", "styles":
 [{ "color": … }] } }` and `"progress": { "column": "done", "remaining_opacity":
-0.4 }`; a waterfall `"Direction"` with `"total": { "column": "is_total",
+0.4 }`; a timeline coloured by row names `"color_by": { "ByRow": { "colors":
+[{ "r": 0.12, "g": 0.47, "b": 0.71, "a": 1.0 }, …] } }` (row `i` takes
+`colors[i % colors.len()]`; it names no column and its `selection_details()`
+carries no colour role); a waterfall `"Direction"` with `"total": { "column": "is_total",
 "color": … }` and `"connector": { "color": …, "width": 1.5 }`. The picked
 bar's `selection_details()` carries `index`, `direction`, `position`, `end`,
 `start` and, when the series has them, `low`, `high`, `total` or `state` and

@@ -49,6 +49,15 @@ pub enum RangeColor {
         column: ColumnId,
         styles: Vec<RangeStateStyle>,
     },
+    /// By the bar's row: the bar of row `i` (its row in the series'
+    /// columns, as a pick reports it) takes `colors[i % colors.len()]`, a
+    /// timeline's one colour per task. Empty draws every bar in the series
+    /// colour. A colour mapping by row index: it reads no column and
+    /// computes no value, and the list cycles, so every row draws.
+    ByRow {
+        /// The fill colours, opaque.
+        colors: Vec<Color>,
+    },
 }
 
 impl RangeColor {
@@ -179,6 +188,7 @@ impl RangeBarSeries {
             RangeColor::Single => None,
             RangeColor::Direction { total, .. } => total.as_ref().map(|t| t.column.as_str()),
             RangeColor::State { column, .. } => Some(column.as_str()),
+            RangeColor::ByRow { .. } => None,
         };
         let whiskers = self.whiskers.as_ref();
         std::iter::once(self.start.as_str())
@@ -194,8 +204,8 @@ pub const MAX_RANGE_STROKE_WIDTH: f32 = 24.0;
 
 /// The rules one range bar series is held to: an opaque colour and valid
 /// style, every column id not empty and distinct, whisker and connector
-/// widths in `0..=`[`MAX_RANGE_STROKE_WIDTH`], opaque whisker, direction
-/// and state colours, a connector colour with channels in `0..=1`, a
+/// widths in `0..=`[`MAX_RANGE_STROKE_WIDTH`], opaque whisker, direction,
+/// state and row colours, a connector colour with channels in `0..=1`, a
 /// remaining opacity in `0..=1`, label decimals `0..=6` and a one-line
 /// value suffix of at most 24 characters, `labels.text` of one-line strings
 /// of at most [`MAX_CATEGORY_BAR_LABEL_CHARS`] characters, and
@@ -243,6 +253,7 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::Rul
                     .is_none_or(|t| valid_bar_color(t.color, true))
         }
         RangeColor::State { styles, .. } => styles.iter().all(|s| valid_bar_color(s.color, true)),
+        RangeColor::ByRow { colors } => colors.iter().all(|c| valid_bar_color(*c, true)),
     };
     if !opaque {
         return Err(crate::RuleKind::RangeBarStateColors);

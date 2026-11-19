@@ -16,7 +16,8 @@ waterfall, the prices of a candle, the bounds of an interval, a state index
 and a progress fraction. The renderer draws them as given: it does not
 compute running totals, changes, durations or statistics. It only compares a
 bar's two ends to choose the up or down colour, maps a state index to a
-style and shades the finished part of a bar. Streamed sources are rejected.
+style or a row index to a row colour, and shades the finished part of a
+bar. Streamed sources are rejected.
 
 ## Series
 
@@ -28,7 +29,7 @@ series:
 |---|---|
 | `start` | the start values |
 | `whiskers` | `RangeWhiskers { low, high, width, color }`: a stroke from the low to the high value at the bar's middle, under the body (a candle's wick) |
-| `color_by` | `RangeColor::Single` (the series colour), `Direction { up, down, total }` (up where end ≥ start, down otherwise; a `RangeTotal { column, color }` flag column that reads 1 marks a total or subtotal) or `State { column, styles }` (the bar of state `k` takes `styles[k]`; a state with no style takes the series colour) |
+| `color_by` | `RangeColor::Single` (the series colour), `Direction { up, down, total }` (up where end ≥ start, down otherwise; a `RangeTotal { column, color }` flag column that reads 1 marks a total or subtotal) `State { column, styles }` (the bar of state `k` takes `styles[k]`; a state with no style takes the series colour) or `ByRow { colors }` (row `i` takes `colors[i % colors.len()]`, a timeline's one colour per task; no colours draw the series colour; it reads no column) |
 | `progress` | `RangeProgress { column, remaining_opacity }`: the bar is whole up to `start + p · (end − start)`, `p` clamped to `0..=1`, and the rest is drawn at the remaining opacity; a NaN `p` draws the bar whole |
 | `connector` | `RangeConnector { color, width }`: a line at each bar's end value, from its edge to the next row's bar (a waterfall) |
 | `slot_width` | the slot of one row in data units on a numeric position axis (a time axis); `None` on a categorical axis, where the slot is one category |
@@ -38,7 +39,7 @@ series:
 Every column holds one value per row of the positions; a column of another
 length is an error naming it. A row with a NaN position, start or end, or
 with equal ends, draws no bar and none of its parts. There is no limit on
-rows, series, states or labels beyond `u32` indices and device memory. The
+rows, series, states, row colours or labels beyond `u32` indices and device memory. The
 cost grows with the rows: on a software Vulkan adapter
 (lavapipe), picking among 100,000 rows takes about 10 ms and exporting them
 on a 7600 px wide panel about 1.8 s.
@@ -100,6 +101,40 @@ let waterfall = SeriesConfig {
         labels: CategoryBarSeriesLabels::default(),
     }),
 };
+```
+
+## Timelines
+
+`SeriesConfig::timeline_bars(id, positions, start, end)` and
+`default::default_timeline_config()` (both with the `helpers` feature)
+build a timeline in the look of the common web timelines (#357):
+
+| Choice | Value | References |
+|---|---|---|
+| Category order | the first row at the top: `left_y.inverted` | Vega-Lite and Google Charts list the first row at the top; Plotly's `px.timeline` needs `autorange="reversed"` for it |
+| Colour | one colour per row from `ColorCycle::Balanced` (`RangeColor::ByRow`); the series colour is the cycle's first | Google Charts colours each bar; Plotly and Vega-Lite take one palette colour |
+| Bar thickness | 0.8 of the row's band (`bar_groups.group_width`) | Plotly 0.8 (`bargap` 0.2), Vega-Lite 0.9 (band padding 0.1) |
+| Corner radius | 3 px, flat, no texture or gloss | Plotly and Vega-Lite square, Google Charts slightly rounded |
+| Gridlines | value gridlines only, pale grey | Vega-Lite and Google Charts grid the time axis only |
+| Frame | the open frame (`AxisPreset::OpenOutward`), light grey axis lines, no tick marks | Vega-Lite and Google Charts draw no box; the gridlines carry the values |
+
+Every choice is a stored field, so a saved timeline reads back with the
+same look, and the documented defaults (`SeriesConfig::range_bars`,
+`default_config`, the serde defaults) are unchanged. A theme recolours a
+row-coloured series from its palette and draws no gridlines along a
+categorical position axis; the gallery's range bars take the open frame
+without tick marks.
+
+```rust
+use renderer::{Category, Chart, SeriesConfig};
+
+let mut config = renderer::default::default_timeline_config();
+config.left_y.categories = Some(vec![
+    Category::new("scope", "Scope"),
+    Category::new("build", "Build"),
+]);
+let chart = Chart::new(config).with_area(0, 0, 800, 600);
+let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end");
 ```
 
 ## Interaction
