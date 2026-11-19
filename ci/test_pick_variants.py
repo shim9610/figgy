@@ -1,11 +1,14 @@
 """The exact pick variant table (#363) belongs to the current shaders.
 
 `crates/renderer/tests/support/pick_variants.csv` lists every exact pick
-pipeline a chart can reach with its measured SwiftShader compile time. It
-records a hash over every WGSL file of the renderer; any shader change
-makes this test fail until the table is regenerated and re-measured. The
-rows themselves are checked against the picker by the renderer's
-`pick_variant_table_matches_the_picker` test.
+pipeline a chart can reach with its measured SwiftShader compile time. For
+each exact module and shader set it records the hash of the assembled
+source its rows were measured on and the fragment files that source is
+assembled from (joined with one newline). This test rehashes those
+fragments: a change to an exact module fails until that module's rows are
+regenerated and re-measured, and a WGSL change outside the exact modules
+changes nothing. The rows themselves, and the fragment lists, are checked
+against the renderer by its `pick_variant_table_matches_the_picker` test.
 """
 from pathlib import Path
 import unittest
@@ -30,17 +33,12 @@ def fnv1a(hash_value, data):
     return hash_value
 
 
-def wgsl_hash():
-    """Each WGSL file under the renderer's `src/`, by its crate-relative path
-    with `/` separators in path order: the path, a NUL, the bytes, a NUL."""
-    hash_value = 0xCBF29CE484222325
-    for path in sorted((CRATE / "src").rglob("*.wgsl"),
-                       key=lambda p: p.relative_to(CRATE).as_posix()):
-        hash_value = fnv1a(hash_value, path.relative_to(CRATE).as_posix().encode())
-        hash_value = fnv1a(hash_value, b"\0")
-        hash_value = fnv1a(hash_value, path.read_bytes())
-        hash_value = fnv1a(hash_value, b"\0")
-    return f"{hash_value:016x}"
+def module_hash(fragments):
+    """The hash of a module assembled from `fragments` (crate-relative
+    paths): their bytes joined with one newline, as `wgsl_module!` joins
+    them."""
+    source = b"\n".join((CRATE / fragment).read_bytes() for fragment in fragments)
+    return f"{fnv1a(0xCBF29CE484222325, source):016x}"
 
 
 def budget_for(measured):
@@ -54,13 +52,29 @@ class PickVariantTable(unittest.TestCase):
     def setUp(self):
         self.lines = TABLE.read_text(encoding="utf-8").splitlines()
 
-    def test_the_table_was_measured_on_the_current_shaders(self):
-        recorded = [line.split("=", 1)[1] for line in self.lines
-                    if line.startswith("# wgsl_hash=")]
+    def header(self, key):
+        """`name -> value` of the header lines `# key=name=value`."""
+        prefix = f"# {key}="
+        return dict(line[len(prefix):].split("=", 1) for line in self.lines
+                    if line.startswith(prefix))
+
+    def test_the_rows_were_measured_on_the_current_exact_modules(self):
+        hashes = self.header("module_hash")
+        fragments = self.header("module_fragments")
+        self.assertTrue(hashes)
+        self.assertEqual(sorted(hashes), sorted(fragments))
+        rows = [line.split(",") for line in self.lines[self.lines.index(COLUMNS) + 1:] if line]
+        changed = []
+        for name, recorded in sorted(hashes.items()):
+            if module_hash(fragments[name].split(";")) != recorded:
+                count = sum(1 for fields in rows if f"{fields[0]}/{fields[1]}" == name)
+                changed.append(f"{name} ({count} rows)")
         self.assertEqual(
-            recorded, [wgsl_hash()],
-            f"the WGSL changed since {TABLE.relative_to(ROOT)} was measured: regenerate it "
-            f"with `{REGENERATE}` and re-measure every row with `{MEASURE}`")
+            changed, [],
+            f"the exact pick modules {', '.join(changed)} changed since "
+            f"{TABLE.relative_to(ROOT)} was measured: regenerate it with `{REGENERATE}`, "
+            f"which keeps every other row's time, and measure those rows with "
+            f"`{MEASURE} --missing`")
 
     def test_every_row_has_a_time_within_its_budget_rule(self):
         self.assertIn(COLUMNS, self.lines)

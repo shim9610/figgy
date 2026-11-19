@@ -9,10 +9,12 @@
 //! each chart, prepares its pick as `pick_chart` does
 //! ([`Renderer::exact_pick_query`]) and reads the keys from the picker
 //! (`exact_variants`, and `stream_exact_variants` where every series of the
-//! chart may stream). The table also records hashes of the WGSL the rows were
-//! measured on; `ci/test_pick_variants.py` checks the hash over every WGSL
-//! file in `python3 ci/verify.py static`, so a shader change forces the table
-//! to be regenerated and re-measured.
+//! chart may stream). The table also records, for each exact module and
+//! shader set, the hash of the assembled source its rows were measured on
+//! and the fragment files it is assembled from; `ci/test_pick_variants.py`
+//! rehashes those fragments in `python3 ci/verify.py static`, so a change to
+//! an exact module forces that module's rows, and only those, to be
+//! re-measured. A WGSL change outside the exact modules changes nothing here.
 //!
 //! Options that do not feed the variant are held at one value: colours,
 //! sizes, widths above zero, step interpolation, size and colour maps, axis
@@ -37,7 +39,7 @@ use crate::line::LineStylePreset;
 use crate::shader_assembly::ShaderSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The table, relative to the renderer crate.
 const TABLE: &str = "tests/support/pick_variants.csv";
@@ -68,46 +70,6 @@ fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
-/// Every `.wgsl` file under `src/`, by its path relative to the crate with
-/// `/` separators, sorted.
-fn wgsl_files(dir: &Path, root: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            wgsl_files(&path, root, out);
-        } else if path.extension().is_some_and(|ext| ext == "wgsl") {
-            let relative = path.strip_prefix(root).unwrap();
-            let name = relative
-                .components()
-                .map(|c| c.as_os_str().to_str().unwrap())
-                .collect::<Vec<_>>()
-                .join("/");
-            out.push((name, path));
-        }
-    }
-}
-
-/// The hash over every WGSL file of the renderer: each file's relative path,
-/// a NUL, its bytes and a NUL, in path order.
-fn wgsl_hash() -> String {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    wgsl_files(&root.join("src"), root, &mut files);
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut hash = FNV_OFFSET;
-    for (name, path) in &files {
-        hash = fnv1a(hash, name.as_bytes());
-        hash = fnv1a(hash, &[0]);
-        hash = fnv1a(hash, &std::fs::read(path).unwrap());
-        hash = fnv1a(hash, &[0]);
-    }
-    format!("{hash:016x}")
-}
-
 fn module_name(shader: PickShader) -> &'static str {
     match shader {
         PickShader::Gate => "gate",
@@ -125,20 +87,43 @@ fn set_name(set: ShaderSet) -> &'static str {
     }
 }
 
-/// The hash of each exact module's assembled source per shader set: what
-/// the browser compiles for a row (`ci/shader_compile.cjs` finds the
-/// capture's source by it).
-fn module_hashes() -> Vec<String> {
+/// One exact module of one shader set as the table records it: its name
+/// (`marker-line/full`), the hash of its assembled source (what the browser
+/// compiles for its rows; `ci/shader_compile.cjs` finds the capture's
+/// source by it) and its fragment files relative to the crate.
+/// `ci/test_pick_variants.py` rehashes the fragments, joined with one
+/// newline as the assembly joins them, so a change to any of them fails the
+/// static check for that module's rows only.
+struct ModuleRecord {
+    name: String,
+    hash: String,
+    fragments: Vec<String>,
+}
+
+fn module_records() -> Vec<ModuleRecord> {
     let mut out = Vec::new();
     for shader in PickShader::EXACT {
         for set in [ShaderSet::Basic, ShaderSet::Full] {
-            let source = shader.assembled_for(set).source;
-            out.push(format!(
-                "{}/{}={:016x}",
-                module_name(shader),
-                set_name(set),
-                fnv1a(FNV_OFFSET, source.as_bytes())
-            ));
+            let assembled = shader.assembled_for(set);
+            let name = format!("{}/{}", module_name(shader), set_name(set));
+            // What the static check rehashes is the source itself.
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+            let joined = assembled
+                .fragments
+                .iter()
+                .map(|fragment| std::fs::read_to_string(root.join(fragment)).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(joined, assembled.source, "{name} is its fragments joined");
+            out.push(ModuleRecord {
+                hash: format!("{:016x}", fnv1a(FNV_OFFSET, assembled.source.as_bytes())),
+                fragments: assembled
+                    .fragments
+                    .iter()
+                    .map(|fragment| format!("src/{fragment}"))
+                    .collect(),
+                name,
+            });
         }
     }
     out
@@ -929,8 +914,8 @@ fn reachable_rows(renderer: &mut Renderer) -> (BTreeMap<RowKey, RowFacts>, usize
 /// A parsed table: its header lines' values and each row's measured time
 /// and budget by key.
 struct Table {
-    wgsl_hash: Option<String>,
-    module_hashes: Vec<String>,
+    /// Each module's hash, by name (`marker-line/full`).
+    module_hashes: BTreeMap<String, String>,
     rows: BTreeMap<String, (String, String)>,
     body: Vec<String>,
 }
@@ -942,16 +927,16 @@ fn row_identity(fields: &[&str]) -> String {
 
 fn parse(text: &str) -> Table {
     let mut table = Table {
-        wgsl_hash: None,
-        module_hashes: Vec::new(),
+        module_hashes: BTreeMap::new(),
         rows: BTreeMap::new(),
         body: Vec::new(),
     };
     for line in text.lines() {
-        if let Some(value) = line.strip_prefix("# wgsl_hash=") {
-            table.wgsl_hash = Some(value.into());
-        } else if let Some(value) = line.strip_prefix("# module_hash=") {
-            table.module_hashes.push(value.into());
+        if let Some((name, hash)) = line
+            .strip_prefix("# module_hash=")
+            .and_then(|value| value.split_once('='))
+        {
+            table.module_hashes.insert(name.into(), hash.into());
         } else if line.starts_with('#') || line == HEADER || line.is_empty() {
         } else {
             let fields: Vec<&str> = line.split(',').collect();
@@ -969,8 +954,7 @@ fn parse(text: &str) -> Table {
 
 fn render(
     rows: &BTreeMap<RowKey, RowFacts>,
-    wgsl: &str,
-    modules: &[String],
+    modules: &[ModuleRecord],
     times: impl Fn(&str) -> (String, String),
 ) -> String {
     let mut out = String::new();
@@ -983,14 +967,26 @@ fn render(
 # a fresh device per row, the capture's descriptor and layout).\n",
     );
     let _ = writeln!(out, "# Regenerate the rows and hashes: {UPDATE_COMMAND}");
-    let _ = writeln!(out, "# Then measure: {MEASURE_COMMAND}");
+    let _ = writeln!(
+        out,
+        "# Then measure the rows without a time: {MEASURE_COMMAND} --missing"
+    );
     out.push_str(
         "# Budget rule: budget_ms = max(3 x measured_ms, 2000), rounded up to the next 100 ms.\n\
 # The runner fails a row whose compile exceeds its budget.\n",
     );
-    let _ = writeln!(out, "# wgsl_hash={wgsl}");
+    out.push_str(
+        "# Each module's hash covers its assembled source; a change re-measures that module's\n\
+# rows only (the update keeps the other rows' times; then measure with --missing).\n",
+    );
     for module in modules {
-        let _ = writeln!(out, "# module_hash={module}");
+        let _ = writeln!(out, "# module_hash={}={}", module.name, module.hash);
+        let _ = writeln!(
+            out,
+            "# module_fragments={}={}",
+            module.name,
+            module.fragments.join(";")
+        );
     }
     out.push_str(HEADER);
     out.push('\n');
@@ -1041,9 +1037,9 @@ fn render(
     out
 }
 
-/// The table holds exactly the keys the picker reaches, generated from the
-/// hashes of the shaders it was measured on, and every row has a measured
-/// time and budget.
+/// The table holds exactly the keys the picker reaches, records the hash of
+/// each exact module its rows were measured on, and every row has a
+/// measured time and budget.
 #[test]
 fn pick_variant_table_matches_the_picker() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -1067,30 +1063,56 @@ fn pick_variant_table_matches_the_picker() {
         rows.len(),
         started.elapsed()
     );
-    let wgsl = wgsl_hash();
-    let modules = module_hashes();
+    let modules = module_records();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(TABLE);
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     let old = parse(&current);
-    let same_shaders =
-        old.wgsl_hash.as_deref() == Some(wgsl.as_str()) && old.module_hashes == modules;
-    // Measurements carry over only for unchanged shaders.
+    // A row's module, `marker-line/full`, from its identity.
+    let module_of = |identity: &str| {
+        let mut fields = identity.split(',');
+        format!(
+            "{}/{}",
+            fields.next().unwrap_or_default(),
+            fields.next().unwrap_or_default()
+        )
+    };
+    let unchanged = |name: &str| {
+        modules
+            .iter()
+            .find(|module| module.name == name)
+            .is_some_and(|module| old.module_hashes.get(name) == Some(&module.hash))
+    };
+    // A row keeps its measurement while its module is unchanged.
     let kept = |identity: &str| {
         old.rows
             .get(identity)
-            .filter(|_| same_shaders)
+            .filter(|_| unchanged(&module_of(identity)))
             .cloned()
             .unwrap_or_default()
     };
-    let expected = render(&rows, &wgsl, &modules, kept);
+    let expected = render(&rows, &modules, kept);
     if std::env::var(UPDATE).as_deref() == Ok("1") {
         std::fs::write(&path, &expected).unwrap();
         return;
     }
+    let changed: Vec<String> = modules
+        .iter()
+        .filter(|module| !unchanged(&module.name))
+        .map(|module| {
+            let rows = old
+                .rows
+                .keys()
+                .filter(|identity| module_of(identity) == module.name)
+                .count();
+            format!("{} ({rows} rows)", module.name)
+        })
+        .collect();
     assert!(
-        same_shaders,
-        "the pick shaders changed since {TABLE} was measured: regenerate it with `{UPDATE_COMMAND}` \
-and re-measure with `{MEASURE_COMMAND}`"
+        changed.is_empty(),
+        "the exact pick modules {} changed since {TABLE} was measured: regenerate it with \
+`{UPDATE_COMMAND}`, which keeps every other row's time, and measure those rows with \
+`{MEASURE_COMMAND} --missing`",
+        changed.join(", ")
     );
     let new = parse(&expected);
     let added: Vec<_> = new
