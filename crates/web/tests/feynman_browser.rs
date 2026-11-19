@@ -13,6 +13,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
+mod support;
+use support::details;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 const WIDTH: u32 = 480;
@@ -96,10 +99,6 @@ async fn pick(chart: &mut FiggyChart, at: [f32; 2]) -> serde_json::Value {
     hit.as_string()
         .map(|json| serde_json::from_str(&json).unwrap())
         .unwrap_or(serde_json::Value::Null)
-}
-
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
 }
 
 #[wasm_bindgen_test(async)]

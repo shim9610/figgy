@@ -6,10 +6,13 @@ use renderer::data_config::{
     BarOrientation, DataBarStyleConfig, FieldFillConfig, FieldSeries, FillMode, GridLayout,
     MatrixOrientation, MatrixRef, Shading,
 };
-use renderer::{Color, DataRenderType, HistogramSeries, SeriesConfig};
+use renderer::{Color, DataRenderType, HistogramSeries};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::series;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -152,18 +155,6 @@ async fn sleep(ms: i32) {
             .unwrap();
     });
     wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
-}
-
-fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type,
-    }
 }
 
 /// One chart per group of pipelines: lines (the demo), bars and a field.

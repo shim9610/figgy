@@ -13,13 +13,12 @@ use renderer::{Config, SeriesConfig};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::*;
 
+mod support;
+use support::json;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 const COLOR: &str = r#"{"r": 0.25, "g": 0.5, "b": 0.75, "a": 1.0}"#;
-
-fn json(text: &str) -> serde_json::Value {
-    serde_json::from_str(text).unwrap()
-}
 
 /// The `code` of a thrown `Error`, `None` for a thrown string.
 fn code(error: &JsValue) -> Option<String> {

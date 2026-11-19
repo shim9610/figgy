@@ -5,31 +5,23 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
 use figgy::FiggyChart;
-use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, ContourLabelConfig, DataLineStyleConfig, GridLayout, MatrixOrientation,
     MatrixRef,
 };
-use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::{
-    Chart, ChartDrawItem, Color, DataRenderType, Renderer, RendererDevice, Series, SeriesConfig,
-};
+use renderer::{Chart, ChartDrawItem, Color, DataRenderType, Renderer, Series, SeriesConfig};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 
+mod support;
+use support::{column, raw_device_method, renderer};
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 const SIZE: u32 = 200;
-
-fn raw_device_method(device: &wgpu::webgpu::GpuDevice, name: &str) -> js_sys::Function {
-    js_sys::Reflect::get(device.as_ref(), &JsValue::from_str(name))
-        .expect("GPUDevice method lookup failed")
-        .dyn_into()
-        .expect("GPUDevice property was not a function")
-}
 
 fn push_raw_error_scope(device: &wgpu::Device, filter: &str) {
     let raw = device
@@ -63,26 +55,6 @@ async fn pop_raw_error_scope(device: &wgpu::Device) -> Option<String> {
         .and_then(|value| value.as_string())
         .unwrap_or_else(|| format!("{error:?}"));
     Some(format!("{name}: {message}"))
-}
-
-fn column(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-async fn renderer() -> Renderer {
-    let instance = create_instance();
-    let adapter = request_adapter_async(&instance)
-        .await
-        .expect("Chrome/Dawn must expose a WebGPU adapter");
-    let (device, queue) = request_device_async(&adapter)
-        .await
-        .expect("Chrome/Dawn must create a WebGPU device");
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer initialization failed")
 }
 
 fn add_contour_columns(renderer: &mut Renderer) {

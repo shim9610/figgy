@@ -10,8 +10,11 @@ use figgy::{FiggyChart, inspect_config_layout};
 use renderer::config::AxisScale;
 use renderer::layout::{ChartArea, Rect};
 use renderer::{Anchor, Annotation, AnnotationAxis, AnnotationKind, Color, LayerRef};
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
+
+mod support;
+use support::{code, json, rect};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -40,21 +43,6 @@ fn set_config(chart: &mut FiggyChart, config: &renderer::Config) {
     chart
         .set_config(&serde_json::to_string(config).unwrap())
         .unwrap();
-}
-
-fn json(text: &str) -> serde_json::Value {
-    serde_json::from_str(text).unwrap()
-}
-
-fn code(error: &JsValue) -> Option<String> {
-    js_sys::Reflect::get(error, &JsValue::from_str("code"))
-        .ok()
-        .and_then(|code| code.as_string())
-}
-
-fn rect(value: &serde_json::Value) -> [f64; 4] {
-    let n = |i: usize| value[i].as_f64().unwrap();
-    [n(0), n(1), n(2), n(3)]
 }
 
 fn close(a: [f64; 4], b: [f64; 4], tolerance: f64) -> bool {

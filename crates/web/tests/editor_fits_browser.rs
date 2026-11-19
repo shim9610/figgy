@@ -12,25 +12,13 @@ use renderer::{
     config::{AxisOptions, Config, DataSelectionsConfig, PickedDataRef},
     data_config::{MatrixRef, VectorScale},
 };
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::canvas_480x320 as canvas;
 
 wasm_bindgen_test_configure!(run_in_browser);
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(320);
-    canvas
-}
 
 /// The error's rule code, or its message for an error without one.
 fn code(error: &JsValue) -> String {

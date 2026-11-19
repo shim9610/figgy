@@ -28,6 +28,9 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
+mod support;
+use support::turn;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 /// Rounds of free-then-collect.
@@ -90,17 +93,6 @@ fn destroyed() -> u32 {
         .unwrap()
         .as_f64()
         .unwrap() as u32
-}
-
-/// One timer turn of 20 ms.
-async fn turn() {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 20)
-            .unwrap();
-    });
-    JsFuture::from(promise).await.unwrap();
 }
 
 /// Wait until `count` devices were destroyed, for at most 10 seconds: the

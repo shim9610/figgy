@@ -7,19 +7,10 @@ use figgy::FiggyChart;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::*;
 
-wasm_bindgen_test_configure!(run_in_browser);
+mod support;
+use support::canvas_320x240 as canvas;
 
-fn canvas() -> web_sys::HtmlCanvasElement {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .unwrap();
-    canvas.set_width(320);
-    canvas.set_height(240);
-    canvas
-}
+wasm_bindgen_test_configure!(run_in_browser);
 
 /// Record, for every shader module created from now on, whether it is a
 /// data module of the basic set or of the full one, and the module of every

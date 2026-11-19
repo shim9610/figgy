@@ -7,25 +7,12 @@
 
 use figgy::{FiggyChart, rich_text_from_tex};
 use renderer::Config;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::canvas_480x360 as canvas;
 
 wasm_bindgen_test_configure!(run_in_browser);
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(360);
-    canvas
-}
 
 #[wasm_bindgen_test(async)]
 async fn a_math_title_draws_hits_and_exports_with_the_bundled_font() {

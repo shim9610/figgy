@@ -1,37 +1,25 @@
 #![cfg(target_arch = "wasm32")]
 
-//! A probability axis (#209) through the WASM wrapper: the scale set as
-//! JSON (`{"Probability": ...}`) draws, `pick_data` names the point under
-//! the cursor where the axis chrome places it, `pointer_to_anchor` answers
-//! a probability, `step_selection` moves along the series, the chart
-//! exports, and the configuration round-trips with the scale unchanged.
+//! A probability axis (#209) through the WASM wrapper, at the JS boundary:
+//! every scale is written and read back as JSON (`{"Probability": ...}`),
+//! and one draw answers `pick_data` and `pointer_to_anchor` as JSON and
+//! exports. The placement, picks, steps, exports and the other interactions
+//! of every scale are the renderer's tests (`probability_interactions.rs`,
+//! `pick_draw_agreement.rs`).
 
 use figgy::FiggyChart;
-use renderer::config::{AxisScale, Config, DataSelectionsConfig, PickedDataRef, ProbabilityScale};
+use renderer::config::{AxisScale, Config, ProbabilityScale};
 use renderer::data_config::{DataScatterStyleConfig, ScatterShape, XySeries};
 use renderer::format::LabelFormat;
 use renderer::{Color, DataRenderType, SeriesConfig};
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::canvas_480x360 as canvas;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
 const POINTS: [(f64, f64); 3] = [(2.0, 0.01), (5.0, 0.5), (8.0, 0.98)];
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(360);
-    canvas
-}
 
 fn markers() -> SeriesConfig {
     SeriesConfig {
@@ -71,7 +59,7 @@ fn at(config: &Config, x: f64, p: f64) -> (f32, f32) {
 }
 
 #[wasm_bindgen_test(async)]
-async fn a_probability_axis_draws_picks_anchors_steps_and_exports() {
+async fn a_probability_axis_round_trips_draws_picks_and_exports() {
     let mut chart = FiggyChart::create(canvas()).await.unwrap();
     chart
         .register_column_f64("x", &POINTS.map(|p| p.0))
@@ -102,60 +90,32 @@ async fn a_probability_axis_draws_picks_anchors_steps_and_exports() {
         chart
             .set_series(&serde_json::to_string(&vec![markers()]).unwrap())
             .unwrap();
-        chart.frame().unwrap();
 
         let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
         assert_eq!(config.left_y.scale, AxisScale::Probability(scale));
-        for (index, &(x, p)) in POINTS.iter().enumerate() {
-            let (px, py) = at(&config, x, p);
-            let picked = chart.pick_data(px, py, 4.0).await.unwrap();
-            let picked: serde_json::Value =
-                serde_json::from_str(&picked.as_string().expect("a point is picked")).unwrap();
-            assert_eq!(picked["kind"], "point", "{scale:?} {picked}");
-            assert_eq!(picked["series_id"], "plot");
-            assert_eq!(picked["point_index"], index, "{scale:?} {picked}");
-
-            let anchor: serde_json::Value =
-                serde_json::from_str(&chart.pointer_to_anchor(px, py, "Data").unwrap()).unwrap();
-            let y = anchor["Data"]["y"].as_f64().expect("a data anchor");
-            assert!(
-                (y - p).abs() <= 1e-4 * p.min(1.0 - p),
-                "{scale:?}: anchor {y} for p = {p}"
-            );
-        }
-
-        let mut selected = config.clone();
-        selected.picked_data = Some(DataSelectionsConfig {
-            refs: vec![PickedDataRef::Point {
-                source_id: None,
-                series_id: "plot".into(),
-                point_index: 0,
-            }],
-            ..Default::default()
-        });
-        chart
-            .set_config(&serde_json::to_string(&selected).unwrap())
-            .unwrap();
-        assert!(chart.step_selection(1, 0).unwrap());
-        let stepped: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
-        assert_eq!(
-            stepped.picked_data.unwrap().refs[0],
-            PickedDataRef::Point {
-                source_id: None,
-                series_id: "plot".into(),
-                point_index: 1,
-            }
-        );
-
-        let png = chart.export_png(2.0).await.unwrap();
-        assert!(png.length() > 0);
-        // Text is written as glyph outlines (`<path id="g…">`), not as
-        // characters, and the data as an embedded image.
-        let svg = chart.export_svg(1.0).await.unwrap();
-        assert!(
-            svg.contains("<path id=\"g"),
-            "{scale:?}: the tick label glyphs"
-        );
-        assert!(svg.contains("<image"), "{scale:?}: the data image");
     }
+
+    // One draw, on the last scale: a pick and an anchor as JSON, and an
+    // export.
+    chart.frame().unwrap();
+    let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    let (index, (x, p)) = (1, POINTS[1]);
+    let (px, py) = at(&config, x, p);
+    let picked = chart.pick_data(px, py, 4.0).await.unwrap();
+    let picked: serde_json::Value =
+        serde_json::from_str(&picked.as_string().expect("a point is picked")).unwrap();
+    assert_eq!(picked["kind"], "point", "{picked}");
+    assert_eq!(picked["series_id"], "plot");
+    assert_eq!(picked["point_index"], index, "{picked}");
+
+    let anchor: serde_json::Value =
+        serde_json::from_str(&chart.pointer_to_anchor(px, py, "Data").unwrap()).unwrap();
+    let y = anchor["Data"]["y"].as_f64().expect("a data anchor");
+    assert!(
+        (y - p).abs() <= 1e-4 * p.min(1.0 - p),
+        "anchor {y} for p = {p}"
+    );
+
+    let png = chart.export_png(2.0).await.unwrap();
+    assert!(png.length() > 0);
 }
