@@ -1839,8 +1839,13 @@ mod tests {
                     .unwrap();
             serde_json::from_str(&json).unwrap()
         };
+        // The default config as a new chart's: its layout kept fitted (#357).
+        let unframed = || renderer::Config {
+            layout_state: renderer::LayoutState::Fitted,
+            ..renderer::default::default_config()
+        };
         let framed = |preset| {
-            let mut config = renderer::default::default_config();
+            let mut config = unframed();
             config.apply_axis_preset(preset);
             config
         };
@@ -1852,10 +1857,10 @@ mod tests {
         );
         assert_eq!(config(&[feynman]), framed(renderer::AxisPreset::Hidden));
         assert_eq!(config(&[levels]), framed(renderer::AxisPreset::Grotrian));
-        assert_eq!(config(&[]), renderer::default::default_config());
+        assert_eq!(config(&[]), unframed());
         assert_eq!(
             config(&[renderer::SeriesConfig::line("l", "x", "y")]),
-            renderer::default::default_config()
+            unframed()
         );
         assert!(super::default_config_for_series_json("{").is_err());
         // The returned config is a valid document.
