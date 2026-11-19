@@ -187,7 +187,7 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
     push_raw_error_scope(renderer.device(), "internal");
     push_raw_error_scope(renderer.device(), "validation");
     add_contour_columns(&mut renderer);
-    let mut chart = chart();
+    let chart = chart();
     let all_levels: Vec<f64> = (0..renderer::MAX_CONTOUR_LEVELS)
         .map(|index| 0.1 + 3.8 * index as f64 / (renderer::MAX_CONTOUR_LEVELS - 1) as f64)
         .collect();
@@ -202,7 +202,7 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
         .expect("1024-label browser view");
     let mut items = [ChartDrawItem {
         view: &mut view,
-        chart: &mut chart,
+        chart: &chart,
         series: &series,
     }];
     let prepared = renderer
@@ -215,7 +215,7 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
         .expect("automatic contour label snapshot");
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, std::slice::from_ref(&config)),
+            renderer::ExportSource::chart(&chart, std::slice::from_ref(&config)),
             renderer::ExportOptions::panel(1.0),
         )
         .await
@@ -244,12 +244,12 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
 async fn cancelled_contour_export_does_not_cross_the_host_error_scope() {
     let mut renderer = renderer().await;
     add_contour_columns(&mut renderer);
-    let mut chart = chart();
+    let chart = chart();
     let configs = [automatic_series(vec![1.0, 2.0, 3.0])];
 
     push_raw_error_scope(renderer.device(), "validation");
     let mut export = Box::pin(renderer.export_rgba(
-        renderer::ExportSource::chart(&mut chart, &configs),
+        renderer::ExportSource::chart(&chart, &configs),
         renderer::ExportOptions::panel(1.0),
     ));
     let waker = Waker::from(Arc::new(NoopWake));
@@ -271,7 +271,7 @@ async fn cancelled_contour_export_does_not_cross_the_host_error_scope() {
 
     renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &configs),
+            renderer::ExportSource::chart(&chart, &configs),
             renderer::ExportOptions::panel(1.0),
         )
         .await

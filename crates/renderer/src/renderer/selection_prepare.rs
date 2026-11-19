@@ -681,7 +681,7 @@ mod tests {
             let mut frame = renderer
                 .prepare(&mut [ChartDrawItem {
                     view: &mut view,
-                    chart: &mut chart,
+                    chart: &chart,
                     series: &series,
                 }])
                 .unwrap();

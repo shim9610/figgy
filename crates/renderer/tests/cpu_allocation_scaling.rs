@@ -327,14 +327,11 @@ fn a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels() {
         no_gpu("prepare allocation measurement");
         return;
     };
-    // One chart per panel: a draw lends each chart mutably, since it may
-    // write the chart's pending layout fit (#357).
-    let mut charts: Vec<_> = (0..4).map(|_| Chart::new(panel_config(320, 240))).collect();
-    let mut views: Vec<_> = charts
-        .iter()
-        .map(|chart| {
+    let chart = Chart::new(panel_config(320, 240));
+    let mut views: Vec<_> = (0..4)
+        .map(|_| {
             renderer
-                .create_chart_view(chart, chart.config().chart_area.0)
+                .create_chart_view(&chart, chart.config().chart_area.0)
                 .unwrap()
         })
         .collect();
@@ -349,11 +346,10 @@ fn a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels() {
     for panels in [0usize, 1, 2, 4] {
         let mut items: Vec<ChartDrawItem<'_>> = views
             .iter_mut()
-            .zip(charts.iter_mut())
             .take(panels)
-            .map(|(view, chart)| ChartDrawItem {
+            .map(|view| ChartDrawItem {
                 view,
-                chart,
+                chart: &chart,
                 series: &[],
             })
             .collect();
@@ -424,7 +420,7 @@ fn prepare_cost_is_independent_of_series_length() {
     }
     renderer.end_gpu_frame();
 
-    let mut chart = Chart::new(panel_config(320, 240));
+    let chart = Chart::new(panel_config(320, 240));
     let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
@@ -459,7 +455,7 @@ fn prepare_cost_is_independent_of_series_length() {
         }];
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &mut chart,
+            chart: &chart,
             series: &series,
         }];
         // Two warm-ups: the first prepare of a series compiles what it needs
@@ -577,7 +573,7 @@ fn polar_field_prepare_cost_is_independent_of_its_rows() {
         }];
         let mut items = [ChartDrawItem {
             view: &mut view,
-            chart: &mut chart,
+            chart: &chart,
             series: &series,
         }];
         renderer.prepare(&mut items).unwrap();

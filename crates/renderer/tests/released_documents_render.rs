@@ -130,9 +130,9 @@ fn export_chart(
     let mut r = Renderer::try_new(device(), wgpu::TextureFormat::Rgba8Unorm, 4 * 1024 * 1024)
         .expect("renderer");
     upload(&mut r, uploads)?;
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     r.export_rgba(
-        ExportSource::chart(&mut chart, series),
+        ExportSource::chart(&chart, series),
         ExportOptions::document(scale),
     )
     .block_on()

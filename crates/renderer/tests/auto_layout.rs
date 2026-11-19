@@ -223,11 +223,13 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
     let default = renderer::default::default_config();
     let out = laid_out(&default);
     assert_eq!(laid_out(&out), out, "default: not idempotent");
+    // The x bands hold the labels' unhinted ink (#357): a pixel more than
+    // the hinted ink took (10 and 25 px), the bands being whole pixels.
     assert_eq!(
         layout_changes(&default, &out),
         [
-            "top_x.out_margin 8 -> 10",
-            "bottom_x.out_margin 80 -> 25",
+            "top_x.out_margin 8 -> 11",
+            "bottom_x.out_margin 80 -> 26",
             "left_y.out_margin 110 -> 49",
             "right_y.out_margin 32 -> 22",
             "chart_title.top_margin 32 -> 0",
@@ -248,8 +250,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "default",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 26",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "chart_title.top_margin 32 -> 0",
@@ -271,8 +273,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "series",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 26",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "colorbar.axis.out_margin 60 -> 55",
@@ -509,12 +511,14 @@ fn the_long_labels_scene_overlaps_as_laid_out_and_clears_after_auto_layout() {
     );
     // The band is set to exactly the labels, the gap (half the 18 px label
     // font), the title beside them and the edge padding (half the 22 px
-    // title font, 11 px): the 110 px band grows to 114 px, the title moves
+    // title font, 11 px): the 110 px band grows to 115 px, the title moves
     // outward by its offset and ends the padding (within the pixel the
-    // offset is rounded to) from the chart edge.
+    // offset is rounded to) from the chart edge. (114 px while the labels'
+    // exponents were hinted: unhinted scripts, #357, measure their ink a
+    // fraction of a pixel wider, and the band is whole pixels.)
     assert_eq!(
         (scene.config.left_y.out_margin, out.left_y.out_margin),
-        (110.0, 114.0)
+        (110.0, 115.0)
     );
     assert!(out.left_y.title_option.offset_y < 0.0);
     let title = rects(&out, Element::AxisTitle(Side::Left))[0];
@@ -566,10 +570,10 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
     let id = r
         .register_chart(scene.config.clone(), scene.series.clone())
         .expect("register");
-    let mut chart = renderer::Chart::new(scene.config.clone());
+    let chart = renderer::Chart::new(scene.config.clone());
     let before = r
         .export_png(
-            renderer::ExportSource::chart(&mut chart, &scene.series),
+            renderer::ExportSource::chart(&chart, &scene.series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -583,7 +587,7 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
     assert_ne!(applied, stamp, "the edit invalidates the chart");
     let after = r
         .export_png(
-            renderer::ExportSource::chart(&mut renderer::Chart::new(out.clone()), &scene.series),
+            renderer::ExportSource::chart(&renderer::Chart::new(out.clone()), &scene.series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -766,7 +770,7 @@ fn a_scaled_subplots_decorations_are_hit_and_dragged_where_they_are_drawn() {
     let scale = doc.subplot_text_factor(0);
     let export = |r: &mut Renderer, config: &Config, at: f32| {
         r.export_rgba(
-            renderer::ExportSource::chart(&mut renderer::Chart::new(config.clone()), &[]),
+            renderer::ExportSource::chart(&renderer::Chart::new(config.clone()), &[]),
             renderer::ExportOptions::document(at).with_clear(renderer::Color::WHITE),
         )
         .block_on()

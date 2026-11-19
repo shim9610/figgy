@@ -36,7 +36,7 @@ pub struct Config {
     pub line_offsets: Option<LineOffsets>,   // offset spectra: line series drawn stacked by a step; None = every series where its values are
     pub plot_background: Option<Color>,      // a fill under the data area and grid (#203); None = transparent
     pub background: Option<Color>,           // a fill over the whole chart area, under everything else (#265); None = transparent
-    pub layout_state: LayoutState,           // Fixed (default) | NeedsFit (the next default draw fits and stores the layout) | Fitted (#357)
+    pub layout_state: LayoutState,           // Fixed (default: drawn as stored) | Fitted (the chart object keeps the layout fitted: fitted when created and on chart edits, never by a draw) (#357)
 }
 ```
 
@@ -407,8 +407,8 @@ both omitted from JSON at their defaults:
 - no grid, and no frame.
 
 The host then writes `parallel_mut().axes` and `bottom_x.categories`.
-The preset starts as `LayoutState::NeedsFit`, so the first default draw
-fits the top band to the names. `SeriesConfig::parallel` rows stay opaque
+The preset is `LayoutState::Fitted`, so the chart made from it is created
+with the top band fitted to the names, and its edits keep it fitted. `SeriesConfig::parallel` rows stay opaque
 in the series ink, so the colour cycle still finds them unset; a theme's
 `ParallelTheme::line_opacity` (0.5 in the family members) or the host's
 alpha thins them.
@@ -1556,7 +1556,7 @@ pub struct Config {
     pub line_offsets: Option<LineOffsets>,   // 오프셋 스펙트럼: 선 시리즈를 일정 간격씩 밀어 쌓아 그린다. None이면 모든 시리즈를 값 그대로 그린다
     pub plot_background: Option<Color>,      // 데이터 영역과 격자 아래를 채우는 색(#203). None이면 투명하다
     pub background: Option<Color>,           // 차트 영역 전체를 다른 모든 요소 아래에서 채우는 색(#265). None이면 투명하다
-    pub layout_state: LayoutState,           // Fixed(기본값) | NeedsFit(다음 기본 그리기가 레이아웃을 맞춰 저장한다) | Fitted (#357)
+    pub layout_state: LayoutState,           // Fixed(기본값, 저장된 그대로 그린다) | Fitted(차트 객체가 레이아웃을 맞춘 상태로 유지한다. 만들 때와 차트 편집 때 맞추고, 그리기는 맞추지 않는다) (#357)
 }
 ```
 

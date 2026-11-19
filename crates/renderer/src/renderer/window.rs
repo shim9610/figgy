@@ -202,8 +202,7 @@ impl<'w> WindowedRenderer<'w> {
 
     /// Draw one frame.
     ///
-    /// Runs the mutable prepare phase (`prepare(items)`, which fits a layout
-    /// waiting for its fit first, #357), then acquires the
+    /// Runs the mutable prepare phase (`prepare(items)`), then acquires the
     /// current swap-chain texture, builds an encoder + render pass, records
     /// via `paint_prepared`, and submits and presents. The caller is only responsible for processing per-panel
     /// dirty flags (`chart.consume_*_dirty()` → `refresh_axis`).
@@ -216,39 +215,14 @@ impl<'w> WindowedRenderer<'w> {
         self.draw_prepared(clear, &prepared)
     }
 
-    /// [`Self::draw`] drawing each chart exactly as stored
-    /// ([`Renderer::prepare_as_stored`], #357): a layout waiting for its fit
-    /// is not fitted.
-    pub fn draw_as_stored(
-        &mut self,
-        clear: crate::color::Color,
-        items: &mut [ChartDrawItem<'_>],
-    ) -> Result<()> {
-        let prepared = self.inner.prepare_as_stored(items)?;
-        self.draw_prepared(clear, &prepared)
-    }
-
     /// Draw renderer-owned charts, selecting resident data or an active exact
-    /// streaming display independently for each chart. A chart whose layout
-    /// waits for its fit is fitted first ([`Renderer::prepare_registered`],
-    /// #357).
+    /// streaming display independently for each chart.
     pub fn draw_registered(
         &mut self,
         clear: crate::color::Color,
         items: &mut [RegisteredChartDrawItem<'_>],
     ) -> Result<()> {
         let prepared = self.inner.prepare_registered(items)?;
-        self.draw_prepared(clear, &prepared)
-    }
-
-    /// [`Self::draw_registered`] drawing each chart exactly as stored
-    /// ([`Renderer::prepare_registered_as_stored`], #357).
-    pub fn draw_registered_as_stored(
-        &mut self,
-        clear: crate::color::Color,
-        items: &mut [RegisteredChartDrawItem<'_>],
-    ) -> Result<()> {
-        let prepared = self.inner.prepare_registered_as_stored(items)?;
         self.draw_prepared(clear, &prepared)
     }
 

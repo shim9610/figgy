@@ -480,6 +480,7 @@ impl VectorOut for PdfOut {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
+        hint: bool,
         pen: [f32; 2],
         color: Color,
     ) {
@@ -493,7 +494,7 @@ impl VectorOut for PdfOut {
         self.set_alpha(color.a);
         self.color(color, b"rg");
         let start = self.content.len();
-        crate::text_render::glyph_outline(font, glyph, size, &mut |segment| {
+        crate::text_render::glyph_outline(font, glyph, size, hint, &mut |segment| {
             if segment_is_finite(&segment) {
                 self.push_segment(segment);
             }

@@ -456,8 +456,8 @@ fn the_timeline_config_puts_the_first_row_on_top_with_a_light_frame() {
         })
     );
     assert_eq!(plain.left_y.category_bands, None);
-    // The row labels are the host's: the first default draw fits them.
-    assert_eq!(config.layout_state, crate::config::LayoutState::NeedsFit);
+    // The row labels are the host's: the chart made from it fits them.
+    assert_eq!(config.layout_state, crate::config::LayoutState::Fitted);
     assert!(config.grid.show_major_x && !config.grid.show_major_y);
     assert!(!config.grid.show_minor_x && !config.grid.show_minor_y);
     assert!(config.top_x.line_visible && !config.right_y.line_visible);

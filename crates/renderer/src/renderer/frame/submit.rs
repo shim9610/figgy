@@ -124,36 +124,16 @@ impl Renderer {
     /// changes that invalidate the captured GPU work: target-pipeline rebuild,
     /// pool layout change, replacement of any captured column allocation, or
     /// another transform/axis write to a captured `ChartView`.
-    ///
-    /// A chart whose layout waits for its fit
-    /// ([`crate::LayoutState::NeedsFit`], #357) is fitted first, and the fit
-    /// is written into it ([`Chart::fit_pending_layout`]); the draw then
-    /// shows the chart as it is stored. [`Self::prepare_as_stored`] skips
-    /// the fit.
     pub fn prepare(&mut self, items: &mut [ChartDrawItem<'_>]) -> Result<PreparedFrame> {
-        let result = self.prepare_items_unreported(items, DrawLayout::FitPending);
-        self.reported(result)
-    }
-
-    /// [`Self::prepare`] drawing each chart exactly as stored (#357): a
-    /// layout waiting for its fit is drawn with the margins it holds and
-    /// stays [`crate::LayoutState::NeedsFit`].
-    pub fn prepare_as_stored(&mut self, items: &mut [ChartDrawItem<'_>]) -> Result<PreparedFrame> {
-        let result = self.prepare_items_unreported(items, DrawLayout::AsStored);
+        let result = self.prepare_items_unreported(items);
         self.reported(result)
     }
 
     pub(super) fn prepare_items_unreported(
         &mut self,
         items: &mut [ChartDrawItem<'_>],
-        layout: DrawLayout,
     ) -> Result<PreparedFrame> {
         self.health.check()?;
-        if layout == DrawLayout::FitPending {
-            for item in items.iter_mut() {
-                item.chart.fit_pending_layout();
-            }
-        }
         for item in items.iter_mut() {
             self.refresh_stale_view(item.view, item.chart)?;
         }
@@ -227,7 +207,7 @@ impl Renderer {
                 .get(hit)
                 .map(|element| element.element_id())
         });
-        let chart = Chart::new(config.into_owned());
+        let chart = Chart::stored(config.into_owned());
         self.refresh_axis_with_selection_unreported(
             view,
             &chart,
@@ -267,26 +247,7 @@ impl Renderer {
     /// ([`Self::set_chart_selection`]). Mutating or removing a captured chart
     /// makes its token stale. Changes to unrelated charts do not invalidate
     /// the captured chart stamps.
-    ///
-    /// A chart whose layout waits for its fit
-    /// ([`crate::LayoutState::NeedsFit`], #357) is fitted first and the fit
-    /// is stored ([`Self::fit_pending_layout`]); a chart that draws a
-    /// streamed source, and a monotonic chart, are drawn as stored.
-    /// [`Self::prepare_registered_as_stored`] skips the fit.
     pub fn prepare_registered(
-        &mut self,
-        items: &mut [RegisteredChartDrawItem<'_>],
-    ) -> Result<PreparedFrame> {
-        let result = self
-            .fit_pending_registered(items.iter().map(|item| item.chart_id))
-            .and_then(|()| self.prepare_registered_items_unreported(items));
-        self.reported(result)
-    }
-
-    /// [`Self::prepare_registered`] drawing each chart exactly as stored
-    /// (#357): a layout waiting for its fit stays
-    /// [`crate::LayoutState::NeedsFit`].
-    pub fn prepare_registered_as_stored(
         &mut self,
         items: &mut [RegisteredChartDrawItem<'_>],
     ) -> Result<PreparedFrame> {

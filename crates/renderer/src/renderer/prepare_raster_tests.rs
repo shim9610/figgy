@@ -27,11 +27,13 @@ fn config() -> Config {
     config
 }
 
+/// `prepare` of `chart` itself: its selection and raster stamp are what
+/// the redraw reads, so the draw borrows the chart rather than a copy.
 fn prepare(r: &mut Renderer, view: &mut ChartView, chart: &Chart) {
     drop(
         r.prepare(&mut [ChartDrawItem {
             view,
-            chart: &mut crate::Chart::new(chart.config().clone()),
+            chart,
             series: &[],
         }])
         .unwrap(),

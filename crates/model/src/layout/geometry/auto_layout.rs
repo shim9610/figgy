@@ -497,9 +497,8 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   it needs is placed the title gap past its labels, whatever offset it
 ///   had. A cell that shares no row or column with another keeps its own
 ///   fit, and a widening that would leave a cell no data area is not made.
-/// - **State.** A config whose [`Config::layout_state`] is
-///   [`LayoutState::NeedsFit`](crate::config::LayoutState::NeedsFit) comes
-///   back `Fitted` (#357); a `Fixed` or `Fitted` one keeps its state.
+/// - **State.** [`Config::layout_state`] is kept: the fit is the same in
+///   either state (#357).
 ///
 /// Not covered: overlay axes drawn over each other or over the parent's
 /// right or top axis (only `line_offset` separates them; a polar chart's radius
@@ -529,11 +528,6 @@ pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
     for (subplot, stored) in out.subplots.iter_mut().zip(&cfg.subplots) {
         subplot.config.scale_text_sizes(Some(&stored.config), 1.0);
         subplot.text_scale = stored.text_scale;
-    }
-    // A layout waiting for its fit has it now (#357); a fixed or fitted one
-    // keeps its state.
-    if out.layout_state.needs_fit() {
-        out.layout_state = crate::config::LayoutState::Fitted;
     }
     out
 }
@@ -1550,19 +1544,19 @@ pub(super) mod tests {
         cfg
     }
 
-    // #357: the layout state. `auto_layout` fits a `NeedsFit` layout into
-    // `Fitted` and keeps `Fixed` and `Fitted`; an edit of a fitted layout
-    // asks for its fit again; a move of the user fixes it; a rejected move
-    // changes nothing; and the state is absent from JSON while `Fixed`.
+    // #357: the layout state. `auto_layout` keeps the state and fits the
+    // same in either; a move of the user fixes a fitted layout; a rejected
+    // move changes nothing; and the state is absent from JSON while
+    // `Fixed`.
     #[test]
-    fn layout_state_follows_fits_edits_and_moves() {
-        use crate::config::LayoutState::{Fitted, Fixed, NeedsFit};
+    fn layout_state_follows_fits_and_moves() {
+        use crate::config::LayoutState::{Fitted, Fixed};
         let measure = Labels;
-        let mut pending = with_titles("Amplitude");
-        pending.layout_state = NeedsFit;
-        let fitted = auto_layout(&pending, &measure);
+        let mut kept = with_titles("Amplitude");
+        kept.layout_state = Fitted;
+        let fitted = auto_layout(&kept, &measure);
         assert_eq!(fitted.layout_state, Fitted);
-        let mut fixed = pending.clone();
+        let mut fixed = kept.clone();
         fixed.layout_state = Fixed;
         assert_eq!(
             auto_layout(&fixed, &measure),
@@ -1570,15 +1564,9 @@ pub(super) mod tests {
                 layout_state: Fixed,
                 ..fitted.clone()
             },
-            "the fit itself is the same in every state"
+            "the fit itself is the same in either state"
         );
         assert_eq!(auto_layout(&fitted, &measure), fitted, "idempotent");
-
-        assert_eq!(Fitted.after_edit(Fitted), NeedsFit);
-        assert_eq!(Fitted.after_edit(Fixed), Fixed);
-        assert_eq!(NeedsFit.after_edit(Fitted), Fitted);
-        assert_eq!(Fixed.after_edit(Fixed), Fixed);
-        assert_eq!(NeedsFit.after_edit(NeedsFit), NeedsFit);
 
         let mut moved = fitted.clone();
         assert_eq!(
@@ -1630,10 +1618,7 @@ pub(super) mod tests {
         let fixed = crate::defaults::config();
         let json = serde_json::to_value(&fixed).unwrap();
         assert!(json.get("layout_state").is_none());
-        for (state, wire) in [
-            (LayoutState::NeedsFit, "needs_fit"),
-            (LayoutState::Fitted, "fitted"),
-        ] {
+        for (state, wire) in [(LayoutState::Fitted, "fitted")] {
             let config = Config {
                 layout_state: state,
                 ..fixed.clone()

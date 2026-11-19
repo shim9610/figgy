@@ -166,7 +166,7 @@ fn heatmap_selection_matches_resident_with_bounded_axis_neighbours() {
             let actual = crate::test_gpu::block_on(f.renderer.finish_stream_export(op)).unwrap();
             let expected = resident
                 .export_rgba(
-                    crate::ExportSource::chart(&mut f.chart, &f.series),
+                    crate::ExportSource::chart(&f.chart, &f.series),
                     crate::ExportOptions::panel(scale),
                 )
                 .block_on()

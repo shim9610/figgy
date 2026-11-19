@@ -632,12 +632,12 @@ fn svg_and_pdf_exports_carry_the_series_as_vector_parts() {
     // with no other series writes no data image; the parts are clipped to
     // the data area, at 1x and 2x.
     let mut r = renderer();
-    let mut chart = chart();
+    let chart = chart();
     let list = [series("he", records())];
     for scale in [1.0f32, 2.0] {
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -672,7 +672,7 @@ fn svg_and_pdf_exports_carry_the_series_as_vector_parts() {
         assert!(svg.contains(&clip), "{scale}x: clipped to {clip}");
         let pdf = r
             .export_pdf(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -776,7 +776,7 @@ fn an_inset_covers_its_parent_and_takes_the_pointer() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -912,7 +912,7 @@ fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1068,7 +1068,7 @@ fn a_crowd_collapses_instead_of_fanning_out() {
     for k in 0..12 {
         levels
             .levels
-            .push(labelled(&format!("c{k}"), "b", 20.0 + 4.0 * k as f64));
+            .push(labelled(&format!("c{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     levels.levels.push(labelled("alone", "b", 92.0));
     let (space, measure) = layout_of(&chart, &levels);
@@ -1130,7 +1130,7 @@ fn crowded_labels_stack_apart_and_dense_runs_collapse() {
     for k in 0..5 {
         levels
             .levels
-            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.0 * k as f64));
+            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     for k in 0..20 {
         levels
@@ -1371,7 +1371,7 @@ fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
         let s = |v: u32| (v as f32 * scale).round() as u32;
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1422,7 +1422,7 @@ fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
         }
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1436,7 +1436,7 @@ fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
         );
         let pdf = r
             .export_pdf(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -2081,7 +2081,7 @@ fn formatted_labels_follow_the_selection_and_the_inset_view() {
     }
     // The inset draws the components and a line between two of them,
     // labelled from the source's records.
-    let mut chart = chart_with_inset();
+    let chart = chart_with_inset();
     let mut levels = labelled_records();
     levels.levels.push(EnergyLevel {
         role: LevelRole::Component {
@@ -2133,7 +2133,7 @@ fn formatted_labels_follow_the_selection_and_the_inset_view() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &list),
+                renderer::ExportSource::chart(&chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -2285,7 +2285,7 @@ fn svg_and_pdf_exports_write_the_corner_note_and_the_formatted_labels() {
     for scale in [1.0f32, 2.0] {
         let mut svg = |unit| {
             r.export_svg(
-                renderer::ExportSource::chart(&mut chart, &with_unit(unit)),
+                renderer::ExportSource::chart(&chart, &with_unit(unit)),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -2318,7 +2318,7 @@ fn svg_and_pdf_exports_write_the_corner_note_and_the_formatted_labels() {
         );
         let mut pdf = |unit| {
             r.export_pdf(
-                renderer::ExportSource::chart(&mut chart, &with_unit(unit)),
+                renderer::ExportSource::chart(&chart, &with_unit(unit)),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()

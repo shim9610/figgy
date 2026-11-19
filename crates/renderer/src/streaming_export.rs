@@ -152,7 +152,7 @@ impl Renderer {
         StreamSurface,
     )> {
         let chart_view =
-            self.create_chart_view(&Chart::new(config.clone()), config.chart_area.0)?;
+            self.create_chart_view(&Chart::stored(config.clone()), config.chart_area.0)?;
         let expected_view_revision = chart_view.advance_stream_revision()?;
         let displayed_view_revision = chart_view.advance_content_revision()?;
         data_render::update_scatter_transform(

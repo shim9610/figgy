@@ -162,7 +162,7 @@ async fn real_prewarm_reuses_pipelines_and_draws_contour_labels() {
     };
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &[series]),
+            renderer::ExportSource::chart(&chart, &[series]),
             renderer::ExportOptions::panel(1.),
         )
         .await

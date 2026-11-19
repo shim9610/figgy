@@ -191,7 +191,8 @@ fn draw_layers(
     let backdrop = matches!(config.draw_style, crate::config::DrawStyle::Milkyway(_));
     let stroker = DecoStroker::from_style(&config.draw_style);
     let fp = FontPolicy::for_style(&config.draw_style);
-    let mut sink = CanvasSink::new(if backdrop { None } else { below }, above, stroker, fp);
+    let mut sink =
+        CanvasSink::new(if backdrop { None } else { below }, above, stroker, fp).carrying(scale);
     emit_chart_chrome(config, &CpuTextMeasure::with_policy(fp), &mut sink, scale);
     sink.finish()
 }

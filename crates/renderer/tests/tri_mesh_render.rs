@@ -193,10 +193,7 @@ fn export(
 ) -> RasterImage {
     renderer
         .export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                series,
-            ),
+            renderer::ExportSource::chart(chart, series),
             renderer::ExportOptions::panel(scale),
         )
         .block_on()
@@ -1661,7 +1658,7 @@ fn a_mesh_on_an_overlay_draws_and_picks_by_its_axis() {
         // The whole document: the overlay layer draws too.
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1725,7 +1722,7 @@ fn a_mesh_subplot_draws_and_picks_its_triangles() {
         marker: None,
         text_scale: Default::default(),
     });
-    let mut doc = Chart::new(document.clone());
+    let doc = Chart::new(document.clone());
     let series = vec![mesh_series(
         MeshValueLocation::Vertices,
         Some(fill(Shading::Interpolated, FillMode::Continuous)),
@@ -1738,7 +1735,7 @@ fn a_mesh_subplot_draws_and_picks_its_triangles() {
     for scale in [1.0f32, 2.0] {
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut doc, &series),
+                renderer::ExportSource::chart(&doc, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1803,7 +1800,7 @@ fn an_annotation_draws_over_the_mesh() {
     for scale in [1.0f32, 2.0] {
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()

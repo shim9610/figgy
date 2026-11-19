@@ -130,8 +130,9 @@ fn push_segment(out: &mut String, segment: PathSegment) {
     }
 }
 
-/// Glyph definitions: face, size bits and glyph id to the `<defs>` id.
-type GlyphKey = (swash::CacheKey, u32, u16);
+/// Glyph definitions: face, size bits, glyph id and hinting to the `<defs>`
+/// id.
+type GlyphKey = (swash::CacheKey, u32, u16, bool);
 
 /// An opaque stroke's paint: colour, width and dash, compared bit for bit.
 #[derive(Clone, Copy, PartialEq)]
@@ -234,8 +235,8 @@ impl SvgOut {
     }
 
     /// The `<defs>` id of a glyph's outline, written on first use.
-    fn glyph_id(&mut self, font: FontRef<'static>, glyph: u16, size: f32) -> u32 {
-        let key = (font.key, size.to_bits(), glyph);
+    fn glyph_id(&mut self, font: FontRef<'static>, glyph: u16, size: f32, hint: bool) -> u32 {
+        let key = (font.key, size.to_bits(), glyph, hint);
         if let Some(id) = self.glyphs.get(&key) {
             return *id;
         }
@@ -243,7 +244,7 @@ impl SvgOut {
         self.glyphs.insert(key, id);
         put(&mut self.defs, format_args!("<path id=\"g{id}\" d=\""));
         let defs = &mut self.defs;
-        crate::text_render::glyph_outline(font, glyph, size, &mut |segment| {
+        crate::text_render::glyph_outline(font, glyph, size, hint, &mut |segment| {
             if segment_is_finite(&segment) {
                 push_segment(defs, segment);
             }
@@ -359,13 +360,14 @@ impl VectorOut for SvgOut {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
+        hint: bool,
         pen: [f32; 2],
         color: Color,
     ) {
         if !(pen[0].is_finite() && pen[1].is_finite() && size.is_finite() && size > 0.0) {
             return;
         }
-        let id = self.glyph_id(font, glyph, size);
+        let id = self.glyph_id(font, glyph, size, hint);
         let svg = &mut self.svg;
         put(svg, format_args!("<use xlink:href=\"#g{id}\" x=\""));
         push_num(svg, pen[0]);

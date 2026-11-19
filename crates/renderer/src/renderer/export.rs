@@ -173,23 +173,8 @@ pub enum ExportScope {
     Document,
 }
 
-/// Whether a draw or an export fits a layout that waits for its fit before
-/// drawing (#357).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum DrawLayout {
-    /// A chart whose layout is [`crate::LayoutState::NeedsFit`] is fitted
-    /// first, and the fit is written into the chart's config, which is then
-    /// `Fitted`: the default of every draw and export.
-    #[default]
-    FitPending,
-    /// The chart is drawn exactly as stored: a layout waiting for its fit is
-    /// drawn with the margins it holds and stays `NeedsFit`. Nothing is
-    /// written.
-    AsStored,
-}
-
-/// How an export renders: its [`ExportScope`], its `scale`, its background
-/// and its [`DrawLayout`].
+/// How an export renders: its [`ExportScope`], its `scale` and its
+/// background.
 ///
 /// - `scale` multiplies the logical size; fonts, line widths and margins
 ///   scale with it. It is raised to at least [`MIN_EXPORT_SCALE`]; past the
@@ -197,15 +182,11 @@ pub enum DrawLayout {
 ///   [`FiggyError::GpuResourceLimit`].
 /// - `clear` is the background, fully transparent by default. A vector
 ///   export draws it as a rectangle under everything.
-/// - `layout` is [`DrawLayout::FitPending`] by default: a chart whose
-///   layout waits for its fit is fitted, and the fit stored, before it is
-///   exported. [`Self::as_stored`] exports the document exactly as stored.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExportOptions {
     pub scope: ExportScope,
     pub scale: f32,
     pub clear: crate::color::Color,
-    pub layout: DrawLayout,
 }
 
 impl ExportOptions {
@@ -218,7 +199,6 @@ impl ExportOptions {
             scope: ExportScope::Panel,
             scale,
             clear: Self::TRANSPARENT,
-            layout: DrawLayout::FitPending,
         }
     }
 
@@ -228,7 +208,6 @@ impl ExportOptions {
             scope: ExportScope::Document,
             scale,
             clear: Self::TRANSPARENT,
-            layout: DrawLayout::FitPending,
         }
     }
 
@@ -236,27 +215,15 @@ impl ExportOptions {
     pub fn with_clear(self, clear: crate::color::Color) -> Self {
         Self { clear, ..self }
     }
-
-    /// These options exporting the document exactly as stored (#357,
-    /// [`DrawLayout::AsStored`]): no layout is fitted or written.
-    pub fn as_stored(self) -> Self {
-        Self {
-            layout: DrawLayout::AsStored,
-            ..self
-        }
-    }
 }
 
 /// The chart an export renders: a chart the caller holds, or one registered
 /// with the renderer.
-///
-/// The caller's chart is lent mutably: an export with
-/// [`DrawLayout::FitPending`] writes the fit of a layout waiting for it into
-/// the chart (#357).
+#[derive(Clone, Copy)]
 pub enum ExportSource<'a> {
     /// A chart and its series as the caller holds them.
     Chart {
-        chart: &'a mut Chart,
+        chart: &'a Chart,
         series: &'a [SeriesConfig],
     },
     /// A chart registered with [`Renderer::register_chart`]: its stored
@@ -278,7 +245,7 @@ pub enum ExportSource<'a> {
 
 impl<'a> ExportSource<'a> {
     /// [`Self::Chart`].
-    pub fn chart(chart: &'a mut Chart, series: &'a [SeriesConfig]) -> Self {
+    pub fn chart(chart: &'a Chart, series: &'a [SeriesConfig]) -> Self {
         Self::Chart { chart, series }
     }
 }
@@ -469,7 +436,7 @@ impl Renderer {
         source: ExportSource<'_>,
         options: ExportOptions,
     ) -> Result<RasterImage> {
-        match self.settle_export_layout(source, options.layout)? {
+        match source {
             ExportSource::Chart { chart, series } => {
                 self.export_rgba_with_clear_scoped(
                     chart,
@@ -567,8 +534,8 @@ impl Renderer {
     ) -> Result<RasterImage> {
         let (chart, series);
         let mut transient = Vec::new();
-        let (chart, series) = match self.settle_export_layout(source, options.layout)? {
-            ExportSource::Chart { chart, series } => (&*chart, series),
+        let (chart, series) = match source {
+            ExportSource::Chart { chart, series } => (chart, series),
             ExportSource::Registered(id) => {
                 (chart, series) = self.registered_export_state(id)?;
                 (&chart, series.as_slice())
@@ -643,8 +610,8 @@ impl Renderer {
         check_vector_scope(options)?;
         let (chart, series);
         let mut transient = Vec::new();
-        let (chart, series) = match self.settle_export_layout(source, options.layout)? {
-            ExportSource::Chart { chart, series } => (&*chart, series),
+        let (chart, series) = match source {
+            ExportSource::Chart { chart, series } => (chart, series),
             ExportSource::Registered(id) => {
                 (chart, series) = self.registered_export_state(id)?;
                 (&chart, series.as_slice())
@@ -712,7 +679,7 @@ impl Renderer {
         options: ExportOptions,
     ) -> Result<F::Output> {
         check_vector_scope(options)?;
-        match self.settle_export_layout(source, options.layout)? {
+        match source {
             ExportSource::Chart { chart, series } => {
                 self.export_vector_scoped::<F>(chart, series, options.scale, options.clear)
                     .await
@@ -736,31 +703,6 @@ impl Renderer {
                 result
             }
         }
-    }
-
-    /// `source` with its layout fitted first when `layout` asks for it and
-    /// the layout waits for its fit (#357): the caller's chart through
-    /// [`Chart::fit_pending_layout`], a registered chart through
-    /// [`Self::fit_pending_layout`] (a chart drawing a streamed source is
-    /// exported as stored). A monotonic chart's layout moves only through
-    /// its own calls (M4) and is exported as stored.
-    fn settle_export_layout<'s>(
-        &mut self,
-        mut source: ExportSource<'s>,
-        layout: DrawLayout,
-    ) -> Result<ExportSource<'s>> {
-        if layout == DrawLayout::FitPending {
-            match &mut source {
-                ExportSource::Chart { chart, .. } => {
-                    chart.fit_pending_layout();
-                }
-                ExportSource::Registered(id) => {
-                    self.fit_pending_layout_on_draw(*id)?;
-                }
-                ExportSource::Monotonic { .. } => {}
-            }
-        }
-        Ok(source)
     }
 
     /// A registered chart's stored config, as a [`Chart`], and its series,
@@ -788,7 +730,7 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        Ok((Chart::new(state.config.clone()), state.series.clone()))
+        Ok((Chart::stored(state.config.clone()), state.series.clone()))
     }
 
     /// The vector export in format `F`, with the PNG export's checks, device
@@ -966,7 +908,7 @@ impl Renderer {
         // export places the parent's area at the origin.
         let scaled_config = export_placed_config(chart.config(), scale, scope);
         let panel_rect = scaled_config.chart_area.0;
-        let scaled_chart = Chart::new(scaled_config);
+        let scaled_chart = Chart::stored(scaled_config);
 
         // 2) Temp ChartView with scaled axis textures, at the export scale.
         let view = self.create_chart_view_at(&scaled_chart, panel_rect, scale)?;

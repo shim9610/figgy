@@ -52,8 +52,8 @@ and radar documents' `text_sizes`) are additive.
     `..Default::default()`).
   - New preset `default::default_parallel_config()`: names on top, white
     label backdrops, light axes with outward major ticks and no minor
-    ticks, no grid and no frame. It starts as `LayoutState::NeedsFit`, so the
-    first default draw makes room for the names.
+    ticks, no grid and no frame. It is `LayoutState::Fitted`, so the chart
+    made from it is created with room for the names.
   - `ParallelTheme` gains `label_backdrop` and `line_opacity` (serde
     defaults `None`). The family members set the backdrop to their paper at
     0.8 and the rows to 0.5 opacity, and their colourbar grows to 0.6 of
@@ -67,40 +67,41 @@ and radar documents' `text_sizes`) are additive.
     both sides by the smaller of the arc and the ring thickness. Labels at
     the top and bottom of thin sunburst rings keep their size, and labels
     that ran past the rim now fit inside it.
-- **A new chart's layout is fitted by its first draw, and the as-stored
-  draw** ([#357](https://github.com/shim9610/figgy/issues/357)). A chart
-  drawn without `fit_layout()` kept the default margins, so an 800 × 600
-  line chart with axis titles drew its y title over `-0.600` tick labels.
-  `Config` has `layout_state` (`LayoutState`): `Fixed` (the default and
-  the value of every document without the key, drawn exactly as stored),
-  `NeedsFit` (the next default draw or export runs `layout::auto_layout`,
-  writes the fit into the config and marks it `Fitted`) and `Fitted` (an
-  edit marks it `NeedsFit` again). `Chart::sized`, `Chart::placed` and the
-  WASM kernel's new chart start `NeedsFit`; `Chart::new(config)` and
-  `Config::default()` keep `Fixed`. A successful `Config::nudge` (every
-  decoration drag and plot-area drag or resize) and
-  `Config::fit_to_data_area` set `Fixed`, so no later draw undoes the
-  user's layout. Monotonic charts are registered and kept `Fixed` (M4);
-  a chart that draws a streamed source is drawn as stored, and
-  `Renderer::fit_pending_layout` refuses it (rule 8). Drawing as stored:
-  `Renderer::prepare_as_stored`, `prepare_registered_as_stored`,
-  `WindowedRenderer::draw_as_stored`, `draw_registered_as_stored`,
-  `ExportOptions::as_stored()` (`DrawLayout`), and in the browser
-  `frame_as_stored`, `export_png_as_stored`, `export_svg_as_stored` and
-  `export_pdf_as_stored`. Documents written before the key draw and export
-  the same image. Migration:
-  - `ChartDrawItem::chart` and `ExportSource::Chart::chart` (and
-    `ExportSource::chart`) take `&mut Chart`, since a default draw writes
-    the fit into the chart: `&chart` → `&mut chart`. `ExportSource` is no
-    longer `Copy`: build it again for each export. Two draw items can no
-    longer lend one chart; draw a second `Chart::new(config.clone())`.
-  - `ExportOptions` has a `layout` field: a struct literal adds
-    `layout: DrawLayout::FitPending`, or uses `ExportOptions::panel` /
-    `document`.
-  - An exhaustive `Config { .. }` pattern or literal names `layout_state`.
-  - A host that sets margins on a `Fitted` chart through `config_mut` or
-    `set_chart_config` also sets `layout_state = LayoutState::Fixed`, or
-    the next draw fits them again.
+- **A new chart is created with its layout fitted**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). A chart drawn
+  without `fit_layout()` kept the default margins, so an 800 × 600 line
+  chart with axis titles drew its y title over `-0.600` tick labels.
+  `Config` has `layout_state` (`LayoutState`): `Fixed` (the default and the
+  value of every document without the key, drawn exactly as stored) and
+  `Fitted` (the chart keeps the layout fitted to what it holds). The
+  layout is fitted when a chart object is created and when a chart edit
+  changes what it holds, never when it is drawn or exported:
+  - `Chart::sized`, `Chart::placed`, `default::config_for_series`,
+    `default::default_parallel_config` and a categorical, box plot or radar
+    document converted with `text_sizes` and no explicit data area are
+    `Fitted`. `Chart::new(config)`, `Renderer::register_chart` and the WASM
+    kernel fit a `Fitted` config when they create the chart
+    (`layout::auto_layout` with `CpuTextMeasure`); a `Fixed` one is kept as
+    given, and `Config::default()` stays `Fixed`.
+  - The chart methods that edit it (`with_title`, the axis titles, ranges
+    and fits, legend, overlays, units, `set_area`, themes,
+    `with_axis_range_change`, `with_decoration_change`), the registered
+    chart's config edits (`set_chart_config`, view and range fits) and the
+    kernel's setters fit a `Fitted` layout again as part of the edit. An
+    edit through `Chart::config_mut()` is not fitted: call `fit_layout()`
+    after it.
+  - A successful `Config::nudge` (every decoration drag and plot-area drag
+    or resize) and `Config::fit_to_data_area` set `Fixed`, so no later edit
+    undoes the user's layout. Monotonic charts are registered and kept
+    `Fixed` (M4).
+  - Draws (`prepare`, `prepare_registered`, `WindowedRenderer::draw*`, the
+    kernel's `frame()`) and exports draw the stored config as it is and
+    write nothing; they take `&Chart` as before.
+  Documents written before the key draw and export the same image.
+  Migration: an exhaustive `Config { .. }` pattern or literal names
+  `layout_state`; a host that sets margins of its own on a `Fitted` chart
+  sets `layout_state = LayoutState::Fixed` with them, or the next chart
+  edit fits them again.
 - **Documents built in Rust draw the Cartesian text sizes**
   ([#357](https://github.com/shim9610/figgy/issues/357)). The categorical,
   box plot and radar readers drew every text at their one `font_size` (14 px)
@@ -110,13 +111,44 @@ and radar documents' `text_sizes`) are additive.
   title, tick label, legend). Without it (the key absent, every document
   written before) the converters draw as before; the Rust `Default` sets
   `DocumentTextSizes::CARTESIAN`, and a converted document with
-  `text_sizes` and no explicit data area fits its layout on its first
-  draw. `font_size` keeps its serde default of 14. The Gallery theme's
+  `text_sizes` and no explicit data area is `LayoutState::Fitted`: its
+  chart is created with its layout fitted. `font_size` keeps its serde default of 14. The Gallery theme's
   document chrome (category bars, box plot, radar) takes the gallery sizes
   26/18/16 and the documented 14 px legend instead of 27/18/18/18.
   Migration: an exhaustive literal of `CategoricalChart`, `BoxPlotChart`
   or `RadarChart` names `text_sizes` (`None` keeps the former sizes).
 
+- **Text looks the same at every scale** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  A 2x (or any scale) export or display is the 1x drawing scaled; before,
+  text was hinted or not by its pixel size, and the layout read the
+  hinted outlines, so the same label sat and snapped differently at 1x
+  and 2x. Appearance only; no value, data position or pick moves.
+  - Glyphs are hinted only in a 1x drawing: base text up to 32 px there,
+    and never a glyph at a script position (a superscript or subscript
+    segment, a Unicode script character, a math leaf in script style).
+    Every other display or export scale draws unhinted outlines: grid
+    fitting snaps a glyph differently on each pixel grid, so hinting at
+    two scales could not keep 2x the 1x drawing scaled. One decision
+    (`glyph_hinting`) serves the canvas, SVG and PDF.
+  - The layout measures unhinted outlines (advances, ascent, descent and
+    ink extents), so label, title and band positions do not depend on the
+    scale; hinting changes pixels only.
+  - The math layout keeps script shifts and fraction, radical, operator
+    and limit offsets fractional instead of rounding them to device
+    pixels.
+  - The segment font sizes of category labels and group headers now scale
+    with an export or display scale, as every other rich text does.
+  - What moves in pixels, documents written by earlier releases included:
+    text in displays and exports at other scales than 1x is drawn
+    unhinted (before, up to 32 drawn pixels was hinted), scripts render
+    slightly softer (on the affected labels a mean
+    colour difference over the inked pixels of at most 25 of 255, the 99th
+    percentile at most 186, the script edges moving within a pixel), and
+    labels whose position follows their ink extents move by a fraction of
+    a pixel. A stored layout is drawn as stored; a layout fitted again
+    (`fit_layout`, a `Fitted` chart's edit) may take a pixel more where a
+    band holds unhinted ink (the default chart's x bands are 11 and 26 px
+    instead of 10 and 25 px).
 - **Grotrian (energy-level) default look** ([#357](https://github.com/shim9610/figgy/issues/357) item 10).
   Appearance only; values, positions and picks are unchanged, and a saved
   document draws as it did.
@@ -379,7 +411,7 @@ and radar documents' `text_sizes`) are additive.
 
   Tests: `every_other_row_gets_a_band_across_the_plot`, `bands_cover_every_category_with_no_limit`, `bands_round_trip_and_older_documents_have_none`, `a_band_fill_outside_the_colour_range_is_refused` (`chrome/grid.rs`); `contrast_ink_is_opaque_and_only_on_range_bars`; the updated `timeline_bars_colour_each_row_and_draw_flat` and `the_timeline_config_puts_the_first_row_on_top_with_a_light_frame`.
 
-- **Timeline look for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). `RangeColor::ByRow { colors }` colours row `i` of a range bar series with `colors[i % colors.len()]` (no colours draw the series colour); it reads no column and the list cycles, so every row draws. Its colours must be opaque (`RuleKind::RangeBarStateColors`, whose message now names row colours too). New helpers: `SeriesConfig::timeline_bars(id, positions, start, end)` (row colours from `ColorCycle::Balanced`, the cycle's first as the series colour, flat bars with 3 px corners) and `default::default_timeline_config()` (horizontal bars over 0.8 of a row, `left_y.inverted` so the first row is at the top, value gridlines only, the open frame in light grey without tick marks, and `LayoutState::NeedsFit` so the first default draw fits the layout to the row labels). A theme recolours a row-coloured series from its palette, and a `RangeBars` theme no longer draws gridlines along a categorical position axis; the gallery's range bars take the open frame without tick marks. `SeriesConfig::range_bars`, `default_config` and every serde default are unchanged, and documents written before parse, read back and draw the same. `RangeColor` gains a variant: an exhaustive `match` on it adds a `RangeColor::ByRow { .. }` arm. Tests: `row_colours_validate_read_no_column_and_step_by_row`, `timeline_bars_colour_each_row_and_draw_flat`, `the_timeline_config_puts_the_first_row_on_top_with_a_light_frame`, `a_series_coloured_by_row_takes_the_palette`, `range_bar_themes_keep_only_the_value_gridlines_on_a_category_axis`.
+- **Timeline look for range bars** ([#357](https://github.com/shim9610/figgy/issues/357), item 14). `RangeColor::ByRow { colors }` colours row `i` of a range bar series with `colors[i % colors.len()]` (no colours draw the series colour); it reads no column and the list cycles, so every row draws. Its colours must be opaque (`RuleKind::RangeBarStateColors`, whose message now names row colours too). New helpers: `SeriesConfig::timeline_bars(id, positions, start, end)` (row colours from `ColorCycle::Balanced`, the cycle's first as the series colour, flat bars with 3 px corners) and `default::default_timeline_config()` (horizontal bars over 0.8 of a row, `left_y.inverted` so the first row is at the top, value gridlines only, the open frame in light grey without tick marks, and `LayoutState::Fitted` so the chart made from it is created with its layout fitted to the row labels). A theme recolours a row-coloured series from its palette, and a `RangeBars` theme no longer draws gridlines along a categorical position axis; the gallery's range bars take the open frame without tick marks. `SeriesConfig::range_bars`, `default_config` and every serde default are unchanged, and documents written before parse, read back and draw the same. `RangeColor` gains a variant: an exhaustive `match` on it adds a `RangeColor::ByRow { .. }` arm. Tests: `row_colours_validate_read_no_column_and_step_by_row`, `timeline_bars_colour_each_row_and_draw_flat`, `the_timeline_config_puts_the_first_row_on_top_with_a_light_frame`, `a_series_coloured_by_row_takes_the_palette`, `range_bar_themes_keep_only_the_value_gridlines_on_a_category_axis`.
 
 - **Legend line marks take their series' stroke width** ([#357](https://github.com/shim9610/figgy/issues/357), item 11). A legend rule was always 0.09 em thick (about 1 px at the 14 px legend), so a 3 px Gallery series showed a 1 px sample. New: `RichSegment::rule_thickness_em: Option<f32>`, the rule's bar thickness in em (× effective font size), with the builder `RichSegment::with_rule_thickness` and the constant `text::RULE_THICKNESS_EM` (0.09), the thickness drawn when the field is `None`. `series_symbol_segments` stores the series' stroke width at the nominal 14 px legend (`width / 14` em, as dash patterns are stored), never thinner than 0.09 em, so a 1 px series keeps the mark it had and a 3 px series gets a 3 px mark. Every line-drawn mark takes it: xy lines (with or without markers), contours, meshes, energy levels, Feynman diagrams, monotonic lines, streamlines, parallel and ternary lines, radar outlines and vector shafts. `RichText::within_limits` holds the field to 0.01..4 em. The mark's length is unchanged: `SYMBOL_FIELD_EM` stays 2.0 em, matplotlib's default `handlelength`. Older documents keep their stored legend: a segment without the key parses as `None` and draws and re-serializes exactly as before, and the legacy converters (`Config::from_categorical`, `from_boxplot`, `from_radar`) store `None` too. The thickness changes only when a legend symbol is rebuilt from its series (`with_legend_from`, applying a theme, the browser's automatic legend updates). Migration: a `RichSegment { .. }` struct literal that lists every field adds `rule_thickness_em: None`.
 
@@ -1911,6 +1943,7 @@ and radar documents' `text_sizes`) are additive.
 - **`RendererDevice::request_async` and figgy-owned devices** ([#322](https://github.com/shim9610/figgy/issues/322)). New, additive: `RendererDevice::request_async(&adapter)` requests a device with figgy's descriptor (`gpu::request_device_async`) and bundles it as `RendererDevice::new` does, recording that figgy owns the device; the windowed and headless constructors build their bundles this way. In the browser, the drop of the last holder of such a bundle (a renderer, a radial renderer, a clone or a pending ticket) destroys the device after its submitted work (see the browser entry for the Chromium deadlock this avoids). Behavior change for browser hosts that keep the raw `wgpu::Device` of a windowed or headless renderer (`device()`) after dropping every figgy holder of it: keep a `renderer_device()` clone as long as the device is used. `RendererDevice::new` and `RendererDevice::blocking` bundles stay the host's and are never destroyed. Native drops are unchanged.
 
 - **A typed data pick compiles only the kernels its chart dispatches** ([#327](https://github.com/shim9610/figgy/issues/327)). Enabling GPU picking (`enable_gpu_picking`, `enable_gpu_picking_async`, `prewarm_all` and the `Picking` preparation) created all 13 typed data pick kernels: histogram, field contour and cell, vector grid, category bar, box plot, range bar, violin, parallel, triangle mesh, value label and the two streamed-pick reducers. In a browser, the first pick of a small radar chart waited for every one of them; on SwiftShader that took minutes. The data pick bundle now holds only its layouts and placeholders. Each kernel is created by the first pick that dispatches it and kept by the renderer's picker (`DataPickKernels`, next to the exact point pipelines of [#299](https://github.com/shim9610/figgy/issues/299)); a pick of a kind whose kernel does not exist yet creates it, so a pick never fails for that reason. A radar or XY line pick creates none of them. New, browser only: `Renderer::compile_data_pick_pipelines_async` and `WindowedRenderer::compile_data_pick_pipelines_at` compile, through `createComputePipelineAsync`, only the kernels a typed pick of that chart at that position dispatches, then create them from the browser's cache; a streamed typed pick compiles its two reducers the same way. As with `compile_pick_pipelines_at`, a compile the browser rejects is left to the creation, which reports its error as before. `prewarm_all` and the `Picking` preparation no longer create the data kernels, matching the exact point pipelines. Native picks create the kernels they need when they run; a data pick returns the same results as before.
+- **The first radar pick compiles its exact pipeline about 3.6 times faster on SwiftShader** ([#363](https://github.com/shim9610/figgy/issues/363)). The first pick of a radar chart waited for `pick_exact_candidates`, whose compile time on Chromium's SwiftShader grew with every inlined copy of the projection and validity helpers and with long short-circuit `&&` chains. Those helpers are now called once inside short loops over the corners, ends, quads or axes, and the validity tests use the non-short-circuit `&` / `|`, in the picker and in the shared `sample_valid`, `area_segment_drawn`, `area_corner_ndc`, `axis_baseline_ndc` and `stem_end_ndc` fragments. Calls and arguments are unchanged, so picks and drawn pixels are the same. Measured alone, the radar variant fell from 9.8 s to 2.7 s and the slowest measured variant (a dashed, styled line with a fill) from 231 s to 0.8 s; [`ci/shader-compilation.md`](ci/shader-compilation.md#exact-point-picker-compilation-363) has the table. No pipeline, module or cache is added and the exact pipelines stay lazy. A generated table, `crates/renderer/tests/support/pick_variants.csv`, lists every exact pick pipeline a chart can reach with its measured SwiftShader compile time and a budget; `ci/shader_compile.cjs --pick-variants` measures it, and `verify.py static` fails when the WGSL changes until the table is regenerated and re-measured.
 
 - **Candidate fits and style domain fits** ([#312](https://github.com/shim9610/figgy/issues/312)). `Renderer::fit_config(&config, &series, padding) -> Result<Config>` returns a candidate configuration with the ranges of every layer fitted as `fit_ranges` fits an installed chart, through the same code (`Chart::auto_fit_every_layer` now calls the shared pure fit), but with the padding given (finite, at least 0, else `FitPadding`) and without changing any chart. `Renderer::fit_y_axes_config` is the same fit with every X axis given back exactly as it came (`bottom_x`, `top_x`, each overlay's `x_axis`, in every subplot too); the Y axes, a 3D chart's z axis and parallel axes are fitted. A candidate whose overlays or subplots name a series that is not in `series` is refused (`LayerSeriesUnknown`), as are invalid overlays, subplots or line offsets, unregistered columns, streamed sources (`ColumnNotResident`, rule 8) and monotonic series. `Renderer::fit_point_size_domain(&mut series)` fits a scatter's `PointSizeMap` domain to its size column's cached statistics (`PointSizeMap::fit_domain`), and `Renderer::fit_vector_scale(&config, &mut series, target)` fits a vector series' scale so the longest vector the U/V columns' statistics allow draws `target` long (`VectorStyle::fit_scale`; a grid unions its columns, a point field drawn in 3D uses `fit_scale_3d`). Both change only that series' map or scale, read nothing back, and refuse an empty, non-finite or degenerate extent with the series unchanged.
 

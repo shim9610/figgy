@@ -71,7 +71,7 @@ fn save(
     }
     chart.fit_layout();
     let image = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&mut chart, &series),
+        renderer::ExportSource::chart(&chart, &series),
         renderer::ExportOptions::panel(1.0),
     )?;
     let colored = image

@@ -56,7 +56,7 @@ fn rgb(color: Color) -> [u8; 3] {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
     r.export_rgba_blocking(
-        ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
+        ExportSource::chart(chart, series),
         ExportOptions::panel(scale).with_clear(Color::WHITE),
     )
     .unwrap()
@@ -196,10 +196,10 @@ fn cycled_series_pick_highlight_and_step() {
 #[test]
 fn vector_exports_carry_the_cycle_colours() {
     let mut r = Renderer::headless_blocking().expect("headless renderer");
-    let (mut chart, series) = chart_and_series(&mut r);
+    let (chart, series) = chart_and_series(&mut r);
     let options = ExportOptions::document(1.0);
     let svg = r
-        .export_svg_blocking(ExportSource::chart(&mut chart, &series), options)
+        .export_svg_blocking(ExportSource::chart(&chart, &series), options)
         .unwrap();
     for (k, item) in series.iter().enumerate() {
         let [red, green, blue] = rgb(line_color(item));
@@ -207,7 +207,7 @@ fn vector_exports_carry_the_cycle_colours() {
         assert!(svg.contains(&hex), "series {k}: {hex} not in the SVG");
     }
     let pdf = r
-        .export_pdf_blocking(ExportSource::chart(&mut chart, &series), options)
+        .export_pdf_blocking(ExportSource::chart(&chart, &series), options)
         .unwrap();
     assert!(pdf.starts_with(b"%PDF-"));
 }

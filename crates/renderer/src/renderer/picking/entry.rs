@@ -271,6 +271,35 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> std::result::Result<Option<crate::gpu_pick::PickExactKey>, crate::gpu_pick::GpuPickError>
     {
+        let Some(query) = self.exact_pick_query(id, request)? else {
+            return Ok(None);
+        };
+        let picker = &self.picker;
+        let active = picker
+            .active
+            .as_ref()
+            .ok_or(crate::gpu_pick::GpuPickError::Internal(
+                "successful chart preparation publishes an active picker registry",
+            ))?;
+        Ok(active
+            .engine
+            .exact_variants(&query)
+            .find(|key| picker.exact.get(*key).is_none()))
+    }
+
+    /// The query a pick of chart `id` at `request` scans with, after the
+    /// chart is prepared and the layer routed as [`Self::pick_chart`] does:
+    /// its exact variants are the active registry's under it. `None` when
+    /// the chart needs the full shaders and the picker's are basic (the
+    /// pick reports this itself). Also the pick variant table's source
+    /// (`picking/variant_table_tests.rs`, #363).
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(super) fn exact_pick_query(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<Option<crate::gpu_pick::GpuPickQuery>, crate::gpu_pick::GpuPickError>
+    {
         self.pick_health()?;
         self.admit_chart_shaders(id);
         let state = self
@@ -306,25 +335,14 @@ impl Renderer {
             // The pick reports this itself.
             return Ok(None);
         }
-        let query = crate::gpu_pick::GpuPickQuery {
+        Ok(Some(crate::gpu_pick::GpuPickQuery {
             transform,
             chart_rect_px: [0.0; 4],
             data_area_px: None,
             canvas_position_px: request.canvas_position_px,
             max_distance_px: request.max_distance_px,
             draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
-        };
-        let picker = &self.picker;
-        let active = picker
-            .active
-            .as_ref()
-            .ok_or(crate::gpu_pick::GpuPickError::Internal(
-                "successful chart preparation publishes an active picker registry",
-            ))?;
-        Ok(active
-            .engine
-            .exact_variants(&query)
-            .find(|key| picker.exact.get(*key).is_none()))
+        }))
     }
 
     /// Submit one exact pick against renderer-owned chart state.

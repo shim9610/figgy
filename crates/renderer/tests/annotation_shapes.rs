@@ -201,7 +201,7 @@ fn is_black(p: [u8; 4]) -> bool {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
     r.export_rgba(
-        renderer::ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
+        renderer::ExportSource::chart(chart, series),
         renderer::ExportOptions::document(scale),
     )
     .block_on()
@@ -433,10 +433,10 @@ fn shapes_hit_drag_resize_and_move_their_vertices() {
 #[test]
 fn the_vector_export_writes_closed_paths_for_shapes() {
     let mut r = renderer();
-    let mut chart = chart(shapes());
+    let chart = chart(shapes());
     let svg = r
         .export_svg(
-            renderer::ExportSource::chart(&mut chart, &[]),
+            renderer::ExportSource::chart(&chart, &[]),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()

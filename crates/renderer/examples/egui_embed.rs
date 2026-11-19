@@ -409,7 +409,7 @@ impl CallbackTrait for FiggyCallback {
         let series = panel_series(&panel.series, &panel.styles);
         let mut items = [ChartDrawItem {
             view: &mut panel.view,
-            chart: &mut panel.chart,
+            chart: &panel.chart,
             series: &series,
         }];
         let prepared = state.renderer.prepare(&mut items);
@@ -631,11 +631,11 @@ impl eframe::App for DemoApp {
                             .callback_resources
                             .get_mut::<FiggyState>()
                             .expect("FiggyState");
-                        let (renderer, panels) = (&mut state.renderer, &mut state.panels);
-                        for (i, panel) in panels.iter_mut().enumerate() {
+                        let (renderer, panels) = (&mut state.renderer, &state.panels);
+                        for (i, panel) in panels.iter().enumerate() {
                             let path = format!("/tmp/figgy_egui_panel_{i}.png");
                             match renderer.save_blocking(
-                                renderer::ExportSource::chart(&mut panel.chart, &panel.series),
+                                renderer::ExportSource::chart(&panel.chart, &panel.series),
                                 renderer::ExportOptions::panel(scale),
                                 &path,
                             ) {

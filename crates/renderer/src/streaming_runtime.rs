@@ -1304,7 +1304,7 @@ impl Renderer {
         };
 
         let previous_config = snapshot.config.clone();
-        let chart = Chart::new(config.clone());
+        let chart = Chart::stored(config.clone());
         let panel = snapshot.view.panel_rect;
         let updated = if snapshot.config == config {
             Ok(())
@@ -2479,7 +2479,7 @@ impl Renderer {
             statistics.insert(id.clone(), cache);
         }
 
-        let snapshot_chart = Chart::new(config.clone());
+        let snapshot_chart = Chart::stored(config.clone());
         let owned_view = self.create_chart_view(&snapshot_chart, config.chart_area.0)?;
         let job = self
             .begin_chart_stream_surface_with_sources(
@@ -2785,7 +2785,7 @@ impl Renderer {
         }
         source_versions.sort_unstable_by(|left, right| left.id.cmp(&right.id));
 
-        let snapshot_chart = Chart::new(render_config.clone());
+        let snapshot_chart = Chart::stored(render_config.clone());
         let owned_view = self.create_chart_view(&snapshot_chart, render_config.chart_area.0)?;
         let job = self
             .begin_chart_stream_surface_with_sources(

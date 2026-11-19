@@ -239,12 +239,12 @@ fn is_selection(p: [u8; 4]) -> bool {
 fn cells_paint_their_channels_at_1x_and_2x() {
     let mut r = renderer();
     let ids = upload(&mut r, "img", &MatrixOrientation::ColumnsAreX, 1.0);
-    let mut chart = chart();
+    let chart = chart();
     let series = [flat("img", &ids)];
     for scale in [1.0f64, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(scale as f32),
             )
             .block_on()
@@ -329,7 +329,7 @@ fn cells_paint_their_channels_at_1x_and_2x() {
 fn a_byte_range_maps_128_to_mid_grey() {
     let mut r = renderer();
     let ids = upload(&mut r, "byte", &MatrixOrientation::ColumnsAreX, 255.0);
-    let mut chart = chart();
+    let chart = chart();
     let range = [0.0, 255.0];
     let series = [image(
         "byte",
@@ -340,7 +340,7 @@ fn a_byte_range_maps_128_to_mid_grey() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -369,7 +369,7 @@ fn a_byte_range_maps_128_to_mid_grey() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -411,7 +411,7 @@ fn bilinear(x: f64, y: f64) -> Color {
 fn interpolated_shading_blends_each_channel_between_sample_points() {
     let mut r = renderer();
     let ids = upload(&mut r, "img", &MatrixOrientation::ColumnsAreX, 1.0);
-    let mut chart = chart();
+    let chart = chart();
     let series = [image(
         "img",
         &ids,
@@ -421,7 +421,7 @@ fn interpolated_shading_blends_each_channel_between_sample_points() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -481,7 +481,7 @@ fn interpolated_shading_blends_each_channel_between_sample_points() {
 fn columns_are_y_reads_the_grid_transposed() {
     let mut r = renderer();
     let ids = upload(&mut r, "img", &MatrixOrientation::ColumnsAreY, 1.0);
-    let mut chart = chart();
+    let chart = chart();
     let series = [image(
         "img",
         &ids,
@@ -491,7 +491,7 @@ fn columns_are_y_reads_the_grid_transposed() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -526,7 +526,7 @@ fn columns_are_y_reads_the_grid_transposed() {
 fn a_hexagonal_lattice_paints_its_centres() {
     let mut r = renderer();
     let ids = upload(&mut r, "img", &MatrixOrientation::ColumnsAreX, 1.0);
-    let mut chart = chart();
+    let chart = chart();
     let mut series = flat("img", &ids);
     if let DataRenderType::RgbImage(RgbImageSeries {
         red, green, blue, ..
@@ -538,7 +538,7 @@ fn a_hexagonal_lattice_paints_its_centres() {
     }
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &[series]),
+            renderer::ExportSource::chart(&chart, &[series]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -679,7 +679,7 @@ fn the_picked_highlight_outlines_the_cell() {
     let series = [flat("img", &ids)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -734,7 +734,7 @@ fn the_picked_highlight_outlines_the_cell() {
 fn registration_names_what_an_image_cannot_read() {
     let mut r = renderer();
     let ids = upload(&mut r, "img", &MatrixOrientation::ColumnsAreX, 1.0);
-    let mut chart = chart();
+    let chart = chart();
     let reason = |r: &mut Renderer, config: &renderer::Config, series: SeriesConfig| {
         let what = format!("{:?}", series.render_type);
         match r.register_chart(config.clone(), vec![series]) {
@@ -870,7 +870,7 @@ fn registration_names_what_an_image_cannot_read() {
         .unwrap();
     r.remove_chart(id).unwrap();
     r.export_rgba(
-        renderer::ExportSource::chart(&mut chart, &[flat("img", &ids)]),
+        renderer::ExportSource::chart(&chart, &[flat("img", &ids)]),
         renderer::ExportOptions::panel(1.0),
     )
     .block_on()
@@ -928,7 +928,7 @@ fn a_two_thousand_square_image_draws_and_picks() {
     let started = std::time::Instant::now();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &[series.clone()]),
+            renderer::ExportSource::chart(&chart, &[series.clone()]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()

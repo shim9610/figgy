@@ -221,14 +221,15 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
 
-    // '₀' (U+2080) renders as a subscript segment; plain '0' would not.
+    // `$…$` spans are TeX: `V_0` draws a subscript 0 and `e^{-t}` a
+    // superscript, as script segments.
     let series = vec![
         SeriesConfig::line("charge", "rc_t", "rc_charge")
-            .label("Charging V₀(1−e⁻ᵗ)")
+            .label("Charging $V_0(1-e^{-t})$")
             .color(Color::from_rgb8(220, 90, 60))
             .width(2.0),
         SeriesConfig::line("discharge", "rc_t", "rc_discharge")
-            .label("Discharging V₀·e⁻ᵗ")
+            .label("Discharging $V_0 e^{-t}$")
             .color(Color::from_rgb8(60, 130, 210))
             .width(2.0),
     ];
@@ -676,10 +677,10 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        for (i, panel) in self.panels.iter_mut().enumerate() {
+        for (i, panel) in self.panels.iter().enumerate() {
             let path = format!("/tmp/figgy_winit_panel_{i}.png");
             match renderer.save_blocking(
-                renderer::ExportSource::chart(&mut panel.chart, &panel.series),
+                renderer::ExportSource::chart(&panel.chart, &panel.series),
                 renderer::ExportOptions::panel(EXPORT_SCALE),
                 &path,
             ) {
@@ -735,10 +736,9 @@ impl App {
         }
 
         // ---- Series + ChartDrawItem slices ----
-        // Each panel lends its view and its chart mutably (prepare redraws a
-        // stale raster and fits a pending layout) and its series immutably:
-        // disjoint fields of one panel.
-        let mut parts: Vec<(&mut ChartView, &mut Chart, Vec<Series<'_>>)> = self
+        // Each panel lends its view mutably (prepare redraws a stale raster)
+        // and its chart and series immutably: disjoint fields of one panel.
+        let mut parts: Vec<(&mut ChartView, &Chart, Vec<Series<'_>>)> = self
             .panels
             .iter_mut()
             .map(|p| {
@@ -748,7 +748,7 @@ impl App {
                     .zip(p.styles.iter())
                     .map(|(cfg, style)| Series { config: cfg, style })
                     .collect();
-                (&mut p.view, &mut p.chart, series)
+                (&mut p.view, &p.chart, series)
             })
             .collect();
         let mut items: Vec<ChartDrawItem<'_>> = parts

@@ -501,17 +501,14 @@ fn the_installed_auto_fit_sizes_auto_scaled_arrows() {
 
     // The registered chart draws what its SSOT says: its PNG export at 1x
     // and 2x is the export of its config and series held by the caller.
-    let mut held = Chart::new(renderer.chart_config(id).unwrap().clone());
+    let held = Chart::new(renderer.chart_config(id).unwrap().clone());
     for scale in [1.0, 2.0] {
         let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
         let registered = renderer
             .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
             .unwrap();
         let own = renderer
-            .export_rgba_blocking(
-                renderer::ExportSource::chart(&mut held, &installed),
-                options,
-            )
+            .export_rgba_blocking(renderer::ExportSource::chart(&held, &installed), options)
             .unwrap();
         assert_eq!(registered.rgba, own.rgba, "{scale}x");
     }

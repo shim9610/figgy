@@ -120,7 +120,7 @@ build a timeline in the look of the common web timelines (#357):
 | Progress | `SeriesConfig::with_progress(column)`: the host's share, the unfinished part at 0.4 opacity (`default::TIMELINE_REMAINING_OPACITY`) | the same hue, lighter past the done share |
 | Gridlines | time gridlines only, pale grey (`#E8EBF0`), no tick marks, the time labels in muted grey (`#6B7280`), no bottom axis line | every reference grids the time axis only |
 | Frame | a light top rule (`#D1D5DB`), no other frame | the web Gantt charts draw no box |
-| Layout | `LayoutState::NeedsFit`: the first default draw fits the margins to the row labels | every reference sizes the label band to its labels |
+| Layout | `LayoutState::Fitted`: the chart is created with its margins fitted to the row labels | every reference sizes the label band to its labels |
 
 A web Gantt's other elements are the host's, with existing parts: a
 milestone is a `ScatterShape::DiamondFilled` scatter series on the bars'

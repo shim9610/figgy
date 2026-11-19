@@ -10,8 +10,9 @@
 //! `0,1,2`, intensity flags such as `1*` and the `Limit` row, and it computes
 //! the g-weighted centroid of every resolved fine-structure multiplet (host
 //! work under CLAUDE.md rule 1). The host also writes the notation (#357):
-//! NIST's `1P*` as the term symbol ¹P°, the configuration `1s2` as 1s²,
-//! and it derives the energy axis' break from its own levels. The chart
+//! NIST's `1P*` as the term symbol `$^{1}$P°` and the configuration `1s2`
+//! as `1s$^{2}$`, TeX script spans drawn as script segments, and it
+//! derives the energy axis' break from its own levels. The chart
 //! starts in the Grotrian frame (`default::config_for_series`) without a
 //! theme.
 //!
@@ -106,7 +107,8 @@ fn term_column(term: &str) -> Option<&str> {
 }
 
 /// A limit row's name in physics notation: NIST's `He II (1s 2S<1/2>)`
-/// as `He II 1s ²S₁/₂`, the ion's core configuration and term. A name of
+/// as `He II 1s $^{2}$S$_{1/2}$`, the ion's core configuration and term,
+/// scripts as TeX spans. A name of
 /// another form is kept as written.
 fn limit_name(name: &str) -> String {
     let Some((ion, core)) = name.split_once(" (") else {
@@ -157,7 +159,7 @@ fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
             out.limits.push(IonizationLimit {
                 id: field(row, conf),
                 energy: e,
-                label: Some(RichText::plain(
+                label: Some(RichText::from_label(
                     &format!("{}  {e:.3} eV", limit_name(&field(row, conf))),
                     Color::from_rgb8(40, 50, 120),
                     19.0,
@@ -248,7 +250,7 @@ fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
                 .parse()
                 .unwrap_or(1);
             if n <= 4 {
-                level.label = Some(RichText::plain(
+                level.label = Some(RichText::from_label(
                     &configuration(outer),
                     Color::from_rgb8(70, 76, 90),
                     20.0,
@@ -389,14 +391,13 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
             categories.push(Category::new(term, ""));
             continue;
         }
-        let symbol = term_symbol(term);
-        let mut category = Category::new(term, symbol.as_str());
-        category.rich_label = Some(RichText::plain(
-            &symbol,
-            Color::from_rgb8(30, 30, 30),
-            24.0,
-            "",
-        ));
+        // The symbol's scripts are TeX spans drawn as script segments; the
+        // plain label is the segments' characters.
+        let symbol =
+            RichText::from_label(&term_symbol(term), Color::from_rgb8(30, 30, 30), 24.0, "");
+        let name: String = symbol.segments.iter().map(|s| s.text).collect();
+        let mut category = Category::new(term, name.as_str());
+        category.rich_label = Some(symbol);
         categories.push(category);
     }
     // The headers name the total spin S in TeX.

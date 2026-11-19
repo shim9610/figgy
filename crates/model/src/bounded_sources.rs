@@ -486,8 +486,9 @@ fn legacy_document_notes(notes: &mut Notes, document: &LegacyDocument<'_>) {
 ///
 /// A document with `text_sizes`, which no release before #357 wrote, and no
 /// explicit data area (or one the layout cannot hold) converts to a layout
-/// that fits on its first draw ([`crate::config::LayoutState::NeedsFit`]);
-/// every other document draws its layout as converted.
+/// its chart keeps fitted ([`crate::config::LayoutState::Fitted`]: the
+/// chart object made from it fits it); every other document draws its
+/// layout as converted.
 fn legacy_data_area(
     notes: &mut Notes,
     config: &mut Config,
@@ -499,7 +500,7 @@ fn legacy_data_area(
         config.chart_area = chart_area.clone();
     }
     if sized {
-        config.layout_state = crate::config::LayoutState::NeedsFit;
+        config.layout_state = crate::config::LayoutState::Fitted;
     }
     let Some(area) = &decorations.data_area else {
         return;
@@ -2080,7 +2081,7 @@ mod tests {
 
     // #357: the text sizes by role. A document without them draws every
     // text at `font_size` and the title half as large again, exactly as
-    // before; one with them (the Rust default) draws the Cartesian sizes,
+    // and its chart keeps its layout fitted unless it holds a data area.
     // and its layout fits on its first draw unless it holds a data area.
     #[test]
     fn text_sizes_set_each_role_and_their_absence_keeps_the_legacy_size() {
@@ -2120,7 +2121,7 @@ mod tests {
             config.legend.content.font_size,
             cartesian.legend.content.font_size
         );
-        assert_eq!(config.layout_state, crate::config::LayoutState::NeedsFit);
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fitted);
 
         // An explicit data area is drawn where the document puts it.
         let mut placed = chart();

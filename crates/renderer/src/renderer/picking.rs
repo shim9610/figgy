@@ -11,6 +11,8 @@ mod energy_levels;
 mod entry;
 mod picker;
 mod plan;
+#[cfg(test)]
+mod variant_table_tests;
 
 pub(super) use descriptors::*;
 pub(super) use energy_levels::*;

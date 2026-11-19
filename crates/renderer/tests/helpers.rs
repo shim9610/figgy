@@ -37,46 +37,42 @@ fn a_headless_renderer_saves_each_format() {
     let mut chart = Chart::new(renderer::config::Config::default()).with_title("A sine wave");
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
-    macro_rules! source {
-        () => {
-            ExportSource::Chart {
-                chart: &mut chart,
-                series: &series,
-            }
-        };
-    }
+    let source = || ExportSource::Chart {
+        chart: &chart,
+        series: &series,
+    };
     let options = ExportOptions::document(1.0);
 
     let png = scratch("sine.png");
-    renderer.save_blocking(source!(), options, &png).unwrap();
+    renderer.save_blocking(source(), options, &png).unwrap();
     let saved = std::fs::read(&png).unwrap();
     assert!(saved.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert_eq!(
         saved,
-        renderer.export_png_blocking(source!(), options).unwrap(),
+        renderer.export_png_blocking(source(), options).unwrap(),
         "the saved PNG is the PNG export"
     );
 
     let svg = scratch("sine.SVG");
-    renderer.save_blocking(source!(), options, &svg).unwrap();
+    renderer.save_blocking(source(), options, &svg).unwrap();
     let saved = std::fs::read_to_string(&svg).unwrap();
     assert!(saved.contains("<svg"), "{}", &saved[..saved.len().min(80)]);
 
     let pdf = scratch("sine.pdf");
-    renderer.save_blocking(source!(), options, &pdf).unwrap();
+    renderer.save_blocking(source(), options, &pdf).unwrap();
     assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF-"));
 
     let named = scratch("sine.image");
     renderer
-        .save_as_blocking(source!(), options, &named, ExportFormat::Png)
+        .save_as_blocking(source(), options, &named, ExportFormat::Png)
         .unwrap();
     assert!(std::fs::read(&named).unwrap().starts_with(b"\x89PNG"));
     assert!(matches!(
-        renderer.save_blocking(source!(), options, scratch("sine.jpeg")),
+        renderer.save_blocking(source(), options, scratch("sine.jpeg")),
         Err(SaveError::UnknownFormat(_))
     ));
     assert!(matches!(
-        renderer.save_blocking(source!(), options, scratch("missing/dir/sine.png")),
+        renderer.save_blocking(source(), options, scratch("missing/dir/sine.png")),
         Err(SaveError::Write { .. })
     ));
 }
@@ -327,21 +323,21 @@ fn a_chart_redraws_with_the_fitted_ranges() {
         .unwrap();
     let stamp = renderer.chart_render_stamp(id).unwrap();
     let placeholder = renderer
-        .export_png_blocking(ExportSource::chart(&mut chart, &series), options)
+        .export_png_blocking(ExportSource::chart(&chart, &series), options)
         .unwrap();
 
     renderer.fit_ranges(&mut chart, &series).unwrap();
     for scale in [1.0, 2.0] {
         let options = ExportOptions::document(scale);
         let fitted = renderer
-            .export_png_blocking(ExportSource::chart(&mut chart, &series), options)
+            .export_png_blocking(ExportSource::chart(&chart, &series), options)
             .unwrap();
         let mut by_hand = Chart::sized(320, 200);
         by_hand.set_x_range(-0.5, 10.5);
         by_hand.set_y_range(-1.1, 1.1);
         assert_eq!(by_hand.config(), chart.config());
         let expected = renderer
-            .export_png_blocking(ExportSource::chart(&mut by_hand, &series), options)
+            .export_png_blocking(ExportSource::chart(&by_hand, &series), options)
             .unwrap();
         assert!(fitted == expected, "{scale}x: the fitted ranges are drawn");
         if scale == 1.0 {
@@ -438,11 +434,11 @@ fn the_chart_background_fills_the_chart_area() {
     chart.config_mut().background = Some(paper);
     for scale in [1.0f32, 2.0] {
         for (config, expected) in [(chart.config(), [250, 246, 236, 255]), (&plain, [0; 4])] {
-            let mut held = Chart::new(config.clone());
+            let held = Chart::new(config.clone());
             let png = renderer
                 .export_png_blocking(
                     ExportSource::Chart {
-                        chart: &mut held,
+                        chart: &held,
                         series: &series,
                     },
                     ExportOptions::document(scale),
@@ -462,7 +458,7 @@ fn the_chart_background_fills_the_chart_area() {
     let svg = renderer
         .export_svg_blocking(
             ExportSource::Chart {
-                chart: &mut chart,
+                chart: &chart,
                 series: &series,
             },
             ExportOptions::document(1.0),
@@ -527,7 +523,7 @@ fn a_themed_chart_exports_with_its_look() {
         let png = renderer
             .export_png_blocking(
                 ExportSource::Chart {
-                    chart: &mut chart,
+                    chart: &chart,
                     series: &series,
                 },
                 ExportOptions::document(scale),
@@ -1072,7 +1068,7 @@ fn chart_placement_overlay_swatch_and_png_save() {
     let image = renderer
         .export_rgba_blocking(
             ExportSource::Chart {
-                chart: &mut Chart::sized(200, 120),
+                chart: &Chart::sized(200, 120),
                 series: &series,
             },
             ExportOptions::panel(1.0),
@@ -1150,7 +1146,7 @@ fn chart_part_builders_write_the_document() {
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
     // `set_x_range` / `set_y_range` choose a format, so the format follows.
-    let mut chart = chart
+    let chart = chart
         .with_label_format(LabelFormat::Degrees)
         .with_label_clearance(LabelClearanceMode::Keep);
     let config = chart.config();
@@ -1179,7 +1175,7 @@ fn chart_part_builders_write_the_document() {
         let png = renderer
             .export_png_blocking(
                 ExportSource::Chart {
-                    chart: &mut chart,
+                    chart: &chart,
                     series: &series,
                 },
                 ExportOptions::document(scale),
@@ -1190,9 +1186,18 @@ fn chart_part_builders_write_the_document() {
 
     // The title builder shows the title in the axis title's style, on the
     // chart's colour bar or, without one, on the default bar it adds (#297).
-    let mut barred = Chart::sized(200, 120);
+    // On `Fixed` charts, so the bar is compared field for field: a chart
+    // that keeps its layout fitted fits the bar's band to the title too
+    // (#357), as `fit_layout` would.
+    let fixed = || {
+        Chart::new(renderer::Config {
+            layout_state: renderer::LayoutState::Fixed,
+            ..Chart::sized(200, 120).config().clone()
+        })
+    };
+    let mut barred = fixed();
     barred.config_mut().colorbar = Some(renderer::default::default_colorbar_options());
-    for chart in [barred, Chart::sized(200, 120)] {
+    for chart in [barred, fixed()] {
         let titled = chart.with_colorbar_title("Speed");
         let mut expected = renderer::default::default_colorbar_options();
         expected.axis.title_option = titled
@@ -1215,9 +1220,15 @@ fn chart_part_builders_write_the_document() {
 
     let cell = Chart::placed(480, 0, 480, 320).config().clone();
     let overlay = renderer::config::AxisOptions::overlay_y("Current (A)", red);
-    let document = Chart::sized(960, 320)
-        .with_overlay(overlay, &["current"])
-        .with_subplot(Subplot::new(cell.clone(), &["b"]).with_link_x(CellRef::Parent));
+    // A `Fixed` document, so the subplot is compared as given: a document
+    // that keeps its layout fitted fits the cell's bands with its own
+    // (#357).
+    let document = Chart::new(renderer::Config {
+        layout_state: renderer::LayoutState::Fixed,
+        ..Chart::sized(960, 320).config().clone()
+    })
+    .with_overlay(overlay, &["current"])
+    .with_subplot(Subplot::new(cell.clone(), &["b"]).with_link_x(CellRef::Parent));
     let config = document.config();
     assert_eq!(config.subplots.len(), 1);
     assert_eq!(config.subplots[0].config, cell);
@@ -1247,7 +1258,7 @@ fn chart_unit_helpers_print_the_axes_in_shown_units() {
         chart.config().bottom_x.major_spacing,
         chart.config().left_y.major_spacing,
     );
-    let mut chart = chart
+    let chart = chart
         .with_x_unit(5.0 / 32768.0, 0.0)
         .with_y_unit(1.0, -273.15);
     let config = chart.config();
@@ -1306,7 +1317,7 @@ fn chart_unit_helpers_print_the_axes_in_shown_units() {
         let png = renderer
             .export_png_blocking(
                 ExportSource::Chart {
-                    chart: &mut chart,
+                    chart: &chart,
                     series: &series,
                 },
                 ExportOptions::document(scale),

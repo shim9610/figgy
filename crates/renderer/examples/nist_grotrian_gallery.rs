@@ -27,7 +27,7 @@ fn save(
     for scale in [1.0, 2.0] {
         let path = out.join(format!("{name}-{scale}x.png"));
         let options = ExportOptions::document(scale).with_clear(Color::WHITE);
-        r.save_blocking(ExportSource::chart(&mut c, &series), options, &path)?;
+        r.save_blocking(ExportSource::chart(&c, &series), options, &path)?;
         println!("{}", path.display());
     }
     Ok(())

@@ -402,23 +402,58 @@ impl RadialStyle {
     /// background set `outline.color` to it. An explicit preset: the
     /// documented default keeps its look.
     pub fn sunburst() -> Self {
-        let defaults = crate::defaults::radial_style();
+        // Every field is named (#46): the preset sets the flat outlined
+        // look and keeps the documented default for the rest.
+        let Self {
+            material: _,
+            tilt_degrees: _,
+            depth: _,
+            bevel,
+            gap_degrees: _,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: _,
+            inner_corner: _,
+            outer_corner: _,
+            outline,
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        } = crate::defaults::radial_style();
+        let RadialOutline {
+            rim: _,
+            separators: _,
+            emphasis,
+            width: _,
+            color: _,
+        } = outline;
         Self {
             material: Material::Flat,
             tilt_degrees: 0.0,
             depth: 0.0,
+            bevel,
             gap_degrees: 0.0,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
             shadow: false,
             inner_corner: 0.0,
             outer_corner: 0.0,
             outline: RadialOutline {
                 rim: true,
                 separators: true,
+                emphasis,
                 width: 1.0,
                 color: Color::WHITE,
-                ..defaults.outline
             },
-            ..defaults
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
         }
     }
 }
