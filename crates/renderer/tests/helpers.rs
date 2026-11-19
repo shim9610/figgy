@@ -339,10 +339,12 @@ fn a_chart_redraws_with_the_fitted_ranges() {
         let mut by_hand = Chart::sized(320, 200);
         by_hand.set_x_range(-0.5, 10.5);
         by_hand.set_y_range(-1.1, 1.1);
-        assert_eq!(by_hand.config(), chart.config());
         let expected = renderer
             .export_png_blocking(ExportSource::chart(&mut by_hand, &series), options)
             .unwrap();
+        // Both charts as their exports left them: each export fits a new
+        // chart's layout and writes the fit into it (#357).
+        assert_eq!(by_hand.config(), chart.config());
         assert!(fitted == expected, "{scale}x: the fitted ranges are drawn");
         if scale == 1.0 {
             assert!(fitted != placeholder, "the placeholder range is replaced");
