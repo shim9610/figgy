@@ -44,6 +44,14 @@ pub fn assert_selection_with_rerasterized_label(
     }
 }
 
+/// How far, in device pixels, a lifted inside label's ink may reach past its
+/// measured box: one pixel of anti-aliasing at the outline's fractional
+/// edge, and one more for the bilinear tap that translates the cached glyphs
+/// by a subpixel lift (`label_pixel` in `radial.wgsl`). Text at 2x is drawn
+/// unhinted (#357), so its edges fall between pixel rows and both pixels
+/// are reached.
+const LABEL_REACH: f32 = 2.0;
+
 fn assert_selection_pixels(
     before: &RasterImage,
     selected: &RasterImage,
@@ -118,7 +126,7 @@ fn assert_selection_pixels(
             on_border.iter().any(|v| *v)
                 || on_handle
                 || rerasterized_label
-                    .is_some_and(|label| label.expanded(1.0 / scale).contains(x, y)),
+                    .is_some_and(|label| label.expanded(LABEL_REACH / scale).contains(x, y)),
             "{context}: selection changed unrelated pixel at ({x}, {y})"
         );
         if new[2] > 140 && i32::from(new[2]) - i32::from(new[0]) > 30 {
@@ -211,7 +219,7 @@ fn assert_part_outlines(
             on.iter().any(|v| *v)
                 || on_handle
                 || rerasterized_label
-                    .is_some_and(|label| label.expanded(1.0 / scale).contains(x, y)),
+                    .is_some_and(|label| label.expanded(LABEL_REACH / scale).contains(x, y)),
             "{context}: selection changed unrelated pixel at ({x}, {y})"
         );
         if new[2] > 140 && i32::from(new[2]) - i32::from(new[0]) > 30 {
