@@ -680,7 +680,30 @@ pub fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
 
 /// The starting model of Cartesian scene `kind`, its columns uploaded to
 /// `r`. The large-data scene generates `big_data_points` samples.
+///
+/// The scene is the document as its first default draw leaves it: a layout
+/// waiting for its fit (`LayoutState::NeedsFit`, which a document reader
+/// gives a document with text sizes, #357) is fitted here, through
+/// `Chart::fit_pending_layout` as `Renderer::prepare` and every default
+/// export fit it. Every check then reads the layout the renderer draws: the
+/// rasters, the hit map and the parts a vector export writes are measured
+/// on the config the export draws, not on the layout before its fit.
 pub fn build(
+    r: &mut Renderer,
+    kind: SceneKind,
+    big_data_points: usize,
+) -> Result<CartesianScene, FiggyError> {
+    let mut scene = build_as_stored(r, kind, big_data_points)?;
+    if scene.config.layout_state.needs_fit() {
+        let mut chart = renderer::Chart::new(scene.config);
+        chart.fit_pending_layout();
+        scene.config = chart.config().clone();
+    }
+    Ok(scene)
+}
+
+/// [`build`] before a layout waiting for its fit is fitted.
+fn build_as_stored(
     r: &mut Renderer,
     kind: SceneKind,
     big_data_points: usize,
