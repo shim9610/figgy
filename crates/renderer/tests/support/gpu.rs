@@ -36,6 +36,20 @@ pub fn device() -> (wgpu::Device, wgpu::Queue) {
     request_device(&adapter, &wgpu::DeviceDescriptor::default())
 }
 
+/// The process-wide device, created once.
+///
+/// A `wgpu` device costs adapter enumeration, driver init and shader-cache
+/// setup; one per test made a binary's tests contend for the driver and hold
+/// a device apiece. A `Renderer` is still per test: it owns the column pool,
+/// so sharing one would let test fixtures collide on column ids. Only the
+/// device is shared, and `wgpu::Device` is `Send + Sync`, so the default
+/// parallel harness is fine.
+pub fn shared_device() -> (wgpu::Device, wgpu::Queue) {
+    static DEVICE: std::sync::OnceLock<(wgpu::Device, wgpu::Queue)> = std::sync::OnceLock::new();
+    let (device, queue) = DEVICE.get_or_init(device);
+    (device.clone(), queue.clone())
+}
+
 /// Run `future` to completion on this thread: the tests' executor for the
 /// async API (#160), so the repository needs no executor crate. The thread
 /// parks until the future's waker unparks it; a spurious wake-up only polls

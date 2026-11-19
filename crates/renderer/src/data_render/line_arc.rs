@@ -204,11 +204,31 @@ mod tests {
         let mut sizes = Vec::new();
         plan.visit_sizes(|bytes| sizes.push(bytes));
         assert_eq!(sizes.len(), plan.buffer_count());
+        let bytes = |size: usize| size as u64;
         assert_eq!(sizes[0], 513 * ARC_PAIR_BYTES);
-        // The last is the transform, `ScatterTransform`'s 304 bytes.
-        assert_eq!(&sizes[1..6], &[16, 8, 8, 8, 304]);
-        assert_eq!(&sizes[6..12], &[32; 6]);
-        assert_eq!(&sizes[12..], &[16, 8, 16]);
+        // The two levels of block sums, the total, the carry, then the
+        // transform.
+        assert_eq!(
+            &sizes[1..6],
+            &[
+                2 * ARC_PAIR_BYTES,
+                ARC_PAIR_BYTES,
+                ARC_PAIR_BYTES,
+                ARC_PAIR_BYTES,
+                bytes(std::mem::size_of::<ScatterTransform>()),
+            ]
+        );
+        // Three `ArcParams` uniforms per chunk.
+        assert_eq!(&sizes[6..12], &[bytes(std::mem::size_of::<ArcParams>()); 6]);
+        // The star pass: indirect draw arguments and its two uniforms.
+        assert_eq!(
+            &sizes[12..],
+            &[
+                bytes(std::mem::size_of::<wgpu::util::DrawIndirectArgs>()),
+                bytes(std::mem::size_of::<StarIndirectParams>()),
+                bytes(std::mem::size_of::<StarVsParams>()),
+            ]
+        );
 
         assert!(buffer_plan(1, 0, None, false).is_none());
         assert!(buffer_plan(0, 65_535, None, false).is_none());

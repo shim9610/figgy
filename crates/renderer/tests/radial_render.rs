@@ -1,20 +1,16 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{gpu, radial_renderer as renderer};
 use renderer::{Color, Material, RendererDevice, radial::*};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// The shared test device in a bundle of its own per call, so each renderer
-/// a test builds charges its own ledger and budget (#160).
-fn gpu() -> RendererDevice {
-    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
-}
 fn chart() -> RadialChart {
     RadialChart {
         labels: RadialLabels::None,
@@ -28,9 +24,6 @@ fn chart() -> RadialChart {
 /// The GPU pick at `p`, resolved.
 fn pick(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Option<RadialTarget> {
     frame.pick(p).unwrap().resolve().block_on().unwrap()
-}
-fn renderer() -> RadialRenderer {
-    RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
 }
 fn drain(r: &RadialRenderer) {
     r.end_frame();
