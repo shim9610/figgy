@@ -109,22 +109,28 @@ pub fn point_on_rect_side(t: f32, side: &Side, rect: &RectF) -> (f32, f32) {
     }
 }
 
-/// Baseline origin for one measured tick label.
+/// Baseline origin for one measured tick label. `row` is how far the
+/// labels of the row reach above and below their baseline (#357,
+/// [`TICK_ROW_REFERENCE`] in the label face): a top label sits on the
+/// row's one baseline, `row.descent` above the gap, and a bottom label
+/// `row.ascent` below it, whatever its own letters; a label reaching
+/// farther (a subscript or a superscript) moves away by its own extent.
 pub fn label_origin(
     side: Side,
     tick_position: (f32, f32),
     outward: f32,
     offset: (f32, f32),
     extents: TextExtents,
+    row: TextExtents,
 ) -> (f32, f32) {
     let (x, y) = match side {
         Side::Top => (
             tick_position.0 - extents.width * 0.5,
-            tick_position.1 - outward - LABEL_GAP - extents.descent,
+            tick_position.1 - outward - LABEL_GAP - extents.descent.max(row.descent),
         ),
         Side::Bottom => (
             tick_position.0 - extents.width * 0.5,
-            tick_position.1 + outward + LABEL_GAP + extents.ascent,
+            tick_position.1 + outward + LABEL_GAP + extents.ascent.max(row.ascent),
         ),
         Side::Left => (
             tick_position.0 - outward - LABEL_GAP - extents.width,
@@ -137,6 +143,12 @@ pub fn label_origin(
     };
     (x + offset.0, y + offset.1)
 }
+
+/// The letters whose extents are a tick-label row's (#357): capitals,
+/// digits, ascenders and round overshoots for the ascent, descenders for
+/// the descent, measured in the label face, so every label of a row
+/// shares one baseline.
+pub const TICK_ROW_REFERENCE: &str = "0AHOSbdfhklgjpqy";
 
 /// Pixel rectangle occupied by a label drawn at a baseline origin.
 pub fn label_rect(origin: (f32, f32), extents: TextExtents) -> RectF {
@@ -350,7 +362,12 @@ mod tests {
             (Side::Right, (111.0, 206.0)),
         ];
         for (side, origin) in expected {
-            let actual = label_origin(side, tick, 5.0, offset, m);
+            let none = TextExtents {
+                width: 0.0,
+                ascent: 0.0,
+                descent: 0.0,
+            };
+            let actual = label_origin(side, tick, 5.0, offset, m, none);
             assert_eq!(actual, origin);
             assert_eq!(label_rect(actual, m).height, 10.0);
         }

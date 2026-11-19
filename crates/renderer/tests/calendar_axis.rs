@@ -280,3 +280,98 @@ fn the_header_draws_at_1x_and_2x_and_round_trips() {
         assert_eq!(draw(&mut r, &Chart::new(config)), before);
     }
 }
+
+/// Every placed label's text and baseline origin.
+#[derive(Default)]
+struct BaselineLog(Vec<(String, (f32, f32), RectF)>);
+
+impl Sink for BaselineLog {
+    fn text(&mut self, _slot: Slot, text: &PlacedText<'_>) {
+        if let TextRef::Plain { text: plain, .. } = text.text {
+            self.0.push((plain.to_owned(), text.origin, text.rect()));
+        }
+    }
+    fn stroke(&mut self, _: Slot, _: [f32; 2], _: [f32; 2], _: &StrokeStyle<'_>) {}
+    fn rect(&mut self, _: Slot, _: RectF, _: Option<Color>, _: Option<Border<'_>>) {}
+    fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+    fn path(&mut self, _: Slot, _: &[renderer::sink::PathSegment], _: &StrokeStyle<'_>) {}
+    fn polygon(&mut self, _: Slot, _: &[[f32; 2]], _: Option<Color>, _: Option<&StrokeStyle<'_>>) {}
+    fn ramp(&mut self, _: Slot, _: RectF, _: &ColorBarOptions) {}
+}
+
+fn baselines(cfg: &Config, side: Side) -> Vec<(String, (f32, f32), RectF)> {
+    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+    let mut log = BaselineLog::default();
+    AxisLabelElement { side }.emit(cfg, &measure, &mut log);
+    log.0
+}
+
+/// One tick row, one baseline (#357): labels with and without descenders
+/// on a top and a bottom axis share their baseline at 1x and 2x, in the
+/// layout's geometry and in the drawn pixels (the bottom of "2026" in each
+/// month name is the baseline).
+#[test]
+fn labels_with_and_without_descenders_share_one_baseline() {
+    let words = ["Mar", "Sep", "Aug", "jumpy", "ok", "Hg"];
+    let mut cfg = timeline().config().clone();
+    for axis in [&mut cfg.top_x, &mut cfg.bottom_x] {
+        axis.categories = Some(
+            words
+                .iter()
+                .enumerate()
+                .map(|(i, w)| Category::new(format!("c{i}"), *w))
+                .collect(),
+        );
+    }
+    for scale in [1.0f32, 2.0] {
+        let scaled = Chart::new(cfg.clone()).scaled(scale);
+        for side in [Side::Top, Side::Bottom] {
+            let row = baselines(scaled.config(), side.clone());
+            assert_eq!(row.len(), words.len(), "{side:?}");
+            let y = row[0].1.1;
+            for (text, origin, _) in &row {
+                assert!(
+                    (origin.1 - y).abs() < 1e-3,
+                    "{scale}x {side:?}: {text} at {origin:?}, row at {y}"
+                );
+            }
+        }
+    }
+
+    // The drawn month header: each label's "2026" ends on the same row of
+    // pixels, at 1x and 2x.
+    let mut r = renderer();
+    let chart = timeline();
+    let series = [SeriesConfig::timeline_bars("t", "pos", "start", "end")];
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale).with_clear(Color::WHITE),
+            )
+            .block_on()
+            .unwrap();
+        let header = baselines(chart.config(), Side::Top);
+        let bottoms: Vec<u32> = header
+            .iter()
+            .map(|(text, _, rect)| {
+                // The last four characters, "2026", in the right part of the box.
+                let s = |v: f32| (v * scale).round() as u32;
+                let x0 = rect.x + rect.width * 0.55;
+                let region = (
+                    s(x0),
+                    s(rect.y) - 2,
+                    s(rect.x + rect.width) + 2,
+                    s(rect.y + rect.height) + 2,
+                );
+                ink(&img, region)
+                    .unwrap_or_else(|| panic!("{scale}x: {text} drew no ink"))
+                    .3
+            })
+            .collect();
+        assert!(
+            bottoms.windows(2).all(|w| w[0] == w[1]),
+            "{scale}x: {bottoms:?} for {header:?}"
+        );
+    }
+}
