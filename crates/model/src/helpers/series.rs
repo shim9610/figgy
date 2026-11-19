@@ -67,6 +67,12 @@ impl MatrixRef {
 /// or [`crate::Config::apply_palette`] sets it (#357). It was black before.
 pub(super) const SERIES_INK: Color = ColorCycle::DEFAULT.color(0);
 
+/// The ink of contour lines a host leaves uncoloured (#357): a dark grey
+/// that reads on white and on the light end of a colour map, where palette
+/// blue was hard to see on a chart without a theme. A theme's
+/// `FieldTheme::unfilled_contour_color` or `contour_color` replaces it.
+pub(super) const CONTOUR_INK: Color = Color::from_rgb8(0x26, 0x26, 0x26);
+
 /// The corner radius of [`SeriesConfig::timeline_bars`], logical pixels:
 /// the slight rounding of a web timeline's bars.
 const TIMELINE_CORNER_RADIUS: f32 = 3.0;
@@ -214,7 +220,9 @@ impl SeriesConfig {
         )
     }
 
-    /// Contour lines of `matrix` at the host's `levels`.
+    /// Contour lines of `matrix` at the host's `levels`, drawn 1 px in a
+    /// dark grey ink (`#262626`, #357) so they read on a chart without a
+    /// theme; `.color(c)` or a theme recolours them.
     pub fn contours(
         id: impl Into<String>,
         x: impl Into<ColumnId>,
@@ -238,6 +246,7 @@ impl SeriesConfig {
                 surface: None,
             },
         )
+        .color(CONTOUR_INK)
     }
 
     /// A hexagonal heatmap of pre-binned `matrix` cells: the host bins,
@@ -843,6 +852,36 @@ mod tests {
 
     // Each constructor returns a series that validates on the chart its
     // family draws on (#265).
+    // Isolines a host leaves uncoloured read on a chart without a theme
+    // (#357): dark ink, not palette blue; the host's colour still wins, and
+    // a heatmap's fill keeps its colour map.
+    #[test]
+    fn contours_draw_in_dark_ink() {
+        let line = |s: &SeriesConfig| match &s.render_type {
+            DataRenderType::Field(FieldSeries {
+                contour: Some(contour),
+                ..
+            }) => contour.line.line_color,
+            _ => unreachable!("contours"),
+        };
+        let plain = SeriesConfig::contours("c", "x", "y", grid("z"), vec![0.5]);
+        assert_eq!(line(&plain), CONTOUR_INK);
+        assert_ne!(CONTOUR_INK, SERIES_INK);
+        let red = Color::from_rgb8(200, 0, 0);
+        assert_eq!(line(&plain.clone().color(red)), red);
+        // Its contrast on white is at least 7:1 (WCAG AAA for text).
+        let lum = |c: u8| {
+            let c = f64::from(c) / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let l = lum(0x26);
+        assert!((1.05 / (l + 0.05)) >= 7.0);
+    }
+
     #[test]
     fn constructors_start_in_the_default_cycle() {
         // #357: an uncoloured series is no longer black.

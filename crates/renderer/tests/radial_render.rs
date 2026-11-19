@@ -11,6 +11,9 @@ use std::sync::Arc;
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The fixture draws without an outline (the documented outline, off):
+/// the tests switch one on where they test it. The host default draws
+/// white separators (#357).
 fn chart() -> RadialChart {
     RadialChart {
         labels: RadialLabels::None,
@@ -18,6 +21,10 @@ fn chart() -> RadialChart {
             RadialSlice::new("A", 25.0, Color::new(1.0, 0.0, 0.0, 1.0)),
             RadialSlice::new("B", 75.0, Color::new(0.0, 0.0, 1.0, 1.0)),
         ],
+        style: RadialStyle {
+            outline: RadialOutline::default(),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -1098,6 +1105,9 @@ fn radial_ssot_fields_are_explicit() {
         font_size: _,
         label_color: _,
         background: _,
+        // Moves inner-ring labels too small to read outside (#357); part of
+        // the frame key, so an edit redraws the frame.
+        inner_label_fallback: _,
     } = RadialChart::default();
     // Independent title fields are covered by the three CPU layout/pixel tests.
     // Keep this exhaustive so additions require an explicit editing/cache review.

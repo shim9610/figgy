@@ -42,6 +42,105 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
 
+- **Contour ink, sunburst separators and readable labels, Grotrian limit
+  labels** ([#357](https://github.com/shim9610/figgy/issues/357), round
+  2). Appearance only; no value, position or pick target moves, and
+  stored documents read back unchanged.
+  - **Contours without a theme.** `SeriesConfig::contours` draws its
+    isolines in a dark ink (`#262626`) instead of palette blue, which was
+    hard to see on a chart without a theme. `.color(c)` and the themes
+    recolour them as before.
+  - **Sunburst and radial default.** `RadialStyle::default()` and
+    `RadialChart::default()` (`helpers`) are now `RadialStyle::sunburst()`:
+    the documented flat look with a 1 px white rim and separators, so the
+    segments and rings of a chart without a theme stay apart.
+    `RadialOutline::default()` and every serde default are unchanged, so a
+    document that omits the style draws as before.
+  - **Inside labels are placed where they fit, with a readable
+    minimum.** An inside radial label slides along its arc (from the
+    bisector towards the top or bottom of a wide segment) and, on a flat
+    chart, reads upright (bottom to top) when that fits it larger. Before,
+    a horizontal label on the bisector of a wide segment at the side of a
+    thin ring was held to the ring's thickness ("Renewables 46%" on the
+    inner ring of a three-ring sunburst drew at about 12 px; it now draws
+    upright at its full size). A label is never drawn below 12 logical
+    pixels (or the chart's `font_size` when that is smaller). One that
+    would be moves outside with a leader when its slice is on the
+    outermost ring or on a pie or donut: the circle makes room for it, and
+    it is hit, selected, outlined and dragged as an outside label. On an
+    inner sunburst ring no leader reaches past the outer rings, so it is
+    hidden: not drawn, no hit region. Raster, SVG, PDF and the hit map
+    read one placement. Before, labels such as "Oil 8%" were drawn at
+    about 7 px. Documents written before draw their inside labels at the
+    new places and sizes.
+  - **Pulling inner-ring labels out of a sunburst.** New
+    `RadialChart::inner_label_fallback: InnerLabelFallback` (`Hide`, the
+    default, or `Outside`; omitted from JSON while `Hide`). With `Outside`,
+    an inner-ring inside label too small to read is drawn outside instead
+    of hidden: its leader crosses the outer rings, and it stacks with the
+    outermost ring's outside labels in angle order without meeting them.
+    It is a normal outside label for hover, selection, its outline, drag,
+    export, serde and WASM. Migration: an exhaustive Rust literal of
+    `RadialChart` names the field (or uses `..Default::default()`).
+  - **Grotrian ionisation-limit labels.** A limit's label sits above its
+    line, right-aligned. When that would leave the plot (a limit near the
+    top of the energy range), it is placed just below the line, so it is
+    not clipped. The level and transition labels keep clear of it as they
+    do of a stroke. The host's `label_offset` still moves it from there.
+  - **Grotrian transition labels stay inside the plot.** A wavelength
+    label takes a spot the plot's edge would clip only when every spot
+    along both sides of its arrow would be clipped; before, "728.1" in the
+    He I diagram at 800 × 600 was cut at the left edge. Labels stay
+    horizontal, as they always were.
+  - **A crowded fan's wavelength labels stand in one aligned column.**
+    Where every spot along a fan of transitions lies on another arrow or
+    label (the Ar I 1s4/1s5 → 2p fan), the labels move out of the fan
+    into one column beside it: one x, left-aligned, evenly spaced, in the
+    order of their arrows from the top. Each label is joined to the middle
+    of its own arrow by a thin leader in the arrow's colour. Before, the
+    labels sat at different stops along the steep arrows and read as a
+    slanted staircase on the arrows' ink. The column takes the side of
+    the fan, and the height within it, where it and its leaders lie on
+    the fewest strokes, labels and arrows, and only when that beats the
+    labels' places along the arrows. The leader is part of its label: the
+    label hits, selects and drags as before, and the leader follows it.
+    A dragged label keeps its place in the column, moved by its offset.
+    PNG, SVG and PDF draw the leader. No serialized field: a document
+    draws its labels at the new places and reads back unchanged.
+  - **Grotrian arrows spread along their levels and run parallel.** The
+    transitions between the same two columns (a bundle) are ordered by
+    where they lie across the bundle's mean direction, and each arrow
+    takes the same offset from its level's centre at both ends. A
+    bundle's arrows therefore keep one order at both ends, never cross,
+    and run near-parallel, as in a textbook Grotrian diagram. Before, the
+    ends meeting one level were spread only among themselves, so a bundle
+    fanned out from a few points (the Ar I 2p → 1s4/1s5 fan). The ends
+    stand `12` px apart, or an arrowhead plus one and a half shafts when
+    that is wider, and are spread evenly over a stroke too short for that.
+    Another bundle's ends on the same level are kept that far apart, and
+    every end stays on its stroke. With the arrows apart, most wavelength
+    labels find a free spot beside their own arrow, and the aligned column
+    becomes the fallback it was meant to be. Appearance only: levels,
+    labels and picks are unchanged, and each arrow is still picked as
+    drawn.
+  - Tests: `bundled_arrows_spread_along_their_levels_without_crossing`
+    (`energy_levels_render.rs`), `contours_draw_in_dark_ink` (`helpers/series.rs`),
+    `the_host_default_separates_segments_and_rings`,
+    `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
+    `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`),
+    `transition_labels_stay_inside_the_plot_and_off_other_labels` (He, Ar
+    and Cu at their own size and at 800 × 600 in the Gallery theme, 1x and
+    2x), `a_crowded_fan_sets_its_labels_in_a_column_with_leaders`
+    (`tests/energy_levels_render.rs`) and
+    `crowded_radial_labels_prepare_and_remain_in_the_hit_map` (crowded
+    inside labels move outside and stay hit and draggable at 1x and 2x)
+    `inner_sunburst_labels_read_upright_or_hide`,
+    `pulled_out_inner_labels_are_full_outside_labels`
+    (`tests/radial_label_layout.rs`) and
+    `the_inner_label_fallback_round_trips_and_is_omitted_while_hidden`
+    (`radial.rs`).
+  - **Migration:** a host that relied on `RadialChart::default()` drawing
+    no outline sets `style.outline = RadialOutline::default()`.
 - **One palette method on the SSOT, and one-time renderer fits**
   ([#357](https://github.com/shim9610/figgy/issues/357)). With no theme,
   every series of a multi-series chart drew in the same colour (palette
@@ -261,7 +360,7 @@ and radar documents' `text_sizes`) are additive.
     textbook term diagrams do: `left_y` keeps its line, outward ticks and
     labels; `bottom_x` keeps the term-column labels without a line or
     ticks; `top_x` and `right_y` draw nothing, unless `right_y` has a
-    `unit` (a second energy unit such as cm⁻¹), which then takes the
+    `unit` (a second energy unit such as cm<sup>-1</sup>), which then takes the
     energy axis' frame. It used to draw the boxed frame with outward ticks
     on the bottom and left. Migration: a host that wants the old frame
     applies `AxisPreset::BoxedOutward` and switches the grid off itself.
@@ -284,11 +383,14 @@ and radar documents' `text_sizes`) are additive.
     Rust literal of `EnergyLevelTheme` adds the two fields.
   - The Grotrian examples (`nist_grotrian`, `nist_grotrian_gallery` and
     the playground's energy-level scenes, `support/grotrian_sets.rs`)
-    write physics notation as host text: term symbols such as ¹P° and
-    ²[3/2]°, configurations such as 1s² and J as a subscript, in Unicode
-    super- and subscripts (#353). They derive each axis break from their
-    own levels (`derived_break`: the widest empty energy range), as the
-    item 13 decision keeps breaks the host's job.
+    write physics notation as host text: term symbols with a raised
+    multiplicity, configurations with raised occupancies and J as a
+    subscript, built from rich-text script segments (TeX `^{}` and `_{}`
+    spans), never from Unicode super- or subscript characters, which
+    figgy's own examples, presets and docs do not use (#357; #353's
+    mapping stays for hosts that pass them). They derive each axis break
+    from their own levels (`derived_break`: the widest empty energy
+    range), as the item 13 decision keeps breaks the host's job.
 - **Palette presets and a default colour cycle** ([#357](https://github.com/shim9610/figgy/issues/357)).
   `ColorCycle` gains five categorical presets from public palettes:
   `Tableau10` (d3-scale-chromatic, ISC), `Set2` and `Dark2` (ColorBrewer,
