@@ -736,3 +736,26 @@ async fn palette_presets_reach_the_browser() {
     );
     assert_eq!(read(&pie), document, "a refusal changes nothing");
 }
+
+/// The browser's `ColorCycle` mirrors every model cycle in order (#357).
+#[wasm_bindgen_test]
+fn color_cycle_mirrors_every_model_cycle() {
+    use figgy::ColorCycle as Web;
+    let web = [
+        Web::Classic,
+        Web::Vivid,
+        Web::Balanced,
+        Web::ColorblindSafe,
+        Web::Monochrome,
+        Web::Tableau10,
+        Web::Set2,
+        Web::Dark2,
+        Web::Plotly,
+        Web::HighContrast,
+    ];
+    assert_eq!(web.len(), renderer::ColorCycle::ALL.len());
+    for (web, model) in web.into_iter().zip(renderer::ColorCycle::ALL) {
+        assert_eq!(renderer::ColorCycle::from(web), model);
+        assert_eq!(figgy::color_cycle_css(web).len(), model.len());
+    }
+}

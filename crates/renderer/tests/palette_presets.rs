@@ -101,7 +101,7 @@ fn uncoloured_series_draw_the_default_cycle_at_1x_and_2x() {
     for (k, item) in series.iter().enumerate() {
         let color = line_color(item);
         assert!(
-            legend.iter().any(|segment| segment.color == color),
+            legend.iter().any(|segment| segment.color == Some(color)),
             "series {k}: no legend symbol in its colour"
         );
     }
@@ -219,7 +219,7 @@ fn vector_exports_carry_the_cycle_colours() {
 #[test]
 fn a_saved_document_keeps_its_colours() {
     let mut r = Renderer::headless_blocking().expect("headless renderer");
-    let (chart, series) = chart_and_series(&mut r);
+    let (mut chart, series) = chart_and_series(&mut r);
     let json = serde_json::to_string(&series).unwrap();
     let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
     assert_eq!(back, series);
@@ -240,8 +240,15 @@ fn a_saved_document_keeps_its_colours() {
     let json = serde_json::to_string(&black).unwrap();
     let loaded: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
     assert!(loaded.iter().all(|item| line_color(item) == Color::BLACK));
+    // The series draw black. The legend is the chart's own value and still
+    // holds the swatches it was built with, so it is hidden here.
+    chart.config_mut().legend.visible = false;
     let img = export(&mut r, &chart, &loaded, 1.0);
-    assert_eq!(has_color(&img, ColorCycle::DEFAULT.color(1)), 0);
+    assert_eq!(
+        has_color(&img, ColorCycle::DEFAULT.color(1)),
+        0,
+        "a stored black series is not recoloured"
+    );
 }
 
 // A family's look with a preset's colours: the gallery line chart in
