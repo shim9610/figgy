@@ -50,6 +50,8 @@ pub(crate) use registry::{exact_variant_for, resident_exact_key};
 use registry::{
     series_arc, series_exact_key, series_exact_variant, series_ring, stream_exact_variant,
 };
+#[cfg(target_arch = "wasm32")]
+pub(crate) use shader::GATE_PIPELINE_LABELS;
 pub(crate) use shader::exact_variant;
 #[cfg(test)]
 use shader::{

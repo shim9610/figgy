@@ -718,6 +718,48 @@ impl CompileQueue {
         Ok(())
     }
 
+    /// Schedule the compute pipelines of `source` whose labels are in
+    /// `labels` as pick compiles (#363): the picker's gate and reduce
+    /// pipelines, compiled ahead of a chart's first pick through
+    /// `createComputePipelineAsync` with the checked layout, ahead of every
+    /// waiting compile. A label already scheduled for `shader_set` is left
+    /// as it is. Like [`Self::schedule_exact_pick`]'s, the screen's counts,
+    /// waits and failures leave them out.
+    pub(crate) fn schedule_pick_compute(
+        &self,
+        shader_set: crate::shader_assembly::ShaderSet,
+        source: &str,
+        labels: &[&str],
+    ) -> Result<(), String> {
+        use crate::compile_schedule::LabelReadiness;
+        {
+            let mut state = self.0.borrow_mut();
+            let mut module = None;
+            for desc in descriptors(source, "compute")? {
+                let label = get(&desc, "label")?.as_string().unwrap_or_default();
+                if !labels.contains(&label.as_str())
+                    || state.schedule.readiness(shader_set, &label) != LabelReadiness::Untracked
+                {
+                    continue;
+                }
+                if module.is_none() {
+                    module = Some(shader(
+                        &state.device,
+                        source,
+                        "figgy GPU pick gate prewarm",
+                    )?);
+                }
+                if let Some(module) = &module {
+                    populate(&state.device, &desc, module)?;
+                }
+                state.schedule.push_pick(shader_set, label);
+                state.descriptors.push((desc, "createComputePipelineAsync"));
+            }
+        }
+        self.pump();
+        Ok(())
+    }
+
     /// Wait for the exact pick pipeline `label` names (#363), issuing it
     /// first if it still waits: `true` once it compiled; `false` when none is
     /// scheduled for `set` or it ended any other way. It wakes on each

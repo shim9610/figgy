@@ -212,6 +212,16 @@ impl PickShader {
     }
 }
 
+/// The labels of the gate module's pipelines a pick always needs, as the
+/// shader contract records them: compiled on a browser renderer's queue
+/// ahead of a chart's first pick (#363).
+#[cfg(target_arch = "wasm32")]
+pub(crate) const GATE_PIPELINE_LABELS: [&str; 3] = [
+    "figgy GPU pick X gate pipeline",
+    "figgy GPU pick Y gate pipeline",
+    "figgy GPU pick candidate reduction pipeline",
+];
+
 /// One exact pipeline: the module, the `PICK_VARIANT` bits and the
 /// `PICK_SHAPE` the driver specialises it for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

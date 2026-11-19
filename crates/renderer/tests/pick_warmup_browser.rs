@@ -1,7 +1,8 @@
 //! #363: a browser renderer compiles a registered chart's exact pick
-//! pipelines ahead of its first pick, on its compile queue, and the first
-//! pick finds the compile done (or waits for it) instead of starting its
-//! own. Also reports the first pick's latency (`PICK_WARMUP` lines), right
+//! pipelines, and the picker's gate and reduce pipelines, ahead of its
+//! first pick, on its compile queue; a frame creates each one once it has
+//! compiled, and the first pick finds them created (or waits for the
+//! compile) instead of starting its own. Also reports the first pick's latency (`PICK_WARMUP` lines), right
 //! after the first frame and after idle waits, while the window's render
 //! compiles still run in the background.
 #![cfg(target_arch = "wasm32")]
@@ -157,11 +158,32 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
             }],
         )
         .unwrap();
-    if wasm_bindgen_futures::JsFuture::from(sleep(idle_ms))
-        .await
-        .is_err()
-    {
-        panic!("sleep rejected");
+    // The host keeps drawing while it idles, as a `FiggyChart` does for its
+    // background compiles: each frame creates what has compiled since.
+    let mut waited = 0.0;
+    let drawn = now_ms();
+    let mut complete_ms = renderer.frame_complete().then_some(0.0);
+    while waited < idle_ms {
+        let step = (idle_ms - waited).min(500.0);
+        if wasm_bindgen_futures::JsFuture::from(sleep(step))
+            .await
+            .is_err()
+        {
+            panic!("sleep rejected");
+        }
+        waited += step;
+        renderer
+            .draw_registered(
+                Color::WHITE,
+                &mut [RegisteredChartDrawItem {
+                    chart_id: id,
+                    view: &mut view,
+                }],
+            )
+            .unwrap();
+        if complete_ms.is_none() && renderer.frame_complete() {
+            complete_ms = Some(now_ms() - drawn);
+        }
     }
     let warmed = exact_settled();
     let start = now_ms();
@@ -184,7 +206,7 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
     let picked = now_ms();
     report(&format!(
         "PICK_WARMUP idle_ms={idle_ms} exact_compiled_before_pick={warmed} \
-         pick_exact_calls={issued_by_pick} \
+         pick_exact_calls={issued_by_pick} frame_complete_ms={complete_ms:?} \
          enable_ms={:.0} exact_ms={:.0} readback_ms={:.0} first_pick_ms={:.0}",
         enabled - start,
         compiled - enabled,
@@ -198,16 +220,27 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
     }
 }
 
-/// The first frame schedules the chart's exact pipeline; after an idle
-/// wait it has compiled before the pick starts, and the pick's own compile
-/// call is the one cache lookup it always makes.
+/// The first frame schedules the chart's gate, reduce and exact pipelines;
+/// after a 20 s idle wait they have compiled and a later frame has created
+/// them, so the pick compiles nothing of its own. After 8 s it depends on
+/// the machine's load: either the same, or the warm-up compile had not been
+/// created yet and the pick waits for it and makes the one cache lookup of
+/// its own. Never a second
+/// compile of the key.
 #[wasm_bindgen_test(async)]
 async fn a_radar_chart_compiles_its_exact_pipeline_before_the_first_pick() {
-    for idle_ms in [8_000.0, 20_000.0] {
-        let pick = first_pick(idle_ms).await;
-        assert_eq!(pick.warmed, 1, "the warm-up compiled during {idle_ms} ms");
-        assert_eq!((pick.issued_by_pick, pick.issued), (1, 2));
-    }
+    let pick = first_pick(8_000.0).await;
+    assert!(
+        matches!(
+            (pick.warmed, pick.issued_by_pick, pick.issued),
+            (1, 0, 1) | (_, 1, 2)
+        ),
+        "after 8 s: {:?}",
+        (pick.warmed, pick.issued_by_pick, pick.issued)
+    );
+    let pick = first_pick(20_000.0).await;
+    assert_eq!(pick.warmed, 1, "the warm-up compiled during 20 s");
+    assert_eq!((pick.issued_by_pick, pick.issued), (0, 1));
 }
 
 /// Picked right after the first frame, the pick waits for the compile the
