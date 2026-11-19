@@ -2171,6 +2171,56 @@ mod wavelength_label_tests {
         assert_eq!(t.drawn_label(None), None);
     }
 
+    // A limit label sits above its line, or below it when above would
+    // leave the plot (#357): it is never clipped, and level labels keep
+    // clear of it.
+    #[test]
+    fn a_limit_label_stays_inside_the_plot() {
+        let space = space();
+        let categories = [Category::new("a", "a"), Category::new("b", "b")];
+        let placement = LevelPlacement {
+            space: &space,
+            categories: &categories,
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let plot = space.plot;
+        let limit = |energy: f64| IonizationLimit {
+            id: "lim".into(),
+            energy,
+            label: Some(RichText::plain("He II 24.587 eV", Color::BLACK, 16.0, "")),
+            label_offset: [0.0; 2],
+            uncertainty: None,
+            reference: String::new(),
+        };
+        let mut records = records();
+        let style = records.style.clone();
+        let rect = |records: &EnergyLevelSeries| {
+            let layout = placement.layout(records, &style, &Fixed);
+            placement
+                .label(records, &style, &layout, LabelPart::Limit, 0, &Fixed)
+                .expect("a limit label")
+                .rect()
+        };
+        let line_y = |energy: f64| {
+            space
+                .value_to_px(crate::annotation::AnnotationAxis::Y, energy)
+                .unwrap()
+        };
+        // Room above: the label sits on the line.
+        records.limits = vec![limit(12.0)];
+        let above = rect(&records);
+        assert!(above.y + above.height <= line_y(12.0));
+        // The line at the top of the range: the label hangs below it,
+        // inside the plot.
+        records.limits = vec![limit(24.9)];
+        let below = rect(&records);
+        assert!(below.y >= line_y(24.9), "{below:?}");
+        assert!(below.y >= plot.y && below.y + below.height <= plot.y + plot.height);
+        assert_eq!(below.x, above.x, "right-aligned either way");
+    }
+
     #[test]
     fn a_formatted_label_is_placed_drawn_picked_and_dragged_as_a_host_label() {
         let space = space();

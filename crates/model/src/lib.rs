@@ -103,8 +103,8 @@ pub use material::Material;
 
 pub use categorical::*;
 pub use radial::{
-    RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialOutline,
-    RadialSlice, RadialSplit, RadialStyle, RadialTarget,
+    InnerLabelFallback, RadialChart, RadialInteraction, RadialKind, RadialLabelFormat,
+    RadialLabels, RadialOutline, RadialSlice, RadialSplit, RadialStyle, RadialTarget,
 };
 
 pub mod boxplot;

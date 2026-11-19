@@ -1840,6 +1840,114 @@ fn a_label_on_the_next_column_moves_to_its_other_side() {
     assert!(labels_on_other_columns(&placement, &levels, &levels.style, &measure).is_empty());
 }
 
+/// Whether segments `a` and `b` cross away from their ends.
+fn segments_cross(a: ([f32; 2], [f32; 2]), b: ([f32; 2], [f32; 2])) -> bool {
+    let side = |p: [f32; 2], q: [f32; 2], r: [f32; 2]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    let (d1, d2) = (side(b.0, b.1, a.0), side(b.0, b.1, a.1));
+    let (d3, d4) = (side(a.0, a.1, b.0), side(a.0, a.1, b.1));
+    d1 * d2 < -1e-3 && d3 * d4 < -1e-3
+}
+
+// #357: in the He, Ar and Cu scenes, at their own size and at 800x600, the
+// arrows of a bundle (the transitions between the same two columns) never
+// cross, no two arrow ends on one level meet (they are at least a step
+// apart, or spread evenly over a stroke too short for that), and every end
+// stays on its level's stroke. The scenes export at 1x and 2x.
+#[test]
+fn bundled_arrows_spread_along_their_levels_without_crossing() {
+    let mut r = renderer();
+    let mut found = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        for size in [None, Some((800, 600))] {
+            let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+            let mut chart = Chart::new(scene.config.clone());
+            if let Some((w, h)) = size {
+                chart.set_area(0, 0, w, h);
+                chart.fit_layout();
+            }
+            let name = format!("{kind:?} {size:?}");
+            each_level_panel(
+                chart.config(),
+                &scene.series,
+                |placement, levels, records, measure| {
+                    let style = &levels.style;
+                    let layout = placement.layout(records, style, measure);
+                    let row = |id: &str| records.levels.iter().position(|l| l.id == id);
+                    let column = |id: &str| row(id).map(|i| records.levels[i].column.clone());
+                    let mut drawn = Vec::new();
+                    for (index, t) in records.transitions.iter().enumerate() {
+                        let Some(arrow) = placement.transition_arrow(&layout, index) else {
+                            continue;
+                        };
+                        let (Some(lower), Some(upper)) = (row(&t.lower), row(&t.upper)) else {
+                            continue;
+                        };
+                        // Each end lies on its level's stroke.
+                        for (end, level) in [
+                            (arrow.0, upper),
+                            (arrow.1, lower),
+                            (arrow.0, lower),
+                            (arrow.1, upper),
+                        ] {
+                            if let Some((a, b)) = placement.level_stroke(records, style, level)
+                                && (end[1] - a[1]).abs() < 0.5
+                                && t.x_offset == 0.0
+                                && (end[0] < a[0].min(b[0]) - 0.5 || end[0] > a[0].max(b[0]) + 0.5)
+                            {
+                                found.push(format!(
+                                    "{name}: {} leaves level {}",
+                                    t.id, records.levels[level].id
+                                ));
+                            }
+                        }
+                        drawn.push((index, (column(&t.lower), column(&t.upper)), arrow));
+                    }
+                    for (i, (a, bundle_a, arrow_a)) in drawn.iter().enumerate() {
+                        for (b, bundle_b, arrow_b) in &drawn[i + 1..] {
+                            let (ta, tb) = (&records.transitions[*a], &records.transitions[*b]);
+                            if bundle_a == bundle_b && segments_cross(*arrow_a, *arrow_b) {
+                                found.push(format!("{name}: {} crosses {}", ta.id, tb.id));
+                            }
+                            // No two ends on one level meet.
+                            for p in [arrow_a.0, arrow_a.1] {
+                                for q in [arrow_b.0, arrow_b.1] {
+                                    if (p[0] - q[0]).abs() < 1.0 && (p[1] - q[1]).abs() < 0.5 {
+                                        found.push(format!(
+                                            "{name}: {} and {} meet at {p:?}",
+                                            ta.id, tb.id
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            );
+            for scale in [1.0, 2.0] {
+                let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+                let image = r
+                    .export_rgba_blocking(
+                        renderer::ExportSource::chart(&chart, &scene.series),
+                        options,
+                    )
+                    .expect("export");
+                assert_eq!(
+                    image.width,
+                    (chart.config().chart_area.0.width as f32 * scale) as u32,
+                    "{name} {scale}x"
+                );
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}
+
 // #248: in the He, Ar, Cu, U and every-level Ar scenes no drawn level or
 // band label lies on another column's level stroke or band fill, on a limit
 // line, or on another label, and no transition label on another label.
@@ -1870,6 +1978,119 @@ fn scene_level_labels_stay_off_other_columns() {
         );
         all.extend(found.into_iter().map(|f| format!("{kind:?}: {f}")));
     }
+    assert!(all.is_empty(), "{all:#?}");
+}
+
+/// Every level and band label of the series in `config` that lies on a
+/// stroke or fill of its own column's neighbours, on a limit line or on
+/// another label, described per `name`.
+fn scene_collisions(name: &str, config: &renderer::Config, series: &[SeriesConfig]) -> Vec<String> {
+    let mut found = Vec::new();
+    each_level_panel(config, series, |placement, levels, records, measure| {
+        found.extend(
+            labels_on_other_columns(placement, records, &levels.style, measure)
+                .into_iter()
+                .map(|f| format!("{name}: {f}")),
+        );
+    });
+    found
+}
+
+fn slot_fractions(series: &[SeriesConfig]) -> Vec<f32> {
+    series
+        .iter()
+        .filter_map(|s| s.render_type.energy_levels())
+        .map(|l| l.style.level.slot_fraction)
+        .collect()
+}
+
+// #357: registration narrows each Grotrian series' strokes once so its level
+// labels fit before the next column, at the scene's size and in an 800x600
+// chart; the value is written to the SSOT, a second fit keeps it, and the
+// `as_given` opt-out and a `Fixed` document keep the stored share. The
+// registered chart exports at 1x and 2x as its stored document does.
+#[test]
+fn registration_fits_the_level_slots_once() {
+    let mut r = renderer();
+    let mut all = Vec::new();
+    let mut narrowed = 0;
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        for size in [None, Some((800, 600))] {
+            let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+            // A new document keeps its layout fitted, as the gallery's do.
+            let mut config = scene.config.clone();
+            config.layout_state = renderer::LayoutState::Fitted;
+            let mut chart = Chart::new(config);
+            if let Some((w, h)) = size {
+                chart.set_area(0, 0, w, h);
+                chart.fit_layout();
+            }
+            let name = format!("{kind:?} {size:?}");
+            let given = slot_fractions(&scene.series);
+            let id = r
+                .register_chart(chart.config().clone(), scene.series.clone())
+                .expect("register");
+            let config = r.chart_config(id).unwrap().clone();
+            let series = r.chart_series(id).unwrap().to_vec();
+            let fitted = slot_fractions(&series);
+            for (g, f) in given.iter().zip(&fitted) {
+                assert!(f <= g && *f >= 0.35f32.min(*g), "{name}: {g} -> {f}");
+                if f < g {
+                    narrowed += 1;
+                }
+            }
+            all.extend(scene_collisions(&name, &config, &series));
+
+            // A second fit keeps the stored share.
+            let mut held = Chart::new(config.clone());
+            let mut again = series.clone();
+            r.fit_ranges(&mut held, &mut again).unwrap();
+            assert_eq!(slot_fractions(&again), fitted, "{name}: refit");
+
+            // The opt-outs keep the share as given.
+            let as_given = r
+                .register_chart_as_given(chart.config().clone(), scene.series.clone())
+                .expect("register as given");
+            assert_eq!(
+                slot_fractions(r.chart_series(as_given).unwrap()),
+                given,
+                "{name}: as given"
+            );
+            let mut fixed = chart.config().clone();
+            fixed.layout_state = renderer::LayoutState::Fixed;
+            let fixed = r.register_chart(fixed, scene.series.clone()).unwrap();
+            assert_eq!(
+                slot_fractions(r.chart_series(fixed).unwrap()),
+                given,
+                "{name}: fixed"
+            );
+
+            if size.is_some() {
+                let stored = Chart::as_given(config.clone());
+                for scale in [1.0, 2.0] {
+                    let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+                    let registered = r
+                        .export_rgba_blocking(renderer::ExportSource::Registered(id), options)
+                        .unwrap();
+                    let own = r
+                        .export_rgba_blocking(
+                            renderer::ExportSource::chart(&stored, &series),
+                            options,
+                        )
+                        .unwrap();
+                    assert_eq!(registered.rgba, own.rgba, "{name} {scale}x");
+                }
+            }
+            for chart in [id, as_given, fixed] {
+                r.remove_chart(chart).unwrap();
+            }
+        }
+    }
+    assert!(narrowed > 0, "some scene is narrowed");
     assert!(all.is_empty(), "{all:#?}");
 }
 
@@ -2454,4 +2675,234 @@ fn a_document_with_formatted_labels_and_a_note_round_trips() {
         let b = export(&mut r, &Chart::new(config.clone()), &back, scale);
         assert_eq!(a.rgba, b.rgba, "{scale}x");
     }
+}
+
+/// The transition labels of `records` in `placement` that leave the plot
+/// or the panel, or overlap any other drawn label (level, band, limit or
+/// transition), described.
+fn transition_label_faults(
+    placement: &renderer::energy_levels::LevelPlacement<'_>,
+    records: &EnergyLevelSeries,
+    style: &renderer::energy_levels::EnergyLevelStyle,
+    measure: &renderer::CpuTextMeasure,
+) -> Vec<String> {
+    use renderer::energy_levels::LabelPart;
+    let layout = placement.layout(records, style, measure);
+    let plot = placement.space.plot_rect();
+    let inside = |r: renderer::layout::RectF| {
+        r.x >= plot.x - 0.5
+            && r.y >= plot.y - 0.5
+            && r.x + r.width <= plot.x + plot.width + 0.5
+            && r.y + r.height <= plot.y + plot.height + 0.5
+    };
+    let mut drawn: Vec<(String, renderer::layout::RectF)> = Vec::new();
+    for (part, len) in [
+        (LabelPart::Level, records.levels.len()),
+        (LabelPart::Band, records.bands.len()),
+        (LabelPart::Limit, records.limits.len()),
+        (LabelPart::Transition, records.transitions.len()),
+    ] {
+        for index in 0..len {
+            if let Some(text) = placement.label(records, style, &layout, part, index, measure) {
+                drawn.push((format!("{part:?} {index}"), text.rect()));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for (i, (name, rect)) in drawn.iter().enumerate() {
+        if !name.starts_with("Transition") {
+            continue;
+        }
+        let id = &records.transitions[name[11..].parse::<usize>().unwrap()].id;
+        if !inside(*rect) {
+            found.push(format!(
+                "transition {id} clipped: {rect:?} outside {plot:?}"
+            ));
+        }
+        for (j, (other, rect2)) in drawn.iter().enumerate() {
+            if i != j && rects_overlap(*rect, *rect2) && (j > i || !other.starts_with("Transition"))
+            {
+                found.push(format!("transition {id} on {other}"));
+            }
+        }
+    }
+    found
+}
+
+// #357: in the He, Ar and Cu diagrams, at their own size and at 800 × 600
+// in the Gallery theme, at 1x and 2x, no transition (wavelength) label is
+// clipped by the plot and no label box overlaps another. The renderer lays
+// a 2x drawing out in logical pixels (`logical_space`), as here.
+#[test]
+fn transition_labels_stay_inside_the_plot_and_off_other_labels() {
+    let mut r = renderer();
+    let mut all = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+        let mut gallery_series = scene.series.clone();
+        let mut gallery = Chart::new(scene.config.clone());
+        gallery.set_area(0, 0, 800, 600);
+        gallery
+            .apply_theme("gallery", &mut gallery_series)
+            .expect("the gallery theme");
+        gallery.fit_layout();
+        for (look, config, series) in [
+            ("scene", scene.config.clone(), scene.series.clone()),
+            ("gallery 800x600", gallery.config().clone(), gallery_series),
+        ] {
+            for scale in [1.0f32, 2.0] {
+                let scaled = config.scaled(scale);
+                let expansion = scaled.expand().expect("the scene expands");
+                for panel in &expansion.panels {
+                    let panel = &panel.config;
+                    let Some(categories) = panel.bottom_x.categories.as_deref() else {
+                        continue;
+                    };
+                    let mut space = renderer::annotation::pixel_space_for_config(panel);
+                    let logical = |r: renderer::layout::RectF| renderer::layout::RectF {
+                        x: r.x / scale,
+                        y: r.y / scale,
+                        width: r.width / scale,
+                        height: r.height / scale,
+                    };
+                    space.panel = logical(space.panel);
+                    space.plot = logical(space.plot);
+                    let measure = renderer::CpuTextMeasure::for_style(&panel.draw_style);
+                    for cfg in &series {
+                        let Some(levels) = cfg.render_type.energy_levels() else {
+                            continue;
+                        };
+                        if levels.source.is_some() {
+                            continue;
+                        }
+                        let placement = renderer::energy_levels::LevelPlacement {
+                            space: &space,
+                            categories,
+                            view: levels.show,
+                            colorbar: panel.colorbar.as_ref(),
+                            picked: None,
+                        };
+                        all.extend(
+                            transition_label_faults(&placement, levels, &levels.style, &measure)
+                                .into_iter()
+                                .map(|f| format!("{kind:?} {look} {scale}x: {f}")),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(all.is_empty(), "{all:#?}");
+}
+
+// #357: the steep 1s4/1s5 fan of Ar I sets its wavelength labels in one
+// aligned column beside it: one x, even spacing, no two meeting, each with
+// a leader from its own arrow to its label. A label in the column picks as
+// itself, and dragged, it and its leader move together while the rest of
+// the column stays.
+#[test]
+fn a_crowded_fan_sets_its_labels_in_a_column_with_leaders() {
+    use renderer::energy_levels::{LabelPart, LevelHit};
+    use renderer::sink::{DrawnPart, Parts};
+    let mut r = renderer();
+    let scene = scenes::build(&mut r, scenes::SceneKind::EnergyLevelsAr, 1_000).expect("scene");
+    let mut checked = false;
+    each_level_panel(
+        &scene.config,
+        &scene.series,
+        |placement, levels, records, measure| {
+            let style = &levels.style;
+            let rects = |records: &EnergyLevelSeries| -> Vec<Option<renderer::layout::RectF>> {
+                let layout = placement.layout(records, style, measure);
+                (0..records.transitions.len())
+                    .map(|i| {
+                        placement
+                            .label(records, style, &layout, LabelPart::Transition, i, measure)
+                            .map(|t| t.rect())
+                    })
+                    .collect()
+            };
+            let leaders = |records: &EnergyLevelSeries| {
+                let mut segments = Vec::new();
+                let mut sink = Parts(&mut |part| {
+                    if let DrawnPart::Segment { a, b, width } = part
+                        && (width - 0.6).abs() < 1e-6
+                    {
+                        segments.push((a, b));
+                    }
+                });
+                placement.emit(records, style, measure, &mut sink);
+                segments
+            };
+            // A leader ends just off its label's near edge, at its middle.
+            let ends_at = |rect: renderer::layout::RectF, p: [f32; 2]| {
+                let mid = rect.y + rect.height / 2.0;
+                (p[1] - mid).abs() < 0.01
+                    && ((p[0] - (rect.x - 1.0)).abs() < 0.01
+                        || (p[0] - (rect.x + rect.width + 1.0)).abs() < 0.01)
+            };
+            let placed = rects(records);
+            // The column: the labels that share one left edge.
+            let mut by_x: Vec<(i64, usize)> = placed
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.map(|r| ((r.x * 10.0).round() as i64, i)))
+                .collect();
+            by_x.sort();
+            let Some(column) = by_x
+                .chunk_by(|a, b| a.0 == b.0)
+                .map(|run| run.iter().map(|(_, i)| *i).collect::<Vec<_>>())
+                .max_by_key(Vec::len)
+            else {
+                return;
+            };
+            if column.len() < 4 {
+                return;
+            }
+            checked = true;
+            let mut tops: Vec<f32> = column.iter().map(|&i| placed[i].unwrap().y).collect();
+            tops.sort_by(f32::total_cmp);
+            let steps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
+            assert!(
+                steps.iter().all(|s| (s - steps[0]).abs() < 1.0 && *s > 0.0),
+                "evenly spaced: {steps:?}"
+            );
+            let segments = leaders(records);
+            for &i in &column {
+                let rect = placed[i].unwrap();
+                assert!(
+                    segments.iter().any(|(_, b)| ends_at(rect, *b)),
+                    "transition {i} has a leader to its label"
+                );
+                let centre = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+                let hit = placement.pick(records, style, measure, centre, 4.0);
+                assert_eq!(
+                    hit.map(|h| h.0),
+                    Some(LevelHit::Label(LabelPart::Transition, i))
+                );
+            }
+            // Dragged, one label moves with its leader; the column stays.
+            let moved = column[1];
+            let mut dragged = records.clone();
+            dragged.drag_label(LabelPart::Transition, moved, 6.0, -5.0);
+            let after = rects(&dragged);
+            let (a, b) = (placed[moved].unwrap(), after[moved].unwrap());
+            assert!(
+                (b.x - a.x - 6.0).abs() < 0.01 && (b.y - a.y + 5.0).abs() < 0.01,
+                "{a:?} {b:?}"
+            );
+            for &i in column.iter().filter(|&&i| i != moved) {
+                assert_eq!(after[i], placed[i], "the rest of the column stays");
+            }
+            assert!(
+                leaders(&dragged).iter().any(|(_, p)| ends_at(b, *p)),
+                "the leader follows its label"
+            );
+        },
+    );
+    assert!(checked, "the Ar fan sets a column");
 }

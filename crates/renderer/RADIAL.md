@@ -168,7 +168,26 @@ ring. `children` is omitted from JSON when it is empty.
   - its outer corners stay inside the rim.
 
   So a horizontal label at the top or bottom of a thin ring keeps its size,
-  and one at the ring's side is held to the thickness.
+  and one at the ring's side is held to the thickness. A label is placed
+  where it fits largest (#357):
+  - along its arc: it slides from the bisector towards the top or bottom
+    of a wide segment when it fits at least 5% larger there;
+  - upright: on a flat chart, a label that cannot keep its size
+    horizontally reads bottom to top (as a y axis title) when that fits
+    larger, so a wide segment at the side of a thin ring keeps its label;
+  - never below 12 logical pixels (or the chart's `font_size` when that is
+    smaller). A label that would be smaller moves outside with a leader
+    when its slice is on the outermost ring (or on a pie or donut); the
+    circle makes room for it as for any outside label, and it is hit,
+    selected and dragged as one. On an inner sunburst ring, where no
+    leader reaches past the outer rings, it is hidden: not drawn and not
+    hit. With `inner_label_fallback: InnerLabelFallback::Outside` it is
+    pulled outside instead: its leader starts just past its own ring's rim
+    and crosses the outer rings to the elbow beside the circle, and it is
+    stacked with the outermost ring's outside labels in angle order, so no
+    two meet. It is then an outside label in every respect: hover, click
+    selection, the part-by-part outline, drag (the leader follows), PNG,
+    SVG and PDF, serde (the key is omitted while `Hide`) and WASM.
 - Sunbursts are drawn flat only. A nonzero `tilt_degrees` or `depth` in the
   chart style or a node style is rejected
   (`"a sunburst draws flat: no tilt or depth"`). A sunburst cannot be used
@@ -183,7 +202,12 @@ ring. `children` is omitted from JSON when it is empty.
   depth, gap or rounded corners, and a 1 px white rim and separators. The
   white line separates every node from its siblings and every ring from the
   next, even when a whole branch shares one colour. On another background,
-  set `outline.color` to it. A theme with `child_tint` (the Gallery and
+  set `outline.color` to it. It is the host default
+  ([#357](https://github.com/shim9610/figgy/issues/357)):
+  `RadialStyle::default()` and `RadialChart::default()` draw it, so a chart
+  without a theme shows its separators. The serde default a document reads
+  when it omits the style keeps no outline, so stored documents draw as
+  before; `RadialOutline::default()` keeps the documented (off) outline. A theme with `child_tint` (the Gallery and
   cool slate members) colours each branch from its top-level slice, each
   ring paler.
 
@@ -816,7 +840,17 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
   반지름에 놓인다. 크기는 조각 자신의 좌표계에서 맞춘다(#357). 이등분선 방향 길이는 띠 두께 안에,
   그와 수직인 방향 길이는 라벨 중심을 지나는 호 안에 들어가야 하고, 바깥 모서리는 테두리 안에 있어야
   한다. 그래서 얇은 고리의 위나 아래에 놓인 가로 라벨은 원래 크기를 지키고, 옆에 놓인 라벨은 두께에
-  맞춰 줄어든다.
+  맞춰 줄어든다. 라벨은 가장 크게 들어가는 곳에 놓인다(#357). 넓은 조각에서는 그 크기가 5% 이상
+  커지면 이등분선에서 호를 따라 위나 아래로 옮긴다. 평면 차트에서 가로로 원래 크기를 지킬 수 없는 라벨은
+  더 크게 들어가면 y축 제목처럼 아래에서 위로 세워 쓴다. 그래서 얇은 고리 옆의 넓은 조각도 라벨을 지킨다.
+  라벨은 12 논리 픽셀(차트의 `font_size`가 더 작으면 그 값)보다 작아지지 않는다. 그보다 작아져야 하는
+  라벨은 조각이 가장 바깥 고리(또는 파이·도넛)에 있으면 연결선과 함께 바깥으로 옮긴다. 원은 다른 바깥
+  라벨처럼 자리를 내주고, 그 라벨은 바깥 라벨과 똑같이 맞히고 선택하고 끌 수 있다. 연결선이 바깥 고리를
+  넘어갈 수 없는 안쪽 선버스트 고리에서는 숨긴다. 그리지도 맞히지도 않는다. `inner_label_fallback`을
+  `InnerLabelFallback::Outside`로 두면 숨기지 않고 바깥으로 꺼낸다. 연결선은 자기 고리 테두리 바로 바깥에서
+  시작해 바깥 고리들을 가로질러 원 옆의 꺾임점까지 가고, 라벨은 가장 바깥 고리의 바깥 라벨과 각도 순으로
+  함께 쌓여 서로 겹치지 않는다. 그다음부터는 호버, 클릭 선택, 부분별 윤곽선, 드래그(연결선이 따라감),
+  PNG·SVG·PDF, serde(`Hide`이면 키 생략), WASM 모두 바깥 라벨과 같다.
 - 평면에서만 그린다. 차트 스타일이나 노드 스타일의 `tilt_degrees`·`depth`가 0이 아니면
   거부한다(`"a sunburst draws flat: no tilt or depth"`). `split`과 함께 쓸 수 없다
   (`"a sunburst has no detail circle"`).
@@ -826,7 +860,10 @@ WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용�
 - 피킹·강조·호버·재질(고리마다 다른 결)은 모두 조각과 같다.
 - `RadialStyle::sunburst()`는 웹 선버스트 차트의 평면 모양이다. 깊이·간격·둥근 모서리가 없고,
   1px 흰색 테두리와 구분선을 그린다. 그래서 한 가지가 같은 색이어도 노드와 고리가 서로 구분된다.
-  배경이 흰색이 아니면 `outline.color`를 배경색으로 바꾼다. `child_tint`가 있는 테마(Gallery,
+  배경이 흰색이 아니면 `outline.color`를 배경색으로 바꾼다. 이 모양이 호스트 기본값이다(#357).
+  `RadialStyle::default()`와 `RadialChart::default()`가 이 모양을 그리므로 테마 없는 차트에도
+  구분선이 보인다. 스타일을 생략한 문서가 읽는 serde 기본값은 윤곽선이 없으므로 저장된 문서는
+  예전 그대로 그려진다. `RadialOutline::default()`는 문서화된(꺼진) 윤곽선을 유지한다. `child_tint`가 있는 테마(Gallery,
   cool slate)는 가지마다 맨 위 조각의 색을 쓰고, 바깥 고리로 갈수록 옅게 칠한다.
 
 ```rust
