@@ -513,14 +513,14 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
     let series = r.chart_series(id).unwrap().to_vec();
     let one = r
         .export_rgba(
-            crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+            crate::ExportSource::chart(&mut Chart::new(config.clone()), &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let two = r
         .export_rgba(
-            crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+            crate::ExportSource::chart(&mut Chart::new(config.clone()), &series),
             crate::ExportOptions::panel(2.0),
         )
         .block_on()

@@ -30,7 +30,7 @@ use crate::data_config::SeriesConfig;
 use crate::energy_levels::{color_ok, offset_ok};
 use crate::layout::{NudgeReject, NudgeResult, RectF};
 use crate::sink::{PathSegment, PlacedText, Sink, Slot, StrokeStyle, TextRef};
-use crate::text::{MeasureText, RichText};
+use crate::text::{MeasureText, RichText, TextExtents};
 use std::f32::consts::PI;
 
 /// A Feynman diagram: its vertices, its propagators and their look. See the
@@ -359,6 +359,19 @@ pub struct FeynmanStyle {
     pub fan_step: f32,
     /// How the picked part is drawn.
     pub picked: FeynmanPicked,
+    /// The factor every vertex, propagator and momentum label is drawn at,
+    /// `0.25..=4`: a label's stored size (its `RichText` sizes, the host's
+    /// data) times this is the size measured, placed, drawn, picked and
+    /// exported. An appearance choice of the series; the stored labels keep
+    /// their sizes.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::feynman_label_scale",
+            skip_serializing_if = "is_default_label_scale"
+        )
+    )]
+    pub label_scale: f32,
 }
 
 /// How the picked vertex, propagator or label of a Feynman series is drawn:
@@ -403,6 +416,7 @@ impl FeynmanStyle {
             || !finite_in(self.dot_radius, 0.0, 64.0)
             || !finite_in(self.loop_radius, 2.0, 512.0)
             || !finite_in(self.fan_step, 0.0, 120.0)
+            || !finite_in(self.label_scale, 0.25, 4.0)
         {
             return Err(crate::RuleKind::FeynmanSizes);
         }
@@ -451,6 +465,11 @@ pub enum FeynmanLabelPart {
 #[cfg(feature = "serde")]
 fn is_zero_offset(offset: &[f32; 2]) -> bool {
     *offset == [0.0; 2]
+}
+
+#[cfg(feature = "serde")]
+fn is_default_label_scale(scale: &f32) -> bool {
+    *scale == crate::defaults::feynman_label_scale()
 }
 
 #[cfg(feature = "serde")]
@@ -2408,7 +2427,17 @@ impl Placed<'_> {
                 )
             }
         };
-        let extents = measure.measure_rich(text);
+        // Drawn at `style.label_scale` times its stored size: the measure
+        // scales with the size (as an export at another scale draws it), so
+        // the extents measured once here are the ones every sink places,
+        // draws, bounds and hit tests.
+        let scale = series.style.label_scale;
+        let measured = measure.measure_rich(text);
+        let extents = TextExtents {
+            width: measured.width * scale,
+            ascent: measured.ascent * scale,
+            descent: measured.descent * scale,
+        };
         // The block's centre sits half its size beyond the anchor, along
         // `direction`, so its near side touches the anchor.
         let centre = [
@@ -2416,7 +2445,11 @@ impl Placed<'_> {
             anchor[1] + direction[1] * extents.height() / 2.0,
         ];
         Some(PlacedText {
-            text: TextRef::Rich(text),
+            text: if scale == 1.0 {
+                TextRef::Rich(text)
+            } else {
+                TextRef::ScaledRich { text, scale }
+            },
             origin: (
                 centre[0] - extents.width / 2.0 + offset[0],
                 centre[1] + (extents.ascent - extents.descent) / 2.0 + offset[1],

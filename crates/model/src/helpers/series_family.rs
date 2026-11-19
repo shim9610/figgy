@@ -169,10 +169,12 @@ impl SeriesConfig {
 
     /// How a vector's magnitude becomes an arrow length. The rest of the
     /// glyph (its minimum length, colour map, line) is set through
-    /// [`Self::style_vectors`].
+    /// [`Self::style_vectors`]. An explicit scale: it turns
+    /// `VectorStyle::auto_scale` off, so a whole-chart fit keeps it.
     pub fn vector_scale(mut self, scale: VectorScale) -> Self {
         if let DataRenderType::Vector(VectorSeries { style, .. }) = &mut self.render_type {
             style.scale = scale;
+            style.auto_scale = false;
         }
         self
     }

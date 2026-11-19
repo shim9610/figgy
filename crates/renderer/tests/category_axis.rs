@@ -11,21 +11,23 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{fresh_gpu as gpu, upload};
 
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{
     AxisOptions, Category, DataSelectionsConfig, PickedDataRef, TickVisibility,
 };
-use renderer::data::Column;
 use renderer::format::{LabelFormat, PlainNumberFormat};
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side, axis_fraction};
 use renderer::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use renderer::{
     AxisLabelElement, Chart, Color, ColorBarOptions, Config, CpuTextMeasure, DataRenderType,
     DataScatterStyleConfig, Draggable, GpuPickRequest, HitMap, LayerRef, OverlayLayer, Renderer,
-    RendererDevice, ScatterShape, Selectable, SelectionGeometry, SeriesConfig, Subplot,
+    ScatterShape, Selectable, SelectionGeometry, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 640;
@@ -165,15 +167,6 @@ fn a_categorical_axis_rasterizes_like_its_numeric_twin() {
     assert!(ink(&left) > ink(&right), "staggered labels add ink");
 }
 
-fn gpu() -> RendererDevice {
-    let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue).expect("figgy poll thread")
-}
-
-fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    r.add_column(id, &Column { data }).unwrap();
-}
-
 fn markers(id: &str, x: &str, y: &str) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
@@ -227,14 +220,14 @@ fn a_categorical_chart_exports_like_its_numeric_twin() {
     for scale in [1.0f32, 2.0] {
         let a = r
             .export_rgba(
-                renderer::ExportSource::chart(&Chart::new(categorical.clone()), &series),
+                renderer::ExportSource::chart(&mut Chart::new(categorical.clone()), &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
             .unwrap();
         let b = r
             .export_rgba(
-                renderer::ExportSource::chart(&Chart::new(numeric.clone()), &series),
+                renderer::ExportSource::chart(&mut Chart::new(numeric.clone()), &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -249,7 +242,7 @@ fn a_categorical_chart_exports_like_its_numeric_twin() {
         assert_eq!(changed, 0, "{scale}x");
         let png = r
             .export_png(
-                renderer::ExportSource::chart(&Chart::new(categorical.clone()), &series),
+                renderer::ExportSource::chart(&mut Chart::new(categorical.clone()), &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -296,7 +289,7 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
     // The highlight of point 3 changes pixels around its marker only.
     let plain = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(cfg.clone()), &series),
+            renderer::ExportSource::chart(&mut Chart::new(cfg.clone()), &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -312,7 +305,7 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
     });
     let highlighted = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(selected), &series),
+            renderer::ExportSource::chart(&mut Chart::new(selected), &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -559,7 +552,7 @@ fn crowded_category_and_log_labels_draw_and_export() {
             }
             let png = r
                 .export_png(
-                    renderer::ExportSource::chart(&Chart::new(cfg.clone()), &series),
+                    renderer::ExportSource::chart(&mut Chart::new(cfg.clone()), &series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()

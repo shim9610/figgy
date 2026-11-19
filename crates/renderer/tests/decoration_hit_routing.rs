@@ -4,17 +4,18 @@
 //! overlay's elements answer on the overlay panel and drag only the overlay
 //! axis. Ported from the model, which cannot lay tick labels out itself.
 
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/gpu.rs"]
+mod test_gpu;
+use harness::measure;
 use renderer::layout::{ChartArea, NudgeReject, NudgeResult, Rect, Side};
 use renderer::select::SELECTION_PADDING;
 use renderer::text::RichText;
 use renderer::{
-    Color, ColorBarAxisElement, ColorBarLabelElement, ColorBarTitleElement, Config, CpuTextMeasure,
-    HitMap, LayerRef, SelectionGeometry,
+    Color, ColorBarAxisElement, ColorBarLabelElement, ColorBarTitleElement, Config, HitMap,
+    LayerRef, SelectionGeometry,
 };
-
-fn measure(cfg: &Config) -> CpuTextMeasure {
-    CpuTextMeasure::for_style(&cfg.draw_style)
-}
 
 fn cfg_800x600() -> Config {
     let mut cfg = renderer::default::default_config();

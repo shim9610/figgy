@@ -10,13 +10,18 @@
 //! own data area and axis range, the same mapping the GPU transform uses.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, GREEN, RED, col as col_f64, count, data_y_to_px, is_blue_ink as is_blue,
+    is_empty_ink as is_empty, is_green_ink as is_green, is_red_ink as is_red,
+    pixel_rounded as pixel,
+};
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
-use renderer::data::Column;
 use renderer::data_config::{LineFill, LineInterpolation};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
@@ -26,19 +31,6 @@ use renderer::{
 };
 
 // ───────────────────────── plumbing / fixtures ─────────────────────────
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
@@ -68,25 +60,6 @@ fn bare_chart(width: u32, height: u32) -> Chart {
     config.grid.show_minor_y = false;
     Chart::new(config)
 }
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 
 fn line(
     fill: Option<LineFill>,
@@ -136,48 +109,6 @@ fn data_x_to_px(chart: &Chart, value: f64) -> f32 {
     let da = cfg.data_area().expect("data area");
     let t = (value - cfg.bottom_x.min) / (cfg.bottom_x.max - cfg.bottom_x.min);
     da.x as f32 + t as f32 * da.width as f32
-}
-
-/// Data y → panel pixel y (screen y grows downward), linear or logarithmic.
-fn data_y_to_px(chart: &Chart, value: f64) -> f32 {
-    let cfg = chart.config();
-    let da = cfg.data_area().expect("data area");
-    let t = match cfg.left_y.scale {
-        AxisScale::Linear => (value - cfg.left_y.min) / (cfg.left_y.max - cfg.left_y.min),
-        AxisScale::Logarithmic => {
-            (value.log10() - cfg.left_y.min.log10())
-                / (cfg.left_y.max.log10() - cfg.left_y.min.log10())
-        }
-        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
-    };
-    (da.y + da.height) as f32 - t as f32 * da.height as f32
-}
-
-fn pixel(img: &RasterImage, x: f32, y: f32) -> [u8; 4] {
-    let (x, y) = (x.round() as u32, y.round() as u32);
-    assert!(
-        x < img.width && y < img.height,
-        "probe ({x}, {y}) outside the image"
-    );
-    let i = ((y * img.width + x) * 4) as usize;
-    img.rgba[i..i + 4].try_into().unwrap()
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
-}
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 16 && p[1] > 120 && p[0] < 90 && p[2] < 90
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 16 && p[2] > 120 && p[0] < 90 && p[1] < 90
-}
-fn is_empty(p: &[u8]) -> bool {
-    p[3] <= 16
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 /// A probe at data coordinates, asserting one colour class with a readable
@@ -237,7 +168,7 @@ fn area_fill_paints_between_the_line_and_its_baseline_under_the_line() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -273,7 +204,7 @@ fn area_fill_paints_between_the_line_and_its_baseline_under_the_line() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -302,7 +233,7 @@ fn area_fill_paints_between_the_line_and_its_baseline_under_the_line() {
 #[test]
 fn default_fill_colour_is_the_line_colour_at_quarter_alpha() {
     let mut r = renderer();
-    let (chart, x, y) = two_point_chart(&mut r, "dfc");
+    let (mut chart, x, y) = two_point_chart(&mut r, "dfc");
     let series = [series(
         "area",
         &x,
@@ -315,7 +246,7 @@ fn default_fill_colour_is_the_line_colour_at_quarter_alpha() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -368,7 +299,7 @@ fn fill_between_two_series_follows_the_referenced_series() {
     ];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -438,7 +369,7 @@ fn fills_composite_in_series_order_under_every_line() {
     ];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -465,7 +396,7 @@ fn fills_composite_in_series_order_under_every_line() {
     let series = [series[1].clone(), series[0].clone()];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -510,7 +441,7 @@ fn fill_breaks_where_the_line_breaks() {
         ];
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -566,7 +497,7 @@ fn non_monotonic_series_blends_overlapping_trapezoids_twice() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -606,7 +537,7 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
         )];
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -633,7 +564,7 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -688,7 +619,7 @@ fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
         chart.set_x_range(0.0, 4.0);
         chart.set_y_range(1.0, 1000.0);
 
-        let cfg = chart.config();
+        let cfg = chart.config().clone();
         let case = format!("{left:?} left_y, {right:?} right_y before");
         assert_eq!(
             (&cfg.left_y.scale, &cfg.right_y.scale),
@@ -706,7 +637,7 @@ fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
 
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportSource::chart(&mut chart, &[]),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -794,7 +725,7 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
     r.add_column("rj_x2", &col_f64(vec![0.0, 1.0])).unwrap();
     r.add_column("rj_y", &col_f64(vec![0.5, 0.5])).unwrap();
     r.add_column("rj_lo", &col_f64(vec![0.1, 0.1])).unwrap();
-    let chart = bare_chart(200, 150);
+    let mut chart = bare_chart(200, 150);
     let other_x = [
         series(
             "lo",
@@ -825,7 +756,7 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
     ] {
         match r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, series),
+                renderer::ExportSource::chart(&mut chart, series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -863,7 +794,7 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
         filled("hi", "rj_x", "rj_y", LineFill::ToSeries("lo".into()), GREEN),
     ];
     r.export_rgba(
-        renderer::ExportSource::chart(&chart, &ok),
+        renderer::ExportSource::chart(&mut chart, &ok),
         renderer::ExportOptions::panel(1.0),
     )
     .block_on()
@@ -907,13 +838,9 @@ fn streamed_series_reject_fill_and_step_interpolation() {
         match r.inspect_streaming_capability(id) {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id,
-                kind: reason,
+                kind: renderer::RuleKind::StreamedLineFillOrStep,
             }) => {
                 assert_eq!(series_id, "streamed", "{name}");
-                assert!(
-                    reason.to_string().contains("GPU-resident"),
-                    "{name}: {reason}"
-                );
             }
             other => panic!("{name}: expected rejection, got {:?}", other.map(|_| ())),
         }
@@ -941,23 +868,23 @@ fn streamed_series_reject_fill_and_step_interpolation() {
 #[test]
 fn step_modes_draw_axis_aligned_pieces_instead_of_the_chord() {
     let mut r = renderer();
-    let (chart, x, y) = two_point_chart(&mut r, "st");
-    let render = |r: &mut Renderer, mode| {
+    let (mut chart, x, y) = two_point_chart(&mut r, "st");
+    let render = |r: &mut Renderer, chart: &mut Chart, mode| {
         let series = [series("step", &x, &y, line(None, None, mode))];
         r.export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap()
     };
 
-    let linear = render(&mut r, LineInterpolation::Linear);
+    let linear = render(&mut r, &mut chart, LineInterpolation::Linear);
     expect(&linear, &chart, 0.5, 0.6, is_red, "linear: the chord");
     expect(&linear, &chart, 0.5, 0.2, is_empty, "linear: no run at y_a");
     expect(&linear, &chart, 0.5, 1.0, is_empty, "linear: no run at y_b");
 
-    let post = render(&mut r, LineInterpolation::StepPost);
+    let post = render(&mut r, &mut chart, LineInterpolation::StepPost);
     expect(&post, &chart, 0.5, 0.2, is_red, "step-post: run at y_a");
     expect(&post, &chart, 1.0, 0.6, is_red, "step-post: riser at x_b");
     expect(&post, &chart, 0.5, 0.6, is_empty, "step-post: no chord");
@@ -978,7 +905,7 @@ fn step_modes_draw_axis_aligned_pieces_instead_of_the_chord() {
         "step-post: no riser at x_a",
     );
 
-    let pre = render(&mut r, LineInterpolation::StepPre);
+    let pre = render(&mut r, &mut chart, LineInterpolation::StepPre);
     expect(&pre, &chart, 0.0, 0.6, is_red, "step-pre: riser at x_a");
     expect(&pre, &chart, 0.5, 1.0, is_red, "step-pre: run at y_b");
     expect(&pre, &chart, 0.5, 0.6, is_empty, "step-pre: no chord");
@@ -992,7 +919,7 @@ fn step_modes_draw_axis_aligned_pieces_instead_of_the_chord() {
         "step-pre: no riser at x_b",
     );
 
-    let mid = render(&mut r, LineInterpolation::StepMid);
+    let mid = render(&mut r, &mut chart, LineInterpolation::StepMid);
     expect(
         &mid,
         &chart,
@@ -1042,8 +969,8 @@ fn step_modes_draw_axis_aligned_pieces_instead_of_the_chord() {
 #[test]
 fn step_fill_follows_the_stepped_line() {
     let mut r = renderer();
-    let (chart, x, y) = two_point_chart(&mut r, "sf");
-    let render = |r: &mut Renderer, mode| {
+    let (mut chart, x, y) = two_point_chart(&mut r, "sf");
+    let render = |r: &mut Renderer, chart: &mut Chart, mode| {
         let series = [series(
             "step",
             &x,
@@ -1051,13 +978,13 @@ fn step_fill_follows_the_stepped_line() {
             line(Some(LineFill::ToBaseline(0.0)), Some(GREEN), mode),
         )];
         r.export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap()
     };
-    let linear = render(&mut r, LineInterpolation::Linear);
+    let linear = render(&mut r, &mut chart, LineInterpolation::Linear);
     expect(
         &linear,
         &chart,
@@ -1075,7 +1002,7 @@ fn step_fill_follows_the_stepped_line() {
         "linear: above the chord",
     );
 
-    let post = render(&mut r, LineInterpolation::StepPost);
+    let post = render(&mut r, &mut chart, LineInterpolation::StepPost);
     expect(
         &post,
         &chart,
@@ -1093,7 +1020,7 @@ fn step_fill_follows_the_stepped_line() {
         "step-post: nothing above y_a before x_b",
     );
 
-    let pre = render(&mut r, LineInterpolation::StepPre);
+    let pre = render(&mut r, &mut chart, LineInterpolation::StepPre);
     expect(
         &pre,
         &chart,
@@ -1111,7 +1038,7 @@ fn step_fill_follows_the_stepped_line() {
         "step-pre: the whole column is filled",
     );
 
-    let mid = render(&mut r, LineInterpolation::StepMid);
+    let mid = render(&mut r, &mut chart, LineInterpolation::StepMid);
     expect(
         &mid,
         &chart,
@@ -1156,7 +1083,7 @@ fn dashed_step_lines_keep_their_pattern_along_the_stepped_path() {
         LineInterpolation::StepPost,
         LineInterpolation::StepMid,
     ] {
-        let render = |r: &mut Renderer, style| {
+        let mut render = |r: &mut Renderer, style| {
             let series = [series(
                 "step",
                 "ds_x",
@@ -1167,7 +1094,7 @@ fn dashed_step_lines_keep_their_pattern_along_the_stepped_path() {
                 },
             )];
             r.export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1193,7 +1120,7 @@ fn dashed_step_lines_keep_their_pattern_along_the_stepped_path() {
 #[test]
 fn export_scale_is_bounded_by_the_device_texture_limit_only() {
     let mut r = renderer();
-    let (chart, x, y) = two_point_chart(&mut r, "s16");
+    let (mut chart, x, y) = two_point_chart(&mut r, "s16");
     let series = [series(
         "step",
         &x,
@@ -1206,14 +1133,14 @@ fn export_scale_is_bounded_by_the_device_texture_limit_only() {
     )];
     let one = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let sixteen = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(16.0),
         )
         .block_on()
@@ -1229,7 +1156,7 @@ fn export_scale_is_bounded_by_the_device_texture_limit_only() {
     );
     let svg = r
         .export_svg(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(16.0),
         )
         .block_on()
@@ -1241,19 +1168,19 @@ fn export_scale_is_bounded_by_the_device_texture_limit_only() {
     let too_big = 1.0e4;
     for result in [
         r.export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(too_big),
         )
         .block_on()
         .map(|_| ()),
         r.export_svg(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(too_big),
         )
         .block_on()
         .map(|_| ()),
         r.export_pdf(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(too_big),
         )
         .block_on()
@@ -1271,7 +1198,7 @@ fn export_scale_is_bounded_by_the_device_texture_limit_only() {
 #[test]
 fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
     let mut r = renderer();
-    let (chart, x, y) = two_point_chart(&mut r, "sc");
+    let (mut chart, x, y) = two_point_chart(&mut r, "sc");
     let series = [series(
         "step",
         &x,
@@ -1284,14 +1211,14 @@ fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
     )];
     let one = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let two = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1323,7 +1250,7 @@ fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
     // PNG export goes through the same path and decodes to the same size.
     let png = r
         .export_png(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1337,7 +1264,7 @@ fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
 #[test]
 fn fills_and_steps_are_deterministic_across_renderers() {
     let build = |r: &mut Renderer| {
-        let (chart, x, y) = two_point_chart(r, "det");
+        let (mut chart, x, y) = two_point_chart(r, "det");
         let series = [
             series(
                 "step",
@@ -1352,7 +1279,7 @@ fn fills_and_steps_are_deterministic_across_renderers() {
             filled("between", &x, &y, LineFill::ToSeries("step".into()), GREEN),
         ];
         r.export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1441,7 +1368,7 @@ fn log_axis_places_lines_at_every_magnitude() {
         )];
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &s),
+                renderer::ExportSource::chart(&mut chart, &s),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1534,7 +1461,7 @@ fn offset_lines_report_unshifted_values() {
         .unwrap();
     let image = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &declared),
+            renderer::ExportSource::chart(&mut chart, &declared),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1615,7 +1542,7 @@ fn forty_offset_members_draw_and_pick() {
     for scale in [1.0f32, 2.0] {
         let image = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &declared),
+                renderer::ExportSource::chart(&mut chart, &declared),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()

@@ -15,34 +15,25 @@
 //! pure colour, so a colour predicate attributes every pixel to one mark.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{BLUE, RED, centroid, is, markers, pick_at, picked, pixel_rgba as pixel, upload};
+use test_gpu::shared_device;
 
 use renderer::config::AxisOptions;
-use renderer::data::Column;
-use renderer::data_config::{DataScatterStyleConfig, ScatterShape, XySeries};
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    Chart, Color, DataRenderType, LayerRef, OverlayLayer, RasterImage, Renderer, RendererDevice,
-    SeriesConfig,
+    Chart, Color, LayerRef, OverlayLayer, RasterImage, Renderer, RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 360;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
 const GOLD: Color = Color::from_rgb8(255, 215, 0);
 
 /// The overlay's points, in its own X units (100..200) and Y units (0..50).
 const OVERLAY_POINTS: [(f64, f64); 3] = [(130.0, 10.0), (150.0, 25.0), (175.0, 35.0)];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
@@ -54,10 +45,6 @@ fn renderer() -> Renderer {
     .expect("renderer init");
     r.enable_gpu_picking().unwrap();
     r
-}
-
-fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    r.add_column(id, &Column { data }).unwrap();
 }
 
 /// A bare chart: x over 0..10, y over 0..100, axis lines off.
@@ -113,32 +100,6 @@ fn with_own_x() -> renderer::Config {
     config
 }
 
-fn markers(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: color,
-                point_shape: ScatterShape::SquareFilled,
-                point_size: 8.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    }
-}
-
 /// The base series `base` at (2, 20) and (8, 80), and the overlay series
 /// `over` at [`OVERLAY_POINTS`].
 fn fixture(r: &mut Renderer) -> [SeriesConfig; 2] {
@@ -158,30 +119,13 @@ fn export(
     series: &[SeriesConfig],
     scale: f32,
 ) -> RasterImage {
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&chart, series),
+        renderer::ExportSource::chart(&mut chart, series),
         renderer::ExportOptions::document(scale),
     )
     .block_on()
     .unwrap()
-}
-
-fn pixel(img: &RasterImage, x: u32, y: u32) -> [u8; 4] {
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn is(color: Color) -> impl Fn([u8; 4]) -> bool {
-    let [r, g, b] = [color.r, color.g, color.b].map(|c| (c * 255.0).round() as i32);
-    move |p| {
-        (p[0] as i32 - r).abs() < 40 && (p[1] as i32 - g).abs() < 40 && (p[2] as i32 - b).abs() < 40
-    }
 }
 
 /// Where `(x, y)` lands at `scale` against `x_axis` and `y_axis` (axes of
@@ -211,74 +155,6 @@ fn placed(
 fn overlay_axes(config: &renderer::Config) -> (AxisOptions, AxisOptions) {
     let (x, y) = config.scaling_axes(Some(0));
     (x.clone(), y.clone())
-}
-
-/// The centroid of the pixels matching `pred` within `radius` of `(cx, cy)`.
-fn centroid(
-    img: &RasterImage,
-    (cx, cy): (f32, f32),
-    radius: f32,
-    pred: impl Fn([u8; 4]) -> bool,
-) -> Option<(f32, f32)> {
-    let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
-    let lo = |c: f32| (c - radius).max(0.0) as u32;
-    for y in lo(cy)..((cy + radius) as u32).min(img.height) {
-        for x in lo(cx)..((cx + radius) as u32).min(img.width) {
-            if pred(pixel(img, x, y)) {
-                sx += x as f32 + 0.5;
-                sy += y as f32 + 0.5;
-                n += 1.0;
-            }
-        }
-    }
-    (n > 0.0).then(|| (sx / n, sy / n))
-}
-
-/// What a data pick at `at` (image pixels) answers, as `(series_id, point
-/// index)`.
-fn pick_at(
-    r: &mut Renderer,
-    config: &renderer::Config,
-    series: &[SeriesConfig],
-    at: (f32, f32),
-    scale: f32,
-) -> Option<(String, usize)> {
-    let panel = config.chart_area.0;
-    let id = r.register_chart(config.clone(), series.to_vec()).unwrap();
-    let request = renderer::GpuPickRequest {
-        canvas_position_px: [at.0, at.1],
-        display_panel_px: Rect {
-            x: 0,
-            y: 0,
-            width: ((panel.x + panel.width) as f32 * scale) as u32,
-            height: ((panel.y + panel.height) as f32 * scale) as u32,
-        },
-        display_scale: scale,
-        max_distance_px: 6.0 * scale,
-    };
-    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
-    r.remove_chart(id).unwrap();
-    match hit {
-        Some(renderer::PickedData::Point {
-            series_id,
-            point_index,
-            ..
-        }) => Some((series_id, point_index)),
-        Some(other) => panic!("unexpected pick {other:?}"),
-        None => None,
-    }
-}
-
-fn picked(mut config: renderer::Config, series_id: &str, index: usize) -> renderer::Config {
-    config.picked_data = Some(renderer::DataSelectionsConfig {
-        refs: vec![renderer::PickedDataRef::Point {
-            source_id: None,
-            series_id: series_id.into(),
-            point_index: index,
-        }],
-        ..Default::default()
-    });
-    config
 }
 
 /// The number of pixels above the data area, inside the chart, that match
@@ -494,9 +370,9 @@ fn vector_export_and_a_json_round_trip_keep_the_own_x_axis() {
     config.overlays[0].x_axis.label_style.color = teal;
     config.overlays[0].x_axis.title_option.text.color = teal;
     let svg = |r: &mut Renderer, config: &renderer::Config| {
-        let chart = Chart::new(config.clone());
+        let mut chart = Chart::new(config.clone());
         r.export_svg_blocking(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .unwrap()
@@ -510,9 +386,9 @@ fn vector_export_and_a_json_round_trip_keep_the_own_x_axis() {
     assert!(!svg(&mut r, &linked).contains("#009988"));
     // The PDF draws the same axis: the own X axis adds its content.
     let pdf = |r: &mut Renderer, config: &renderer::Config| {
-        let chart = Chart::new(config.clone());
+        let mut chart = Chart::new(config.clone());
         r.export_pdf_blocking(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .unwrap()

@@ -440,7 +440,8 @@ impl Sink for VectorSink<'_> {
                 false,
                 policy,
             ),
-            TextRef::Rich(rich) => {
+            TextRef::Rich(rich) | TextRef::ScaledRich { text: rich, .. } => {
+                let scale = scale * text.text.rich().map_or(1.0, |(_, own)| own);
                 if scale == 1.0 {
                     place_rich_text(self, rich, origin, policy);
                 } else {
@@ -1565,13 +1566,15 @@ impl Sink for PartsTwin<'_> {
                 false,
                 policy,
             ),
-            TextRef::Rich(rich) if scale == 1.0 => place_rich_text(self, rich, pen, policy),
-            TextRef::Rich(rich) => place_rich_text(
-                self,
-                &crate::decoration::scaled_rich_text(rich, scale),
-                pen,
-                policy,
-            ),
+            TextRef::Rich(rich) | TextRef::ScaledRich { text: rich, .. } => {
+                let scale = scale * text.text.rich().map_or(1.0, |(_, own)| own);
+                if scale == 1.0 {
+                    place_rich_text(self, rich, pen, policy);
+                } else {
+                    let scaled = crate::decoration::scaled_rich_text(rich, scale);
+                    place_rich_text(self, &scaled, pen, policy);
+                }
+            }
         }
         (self.out)(WrittenPart::TextEnd);
     }

@@ -11,19 +11,21 @@
 //! a row drawn through the wrong column fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, DARK_GREEN as GREEN, RED, col, pixel_at as pixel, renderer_with, save_png as save, to8,
+};
 
 use renderer::config::{AxisScale, Category, DataSelectionsConfig, PickedDataRef, TickVisibility};
-use renderer::data::Column;
 use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::parallel::{ParallelAxis, ParallelOptions};
 use renderer::{
     Chart, Color, ColorMap, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
     FiggyError, GpuPickRequest, HitMap, ParallelSeries, PickedData, RasterImage, Renderer,
-    RendererDevice, SeriesConfig,
+    SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -40,24 +42,6 @@ const ROWS: [[f64; AXES]; 3] = [
     [8.0, 40.0, 500.0, 4.0],
 ];
 
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 0.6,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 const COLOURS: [Color; 3] = [RED, GREEN, BLUE];
 
 /// The highlight is orange, a colour no row has.
@@ -67,29 +51,6 @@ const HIGHLIGHT: Color = Color {
     b: 0.0,
     a: 1.0,
 };
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer_with(budget: u64) -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        budget,
-    )
-    .expect("renderer init")
-}
 
 fn renderer() -> Renderer {
     renderer_with(64 * 1024 * 1024)
@@ -174,6 +135,8 @@ fn bare_config() -> Config {
     config.left_y.max = 1.0;
     config.left_y.major_spacing = 0.25;
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: RANGES
             .iter()
             .map(|(min, max)| ParallelAxis::new(*min, *max))
@@ -210,31 +173,6 @@ fn midpoint_px(config: &Config, row: &[f64; AXES], i: usize, scale: f64) -> (f64
     let a = point_px(config, i, row[i], scale);
     let b = point_px(config, i + 1, row[i + 1], scale);
     ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5)
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        let png = renderer::encode_png(image).unwrap();
-        std::fs::write(format!("{path}/{name}.png"), png).unwrap();
-    }
-}
-
-fn pixel(img: &RasterImage, (x, y): (f64, f64)) -> [u8; 4] {
-    let x = (x.floor() as i64).clamp(0, i64::from(img.width) - 1) as u32;
-    let y = (y.floor() as i64).clamp(0, i64::from(img.height) - 1) as u32;
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 /// The pixel is `want`'s colour within the rounding steps, and the stroke
@@ -294,11 +232,11 @@ fn each_row_passes_through_its_axis_points_and_midpoints_at_1x_and_2x() {
             series(&format!("row{k}"), &columns, COLOURS[k], None)
         })
         .collect();
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     for scale in [1.0f64, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale as f32),
             )
             .block_on()
@@ -361,10 +299,10 @@ fn inverted_and_logarithmic_axes_place_their_values() {
     }
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -420,10 +358,10 @@ fn a_non_finite_value_breaks_the_row_at_its_axis() {
     rows[0][2] = f64::NAN;
     let columns = upload(&mut r, "nan", &rows);
     let series = [series("nan", &columns, RED, None)];
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -555,10 +493,10 @@ fn the_pick_answers_the_row_and_the_highlight_redraws_it() {
         point_radius_extra_px: 0.0,
         contour_width_extra_px: 0.0,
     });
-    let chart = Chart::new(highlighted);
+    let mut chart = Chart::new(highlighted);
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -635,10 +573,10 @@ fn a_colour_column_colours_each_row_through_the_colorbar() {
     r.add_column("rows_class", &col(vec![0.0, 1.0, 2.0]))
         .unwrap();
     let series = [series("rows", &columns, RED, Some("rows_class"))];
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -728,10 +666,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     let config = dressed_config();
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -828,10 +766,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     let mut named = config.clone();
     named.bottom_x.label_style.visible = true;
     named.bottom_x.label_style.label_visible = true;
-    let names = Chart::new(named.clone());
+    let mut names = Chart::new(named.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&names, &series),
+            renderer::ExportSource::chart(&mut names, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -845,6 +783,107 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     });
     assert!(below, "the category name is drawn under its axis");
     let _ = Side::Left;
+}
+
+/// The axis names above the plot (`names_on_top`) and the tick labels'
+/// backdrop boxes (`label_backdrop`, #357) draw at 1x and 2x, and are hit
+/// and dragged where they are drawn: the names as `bottom_x`'s labels, each
+/// box with its axis's labels.
+#[test]
+fn names_on_top_and_label_backdrops_draw_hit_and_drag() {
+    let mut r = renderer();
+    let mut config = dressed_config();
+    config.bottom_x.label_style.visible = true;
+    config.bottom_x.label_style.label_visible = true;
+    // A backdrop no row or label is drawn in.
+    let backdrop = Color::from_rgb8(250, 230, 120);
+    let options = config.parallel_mut().unwrap();
+    options.names_on_top = true;
+    options.label_backdrop = Some(backdrop);
+    // The names need a top band: the first default draw fits the layout
+    // to them (#357 item 7), as for a chart made from the preset.
+    config.layout_state = renderer::LayoutState::NeedsFit;
+    let columns = upload(&mut r, "rows", &ROWS);
+    let series = [series("rows", &columns, RED, None)];
+    let mut chart = Chart::new(config);
+    let want = [250u8, 230, 120];
+    let mut boxed = [0usize; 2];
+    let mut fitted: Option<Config> = None;
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        save(&format!("parallel-names-on-top-{scale}x"), &img);
+        // The fit is written into the chart once; the 2x export draws it
+        // as fitted.
+        let config = chart.config().clone();
+        assert_ne!(config.layout_state, renderer::LayoutState::NeedsFit);
+        if let Some(first) = &fitted {
+            assert_eq!(first, &config, "the 2x export does not refit");
+        }
+        fitted = Some(config.clone());
+        let da = config.data_area().unwrap();
+        boxed[k] = img.rgba.chunks_exact(4).filter(|p| p[..3] == want).count();
+        let background = pixel(&img, (2.0, 2.0));
+        // A name is inked above the data area over axis 1, none below it.
+        let (x, _) = point_px(&config, 1, 50.0, f64::from(scale));
+        let s = f64::from(scale);
+        let top = f64::from(da.y) * s;
+        let bottom = f64::from(da.y + da.height) * s;
+        let above = (2..(30.0 * s) as i32)
+            .any(|dy| !is_background(pixel(&img, (x, top - f64::from(dy))), background));
+        assert!(above, "{scale}x: the name is drawn above its axis");
+        let below = (4..(30.0 * s) as i32)
+            .any(|dy| !is_background(pixel(&img, (x, bottom + f64::from(dy))), background));
+        assert!(!below, "{scale}x: nothing is drawn under the axes");
+    }
+    assert!(boxed[0] > 100, "the backdrops are drawn: {boxed:?}");
+    // The 2x boxes cover about four times the 1x pixels.
+    let ratio = boxed[1] as f64 / boxed[0] as f64;
+    assert!((3.0..5.0).contains(&ratio), "{boxed:?}");
+
+    let config = fitted.unwrap();
+    let da = config.data_area().unwrap();
+    let measure = CpuTextMeasure::for_style(&config.draw_style);
+    let map = HitMap::for_active_layer(&config);
+    let hit = |config: &Config, map: &HitMap, x: f32, y: f32| {
+        map.hit_test(config, &measure, x, y)
+            .and_then(|id| map.get(id))
+            .map(|e| e.element_id())
+    };
+    // The names are hit above the data area, as the bottom axis's labels.
+    let (x, _) = point_px(&config, 1, 50.0, 1.0);
+    let name_at = (1..30)
+        .map(|dy| (x as f32, da.y as f32 - dy as f32))
+        .find(|at| hit(&config, &map, at.0, at.1).as_deref() == Some("tick_labels_bottom"))
+        .expect("a name is hit above the plot");
+    // A drag moves them by the stored offset, and they are hit there.
+    let mut moved = config.clone();
+    assert_eq!(
+        moved.nudge(Element::AxisLabel(Side::Bottom), &measure, 0.0, -5.0),
+        NudgeResult::Moved
+    );
+    assert_eq!(moved.bottom_x.label_style.label_offset_y, -5.0);
+    let moved_map = HitMap::for_active_layer(&moved);
+    assert_eq!(
+        hit(&moved, &moved_map, name_at.0, name_at.1 - 5.0).as_deref(),
+        Some("tick_labels_bottom")
+    );
+    // A backdrop box is hit as its axis's labels: some point just outside
+    // a label's text, inside its box, answers the axis.
+    let (x, _) = point_px(&config, 2, 500.0, 1.0);
+    let top = da.y;
+    let found = (0..da.height)
+        .flat_map(|dy| (2..60).map(move |d| (x - f64::from(d), f64::from(top + dy) + 0.5)))
+        .any(|at| {
+            hit(&config, &map, at.0 as f32, at.1 as f32).as_deref()
+                == Some("parallel_axis_labels_2")
+        });
+    assert!(found, "axis 2's labels are hit");
 }
 
 /// Registration names each rule: the axis count, a series that is not
@@ -921,7 +960,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         let what = format!("{:?}", config.parallel());
         match r
             .export_rgba(
-                renderer::ExportSource::chart(&Chart::new(config.clone()), &series),
+                renderer::ExportSource::chart(&mut Chart::new(config.clone()), &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1075,6 +1114,8 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
             .collect(),
     );
     config.set_parallel(Some(ParallelOptions {
+        names_on_top: false,
+        label_backdrop: None,
         axes: (0..axes).map(|_| ParallelAxis::new(0.0, 100.0)).collect(),
     }));
     let series = SeriesConfig {
@@ -1090,11 +1131,11 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
             color_column: None,
         }),
     };
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let started = std::time::Instant::now();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[series.clone()]),
+            renderer::ExportSource::chart(&mut chart, &[series.clone()]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()

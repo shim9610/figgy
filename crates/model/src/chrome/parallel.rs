@@ -10,6 +10,9 @@
 //! share one placement.
 
 use super::*;
+use crate::color::Color;
+use crate::config::ColorBarOptions;
+use crate::sink::{Border, PathSegment};
 
 /// The plot rectangle whose left edge is category `i`'s x: the axis walks
 /// (`Side::Left`) read their x from it and their y span from the plot. The
@@ -112,8 +115,21 @@ pub fn emit_parallel_axis_strokes(
     );
 }
 
+/// The side the axis names (`bottom_x`'s labels) are placed on: the top
+/// with [`crate::parallel::ParallelOptions::names_on_top`], the bottom
+/// otherwise.
+pub(super) fn names_side(config: &Config) -> Side {
+    if config.parallel().is_some_and(|p| p.names_on_top) {
+        Side::Top
+    } else {
+        Side::Bottom
+    }
+}
+
 /// Axis `i`'s tick labels (`Element::ParallelAxisLabel(i)`): to the left of
-/// its line, as a left axis' are, moved by the axis's `label_offset`.
+/// its line, as a left axis' are, moved by the axis's `label_offset`, each
+/// over its backdrop box when the chart has a
+/// [`crate::parallel::ParallelOptions::label_backdrop`].
 pub fn emit_parallel_labels(
     config: &Config,
     da: &DataArea,
@@ -125,5 +141,63 @@ pub fn emit_parallel_labels(
         return;
     };
     let plot = axis_plot(config, &data_area_rect(da), i);
-    emit_axis_tick_labels(&axis, Side::Left, &plot, measure, sink);
+    match config.parallel().and_then(|p| p.label_backdrop) {
+        Some(fill) => {
+            let mut backed = Backdrop { fill, inner: sink };
+            emit_axis_tick_labels(&axis, Side::Left, &plot, measure, &mut backed);
+        }
+        None => emit_axis_tick_labels(&axis, Side::Left, &plot, measure, sink),
+    }
+}
+
+/// A sink that puts a box of `fill` under every text it passes on: the
+/// text's rectangle grown by [`crate::parallel::LABEL_BACKDROP_PAD`] of its
+/// font size on each side. Every other part passes through unchanged.
+struct Backdrop<'a> {
+    fill: Color,
+    inner: &'a mut dyn Sink,
+}
+
+impl Sink for Backdrop<'_> {
+    fn text(&mut self, slot: Slot, text: &PlacedText<'_>) {
+        let size = match text.text {
+            TextRef::Plain { size, .. } => size,
+            TextRef::Rich(rich) => rich.font_size,
+            TextRef::ScaledRich { text, scale } => text.font_size * scale,
+        };
+        let pad = size * crate::parallel::LABEL_BACKDROP_PAD;
+        let rect = text.rect();
+        let boxed = RectF {
+            x: rect.x - pad,
+            y: rect.y - pad,
+            width: rect.width + 2.0 * pad,
+            height: rect.height + 2.0 * pad,
+        };
+        self.inner.rect(slot, boxed, Some(self.fill), None);
+        self.inner.text(slot, text);
+    }
+    fn stroke(&mut self, slot: Slot, a: [f32; 2], b: [f32; 2], style: &StrokeStyle<'_>) {
+        self.inner.stroke(slot, a, b, style);
+    }
+    fn rect(&mut self, slot: Slot, rect: RectF, fill: Option<Color>, border: Option<Border<'_>>) {
+        self.inner.rect(slot, rect, fill, border);
+    }
+    fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: Color) {
+        self.inner.triangle(slot, points, color);
+    }
+    fn path(&mut self, slot: Slot, segments: &[PathSegment], style: &StrokeStyle<'_>) {
+        self.inner.path(slot, segments, style);
+    }
+    fn polygon(
+        &mut self,
+        slot: Slot,
+        points: &[[f32; 2]],
+        fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        self.inner.polygon(slot, points, fill, border);
+    }
+    fn ramp(&mut self, slot: Slot, rect: RectF, bar: &ColorBarOptions) {
+        self.inner.ramp(slot, rect, bar);
+    }
 }

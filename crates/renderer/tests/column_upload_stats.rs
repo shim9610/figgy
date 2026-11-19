@@ -1,8 +1,8 @@
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use test_gpu::shared_device;
 
 use std::cell::Cell;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
@@ -182,10 +182,7 @@ fn required_fused_writer_keeps_source_traits_object_safe() {
 #[test]
 fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
     let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
-    let Some((device, queue)) = shared_device() else {
-        eprintln!("no GPU adapter; skipping fused upload matrix");
-        return;
-    };
+    let (device, queue) = shared_device();
     let min_subnormal = f32::from_bits(1);
     let f32_column = Column {
         data: vec![
@@ -276,10 +273,7 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
 
 #[test]
 fn built_in_hilo_stats_use_recorded_hi_plus_lo() {
-    let Some((device, queue)) = shared_device() else {
-        eprintln!("no GPU adapter; skipping fused upload matrix");
-        return;
-    };
+    let (device, queue) = shared_device();
     let cancellation = 16_777_215.5_f64;
     let epoch_a = 1_700_000_000_000.125_f64;
     let epoch_b = epoch_a + 0.75;
@@ -327,17 +321,6 @@ fn built_in_hilo_stats_use_recorded_hi_plus_lo() {
     let (pairs, min_positive) = hilo_upload(&device, &queue, &optional);
     assert_pair_bits(&pairs, &[(f32::NAN, 0.0), (cancel_hi, cancel_lo)]);
     assert_eq!(min_positive, Some(cancel_hi as f64 + cancel_lo as f64));
-}
-
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
 }
 
 #[derive(Debug, PartialEq)]
@@ -440,10 +423,7 @@ fn read_pairs(
 #[test]
 fn pool_calls_fused_writer_once_and_panics_roll_back() {
     let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
-    let Some((device, queue)) = shared_device() else {
-        eprintln!("no GPU adapter; skipping pool contract assertions");
-        return;
-    };
+    let (device, queue) = shared_device();
     let mut pool = ColumnPool::new(
         renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         3 * ALIGN,
@@ -522,10 +502,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
 #[test]
 fn pool_statistics_are_measured_from_the_written_values() {
     let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
-    let Some((device, queue)) = shared_device() else {
-        eprintln!("no GPU adapter; skipping measured statistics");
-        return;
-    };
+    let (device, queue) = shared_device();
     let ctx = || renderer::GpuAllocCtx::new(&device, &queue, &ledger);
     let mut pool = ColumnPool::new(ctx(), ALIGN).unwrap();
     pool.add_column(

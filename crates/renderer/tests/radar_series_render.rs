@@ -15,13 +15,16 @@
 //! with.
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, MID_GREEN as GREEN, RED, categories, col, export, is_empty_rgba as is_empty, save,
+};
+use test_gpu::shared_device;
 
 use renderer::config::{Category, TickVisibility};
-use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect};
 use renderer::polar::{GridShape, PolarInterpolation, PolarOptions};
 use renderer::{
@@ -33,9 +36,6 @@ use renderer::{
 
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 360;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const GREEN: Color = Color::from_rgb8(0, 200, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
 const CLEAR: Color = Color {
     r: 0.0,
     g: 0.0,
@@ -45,19 +45,6 @@ const CLEAR: Color = Color {
 /// The values of the first series over five categories, on a 0..1 radius.
 const ONE: [f64; 5] = [0.9, 0.5, 0.8, 0.4, 0.7];
 const TWO: [f64; 5] = [0.3, 0.6, 0.35, 0.65, 0.4];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// A renderer holding the category indices and the two series' values, the
 /// first one also with a NaN vertex.
@@ -77,12 +64,6 @@ fn renderer() -> Renderer {
     gap[1] = f64::NAN;
     r.add_column("gap", &col(gap)).unwrap();
     r
-}
-
-fn categories(n: usize) -> Vec<Category> {
-    (0..n)
-        .map(|i| Category::new(format!("c{i}"), format!("Cat {i}")))
-        .collect()
 }
 
 /// A polar chart over the five categories and a 0..1 radius, first spoke
@@ -199,36 +180,11 @@ fn is_blue(p: [u8; 4]) -> bool {
     p[3] > 180 && p[2] > 180 && p[0] < 90 && p[1] < 90
 }
 
-fn is_empty(p: [u8; 4]) -> bool {
-    p[3] < 16
-}
-
 fn count(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> usize {
     img.rgba
         .chunks_exact(4)
         .filter(|p| pred([p[0], p[1], p[2], p[3]]))
         .count()
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 #[test]
@@ -642,36 +598,39 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     rectangular.config_mut().set_polar(None);
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&rectangular, &series),
+            renderer::ExportSource::chart(&mut rectangular, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
         "rectangular",
     );
-    assert!(reason.to_string().contains("polar"), "{reason}");
+    assert!(
+        matches!(reason, renderer::RuleKind::RadarNotPolar),
+        "{reason}"
+    );
     // A numeric angle axis.
     let mut numeric = chart(up_clockwise());
     numeric.config_mut().bottom_x.categories = None;
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&numeric, &series),
+            renderer::ExportSource::chart(&mut numeric, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
         "numeric",
     );
     assert!(
-        reason.to_string().contains("categorical angle axis"),
+        matches!(reason, renderer::RuleKind::RadarAngleAxis),
         "{reason}"
     );
     // Arc interpolation.
-    let arcs = chart(PolarOptions {
+    let mut arcs = chart(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 4 },
         ..up_clockwise()
     });
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&arcs, &series),
+            renderer::ExportSource::chart(&mut arcs, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -686,14 +645,14 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     let short = [radar("short", "short", RED, outline_and_fill())];
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&chart(up_clockwise()), &short),
+            renderer::ExportSource::chart(&mut chart(up_clockwise()), &short),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
         "short",
     );
     assert!(
-        reason.to_string().contains("one value per category"),
+        matches!(reason, renderer::RuleKind::RadarValueCount { .. }),
         "{reason}"
     );
     // A label text per category or none.
@@ -704,14 +663,14 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     }
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&chart(up_clockwise()), &[labelled]),
+            renderer::ExportSource::chart(&mut chart(up_clockwise()), &[labelled]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
         "labels",
     );
     assert!(
-        reason.to_string().contains("one string per category"),
+        matches!(reason, renderer::RuleKind::RadarLabelTextCount),
         "{reason}"
     );
     // A polygon grid needs the categorical angle axis too.
@@ -722,7 +681,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     polygon.config_mut().bottom_x.categories = None;
     assert!(
         r.export_rgba(
-            renderer::ExportSource::chart(&polygon, &[]),
+            renderer::ExportSource::chart(&mut polygon, &[]),
             renderer::ExportOptions::panel(1.0)
         )
         .block_on()
@@ -804,12 +763,12 @@ fn a_polar_subplot_draws_its_own_radar_series() {
         marker: None,
         text_scale: Default::default(),
     });
-    let chart = Chart::new(parent);
+    let mut chart = Chart::new(parent);
     let series = [radar("one", "one", RED, outline_and_fill())];
     for scale in [1.0, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1111,7 +1070,11 @@ fn radar_value_labels_meet_no_other_label() {
         for upload in &uploads {
             r.add_column(upload.column.clone(), &upload.values).unwrap();
         }
-        let chart = Chart::new(config);
+        // A document built in Rust carries `text_sizes` and fits its
+        // layout on its first draw (#357): fit it here, so the vertices are
+        // read from the layout the exports draw.
+        let mut chart = Chart::new(config);
+        chart.fit_pending_layout();
         // `only` keeps the labels of that series on the chart; the others
         // are dragged far off it, which leaves every label where it is
         // placed (the drag applies after the placement); `None` drags them

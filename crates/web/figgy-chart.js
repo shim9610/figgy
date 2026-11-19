@@ -1373,6 +1373,15 @@ export class FiggyChartElement extends HTMLElement {
     }
   }
 
+  // The frame and exports below draw the document exactly as stored: a
+  // layout waiting for its fit (`layout_state: "needs_fit"`) is not fitted
+  // (#357). `frame` and the exports above fit it first.
+  frame_as_stored() {
+    if (!this.busy) {
+      this.kernel.frame_as_stored();
+    }
+  }
+
   async export_png(scale = 1.0) {
     if (this.#streamReplay) return this.#replayStreamExport(scale);
     return this.#runKernelOperation("export", (kernel) => kernel.export_png(scale));
@@ -1388,6 +1397,22 @@ export class FiggyChartElement extends HTMLElement {
   async export_pdf(scale = 1.0) {
     if (this.#streamReplay) throw new Error("PDF export does not support streamed sources");
     return this.#runKernelOperation("export", (kernel) => kernel.export_pdf(scale));
+  }
+
+  // Streaming is not extended to the as-stored exports (#357).
+  async export_png_as_stored(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("as-stored export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_png_as_stored(scale));
+  }
+
+  async export_svg_as_stored(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("as-stored export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_svg_as_stored(scale));
+  }
+
+  async export_pdf_as_stored(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("as-stored export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_pdf_as_stored(scale));
   }
 
   // An export at another scale than the screen's maps a monotonic series'
@@ -2626,6 +2651,9 @@ export class FiggyChartElement extends HTMLElement {
   theme_names() { return this.#kernelForCall().theme_names(); }
   theme(name) { return this.#kernelForCall().theme(name); }
   subplot_theme(index, name) { return this.#kernelForCall().subplot_theme(index, name); }
+  theme_with_palette(name, cycle) {
+    return this.#kernelForCall().theme_with_palette(name, cycle);
+  }
   apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
   apply_custom_theme_to(theme, scope = "all") {
     const list = typeof scope === "string" ? scope : JSON.stringify(scope);

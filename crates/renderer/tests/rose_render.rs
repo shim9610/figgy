@@ -16,61 +16,34 @@
 //! the ring.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
-
-use renderer::config::{Category, TickVisibility};
-use renderer::data::Column;
-use renderer::data_config::{
-    BarGroups, CategoryBarDirection, CategoryBarLabels, CategoryBarMode, CategoryBarStyle,
+use harness::{
+    BLUE, MAGENTA, RED, any_within, at, categories, col, export, flat_style, geometry,
+    is_blue_rgba as is_blue, is_empty_rgba as is_empty, is_magenta_rgba as is_magenta,
+    is_red_rgba as is_red, pixel_at_polar as pixel, save,
 };
+use test_gpu::shared_device;
+
+use renderer::config::TickVisibility;
+use renderer::data::Column;
+use renderer::data_config::{BarGroups, CategoryBarDirection, CategoryBarLabels, CategoryBarMode};
 use renderer::layout::{ChartArea, Rect};
 use renderer::polar::PolarOptions;
 use renderer::{
-    CategoryBarSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig, Material,
+    CategoryBarSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
     PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 480;
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-const MAGENTA: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 /// Values of the two series over the four categories.
 const ONE: [f64; 4] = [10.0, 20.0, 5.0, 15.0];
 const TWO: [f64; 4] = [20.0, 10.0, 15.0, 5.0];
 const GROUP_WIDTH: f32 = 0.8;
 const BAR_GAP: f32 = 4.0;
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// A renderer holding the position column `0..n` and the value columns,
 /// uploaded as one batch.
@@ -95,15 +68,6 @@ fn renderer(columns: &[(&str, &[f64])]) -> Renderer {
     r
 }
 
-fn flat_style() -> CategoryBarStyle {
-    CategoryBarStyle {
-        material: Material::Flat,
-        corner_radius: 0.0,
-        outline: false,
-        ..CategoryBarStyle::default()
-    }
-}
-
 fn bars(id: &str, color: Color) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
@@ -120,12 +84,6 @@ fn bars(id: &str, color: Color) -> SeriesConfig {
             overrides: None,
         }),
     }
-}
-
-fn categories(n: usize) -> Vec<Category> {
-    (0..n)
-        .map(|i| Category::new(format!("c{i}"), format!("Cat {i}")))
-        .collect()
 }
 
 /// A polar chart with `n` categories on the angle axis, the first one up
@@ -167,20 +125,6 @@ fn chart(mode: CategoryBarMode, n: usize, value: (f64, f64)) -> Chart {
     let mut chart = Chart::new(config);
     chart.set_y_range(value.0, value.1);
     chart
-}
-
-/// The ring's centre, radius and inner radius in export pixels.
-fn geometry(chart: &Chart, scale: f32) -> ((f64, f64), f64, f64) {
-    let g = chart
-        .config()
-        .scaled(scale)
-        .polar_geometry()
-        .expect("geometry");
-    (
-        (f64::from(g.center[0]), f64::from(g.center[1])),
-        f64::from(g.radius),
-        f64::from(g.inner_radius),
-    )
 }
 
 /// The radius in export pixels of value `v` on the radius axis.
@@ -225,35 +169,6 @@ fn mid_angle(chart: &Chart, scale: f32, k: usize, m: usize, members: usize) -> f
     (a + b) * 0.5
 }
 
-/// The export pixel at screen angle `a` and radius `r` from the centre.
-fn at(centre: (f64, f64), a: f64, r: f64) -> (f64, f64) {
-    (centre.0 + a.cos() * r, centre.1 - a.sin() * r)
-}
-
-fn pixel(img: &RasterImage, (x, y): (f64, f64)) -> [u8; 4] {
-    let x = (x.floor() as i64).clamp(0, img.width as i64 - 1) as u32;
-    let y = (y.floor() as i64).clamp(0, img.height as i64 - 1) as u32;
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn is_red(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
-fn is_magenta(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
-fn is_empty(p: [u8; 4]) -> bool {
-    p[3] < 16
-}
 /// A value label's glyph pixel outside a bar: dark ink.
 fn is_dark(p: [u8; 4]) -> bool {
     p[3] > 120 && p[0] < 110 && p[1] < 110 && p[2] < 110
@@ -277,39 +192,6 @@ fn bbox(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> Option<(u32, u32, u32, 
         }
     }
     found
-}
-
-/// Whether any pixel within `radius` of `centre` satisfies `pred`.
-fn any_within(
-    img: &RasterImage,
-    centre: (f64, f64),
-    radius: f64,
-    pred: fn([u8; 4]) -> bool,
-) -> bool {
-    let n = radius.ceil() as i64;
-    (-n..=n)
-        .any(|dy| (-n..=n).any(|dx| pred(pixel(img, (centre.0 + dx as f64, centre.1 + dy as f64)))))
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 fn pick_request(x: f64, y: f64, w: u32, h: u32, scale: f32) -> renderer::GpuPickRequest {
@@ -815,12 +697,12 @@ fn a_polar_subplot_draws_its_own_rose() {
         marker: None,
         text_scale: Default::default(),
     });
-    let chart = Chart::new(parent);
+    let mut chart = Chart::new(parent);
     let series = [bars("one", RED), bars("two", BLUE)];
     for scale in [1.0, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -888,7 +770,7 @@ fn a_horizontal_group_on_a_polar_chart_is_refused() {
     );
     assert!(
         r.export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0)
         )
         .block_on()

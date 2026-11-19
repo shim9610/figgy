@@ -21,13 +21,14 @@
 //! explicit_precise_mode_deserializes_to_precise).
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{BLUE, GREEN, RED, col as col_f64, is_blue_ink as is_blue, is_green_ink as is_green};
+use test_gpu::shared_device;
 
 use renderer::config::{DrawStyle, SketchOptions};
-use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
@@ -38,35 +39,10 @@ use renderer::{
 
 // ───────────────────────── plumbing / fixtures ─────────────────────────
 
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-/// The process-wide device, created once.
-///
-/// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
-/// creating one per test made this binary's tests contend for the driver and hold
-/// a device apiece. `column_upload_stats.rs` already pools this way — the pixel
-/// suites simply had not.
-///
-/// The `Renderer` is still per test: it owns the column pool, so sharing one
-/// would let test fixtures collide on column ids. Only the device is shared, and
-/// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 /// Headless renderer. Initialization failures panic; the optional return type
 /// is retained for the existing fixtures.
 fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
@@ -94,25 +70,6 @@ fn bare_chart(width: u32, height: u32) -> Chart {
     config.grid.show_minor_y = false;
     Chart::new(config)
 }
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 
 fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset) -> SeriesConfig {
     SeriesConfig {
@@ -251,13 +208,6 @@ fn build_combined(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
 fn is_red(p: &[u8]) -> bool {
     p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
 }
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 16 && p[1] > 120 && p[0] < 90 && p[2] < 90
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 16 && p[2] > 120 && p[0] < 90 && p[1] < 90
-}
-
 type PixelPredicate = fn(&[u8]) -> bool;
 
 struct PixelClass {
@@ -338,7 +288,7 @@ fn sketch_diverges_from_precise() {
 
     let img_p = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -346,7 +296,7 @@ fn sketch_diverges_from_precise() {
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let img_s = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -417,7 +367,7 @@ fn sketch_diverges_from_precise() {
         let one = [cfg];
         let p = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &one),
+                renderer::ExportSource::chart(&mut chart, &one),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -425,7 +375,7 @@ fn sketch_diverges_from_precise() {
         chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
         let s = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &one),
+                renderer::ExportSource::chart(&mut chart, &one),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -453,14 +403,14 @@ fn sketch_is_deterministic() {
 
     let a = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let b = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -472,7 +422,7 @@ fn sketch_is_deterministic() {
     chart2.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let c = r2
         .export_rgba(
-            renderer::ExportSource::chart(&chart2, &series2),
+            renderer::ExportSource::chart(&mut chart2, &series2),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -494,7 +444,7 @@ fn sketch_seed_separates() {
     });
     let s0 = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -505,7 +455,7 @@ fn sketch_seed_separates() {
     });
     let s1 = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -551,7 +501,7 @@ fn sketch_amplitude_is_bounded() {
 
     let img_p = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -584,7 +534,7 @@ fn sketch_amplitude_is_bounded() {
     });
     let img_s = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -636,7 +586,7 @@ fn sketch_preserves_nan_gaps() {
     let series = [line_series("gap", "gx", "gy", RED, LineStylePreset::Solid)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -693,7 +643,7 @@ fn sketch_composes_with_dash() {
     let solid = [line_series("ds", "dx", "dy", RED, LineStylePreset::Solid)];
     let img_solid = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &solid),
+            renderer::ExportSource::chart(&mut chart, &solid),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -701,7 +651,7 @@ fn sketch_composes_with_dash() {
     let dashed = [line_series("dd", "dx", "dy", RED, LineStylePreset::Dash)];
     let img_dash = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &dashed),
+            renderer::ExportSource::chart(&mut chart, &dashed),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -792,14 +742,14 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                 };
                 let actual = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &[series("noisy")]),
+                        renderer::ExportSource::chart(&mut chart, &[series("noisy")]),
                         renderer::ExportOptions::panel(1.0),
                     )
                     .block_on()
                     .unwrap();
                 let expected = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &[series("masked")]),
+                        renderer::ExportSource::chart(&mut chart, &[series("masked")]),
                         renderer::ExportOptions::panel(1.0),
                     )
                     .block_on()
@@ -811,7 +761,7 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                 );
                 let blank = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&chart, &[]),
+                        renderer::ExportSource::chart(&mut chart, &[]),
                         renderer::ExportOptions::panel(1.0),
                     )
                     .block_on()
@@ -892,14 +842,14 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
             };
             let actual = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &[series("noisy")]),
+                    renderer::ExportSource::chart(&mut chart, &[series("noisy")]),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()
                 .unwrap();
             let expected = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &[series("masked")]),
+                    renderer::ExportSource::chart(&mut chart, &[series("masked")]),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()
@@ -907,7 +857,7 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
             assert_bytes_eq(&actual, &expected, "nonpositive log markers must be masked");
             let blank = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &[]),
+                    renderer::ExportSource::chart(&mut chart, &[]),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()

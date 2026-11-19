@@ -90,7 +90,7 @@ fn save(
     chart.fit_layout();
     let path = directory.join(format!("{name}.png"));
     r.save_blocking(
-        ExportSource::chart(&chart, &series),
+        ExportSource::chart(&mut chart, &series),
         ExportOptions::panel(1.0),
         &path,
     )?;

@@ -72,7 +72,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
             }), errors: None, stem: None }),
     }];
     // The background stays transparent; `export_rgba` fills it.
-    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0))?;
+    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&mut chart, &series), renderer::ExportOptions::panel(1.0))?;
     std::fs::write("antenna.png", renderer::encode_png(&image)?)?;
     Ok(())
 }

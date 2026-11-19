@@ -1,17 +1,15 @@
 //! A crowded first frame must remain renderable and editable through the shared API.
 #![cfg(not(target_arch = "wasm32"))]
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{layout::NudgeResult, *};
+use harness::fresh_gpu as gpu;
 use radial_decorations::Decorations;
-
-fn gpu() -> RendererDevice {
-    let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue).expect("figgy poll thread")
-}
 
 /// The slice labels of a radial frame.
 fn radial_labels(frame: &RadialFrame, chart: &RadialChart) -> Vec<(HitId, DecorationId)> {

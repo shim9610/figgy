@@ -38,12 +38,19 @@ impl Renderer {
     /// Registers a monotonic chart (#271): `config` and `series`, which may
     /// hold monotonic line series ([`SeriesConfig::monotonic_line`]) and any
     /// other series. Its monotonic series draw nothing until their group's
-    /// first [`MonotonicChart::set_monotonic`].
+    /// first [`MonotonicChart::set_monotonic`]. Its layout is stored
+    /// [`crate::LayoutState::Fixed`] whatever `config` says (#357): no draw
+    /// moves its mapping (M4), and [`MonotonicChart::fit_layout`] fits it.
     pub fn register_monotonic_chart(
         &mut self,
         config: Config,
         series: Vec<SeriesConfig>,
     ) -> Result<MonotonicChartId> {
+        // Only the chart's own four calls move its mapping (M4), so no draw
+        // fits its layout: it is registered and kept `Fixed` (#357), and
+        // `MonotonicChart::fit_layout` fits it.
+        let mut config = config;
+        config.layout_state = crate::LayoutState::Fixed;
         let result = self
             .register_chart_unreported(config, series, true)
             .map(MonotonicChartId);

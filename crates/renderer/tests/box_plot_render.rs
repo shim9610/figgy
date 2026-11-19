@@ -15,13 +15,18 @@
 //! data area and axis ranges the renderer draws with.
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, CYAN, DIRECTIONS, GREEN, MAGENTA, ORANGE, RED, Region, YELLOW, across_span, bbox, col,
+    is_blue, is_cyan, is_green, is_magenta, is_orange, is_red, is_yellow, pixel, rule_of, slot,
+    value_px,
+};
+use test_gpu::shared_device;
 
 use renderer::config::Category;
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, BoxPlotOverride, BoxPlotSeriesLabels, BoxPlotStyle, BoxPlotTarget,
     CategoryBarDirection, CategoryBarMode,
@@ -29,19 +34,12 @@ use renderer::data_config::{
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
     BOX_PLOT_RECORD, BoxSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
-    LayerRef, Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer,
-    RendererDevice, SeriesConfig,
+    LayerRef, Material, PickedDataRef, RaggedSource, RecordSource, Renderer, RendererDevice,
+    RuleKind, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
-const YELLOW: Color = Color::from_rgb8(255, 255, 0);
-const CYAN: Color = Color::from_rgb8(0, 255, 255);
-const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
 const NAN: f64 = f64::NAN;
 
 /// One box: whisker low, q1, median, q3, whisker high, mean, CI low, CI
@@ -59,19 +57,6 @@ const TWO: [Stats; 3] = [
     [25.0, 35.0, 50.0, 65.0, 75.0, NAN, NAN, NAN],
     [10.0, 20.0, 30.0, 40.0, 50.0, NAN, NAN, NAN],
 ];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// Upload `stats` as the box plot record `id`: the summary fields, the mean
 /// and the interval (no sample count).
@@ -249,99 +234,11 @@ fn chart(direction: CategoryBarDirection) -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[0] < 60 && p[2] < 60
-}
-fn is_yellow(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] > 200 && p[2] < 60
-}
-fn is_cyan(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[2] > 200 && p[0] < 60
-}
-fn is_orange(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
-}
-fn is_magenta(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
-
-type Region = (u32, u32, u32, u32);
-
-/// Bounding box `(x0, y0, x1, y1)` (inclusive) of the pixels `pred` accepts
-/// within `region` (export pixels, end exclusive).
-fn bbox(img: &RasterImage, region: Region, pred: fn(&[u8]) -> bool) -> Option<Region> {
-    let mut found: Option<Region> = None;
-    for y in region.1..region.3.min(img.height) {
-        for x in region.0..region.2.min(img.width) {
-            if pred(pixel(img, x, y)) {
-                let b = found.get_or_insert((x, y, x, y));
-                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
-            }
-        }
-    }
-    found
-}
-
-/// Export-pixel region of category `k`'s slot (the whole value extent).
-fn slot(chart: &Chart, direction: CategoryBarDirection, k: usize, scale: f32) -> Region {
-    let da = chart.config().data_area().expect("data area");
-    let s = |v: f32| (v * scale).round() as u32;
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let w = da.width as f32 / 3.0;
-            let x0 = da.x as f32 + w * k as f32;
-            (
-                s(x0),
-                s(da.y as f32),
-                s(x0 + w),
-                s((da.y + da.height) as f32),
-            )
-        }
-        CategoryBarDirection::Horizontal => {
-            let h = da.height as f32 / 3.0;
-            let y1 = (da.y + da.height) as f32 - h * k as f32;
-            (
-                s(da.x as f32),
-                s(y1 - h),
-                s((da.x + da.width) as f32),
-                s(y1),
-            )
-        }
-    }
-}
-
 /// `region` narrowed across the category axis to `lo..=hi`.
 fn across_of(region: Region, (lo, hi): (u32, u32), direction: CategoryBarDirection) -> Region {
     match direction {
         CategoryBarDirection::Vertical => (lo, region.1, hi + 1, region.3),
         CategoryBarDirection::Horizontal => (region.0, lo, region.2, hi + 1),
-    }
-}
-
-/// Value `v` as an export-pixel coordinate along the value axis.
-fn value_px(chart: &Chart, direction: CategoryBarDirection, v: f64, scale: f32) -> f32 {
-    let config = chart.config();
-    let da = config.data_area().expect("data area");
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let t = (v - config.left_y.min) / (config.left_y.max - config.left_y.min);
-            ((da.y + da.height) as f32 - t as f32 * da.height as f32) * scale
-        }
-        CategoryBarDirection::Horizontal => {
-            let t = (v - config.bottom_x.min) / (config.bottom_x.max - config.bottom_x.min);
-            (da.x as f32 + t as f32 * da.width as f32) * scale
-        }
     }
 }
 
@@ -359,18 +256,6 @@ fn value_centre(b: Region, direction: CategoryBarDirection) -> f32 {
     (a + c) * 0.5
 }
 
-fn across_span(b: Region, direction: CategoryBarDirection) -> (u32, u32) {
-    match direction {
-        CategoryBarDirection::Vertical => (b.0, b.2),
-        CategoryBarDirection::Horizontal => (b.1, b.3),
-    }
-}
-
-const DIRECTIONS: [CategoryBarDirection; 2] = [
-    CategoryBarDirection::Vertical,
-    CategoryBarDirection::Horizontal,
-];
-
 /// Every part of a box stands where its statistic is, in its own series'
 /// place of the category slot, in both directions at 1x and 2x: the body
 /// from q1 to q3, the median across it, the whiskers from the box out to
@@ -380,12 +265,12 @@ const DIRECTIONS: [CategoryBarDirection; 2] = [
 fn boxes_draw_their_statistics_in_both_directions_and_scales() {
     let mut r = renderer();
     for direction in DIRECTIONS {
-        let chart = chart(direction);
+        let mut chart = chart(direction);
         let series = [boxes("one", RED), boxes("two", BLUE)];
         for scale in [1.0f32, 2.0] {
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -492,7 +377,7 @@ fn boxes_draw_their_statistics_in_both_directions_and_scales() {
 fn notched_boxes_narrow_at_the_median() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let mut one = boxes("one", RED);
     style(&mut one).notched = true;
     style(&mut one).notch_depth = 0.3;
@@ -501,7 +386,7 @@ fn notched_boxes_narrow_at_the_median() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[one.clone()]),
+                renderer::ExportSource::chart(&mut chart, &[one.clone()]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -535,7 +420,7 @@ fn notched_boxes_narrow_at_the_median() {
 fn missing_boxes_draw_nothing_and_unordered_statistics_are_clamped() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let ordered = [
         [10.0, 20.0, 30.0, 40.0, 50.0, NAN, NAN, NAN],
         [NAN; 8],
@@ -558,14 +443,14 @@ fn missing_boxes_draw_nothing_and_unordered_statistics_are_clamped() {
     for scale in [1.0f32, 2.0] {
         let first = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[a.clone()]),
+                renderer::ExportSource::chart(&mut chart, &[a.clone()]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let second = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[b.clone()]),
+                renderer::ExportSource::chart(&mut chart, &[b.clone()]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -606,7 +491,7 @@ fn missing_boxes_draw_nothing_and_unordered_statistics_are_clamped() {
 fn overrides_and_materials_restyle_only_their_box() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let plain = [boxes("one", RED), boxes("two", BLUE)];
     let mut overridden = plain.clone();
     let mut o = BoxPlotOverride::new(BoxPlotTarget::new("b", "one"));
@@ -615,14 +500,14 @@ fn overrides_and_materials_restyle_only_their_box() {
     for scale in [1.0f32, 2.0] {
         let before = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &plain),
+                renderer::ExportSource::chart(&mut chart, &plain),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let after = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &overridden),
+                renderer::ExportSource::chart(&mut chart, &overridden),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -654,14 +539,14 @@ fn overrides_and_materials_restyle_only_their_box() {
     overrides(&mut styled[1]).push(o);
     let before = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &plain),
+            renderer::ExportSource::chart(&mut chart, &plain),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let after = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &styled),
+            renderer::ExportSource::chart(&mut chart, &styled),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -692,14 +577,14 @@ fn overrides_and_materials_restyle_only_their_box() {
     }
     let flat = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &plain),
+            renderer::ExportSource::chart(&mut chart, &plain),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let grained = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &matte),
+            renderer::ExportSource::chart(&mut chart, &matte),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -742,7 +627,7 @@ fn the_selection_outline_traces_an_overridden_box() {
             chart.config_mut().picked_data = None;
             let painted = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -764,7 +649,7 @@ fn the_selection_outline_traces_an_overridden_box() {
             });
             let outlined = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -843,11 +728,11 @@ fn the_value_axis_fits_the_record_and_outlier_statistics() {
 fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let series = [boxes("one", RED), boxes("two", BLUE)];
     let before = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -861,7 +746,7 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     upload_record(&mut r, "one.record", &moved);
     let after = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -886,24 +771,44 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     *outliers = None;
     let error = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[short]),
+            renderer::ExportSource::chart(&mut chart, &[short]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("one per category"), "{error}");
+    assert!(
+        matches!(
+            rule_of(&error),
+            Some(RuleKind::BoxPlotRecordRows {
+                rows: 2,
+                categories: 3,
+                ..
+            })
+        ),
+        "{error}"
+    );
     // Two groups for three categories.
     upload_outliers(&mut r, "one.outliers", &ONE_OUTLIERS[..2]);
     let error = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("groups"), "{error}");
+    assert!(
+        matches!(
+            rule_of(&error),
+            Some(RuleKind::BoxPlotOutlierGroups {
+                groups: 2,
+                categories: 3,
+                ..
+            })
+        ),
+        "{error}"
+    );
     upload_outliers(&mut r, "one.outliers", &ONE_OUTLIERS);
     // A record that is not uploaded.
     let missing = SeriesConfig {
@@ -912,13 +817,16 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     };
     let error = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[missing]),
+            renderer::ExportSource::chart(&mut chart, &[missing]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("nowhere"), "{error}");
+    assert!(
+        matches!(rule_of(&error), Some(RuleKind::BoxPlotRecordNotResident { id }) if id == "nowhere"),
+        "{error}"
+    );
 }
 
 /// Box plot series sit on overlays and subplots with their own box groups,
@@ -961,7 +869,7 @@ fn overlays_and_subplots_draw_their_own_box_groups() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportSource::chart(&mut parent, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1083,18 +991,18 @@ fn a_box_plot_document_draws_through_the_reader() {
             }
         }
     }
-    let chart = Chart::new(config);
+    let mut chart = Chart::new(config);
     for scale in [1.0f32, 2.0] {
         let with = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let without = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportSource::chart(&mut chart, &[]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1158,7 +1066,7 @@ fn the_annotation_layer_maps_categories_and_values() {
         for scale in [1.0f32, 2.0] {
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1216,18 +1124,18 @@ fn the_annotation_layer_maps_categories_and_values() {
 fn a_2x_export_is_the_1x_layout_doubled() {
     let mut r = renderer();
     for direction in DIRECTIONS {
-        let chart = chart(direction);
+        let mut chart = chart(direction);
         let series = [boxes("one", RED), boxes("two", BLUE)];
         let one = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
             .unwrap();
         let two = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(2.0),
             )
             .block_on()
@@ -1312,7 +1220,7 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1339,7 +1247,7 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
     });
     let outlined = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1354,7 +1262,7 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
         .unwrap();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1439,7 +1347,7 @@ fn overrides_on_a_hundred_boxes_all_apply() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1530,7 +1438,7 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1575,7 +1483,7 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
     });
     let outlined = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1589,7 +1497,7 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
         .unwrap();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()

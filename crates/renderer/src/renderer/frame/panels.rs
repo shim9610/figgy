@@ -60,6 +60,8 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         // The plot fill is under the grid, not the annotations (#203).
         plot_background: _,
         background: _,
+        // Who owns the layout: the annotations follow the data area it set.
+        layout_state: _,
     } = config;
     let area = chart_area.0;
     crate::annotation::rasterize(&crate::annotation::RasterRequest {

@@ -8,13 +8,16 @@
 //! lands on, so a wrong projection, pivot or scale fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, GREEN, RED, col as col_f64, count, export_1x as export, is_red_soft as is_red,
+    is_selection, pixel, to8, try_renderer,
+};
 
 use renderer::config::{AxisOptions, AxisScale};
-use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, LineInterpolation,
     MatrixOrientation, MatrixRef, PointColorMap, Shading, StreamlineArrows, VectorColorMap,
@@ -25,58 +28,12 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, FiggyError,
-    GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice,
-    SeriesConfig, StreamlineSeries, Subplot, VectorSeries, display_config_for_surface,
+    GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, SeriesConfig,
+    StreamlineSeries, Subplot, VectorSeries, display_config_for_surface,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
-fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
-    Some(
-        Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Bgra8Unorm,
-            4 * 1024 * 1024,
-        )
-        .expect("renderer init"),
-    )
-}
 
 /// Grid and legend off: the only non-vector ink is the black deco frame.
 fn bare_chart() -> Chart {
@@ -108,6 +65,7 @@ fn style(scale: VectorScale) -> VectorStyle {
         head_width_px: 10.0,
         min_length_px: 0.0,
         color_map: None,
+        auto_scale: false,
     }
 }
 
@@ -228,25 +186,8 @@ fn grid_chart() -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 fn is_green(p: &[u8]) -> bool {
     p[3] > 180 && p[1] > 180 && p[0] < 80 && p[2] < 80
-}
-
-fn is_selection(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[2] > 180 && p[1] < 80
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 fn axis_t(axis: &AxisOptions, v: f64) -> f64 {
@@ -295,16 +236,6 @@ fn assert_clear(img: &RasterImage, origin: (f64, f64), dx: f64, dy: f64, what: &
     );
 }
 
-fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer
-        .export_rgba(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()
-        .unwrap()
-}
-
 // ── Pixel mode ───────────────────────────────────────────────────────────────
 
 /// `Pixels { px_per_unit }` draws `px_per_unit * |(u, v)|` pixels from the
@@ -317,7 +248,7 @@ fn pixel_scaled_arrows_have_their_length_in_pixels_at_every_export_scale() {
         return;
     };
     point_fixture(&mut renderer, &[(2.0, 2.0)], &[(40.0, 0.0)]);
-    let chart = bare_chart();
+    let mut chart = bare_chart();
     let series = [points("arrows", pixels(1.0))];
 
     let img = export(&mut renderer, &chart, &series);
@@ -337,7 +268,7 @@ fn pixel_scaled_arrows_have_their_length_in_pixels_at_every_export_scale() {
 
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -584,10 +515,6 @@ fn two_stop_colorbar(scale: AxisScale, min: f64, max: f64) -> ColorBarOptions {
     bar.axis.min = min;
     bar.axis.max = max;
     bar
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 fn assert_colour_at(img: &RasterImage, px: (f64, f64), want: Color, what: &str) {
@@ -1266,7 +1193,7 @@ fn vector_series_scale_by_their_overlay_axis() {
     let series = [points("arrows", data(1.0))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1331,7 +1258,7 @@ fn vector_series_draw_inside_their_subplot() {
     let series = [points("arrows", pixels(1.0))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1821,7 +1748,7 @@ fn streamline_arrowheads_keep_pixel_spacing_at_1x_and_2x() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
-    let chart = bare_chart();
+    let mut chart = bare_chart();
     streamline_fixture(&mut renderer, &[(0.5, 2.0), (3.5, 2.0)]);
     let series = [thin_streamlines(Some(ARROWS))];
     let img = export(&mut renderer, &chart, &series);
@@ -1830,7 +1757,7 @@ fn streamline_arrowheads_keep_pixel_spacing_at_1x_and_2x() {
     assert!(no_head_at(&img, a, (1.0, 0.0), 80.0));
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1951,7 +1878,7 @@ fn streamlines_scale_by_their_overlay_axis() {
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -2001,7 +1928,7 @@ fn streamlines_draw_inside_their_subplot() {
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()

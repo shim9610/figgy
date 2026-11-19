@@ -21,34 +21,19 @@
 //!   column, it is the full draw's within one pixel.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::renderer_bgra as renderer;
 
 use renderer::layout::{ChartArea, Rect};
 use renderer::renderer::{MonotonicGroupRef, MonotonicRange};
 use renderer::{
     ChartId, Color, ExportOptions, ExportSource, FiggyError, MappingChange, MonotonicAppend,
     MonotonicChartId, MonotonicInterleaved, MonotonicSlices, MonotonicSource, MonotonicUpdate,
-    RasterImage, Renderer, RendererDevice, SeriesConfig,
+    RasterImage, Renderer, SeriesConfig,
 };
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        64 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 /// A chart with grid and legend off, so the images hold the series and the
 /// axes only.
@@ -1724,20 +1709,20 @@ fn an_export_at_2x_takes_the_sources() {
     let groups = [MonotonicGroupRef::new("g", &source)];
     let image = export_with(&mut r, id, 2.0, &groups);
     assert_eq!((image.width, image.height), (1200, 600));
-    let with = ExportSource::Monotonic {
+    let with = || ExportSource::Monotonic {
         chart: id,
         monotonic: &groups,
     };
     let svg = r
-        .export_svg(with, ExportOptions::document(2.0))
+        .export_svg(with(), ExportOptions::document(2.0))
         .block_on()
         .expect("svg");
     assert!(svg.contains("<image"));
-    r.export_pdf(with, ExportOptions::document(2.0))
+    r.export_pdf(with(), ExportOptions::document(2.0))
         .block_on()
         .expect("pdf");
     #[cfg(not(target_arch = "wasm32"))]
-    r.export_png_blocking(with, ExportOptions::panel(2.0))
+    r.export_png_blocking(with(), ExportOptions::panel(2.0))
         .expect("blocking png");
     // The sources a 1x export does not need change nothing.
     assert_identical(

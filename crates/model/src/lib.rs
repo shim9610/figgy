@@ -69,7 +69,8 @@ pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
     AxisBreak, AxisBreakStyle, AxisBreaks, BarAlign, BreakMark, ColorBarOptions, Config,
-    DataSelectionsConfig, MAX_AXIS_BREAK_GAP_PX, MAX_AXIS_BREAKS, PickedDataRef, PieceSizing,
+    DataSelectionsConfig, LayoutState, MAX_AXIS_BREAK_GAP_PX, MAX_AXIS_BREAKS, PickedDataRef,
+    PieceSizing,
 };
 pub use data::{Column, ColumnId};
 pub use data_config::{
@@ -135,4 +136,4 @@ pub mod radar;
 pub use radar::*;
 
 pub mod bounded_title;
-pub use bounded_title::BoundedTitleOptions;
+pub use bounded_title::{BoundedTitleOptions, DocumentTextSizes};

@@ -13,17 +13,78 @@ pub struct BoundedTitleOptions {
     pub text: RichText,
 }
 
+/// The text sizes of a categorical, box plot or radar document by role, in
+/// logical pixels (#357): the chart title, the axis titles, the tick labels
+/// (a radar's spoke and ring labels) and the legend.
+///
+/// A document without them (`text_sizes` absent, every document written
+/// before the field) draws every text at its one `font_size` and the title
+/// half as large again ([`Self::legacy`]). The documents' Rust `Default`
+/// sets [`Self::CARTESIAN`], the sizes of the documented Cartesian chart,
+/// so a document built in Rust draws its text as a Cartesian chart does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DocumentTextSizes {
+    pub title: f32,
+    pub axis_title: f32,
+    pub tick_label: f32,
+    pub legend: f32,
+}
+
+impl DocumentTextSizes {
+    /// The documented Cartesian chart's sizes: a 28 px title, 22 px axis
+    /// titles, 18 px tick labels and a 14 px legend.
+    pub const CARTESIAN: Self = Self {
+        title: 28.0,
+        axis_title: 22.0,
+        tick_label: 18.0,
+        legend: 14.0,
+    };
+
+    /// The smallest and largest size a role takes, in logical pixels.
+    pub const RANGE: std::ops::RangeInclusive<f32> = 8.0..=64.0;
+
+    /// The sizes of a document without `text_sizes`: every role at
+    /// `font_size`, the title at one and a half times it.
+    pub fn legacy(font_size: f32) -> Self {
+        Self {
+            title: font_size * 1.5,
+            axis_title: font_size,
+            tick_label: font_size,
+            legend: font_size,
+        }
+    }
+
+    /// The sizes a document draws with: `sizes`, or [`Self::legacy`] of
+    /// `font_size` without them.
+    pub fn resolved(sizes: Option<&Self>, font_size: f32) -> Self {
+        sizes.copied().unwrap_or_else(|| Self::legacy(font_size))
+    }
+
+    /// Whether every size is finite and within [`Self::RANGE`].
+    pub fn is_valid(&self) -> bool {
+        [self.title, self.axis_title, self.tick_label, self.legend]
+            .into_iter()
+            .all(|size| Self::RANGE.contains(&size))
+    }
+}
+
 impl BoundedTitleOptions {
     /// Snapshot the legacy plain title once before editing label styles.
     /// Once installed as `chart_title`, this document is authoritative; the
     /// legacy `title` string is ignored by rendering.
     pub fn from_legacy(title: &str, font: &str, label_size: f32, color: Color) -> Self {
+        Self::from_plain(title, font, label_size * 1.5, color)
+    }
+
+    /// The plain title `title` at `size`.
+    fn from_plain(title: &str, font: &str, size: f32, color: Color) -> Self {
         Self {
             visible: true,
             text: RichText {
                 segments: title.chars().map(RichSegment::plain).collect(),
                 color,
-                font_size: label_size * 1.5,
+                font_size: size,
                 font: font.into(),
                 align: crate::text::TextAlign::Left,
             },
@@ -31,17 +92,20 @@ impl BoundedTitleOptions {
     }
 
     /// The stored `chart_title`, or the snapshot [`Self::from_legacy`]
-    /// takes of the legacy plain title while there is none.
+    /// takes of the legacy plain title while there is none: at the title
+    /// size of `sizes` when the document has them (#357).
     pub(crate) fn resolved(
         chart_title: Option<&Self>,
         title: &str,
         font: &str,
         label_size: f32,
+        sizes: Option<&DocumentTextSizes>,
         color: Color,
     ) -> Self {
-        chart_title
-            .cloned()
-            .unwrap_or_else(|| Self::from_legacy(title, font, label_size, color))
+        chart_title.cloned().unwrap_or_else(|| match sizes {
+            Some(sizes) => Self::from_plain(title, font, sizes.title, color),
+            None => Self::from_legacy(title, font, label_size, color),
+        })
     }
 
     pub fn validate(&self) -> Result<(), crate::RuleKind> {

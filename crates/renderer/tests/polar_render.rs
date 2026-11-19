@@ -7,13 +7,14 @@
 //! radius or sector fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{RED, col, count, export_1x as export, is_red_soft as is_red, pixel, save};
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
-use renderer::data::Column;
 use renderer::data_config::{BarOrientation, DataBarStyleConfig, LineFill, LineInterpolation};
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -31,26 +32,6 @@ use renderer::{GpuPickRequest, display_config_for_surface};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 400;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
@@ -188,15 +169,6 @@ fn inward(config: &Config, theta: f64, r: f64, px: f64) -> (f64, f64) {
     (x - dx / len * px, y - dy / len * px)
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 /// The half-transparent fill: red ink at any alpha (the export is not
 /// composited over a background).
 fn is_tinted(p: &[u8]) -> bool {
@@ -209,32 +181,6 @@ fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
         (x.round() as i64).clamp(0, img.width as i64 - 1) as u32,
         (y.round() as i64).clamp(0, img.height as i64 - 1) as u32,
     )
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
-}
-
-fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer
-        .export_rgba(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()
-        .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 #[test]
@@ -698,7 +644,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
 fn unsupported_series_and_overlays_are_explicit_errors() {
     let mut renderer = renderer();
     upload(&mut renderer, vec![0.0, 90.0, 180.0], vec![0.2, 0.6, 1.0]);
-    let chart = bare_chart(PolarOptions::default());
+    let mut chart = bare_chart(PolarOptions::default());
     let histogram = SeriesConfig {
         series_id: "bins".into(),
         source_id: None,
@@ -721,7 +667,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     };
     match renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[histogram]),
+            renderer::ExportSource::chart(&mut chart, &[histogram]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -738,14 +684,14 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     }
     let mut stepped = line_style(2.0);
     stepped.interpolation = LineInterpolation::StepPost;
-    let arc = bare_chart(PolarOptions {
+    let mut arc = bare_chart(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 4 },
         ..PolarOptions::default()
     });
     assert!(matches!(
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&arc, &[line("step", stepped)]),
+                renderer::ExportSource::chart(&mut arc, &[line("step", stepped)]),
                 renderer::ExportOptions::panel(1.0)
             )
             .block_on(),
@@ -755,7 +701,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     overlay.config_mut().overlays.push(OverlayLayer::default());
     match renderer
         .export_rgba(
-            renderer::ExportSource::chart(&overlay, &[scatter("points", 4.0)]),
+            renderer::ExportSource::chart(&mut overlay, &[scatter("points", 4.0)]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -770,7 +716,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     assert!(matches!(
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&log_angle, &[scatter("points", 4.0)]),
+                renderer::ExportSource::chart(&mut log_angle, &[scatter("points", 4.0)]),
                 renderer::ExportOptions::panel(1.0)
             )
             .block_on(),
@@ -780,7 +726,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     assert!(
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &[scatter("points", 4.0)]),
+                renderer::ExportSource::chart(&mut chart, &[scatter("points", 4.0)]),
                 renderer::ExportOptions::panel(1.0)
             )
             .block_on()
@@ -818,7 +764,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
     let series = [scatter("points", 8.0), polar_points];
     let document = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&parent, &series),
+            renderer::ExportSource::chart(&mut parent, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -923,7 +869,7 @@ fn grid_axes_and_labels_draw_rings_spokes_and_angle_formats_at_both_scales() {
     // The 2x export doubles every position.
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1250,7 +1196,10 @@ fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
     // 2x: the same rings, at twice the pixels.
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&adaptive, &series),
+            renderer::ExportSource::chart(
+                &mut renderer::Chart::new(adaptive.config().clone()),
+                &series,
+            ),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()

@@ -48,7 +48,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         z_column: None,
         render_type: DataRenderType::Feynman(diagram),
     };
-    let mut chart = Chart::new(default::default_config());
+    // The default config without axes, the frame of a Feynman chart.
+    let mut chart = Chart::new(default::config_for_series(std::slice::from_ref(&series)));
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
     let id = renderer.register_chart(chart.config().clone(), vec![series])?;
@@ -100,6 +101,13 @@ such a diagram.
 A diagram is usually drawn without axes: `Config::apply_axis_preset(AxisPreset::Hidden)`
 switches off the axis lines, ticks, tick labels and grid and keeps the
 layout, so the diagram's data units stay where they were.
+`default::config_for_series(&series)` starts a chart in that frame: it is
+`default::default_config()` with `AxisPreset::Hidden` applied when the
+series draw a Feynman diagram ([#357](https://github.com/shim9610/figgy/issues/357)).
+The frame is chosen there, once, never at draw time, so axes the host turns
+back on (`Config::apply_axis_preset`, then the grid flags) stay on. A theme
+sets the same frame (`FeynmanTheme::axis_preset`). In the browser,
+`default_config_for_series(seriesJson)` returns the same config as JSON.
 
 Committing the layout works like an auto-fit: the renderer writes the
 positions into the registered series, and the host reads them back
@@ -140,6 +148,22 @@ A vertex draws a dot when internal and nothing at a leg's end, unless its
 keeps its scripts. A vertex label sits away from the vertex's neighbours, a
 propagator label on the side its arc bulges to, and a momentum arrow
 (`MomentumArrow { label, side, reversed }`) runs beside the line.
+
+## The default look
+
+Without a theme a diagram is drawn for a chart of a few hundred pixels:
+lines 2.6 px wide, a photon wave of amplitude 7 px and wavelength 24 px, a
+gluon coil of 8 px loops every 13 px, arrowheads 12 × 9 px, dots of radius
+4 px and tadpole loops of radius 24 px (`FeynmanStyle`, all in logical
+pixels). A label's size is the host's (`RichText::font_size`); the series
+draws it `style.label_scale` times as large, `1.5` by default, so a TeX
+label given at 13 px reads at about 19.5 px. TeX's math font has a smaller
+x-height than the sans font, so it reads smaller at the same size. The
+scale applies everywhere the label is: its measure and place, the drawing,
+the pick and the picked box, the label drag and SVG and PDF export. The
+stored label keeps its size. A theme sets the scale with the rest of the
+look (`FeynmanTheme::label_scale`) and gives its label looks as the stored
+size, so labels the host adds after the theme draw at the same scale.
 
 ## Interaction
 
