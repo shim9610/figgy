@@ -1216,7 +1216,11 @@ impl GlyphSink for CanvasSink<'_> {
         if self.1.is_some() {
             return;
         }
-        let hint = glyph_hinting(font, size / self.2, script);
+        // Grid fitting aligns outlines to the pixel grid: a glyph drawn
+        // through a transform that is not a quarter turn is not aligned
+        // with it, so it is drawn unhinted (#357).
+        let aligned = self.0.orthogonal_text_transform().is_some();
+        let hint = aligned && glyph_hinting(font, size / self.2, script);
         if let Err(error) = draw_glyph(self.0, font, size, glyph, hint, pen.0, pen.1, color) {
             self.1 = Some(error);
         }
