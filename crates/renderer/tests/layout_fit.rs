@@ -301,22 +301,68 @@ fn an_identical_config_changes_nothing() {
     assert_eq!(r.chart_render_stamp(id).unwrap(), stamp);
 }
 
+/// A saved fitted chart that is loaded and made into a chart again is
+/// refitted when the chart is created: a refit of a layout that is already
+/// fitted is a fixed point, so the reread chart holds the saved layout and
+/// draws the same image at 1x and 2x (#357). Covered for the audit chart,
+/// a document with a subplot cell, and the categorical, box plot and radar
+/// documents built in Rust.
 #[cfg(feature = "serde")]
 #[test]
-fn a_fitted_chart_round_trips_and_exports_the_same_image() {
+fn a_saved_fitted_chart_is_created_again_with_the_same_layout() {
+    use renderer::{BoxPlotChart, CategoricalChart, RadarChart, Subplot};
     let mut r = renderer();
-    let (chart, series) = audit_chart(&mut r);
-    let json = serde_json::to_string(chart.config()).unwrap();
-    assert!(json.contains("\"layout_state\":\"fitted\""));
-    let back: Config = serde_json::from_str(&json).unwrap();
-    assert_eq!(&back, chart.config());
-    let reread = Chart::new(back);
-    assert_eq!(reread.config(), chart.config(), "a reread fit is the same");
-    assert_eq!(serde_json::to_string(reread.config()).unwrap(), json);
-    for scale in [1.0, 2.0] {
-        let image = export(&mut r, &chart, &series, ExportOptions::panel(scale));
-        let again = export(&mut r, &reread, &series, ExportOptions::panel(scale));
-        assert_eq!(again.rgba, image.rgba, "{scale}x");
+    let (audit, audit_series) = audit_chart(&mut r);
+    let mut documents: Vec<(&str, Chart, Vec<SeriesConfig>)> =
+        vec![("audit", audit, audit_series.to_vec())];
+    let cell = Chart::placed(480, 0, 480, 320)
+        .with_title("Cell")
+        .with_y_title("Amplitude (V)")
+        .config()
+        .clone();
+    let grid = Chart::sized(480, 320)
+        .with_title("Parent")
+        .with_x_title("Time (s)")
+        .with_subplot(Subplot::new(cell, &[]));
+    documents.push(("subplot", grid, Vec::new()));
+    let (categorical, box_plot, radar) = (
+        CategoricalChart::default(),
+        BoxPlotChart::default(),
+        RadarChart::default(),
+    );
+    let converted = [
+        Config::from_categorical(&categorical),
+        Config::from_boxplot(&box_plot),
+        Config::from_radar(&radar),
+    ];
+    // The default documents hold no values: their layout and chrome are
+    // drawn without series.
+    for (name, (config, _, _)) in ["categorical", "box plot", "radar"]
+        .into_iter()
+        .zip(converted)
+    {
+        assert_eq!(config.layout_state, LayoutState::Fitted, "{name}");
+        documents.push((name, Chart::new(config), Vec::new()));
+    }
+    for (name, chart, series) in &documents {
+        assert_eq!(chart.config().layout_state, LayoutState::Fitted, "{name}");
+        let json = serde_json::to_string(chart.config()).unwrap();
+        assert!(json.contains("\"layout_state\":\"fitted\""), "{name}");
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, chart.config(), "{name}: read back");
+        let reread = Chart::new(back);
+        assert_eq!(
+            reread.config(),
+            chart.config(),
+            "{name}: a refit of a fitted layout is a fixed point"
+        );
+        assert_eq!(serde_json::to_string(reread.config()).unwrap(), json);
+        for scale in [1.0, 2.0] {
+            let options = ExportOptions::document(scale);
+            let image = export(&mut r, chart, series, options);
+            let again = export(&mut r, &reread, series, options);
+            assert_eq!(again.rgba, image.rgba, "{name} at {scale}x");
+        }
     }
 }
 
