@@ -776,23 +776,6 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
                  instead of moving",
         issue: "#205",
     },
-    // The BoxPlot scene's rotated "Response" title, placed the edge
-    // padding from the chart edge (#270): its box spans x 8.5..21.5 at
-    // 1x and 17.5..42.5 at 2x (the 2x measure is 25 px, not 26). Looked at
-    // side by side, both draw the same glyphs at the same place; 68 % of
-    // the 1x ink pixels differ from the 2x ink box-filtered against the
-    // 65 % text limit, the glyph snapping at the two sizes, as for the
-    // category headers above.
-    Exclusion {
-        scene: "BoxPlot",
-        layer: "document",
-        element: "axis_title_left",
-        inv: Inv::I5,
-        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
-        reason: "the rotated title's glyphs snap differently at 1x and 2x; the ink is in the \
-                 same place at both scales",
-        issue: "#270",
-    },
     // The `Annotations` scene's arrow past its tip (the shared exclusions'
     // rows) at the data area the exact bands give it, with the chart title
     // band holding the font's line (#270): 2 points and 2 pixels at 1x and
