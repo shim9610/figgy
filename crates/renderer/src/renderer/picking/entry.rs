@@ -14,6 +14,13 @@ impl Renderer {
     ///
     /// This is idempotent. The immutable compute pipeline bundle is created
     /// only by the first successful call; chart registries remain lazy.
+    ///
+    /// On a browser renderer that compiles in the background
+    /// ([`Self::for_window_with_shader_set_async_observed`]), switching to
+    /// the full shaders (a chart that needs them) leaves the picker not
+    /// enabled until the new set's pick pipelines have compiled (#363), so
+    /// a host picks with [`Self::enable_gpu_picking_async`] first, as
+    /// `FiggyChart` does, rather than relying on an earlier enable.
     pub fn enable_gpu_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let result = self.enable_gpu_picking_unreported();
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
@@ -62,6 +69,12 @@ impl Renderer {
         )
     }
 
+    /// [`Self::enable_gpu_picking`] through the browser's async compile
+    /// API. On a renderer that compiles in the background it waits for the
+    /// gate and reduce compiles a chart's pick warm-up scheduled (#363).
+    /// Call it before each pick on such a renderer: after a switch to the
+    /// full shaders the picker is not enabled until it runs, or until a
+    /// frame enables it once the new set's pipelines have compiled.
     pub async fn enable_gpu_picking_async(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
@@ -91,6 +104,20 @@ impl Renderer {
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
+        // The gate and reduce compiles a chart's warm-up scheduled (#363)
+        // are waited for, issued first if they still wait, so the enable
+        // below finds them compiled instead of starting its own.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(queue) = self.compile_queue.clone()
+            && matches!(
+                self.picker.ready_bundle(),
+                Err(crate::gpu_pick::GpuPickError::PickerDisabled)
+            )
+        {
+            for label in crate::gpu_pick::GATE_PIPELINE_LABELS {
+                let _ = queue.wait_pick(self.pipelines.shaders.set, label).await;
+            }
+        }
         self.picker
             .enable_observed_async(
                 self.device.clone(),
@@ -172,6 +199,14 @@ impl Renderer {
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         while let Some(key) = self.missing_exact_pick_key(id, request)? {
             let bundle = self.picker.ready_bundle()?;
+            // A compile the chart's warm-up scheduled (#363) is waited for,
+            // issued first if it still waits. The pick then compiles as it
+            // always did: a cache hit when the warm-up compiled it, and a
+            // compile of its own when the browser no longer holds that
+            // result, so a pick is never slower than without the warm-up.
+            if let Some(queue) = self.compile_queue.clone() {
+                let _ = queue.wait_pick(bundle.set, &key.compile_label()).await;
+            }
             let (constants, count) = key.constants(self.device());
             let compiled = crate::browser_compile::compute_with_constants(
                 self.device(),
@@ -195,6 +230,155 @@ impl Renderer {
             picker.exact.ensure(active.engine.bundle(), key)?;
         }
         Ok(())
+    }
+
+    /// Compile, on the browser's compile queue, the pick pipelines chart
+    /// `id`'s first pick needs, ahead of the waiting compiles (#363), and
+    /// create each one in the picker's own cache as its compile resolves, so
+    /// the first pick finds them created. Called for each chart a screen
+    /// frame draws. When the chart's config or series revision or the shader
+    /// set moves, it schedules, while the picker is not enabled, its gate
+    /// and reduce pipelines, then the chart's exact keys
+    /// ([`Self::for_each_exact_pick_key`]), which go first. On later
+    /// frames, only when a compile has ended since, it enables the picker
+    /// once the gate and reduce compiles are ready and creates each exact
+    /// pipeline whose compile is ready. Never the whole variant table: only
+    /// the chart's own keys. A failure leaves the pick to compile, or to
+    /// report, as it always did, so nothing is reported here.
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) fn warm_exact_picks(&mut self, id: ChartId) {
+        use crate::renderer::registry::PickWarmup;
+        let Some(queue) = self.compile_queue.clone() else {
+            return;
+        };
+        let set = self.pipelines.shaders.set;
+        let Some(state) = self.chart_states.get(&id) else {
+            return;
+        };
+        let stamp = (state.revisions.config, state.revisions.series, set);
+        let mut warmup = state.pick_warmup;
+        if warmup.map(|w| w.stamp) != Some(stamp) {
+            // The gate and reduce compiles first, and only for a chart a
+            // pick can reach: each pick compile goes to the front, so the
+            // exact keys, the longest, are issued before them.
+            let mut pickable = false;
+            let walked = self.for_each_exact_pick_key(id, |_| pickable = true);
+            if pickable
+                && matches!(
+                    self.picker.ready_bundle(),
+                    Err(crate::gpu_pick::GpuPickError::PickerDisabled)
+                )
+                && queue
+                    .schedule_pick_compute(
+                        set,
+                        crate::gpu_pick::PickShader::Gate.assembled_for(set).source,
+                        &crate::gpu_pick::GATE_PIPELINE_LABELS,
+                    )
+                    .is_err()
+            {
+                // The first pick enables the picker as it always did.
+            }
+            let device = self.device.clone();
+            let scheduled = self.for_each_exact_pick_key(id, |key| {
+                let (constants, count) = key.constants(&device);
+                if queue
+                    .schedule_exact_pick(
+                        set,
+                        key.compile_label(),
+                        key.source(set),
+                        &constants[..count],
+                    )
+                    .is_err()
+                {
+                    // The first pick compiles this one as it always did.
+                }
+            });
+            // A chart whose keys cannot be walked is left to its first pick,
+            // which reports why, until an edit moves the stamp.
+            warmup = Some(PickWarmup {
+                stamp,
+                adopting: (walked.is_ok() && scheduled.is_ok() && pickable).then_some(u64::MAX),
+            });
+        }
+        let Some(PickWarmup {
+            adopting: Some(seen),
+            ..
+        }) = warmup
+        else {
+            if let Some(state) = self.chart_states.get_mut(&id) {
+                state.pick_warmup = warmup;
+            }
+            return;
+        };
+        let settled = queue.settled();
+        let adopting = if settled == seen {
+            Some(seen)
+        } else {
+            self.adopt_warmed_picks(id, &queue, set).then_some(settled)
+        };
+        if let Some(state) = self.chart_states.get_mut(&id) {
+            state.pick_warmup = Some(PickWarmup { stamp, adopting });
+        }
+    }
+
+    /// Create the pick pipelines of chart `id` whose warm-up compiles have
+    /// resolved ([`Self::warm_exact_picks`]): the picker's bundle once its
+    /// gate and reduce compiles are ready, then each exact pipeline that is
+    /// ready, in the picker's exact cache. `true` while some compile it
+    /// waits for is still pending.
+    #[cfg(target_arch = "wasm32")]
+    fn adopt_warmed_picks(
+        &mut self,
+        id: ChartId,
+        queue: &crate::browser_compile::CompileQueue,
+        set: crate::shader_assembly::ShaderSet,
+    ) -> bool {
+        use crate::compile_schedule::LabelReadiness;
+        if matches!(
+            self.picker.ready_bundle(),
+            Err(crate::gpu_pick::GpuPickError::PickerDisabled)
+        ) {
+            let mut pending = false;
+            let mut ready = true;
+            for label in crate::gpu_pick::GATE_PIPELINE_LABELS {
+                match queue.readiness(set, label) {
+                    LabelReadiness::Ready => {}
+                    LabelReadiness::Pending => pending = true,
+                    _ => ready = false,
+                }
+            }
+            if pending {
+                return true;
+            }
+            if !ready || self.enable_gpu_picking_unreported().is_err() {
+                // The first pick enables the picker, or reports why it
+                // cannot, as it always did.
+                return false;
+            }
+        }
+        let Ok(bundle) = self.picker.ready_bundle() else {
+            return false;
+        };
+        // The cache is moved out while the chart's keys are walked, which
+        // borrow the renderer, and moved back: nothing is copied.
+        let mut exact = std::mem::take(&mut self.picker.exact);
+        let mut pending = false;
+        let walked = self.for_each_exact_pick_key(id, |key| {
+            if exact.get(key).is_some() {
+                return;
+            }
+            match queue.readiness(set, &key.compile_label()) {
+                LabelReadiness::Ready => {
+                    if exact.ensure(&bundle, key).is_err() {
+                        // The pick creates it and reports the failure.
+                    }
+                }
+                LabelReadiness::Pending => pending = true,
+                _ => {}
+            }
+        });
+        self.picker.exact = exact;
+        pending && walked.is_ok()
     }
 
     /// Compile, through the browser's async API, the typed data pick
@@ -343,6 +527,65 @@ impl Renderer {
             max_distance_px: request.max_distance_px,
             draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
         }))
+    }
+
+    /// Each exact pick pipeline a pick of chart `id` can need, given to
+    /// `each`, possibly more than once: for every layer a pick can reach (the
+    /// active one and, from the base layer, each subplot the pointer can
+    /// route to, as [`subplot_route`] does), each resident series' stored key
+    /// from its pick descriptor ([`crate::gpu_pick::resident_exact_key`]) with
+    /// the layer's query bits. Read from the stored config and series alone:
+    /// no picker, slot or GPU object is needed, so a chart's pipelines can
+    /// compile before its first pick (#363). A monotonic chart picks through
+    /// its own query and a chart with a streamed series through the stream's
+    /// variants (rule 8): neither gives any.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(in crate::renderer) fn for_each_exact_pick_key(
+        &self,
+        id: ChartId,
+        mut each: impl FnMut(crate::gpu_pick::PickExactKey),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        if self.monotonic_order.contains(&id)
+            || state
+                .series
+                .iter()
+                .any(|series| self.require_resident_series(series).is_err())
+        {
+            return Ok(());
+        }
+        let series = pickable_series(&self.pool, &state.series);
+        let mut layer =
+            |config: &Config| -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+                let inputs = active_layer_pick_inputs(config, &series)?;
+                let plan = PickChartPlan::new(&inputs.panel, &inputs.series)?;
+                let transform = data_render::scatter_transform_from_config(&inputs.panel);
+                let draw_style = crate::gpu_pick::GpuPickDrawStyle::of(&inputs.panel.draw_style);
+                let polar = transform.polar_angle[0] > 0.5;
+                for descriptor in &plan.descriptors {
+                    let (key, flags) =
+                        crate::gpu_pick::resident_exact_key(&descriptor.descriptor());
+                    each(crate::gpu_pick::exact_variant_for(
+                        key,
+                        flags,
+                        &draw_style,
+                        polar,
+                    ));
+                }
+                Ok(())
+            };
+        layer(&state.config)?;
+        if state.config.active_layer() == crate::LayerRef::Base {
+            for index in 0..state.config.subplots.len() {
+                let mut routed = state.config.clone();
+                routed.active_layer = crate::LayerRef::Subplot(index);
+                layer(&routed)?;
+            }
+        }
+        Ok(())
     }
 
     /// Submit one exact pick against renderer-owned chart state.
