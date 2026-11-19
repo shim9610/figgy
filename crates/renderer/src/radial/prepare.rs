@@ -221,6 +221,7 @@ pub(super) struct FrameKey {
     font_size: f32,
     label_color: crate::Color,
     background: crate::Color,
+    inner_label_fallback: model::radial::InnerLabelFallback,
 }
 /// A decoration selection as the frame sees it.
 fn frame_selection(selected: &Option<model::DecorationId>) -> Option<&model::DecorationId> {
@@ -253,6 +254,7 @@ impl FrameKey {
             font_size,
             label_color,
             background,
+            inner_label_fallback,
         } = chart;
         let model::DecorationLayout {
             data_area,
@@ -275,6 +277,7 @@ impl FrameKey {
             font_size: *font_size,
             label_color: *label_color,
             background: *background,
+            inner_label_fallback: *inner_label_fallback,
         }
     }
     /// `*self == Self::of(chart)` without building the key: the per-frame
@@ -299,6 +302,7 @@ impl FrameKey {
             font_size,
             label_color,
             background,
+            inner_label_fallback,
         } = chart;
         let model::DecorationLayout {
             data_area,
@@ -320,6 +324,7 @@ impl FrameKey {
             && self.font_size == *font_size
             && self.label_color == *label_color
             && self.background == *background
+            && self.inner_label_fallback == *inner_label_fallback
     }
 }
 /// The key of a frame's label raster: its [`FrameKey`] with what only the
@@ -388,6 +393,7 @@ mod frame_key_tests {
             font_size: _,
             label_color: _,
             background: _,
+            inner_label_fallback: _,
         } = base();
         type Edit = fn(&mut RadialChart);
         let reaching: &[(&str, Edit)] = &[
@@ -429,6 +435,9 @@ mod frame_key_tests {
             ("font_size", |c| c.font_size = 20.),
             ("label_color", |c| c.label_color = crate::Color::BLACK),
             ("background", |c| c.background = crate::Color::BLACK),
+            ("inner_label_fallback", |c| {
+                c.inner_label_fallback = model::radial::InnerLabelFallback::Outside
+            }),
         ];
         let outside: &[(&str, Edit)] = &[
             ("active_layer", |c| c.active_layer = LayerRef::Annotations),

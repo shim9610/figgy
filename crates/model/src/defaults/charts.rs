@@ -219,6 +219,7 @@ pub(crate) fn radial_chart() -> RadialChart {
         font_size: 16.0,
         label_color: Color::new(0.12, 0.16, 0.22, 1.0),
         background: Color::WHITE,
+        inner_label_fallback: crate::radial::InnerLabelFallback::Hide,
     }
 }
 

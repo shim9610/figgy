@@ -42,6 +42,199 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit` and `catego
 `text_generated`, the chart's `layout_state` and the categorical, box plot
 and radar documents' `text_sizes`) are additive.
 
+- **Contour ink, sunburst separators and readable labels, Grotrian limit
+  labels** ([#357](https://github.com/shim9610/figgy/issues/357), round
+  2). Appearance only; no value, position or pick target moves, and
+  stored documents read back unchanged.
+  - **Contours without a theme.** `SeriesConfig::contours` draws its
+    isolines in a dark ink (`#262626`) instead of palette blue, which was
+    hard to see on a chart without a theme. `.color(c)` and the themes
+    recolour them as before.
+  - **Sunburst and radial default.** `RadialStyle::default()` and
+    `RadialChart::default()` (`helpers`) are now `RadialStyle::sunburst()`:
+    the documented flat look with a 1 px white rim and separators, so the
+    segments and rings of a chart without a theme stay apart.
+    `RadialOutline::default()` and every serde default are unchanged, so a
+    document that omits the style draws as before.
+  - **Inside labels are placed where they fit, with a readable
+    minimum.** An inside radial label slides along its arc (from the
+    bisector towards the top or bottom of a wide segment) and, on a flat
+    chart, reads upright (bottom to top) when that fits it larger. Before,
+    a horizontal label on the bisector of a wide segment at the side of a
+    thin ring was held to the ring's thickness ("Renewables 46%" on the
+    inner ring of a three-ring sunburst drew at about 12 px; it now draws
+    upright at its full size). A label is never drawn below 12 logical
+    pixels (or the chart's `font_size` when that is smaller). One that
+    would be moves outside with a leader when its slice is on the
+    outermost ring or on a pie or donut: the circle makes room for it, and
+    it is hit, selected, outlined and dragged as an outside label. On an
+    inner sunburst ring no leader reaches past the outer rings, so it is
+    hidden: not drawn, no hit region. Raster, SVG, PDF and the hit map
+    read one placement. Before, labels such as "Oil 8%" were drawn at
+    about 7 px. Documents written before draw their inside labels at the
+    new places and sizes.
+  - **Pulling inner-ring labels out of a sunburst.** New
+    `RadialChart::inner_label_fallback: InnerLabelFallback` (`Hide`, the
+    default, or `Outside`; omitted from JSON while `Hide`). With `Outside`,
+    an inner-ring inside label too small to read is drawn outside instead
+    of hidden: its leader crosses the outer rings, and it stacks with the
+    outermost ring's outside labels in angle order without meeting them.
+    It is a normal outside label for hover, selection, its outline, drag,
+    export, serde and WASM. Migration: an exhaustive Rust literal of
+    `RadialChart` names the field (or uses `..Default::default()`).
+  - **Grotrian ionisation-limit labels.** A limit's label sits above its
+    line, right-aligned. When that would leave the plot (a limit near the
+    top of the energy range), it is placed just below the line, so it is
+    not clipped. The level and transition labels keep clear of it as they
+    do of a stroke. The host's `label_offset` still moves it from there.
+  - **Grotrian transition labels stay inside the plot.** A wavelength
+    label takes a spot the plot's edge would clip only when every spot
+    along both sides of its arrow would be clipped; before, "728.1" in the
+    He I diagram at 800 × 600 was cut at the left edge. Labels stay
+    horizontal, as they always were.
+  - **A crowded fan's wavelength labels stand in one aligned column.**
+    Where every spot along a fan of transitions lies on another arrow or
+    label (the Ar I 1s4/1s5 → 2p fan), the labels move out of the fan
+    into one column beside it: one x, left-aligned, evenly spaced, in the
+    order of their arrows from the top. Each label is joined to the middle
+    of its own arrow by a thin leader in the arrow's colour. Before, the
+    labels sat at different stops along the steep arrows and read as a
+    slanted staircase on the arrows' ink. The column takes the side of
+    the fan, and the height within it, where it and its leaders lie on
+    the fewest strokes, labels and arrows, and only when that beats the
+    labels' places along the arrows. The leader is part of its label: the
+    label hits, selects and drags as before, and the leader follows it.
+    A dragged label keeps its place in the column, moved by its offset.
+    PNG, SVG and PDF draw the leader. No serialized field: a document
+    draws its labels at the new places and reads back unchanged.
+  - **Grotrian arrows spread along their levels and run parallel.** The
+    transitions between the same two columns (a bundle) are ordered by
+    where they lie across the bundle's mean direction, and each arrow
+    takes the same offset from its level's centre at both ends. A
+    bundle's arrows therefore keep one order at both ends, never cross,
+    and run near-parallel, as in a textbook Grotrian diagram. Before, the
+    ends meeting one level were spread only among themselves, so a bundle
+    fanned out from a few points (the Ar I 2p → 1s4/1s5 fan). The ends
+    stand `12` px apart, or an arrowhead plus one and a half shafts when
+    that is wider, and are spread evenly over a stroke too short for that.
+    Another bundle's ends on the same level are kept that far apart, and
+    every end stays on its stroke. With the arrows apart, most wavelength
+    labels find a free spot beside their own arrow, and the aligned column
+    becomes the fallback it was meant to be. Appearance only: levels,
+    labels and picks are unchanged, and each arrow is still picked as
+    drawn.
+  - Tests: `bundled_arrows_spread_along_their_levels_without_crossing`
+    (`energy_levels_render.rs`), `contours_draw_in_dark_ink` (`helpers/series.rs`),
+    `the_host_default_separates_segments_and_rings`,
+    `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
+    `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`),
+    `transition_labels_stay_inside_the_plot_and_off_other_labels` (He, Ar
+    and Cu at their own size and at 800 × 600 in the Gallery theme, 1x and
+    2x), `a_crowded_fan_sets_its_labels_in_a_column_with_leaders`
+    (`tests/energy_levels_render.rs`) and
+    `crowded_radial_labels_prepare_and_remain_in_the_hit_map` (crowded
+    inside labels move outside and stay hit and draggable at 1x and 2x)
+    `inner_sunburst_labels_read_upright_or_hide`,
+    `pulled_out_inner_labels_are_full_outside_labels`
+    (`tests/radial_label_layout.rs`) and
+    `the_inner_label_fallback_round_trips_and_is_omitted_while_hidden`
+    (`radial.rs`).
+  - **Migration:** a host that relied on `RadialChart::default()` drawing
+    no outline sets `style.outline = RadialOutline::default()`.
+- **One palette method on the SSOT, and one-time renderer fits**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). With no theme,
+  every series of a multi-series chart drew in the same colour (palette
+  blue; black before), because a constructor cannot know its index and
+  nothing in the default flow coloured the list. Quiver charts built
+  through the default flow drew 2 px specks, because only an explicit
+  `fit_vector_scales` or `commit_auto_fit_all` wrote the auto scale.
+  - **New:** `Config::apply_palette(&mut series, palette: &[Color])`.
+    Series `i` takes `palette[i % len]` in every part its kind draws in a
+    palette colour: the x-y line, markers, error bars and stems, the
+    histogram fill, the series colour of category bars, box plots, range
+    bars and radar series, vectors, ternary series, streamlines, parallel
+    rows and monotonic channels. A field or mesh, an RGB image, an
+    energy-level diagram and a Feynman diagram keep their colours and
+    still take their index. The legends derived from the series (the base
+    chart's, each overlay's and each subplot's) redraw their symbols. The
+    layout is not touched, and an empty palette changes nothing.
+  - `default::config_for_series` takes `&mut [SeriesConfig]` and applies
+    `ColorCycle::DEFAULT`. The browser `apply_color_cycle(cycle)` goes
+    through the same method, so its legend refresh now also covers
+    overlays and subplots, and it leaves the kinds above in their colours.
+  - **Removed:** `ColorCycle::color_unset` (added earlier in this beta,
+    never released). Its rule, "only series still in the starting
+    colour", could not tell an unset colour from a chosen one.
+  - **One-time fits.** `Renderer::register_chart` with a new chart's
+    config (`LayoutState::Fitted`: `Chart::sized`, `Chart::placed`,
+    `default::config_for_series`, the family presets) fits once:
+    1. the axis ranges, by the `fit_ranges` path;
+    2. the layout;
+    3. the scale of every auto-scaled vector series;
+    4. the stroke share of every energy-level series' column slots
+       (`LevelStrokeStyle::slot_fraction`).
+
+    The results are stored in the chart's config and series, and nothing
+    refits them on its own. A `Fixed` config, such as every stored
+    document, is registered exactly as given, as before. A new chart over
+    a streamed source cannot be fitted (rule 8): it is refused with
+    `ColumnNotResident`.
+  - **Opt-outs:** `Renderer::register_chart_as_given(config, series)`
+    registers any config without the fit, and `Chart::as_given(config)`
+    creates a chart object without the layout fit of `Chart::new`.
+  - `Renderer::fit_ranges(&mut chart, &mut series)` also fits the scale of
+    every auto-scaled vector series from the fitted data area, so the
+    default flow (`fit_ranges`, then export) draws visible arrows. The
+    browser `fit_ranges()` stores the rescaled series.
+  - **Grotrian slots.** The fit narrows an energy-level series'
+    `style.level.slot_fraction`, never below 0.35 and never wider than
+    stored, so its level labels fit their own column's lane instead of
+    moving into the neighbour's. It lays the labels out at the stored
+    share and at each twentieth below it, down to the share that leaves
+    the widest fitting label room before the next column's strokes. It
+    keeps the share with the fewest labels on (or within a label gap of)
+    another column's ink, on a limit line or on another label, then the
+    fewest labels moved to the other side or onto a leader, then the
+    widest. A second fit keeps the result. He I (0.65 at its own size, 0.5
+    at 800 × 600 with the Gallery sizes) and Cu I at its own size (0.5)
+    draw every level label beside its own stroke with room before the next
+    one; Cu I at 800 × 600 keeps 0.7, where its widest ²P° labels do not
+    fit the gap at any share and a narrower one draws more labels on
+    other ink. A `Fixed` document
+    and `register_chart_as_given` keep the stored share, and
+    `fit_ranges` applies the same fit.
+  - `VectorStyle::auto_scale` is consumed by the first fit.
+    `fit_vector_scales`, and through it `register_chart`, `fit_ranges` and
+    `commit_auto_fit_all`, turns it off after writing the scale, so the
+    stored scale stays through later fits. A field of zero vectors keeps
+    the flag. Before, the flag stayed on and every whole-chart fit
+    rewrote the scale.
+  - Documents written before this change parse, read back and draw the
+    same. No serialized field is added.
+  - **Migration:**
+    - `ColorCycle::DEFAULT.color_unset(&mut series)` becomes
+      `config.apply_palette(&mut series, ColorCycle::DEFAULT.colors())`.
+      Unlike `color_unset`, it colours every palette-coloured series. Set
+      a host colour after it.
+    - `default::config_for_series(&series)` becomes
+      `config_for_series(&mut series)`.
+    - `renderer.fit_ranges(&mut chart, &series)` becomes
+      `fit_ranges(&mut chart, &mut series)`.
+    - A host that sets ranges on a `Chart::sized` chart and then registers
+      it calls `register_chart_as_given`, or the registration fits the
+      ranges to the data. A streamed chart built from `Chart::sized` is
+      also registered with `register_chart_as_given`.
+    - A host that relied on `auto_scale` staying on calls
+      `style.auto_scale = true` before the next fit.
+  - Tests: `apply_palette_gives_series_i_colour_i_and_redraws_the_legend`
+    (`helpers/series.rs`), `the_series_take_the_default_palette_in_order`
+    (`helpers/default.rs`), `registration_fits_a_new_chart_once`,
+    `fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing`,
+    `the_installed_auto_fit_sizes_auto_scaled_arrows`
+    (`tests/candidate_fit.rs`), `fit_ranges_sizes_auto_scaled_arrows`
+    (`tests/helpers.rs`), `registration_fits_the_level_slots_once`
+    (`tests/energy_levels_render.rs`), and `palette_presets.rs` through the
+    default flow.
 - **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),
   items 8 and 9). Appearance only; no value, position or pick moves.
   - `ParallelOptions` gains `names_on_top` (the axis names above the plot)
@@ -167,7 +360,7 @@ and radar documents' `text_sizes`) are additive.
     textbook term diagrams do: `left_y` keeps its line, outward ticks and
     labels; `bottom_x` keeps the term-column labels without a line or
     ticks; `top_x` and `right_y` draw nothing, unless `right_y` has a
-    `unit` (a second energy unit such as cm⁻¹), which then takes the
+    `unit` (a second energy unit such as cm<sup>-1</sup>), which then takes the
     energy axis' frame. It used to draw the boxed frame with outward ticks
     on the bottom and left. Migration: a host that wants the old frame
     applies `AxisPreset::BoxedOutward` and switches the grid off itself.
@@ -190,11 +383,14 @@ and radar documents' `text_sizes`) are additive.
     Rust literal of `EnergyLevelTheme` adds the two fields.
   - The Grotrian examples (`nist_grotrian`, `nist_grotrian_gallery` and
     the playground's energy-level scenes, `support/grotrian_sets.rs`)
-    write physics notation as host text: term symbols such as ¹P° and
-    ²[3/2]°, configurations such as 1s² and J as a subscript, in Unicode
-    super- and subscripts (#353). They derive each axis break from their
-    own levels (`derived_break`: the widest empty energy range), as the
-    item 13 decision keeps breaks the host's job.
+    write physics notation as host text: term symbols with a raised
+    multiplicity, configurations with raised occupancies and J as a
+    subscript, built from rich-text script segments (TeX `^{}` and `_{}`
+    spans), never from Unicode super- or subscript characters, which
+    figgy's own examples, presets and docs do not use (#357; #353's
+    mapping stays for hosts that pass them). They derive each axis break
+    from their own levels (`derived_break`: the widest empty energy
+    range), as the item 13 decision keeps breaks the host's job.
 - **Palette presets and a default colour cycle** ([#357](https://github.com/shim9610/figgy/issues/357)).
   `ColorCycle` gains five categorical presets from public palettes:
   `Tableau10` (d3-scale-chromatic, ISC), `Set2` and `Dark2` (ColorBrewer,
@@ -203,7 +399,7 @@ and radar documents' `text_sizes`) are additive.
   `HighContrast` (plotly.py `Plotly` and `Dark24`, MIT), beside `Balanced`
   (D3 category10 / matplotlib tab10) and `ColorblindSafe` (Okabe–Ito). New:
   `ColorCycle::DEFAULT` (`Balanced`), `ColorCycle::ALL`, `PRESETS`,
-  `name()`, `from_name()`, `color_unset(&mut series)`, and
+  `name()`, `from_name()`, and
   `Theme::with_palette(cycle)` / `RadialTheme::with_palette(cycle)`;
   `colors()` and `color()` are `const`. The browser `ColorCycle` enum has
   the same variants, `FiggyChart.theme_with_palette(name, cycle)` and
@@ -214,8 +410,8 @@ and radar documents' `text_sizes`) are additive.
   - **Default cycle.** The series constructors (`SeriesConfig::line`,
     `scatter`, `histogram`, `category_bars`, `box_plot`, `vectors`, ...)
     start a series in `ColorCycle::DEFAULT.color(0)` instead of black, and
-    `ColorCycle::DEFAULT.color_unset(&mut series)` gives series `i` the
-    cycle's colour `i` when it is still in that starting colour. In the
+    `Config::apply_palette` (above) gives series `i` the cycle's colour
+    `i`. In the
     browser a new chart's cycle is `Balanced` instead of `Classic`, so
     `add_line_series` gives new series its colours in order. The colour is
     written into the series where it is created; the model has no unset
@@ -235,9 +431,7 @@ and radar documents' `text_sizes`) are additive.
     compared a themed palette with its designed list compares the first
     entries. Tests: `presets_have_eight_distinct_colours_and_names`,
     `preset_values_match_their_sources` (`preset.rs`),
-    `constructors_start_in_the_default_cycle`,
-    `color_unset_cycles_in_series_order_and_keeps_set_colours`
-    (`helpers/series.rs`), `every_member_palette_has_eight_distinct_colours`,
+    `constructors_start_in_the_default_cycle` (`helpers/series.rs`), `every_member_palette_has_eight_distinct_colours`,
     `filled_palettes_keep_the_designed_colours_first`,
     `with_palette_selects_a_preset` (`helpers/theme/tests.rs`).
 - **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).

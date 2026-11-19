@@ -65,8 +65,14 @@ impl MatrixRef {
 /// The colour a constructor gives a series that takes one colour, the
 /// ink a line or a marker starts in: the first colour of
 /// [`ColorCycle::DEFAULT`] until [`SeriesConfig::color`], a theme's palette
-/// or [`ColorCycle::color_unset`] sets it (#357). It was black before.
+/// or [`crate::Config::apply_palette`] sets it (#357). It was black before.
 pub(super) const SERIES_INK: Color = ColorCycle::DEFAULT.color(0);
+
+/// The ink of contour lines a host leaves uncoloured (#357): a dark grey
+/// that reads on white and on the light end of a colour map, where palette
+/// blue was hard to see on a chart without a theme. A theme's
+/// `FieldTheme::unfilled_contour_color` or `contour_color` replaces it.
+pub(super) const CONTOUR_INK: Color = Color::from_rgb8(0x26, 0x26, 0x26);
 
 /// The corner radius of [`SeriesConfig::timeline_bars`], logical pixels:
 /// the rounding of a web timeline's bars.
@@ -215,7 +221,9 @@ impl SeriesConfig {
         )
     }
 
-    /// Contour lines of `matrix` at the host's `levels`.
+    /// Contour lines of `matrix` at the host's `levels`, drawn 1 px in a
+    /// dark grey ink (`#262626`, #357) so they read on a chart without a
+    /// theme; `.color(c)` or a theme recolours them.
     pub fn contours(
         id: impl Into<String>,
         x: impl Into<ColumnId>,
@@ -239,6 +247,7 @@ impl SeriesConfig {
                 surface: None,
             },
         )
+        .color(CONTOUR_INK)
     }
 
     /// A hexagonal heatmap of pre-binned `matrix` cells: the host bins,
@@ -491,12 +500,10 @@ impl SeriesConfig {
     /// One polyline per row across the parallel axes, one column per axis
     /// in the axes' order. The first two also name the series' `x_column`
     /// and `y_column`, as the variant requires. The rows draw 1 px wide in
-    /// the series ink, opaque, so [`ColorCycle::color_unset`] still finds
-    /// them unset; a theme's `ParallelTheme::line_opacity` or the host's
+    /// the series ink, opaque, so [`crate::Config::apply_palette`] colours
+    /// them like any other series; a theme's `ParallelTheme::line_opacity` or the host's
     /// alpha makes many rows read as a density (#357), and a colour column
     /// ([`Self::color_by`]) colours them through the chart's colourbar.
-    ///
-    /// [`ColorCycle::color_unset`]: crate::preset::ColorCycle::color_unset
     pub fn parallel<I, C>(id: impl Into<String>, columns: I) -> Self
     where
         I: IntoIterator<Item = C>,
@@ -864,6 +871,36 @@ mod tests {
 
     // Each constructor returns a series that validates on the chart its
     // family draws on (#265).
+    // Isolines a host leaves uncoloured read on a chart without a theme
+    // (#357): dark ink, not palette blue; the host's colour still wins, and
+    // a heatmap's fill keeps its colour map.
+    #[test]
+    fn contours_draw_in_dark_ink() {
+        let line = |s: &SeriesConfig| match &s.render_type {
+            DataRenderType::Field(FieldSeries {
+                contour: Some(contour),
+                ..
+            }) => contour.line.line_color,
+            _ => unreachable!("contours"),
+        };
+        let plain = SeriesConfig::contours("c", "x", "y", grid("z"), vec![0.5]);
+        assert_eq!(line(&plain), CONTOUR_INK);
+        assert_ne!(CONTOUR_INK, SERIES_INK);
+        let red = Color::from_rgb8(200, 0, 0);
+        assert_eq!(line(&plain.clone().color(red)), red);
+        // Its contrast on white is at least 7:1 (WCAG AAA for text).
+        let lum = |c: u8| {
+            let c = f64::from(c) / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let l = lum(0x26);
+        assert!((1.05 / (l + 0.05)) >= 7.0);
+    }
+
     #[test]
     fn constructors_start_in_the_default_cycle() {
         // #357: an uncoloured series is no longer black.
@@ -889,18 +926,32 @@ mod tests {
     }
 
     #[test]
-    fn color_unset_cycles_in_series_order_and_keeps_set_colours() {
+    fn apply_palette_gives_series_i_colour_i_and_redraws_the_legend() {
         let red = Color::from_rgb8(200, 0, 0);
         let mut series = [
-            SeriesConfig::line("a", "x", "y"),
-            SeriesConfig::scatter("b", "x", "y").color(red),
+            SeriesConfig::line("a", "x", "y").label("a"),
+            SeriesConfig::scatter("b", "x", "y").color(red).label("b"),
             SeriesConfig::line("c", "x", "y").color(Color::BLACK),
             SeriesConfig::stem("d", "x", "y"),
             SeriesConfig::box_plot("e", "p", "r"),
             SeriesConfig::histogram("f", "e", "c"),
-            SeriesConfig::line("g", "x", "y"),
+            SeriesConfig::heatmap("g", "x", "y", grid("z")),
+            SeriesConfig::contours("h", "x", "y", grid("z"), vec![0.5]),
+            SeriesConfig::energy_levels("i", crate::defaults::energy_level_series()),
+            SeriesConfig::line("j", "x", "y"),
         ];
-        ColorCycle::DEFAULT.color_unset(&mut series);
+        let untouched = series.clone();
+        let mut config = Config {
+            layout_state: crate::LayoutState::Fitted,
+            ..Config::default()
+        };
+        for item in &series[..2] {
+            let symbol = crate::legend::series_symbol_segments(item, None);
+            let label = item.label.as_ref().unwrap().segments.clone();
+            crate::legend::append_legend_entry_rich(&mut config.legend.content, symbol, label);
+        }
+        let before = config.clone();
+        config.apply_palette(&mut series, ColorCycle::DEFAULT.colors());
         let first = |s: &SeriesConfig| match &s.render_type {
             DataRenderType::Xy(xy) => xy
                 .line
@@ -912,36 +963,47 @@ mod tests {
             DataRenderType::Histogram(h) => h.bar.fill_color,
             _ => unreachable!(),
         };
-        let colors: Vec<Color> = series.iter().map(first).collect();
         let d = ColorCycle::DEFAULT;
-        assert_eq!(
-            colors,
-            [
-                d.color(0),
-                red,
-                Color::BLACK,
-                d.color(3),
-                d.color(4),
-                d.color(5),
-                d.color(6),
-            ]
-        );
+        // Every palette-coloured series takes the colour of its place, a
+        // colour set before included: the method applies the palette.
+        for i in [0, 1, 2, 3, 4, 5, 9] {
+            assert_eq!(first(&series[i]), d.color(i), "series {i}");
+        }
         // A stem's marker and stem take the same colour.
         let DataRenderType::Xy(stem) = &series[3].render_type else {
             unreachable!()
         };
         assert_eq!(stem.stem.as_ref().unwrap().color, d.color(3));
-        // Another preset cycles the same way, and a second call changes
-        // nothing it already coloured.
-        let mut again = series.clone();
-        ColorCycle::DEFAULT.color_unset(&mut again);
+        // The fill, the contour ink and the levels keep their colours.
+        for i in [6, 7, 8] {
+            assert_eq!(series[i], untouched[i], "series {i}");
+        }
+        // The legend's symbols follow the series; its text, and the rest
+        // of the chart (the layout included), stay.
+        let symbol = crate::legend::series_symbol_segments(&series[1], None);
+        assert!(
+            symbol
+                .iter()
+                .all(|seg| config.legend.content.segments.contains(seg))
+        );
+        assert_ne!(config.legend, before.legend);
+        assert_eq!(
+            Config {
+                legend: before.legend.clone(),
+                ..config.clone()
+            },
+            before
+        );
+        // A second call changes nothing; another preset cycles the same
+        // way; an empty palette changes nothing.
+        let (mut again, mut config_again) = (series.clone(), config.clone());
+        config_again.apply_palette(&mut again, d.colors());
+        assert_eq!((&again, &config_again), (&series, &config));
+        config_again.apply_palette(&mut again, &[]);
         assert_eq!(again, series);
-        let mut set2 = [
-            SeriesConfig::line("a", "x", "y"),
-            SeriesConfig::line("b", "x", "y"),
-        ];
-        ColorCycle::Set2.color_unset(&mut set2);
-        assert_eq!(first(&set2[1]), ColorCycle::Set2.color(1));
+        config_again.apply_palette(&mut again, ColorCycle::Set2.colors());
+        assert_eq!(first(&again[1]), ColorCycle::Set2.color(1));
+        assert_eq!(first(&again[9]), ColorCycle::Set2.color(9));
     }
 
     #[test]

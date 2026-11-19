@@ -36,7 +36,7 @@ Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/c
 into `src/main.rs` and run `cargo run`. It creates a headless renderer, uploads two
 columns, draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening
 a window. The example sets its ranges by hand; `Renderer::fit_ranges(&mut chart,
-&series)` fits every axis the series use to the registered columns in one call,
+&mut series)` fits every axis the series use to the registered columns in one call,
 as the [quick start](https://github.com/shim9610/figgy#quick-start) does. A chart
 starts at a `0..1` placeholder range, so a first plot needs one or the other.
 The crate root page of the API documentation shows the example after this
