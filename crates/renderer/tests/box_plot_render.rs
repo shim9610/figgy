@@ -21,7 +21,8 @@ mod harness;
 mod test_gpu;
 use harness::{
     BLUE, CYAN, DIRECTIONS, GREEN, MAGENTA, ORANGE, RED, Region, YELLOW, across_span, bbox, col,
-    is_blue, is_cyan, is_green, is_magenta, is_orange, is_red, is_yellow, pixel, slot, value_px,
+    is_blue, is_cyan, is_green, is_magenta, is_orange, is_red, is_yellow, pixel, rule_of, slot,
+    value_px,
 };
 use test_gpu::shared_device;
 
@@ -34,7 +35,7 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::{
     BOX_PLOT_RECORD, BoxSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
     LayerRef, Material, PickedDataRef, RaggedSource, RecordSource, Renderer, RendererDevice,
-    SeriesConfig,
+    RuleKind, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -776,7 +777,17 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("one per category"), "{error}");
+    assert!(
+        matches!(
+            rule_of(&error),
+            Some(RuleKind::BoxPlotRecordRows {
+                rows: 2,
+                categories: 3,
+                ..
+            })
+        ),
+        "{error}"
+    );
     // Two groups for three categories.
     upload_outliers(&mut r, "one.outliers", &ONE_OUTLIERS[..2]);
     let error = r
@@ -787,7 +798,17 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("groups"), "{error}");
+    assert!(
+        matches!(
+            rule_of(&error),
+            Some(RuleKind::BoxPlotOutlierGroups {
+                groups: 2,
+                categories: 3,
+                ..
+            })
+        ),
+        "{error}"
+    );
     upload_outliers(&mut r, "one.outliers", &ONE_OUTLIERS);
     // A record that is not uploaded.
     let missing = SeriesConfig {
@@ -802,7 +823,10 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("nowhere"), "{error}");
+    assert!(
+        matches!(rule_of(&error), Some(RuleKind::BoxPlotRecordNotResident { id }) if id == "nowhere"),
+        "{error}"
+    );
 }
 
 /// Box plot series sit on overlays and subplots with their own box groups,

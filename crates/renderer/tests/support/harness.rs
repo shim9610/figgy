@@ -610,3 +610,15 @@ pub fn output_dir() -> PathBuf {
         package_root.join(configured)
     }
 }
+
+// ── Refusals ────────────────────────────────────────────────────────────
+
+/// The rule a configuration refusal names, whether the chart or a series
+/// broke it.
+pub fn rule_of(error: &::renderer::FiggyError) -> Option<&::renderer::RuleKind> {
+    match error {
+        ::renderer::FiggyError::InvalidConfig { kind, .. }
+        | ::renderer::FiggyError::InvalidSeriesConfig { kind, .. } => Some(kind),
+        _ => None,
+    }
+}

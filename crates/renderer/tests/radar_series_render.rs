@@ -604,7 +604,10 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         .block_on(),
         "rectangular",
     );
-    assert!(reason.to_string().contains("polar"), "{reason}");
+    assert!(
+        matches!(reason, renderer::RuleKind::RadarNotPolar),
+        "{reason}"
+    );
     // A numeric angle axis.
     let mut numeric = chart(up_clockwise());
     numeric.config_mut().bottom_x.categories = None;
@@ -617,7 +620,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "numeric",
     );
     assert!(
-        reason.to_string().contains("categorical angle axis"),
+        matches!(reason, renderer::RuleKind::RadarAngleAxis),
         "{reason}"
     );
     // Arc interpolation.
@@ -649,7 +652,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "short",
     );
     assert!(
-        reason.to_string().contains("one value per category"),
+        matches!(reason, renderer::RuleKind::RadarValueCount { .. }),
         "{reason}"
     );
     // A label text per category or none.
@@ -667,7 +670,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "labels",
     );
     assert!(
-        reason.to_string().contains("one string per category"),
+        matches!(reason, renderer::RuleKind::RadarLabelTextCount),
         "{reason}"
     );
     // A polygon grid needs the categorical angle axis too.

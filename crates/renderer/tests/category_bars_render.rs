@@ -751,12 +751,13 @@ fn a_percent_stack_with_a_negative_value_is_refused() {
         {
             Err(renderer::FiggyError::InvalidSeriesConfig {
                 series_id,
-                kind: reason,
+                kind:
+                    renderer::RuleKind::PercentStackedNegative {
+                        series_id: named, ..
+                    },
             }) => {
                 assert_eq!(series_id, "two", "{scale}x");
-                assert!(reason.to_string().contains("PercentStacked"), "{reason}");
-                assert!(reason.to_string().contains("\"two\""), "{reason}");
-                assert!(reason.to_string().contains("negative"), "{reason}");
+                assert_eq!(named, "two", "{scale}x");
             }
             Err(other) => panic!("{scale}x: expected InvalidSeriesConfig, got {other:?}"),
             Ok(_) => panic!("{scale}x: a negative value in a percent stack drew"),

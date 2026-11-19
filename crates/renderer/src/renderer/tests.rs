@@ -888,45 +888,54 @@ fn pool_capacity_clamps_to_storage_and_buffer_limits() {
     assert_eq!(effective_pool_capacity(512 * mb, caps_big), 512 * mb);
 }
 
+/// Enabling picking creates the gate and reduction pipelines once, and a
+/// second enable creates nothing. The exact point pipelines and every typed
+/// data kernel wait for the first pick that dispatches them
+/// (`PickExactPipelines`, `DataPickKernels`, #327): activation compiles none
+/// of them, so a first pick never waits for kernels its chart does not use.
 #[test]
-/// Enabling picking creates the gate and reduction pipelines once; the
-/// exact point pipelines and the typed data kernels wait for the first pick
-/// that needs each (`PickExactPipelines`, `DataPickKernels`, #327).
-fn renderer_gpu_picker_activation_creates_three_pipelines_once() {
+fn renderer_gpu_picker_activation_is_idempotent_and_defers_pick_kernels() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
-    let mut events = Vec::new();
+    let mut first = Vec::new();
     renderer
-        .enable_gpu_picking_observed(&mut |event| events.push(event))
+        .enable_gpu_picking_observed(&mut |event| first.push(event))
         .unwrap();
+    let mut second = Vec::new();
     renderer
-        .enable_gpu_picking_observed(&mut |event| events.push(event))
+        .enable_gpu_picking_observed(&mut |event| second.push(event))
         .unwrap();
 
-    let pipeline_starts = events
-        .iter()
-        .filter(|event| {
-            event.scope == "renderer.gpu_pick"
-                && event.phase == crate::init::InitPhase::Started
-                && matches!(
-                    event.stage,
-                    "pick_gate_x"
-                        | "pick_gate_y"
-                        | "pick_exact_candidates"
-                        | "pick_reduce_candidates"
-                )
-        })
-        .count();
-    let setup_starts = events
-        .iter()
-        .filter(|event| {
-            event.scope == "renderer.gpu_pick"
-                && event.phase == crate::init::InitPhase::Started
-                && event.stage == "setup"
-        })
-        .count();
-    let data_pipeline_starts = events
+    let started = |events: &[crate::init::InitEvent], scope: &str, stage: &str| {
+        events
+            .iter()
+            .filter(|event| {
+                event.scope == scope
+                    && event.phase == crate::init::InitPhase::Started
+                    && event.stage == stage
+            })
+            .count()
+    };
+    for stage in [
+        "setup",
+        "pick_gate_x",
+        "pick_gate_y",
+        "pick_reduce_candidates",
+    ] {
+        assert_eq!(
+            started(&first, "renderer.gpu_pick", stage),
+            1,
+            "activation creates {stage} once"
+        );
+    }
+    assert_eq!(
+        started(&first, "renderer.gpu_pick", "pick_exact_candidates"),
+        0,
+        "the exact point pipelines wait for the first point pick"
+    );
+    assert_eq!(started(&first, "renderer.gpu_data_pick", "setup"), 1);
+    let data_kernels = first
         .iter()
         .filter(|event| {
             event.scope == "renderer.gpu_data_pick"
@@ -934,18 +943,18 @@ fn renderer_gpu_picker_activation_creates_three_pipelines_once() {
                 && event.stage != "setup"
         })
         .count();
-    let data_setup_starts = events
-        .iter()
-        .filter(|event| {
-            event.scope == "renderer.gpu_data_pick"
-                && event.phase == crate::init::InitPhase::Started
-                && event.stage == "setup"
-        })
-        .count();
-    assert_eq!(pipeline_starts, 3);
-    assert_eq!(setup_starts, 1);
-    assert_eq!(data_pipeline_starts, 0);
-    assert_eq!(data_setup_starts, 1);
+    assert_eq!(data_kernels, 0, "activation compiles no data pick kernel");
+    assert!(
+        crate::gpu_data_pick::DataPickKernel::ALL
+            .into_iter()
+            .all(|kernel| renderer.picker.data_kernels.get(kernel).is_none())
+    );
+    assert!(
+        second
+            .iter()
+            .all(|event| event.phase != crate::init::InitPhase::Started),
+        "a second enable creates nothing: {second:?}"
+    );
     assert!(renderer.picker.active.is_none());
 }
 
@@ -6899,8 +6908,10 @@ fn streamed_series_reject_value_maps() {
     for series in [colour, size] {
         assert!(matches!(
             PrepareContext::validate_stream_series(&config, &series),
-            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-                if reason.to_string().contains("streamed sources are not supported")
+            Err(FiggyError::InvalidSeriesConfig {
+                kind: crate::RuleKind::StreamedPointMaps,
+                ..
+            })
         ));
     }
     let plain = test_scatter_style();
@@ -7063,8 +7074,10 @@ fn streamed_series_reject_vectors() {
     let config = basic_errorbar_chart().config().clone();
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &vector_points_series("stream")),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedVector,
+            ..
+        })
     ));
 }
 
@@ -7091,8 +7104,10 @@ fn streamed_series_reject_category_bars() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("category bar") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedCategoryBars,
+            ..
+        })
     ));
 }
 
@@ -7121,8 +7136,10 @@ fn streamed_series_reject_box_plots() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("box plot") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedBoxPlot,
+            ..
+        })
     ));
 }
 
@@ -7153,8 +7170,10 @@ fn streamed_series_reject_range_bars() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("range bar") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedRangeBars,
+            ..
+        })
     ));
 }
 
@@ -7207,12 +7226,6 @@ fn streamed_series_reject_histograms() {
                 ),
                 "{refused:?}"
             );
-            let reason = refused.unwrap_err().to_string();
-            assert!(
-                reason.contains("histogram")
-                    && reason.contains("streamed sources are not supported"),
-                "{reason}"
-            );
         }
     }
 }
@@ -7249,8 +7262,10 @@ fn streamed_series_reject_hexagonal_grids() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("hexagonal") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedHexagonal,
+            ..
+        })
     ));
 }
 
@@ -7282,8 +7297,10 @@ fn streamed_series_reject_ternary_series() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("ternary") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedTernary,
+            ..
+        })
     ));
 }
 
@@ -7321,9 +7338,10 @@ fn streamed_series_reject_violins_and_raw_points() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("violin") && matches!(reason, crate::RuleKind::StreamedBoxPlot)
-                && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedBoxPlot,
+            ..
+        })
     ));
 }
 
@@ -7354,8 +7372,10 @@ fn streamed_series_reject_radar() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("radar") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedRadar,
+            ..
+        })
     ));
 }
 
@@ -7396,9 +7416,10 @@ fn streamed_sources_reject_streamlines() {
             }
             assert!(matches!(
                 PrepareContext::validate_stream_series(&config, &series),
-                Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-                    if reason.to_string().contains("streamline")
-                        && reason.to_string().contains("streamed sources are not supported")
+                Err(FiggyError::InvalidSeriesConfig {
+                    kind: crate::RuleKind::StreamedStreamlines,
+                    ..
+                })
             ));
         }
     }
@@ -7516,8 +7537,10 @@ fn streamed_series_reject_polar_charts() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("polar") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedPolar,
+            ..
+        })
     ));
     // A polar heatmap (#208) is held to the same rule: no new streaming.
     let field = SeriesConfig {
@@ -7544,8 +7567,10 @@ fn streamed_series_reject_polar_charts() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &field),
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-            if reason.to_string().contains("polar") && reason.to_string().contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::StreamedPolar,
+            ..
+        })
     ));
     config.set_polar(None);
     assert!(PrepareContext::validate_stream_series(&config, &series).is_ok());
@@ -7597,9 +7622,10 @@ fn streamed_series_reject_categorical_axes() {
         assert!(
             matches!(
                 PrepareContext::validate_stream_series(&config, &series),
-                Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
-                    if reason.to_string().contains("categorical")
-                        && reason.to_string().contains("streamed sources are not supported")
+                Err(FiggyError::InvalidSeriesConfig {
+                    kind: crate::RuleKind::StreamedCategoricalAxis,
+                    ..
+                })
             ),
             "axis {index}"
         );
@@ -15045,15 +15071,11 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
         offsets: &offsets,
     };
     let streamed = |result: Result<String>| match result {
-        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => {
-            assert!(
-                reason
-                    .to_string()
-                    .contains("streaming is not extended to records, ragged and triangle columns"),
-                "{reason}"
-            );
-        }
-        other => panic!("expected InvalidSeriesConfig, got {other:?}"),
+        Err(FiggyError::InvalidSeriesConfig {
+            kind: crate::RuleKind::CompositeNeedsResident { .. },
+            ..
+        }) => {}
+        other => panic!("expected CompositeNeedsResident, got {other:?}"),
     };
     let indices = Column {
         data: vec![0u32, 1, 2],
@@ -15071,13 +15093,11 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
     renderer.upsert_triangles("mesh", &triangles).unwrap();
     for id in ["box", "outliers", "mesh"] {
         match renderer.register_streamed_columns(vec![state_test_stream(id, 1)]) {
-            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => assert!(
-                reason
-                    .to_string()
-                    .contains("streaming is not extended to records, ragged and triangle columns"),
-                "{reason}"
-            ),
-            other => panic!("expected InvalidSeriesConfig for {id}, got {other:?}"),
+            Err(FiggyError::InvalidSeriesConfig {
+                kind: crate::RuleKind::StreamedCompositeId { .. },
+                ..
+            }) => {}
+            other => panic!("expected StreamedCompositeId for {id}, got {other:?}"),
         }
         assert!(renderer.logical_column(id).is_none());
     }

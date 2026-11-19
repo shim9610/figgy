@@ -838,13 +838,9 @@ fn streamed_series_reject_fill_and_step_interpolation() {
         match r.inspect_streaming_capability(id) {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id,
-                kind: reason,
+                kind: renderer::RuleKind::StreamedLineFillOrStep,
             }) => {
                 assert_eq!(series_id, "streamed", "{name}");
-                assert!(
-                    reason.to_string().contains("GPU-resident"),
-                    "{name}: {reason}"
-                );
             }
             other => panic!("{name}: expected rejection, got {:?}", other.map(|_| ())),
         }

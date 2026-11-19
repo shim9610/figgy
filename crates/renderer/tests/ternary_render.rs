@@ -13,7 +13,8 @@ mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use harness::{
-    MAGENTA, RED, col, count, is_red_soft as is_red, pixel, renderer_bgra as renderer, save,
+    MAGENTA, RED, col, count, is_red_soft as is_red, pixel, renderer_bgra as renderer, rule_of,
+    save,
 };
 
 use renderer::config::{DataSelectionsConfig, PickedDataRef, TickVisibility};
@@ -22,8 +23,8 @@ use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, FitExtent, HitMap, LayerRef, RasterImage, Renderer, ScatterShape,
-    SeriesConfig, Subplot, TernaryOptions, TernarySeries,
+    DataScatterStyleConfig, FiggyError, FitExtent, HitMap, LayerRef, RasterImage, Renderer,
+    RuleKind, ScatterShape, SeriesConfig, Subplot, TernaryOptions, TernarySeries,
 };
 
 const WIDTH: u32 = 480;
@@ -580,10 +581,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
     let err = |config: Config, series: Vec<SeriesConfig>| {
         let mut r = renderer();
         upload(&mut r, &[[1.0, 1.0, 1.0]]);
-        match r.register_chart(config, series) {
-            Ok(_) => String::from("registered"),
-            Err(e) => e.to_string(),
-        }
+        r.register_chart(config, series).err()
     };
     let plain = SeriesConfig {
         render_type: DataRenderType::Xy(renderer::data_config::XySeries {
@@ -594,10 +592,24 @@ fn registration_rejects_what_ternary_does_not_draw() {
         }),
         ..ok.clone()
     };
-    assert!(err(bare_config(), vec![plain]).contains("only ternary series"));
+    let refused = err(bare_config(), vec![plain]);
+    assert!(
+        matches!(
+            refused.as_ref().and_then(rule_of),
+            Some(RuleKind::TernaryChartSeriesKind)
+        ),
+        "{refused:?}"
+    );
     let mut rectangular = bare_config();
     rectangular.set_ternary(None);
-    assert!(err(rectangular, vec![ok.clone()]).contains("ternary chart"));
+    let refused = err(rectangular, vec![ok.clone()]);
+    assert!(
+        matches!(
+            refused.as_ref().and_then(rule_of),
+            Some(RuleKind::TernarySeriesNotTernary)
+        ),
+        "{refused:?}"
+    );
     // The axis rules are the chart's, checked where it is drawn, as a
     // polar chart's are.
     let mut unequal = bare_config();
@@ -611,7 +623,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
     assert!(
         drawn
             .as_ref()
-            .is_err_and(|e| e.to_string().contains("same")),
+            .is_err_and(|e| matches!(rule_of(e), Some(RuleKind::TernaryAxisSpan))),
         "{:?}",
         drawn.map(|_| ())
     );
@@ -624,7 +636,11 @@ fn registration_rejects_what_ternary_does_not_draw() {
         }),
         ..ok
     };
-    assert!(err(bare_config(), vec![missing]).contains("missing"));
+    let refused = err(bare_config(), vec![missing]);
+    assert!(
+        matches!(&refused, Some(FiggyError::UnknownColumn { id }) if id == "missing"),
+        "{refused:?}"
+    );
 }
 
 /// A ternary subplot draws its triangle in its own cell, beside a
@@ -1272,12 +1288,14 @@ fn a_region_alone_registers_and_a_bad_opacity_is_rejected() {
     let alone = region_series("field", region(RED, 0.5));
     assert!(r.register_chart(bare_config(), vec![alone]).is_ok());
     let bad = region_series("field", region(RED, 1.5));
-    let err = r
-        .register_chart(bare_config(), vec![bad])
-        .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
-    assert!(err.contains("0..=1"), "{err}");
+    let err = r.register_chart(bare_config(), vec![bad]).err();
+    assert!(
+        matches!(
+            err.as_ref().and_then(rule_of),
+            Some(RuleKind::TernaryRegionStyle)
+        ),
+        "{err:?}"
+    );
 }
 
 /// A region with its outline and markers in one series, beside a marker
