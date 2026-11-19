@@ -262,6 +262,11 @@ struct FontRegistry {
     fonts: ArcSwap<RegisteredFonts>,
     /// Exact font bytes to the families their first registration reported.
     /// Held only while registering, which also serializes registrations.
+    ///
+    /// This lock is the one approved exception to rule 4 (no lock-based
+    /// synchronization; maintainer decision in #160, 2026-11-15). It is held
+    /// only inside [`register_font_bytes`]; lookups read the `fonts`
+    /// `ArcSwap` snapshot and never take it.
     registered: Mutex<HashMap<&'static [u8], Vec<String>>>,
 }
 
