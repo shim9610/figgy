@@ -1,5 +1,6 @@
 //! A crowded first frame must remain renderable and editable through the shared API;
-//! an inside label too small to read is hidden, not shrunk (#357).
+//! an inside label too small to read moves outside, or on an inner
+//! sunburst ring is hidden, never shrunk (#357).
 #![cfg(not(target_arch = "wasm32"))]
 use test_gpu::BlockOn as _;
 #[path = "support/harness.rs"]
@@ -61,17 +62,19 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
         ..Default::default()
     };
     chart.format_labels();
-    // Too small for its slices, an inside label is hidden (#357): it is
-    // neither drawn nor hit, never shrunk below the readable minimum, and
-    // the first frame still prepares.
+    // Too small for its slices, an inside label moves outside with a
+    // leader (#357), never shrunk below the readable minimum: the crowded
+    // pie draws exactly as with outside labels, and every label stays in
+    // the hit map, hit, dragged and reset as an outside label is (the loop
+    // below).
     chart.labels = RadialLabels::Inside;
     for scale in [1., 2.] {
         let frame = renderer
             .prepare(&chart, (420, 280), scale)
             .expect("label spacing cannot reject the first frame");
-        assert!(radial_labels(&*frame, &chart).is_empty());
-        let mut unlabelled = chart.clone();
-        unlabelled.labels = RadialLabels::None;
+        assert_eq!(radial_labels(&*frame, &chart).len(), 16);
+        let mut outside = chart.clone();
+        outside.labels = RadialLabels::Outside;
         let export = |renderer: &mut RadialRenderer, chart: &RadialChart| {
             renderer
                 .export_rgba(chart, (420, 280), renderer::ExportOptions::document(scale))
@@ -81,7 +84,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
         };
         assert_eq!(
             export(&mut renderer, &chart),
-            export(&mut renderer, &unlabelled)
+            export(&mut renderer, &outside)
         );
         renderer.end_frame();
     }
@@ -89,6 +92,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
     // and hit; outside labels are always drawn.
     for (mode, size) in [
         (RadialLabels::Inside, (1200, 900)),
+        (RadialLabels::Inside, (420, 280)),
         (RadialLabels::Outside, (420, 280)),
     ] {
         chart.labels = mode;
@@ -98,7 +102,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
                 .prepare(&chart, size, scale)
                 .expect("label spacing cannot reject the first frame");
             assert_eq!(radial_labels(&*frame, &chart).len(), 16);
-            if mode == RadialLabels::Inside {
+            if mode == RadialLabels::Inside && size == (1200, 900) {
                 for (hit, _) in radial_labels(&*frame, &chart) {
                     let text = frame.text_bounds(&chart, hit).unwrap();
                     // Two lines at no less than 12 px.
@@ -167,4 +171,55 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             .unwrap(),
     );
     renderer.end_frame();
+}
+
+/// On an inner sunburst ring no leader reaches past the outer rings, so an
+/// inside label too small to read there is hidden (#357): not drawn and not
+/// hit. A wide segment on a thin ring at the side of the circle reads
+/// upright and keeps its size instead.
+#[test]
+fn inner_sunburst_labels_read_upright_or_hide() {
+    let mut renderer = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let node = |label: &str, value: f64, children: Vec<RadialSlice>| RadialSlice {
+        children,
+        ..RadialSlice::new(label, value, Color::from_rgb8(44, 160, 44))
+    };
+    let mut chart = RadialChart {
+        kind: RadialKind::Donut { inner_radius: 0.14 },
+        labels: RadialLabels::Inside,
+        slices: vec![
+            node(
+                "Renewables",
+                46.0,
+                vec![
+                    node("Wind", 30.0, vec![node("On", 20.0, vec![])]),
+                    node("Tiny", 1.0, vec![]),
+                ],
+            ),
+            node(
+                "Rest",
+                54.0,
+                vec![node("All", 54.0, vec![node("Leaf", 54.0, vec![])])],
+            ),
+        ],
+        ..Default::default()
+    };
+    chart.format_labels();
+    for scale in [1., 2.] {
+        let frame = renderer.prepare(&chart, (800, 600), scale).unwrap();
+        let labels = radial_labels(&*frame, &chart);
+        let target = |group, index| DecorationId::RadialLabel(RadialTarget { group, index });
+        // "Renewables" (ring 0, a 166° segment) is drawn, upright, at its
+        // full size: its box is taller than wide.
+        let renewables = labels
+            .iter()
+            .find(|(_, k)| *k == target(0, 0))
+            .expect("the wide segment keeps its label");
+        let text = frame.text_bounds(&chart, renewables.0).unwrap();
+        assert!(text.height > text.width, "{text:?}");
+        assert!(text.height >= 2.0 * chart.font_size * 0.9, "{text:?}");
+        // "Tiny" (ring 1, 1%) is hidden, so it cannot be hit.
+        assert!(labels.iter().all(|(_, k)| *k != target(1, 1)));
+        renderer.end_frame();
+    }
 }

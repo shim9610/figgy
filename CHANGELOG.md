@@ -56,14 +56,23 @@ and radar documents' `text_sizes`) are additive.
     segments and rings of a chart without a theme stay apart.
     `RadialOutline::default()` and every serde default are unchanged, so a
     document that omits the style draws as before.
-  - **Inside labels have a readable minimum.** An inside radial label is
-    no longer shrunk below 12 logical pixels (or the chart's `font_size`
-    when that is smaller). A label that would be is hidden: it is not
-    drawn, has no hit region, and the selection and hover paths skip it,
-    the same in PNG, SVG and PDF. Before, labels such as "Oil 8%" were
-    drawn at about 7 px. This applies to documents written before too: a
-    label they drew below the minimum is now hidden. A host that wants it
-    shown sets the slice's `labels` to `Outside` or gives the chart room.
+  - **Inside labels are placed where they fit, with a readable
+    minimum.** An inside radial label slides along its arc (from the
+    bisector towards the top or bottom of a wide segment) and, on a flat
+    chart, reads upright (bottom to top) when that fits it larger. Before,
+    a horizontal label on the bisector of a wide segment at the side of a
+    thin ring was held to the ring's thickness ("Renewables 46%" on the
+    inner ring of a three-ring sunburst drew at about 12 px; it now draws
+    upright at its full size). A label is never drawn below 12 logical
+    pixels (or the chart's `font_size` when that is smaller). One that
+    would be moves outside with a leader when its slice is on the
+    outermost ring or on a pie or donut: the circle makes room for it, and
+    it is hit, selected, outlined and dragged as an outside label. On an
+    inner sunburst ring no leader reaches past the outer rings, so it is
+    hidden: not drawn, no hit region. Raster, SVG, PDF and the hit map
+    read one placement. Before, labels such as "Oil 8%" were drawn at
+    about 7 px. Documents written before draw their inside labels at the
+    new places and sizes.
   - **Grotrian ionisation-limit labels.** A limit's label sits above its
     line, right-aligned. When that would leave the plot (a limit near the
     top of the energy range), it is placed just below the line, so it is
@@ -73,9 +82,10 @@ and radar documents' `text_sizes`) are additive.
     `the_host_default_separates_segments_and_rings`,
     `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
     `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`) and
-    `crowded_radial_labels_prepare_and_remain_in_the_hit_map`
-    (`tests/radial_label_layout.rs`, now checking hidden labels and the
-    minimum size).
+    `crowded_radial_labels_prepare_and_remain_in_the_hit_map` (crowded
+    inside labels move outside and stay hit and draggable at 1x and 2x)
+    and `inner_sunburst_labels_read_upright_or_hide`
+    (`tests/radial_label_layout.rs`).
   - **Migration:** a host that relied on `RadialChart::default()` drawing
     no outline sets `style.outline = RadialOutline::default()`.
 - **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),
