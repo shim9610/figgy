@@ -11,6 +11,7 @@ use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
+use renderer::format::LabelFormat;
 use renderer::layout::{Side, auto_layout};
 use renderer::select::AxisTitleElement;
 use renderer::{
@@ -89,7 +90,10 @@ fn title_clears_labels(config: &Config) -> bool {
 }
 
 /// The audit's chart on a `Fixed` config: the documented default margins,
-/// drawn as stored.
+/// drawn as stored. Its y labels are written in `Decimal`, as the audit's
+/// were (`-0.600`), so they are wide enough to meet the y title at those
+/// margins whatever format the helpers choose for a new chart (#370 made
+/// that `Auto`, which writes `-0.6`).
 fn audit_chart_fixed(r: &mut Renderer) -> (Chart, [SeriesConfig; 1]) {
     let config = Config {
         layout_state: LayoutState::Fixed,
@@ -104,7 +108,8 @@ fn audit_chart_fixed(r: &mut Renderer) -> (Chart, [SeriesConfig; 1]) {
         chart_title: documented.chart_title,
         ..config
     };
-    audit_chart_in(r, Chart::new(config))
+    let (chart, series) = audit_chart_in(r, Chart::new(config));
+    (chart.with_label_format(LabelFormat::Decimal), series)
 }
 
 #[test]
