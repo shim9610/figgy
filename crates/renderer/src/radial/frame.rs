@@ -38,7 +38,10 @@ pub(super) fn frame_globals(
 
 /// The clear colour of an export over `background`: transparent for
 /// [`RadialExportBackground::Transparent`], the options' own otherwise.
-pub(super) fn export_clear(clear: crate::Color, background: RadialExportBackground) -> crate::Color {
+pub(super) fn export_clear(
+    clear: crate::Color,
+    background: RadialExportBackground,
+) -> crate::Color {
     match background {
         RadialExportBackground::Transparent => crate::Color::new(0.0, 0.0, 0.0, 0.0),
         _ => clear,

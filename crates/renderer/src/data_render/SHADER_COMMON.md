@@ -968,7 +968,7 @@ it: its dashes pick as a solid stroke and its
 sketch wobble as the envelope `±amplitude_px`. In a dash gap the hit distance
 runs along the stroke to the nearer dash of the same piece. A Milkyway
 ribbon is never dashed; its strip and the star field scattered along it pick
-as one rectangle of the larger half extent (`gpu_pick/engine.rs::
+as one rectangle of the larger half extent (`gpu_pick/engine/query.rs::
 milkyway_line_half_extent`), since the star positions are hashed per slot.
 
 CPU twin: `cpu_twin::line_segment_pick` (precise strokes and dashes) with
