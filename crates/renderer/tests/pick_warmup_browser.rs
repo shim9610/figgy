@@ -21,6 +21,8 @@ let restore = [];
 let exact = 0;
 let settled = 0;
 export function begin_exact_count() {
+  // A test that panicked left its wrapper in place: remove it first.
+  end_exact_count();
   exact = 0;
   settled = 0;
   const previous = GPUDevice.prototype.createComputePipelineAsync;
@@ -111,15 +113,33 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
     let _counting = Counting;
     // As a `FiggyChart` creates it: the render pipelines compile in the
     // background on the renderer's queue (#299).
-    let mut renderer = Renderer::for_window_with_shader_set_async_observed(
-        wgpu::SurfaceTarget::Canvas(chart_canvas().unchecked_into()),
-        (480, 360),
-        1024 * 1024,
-        renderer::ShaderSet::Basic,
-        &mut |_| {},
-    )
-    .await
-    .expect("browser renderer");
+    // SwiftShader sometimes reports no adapter right after an earlier
+    // renderer of the page was dropped; ask again after a pause.
+    let mut attempt = 0;
+    let mut renderer = loop {
+        match Renderer::for_window_with_shader_set_async_observed(
+            wgpu::SurfaceTarget::Canvas(chart_canvas().unchecked_into()),
+            (480, 360),
+            1024 * 1024,
+            renderer::ShaderSet::Basic,
+            &mut |_| {},
+        )
+        .await
+        {
+            Ok(renderer) => break renderer,
+            Err(error) if attempt < 3 => {
+                report(&format!("PICK_WARMUP renderer retry after {error:?}"));
+                attempt += 1;
+                if wasm_bindgen_futures::JsFuture::from(sleep(1_000.0))
+                    .await
+                    .is_err()
+                {
+                    panic!("sleep rejected");
+                }
+            }
+            Err(error) => panic!("browser renderer: {error:?}"),
+        }
+    };
     for (id, data) in [
         ("cat", vec![0.0, 1.0, 2.0, 3.0, 4.0]),
         ("val", vec![5.0, 8.0, 3.0, 9.0, 6.0]),
@@ -163,6 +183,9 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
     let mut waited = 0.0;
     let drawn = now_ms();
     let mut complete_ms = renderer.frame_complete().then_some(0.0);
+    // The slowest idle frame: the one that enables the picker and creates
+    // the warmed pipelines included.
+    let mut slowest_frame_ms: f64 = 0.0;
     while waited < idle_ms {
         let step = (idle_ms - waited).min(500.0);
         if wasm_bindgen_futures::JsFuture::from(sleep(step))
@@ -172,6 +195,7 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
             panic!("sleep rejected");
         }
         waited += step;
+        let frame_start = now_ms();
         renderer
             .draw_registered(
                 Color::WHITE,
@@ -181,6 +205,7 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
                 }],
             )
             .unwrap();
+        slowest_frame_ms = slowest_frame_ms.max(now_ms() - frame_start);
         if complete_ms.is_none() && renderer.frame_complete() {
             complete_ms = Some(now_ms() - drawn);
         }
@@ -207,6 +232,7 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
     report(&format!(
         "PICK_WARMUP idle_ms={idle_ms} exact_compiled_before_pick={warmed} \
          pick_exact_calls={issued_by_pick} frame_complete_ms={complete_ms:?} \
+         slowest_idle_frame_ms={slowest_frame_ms:.0} \
          enable_ms={:.0} exact_ms={:.0} readback_ms={:.0} first_pick_ms={:.0}",
         enabled - start,
         compiled - enabled,

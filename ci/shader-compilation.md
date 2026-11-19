@@ -302,7 +302,10 @@ compiles resolve:
   with a queue no longer re-creates a ready picker's gate and reduce pipelines
   synchronously on the page's thread: the picker goes back to not enabled, the next
   frame's warm-up schedules the full set's and enables it when they resolve, and an
-  enable before that waits for them. Native renderers re-create it as before.
+  enable before that waits for them. A wasm Rust host on such a renderer therefore
+  calls `enable_gpu_picking_async` before picking after a shader-set switch, as
+  `FiggyChart` does: a synchronous pick right after it reports `PickerDisabled`.
+  Native renderers re-create it as before.
 
 First pick of a radar chart (markers and a fill) in headless Chromium 157 with
 SwiftShader, 4-core Linux container, on a renderer whose background render compiles

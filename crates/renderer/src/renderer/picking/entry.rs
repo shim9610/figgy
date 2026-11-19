@@ -14,6 +14,13 @@ impl Renderer {
     ///
     /// This is idempotent. The immutable compute pipeline bundle is created
     /// only by the first successful call; chart registries remain lazy.
+    ///
+    /// On a browser renderer that compiles in the background
+    /// ([`Self::for_window_with_shader_set_async_observed`]), switching to
+    /// the full shaders (a chart that needs them) leaves the picker not
+    /// enabled until the new set's pick pipelines have compiled (#363), so
+    /// a host picks with [`Self::enable_gpu_picking_async`] first, as
+    /// `FiggyChart` does, rather than relying on an earlier enable.
     pub fn enable_gpu_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let result = self.enable_gpu_picking_unreported();
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
@@ -62,6 +69,12 @@ impl Renderer {
         )
     }
 
+    /// [`Self::enable_gpu_picking`] through the browser's async compile
+    /// API. On a renderer that compiles in the background it waits for the
+    /// gate and reduce compiles a chart's pick warm-up scheduled (#363).
+    /// Call it before each pick on such a renderer: after a switch to the
+    /// full shaders the picker is not enabled until it runs, or until a
+    /// frame enables it once the new set's pipelines have compiled.
     pub async fn enable_gpu_picking_async(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
