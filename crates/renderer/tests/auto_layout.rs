@@ -223,11 +223,13 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
     let default = renderer::default::default_config();
     let out = laid_out(&default);
     assert_eq!(laid_out(&out), out, "default: not idempotent");
+    // The x bands hold the labels' unhinted ink (#357): a pixel more than
+    // the hinted ink took (10 and 25 px), the bands being whole pixels.
     assert_eq!(
         layout_changes(&default, &out),
         [
-            "top_x.out_margin 8 -> 10",
-            "bottom_x.out_margin 80 -> 25",
+            "top_x.out_margin 8 -> 11",
+            "bottom_x.out_margin 80 -> 26",
             "left_y.out_margin 110 -> 49",
             "right_y.out_margin 32 -> 22",
             "chart_title.top_margin 32 -> 0",
@@ -248,8 +250,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "default",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 26",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "chart_title.top_margin 32 -> 0",
@@ -271,8 +273,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "series",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 26",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "colorbar.axis.out_margin 60 -> 55",

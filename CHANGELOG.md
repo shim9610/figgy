@@ -118,21 +118,34 @@ and radar documents' `text_sizes`) are additive.
   Migration: an exhaustive literal of `CategoricalChart`, `BoxPlotChart`
   or `RadarChart` names `text_sizes` (`None` keeps the former sizes).
 
-- **Scripts are drawn without hinting** ([#357](https://github.com/shim9610/figgy/issues/357)).
-  Appearance only. A glyph at a script position (a superscript or
-  subscript segment, a Unicode script character, or a math leaf in script
-  or scriptscript style) is no longer grid-fitted; base text up to 32 px
-  keeps its hinting. One decision (`glyph_hinting`) serves measurement,
-  raster, SVG and PDF outlines alike, so hit regions and drags stay exact.
-  Script sizes are fractions of the base size and grid fitting snapped
-  them differently at each scale, so a 2x export was not its 1x drawing
-  scaled; now it is (decoration_oracle I5). Scripts render slightly
-  softer: on the affected labels the mean colour difference over the
-  inked pixels is at most 25 (of 255) and the 99th percentile at most 186,
-  the script edges moving within a pixel. Advances, and so every layout,
-  are unchanged. The segment font sizes of category labels and group
-  headers now scale with an export or display scale as every other rich
-  text does.
+- **Text looks the same at every scale** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  A 2x (or any scale) export or display is the 1x drawing scaled; before,
+  text was hinted or not by its pixel size, and the layout read the
+  hinted outlines, so the same label sat and snapped differently at 1x
+  and 2x. Appearance only; no value, data position or pick moves.
+  - Hinting is decided once per glyph from its logical size: text up to
+    32 logical pixels is hinted at every scale, larger text at none, and
+    a glyph at a script position (a superscript or subscript segment, a
+    Unicode script character, a math leaf in script style) is never
+    hinted. One decision (`glyph_hinting`) serves the canvas, SVG and PDF.
+  - The layout measures unhinted outlines (advances, ascent, descent and
+    ink extents), so label, title and band positions do not depend on the
+    scale; hinting changes pixels only.
+  - The math layout keeps script shifts and fraction, radical, operator
+    and limit offsets fractional instead of rounding them to device
+    pixels.
+  - The segment font sizes of category labels and group headers now scale
+    with an export or display scale, as every other rich text does.
+  - What moves in pixels, documents written by earlier releases included:
+    text in exports and displays above 1x is now hinted up to 32 logical
+    pixels, scripts render slightly softer (on the affected labels a mean
+    colour difference over the inked pixels of at most 25 of 255, the 99th
+    percentile at most 186, the script edges moving within a pixel), and
+    labels whose position follows their ink extents move by a fraction of
+    a pixel. A stored layout is drawn as stored; a layout fitted again
+    (`fit_layout`, a `Fitted` chart's edit) may take a pixel more where a
+    band holds unhinted ink (the default chart's x bands are 11 and 26 px
+    instead of 10 and 25 px).
 - **Grotrian (energy-level) default look** ([#357](https://github.com/shim9610/figgy/issues/357) item 10).
   Appearance only; values, positions and picks are unchanged, and a saved
   document draws as it did.
