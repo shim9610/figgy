@@ -983,6 +983,7 @@ mod tests {
             head_width_px: 6.0,
             min_length_px: 0.0,
             color_map: None,
+            auto_scale: false,
         }
     }
 

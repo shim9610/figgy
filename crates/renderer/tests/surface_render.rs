@@ -1511,6 +1511,7 @@ fn arrows_3d(
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
         }),
     )

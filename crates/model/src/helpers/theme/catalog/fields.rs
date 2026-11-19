@@ -10,8 +10,17 @@ use crate::colormap::ColorMap;
 use crate::material::Material;
 use crate::preset::AxisPreset;
 
-/// `family`'s member for `kind`.
+/// `family`'s member for `kind`. The designed field themes choose a
+/// label ink for their maps and draw the labels without the documented
+/// plate behind them (#357).
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
+    let mut theme = designed(family, kind);
+    theme.series.fields.contour_label_background = None;
+    theme
+}
+
+/// `family`'s member for `kind` as designed.
+fn designed(family: ThemeFamily, kind: ChartKind) -> Theme {
     match (kind, family) {
         (ChartKind::Field, ThemeFamily::Gallery) => field_gallery(),
         (ChartKind::Field, ThemeFamily::WarmPaper) => field_warm_paper(),
@@ -37,13 +46,16 @@ pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
 }
 
 /// The gallery's contour field: Viridis under white isolines with white
-/// labels, no grid, and a colourbar titled like an axis.
+/// labels, no grid, and a colourbar titled like an axis. Isolines without
+/// a fill are drawn on the white paper, in the gallery's ink (#357).
 fn field_gallery() -> Theme {
     let mut theme = covered(gallery(ChartKind::Field));
     theme.chrome.colorbar.title_size = theme.chrome.axis_title_size;
     let fields = &mut theme.series.fields;
     fields.colormap = ColorMap::Viridis;
     fields.contour_color = Some(alpha(Color::WHITE, 0.9));
+    fields.unfilled_contour_color = Some(alpha(GALLERY_INK, 0.85));
+    fields.unfilled_contour_label_color = Some(GALLERY_INK);
     fields.contour_width = 1.3;
     fields.contour_label_color = Color::WHITE;
     fields.contour_label_size = 13.0;
@@ -425,6 +437,11 @@ fn tri_mesh(family: ThemeFamily) -> Theme {
     fields.colormap = colormap(family);
     fields.contour_width = 1.2;
     fields.contour_label_color = ink;
+    // The gallery's white isolines vanish into its paper without a fill
+    // under them (#357).
+    if family == ThemeFamily::Gallery {
+        fields.unfilled_contour_color = Some(alpha(GALLERY_INK, 0.6));
+    }
     theme
 }
 

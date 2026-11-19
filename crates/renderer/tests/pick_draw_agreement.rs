@@ -1532,6 +1532,7 @@ fn arrows(
                 head_width_px: 8.0,
                 min_length_px: 6.0,
                 color_map: None,
+                auto_scale: false,
             },
         }),
     }
@@ -1702,6 +1703,7 @@ fn grid_vectors_pick_the_arrow_they_draw() {
                     head_width_px: 7.0,
                     min_length_px: 0.0,
                     color_map: None,
+                    auto_scale: false,
                 },
             }),
         }];
@@ -1810,6 +1812,7 @@ fn arrows_ringed() -> SeriesConfig {
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
         }),
     }

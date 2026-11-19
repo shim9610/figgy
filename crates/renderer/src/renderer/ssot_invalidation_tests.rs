@@ -2985,6 +2985,7 @@ fn vector_3d_edits_refresh_first_frame_without_reupload() {
             head_width_px: 7.0,
             min_length_px: 0.0,
             color_map: None,
+            auto_scale: false,
         },
     });
     let add_columns = |r: &mut Renderer| {
