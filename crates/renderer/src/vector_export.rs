@@ -101,9 +101,18 @@ pub(crate) trait VectorOut {
     /// clockwise about a centre) when given: glyphs and rules until
     /// [`Self::end_text`] are relative to `origin`.
     fn begin_text(&mut self, origin: [f32; 2], rotation: Option<(f32, [f32; 2])>);
-    /// The outline of glyph `glyph` of `font` at `size`, its pen at `pen`
-    /// relative to the text origin.
-    fn glyph(&mut self, font: FontRef<'static>, glyph: u16, size: f32, pen: [f32; 2], color: Color);
+    /// The outline of glyph `glyph` of `font` at `size`, hinted when `hint`
+    /// says so (the raster's [`crate::text_render::glyph_hinting`]), its pen
+    /// at `pen` relative to the text origin.
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        hint: bool,
+        pen: [f32; 2],
+        color: Color,
+    );
     fn end_text(&mut self);
     /// Clip what follows, until [`Self::pop_clip`], to `rect`.
     fn push_clip(&mut self, rect: Rect);
@@ -624,11 +633,12 @@ impl GlyphSink for VectorSink<'_> {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
+        hint: bool,
         pen: (f32, f32),
         color: &Color,
     ) {
         let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
-        self.out.glyph(font, glyph, size, pen, *color);
+        self.out.glyph(font, glyph, size, hint, pen, *color);
     }
 
     fn rect(&mut self, r: RectF, color: &Color) {
@@ -1662,7 +1672,15 @@ impl GlyphSink for PartsTwin<'_> {
         true
     }
 
-    fn glyph(&mut self, _: FontRef<'static>, _: u16, size: f32, pen: (f32, f32), _: &Color) {
+    fn glyph(
+        &mut self,
+        _: FontRef<'static>,
+        _: u16,
+        size: f32,
+        _: bool,
+        pen: (f32, f32),
+        _: &Color,
+    ) {
         let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
         if pen[0].is_finite() && pen[1].is_finite() && size.is_finite() && size > 0.0 {
             (self.out)(WrittenPart::Glyph(pen));

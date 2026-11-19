@@ -118,6 +118,21 @@ and radar documents' `text_sizes`) are additive.
   Migration: an exhaustive literal of `CategoricalChart`, `BoxPlotChart`
   or `RadarChart` names `text_sizes` (`None` keeps the former sizes).
 
+- **Scripts are drawn without hinting** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  Appearance only. A glyph at a script position (a superscript or
+  subscript segment, a Unicode script character, or a math leaf in script
+  or scriptscript style) is no longer grid-fitted; base text up to 32 px
+  keeps its hinting. One decision (`glyph_hinting`) serves measurement,
+  raster, SVG and PDF outlines alike, so hit regions and drags stay exact.
+  Script sizes are fractions of the base size and grid fitting snapped
+  them differently at each scale, so a 2x export was not its 1x drawing
+  scaled; now it is (decoration_oracle I5). Scripts render slightly
+  softer: on the affected labels the mean colour difference over the
+  inked pixels is at most 25 (of 255) and the 99th percentile at most 186,
+  the script edges moving within a pixel. Advances, and so every layout,
+  are unchanged. The segment font sizes of category labels and group
+  headers now scale with an export or display scale as every other rich
+  text does.
 - **Grotrian (energy-level) default look** ([#357](https://github.com/shim9610/figgy/issues/357) item 10).
   Appearance only; values, positions and picks are unchanged, and a saved
   document draws as it did.

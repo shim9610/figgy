@@ -216,6 +216,9 @@ struct Shape {
     stretched: Stretched,
     horizontal: bool,
     size: f32,
+    /// Whether its glyphs are hinted ([`super::glyph_hinting`]): not in a
+    /// script style (#357).
+    hint: bool,
     ink: MBox,
 }
 
@@ -602,20 +605,23 @@ impl Formula<'_> {
                 Some(f) => f * size,
                 None => {
                     let face = self.face.font;
-                    glyph_extents_id(face, size, self.face.glyph(' ')).advance
+                    let hint = super::glyph_hinting(face, size, style.small());
+                    glyph_extents_id(face, size, self.face.glyph(' '), hint).advance
                 }
             };
             return MBox::empty(width);
         }
         let (font, glyph, math) = self.leaf_glyph(seg, ch, style);
-        let g = glyph_extents_id(font, size, glyph);
+        // A leaf in a script style is a script: not hinted (#357).
+        let hint = super::glyph_hinting(font, size, style.small());
+        let g = glyph_extents_id(font, size, glyph, hint);
         let (width, inset) = match seg.field_em {
             Some(f) => (f * size, (f * size - g.advance) * 0.5),
             None => (g.advance, 0.0),
         };
         if sink.paints() {
             let color = seg.color.unwrap_or(self.rt.color);
-            sink.glyph(font, glyph, size, (pen.0 + inset, pen.1), &color);
+            sink.glyph(font, glyph, size, hint, (pen.0 + inset, pen.1), &color);
         }
         let mut b = MBox::empty(width);
         if g.ink_left != g.ink_right || g.ink_top != g.ink_bottom {
@@ -680,13 +686,14 @@ impl Formula<'_> {
         )
     }
 
-    /// The shape of `stretched` at `size`.
-    fn shape(&self, stretched: Stretched, horizontal: bool, size: f32) -> Shape {
+    /// The shape of `stretched` at `size`, in `style`.
+    fn shape(&self, stretched: Stretched, horizontal: bool, size: f32, style: Style) -> Shape {
         let font = self.face.font;
+        let hint = super::glyph_hinting(font, size, style.small());
         let mut ink = MBox::empty(0.0);
         match &stretched {
             &Stretched::Glyph(glyph) => {
-                let g = glyph_extents_id(font, size, glyph);
+                let g = glyph_extents_id(font, size, glyph, hint);
                 ink.width = g.advance;
                 if g.ink_left != g.ink_right || g.ink_top != g.ink_bottom {
                     ink.ink_rect(g.ink_left, g.ink_top, g.ink_right, g.ink_bottom);
@@ -697,7 +704,7 @@ impl Formula<'_> {
             }
             Stretched::Assembly(a) => {
                 a.for_each_part(|part, offset| {
-                    let g = glyph_extents_id(font, size, part.glyph_id().to_u16());
+                    let g = glyph_extents_id(font, size, part.glyph_id().to_u16(), hint);
                     let o = self.face.px(offset, size);
                     let (dx, dy) = if horizontal { (o, 0.0) } else { (0.0, -o) };
                     ink.width = ink.width.max(if horizontal { 0.0 } else { g.advance });
@@ -723,6 +730,7 @@ impl Formula<'_> {
             stretched,
             horizontal,
             size,
+            hint,
             ink,
         }
     }
@@ -734,7 +742,7 @@ impl Formula<'_> {
         }
         let font = self.face.font;
         match &shape.stretched {
-            Stretched::Glyph(glyph) => sink.glyph(font, *glyph, shape.size, pen, color),
+            Stretched::Glyph(glyph) => sink.glyph(font, *glyph, shape.size, shape.hint, pen, color),
             Stretched::Assembly(a) => a.for_each_part(|part, offset| {
                 let o = self.face.px(offset, shape.size);
                 let at = if shape.horizontal {
@@ -742,13 +750,21 @@ impl Formula<'_> {
                 } else {
                     (pen.0, pen.1 - o)
                 };
-                sink.glyph(font, part.glyph_id().to_u16(), shape.size, at, color);
+                let glyph = part.glyph_id().to_u16();
+                sink.glyph(font, glyph, shape.size, shape.hint, at, color);
             }),
         }
     }
 
-    /// The glyph of `c` stretched to `target` pixels at `size`.
-    fn stretch(&self, c: char, target: f32, horizontal: bool, size: f32) -> Option<Shape> {
+    /// The glyph of `c` stretched to `target` pixels at `size`, in `style`.
+    fn stretch(
+        &self,
+        c: char,
+        target: f32,
+        horizontal: bool,
+        size: f32,
+        style: Style,
+    ) -> Option<Shape> {
         let glyph = self.face.glyph(c);
         if glyph == 0 {
             return None;
@@ -756,7 +772,7 @@ impl Formula<'_> {
         let stretched = self
             .face
             .stretch(glyph, self.face.units(target, size), horizontal);
-        Some(self.shape(stretched, horizontal, size))
+        Some(self.shape(stretched, horizontal, size, style))
     }
 
     /// A fraction or binomial: numerator over denominator, a bar on the
@@ -851,8 +867,8 @@ impl Formula<'_> {
         let (open, close) = if binom {
             let target = 2.0 * (u + num.ascent - axis).max(d + den.descent + axis);
             (
-                self.stretch('(', target, false, size),
-                self.stretch(')', target, false, size),
+                self.stretch('(', target, false, size, style),
+                self.stretch(')', target, false, size, style),
             )
         } else {
             (None, None)
@@ -949,7 +965,7 @@ impl Formula<'_> {
         };
         let target = body_top + body_bottom + gap + thickness;
         let symbol = if symbol == '\u{200B}' { '√' } else { symbol };
-        let Some(shape) = self.stretch(symbol, target, false, size) else {
+        let Some(shape) = self.stretch(symbol, target, false, size, at.style) else {
             return self.row(body_r, body_style, at.base, sink, at.pen, None);
         };
         let (glyph_top, glyph_bottom) = self.vertical_extent(&shape);
@@ -1206,7 +1222,7 @@ impl Formula<'_> {
         } else {
             Stretched::Glyph(glyph)
         };
-        let shape = self.shape(stretched, false, size);
+        let shape = self.shape(stretched, false, size, at.style);
         let dy = self.axis_shift(&shape, size);
         let mut op = MBox::empty(shape.ink.width);
         op.add(&shape.ink, 0.0, dy);
@@ -1325,7 +1341,7 @@ impl Formula<'_> {
         if c == '.' {
             return MBox::empty(NULL_DELIMITER_EM * size);
         }
-        let Some(shape) = self.stretch(c, target, false, size) else {
+        let Some(shape) = self.stretch(c, target, false, size, at.style) else {
             let leaf = RichSegment {
                 char_set: CharSet::Math,
                 color: Some(at.color),
@@ -1368,9 +1384,9 @@ impl Formula<'_> {
         let Some(shape) = (match kind {
             AccentKind::Fixed => {
                 let glyph = self.face.glyph(mark);
-                (glyph != 0).then(|| self.shape(Stretched::Glyph(glyph), true, size))
+                (glyph != 0).then(|| self.shape(Stretched::Glyph(glyph), true, size, at.style))
             }
-            AccentKind::Wide => self.stretch(mark, body.width, true, size),
+            AccentKind::Wide => self.stretch(mark, body.width, true, size, at.style),
         }) else {
             return out;
         };
@@ -1449,7 +1465,9 @@ impl Formula<'_> {
             piece_w = piece_w.max(label.width + ARROW_PADDING_EM * size);
         }
         let shape = match kind {
-            OverUnder::Brace | OverUnder::Arrow => self.stretch(symbol, piece_w, true, size),
+            OverUnder::Brace | OverUnder::Arrow => {
+                self.stretch(symbol, piece_w, true, size, at.style)
+            }
             _ => None,
         };
         let width = body
@@ -1873,7 +1891,15 @@ mod tests {
         fn paints(&self) -> bool {
             true
         }
-        fn glyph(&mut self, _: FontRef<'static>, glyph: u16, _: f32, _: (f32, f32), _: &Color) {
+        fn glyph(
+            &mut self,
+            _: FontRef<'static>,
+            glyph: u16,
+            _: f32,
+            _: bool,
+            _: (f32, f32),
+            _: &Color,
+        ) {
             self.0.push(glyph);
         }
         fn rect(&mut self, _: RectF, _: &Color) {}
@@ -1930,9 +1956,13 @@ mod tests {
                 .find(|&y| (0..w).any(|x| rgba[((y * w + x) * 4 + 3) as usize] > 0))
                 .expect("a second line");
             let gap = next_top as f32 - limit_bottom - 1.0;
-            // Two pixels of slack: the second baseline snaps to the pixel
-            // grid and anti-aliasing reaches past the outline's bounds.
-            assert!(gap >= size * LINE_SKIP_EM - 2.0, "{policy:?}: gap {gap}");
+            // Three pixels of slack: the second baseline snaps to the pixel
+            // grid, and anti-aliasing reaches past the outline's bounds at
+            // both edges. The limits are scripts, drawn unhinted (#357), so
+            // their bounds are fractional and their anti-aliasing reaches
+            // one row further than a grid-fitted outline's; the measured line
+            // skip itself is unchanged.
+            assert!(gap >= size * LINE_SKIP_EM - 3.0, "{policy:?}: gap {gap}");
         }
     }
 
