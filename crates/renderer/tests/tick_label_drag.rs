@@ -301,6 +301,9 @@ fn wide_label_config(colorbar: bool) -> Config {
     if let Some(bar) = cfg.colorbar.as_mut() {
         bar.axis.min = -0.000_25;
         bar.axis.max = 1_250_000.0;
+        // Wide plain labels: the helpers' `Auto` format (#357) would write
+        // this range as powers of ten.
+        bar.axis.label_style.format = renderer::format::LabelFormat::Decimal;
     }
     cfg
 }

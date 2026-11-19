@@ -427,6 +427,12 @@ impl Default for crate::format::PlainNumberFormat {
     }
 }
 
+impl Default for crate::format::AutoNumberFormat {
+    fn default() -> Self {
+        crate::defaults::auto_number_format()
+    }
+}
+
 impl Default for crate::format::TimestampLabelFormat {
     fn default() -> Self {
         crate::defaults::timestamp_label_format()
@@ -625,7 +631,7 @@ impl Default for crate::view3d::View3d {
 
 impl Default for crate::config::Config {
     fn default() -> Self {
-        crate::defaults::config()
+        crate::default::default_config()
     }
 }
 
@@ -649,7 +655,7 @@ impl Default for crate::config::GridOptions {
 
 impl Default for crate::config::ColorBarOptions {
     fn default() -> Self {
-        crate::defaults::color_bar_options()
+        crate::default::default_colorbar_options()
     }
 }
 
