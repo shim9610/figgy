@@ -481,7 +481,7 @@ use renderer::{
 
 fn prepare_after_series_edit(
     renderer: &mut Renderer,
-    chart: &Chart,
+    chart: &mut Chart,
     view: &mut ChartView,
     configs: &[SeriesConfig],
 ) -> Result<(Vec<ChartStyle>, PreparedFrame), FiggyError> {
@@ -491,8 +491,9 @@ fn prepare_after_series_edit(
     let series: Vec<_> = configs.iter().zip(&styles)
         .map(|(config, style)| Series { config, style })
         .collect();
-    // Redraws the view's raster first when the chart changed since it was
-    // drawn.
+    // Fits a layout waiting for its fit and writes the fit into the chart
+    // (#357), then redraws the view's raster first when the chart changed
+    // since it was drawn.
     let frame = renderer.prepare(&mut [ChartDrawItem {
         view,
         chart,
