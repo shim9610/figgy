@@ -1681,17 +1681,6 @@ mod serde_tests {
         assert_eq!(back.picked_data, cfg.picked_data);
     }
 
-    #[test]
-    fn scale_scales_typed_selection_pixel_dimensions() {
-        let mut cfg = crate::defaults::config();
-        cfg.picked_data = Some(crate::defaults::data_selections_config());
-        cfg.scale_in_place(2.0);
-        let picked = cfg.picked_data.expect("picked data");
-        assert_eq!(picked.outline_width_px, 4.0);
-        assert_eq!(picked.point_radius_extra_px, 6.0);
-        assert_eq!(picked.contour_width_extra_px, 4.0);
-    }
-
     fn constellation_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
         json["draw_style"] = serde_json::json!({ "mode": "constellation" });

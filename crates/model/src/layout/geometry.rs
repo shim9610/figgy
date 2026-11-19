@@ -493,6 +493,7 @@ mod tests {
 
     #[test]
     fn fitting_skips_hidden_empty_and_unusable_titles() {
+        let default_band = crate::defaults::config().chart_title.top_margin;
         let mut empty = crate::defaults::config();
         assert!(!fit_chart_title_margin(&mut empty, &LineMeasure));
         assert_eq!(empty, crate::defaults::config());
@@ -500,7 +501,7 @@ mod tests {
         let mut hidden = titled("one\ntwo\nthree");
         hidden.chart_title.visible = false;
         assert!(!fit_chart_title_margin(&mut hidden, &LineMeasure));
-        assert_eq!(hidden.chart_title.top_margin, 32.0);
+        assert_eq!(hidden.chart_title.top_margin, default_band);
 
         // A non-finite margin is left for validation to report.
         let mut nan = titled("one\ntwo\nthree");
@@ -514,7 +515,7 @@ mod tests {
         short.chart_area.0.height = 300;
         assert!(short.data_area().is_ok());
         assert!(!fit_chart_title_margin(&mut short, &LineMeasure));
-        assert_eq!(short.chart_title.top_margin, 32.0);
+        assert_eq!(short.chart_title.top_margin, default_band);
         assert!(short.data_area().is_ok());
     }
 
