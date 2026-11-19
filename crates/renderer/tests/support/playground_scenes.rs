@@ -503,10 +503,7 @@ pub fn export_scene<T>(
     export: impl FnOnce(&mut Renderer, ExportSource<'_>) -> Result<T, FiggyError>,
 ) -> Result<T, FiggyError> {
     if monotonic.is_empty() {
-        return export(
-            r,
-            ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
-        );
+        return export(r, ExportSource::chart(chart, series));
     }
     let views: Vec<Vec<&[f64]>> = monotonic
         .iter()
@@ -681,29 +678,26 @@ pub fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
 /// The starting model of Cartesian scene `kind`, its columns uploaded to
 /// `r`. The large-data scene generates `big_data_points` samples.
 ///
-/// The scene is the document as its first default draw leaves it: a layout
-/// waiting for its fit (`LayoutState::NeedsFit`, which a document reader
-/// gives a document with text sizes, #357) is fitted here, through
-/// `Chart::fit_pending_layout` as `Renderer::prepare` and every default
-/// export fit it. Every check then reads the layout the renderer draws: the
-/// rasters, the hit map and the parts a vector export writes are measured
-/// on the config the export draws, not on the layout before its fit.
+/// The scene is the document as its chart object holds it: a layout the
+/// chart keeps fitted (`LayoutState::Fitted`, which a document reader gives
+/// a document with text sizes and the default parallel config sets, #357)
+/// is fitted when the chart is created (`Chart::new`), and every check
+/// reads that layout: the rasters, the hit map and the parts a vector
+/// export writes are measured on the config the export draws.
 pub fn build(
     r: &mut Renderer,
     kind: SceneKind,
     big_data_points: usize,
 ) -> Result<CartesianScene, FiggyError> {
-    let mut scene = build_as_stored(r, kind, big_data_points)?;
-    if scene.config.layout_state.needs_fit() {
-        let mut chart = renderer::Chart::new(scene.config);
-        chart.fit_pending_layout();
-        scene.config = chart.config().clone();
+    let mut scene = build_scene(r, kind, big_data_points)?;
+    if scene.config.layout_state.is_fitted() {
+        scene.config = renderer::Chart::new(scene.config).config().clone();
     }
     Ok(scene)
 }
 
-/// [`build`] before a layout waiting for its fit is fitted.
-fn build_as_stored(
+/// [`build`] before its chart object fits a layout it keeps fitted.
+fn build_scene(
     r: &mut Renderer,
     kind: SceneKind,
     big_data_points: usize,

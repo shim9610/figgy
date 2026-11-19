@@ -580,14 +580,12 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub background: Option<crate::color::Color>,
-    /// Whether the stored layout (the axis bands, the title band and the
-    /// legend's clearance, everything [`crate::layout::auto_layout`]
-    /// writes) is the chart's own or still to be fitted (#357). `Fixed`
-    /// (default, key absent in JSON) is drawn exactly as stored: every
-    /// document written before the field. A chart made by
-    /// `Chart::sized` starts `NeedsFit`: the first default draw or export
-    /// fits it, writes the fit here and marks it `Fitted`; see
-    /// [`LayoutState`].
+    /// Whether the chart keeps its layout (the axis bands, the title band
+    /// and the legend's clearance, everything [`crate::layout::auto_layout`]
+    /// writes) fitted to its content, or draws it as stored (#357).
+    /// `Fixed` (default, key absent in JSON) is drawn exactly as stored:
+    /// every document written before the field. A new chart is `Fitted`;
+    /// see [`LayoutState`].
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "LayoutState::is_fixed")
@@ -596,28 +594,31 @@ pub struct Config {
 }
 
 /// Who owns a chart's layout: the margins, axis bands, title band and
-/// legend clearance [`crate::layout::auto_layout`] writes (#357). The state
-/// is part of the document, so the stored config always says what is drawn:
-/// a draw never lays out a chart without writing the result here.
+/// legend clearance [`crate::layout::auto_layout`] writes (#357).
+///
+/// The layout is fitted when a chart object is created and when a chart
+/// edit changes what it holds, never when it is drawn or exported: every
+/// draw and export draws the stored config as it is. The state says
+/// whether those fits happen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum LayoutState {
-    /// The layout is drawn exactly as stored and never fitted on its own:
-    /// a document read from JSON without the field, a layout the user moved
+    /// The layout is the stored one and is never fitted on its own: a
+    /// document read from JSON without the field, a layout the user moved
     /// (a successful [`Config::nudge`], which every decoration drag and
     /// plot-area drag or resize goes through) or placed
-    /// ([`Config::fit_to_data_area`]).
+    /// ([`Config::fit_to_data_area`]). An explicit fit
+    /// ([`crate::layout::auto_layout`]) keeps it `Fixed`.
     #[default]
     Fixed,
-    /// The next default draw or export fits the layout
-    /// ([`crate::layout::auto_layout`]), writes it into the config and
-    /// marks it [`Self::Fitted`]. Drawing as stored leaves it as it is.
-    NeedsFit,
-    /// The layout is the fit of the content it was last fitted to. An edit
-    /// of the document marks it [`Self::NeedsFit`] again
-    /// ([`Self::after_edit`]), so the next default draw fits the new text,
-    /// ranges and sizes.
+    /// The chart keeps the layout fitted to its content: creating a chart
+    /// object from the config (the renderer's `Chart::new`,
+    /// `Renderer::register_chart`, the WASM kernel) fits it, and so does
+    /// every chart edit that changes what the layout holds (titles, ranges,
+    /// legend, themes). A new chart starts here: `Chart::sized`, the
+    /// helpers' `config_for_series` and default parallel config, and a
+    /// document converted with its `text_sizes`.
     Fitted,
 }
 
@@ -627,21 +628,9 @@ impl LayoutState {
         *self == Self::Fixed
     }
 
-    /// Whether the next default draw fits the layout.
-    pub fn needs_fit(&self) -> bool {
-        *self == Self::NeedsFit
-    }
-
-    /// The state of a config edited from one in `self` to one whose state
-    /// is `edited`: a [`Self::Fitted`] layout that the edit kept `Fitted`
-    /// needs a fit again, since the edit may have changed what the bands
-    /// hold. An edit that set the state itself (to `Fixed` or `NeedsFit`)
-    /// keeps it.
-    pub fn after_edit(self, edited: Self) -> Self {
-        match (self, edited) {
-            (Self::Fitted, Self::Fitted) => Self::NeedsFit,
-            (_, edited) => edited,
-        }
+    /// Whether the chart keeps the layout fitted ([`Self::Fitted`]).
+    pub fn is_fitted(&self) -> bool {
+        *self == Self::Fitted
     }
 }
 
@@ -688,9 +677,13 @@ impl Config {
             line_offsets: _,
             plot_background: _,
             background: _,
-            // Who owns the layout: not a dimension.
-            layout_state: _,
+            // Who owns the layout: set below.
+            layout_state,
         } = self;
+        // A scaled config is a drawing of the layout at another scale (an
+        // export, a display): it is drawn as it is, never fitted again at
+        // the scaled size (#357), so 2x stays 1x scaled.
+        *layout_state = LayoutState::Fixed;
         // A parallel axis's labels sit to its left with the fixed label gap,
         // as `left_y`'s: its scaled offset makes up the gap as
         // `scale_label_gap` does.

@@ -74,8 +74,11 @@ pub fn default_config() -> Config {
 /// The frame is written into the returned config, a plain document: it is
 /// chosen once, where the chart is made, never at draw time, so a host
 /// that turns the axes back on (`Config::apply_axis_preset`) keeps them.
+/// Its layout is a new chart's ([`LayoutState::Fitted`]): the chart object
+/// made from it fits the layout to the frame and content it holds.
 pub fn config_for_series(series: &[SeriesConfig]) -> Config {
     let mut config = default_config();
+    config.layout_state = LayoutState::Fitted;
     let frame = crate::helpers::theme::Theme::default().family_frame(
         &config,
         series,
@@ -93,9 +96,17 @@ mod tests {
     use crate::preset::AxisPreset;
 
     fn framed(preset: AxisPreset) -> Config {
-        let mut config = default_config();
+        let mut config = unframed();
         config.apply_axis_preset(preset);
         config
+    }
+
+    /// [`default_config`] as a new chart's: its layout kept fitted (#357).
+    fn unframed() -> Config {
+        Config {
+            layout_state: LayoutState::Fitted,
+            ..default_config()
+        }
     }
 
     fn feynman() -> SeriesConfig {
@@ -110,9 +121,9 @@ mod tests {
     fn a_chart_takes_the_frame_of_its_family() {
         assert_eq!(config_for_series(&[feynman()]), framed(AxisPreset::Hidden));
         assert_eq!(config_for_series(&[levels()]), framed(AxisPreset::Grotrian));
-        assert_eq!(config_for_series(&[]), default_config());
+        assert_eq!(config_for_series(&[]), unframed());
         let line = SeriesConfig::line("l", "x", "y");
-        assert_eq!(config_for_series(&[line.clone()]), default_config());
+        assert_eq!(config_for_series(&[line.clone()]), unframed());
         // The first framed family decides, as a theme's frame does.
         assert_eq!(
             config_for_series(&[line, feynman(), levels()]),
@@ -135,7 +146,7 @@ mod tests {
         // A preset only switches the grid off; the host turns it back on.
         config.grid.show_major_x = true;
         config.grid.show_major_y = true;
-        assert_eq!(config, default_config());
+        assert_eq!(config, unframed());
     }
 
     #[cfg(feature = "serde")]
@@ -165,9 +176,10 @@ mod tests {
 /// - `bottom_x`, which names the axes: no line, no ticks.
 /// - No grid, and no frame: `top_x` and `right_y` draw no line and no
 ///   ticks.
-/// - `layout_state` is [`LayoutState::NeedsFit`], as a new chart's is: the
-///   names above the plot need a top band, so the first default draw fits
-///   the layout to them and to the host's axes and names.
+/// - `layout_state` is [`LayoutState::Fitted`], as a new chart's is: the
+///   names above the plot need a top band, so the chart object made from
+///   the config fits the layout to them and to the host's axes and names,
+///   and its edits keep it fitted.
 ///
 /// Every choice is a stored field, so a saved chart reads back with the
 /// same look.
@@ -204,6 +216,6 @@ pub fn default_parallel_config() -> Config {
             ..Color::WHITE
         }),
     }));
-    config.layout_state = LayoutState::NeedsFit;
+    config.layout_state = LayoutState::Fitted;
     config
 }

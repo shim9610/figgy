@@ -29,7 +29,7 @@ fn config() -> Config {
 
 /// `prepare` of `chart` itself: its selection and raster stamp are what
 /// the redraw reads, so the draw borrows the chart rather than a copy.
-fn prepare(r: &mut Renderer, view: &mut ChartView, chart: &mut Chart) {
+fn prepare(r: &mut Renderer, view: &mut ChartView, chart: &Chart) {
     drop(
         r.prepare(&mut [ChartDrawItem {
             view,
@@ -58,17 +58,17 @@ fn prepare_redraws_a_changed_chart_once() {
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let made = view.layer_stamps();
-    prepare(&mut r, &mut view, &mut chart);
+    prepare(&mut r, &mut view, &chart);
     assert_eq!(view.layer_stamps(), made, "a fresh view is not redrawn");
 
     chart.set_x_range(0.0, 5.0);
-    prepare(&mut r, &mut view, &mut chart);
+    prepare(&mut r, &mut view, &chart);
     let redrawn = view.layer_stamps();
     assert!(
         redrawn.decoration > made.decoration,
         "{redrawn:?} after {made:?}"
     );
-    prepare(&mut r, &mut view, &mut chart);
+    prepare(&mut r, &mut view, &chart);
     assert_eq!(
         view.layer_stamps(),
         redrawn,
@@ -90,10 +90,10 @@ fn prepare_draws_the_chart_selection() {
     assert_eq!(drawn_selection(&view), 0);
     chart.select(Some("axis_bottom"));
     assert_eq!(chart.selected(), Some("axis_bottom"));
-    prepare(&mut r, &mut view, &mut chart);
+    prepare(&mut r, &mut view, &chart);
     assert_eq!(drawn_selection(&view), 1, "the selected axis has its box");
     chart.select(None);
-    prepare(&mut r, &mut view, &mut chart);
+    prepare(&mut r, &mut view, &chart);
     assert_eq!(drawn_selection(&view), 0);
 }
 
@@ -111,14 +111,14 @@ fn a_hand_refresh_of_the_chart_as_it_stands_is_kept() {
     chart.set_y_range(-2.0, 2.0);
     r.refresh_axis(&mut view, &chart, rect).unwrap();
     let refreshed = view.layer_stamps();
-    prepare(&mut r, &mut view, &mut chart);
+    prepare(&mut r, &mut view, &chart);
     assert_eq!(view.layer_stamps(), refreshed);
 
     // A view another chart drew is redrawn for this one.
     let other = Chart::new(config());
     let mut borrowed = r.create_chart_view(&other, rect).unwrap();
     let before = view_source(&borrowed);
-    prepare(&mut r, &mut borrowed, &mut chart);
+    prepare(&mut r, &mut borrowed, &chart);
     assert_ne!(
         view_source(&borrowed),
         before,

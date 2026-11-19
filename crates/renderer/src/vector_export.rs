@@ -2148,7 +2148,7 @@ mod tests {
                 }
                 #[cfg(feature = "cpu-twin")]
                 {
-                    let chart = crate::chart::Chart::new(document.clone());
+                    let chart = crate::chart::Chart::stored(document.clone());
                     let mut parts = 0usize;
                     written_document_parts(&chart, &[], scale, &mut |_| parts += 1).unwrap();
                     assert!(parts > 0);
@@ -2176,7 +2176,7 @@ mod tests {
         .unwrap();
         let clear = Color::new(0.0, 0.0, 0.0, 0.0);
         for document in pass_documents() {
-            let chart = crate::chart::Chart::new(document);
+            let chart = crate::chart::Chart::stored(document);
             for scale in [1.0f32, 2.0] {
                 let mut frame = renderer
                     .prepare_export(&chart, &[], scale, crate::renderer::ExportScope::Document)

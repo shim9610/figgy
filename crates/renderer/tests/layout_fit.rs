@@ -1,10 +1,10 @@
-//! The layout fit of the first draw and drawing as stored (#357): a chart
-//! whose layout waits for its fit (`LayoutState::NeedsFit`) is fitted once
-//! by its first default draw or export, the fit is written into its config
-//! (the SSOT says what is drawn), and the `as_stored` calls draw the SSOT
-//! exactly as it is. An edit of a fitted layout fits again; a user's drag
-//! fixes the layout, and no later draw undoes it. Older documents read as
-//! `Fixed` and draw as they did (`released_documents*.rs` pin them).
+//! The layout of a new chart (#357): a chart whose layout it keeps fitted
+//! (`LayoutState::Fitted`) is created with that layout, and every chart
+//! edit fits it again as part of the edit, so the stored config always
+//! says what is drawn. Draws and exports draw the stored config as it is:
+//! they never fit and never write. A user's drag fixes the layout, and no
+//! later edit undoes it. Older documents read as `Fixed` and draw as they
+//! did (`released_documents*.rs` pin them).
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
@@ -29,13 +29,18 @@ fn renderer() -> Renderer {
 /// The audit's chart (#357): 800 × 600, a title, axis titles and y tick
 /// labels like `-0.600`, never fitted by hand. Its columns are in `r`.
 fn audit_chart(r: &mut Renderer) -> (Chart, [SeriesConfig; 1]) {
+    audit_chart_in(r, Chart::sized(800, 600))
+}
+
+/// The audit's edits on `chart`, its columns in `r`.
+fn audit_chart_in(r: &mut Renderer, chart: Chart) -> (Chart, [SeriesConfig; 1]) {
     let x: Vec<f64> = (0..=100).map(|i| f64::from(i) / 10.0).collect();
     let y: Vec<f64> = x.iter().map(|t| 0.7 * (t * 1.3).cos() + 0.05).collect();
     let _ = r.remove_column("x");
     let _ = r.remove_column("y");
     r.add_column("x", &x).unwrap();
     r.add_column("y", &y).unwrap();
-    let mut chart = Chart::sized(800, 600)
+    let mut chart = chart
         .with_title("Damped oscillation")
         .with_x_title("Time (s)")
         .with_y_title("Amplitude (V)");
@@ -50,7 +55,7 @@ fn fitted(config: &Config) -> Config {
 
 fn export(
     r: &mut Renderer,
-    chart: &mut Chart,
+    chart: &Chart,
     series: &[SeriesConfig],
     options: ExportOptions,
 ) -> RasterImage {
@@ -83,192 +88,197 @@ fn title_clears_labels(config: &Config) -> bool {
     title_right <= labels_left
 }
 
+/// The audit's chart on a `Fixed` config: the documented default margins,
+/// drawn as stored.
+fn audit_chart_fixed(r: &mut Renderer) -> (Chart, [SeriesConfig; 1]) {
+    let config = Config {
+        layout_state: LayoutState::Fixed,
+        ..Chart::sized(800, 600).config().clone()
+    };
+    let documented = renderer::default::default_config();
+    let config = Config {
+        top_x: documented.top_x,
+        bottom_x: documented.bottom_x,
+        left_y: documented.left_y,
+        right_y: documented.right_y,
+        chart_title: documented.chart_title,
+        ..config
+    };
+    audit_chart_in(r, Chart::new(config))
+}
+
 #[test]
-fn a_new_chart_overlaps_as_stored_and_its_first_export_fits_it_once() {
+fn a_new_chart_is_created_with_its_layout_fitted() {
     let mut r = renderer();
-    let (mut chart, series) = audit_chart(&mut r);
-    let stored = chart.config().clone();
-    assert_eq!(stored.layout_state, LayoutState::NeedsFit);
-    assert!(
-        !title_clears_labels(&stored),
-        "the default margins put the y title over the -0.600 labels"
-    );
-
-    // As stored: the SSOT is drawn as it is and nothing is written.
-    let as_stored = export(
-        &mut r,
-        &mut chart,
-        &series,
-        ExportOptions::panel(1.0).as_stored(),
-    );
-    assert_eq!(chart.config(), &stored, "as stored writes nothing");
-
-    // The default export fits once and writes the fit into the chart.
-    let first = export(&mut r, &mut chart, &series, ExportOptions::panel(1.0));
-    let expected = fitted(&stored);
-    assert_eq!(expected.layout_state, LayoutState::Fitted);
+    let (chart, _) = audit_chart(&mut r);
+    assert_eq!(chart.config().layout_state, LayoutState::Fitted);
     assert_eq!(
         chart.config(),
-        &expected,
-        "the stored config says what is drawn"
+        &fitted(chart.config()),
+        "the chart holds the fit of what it holds"
     );
     assert!(title_clears_labels(chart.config()));
-    assert_ne!(first.rgba, as_stored.rgba, "the fit moved the bands");
 
-    // The fitted SSOT drawn as stored is the same image: no hidden layout.
-    let again = export(
-        &mut r,
-        &mut chart,
-        &series,
-        ExportOptions::panel(1.0).as_stored(),
-    );
-    assert_eq!(again.rgba, first.rgba);
-    // A second default export fits nothing more.
-    let second = export(&mut r, &mut chart, &series, ExportOptions::panel(1.0));
-    assert_eq!(chart.config(), &expected);
-    assert_eq!(second.rgba, first.rgba);
+    // The same edits on a `Fixed` chart keep the documented margins, which
+    // put the y title over the -0.600 labels: the overlap the audit saw.
+    let (fixed, _) = audit_chart_fixed(&mut r);
+    assert_eq!(fixed.config().layout_state, LayoutState::Fixed);
+    assert!(!title_clears_labels(fixed.config()));
+
+    // Creating a chart object from a config the chart keeps fitted fits it.
+    let mut unfitted = fixed.config().clone();
+    unfitted.layout_state = LayoutState::Fitted;
+    let created = Chart::new(unfitted.clone());
+    assert_eq!(created.config(), &fitted(&unfitted));
+    assert!(title_clears_labels(created.config()));
 }
 
 #[test]
-fn a_two_x_export_fits_the_same_layout_as_a_one_x_export() {
+fn draws_and_exports_never_change_the_config() {
     let mut r = renderer();
-    let (mut pending, series) = audit_chart(&mut r);
-    let mut by_hand = Chart::new(pending.config().clone());
-    by_hand.fit_layout();
-    for scale in [1.0, 2.0] {
-        let mut chart = Chart::new(pending.config().clone());
-        let auto = export(&mut r, &mut chart, &series, ExportOptions::panel(scale));
-        let manual = export(&mut r, &mut by_hand, &series, ExportOptions::panel(scale));
-        assert_eq!(auto.rgba, manual.rgba, "{scale}x: the fit is the hand fit");
-        assert_eq!(chart.config(), by_hand.config(), "{scale}x");
-    }
-    let _ = export(&mut r, &mut pending, &series, ExportOptions::document(2.0));
-    assert_eq!(
-        pending.config(),
-        by_hand.config(),
-        "a 2x document export fits at 1x"
-    );
-}
-
-#[test]
-fn the_first_draw_fits_and_draw_as_stored_does_not() {
-    let mut r = renderer();
-    let (mut chart, _) = audit_chart(&mut r);
+    let (mut chart, series) = audit_chart(&mut r);
+    // An edit through `config_mut` is not fitted: the draw shows it as
+    // stored, with no hidden layout. Larger y tick labels need a wider band.
+    chart.config_mut().left_y.label_style.font_size = 30.0;
     let stored = chart.config().clone();
+    assert_ne!(stored, fitted(&stored), "the edit is not fitted yet");
+    for options in [
+        ExportOptions::panel(1.0),
+        ExportOptions::panel(2.0),
+        ExportOptions::document(2.0),
+    ] {
+        let _ = export(&mut r, &chart, &series, options);
+        assert_eq!(chart.config(), &stored, "{options:?}");
+    }
     let mut view = r.create_chart_view(&chart, stored.chart_area.0).unwrap();
     let _ = r
-        .prepare_as_stored(&mut [ChartDrawItem {
+        .prepare(&mut [ChartDrawItem {
             view: &mut view,
-            chart: &mut chart,
+            chart: &chart,
             series: &[],
         }])
         .unwrap();
     assert_eq!(chart.config(), &stored);
-    let _ = r
-        .prepare(&mut [ChartDrawItem {
-            view: &mut view,
-            chart: &mut chart,
-            series: &[],
-        }])
-        .unwrap();
+    // The export draws exactly the stored layout: the same image as a
+    // `Fixed` chart holding it.
+    let mut held = stored.clone();
+    held.layout_state = LayoutState::Fixed;
+    let as_fixed = Chart::new(held);
+    for scale in [1.0, 2.0] {
+        let image = export(&mut r, &chart, &series, ExportOptions::panel(scale));
+        let same = export(&mut r, &as_fixed, &series, ExportOptions::panel(scale));
+        assert_eq!(image.rgba, same.rgba, "{scale}x");
+    }
+    // `fit_layout` fits it on request.
+    chart.fit_layout();
     assert_eq!(chart.config(), &fitted(&stored));
 }
 
 #[test]
-fn an_edit_of_a_fitted_layout_fits_again_and_a_drag_is_never_undone() {
+fn one_x_and_two_x_export_the_same_layout() {
     let mut r = renderer();
-    let (mut chart, series) = audit_chart(&mut r);
-    let _ = export(&mut r, &mut chart, &series, ExportOptions::panel(1.0));
+    let (chart, series) = audit_chart(&mut r);
+    let mut by_hand = chart.config().clone();
+    by_hand.layout_state = LayoutState::Fixed;
+    let by_hand = Chart::new(fitted(&by_hand));
+    for options in [
+        ExportOptions::panel(1.0),
+        ExportOptions::panel(2.0),
+        ExportOptions::document(2.0),
+    ] {
+        let auto = export(&mut r, &chart, &series, options);
+        let manual = export(&mut r, &by_hand, &series, options);
+        assert_eq!(
+            auto.rgba, manual.rgba,
+            "{options:?}: the layout is the hand fit"
+        );
+    }
+}
+
+#[test]
+fn a_chart_edit_fits_again_and_a_drag_is_never_undone() {
+    let mut r = renderer();
+    let (mut chart, _) = audit_chart(&mut r);
+
+    // A longer y title through a chart method: the edit fits it.
+    chart.with_decoration_change(|config| {
+        config.left_y.title_option.text.segments =
+            renderer::text::rich_segments_from_label("Amplitude of the damped signal (V)");
+    });
     assert_eq!(chart.config().layout_state, LayoutState::Fitted);
+    assert_eq!(chart.config(), &fitted(chart.config()));
+    assert!(title_clears_labels(chart.config()));
+    // New ranges are new tick labels: fitted as part of the edit.
+    chart.set_y_range(-1000.0, 1000.0);
+    assert_eq!(chart.config(), &fitted(chart.config()));
+    assert!(title_clears_labels(chart.config()));
 
-    // A longer y title after the first draw: the next draw fits it.
-    chart.config_mut().left_y.title_option.text.segments =
-        renderer::text::rich_segments_from_label("Amplitude of the damped signal (V)");
-    assert_eq!(chart.config().layout_state, LayoutState::NeedsFit);
-    let edited = chart.config().clone();
-    let _ = export(&mut r, &mut chart, &series, ExportOptions::panel(1.0));
-    assert_eq!(chart.config(), &fitted(&edited));
-
-    // The user drags the y title; later draws keep it where it was put.
+    // The user drags the y title; later edits keep it where it was put.
     let measure = CpuTextMeasure::for_style(&chart.config().draw_style);
     let moved =
         AxisTitleElement { side: Side::Left }.drag_by(chart.config_mut(), &measure, -6.0, 0.0);
     assert_eq!(moved, renderer::layout::NudgeResult::Moved);
     assert_eq!(chart.config().layout_state, LayoutState::Fixed);
     let dragged = chart.config().clone();
-    let image = export(&mut r, &mut chart, &series, ExportOptions::panel(1.0));
-    assert_eq!(
-        chart.config(),
-        &dragged,
-        "a draw after a drag does not refit"
-    );
-    // Further edits keep the user's layout too.
     chart.set_y_range(-0.8, 0.9);
+    chart.with_decoration_change(|config| {
+        config.chart_title.text.segments =
+            renderer::text::rich_segments_from_label("A longer title\nover two lines");
+    });
     assert_eq!(chart.config().layout_state, LayoutState::Fixed);
-    let _ = export(&mut r, &mut chart, &series, ExportOptions::panel(1.0));
     assert_eq!(chart.config().left_y.out_margin, dragged.left_y.out_margin);
     assert_eq!(
         chart.config().left_y.title_option.offset_y,
         dragged.left_y.title_option.offset_y
     );
-    assert!(!image.rgba.is_empty());
+    assert_eq!(
+        chart.config().chart_title.top_margin,
+        dragged.chart_title.top_margin
+    );
 }
 
 #[test]
-fn a_registered_chart_fits_on_its_first_draw_and_export_and_records_the_fit() {
+fn a_registered_chart_is_fitted_when_registered_and_edited_never_when_drawn() {
     let mut r = renderer();
-    let (chart, series) = audit_chart(&mut r);
-    let stored = chart.config().clone();
-    let id = r.register_chart(stored.clone(), series.to_vec()).unwrap();
-    let mut view = r.create_chart_view(&chart, stored.chart_area.0).unwrap();
+    let (fixed, series) = audit_chart_fixed(&mut r);
+    let mut unfitted = fixed.config().clone();
+    unfitted.layout_state = LayoutState::Fitted;
+    let id = r.register_chart(unfitted.clone(), series.to_vec()).unwrap();
+    let laid = r.chart_config(id).unwrap().clone();
+    assert_eq!(laid, fitted(&unfitted), "registration fits");
 
-    // Drawing as stored leaves the stored layout waiting.
-    let _ = r
-        .prepare_registered_as_stored(&mut [RegisteredChartDrawItem {
-            chart_id: id,
-            view: &mut view,
-        }])
-        .unwrap();
-    assert_eq!(r.chart_config(id).unwrap(), &stored);
-    let before = r.chart_render_stamp(id).unwrap();
-
-    // The default draw fits it through the registry, so its revisions move.
+    // Draws and exports draw it as stored.
+    let stamp = r.chart_render_stamp(id).unwrap();
+    let mut view = r.create_chart_view(&fixed, laid.chart_area.0).unwrap();
     let _ = r
         .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: id,
             view: &mut view,
         }])
         .unwrap();
-    assert_eq!(r.chart_config(id).unwrap(), &fitted(&stored));
-    assert_ne!(r.chart_render_stamp(id).unwrap(), before);
-    assert!(!r.fit_pending_layout(id).unwrap(), "nothing waits any more");
+    for scale in [1.0, 2.0] {
+        let _ = r
+            .export_rgba(ExportSource::Registered(id), ExportOptions::panel(scale))
+            .block_on()
+            .unwrap();
+    }
+    assert_eq!(r.chart_config(id).unwrap(), &laid);
+    assert_eq!(r.chart_render_stamp(id).unwrap(), stamp);
 
-    // An edit of the fitted chart asks for a fit; the export makes it.
-    let mut edited = r.chart_config(id).unwrap().clone();
+    // An edit of the chart is fitted as part of the edit.
+    let mut edited = laid.clone();
     edited.chart_title.text.segments =
         renderer::text::rich_segments_from_label("A longer title\nover two lines");
-    r.set_chart_config(id, edited).unwrap();
-    let pending = r.chart_config(id).unwrap().clone();
-    assert_eq!(pending.layout_state, LayoutState::NeedsFit);
-    let as_stored = r
-        .export_rgba(
-            ExportSource::Registered(id),
-            ExportOptions::panel(1.0).as_stored(),
-        )
-        .block_on()
-        .unwrap();
-    assert_eq!(r.chart_config(id).unwrap(), &pending);
-    let image = r
-        .export_rgba(ExportSource::Registered(id), ExportOptions::panel(1.0))
-        .block_on()
-        .unwrap();
-    assert_eq!(r.chart_config(id).unwrap(), &fitted(&pending));
-    assert_ne!(image.rgba, as_stored.rgba);
+    r.set_chart_config(id, edited.clone()).unwrap();
+    assert_eq!(r.chart_config(id).unwrap(), &fitted(&edited));
+    assert_ne!(r.chart_render_stamp(id).unwrap(), stamp);
+
     // A host that sets a layout of its own keeps it.
     let mut manual = r.chart_config(id).unwrap().clone();
     manual.left_y.out_margin += 30.0;
     manual.layout_state = LayoutState::Fixed;
     r.set_chart_config(id, manual.clone()).unwrap();
+    assert_eq!(r.chart_config(id).unwrap(), &manual);
     let _ = r
         .export_rgba(ExportSource::Registered(id), ExportOptions::panel(1.0))
         .block_on()
@@ -277,21 +287,17 @@ fn a_registered_chart_fits_on_its_first_draw_and_export_and_records_the_fit() {
 }
 
 #[test]
-fn an_explicit_fit_and_a_registered_fit_agree_and_an_identical_config_changes_nothing() {
+fn an_identical_config_changes_nothing() {
     let mut r = renderer();
     let (chart, series) = audit_chart(&mut r);
     let id = r
         .register_chart(chart.config().clone(), series.to_vec())
         .unwrap();
-    assert!(r.fit_pending_layout(id).unwrap());
     let laid = r.chart_config(id).unwrap().clone();
+    assert_eq!(&laid, chart.config(), "a fitted chart registers as it is");
     let stamp = r.chart_render_stamp(id).unwrap();
     r.set_chart_config(id, laid.clone()).unwrap();
-    assert_eq!(
-        r.chart_config(id).unwrap(),
-        &laid,
-        "an identical config stays fitted"
-    );
+    assert_eq!(r.chart_config(id).unwrap(), &laid);
     assert_eq!(r.chart_render_stamp(id).unwrap(), stamp);
 }
 
@@ -299,27 +305,26 @@ fn an_explicit_fit_and_a_registered_fit_agree_and_an_identical_config_changes_no
 #[test]
 fn a_fitted_chart_round_trips_and_exports_the_same_image() {
     let mut r = renderer();
-    let (mut chart, series) = audit_chart(&mut r);
-    let pending_json = serde_json::to_string(chart.config()).unwrap();
-    assert!(pending_json.contains("\"layout_state\":\"needs_fit\""));
+    let (chart, series) = audit_chart(&mut r);
+    let json = serde_json::to_string(chart.config()).unwrap();
+    assert!(json.contains("\"layout_state\":\"fitted\""));
+    let back: Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(&back, chart.config());
+    let reread = Chart::new(back);
+    assert_eq!(reread.config(), chart.config(), "a reread fit is the same");
+    assert_eq!(serde_json::to_string(reread.config()).unwrap(), json);
     for scale in [1.0, 2.0] {
-        let image = export(&mut r, &mut chart, &series, ExportOptions::panel(scale));
-        let json = serde_json::to_string(chart.config()).unwrap();
-        assert!(json.contains("\"layout_state\":\"fitted\""));
-        let back: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(&back, chart.config());
-        let mut reread = Chart::new(back);
-        let again = export(&mut r, &mut reread, &series, ExportOptions::panel(scale));
+        let image = export(&mut r, &chart, &series, ExportOptions::panel(scale));
+        let again = export(&mut r, &reread, &series, ExportOptions::panel(scale));
         assert_eq!(again.rgba, image.rgba, "{scale}x");
-        assert_eq!(serde_json::to_string(reread.config()).unwrap(), json);
     }
 }
 
 #[test]
 fn a_monotonic_chart_is_registered_fixed() {
     let mut r = renderer();
-    let mut config = Chart::sized(400, 300).config().clone();
-    config.layout_state = LayoutState::NeedsFit;
+    let config = Chart::sized(400, 300).config().clone();
+    assert_eq!(config.layout_state, LayoutState::Fitted);
     let id = r.register_monotonic_chart(config, Vec::new()).unwrap();
     assert_eq!(
         r.monotonic_config(id).unwrap().layout_state,

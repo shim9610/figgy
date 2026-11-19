@@ -232,11 +232,11 @@ fn each_row_passes_through_its_axis_points_and_midpoints_at_1x_and_2x() {
             series(&format!("row{k}"), &columns, COLOURS[k], None)
         })
         .collect();
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     for scale in [1.0f64, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(scale as f32),
             )
             .block_on()
@@ -299,10 +299,10 @@ fn inverted_and_logarithmic_axes_place_their_values() {
     }
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -358,10 +358,10 @@ fn a_non_finite_value_breaks_the_row_at_its_axis() {
     rows[0][2] = f64::NAN;
     let columns = upload(&mut r, "nan", &rows);
     let series = [series("nan", &columns, RED, None)];
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -493,10 +493,10 @@ fn the_pick_answers_the_row_and_the_highlight_redraws_it() {
         point_radius_extra_px: 0.0,
         contour_width_extra_px: 0.0,
     });
-    let mut chart = Chart::new(highlighted);
+    let chart = Chart::new(highlighted);
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -573,10 +573,10 @@ fn a_colour_column_colours_each_row_through_the_colorbar() {
     r.add_column("rows_class", &col(vec![0.0, 1.0, 2.0]))
         .unwrap();
     let series = [series("rows", &columns, RED, Some("rows_class"))];
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -666,10 +666,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     let config = dressed_config();
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -766,10 +766,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     let mut named = config.clone();
     named.bottom_x.label_style.visible = true;
     named.bottom_x.label_style.label_visible = true;
-    let mut names = Chart::new(named.clone());
+    let names = Chart::new(named.clone());
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut names, &series),
+            renderer::ExportSource::chart(&names, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -800,28 +800,27 @@ fn names_on_top_and_label_backdrops_draw_hit_and_drag() {
     let options = config.parallel_mut().unwrap();
     options.names_on_top = true;
     options.label_backdrop = Some(backdrop);
-    // The names need a top band: the first default draw fits the layout
-    // to them (#357 item 7), as for a chart made from the preset.
-    config.layout_state = renderer::LayoutState::NeedsFit;
+    // The names need a top band: the chart is created with its layout
+    // fitted to them (#357 item 7), as for a chart made from the preset.
+    config.layout_state = renderer::LayoutState::Fitted;
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
-    let mut chart = Chart::new(config);
+    let chart = Chart::new(config);
     let want = [250u8, 230, 120];
     let mut boxed = [0usize; 2];
     let mut fitted: Option<Config> = None;
     for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         save(&format!("parallel-names-on-top-{scale}x"), &img);
-        // The fit is written into the chart once; the 2x export draws it
-        // as fitted.
+        // The chart holds its fit; neither export changes it.
         let config = chart.config().clone();
-        assert_ne!(config.layout_state, renderer::LayoutState::NeedsFit);
+        assert_eq!(config.layout_state, renderer::LayoutState::Fitted);
         if let Some(first) = &fitted {
             assert_eq!(first, &config, "the 2x export does not refit");
         }
@@ -960,7 +959,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         let what = format!("{:?}", config.parallel());
         match r
             .export_rgba(
-                renderer::ExportSource::chart(&mut Chart::new(config.clone()), &series),
+                renderer::ExportSource::chart(&Chart::new(config.clone()), &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1131,11 +1130,11 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
             color_column: None,
         }),
     };
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     let started = std::time::Instant::now();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &[series.clone()]),
+            renderer::ExportSource::chart(&chart, &[series.clone()]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()

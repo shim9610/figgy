@@ -487,11 +487,10 @@ impl Renderer {
         let mut prospective_config = state.config.clone();
         view.apply_to(&mut prospective_config);
         prospective_config.sync_subplot_links(Some(&state.config));
-        // New ranges are new tick labels: a fitted layout asks for its fit
-        // again (#357).
+        // New ranges are new tick labels: a layout the chart keeps fitted is
+        // fitted to them as part of the edit (#357).
         if prospective_config != state.config {
-            let layout = state.config.layout_state;
-            prospective_config.layout_state = layout.after_edit(layout);
+            prospective_config = super::charts::kept_layout(prospective_config);
         }
         crate::chart::validate_renderer_config(&prospective_config)?;
         let touched = self.reconcile_monotonic(

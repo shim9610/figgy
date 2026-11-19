@@ -52,8 +52,8 @@ and radar documents' `text_sizes`) are additive.
     `..Default::default()`).
   - New preset `default::default_parallel_config()`: names on top, white
     label backdrops, light axes with outward major ticks and no minor
-    ticks, no grid and no frame. It starts as `LayoutState::NeedsFit`, so the
-    first default draw makes room for the names.
+    ticks, no grid and no frame. It is `LayoutState::Fitted`, so the chart
+    made from it is created with room for the names.
   - `ParallelTheme` gains `label_backdrop` and `line_opacity` (serde
     defaults `None`). The family members set the backdrop to their paper at
     0.8 and the rows to 0.5 opacity, and their colourbar grows to 0.6 of
@@ -67,40 +67,41 @@ and radar documents' `text_sizes`) are additive.
     both sides by the smaller of the arc and the ring thickness. Labels at
     the top and bottom of thin sunburst rings keep their size, and labels
     that ran past the rim now fit inside it.
-- **A new chart's layout is fitted by its first draw, and the as-stored
-  draw** ([#357](https://github.com/shim9610/figgy/issues/357)). A chart
-  drawn without `fit_layout()` kept the default margins, so an 800 × 600
-  line chart with axis titles drew its y title over `-0.600` tick labels.
-  `Config` has `layout_state` (`LayoutState`): `Fixed` (the default and
-  the value of every document without the key, drawn exactly as stored),
-  `NeedsFit` (the next default draw or export runs `layout::auto_layout`,
-  writes the fit into the config and marks it `Fitted`) and `Fitted` (an
-  edit marks it `NeedsFit` again). `Chart::sized`, `Chart::placed` and the
-  WASM kernel's new chart start `NeedsFit`; `Chart::new(config)` and
-  `Config::default()` keep `Fixed`. A successful `Config::nudge` (every
-  decoration drag and plot-area drag or resize) and
-  `Config::fit_to_data_area` set `Fixed`, so no later draw undoes the
-  user's layout. Monotonic charts are registered and kept `Fixed` (M4);
-  a chart that draws a streamed source is drawn as stored, and
-  `Renderer::fit_pending_layout` refuses it (rule 8). Drawing as stored:
-  `Renderer::prepare_as_stored`, `prepare_registered_as_stored`,
-  `WindowedRenderer::draw_as_stored`, `draw_registered_as_stored`,
-  `ExportOptions::as_stored()` (`DrawLayout`), and in the browser
-  `frame_as_stored`, `export_png_as_stored`, `export_svg_as_stored` and
-  `export_pdf_as_stored`. Documents written before the key draw and export
-  the same image. Migration:
-  - `ChartDrawItem::chart` and `ExportSource::Chart::chart` (and
-    `ExportSource::chart`) take `&mut Chart`, since a default draw writes
-    the fit into the chart: `&chart` → `&mut chart`. `ExportSource` is no
-    longer `Copy`: build it again for each export. Two draw items can no
-    longer lend one chart; draw a second `Chart::new(config.clone())`.
-  - `ExportOptions` has a `layout` field: a struct literal adds
-    `layout: DrawLayout::FitPending`, or uses `ExportOptions::panel` /
-    `document`.
-  - An exhaustive `Config { .. }` pattern or literal names `layout_state`.
-  - A host that sets margins on a `Fitted` chart through `config_mut` or
-    `set_chart_config` also sets `layout_state = LayoutState::Fixed`, or
-    the next draw fits them again.
+- **A new chart is created with its layout fitted**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). A chart drawn
+  without `fit_layout()` kept the default margins, so an 800 × 600 line
+  chart with axis titles drew its y title over `-0.600` tick labels.
+  `Config` has `layout_state` (`LayoutState`): `Fixed` (the default and the
+  value of every document without the key, drawn exactly as stored) and
+  `Fitted` (the chart keeps the layout fitted to what it holds). The
+  layout is fitted when a chart object is created and when a chart edit
+  changes what it holds, never when it is drawn or exported:
+  - `Chart::sized`, `Chart::placed`, `default::config_for_series`,
+    `default::default_parallel_config` and a categorical, box plot or radar
+    document converted with `text_sizes` and no explicit data area are
+    `Fitted`. `Chart::new(config)`, `Renderer::register_chart` and the WASM
+    kernel fit a `Fitted` config when they create the chart
+    (`layout::auto_layout` with `CpuTextMeasure`); a `Fixed` one is kept as
+    given, and `Config::default()` stays `Fixed`.
+  - The chart methods that edit it (`with_title`, the axis titles, ranges
+    and fits, legend, overlays, units, `set_area`, themes,
+    `with_axis_range_change`, `with_decoration_change`), the registered
+    chart's config edits (`set_chart_config`, view and range fits) and the
+    kernel's setters fit a `Fitted` layout again as part of the edit. An
+    edit through `Chart::config_mut()` is not fitted: call `fit_layout()`
+    after it.
+  - A successful `Config::nudge` (every decoration drag and plot-area drag
+    or resize) and `Config::fit_to_data_area` set `Fixed`, so no later edit
+    undoes the user's layout. Monotonic charts are registered and kept
+    `Fixed` (M4).
+  - Draws (`prepare`, `prepare_registered`, `WindowedRenderer::draw*`, the
+    kernel's `frame()`) and exports draw the stored config as it is and
+    write nothing; they take `&Chart` as before.
+  Documents written before the key draw and export the same image.
+  Migration: an exhaustive `Config { .. }` pattern or literal names
+  `layout_state`; a host that sets margins of its own on a `Fitted` chart
+  sets `layout_state = LayoutState::Fixed` with them, or the next chart
+  edit fits them again.
 - **Documents built in Rust draw the Cartesian text sizes**
   ([#357](https://github.com/shim9610/figgy/issues/357)). The categorical,
   box plot and radar readers drew every text at their one `font_size` (14 px)
@@ -110,8 +111,8 @@ and radar documents' `text_sizes`) are additive.
   title, tick label, legend). Without it (the key absent, every document
   written before) the converters draw as before; the Rust `Default` sets
   `DocumentTextSizes::CARTESIAN`, and a converted document with
-  `text_sizes` and no explicit data area fits its layout on its first
-  draw. `font_size` keeps its serde default of 14. The Gallery theme's
+  `text_sizes` and no explicit data area is `LayoutState::Fitted`: its
+  chart is created with its layout fitted. `font_size` keeps its serde default of 14. The Gallery theme's
   document chrome (category bars, box plot, radar) takes the gallery sizes
   26/18/16 and the documented 14 px legend instead of 27/18/18/18.
   Migration: an exhaustive literal of `CategoricalChart`, `BoxPlotChart`
