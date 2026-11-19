@@ -312,14 +312,14 @@ first pick includes enabling the picker):
 
 | Pick after the first frame | Before #373 | Exact keys only | Exact, gate and reduce, created on resolve |
 | --- | ---: | ---: | ---: |
-| at once | 10.2–12.6 s | 7.0–7.4 s | 6.8–7.1 s |
-| after 8 s | 14.8–15.3 s | 2.4–2.5 s | 23–40 ms |
-| after 20 s | 25.8 s | 24.5–24.9 s | 24–25 ms |
+| at once | 10.2–12.6 s | 7.0–7.4 s | 6.5–7.1 s (4 runs) |
+| after 8 s | 14.8–15.3 s | 2.4–2.5 s | 18–40 ms (4 runs) |
+| after 20 s | 25.8 s | 24.5–24.9 s | 10–25 ms (4 runs) |
 
 A pick at once waits for the compiles the first frame scheduled (gate and reduce
 about 2.5 s, the exact key about 4.5 s). After 8 s and 20 s every pipeline the pick
 needs was created by a frame, and the pick only prepares, dispatches and reads back.
-The frame that drew every series came about 2.0–2.5 s after the first frame with and
+The frame that drew every series came about 1.5–2.5 s after the first frame with and
 without gate and reduce scheduled ahead of the render compiles.
 
 ## 한국어 요약
@@ -349,5 +349,5 @@ exact pick 모듈의 WGSL이 바뀌면 `verify.py static`이 바뀐 모듈과 �
 컴파일을 요청한다. 첫 프레임 직후 레이더 차트의 첫 픽은 약 10~13초에서 약 7.4초로, 8초 뒤의
 첫 픽은 약 15초에서 약 2.4초로 줄었다. 이어서 피커의 gate·reduce 파이프라인도 같은 큐에 미리
 올리고, 컴파일이 끝나면 다음 프레임이 기존 캐시에 파이프라인을 만들어 둔다. 브라우저가 컴파일
-결과를 버려도 만든 파이프라인은 남으므로, 8초나 20초 뒤의 첫 픽은 약 25~40ms로 줄었다. 바로 하는
+결과를 버려도 만든 파이프라인은 남으므로, 8초나 20초 뒤의 첫 픽은 약 10~40ms로 줄었다. 바로 하는
 첫 픽은 미리 올린 컴파일을 기다려 약 7초다.
