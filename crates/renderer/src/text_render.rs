@@ -1235,7 +1235,8 @@ fn place_cell(
     while i < segments.len() {
         let seg = &segments[i];
         i += 1;
-        let mut position = ScriptPosition::of(seg);
+        let drawn = DrawnChar::of(seg);
+        let mut position = drawn.position;
         if let Some(face) = &math {
             if let Some(node) = seg.math_node {
                 if matches!(node.kind, crate::text::MathKind::Math(_)) {
@@ -1263,12 +1264,16 @@ fn place_cell(
             // A text-mode script places its slots as the `superscript` and
             // `subscript` flags do, so the node and the flags give the same
             // pixels.
+            // A Unicode script character in a slot combines with the
+            // slot's position as it does with the flags (math segments
+            // carry no flags).
             if let Some(parent) = seg.math_parent {
                 position = match parent.slot {
                     1 => ScriptPosition::Superscript,
                     2 => ScriptPosition::Subscript,
                     _ => ScriptPosition::Base,
-                };
+                }
+                .with(drawn.position);
             }
         }
         let base = segment_base_size(seg, rt);
@@ -1292,7 +1297,7 @@ fn place_cell(
             }
             (field, field, center - t * 0.5, center + t * 0.5)
         } else {
-            let ch = seg.char_set.glyph_char(seg.text);
+            let ch = seg.char_set.glyph_char(drawn.text);
             // A math character draws from the math face (whatever the
             // policy), falling back to the text chain when the face lacks it.
             let (font, glyph) = (seg.char_set == crate::text::CharSet::Math)
@@ -1793,15 +1798,83 @@ pub(crate) enum ScriptPosition {
 }
 
 impl ScriptPosition {
-    /// The position a segment's `superscript` / `subscript` flags select.
-    /// `superscript` wins when both are set, as it always has.
+    /// Both positions at once, as the segment flags combine: superscript
+    /// wins when either is a superscript, as it always has; a script is not
+    /// raised or dropped twice.
+    fn with(self, other: ScriptPosition) -> Self {
+        match (self, other) {
+            (ScriptPosition::Superscript, _) | (_, ScriptPosition::Superscript) => {
+                ScriptPosition::Superscript
+            }
+            (ScriptPosition::Subscript, _) | (_, ScriptPosition::Subscript) => {
+                ScriptPosition::Subscript
+            }
+            _ => ScriptPosition::Base,
+        }
+    }
+}
+
+/// What a segment draws: the character and the script position it sits at.
+///
+/// The one place segment text is normalized for drawing (#353). A Unicode
+/// superscript or subscript character (`⁻`, `²`, `₀`, …) draws as its base
+/// character at the superscript or subscript position, through the table
+/// the string conversions use ([`crate::text::unicode_script_char`]),
+/// whether or not some installed face has the character itself; the bundled
+/// faces lack several of them, so native, WASM and every CI host draw the
+/// same pixels. The stored segment keeps its character: this is
+/// appearance, not data.
+///
+/// Every path that turns segments into glyphs reads the character and the
+/// position from here: [`place_cell`] (canvas raster, measurement, the
+/// label rasters, and the SVG and PDF export, which all place through it)
+/// and the math layout's leaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DrawnChar {
+    /// The character to draw, before the segment's character set maps it
+    /// ([`crate::text::CharSet::glyph_char`]).
+    pub(crate) text: char,
+    /// Where it sits against the baseline.
+    pub(crate) position: ScriptPosition,
+}
+
+impl DrawnChar {
+    /// The character alone: a Unicode super- or subscript character as its
+    /// base character at its position, any other character as itself on
+    /// the baseline.
+    pub(crate) fn of_char(c: char) -> Self {
+        use crate::text::{UnicodeScript, unicode_script_char};
+        match unicode_script_char(c) {
+            Some((text, UnicodeScript::Superscript)) => DrawnChar {
+                text,
+                position: ScriptPosition::Superscript,
+            },
+            Some((text, UnicodeScript::Subscript)) => DrawnChar {
+                text,
+                position: ScriptPosition::Subscript,
+            },
+            None => DrawnChar {
+                text: c,
+                position: ScriptPosition::Base,
+            },
+        }
+    }
+
+    /// A segment: its character as [`DrawnChar::of_char`] maps it, with
+    /// the segment's own flags combined in ([`ScriptPosition::with`]): a
+    /// `⁻` in a superscript segment is raised once.
     pub(crate) fn of(seg: &RichSegment) -> Self {
-        if seg.superscript {
+        let flags = if seg.superscript {
             ScriptPosition::Superscript
         } else if seg.subscript {
             ScriptPosition::Subscript
         } else {
             ScriptPosition::Base
+        };
+        let c = DrawnChar::of_char(seg.text);
+        DrawnChar {
+            position: flags.with(c.position),
+            ..c
         }
     }
 }
@@ -2452,7 +2525,6 @@ mod tests {
 
     /// Whether `font` maps `ch` to a glyph with an outline. A test-local
     /// check, independent of the coverage helper the fallback chain uses.
-    #[cfg(not(target_arch = "wasm32"))]
     fn outline_drawn(font: FontRef<'_>, ch: char, scale: &mut ScaleContext) -> bool {
         let glyph = font.charmap().map(ch);
         glyph != 0
@@ -2464,38 +2536,137 @@ mod tests {
                 .is_some_and(|outline| !outline.is_empty())
     }
 
-    /// Whether any face installed on this host draws `ch`, in any style.
-    /// This runs its own system scan, so it does not depend on the fallback
-    /// chain: if the chain's system step breaks, the test fails instead of
-    /// skipping.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn installed_face_draws(ch: char) -> bool {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        let mut scale = ScaleContext::new();
-        db.faces().any(|face| {
-            db.with_face_data(face.id, |data, index| {
-                FontRef::from_index(data, index as usize)
-                    .is_some_and(|font| outline_drawn(font, ch, &mut scale))
-            })
-            .unwrap_or(false)
-        })
+    /// Every Unicode superscript and subscript character the string
+    /// conversions map, with its base character and position.
+    const UNICODE_SCRIPTS: [(char, char, ScriptPosition); 30] = {
+        use ScriptPosition::{Subscript as Sub, Superscript as Sup};
+        [
+            ('⁰', '0', Sup),
+            ('¹', '1', Sup),
+            ('²', '2', Sup),
+            ('³', '3', Sup),
+            ('⁴', '4', Sup),
+            ('⁵', '5', Sup),
+            ('⁶', '6', Sup),
+            ('⁷', '7', Sup),
+            ('⁸', '8', Sup),
+            ('⁹', '9', Sup),
+            ('⁺', '+', Sup),
+            ('⁻', '-', Sup),
+            ('⁽', '(', Sup),
+            ('⁾', ')', Sup),
+            ('ⁿ', 'n', Sup),
+            ('ᵗ', 't', Sup),
+            ('₀', '0', Sub),
+            ('₁', '1', Sub),
+            ('₂', '2', Sub),
+            ('₃', '3', Sub),
+            ('₄', '4', Sub),
+            ('₅', '5', Sub),
+            ('₆', '6', Sub),
+            ('₇', '7', Sub),
+            ('₈', '8', Sub),
+            ('₉', '9', Sub),
+            ('₊', '+', Sub),
+            ('₋', '-', Sub),
+            ('₍', '(', Sub),
+            ('₎', ')', Sub),
+        ]
+    };
+
+    /// A rich text of `segments` at the fallback size in the default family.
+    fn rich_of(segments: Vec<RichSegment>) -> RichText {
+        RichText {
+            segments,
+            color: Color::BLACK,
+            font_size: FALLBACK_SIZE,
+            font: String::new(),
+            align: TextAlign::Left,
+        }
     }
 
-    // U+207B (superscript minus) is missing from every bundled face, and
-    // tests register only bundled faces, so with the default font only an
-    // installed system face can draw it. Installed fonts vary across CI
-    // hosts: the assertion runs only when some installed face draws it.
-    // The chain picks one face per family per requested style (CSS
-    // matching), and the covering face may be another style, so at least
-    // one of the four styles must draw a real glyph.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// A segment drawing `c` in the given style and script flags.
+    fn styled(
+        c: char,
+        bold: bool,
+        italic: bool,
+        superscript: bool,
+        subscript: bool,
+    ) -> RichSegment {
+        RichSegment {
+            bold,
+            italic,
+            superscript,
+            subscript,
+            ..RichSegment::plain(c)
+        }
+    }
+
+    /// Draw rich `runs` of (text, left x) onto one fresh canvas, in order,
+    /// on a shared baseline.
+    fn draw_rich_runs(runs: &[(&RichText, f32)], policy: FontPolicy) -> Vec<u8> {
+        let mut canvas = Canvas::new(160, 40).unwrap();
+        for &(rt, x) in runs {
+            draw_rich_text(&mut canvas, rt, (x, 28.0), policy).unwrap();
+        }
+        canvas.into_rgba()
+    }
+
+    // The draw-time map covers exactly the string conversions' table: each
+    // character is its base character at its position, in a segment of
+    // any flags, and every other character is itself on the baseline.
     #[test]
-    fn superscript_minus_draws_from_an_installed_face_when_one_covers_it() {
+    fn drawn_char_maps_every_unicode_script_character() {
+        for (c, base, position) in UNICODE_SCRIPTS {
+            let drawn = DrawnChar::of_char(c);
+            assert_eq!((drawn.text, drawn.position), (base, position), "{c}");
+            let from_text = rich_segments_from_text(&c.to_string());
+            assert_eq!(
+                DrawnChar::of(&from_text[0]),
+                drawn,
+                "{c}: the string conversion and the draw-time map agree"
+            );
+            // Nested: the segment's own flag is not applied twice, and a
+            // superscript wins over a subscript either way.
+            for (sup, sub) in [(true, false), (false, true), (true, true)] {
+                let want = if sup || position == ScriptPosition::Superscript {
+                    ScriptPosition::Superscript
+                } else {
+                    ScriptPosition::Subscript
+                };
+                let seg = styled(c, false, false, sup, sub);
+                assert_eq!(
+                    DrawnChar::of(&seg),
+                    DrawnChar {
+                        text: base,
+                        position: want
+                    },
+                    "{c} sup={sup} sub={sub}"
+                );
+            }
+        }
+        for c in ['-', '+', '2', 'e', 'μ', '\n', '\u{2212}'] {
+            assert_eq!(
+                DrawnChar::of_char(c),
+                DrawnChar {
+                    text: c,
+                    position: ScriptPosition::Base
+                }
+            );
+        }
+    }
+
+    // #353: U+207B, U+207A and the rest of the Unicode scripts draw as their
+    // base character at the script position, the same pixels as a styled
+    // base segment, on every host: the bundled faces lack U+207A and U+207B
+    // and installed faces do not matter. The pen after a mapped character
+    // sits where measurement ends it, and the drawing is never the .notdef
+    // box.
+    #[test]
+    fn unicode_script_characters_draw_as_styled_base_characters() {
         let _font_registration = FONT_REGISTRATION_TEST_LOCK
             .lock()
             .expect("font registration test lock poisoned");
-        let ch = '\u{207B}';
         let mut scale = ScaleContext::new();
         let bundled = [
             EMBEDDED_REGULAR,
@@ -2505,31 +2676,54 @@ mod tests {
             HANDWRITTEN_REGULAR,
             HANDWRITTEN_BOLD,
         ];
-        for bytes in bundled {
-            let font = FontRef::from_index(bytes, 0).unwrap();
-            assert!(!outline_drawn(font, ch, &mut scale), "fixture");
+        for ch in ['\u{207A}', '\u{207B}'] {
+            for bytes in bundled {
+                let font = FontRef::from_index(bytes, 0).unwrap();
+                assert!(!outline_drawn(font, ch, &mut scale), "fixture: {ch}");
+            }
         }
-        if !installed_face_draws(ch) {
-            return;
-        }
-        let policy = FontPolicy::Standard;
-        let mut real_glyph = false;
-        for (bold, italic) in STYLES {
-            let minus = measure_plain_text("\u{207B}", "", FALLBACK_SIZE, bold, italic, policy);
-            let draw = |runs: &[(&str, f32)]| draw_runs(runs, "", bold, italic, policy);
-            assert!(
-                draw(&[("\u{207B}X", 4.0)]) == draw(&[("\u{207B}", 4.0), ("X", 4.0 + minus.width)]),
-                "the pen after U+207B (bold={bold} italic={italic}) must sit where \
-                 measurement ends it"
+        for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
+            let notdef = draw_rich_runs(
+                &[(&rich_of(rich_segments_from_text(NOTDEF_TEXT)), 4.0)],
+                policy,
             );
-            let drawn = draw(&[("\u{207B}", 4.0)]);
-            real_glyph |= has_ink(&drawn) && drawn != draw(&[(NOTDEF_TEXT, 4.0)]);
+            for (bold, italic) in STYLES {
+                for (c, base, position) in UNICODE_SCRIPTS {
+                    let sup = position == ScriptPosition::Superscript;
+                    let literal = rich_of(vec![styled(c, bold, italic, false, false)]);
+                    let styled_base = rich_of(vec![styled(base, bold, italic, sup, !sup)]);
+                    let what = format!("{c} bold={bold} italic={italic} {policy:?}");
+                    assert_eq!(
+                        measure_rich_text(&literal, policy),
+                        measure_rich_text(&styled_base, policy),
+                        "{what}: measures as the styled base character"
+                    );
+                    let drawn = draw_rich_runs(&[(&literal, 4.0)], policy);
+                    assert!(
+                        drawn == draw_rich_runs(&[(&styled_base, 4.0)], policy),
+                        "{what}: draws the styled base character's pixels"
+                    );
+                    assert!(
+                        has_ink(&drawn) && drawn != notdef,
+                        "{what}: not the .notdef box"
+                    );
+                }
+                // The pen after a mapped run sits where measurement ends it.
+                let minus = rich_of(vec![styled('⁻', bold, italic, false, false)]);
+                let then_x = rich_of(vec![
+                    styled('⁻', bold, italic, false, false),
+                    styled('X', bold, italic, false, false),
+                ]);
+                let x = rich_of(vec![styled('X', bold, italic, false, false)]);
+                let w = measure_rich_text(&minus, policy).width;
+                assert!(
+                    draw_rich_runs(&[(&then_x, 4.0)], policy)
+                        == draw_rich_runs(&[(&minus, 4.0), (&x, 4.0 + w)], policy),
+                    "the pen after U+207B (bold={bold} italic={italic} {policy:?}) must sit \
+                     where measurement ends it"
+                );
+            }
         }
-        assert!(
-            real_glyph,
-            "an installed face draws U+207B, so the default font must draw it in \
-             at least one style instead of the .notdef box"
-        );
     }
 
     // Every legend symbol form must measure EXACTLY the same width at the
@@ -2973,11 +3167,12 @@ mod tests {
         );
 
         let flags = |superscript: bool, subscript: bool| {
-            ScriptPosition::of(&RichSegment {
+            DrawnChar::of(&RichSegment {
                 superscript,
                 subscript,
                 ..RichSegment::plain('2')
             })
+            .position
         };
         assert_eq!(flags(false, false), ScriptPosition::Base);
         assert_eq!(flags(true, false), ScriptPosition::Superscript);

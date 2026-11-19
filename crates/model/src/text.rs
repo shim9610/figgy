@@ -131,6 +131,10 @@ impl CharSet {
     serde(try_from = "segment_serde::RichSegmentIn")
 )]
 pub struct RichSegment {
+    /// The character. A Unicode superscript or subscript character (`⁻`,
+    /// `²`, `₀`, …) is kept as written and draws as its base character at
+    /// that script position ([`unicode_script_char`]), combined with the
+    /// flags below.
     pub text: char,
     pub bold: bool,
     pub italic: bool,
@@ -594,44 +598,70 @@ pub fn rich_segments_from_label(text: &str) -> Vec<RichSegment> {
 }
 
 fn rich_segment_from_char(c: char) -> RichSegment {
-    let (text, superscript, subscript) = match c {
-        '⁰' => ('0', true, false),
-        '¹' => ('1', true, false),
-        '²' => ('2', true, false),
-        '³' => ('3', true, false),
-        '⁴' => ('4', true, false),
-        '⁵' => ('5', true, false),
-        '⁶' => ('6', true, false),
-        '⁷' => ('7', true, false),
-        '⁸' => ('8', true, false),
-        '⁹' => ('9', true, false),
-        '⁺' => ('+', true, false),
-        '⁻' => ('-', true, false),
-        '⁽' => ('(', true, false),
-        '⁾' => (')', true, false),
-        'ⁿ' => ('n', true, false),
-        'ᵗ' => ('t', true, false),
-        '₀' => ('0', false, true),
-        '₁' => ('1', false, true),
-        '₂' => ('2', false, true),
-        '₃' => ('3', false, true),
-        '₄' => ('4', false, true),
-        '₅' => ('5', false, true),
-        '₆' => ('6', false, true),
-        '₇' => ('7', false, true),
-        '₈' => ('8', false, true),
-        '₉' => ('9', false, true),
-        '₊' => ('+', false, true),
-        '₋' => ('-', false, true),
-        '₍' => ('(', false, true),
-        '₎' => (')', false, true),
-        other => (other, false, false),
+    let (text, superscript, subscript) = match unicode_script_char(c) {
+        Some((base, UnicodeScript::Superscript)) => (base, true, false),
+        Some((base, UnicodeScript::Subscript)) => (base, false, true),
+        None => (c, false, false),
     };
     RichSegment {
         superscript,
         subscript,
         ..RichSegment::plain(text)
     }
+}
+
+/// The script position a Unicode superscript or subscript character stands
+/// for ([`unicode_script_char`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnicodeScript {
+    Superscript,
+    Subscript,
+}
+
+/// The base character and script position of a Unicode superscript or
+/// subscript character (`'⁻'` is `'-'` raised, `'₂'` is `'2'` dropped);
+/// `None` for every other character.
+///
+/// The one table of these characters: [`rich_segments_from_text`] and
+/// [`rich_segments_from_label`] split a string with it, and the renderer
+/// maps a segment's `text` with it at draw time, so a literal `"e⁻"`
+/// segment draws as `e` plus a superscript `-` whatever faces are
+/// installed. The stored segment keeps its character.
+pub fn unicode_script_char(c: char) -> Option<(char, UnicodeScript)> {
+    use UnicodeScript::{Subscript as Sub, Superscript as Sup};
+    Some(match c {
+        '⁰' => ('0', Sup),
+        '¹' => ('1', Sup),
+        '²' => ('2', Sup),
+        '³' => ('3', Sup),
+        '⁴' => ('4', Sup),
+        '⁵' => ('5', Sup),
+        '⁶' => ('6', Sup),
+        '⁷' => ('7', Sup),
+        '⁸' => ('8', Sup),
+        '⁹' => ('9', Sup),
+        '⁺' => ('+', Sup),
+        '⁻' => ('-', Sup),
+        '⁽' => ('(', Sup),
+        '⁾' => (')', Sup),
+        'ⁿ' => ('n', Sup),
+        'ᵗ' => ('t', Sup),
+        '₀' => ('0', Sub),
+        '₁' => ('1', Sub),
+        '₂' => ('2', Sub),
+        '₃' => ('3', Sub),
+        '₄' => ('4', Sub),
+        '₅' => ('5', Sub),
+        '₆' => ('6', Sub),
+        '₇' => ('7', Sub),
+        '₈' => ('8', Sub),
+        '₉' => ('9', Sub),
+        '₊' => ('+', Sub),
+        '₋' => ('-', Sub),
+        '₍' => ('(', Sub),
+        '₎' => (')', Sub),
+        _ => return None,
+    })
 }
 
 /// Map Latin a-z/A-Z to the matching Greek letter following the Adobe Symbol
@@ -773,6 +803,48 @@ mod tests {
         for c in ['0', '9', ' ', '+', '=', '.', '-', '_', 'α', 'Ω', '漢'] {
             assert_eq!(greek_char(c), c);
         }
+    }
+
+    // The one table of Unicode scripts (#353): every superscript and
+    // subscript character maps to its base character, the string
+    // conversions split with it, and nothing else maps.
+    #[test]
+    fn unicode_script_table_covers_every_superscript_and_subscript() {
+        let sup = "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁽⁾ⁿᵗ";
+        let sub = "₀₁₂₃₄₅₆₇₈₉₊₋₍₎";
+        let base = "0123456789+-()";
+        let sup_base = base.chars().chain(['n', 't']);
+        for (c, b) in sup.chars().zip(sup_base) {
+            assert_eq!(
+                unicode_script_char(c),
+                Some((b, UnicodeScript::Superscript))
+            );
+            let seg = &rich_segments_from_text(&c.to_string())[0];
+            assert_eq!((seg.text, seg.superscript, seg.subscript), (b, true, false));
+        }
+        for (c, b) in sub.chars().zip(base.chars()) {
+            assert_eq!(unicode_script_char(c), Some((b, UnicodeScript::Subscript)));
+            let seg = &rich_segments_from_text(&c.to_string())[0];
+            assert_eq!((seg.text, seg.superscript, seg.subscript), (b, false, true));
+        }
+        assert_eq!(sup.chars().count() + sub.chars().count(), 30);
+        for c in ['-', '+', '2', 'n', 'e', 'μ', '\u{2212}', '\u{1D62}', ' '] {
+            assert_eq!(unicode_script_char(c), None, "{c}");
+        }
+    }
+
+    // A segment holding a literal script character is data: it keeps the
+    // character through a save and a read (the renderer maps it only when
+    // it draws).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_literal_script_character_round_trips_unchanged() {
+        let seg = RichSegment::plain('⁻');
+        let json = serde_json::to_string(&seg).unwrap();
+        assert!(json.contains("\"text\":\"⁻\""), "{json}");
+        let back: RichSegment = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, seg);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     // Per-segment overrides are additive schema: documents serialized before

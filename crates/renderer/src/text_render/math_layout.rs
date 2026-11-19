@@ -30,7 +30,9 @@
 use swash::FontRef;
 
 use super::math_font::{MathFace, Stretched};
-use super::{FontPolicy, GlyphSink, MeasureSink, glyph_extents_id, glyph_font};
+use super::{
+    DrawnChar, FontPolicy, GlyphSink, MeasureSink, ScriptPosition, glyph_extents_id, glyph_font,
+};
 use crate::color::Color;
 use crate::layout::RectF;
 use crate::text::math::subtree_end;
@@ -352,6 +354,11 @@ impl Formula<'_> {
             if seg.text.is_whitespace() {
                 return None;
             }
+            // A Unicode script character is a script with an empty base,
+            // an ordinary atom.
+            if DrawnChar::of(seg).position != ScriptPosition::Base {
+                return Some(Atom::Ord);
+            }
             return Some(match seg.char_set {
                 CharSet::Text | CharSet::Greek => Atom::Ord,
                 CharSet::Math => char_atom(seg.text),
@@ -522,7 +529,10 @@ impl Formula<'_> {
         }
     }
 
-    /// A leaf: a glyph, or a space of its field width.
+    /// A leaf: a glyph, or a space of its field width. A Unicode super- or
+    /// subscript character ([`DrawnChar`]) is its base character set as a
+    /// script of an empty base: one level smaller, raised or dropped by the
+    /// face's script shifts, as `^` and `_` place it beside a glyph.
     fn leaf(
         &self,
         seg: &RichSegment,
@@ -531,8 +541,63 @@ impl Formula<'_> {
         sink: &mut dyn GlyphSink,
         pen: (f32, f32),
     ) -> MBox {
+        let drawn = DrawnChar::of(seg);
+        let script_style = match drawn.position {
+            ScriptPosition::Base => return self.leaf_char(seg, drawn.text, style, base, sink, pen),
+            ScriptPosition::Superscript => style.sup(),
+            ScriptPosition::Subscript => style.sub(),
+        };
         let size = self.size(style, base);
-        if seg.text.is_whitespace() {
+        let c = self.face.constants().clone();
+        let v = |m| self.face.value(m, size);
+        let inner = self.leaf_char(
+            seg,
+            drawn.text,
+            script_style,
+            base,
+            &mut MeasureSink,
+            (0.0, 0.0),
+        );
+        let dy = if drawn.position == ScriptPosition::Superscript {
+            let u = if style.cramped {
+                v(c.superscript_shift_up_cramped())
+            } else {
+                v(c.superscript_shift_up())
+            };
+            -u.max(v(c.superscript_bottom_min()) + inner.descent).round()
+        } else {
+            v(c.subscript_shift_down())
+                .max(inner.ascent - v(c.subscript_top_max()))
+                .round()
+        };
+        if sink.paints() {
+            self.leaf_char(
+                seg,
+                drawn.text,
+                script_style,
+                base,
+                sink,
+                (pen.0, pen.1 + dy),
+            );
+        }
+        let mut out = MBox::empty(inner.width + v(c.space_after_script()));
+        out.add(&inner, 0.0, dy);
+        out
+    }
+
+    /// A leaf drawing `ch` (the segment's character, or the base character
+    /// of a Unicode script character) at `style`.
+    fn leaf_char(
+        &self,
+        seg: &RichSegment,
+        ch: char,
+        style: Style,
+        base: f32,
+        sink: &mut dyn GlyphSink,
+        pen: (f32, f32),
+    ) -> MBox {
+        let size = self.size(style, base);
+        if ch.is_whitespace() {
             let width = match seg.field_em {
                 Some(f) => f * size,
                 None => {
@@ -542,7 +607,7 @@ impl Formula<'_> {
             };
             return MBox::empty(width);
         }
-        let (font, glyph, math) = self.leaf_glyph(seg, style);
+        let (font, glyph, math) = self.leaf_glyph(seg, ch, style);
         let g = glyph_extents_id(font, size, glyph);
         let (width, inset) = match seg.field_em {
             Some(f) => (f * size, (f * size - g.advance) * 0.5),
@@ -577,14 +642,19 @@ impl Formula<'_> {
     /// alphanumeric, its script alternate in script styles), text from the
     /// policy's chain; a character the math face lacks falls back to the
     /// standard chain.
-    fn leaf_glyph(&self, seg: &RichSegment, style: Style) -> (FontRef<'static>, u16, bool) {
+    fn leaf_glyph(
+        &self,
+        seg: &RichSegment,
+        ch: char,
+        style: Style,
+    ) -> (FontRef<'static>, u16, bool) {
         let ch = match seg.char_set {
             CharSet::Text => {
-                let font = glyph_font(self.policy, &self.rt.font, seg.bold, seg.italic, seg.text);
-                return (font, font.charmap().map(seg.text), false);
+                let font = glyph_font(self.policy, &self.rt.font, seg.bold, seg.italic, ch);
+                return (font, font.charmap().map(ch), false);
             }
-            CharSet::Greek => greek_char(seg.text),
-            CharSet::Math => seg.text,
+            CharSet::Greek => greek_char(ch),
+            CharSet::Math => ch,
         };
         let mapped = self.face.glyph(math_alphanumeric(ch, seg.bold, seg.italic));
         let glyph = if mapped != 0 {
@@ -1642,6 +1712,40 @@ mod tests {
         }
     }
 
+    // #353: a Unicode super- or subscript character in a formula is its
+    // base character set as a script of an empty base, the pixels and the
+    // envelope of `{}^-` and `{}_2`, never the character itself.
+    #[test]
+    fn unicode_script_characters_in_a_formula_are_scripts() {
+        for (c, base, slot) in [('⁻', '-', 1), ('⁺', '+', 1), ('²', '2', 1), ('₂', '2', 2)] {
+            let literal = vec![
+                node(Z, 0, MathKind::Math(MathStyle::Text), None),
+                leaf('x', 0, 0),
+                leaf(c, 0, 0),
+            ];
+            let scripted = vec![
+                node(Z, 0, MathKind::Math(MathStyle::Text), None),
+                leaf('x', 0, 0),
+                node(Z, 1, MathKind::Scripts, Some((0, 0))),
+                leaf(base, 1, slot),
+            ];
+            for segments in [&literal, &scripted] {
+                assert!(crate::text::math::validate_math_segments(segments).is_ok());
+            }
+            for size in [9.0, 16.0, 40.0] {
+                let (a, b) = (text(literal.clone(), size), text(scripted.clone(), size));
+                for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
+                    assert_eq!(
+                        measure_rich_text(&a, policy),
+                        measure_rich_text(&b, policy),
+                        "{c} at {size}"
+                    );
+                    assert!(draw(&a, policy).0 == draw(&b, policy).0, "{c} at {size}");
+                }
+            }
+        }
+    }
+
     // Math glyphs come from the math face whatever the font policy (D6):
     // a formula without text draws the same pixels in sketch mode.
     #[test]
@@ -1888,9 +1992,9 @@ mod tests {
         };
         let prime = leaf('′', 0, 0);
         let script = Style::TEXT.sup();
-        let (_, base_glyph, _) = f.leaf_glyph(&prime, Style::TEXT);
-        let (_, script_glyph, _) = f.leaf_glyph(&prime, script);
-        let (_, tiny_glyph, _) = f.leaf_glyph(&prime, script.sup());
+        let (_, base_glyph, _) = f.leaf_glyph(&prime, prime.text, Style::TEXT);
+        let (_, script_glyph, _) = f.leaf_glyph(&prime, prime.text, script);
+        let (_, tiny_glyph, _) = f.leaf_glyph(&prime, prime.text, script.sup());
         assert_eq!(base_glyph, face.glyph('′'));
         assert_eq!(script_glyph, face.script_alternate(base_glyph, 1));
         assert_eq!(tiny_glyph, face.script_alternate(base_glyph, 2));
