@@ -118,8 +118,8 @@ pub mod tri_mesh;
 pub mod view3d;
 pub use energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelLabelSide,
-    LevelRole, LevelStrokeStyle, LevelView, Transition, TransitionArrowStyle, TransitionDirection,
-    WavelengthLabels,
+    LevelRole, LevelStrokeStyle, LevelView, SpectralColors, Transition, TransitionArrowStyle,
+    TransitionDirection, WavelengthLabels, WavelengthUnit,
 };
 pub use feynman::{
     FeynmanHit, FeynmanLabelPart, FeynmanLayout, FeynmanPicked, FeynmanSeries, FeynmanStyle,

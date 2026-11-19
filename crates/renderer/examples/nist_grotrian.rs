@@ -322,6 +322,7 @@ fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
             label_offset: [0.0; 2],
             value: a,
             x_offset: 0.0,
+            color: None,
             // The host chooses the column: the observed wavelength, else
             // the Ritz one.
             wavelength: Some(wl),
