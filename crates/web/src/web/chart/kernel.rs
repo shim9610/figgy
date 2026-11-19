@@ -84,7 +84,8 @@ pub(in crate::web) async fn create_chart_kernel(
         dragging: false,
         drag_pointer: [0.0; 2],
         resizing: None,
-        cycle: renderer::ColorCycle::Classic,
+        // A new series takes the default palette's next colour (#357).
+        cycle: renderer::ColorCycle::DEFAULT,
         clear_color: Color::WHITE,
         view_dirty: false,
         redraw_pending: true,

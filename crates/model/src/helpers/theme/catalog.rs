@@ -15,7 +15,7 @@ use super::{ChartKind, RadialTheme, Theme, ThemeFamily};
 use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::line::LineStylePreset;
-use crate::preset::AxisPreset;
+use crate::preset::{AxisPreset, ColorCycle};
 
 mod bars;
 mod fields;
@@ -23,8 +23,25 @@ mod radial;
 mod science;
 mod xy;
 
-/// `family`'s member for `kind`.
+/// `family`'s member for `kind`, its palettes filled to
+/// [`MIN_PALETTE`] colours ([`filled`]).
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
+    let mut theme = designed_member(family, kind);
+    // The fill the series are drawn on, as the theme matrix test reads it.
+    let chrome = &theme.chrome;
+    let paper = match chrome.plot_background {
+        Some(fill) if fill.a == 1.0 => fill,
+        _ => chrome.background.unwrap_or(Color::WHITE),
+    };
+    let series = &mut theme.series;
+    series.palette = filled(&series.palette, family, paper);
+    series.range_bars.states = filled(&series.range_bars.states, family, paper);
+    series.ternary.regions = filled(&series.ternary.regions, family, paper);
+    theme
+}
+
+/// `family`'s member for `kind` as designed, before [`filled`].
+fn designed_member(family: ThemeFamily, kind: ChartKind) -> Theme {
     match kind {
         ChartKind::Line
         | ChartKind::Scatter
@@ -47,9 +64,82 @@ pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
     }
 }
 
-/// `family`'s radial member.
+/// `family`'s radial member, its palette filled to [`MIN_PALETTE`]
+/// colours ([`filled`]).
 pub(super) fn radial_member(family: ThemeFamily) -> RadialTheme {
-    radial::member(family)
+    let mut theme = radial::member(family);
+    theme.palette = filled(&theme.palette, family, theme.background);
+    theme
+}
+
+/// The fewest colours a member's palette holds (#357): a chart with up to
+/// this many series, states or regions repeats no colour.
+pub(super) const MIN_PALETTE: usize = 8;
+
+/// How far apart, in RGB (each channel `0..=1`), a colour added by
+/// [`filled`] stays from every colour already in the palette, so that no
+/// added colour reads as a repeat of a designed one.
+const MIN_FILL_DISTANCE: f32 = 0.25;
+
+/// The WCAG contrast ratio an added colour reaches against the fill it is
+/// drawn on, the floor every opaque palette colour of a member meets.
+const MIN_FILL_CONTRAST: f32 = 1.5;
+
+/// The presets a family's palettes are filled from, in order (#357); the
+/// high-contrast set comes last, so a palette always fills.
+fn fill_sources(family: ThemeFamily) -> [ColorCycle; 3] {
+    let [first, second] = match family {
+        ThemeFamily::Gallery => [ColorCycle::Balanced, ColorCycle::Dark2],
+        ThemeFamily::CoolSlate => [ColorCycle::Tableau10, ColorCycle::Dark2],
+        ThemeFamily::Midnight => [ColorCycle::Set2, ColorCycle::Plotly],
+        ThemeFamily::WarmPaper => [ColorCycle::Dark2, ColorCycle::Tableau10],
+    };
+    [first, second, ColorCycle::HighContrast]
+}
+
+/// WCAG contrast ratio of two opaque colours, 1 to 21.
+fn contrast(a: Color, b: Color) -> f32 {
+    let linear = |c: f32| {
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = |c: Color| 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// `palette` with colours from `family`'s fill presets ([`fill_sources`])
+/// appended, in their order, until it holds [`MIN_PALETTE`] colours. The
+/// designed colours keep their places, so the first series look as they
+/// did; an added colour takes the first colour's opacity and is skipped
+/// when it lies within [`MIN_FILL_DISTANCE`] of a colour already in or
+/// falls below [`MIN_FILL_CONTRAST`] against `paper`, the fill it is drawn
+/// on. An empty palette, which keeps every series colour, stays empty.
+fn filled(palette: &[Color], family: ThemeFamily, paper: Color) -> Vec<Color> {
+    let mut out = palette.to_vec();
+    let Some(first) = palette.first() else {
+        return out;
+    };
+    let near = |a: &Color, b: &Color| {
+        let (dr, dg, db) = (a.r - b.r, a.g - b.g, a.b - b.b);
+        (dr * dr + dg * dg + db * db).sqrt() < MIN_FILL_DISTANCE
+    };
+    for cycle in fill_sources(family) {
+        for color in cycle.colors() {
+            if out.len() >= MIN_PALETTE {
+                return out;
+            }
+            if contrast(*color, paper) >= MIN_FILL_CONTRAST
+                && !out.iter().any(|kept| near(kept, color))
+            {
+                out.push(alpha(*color, first.a));
+            }
+        }
+    }
+    out
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {

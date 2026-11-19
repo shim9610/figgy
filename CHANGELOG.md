@@ -41,6 +41,51 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 `MonotonicLine` series kind, a subplot's `text_scale` and a radial slice's
 `text_generated`) are additive.
 
+- **Palette presets and a default colour cycle** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  `ColorCycle` gains five categorical presets from public palettes:
+  `Tableau10` (d3-scale-chromatic, ISC), `Set2` and `Dark2` (ColorBrewer,
+  Apache-2.0; this product includes color specifications and designs
+  developed by Cynthia Brewer, http://colorbrewer.org/), `Plotly` and
+  `HighContrast` (plotly.py `Plotly` and `Dark24`, MIT), beside `Balanced`
+  (D3 category10 / matplotlib tab10) and `ColorblindSafe` (Okabe–Ito). New:
+  `ColorCycle::DEFAULT` (`Balanced`), `ColorCycle::ALL`, `PRESETS`,
+  `name()`, `from_name()`, `color_unset(&mut series)`, and
+  `Theme::with_palette(cycle)` / `RadialTheme::with_palette(cycle)`;
+  `colors()` and `color()` are `const`. The browser `ColorCycle` enum has
+  the same variants, `FiggyChart.theme_with_palette(name, cycle)` and
+  `FiggyBoundedChart.apply_theme_with_palette(name, cycle)` select a preset
+  through the themes, and `<figgy-chart>` forwards `theme_with_palette`.
+  [USAGE.md](crates/renderer/USAGE.md#palette-presets) lists every source
+  and licence.
+  - **Default cycle.** The series constructors (`SeriesConfig::line`,
+    `scatter`, `histogram`, `category_bars`, `box_plot`, `vectors`, ...)
+    start a series in `ColorCycle::DEFAULT.color(0)` instead of black, and
+    `ColorCycle::DEFAULT.color_unset(&mut series)` gives series `i` the
+    cycle's colour `i` when it is still in that starting colour. In the
+    browser a new chart's cycle is `Balanced` instead of `Classic`, so
+    `add_line_series` gives new series its colours in order. The colour is
+    written into the series where it is created; the model has no unset
+    colour, and loading or drawing a document never recolours it. Stored
+    documents therefore read back and draw the same, black series included.
+  - **Theme palettes.** Every family member's palette, range-bar state list
+    and ternary region list holds eight or more distinct colours: a member
+    designed with fewer (the Gallery line chart had 3, error bars 2,
+    histogram 1, distribution 3, vector field 1, parallel 1) keeps its
+    colours first and is filled from the presets, skipping colours close to
+    one already in. Charts with up to the designed number of series look as
+    before; further series no longer repeat colours.
+  - **Migration.** A host that relied on constructors drawing black sets it:
+    `.color(Color::BLACK)`. A browser host that relied on `Classic` calls
+    `apply_color_cycle(ColorCycle.Classic)` first. A host that matched on
+    `ColorCycle` exhaustively handles the five new variants. A test that
+    compared a themed palette with its designed list compares the first
+    entries. Tests: `presets_have_eight_distinct_colours_and_names`,
+    `preset_values_match_their_sources` (`preset.rs`),
+    `constructors_start_in_the_default_cycle`,
+    `color_unset_cycles_in_series_order_and_keeps_set_colours`
+    (`helpers/series.rs`), `every_member_palette_has_eight_distinct_colours`,
+    `filled_palettes_keep_the_designed_colours_first`,
+    `with_palette_selects_a_preset` (`helpers/theme/tests.rs`).
 - **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
   Public items with no caller, aliases and one-line twins of another entry,
   and builders only tests used are removed; serialized documents are
