@@ -8,13 +8,16 @@
 //! lands on, so a wrong projection, pivot or scale fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, GREEN, RED, col as col_f64, count, export_1x as export, is_red_soft as is_red,
+    is_selection, pixel, to8, try_renderer,
+};
 
 use renderer::config::{AxisOptions, AxisScale};
-use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, LineInterpolation,
     MatrixOrientation, MatrixRef, PointColorMap, Shading, StreamlineArrows, VectorColorMap,
@@ -25,58 +28,12 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, FiggyError,
-    GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice,
-    SeriesConfig, StreamlineSeries, Subplot, VectorSeries, display_config_for_surface,
+    GpuPickRequest, OverlayLayer, PickedData, PickedDataRef, RasterImage, Renderer, SeriesConfig,
+    StreamlineSeries, Subplot, VectorSeries, display_config_for_surface,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
-fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
-    Some(
-        Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Bgra8Unorm,
-            4 * 1024 * 1024,
-        )
-        .expect("renderer init"),
-    )
-}
 
 /// Grid and legend off: the only non-vector ink is the black deco frame.
 fn bare_chart() -> Chart {
@@ -229,25 +186,8 @@ fn grid_chart() -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 fn is_green(p: &[u8]) -> bool {
     p[3] > 180 && p[1] > 180 && p[0] < 80 && p[2] < 80
-}
-
-fn is_selection(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[2] > 180 && p[1] < 80
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 fn axis_t(axis: &AxisOptions, v: f64) -> f64 {
@@ -294,16 +234,6 @@ fn assert_clear(img: &RasterImage, origin: (f64, f64), dx: f64, dy: f64, what: &
         !is_red(p),
         "{what}: expected no arrow ink at {origin:?} + ({dx}, {dy}), got {p:?}"
     );
-}
-
-fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer
-        .export_rgba(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()
-        .unwrap()
 }
 
 // ── Pixel mode ───────────────────────────────────────────────────────────────
@@ -585,10 +515,6 @@ fn two_stop_colorbar(scale: AxisScale, min: f64, max: f64) -> ColorBarOptions {
     bar.axis.min = min;
     bar.axis.max = max;
     bar
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 fn assert_colour_at(img: &RasterImage, px: (f64, f64), want: Color, what: &str) {

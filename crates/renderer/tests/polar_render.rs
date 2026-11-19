@@ -7,13 +7,14 @@
 //! radius or sector fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{RED, col, count, export_1x as export, is_red_soft as is_red, pixel, save};
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
-use renderer::data::Column;
 use renderer::data_config::{BarOrientation, DataBarStyleConfig, LineFill, LineInterpolation};
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -31,26 +32,6 @@ use renderer::{GpuPickRequest, display_config_for_surface};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 400;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
@@ -188,15 +169,6 @@ fn inward(config: &Config, theta: f64, r: f64, px: f64) -> (f64, f64) {
     (x - dx / len * px, y - dy / len * px)
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 /// The half-transparent fill: red ink at any alpha (the export is not
 /// composited over a background).
 fn is_tinted(p: &[u8]) -> bool {
@@ -209,32 +181,6 @@ fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
         (x.round() as i64).clamp(0, img.width as i64 - 1) as u32,
         (y.round() as i64).clamp(0, img.height as i64 - 1) as u32,
     )
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
-}
-
-fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer
-        .export_rgba(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()
-        .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 #[test]

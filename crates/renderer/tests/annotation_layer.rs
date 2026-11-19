@@ -3,6 +3,8 @@
 //! parity with fresh renderers, and the common hit-map contract.
 #![cfg(not(target_arch = "wasm32"))]
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[path = "support/gpu.rs"]
@@ -11,16 +13,10 @@ use ::renderer::{
     layout::{NudgeResult, RectF},
     *,
 };
+use harness::{gpu, ink};
 use radial_decorations::Decorations;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 static LOCK: Mutex<()> = Mutex::new(());
-/// The shared test device in a bundle of its own per call, so each renderer
-/// a test builds charges its own ledger and budget (#160).
-fn gpu() -> RendererDevice {
-    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
-}
 const SIZE: (u32, u32) = (800, 520);
 
 fn text(s: &str) -> text::RichText {
@@ -47,17 +43,6 @@ fn boxed_text(anchor: Anchor) -> Annotation {
         align: Default::default(),
     })
 }
-fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
-    let x0 = (r.x * scale).floor().max(0.) as u32;
-    let y0 = (r.y * scale).floor().max(0.) as u32;
-    let x1 = ((r.x + r.width) * scale).ceil().min(image.width as f32) as u32;
-    let y1 = ((r.y + r.height) * scale).ceil().min(image.height as f32) as u32;
-    (y0..y1)
-        .flat_map(|y| (x0..x1).map(move |x| ((y * image.width + x) * 4) as usize))
-        .filter(|&i| image.rgba[i..i + 3].iter().any(|v| *v < 200))
-        .count()
-}
-
 /// A point on the first part the raster places for an item: a stroke's
 /// midpoint, a head's centroid, a box's centre. The centre of the item's
 /// bounds can be empty, for example beside a label.

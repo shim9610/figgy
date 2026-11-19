@@ -3,35 +3,20 @@
 //! Every pixel test exports at 1x and 2x.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{export, renderer_rgba as renderer};
 
 use renderer::feynman::{
     FeynmanSeries, FeynmanVertex, ParticleLine, Propagator, VertexMarker, VertexRole,
 };
 use renderer::layout::{ChartArea, Rect};
-use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig};
+use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, SeriesConfig};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 360;
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 fn series(id: &str, diagram: FeynmanSeries) -> SeriesConfig {
     SeriesConfig {
@@ -102,15 +87,6 @@ fn s_channel() -> FeynmanSeries {
         ],
         ..FeynmanSeries::default()
     }
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
 }
 
 /// The export pixel of data point `(x, y)`.
@@ -1484,5 +1460,109 @@ fn a_diagram_zoomed_a_million_times_draws_and_picks_at_1x_and_2x() {
                 "{scale}x line {k}: {hit:?}"
             );
         }
+    }
+}
+
+/// The s channel committed, its outer vertices labelled `e⁻`, `e⁺`, `μ⁻`
+/// and `μ⁺` in the default (empty) family, each charge built by `sign`.
+fn charged(sign: fn(char) -> Vec<renderer::text::RichSegment>) -> FeynmanSeries {
+    use renderer::text::{RichSegment, RichText};
+    let mut diagram = s_channel();
+    diagram.place_vertices().unwrap();
+    for (k, (letter, charge)) in [
+        (0, ('e', '⁻')),
+        (1, ('e', '⁺')),
+        (4, ('μ', '⁻')),
+        (5, ('μ', '⁺')),
+    ] {
+        let mut segments = vec![RichSegment::plain(letter)];
+        segments.extend(sign(charge));
+        diagram.vertices[k].label = Some(RichText {
+            segments,
+            ..RichText::plain("", Color::BLACK, 16.0, "")
+        });
+    }
+    diagram
+}
+
+/// #353: vertex labels whose charges are literal Unicode segments (`⁻`,
+/// `⁺`, which no bundled face has) draw exactly as the same labels with a
+/// superscript `-` and `+` segment, in PNG at 1x and 2x and in SVG, never
+/// as the .notdef box. The literal characters stay in the series.
+#[test]
+fn literal_unicode_charges_draw_as_superscript_signs() {
+    use renderer::text::RichSegment;
+    let literal = [series("d", charged(|c| vec![RichSegment::plain(c)]))];
+    let styled = [series(
+        "d",
+        charged(|c| renderer::text::rich_segments_from_text(&c.to_string())),
+    )];
+    let boxed = [series(
+        "d",
+        charged(|_| vec![RichSegment::plain('\u{10FFFF}')]),
+    )];
+    let render_type = &literal[0].render_type;
+    let label = &render_type.feynman().unwrap().vertices[0].label;
+    let kept = label.as_ref().unwrap().segments[1].clone();
+    assert_eq!(
+        (kept.text, kept.superscript),
+        ('⁻', false),
+        "data keeps the character"
+    );
+    let styled_sign = &styled[0].render_type.feynman().unwrap().vertices[0]
+        .label
+        .as_ref()
+        .unwrap()
+        .segments[1];
+    assert_eq!((styled_sign.text, styled_sign.superscript), ('-', true));
+
+    let mut r = renderer();
+    // Room around the diagram: the outer vertices sit on its edges and
+    // their labels outside them.
+    let mut chart = chart();
+    chart.set_x_range(-0.5, 1.5);
+    chart.set_y_range(-0.5, 1.5);
+    let bare = [series("d", charged(|_| Vec::new()))];
+    for scale in [1.0f32, 2.0] {
+        let drawn = export(&mut r, &chart, &literal, scale);
+        assert!(
+            drawn.rgba != export(&mut r, &chart, &bare, scale).rgba,
+            "{scale}x: the charges draw"
+        );
+        assert!(
+            drawn.rgba == export(&mut r, &chart, &styled, scale).rgba,
+            "{scale}x: the literal charges draw as superscript signs"
+        );
+        let notdef = export(&mut r, &chart, &boxed, scale);
+        // Only the charges differ from the boxed labels, so every pixel
+        // that differs lies in a label: the charges are drawn, not boxed.
+        let differ = drawn
+            .rgba
+            .chunks_exact(4)
+            .zip(notdef.rgba.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(differ > 0, "{scale}x: a charge draws the .notdef box");
+
+        let mut svg = |list: &[SeriesConfig]| {
+            r.export_svg(
+                renderer::ExportSource::chart(&chart, list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        let literal_svg = svg(&literal);
+        assert_eq!(literal_svg, svg(&styled), "{scale}x SVG");
+        assert_ne!(literal_svg, svg(&boxed), "{scale}x SVG");
+        let mut pdf = |list: &[SeriesConfig]| {
+            r.export_pdf(
+                renderer::ExportSource::chart(&chart, list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        assert!(pdf(&literal) == pdf(&styled), "{scale}x PDF");
     }
 }

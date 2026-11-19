@@ -29,6 +29,7 @@
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use test_gpu::shared_device;
 
 use renderer::{Column, GpuResourceKind, GrowthPolicy, Renderer, RendererDevice};
 
@@ -91,20 +92,8 @@ fn fit(points: &[(f64, f64)]) -> Fit {
 
 // Scenario harness.
 
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    use std::sync::OnceLock;
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
