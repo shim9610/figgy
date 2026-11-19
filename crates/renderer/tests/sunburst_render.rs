@@ -11,27 +11,18 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{radial_renderer as renderer, save_png as save};
 use renderer::radial::*;
-use renderer::{Color, RasterImage, RendererDevice};
+use renderer::{Color, RasterImage};
 use std::f32::consts::TAU;
-use std::sync::OnceLock;
 
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// The shared test device in a bundle of its own per call, so each renderer
-/// a test builds charges its own ledger and budget (#160).
-fn gpu() -> RendererDevice {
-    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
-}
-fn renderer() -> RadialRenderer {
-    RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
-}
-
 const SIZE: (u32, u32) = (600, 600);
 
 /// A node of the tree, by its ring and position, with its colour and the
@@ -182,15 +173,6 @@ fn at(chart: &RadialChart, center: (f32, f32), radius: f32, f: f64, r: f32) -> (
         center.0 + radius * r * a.cos(),
         center.1 + radius * r * a.sin(),
     )
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        let png = renderer::encode_png(image).unwrap();
-        std::fs::write(format!("{path}/{name}.png"), png).unwrap();
-    }
 }
 
 /// Each node is its colour at the middle of its band along its bisector

@@ -1752,6 +1752,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 head_width_px: 6.0,
                 min_length_px: 2.0,
                 color_map: Some(VectorColorMap::Grid(grid(&s_ids))),
+                auto_scale: false,
             },
         }),
     );
@@ -1765,6 +1766,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         head_width_px: 9.0,
         min_length_px: 0.0,
         color_map: None,
+        auto_scale: false,
     };
     probe_style.fit_scale(bounds(|p| p.0), bounds(|p| p.1), 48.0);
     let probes = series(
@@ -3985,6 +3987,7 @@ fn quiver_3d(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         head_width_px: 6.0,
         min_length_px: 0.0,
         color_map: Some(VectorColorMap::Column("q3_s".into())),
+        auto_scale: false,
     };
     style.fit_scale_3d(bounds(0), bounds(1), bounds(2), 0.8 * spacing);
     let mut arrows = series(

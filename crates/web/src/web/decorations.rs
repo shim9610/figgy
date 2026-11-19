@@ -1186,6 +1186,26 @@ impl FiggyChart {
         theme_to_js(&theme)
     }
 
+    /// [`Self::theme`] with its series palette replaced by the preset
+    /// `cycle` (#357): the family's chrome and parts with, say, the
+    /// Okabe–Ito or ColorBrewer Set2 colours. Pass it to
+    /// [`Self::apply_custom_theme`]. Refused as [`Self::theme`] refuses the
+    /// name.
+    ///
+    /// Returns a plain object, not a JSON string.
+    #[wasm_bindgen(unchecked_return_type = "FiggyThemeObject")]
+    pub fn theme_with_palette(&self, name: &str, cycle: ColorCycle) -> Result<JsValue, JsValue> {
+        let theme = renderer::theme::Theme::for_chart(
+            name,
+            self.chart_config()?,
+            self.chart_series()?,
+            renderer::LayerRef::Base,
+        )
+        .map_err(theme_error)?
+        .with_palette(renderer::ColorCycle::from(cycle));
+        theme_to_js(&theme)
+    }
+
     /// The member of the family `name` subplot `index` takes (#295), as
     /// [`Self::apply_theme`] gives it there, as a plain object to edit and
     /// pass to [`Self::apply_custom_theme`]. Refused as [`Self::theme`]

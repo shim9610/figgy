@@ -14,13 +14,17 @@
 //! renderer draws with.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, CYAN, GREEN, ORANGE, RED, YELLOW, col, is_blue, is_cyan, is_magenta, is_orange, is_red,
+    pixel,
+};
+use test_gpu::shared_device;
 
 use renderer::config::Category;
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, BoxOutlierShape, BoxPlotOverride, BoxPlotSeriesLabels, BoxPlotStyle, BoxPlotTarget,
     BoxPoints, BoxPointsStyle, CategoryBarDirection, CategoryBarMode, Violin, ViolinBody,
@@ -35,28 +39,8 @@ use renderer::{
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
-const YELLOW: Color = Color::from_rgb8(255, 255, 0);
-const CYAN: Color = Color::from_rgb8(0, 255, 255);
-const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-
 /// The curve grid of every category: values 10..=90, one per unit.
 const GRID: std::ops::RangeInclusive<i32> = 10..=90;
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// A triangular density on the grid peaking at `peak` with height 1 and
 /// reaching 0 `spread` away.
@@ -263,26 +247,6 @@ fn chart(direction: CategoryBarDirection) -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
-fn is_cyan(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[2] > 200 && p[0] < 60
-}
-fn is_orange(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
-}
-fn is_magenta(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
 fn is_ink(p: &[u8]) -> bool {
     p[3] > 100
 }

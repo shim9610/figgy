@@ -238,6 +238,13 @@ impl Config {
 
 /// Color rotation rules for multi-series plots. `color(i)` wraps around, so
 /// any number of series can be colored consistently.
+///
+/// The categorical presets (#357) come from established public palettes;
+/// each has eight or more colours, no two alike, and its source and licence
+/// are noted on its variant and in `crates/renderer/USAGE.md` ("Palette
+/// presets"). [`ColorCycle::DEFAULT`] is the cycle a series takes when the
+/// host does not colour it. `Classic`, `Vivid` and `Monochrome` are figgy's
+/// own rotations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorCycle {
     /// Strong primary rotation starting at black — the classic
@@ -246,14 +253,46 @@ pub enum ColorCycle {
     /// High-saturation, high-contrast rotation — the look of biostatistics
     /// plotting tools, optimized for telling few series apart at a glance.
     Vivid,
-    /// Ten balanced mid-saturation hues (the public "tab10" palette) — the
-    /// modern general-purpose default.
+    /// Ten balanced mid-saturation hues — the modern general-purpose
+    /// default ([`ColorCycle::DEFAULT`]). The values are D3's
+    /// `schemeCategory10`, which matplotlib ships as `tab10` and Vega as
+    /// `category10`. Source: d3-scale-chromatic,
+    /// <https://github.com/d3/d3-scale-chromatic> (ISC licence).
     Balanced,
     /// The Okabe–Ito eight-color palette, designed to stay distinguishable
-    /// under the common forms of color-vision deficiency.
+    /// under the common forms of color-vision deficiency. Source: M. Okabe
+    /// and K. Ito, "Color Universal Design (CUD)", 2002/2008,
+    /// <https://jfly.uni-koeln.de/color/>; published as a free
+    /// recommendation, no licence terms.
     ColorblindSafe,
-    /// Grayscale steps for print-safe single-ink figures.
+    /// Grayscale steps for print-safe single-ink figures. Not a categorical
+    /// preset: four steps, for one ink.
     Monochrome,
+    /// Tableau 10, the ten-colour palette Tableau introduced in 2016.
+    /// Source: d3-scale-chromatic `schemeTableau10`,
+    /// <https://github.com/d3/d3-scale-chromatic> (ISC licence).
+    Tableau10,
+    /// ColorBrewer Set2: eight soft qualitative colours. Source: Cynthia
+    /// Brewer, Mark Harrower and The Pennsylvania State University,
+    /// <https://colorbrewer2.org> (Apache-2.0 licence; this product
+    /// includes color specifications and designs developed by Cynthia
+    /// Brewer).
+    Set2,
+    /// ColorBrewer Dark2: eight dark qualitative colours that hold up on
+    /// white. Source: Cynthia Brewer, Mark Harrower and The Pennsylvania
+    /// State University, <https://colorbrewer2.org> (Apache-2.0 licence;
+    /// this product includes color specifications and designs developed by
+    /// Cynthia Brewer).
+    Dark2,
+    /// Plotly's default ten-colour qualitative sequence. Source: plotly.py
+    /// `plotly.colors.qualitative.Plotly`,
+    /// <https://github.com/plotly/plotly.py> (MIT licence).
+    Plotly,
+    /// A high-contrast set of 24 dark, saturated colours that stand off a
+    /// light background, for charts with many series. Source: plotly.py
+    /// `plotly.colors.qualitative.Dark24`,
+    /// <https://github.com/plotly/plotly.py> (MIT licence).
+    HighContrast,
 }
 
 const CLASSIC: &[Color] = &[
@@ -313,21 +352,161 @@ const MONOCHROME: &[Color] = &[
     rgb8(191, 191, 191),
 ];
 
+// Tableau 10 (d3-scale-chromatic `schemeTableau10`, ISC licence).
+const TABLEAU10: &[Color] = &[
+    rgb8(0x4e, 0x79, 0xa7),
+    rgb8(0xf2, 0x8e, 0x2c),
+    rgb8(0xe1, 0x57, 0x59),
+    rgb8(0x76, 0xb7, 0xb2),
+    rgb8(0x59, 0xa1, 0x4f),
+    rgb8(0xed, 0xc9, 0x49),
+    rgb8(0xaf, 0x7a, 0xa1),
+    rgb8(0xff, 0x9d, 0xa7),
+    rgb8(0x9c, 0x75, 0x5f),
+    rgb8(0xba, 0xb0, 0xab),
+];
+
+// ColorBrewer Set2. Apache-2.0: this product includes color specifications
+// and designs developed by Cynthia Brewer (http://colorbrewer.org/).
+const SET2: &[Color] = &[
+    rgb8(0x66, 0xc2, 0xa5),
+    rgb8(0xfc, 0x8d, 0x62),
+    rgb8(0x8d, 0xa0, 0xcb),
+    rgb8(0xe7, 0x8a, 0xc3),
+    rgb8(0xa6, 0xd8, 0x54),
+    rgb8(0xff, 0xd9, 0x2f),
+    rgb8(0xe5, 0xc4, 0x94),
+    rgb8(0xb3, 0xb3, 0xb3),
+];
+
+// ColorBrewer Dark2. Apache-2.0: this product includes color specifications
+// and designs developed by Cynthia Brewer (http://colorbrewer.org/).
+const DARK2: &[Color] = &[
+    rgb8(0x1b, 0x9e, 0x77),
+    rgb8(0xd9, 0x5f, 0x02),
+    rgb8(0x75, 0x70, 0xb3),
+    rgb8(0xe7, 0x29, 0x8a),
+    rgb8(0x66, 0xa6, 0x1e),
+    rgb8(0xe6, 0xab, 0x02),
+    rgb8(0xa6, 0x76, 0x1d),
+    rgb8(0x66, 0x66, 0x66),
+];
+
+// Plotly (plotly.py `qualitative.Plotly`, MIT licence).
+const PLOTLY: &[Color] = &[
+    rgb8(0x63, 0x6e, 0xfa),
+    rgb8(0xef, 0x55, 0x3b),
+    rgb8(0x00, 0xcc, 0x96),
+    rgb8(0xab, 0x63, 0xfa),
+    rgb8(0xff, 0xa1, 0x5a),
+    rgb8(0x19, 0xd3, 0xf3),
+    rgb8(0xff, 0x66, 0x92),
+    rgb8(0xb6, 0xe8, 0x80),
+    rgb8(0xff, 0x97, 0xff),
+    rgb8(0xfe, 0xcb, 0x52),
+];
+
+// High contrast (plotly.py `qualitative.Dark24`, MIT licence).
+const HIGH_CONTRAST: &[Color] = &[
+    rgb8(0x2e, 0x91, 0xe5),
+    rgb8(0xe1, 0x5f, 0x99),
+    rgb8(0x1c, 0xa7, 0x1c),
+    rgb8(0xfb, 0x0d, 0x0d),
+    rgb8(0xda, 0x16, 0xff),
+    rgb8(0x22, 0x2a, 0x2a),
+    rgb8(0xb6, 0x81, 0x00),
+    rgb8(0x75, 0x0d, 0x86),
+    rgb8(0xeb, 0x66, 0x3b),
+    rgb8(0x51, 0x1c, 0xfb),
+    rgb8(0x00, 0xa0, 0x8b),
+    rgb8(0xfb, 0x00, 0xd1),
+    rgb8(0xfc, 0x00, 0x80),
+    rgb8(0xb2, 0x82, 0x8d),
+    rgb8(0x6c, 0x7c, 0x32),
+    rgb8(0x77, 0x8a, 0xae),
+    rgb8(0x86, 0x2a, 0x16),
+    rgb8(0xa7, 0x77, 0xf1),
+    rgb8(0x62, 0x00, 0x42),
+    rgb8(0x16, 0x16, 0xa7),
+    rgb8(0xda, 0x60, 0xca),
+    rgb8(0x6c, 0x45, 0x16),
+    rgb8(0x0d, 0x2a, 0x63),
+    rgb8(0xaf, 0x00, 0x38),
+];
+
 impl ColorCycle {
+    /// The cycle a series takes when the host leaves its colour unset: the
+    /// series constructors start in its first colour, and
+    /// [`Self::color_unset`] gives each series still in it the colour of its
+    /// place (#357).
+    pub const DEFAULT: Self = Self::Balanced;
+
+    /// Every cycle, in declaration order.
+    pub const ALL: [Self; 10] = [
+        Self::Classic,
+        Self::Vivid,
+        Self::Balanced,
+        Self::ColorblindSafe,
+        Self::Monochrome,
+        Self::Tableau10,
+        Self::Set2,
+        Self::Dark2,
+        Self::Plotly,
+        Self::HighContrast,
+    ];
+
+    /// The categorical presets from public palettes (#357), each with eight
+    /// or more distinct colours.
+    pub const PRESETS: [Self; 7] = [
+        Self::Balanced,
+        Self::ColorblindSafe,
+        Self::Tableau10,
+        Self::Set2,
+        Self::Dark2,
+        Self::Plotly,
+        Self::HighContrast,
+    ];
+
+    /// The cycle's name, in kebab case (`"balanced"`, `"set2"`, ...).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Vivid => "vivid",
+            Self::Balanced => "balanced",
+            Self::ColorblindSafe => "colorblind-safe",
+            Self::Monochrome => "monochrome",
+            Self::Tableau10 => "tableau10",
+            Self::Set2 => "set2",
+            Self::Dark2 => "dark2",
+            Self::Plotly => "plotly",
+            Self::HighContrast => "high-contrast",
+        }
+    }
+
+    /// The cycle named `name` ([`Self::name`]), or `None`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|cycle| cycle.name() == name)
+    }
+
     /// The full palette in rotation order.
-    pub fn colors(self) -> &'static [Color] {
+    pub const fn colors(self) -> &'static [Color] {
         match self {
             Self::Classic => CLASSIC,
             Self::Vivid => VIVID,
             Self::Balanced => BALANCED,
             Self::ColorblindSafe => COLORBLIND_SAFE,
             Self::Monochrome => MONOCHROME,
+            Self::Tableau10 => TABLEAU10,
+            Self::Set2 => SET2,
+            Self::Dark2 => DARK2,
+            Self::Plotly => PLOTLY,
+            Self::HighContrast => HIGH_CONTRAST,
         }
     }
 
     /// Color for the `index`-th series — wraps past the palette end, so it is
     /// total over any series count.
-    pub fn color(self, index: usize) -> Color {
+    pub const fn color(self, index: usize) -> Color {
         let palette = self.colors();
         palette[index % palette.len()]
     }
@@ -354,6 +533,84 @@ impl ColorCycle {
             self.apply_to_series(s, i);
         }
     }
+
+    /// Colour the series whose colour the host left unset, in series
+    /// order: series `i` takes `color(i)` when every part a palette colours
+    /// is still in [`ColorCycle::DEFAULT`]'s first colour, the colour the
+    /// series constructors start in (#357). A series coloured otherwise,
+    /// black included, keeps its colours, and so does a kind the
+    /// constructors leave uncoloured (a field fill, an RGB image, an
+    /// energy-level or a Feynman diagram). The colours are written into the
+    /// series, so the document says what is drawn; call this where the
+    /// series list is built, not on a loaded document.
+    pub fn color_unset(self, series: &mut [SeriesConfig]) {
+        let unset = Self::DEFAULT.color(0);
+        for (i, s) in series.iter_mut().enumerate() {
+            if cycle_color(s) == Some(unset) {
+                recolor_series(s, self.color(i));
+            }
+        }
+    }
+}
+
+/// The one colour every part a palette colours ([`recolor_series`]) holds,
+/// for the kinds the series constructors colour; `None` when the parts
+/// differ, the series has none, or it is a kind the constructors leave
+/// uncoloured.
+fn cycle_color(series: &SeriesConfig) -> Option<Color> {
+    let mut found: Option<Color> = None;
+    let mut same = true;
+    let mut see = |c: Color| match found {
+        None => found = Some(c),
+        Some(f) => same &= f == c,
+    };
+    match &series.render_type {
+        DataRenderType::Xy(xy) => {
+            if let Some(scatter) = &xy.scatter {
+                see(scatter.point_color);
+            }
+            if let Some(line) = &xy.line {
+                see(line.line_color);
+            }
+            if let Some(errors) = &xy.errors {
+                see(errors.style.error_bar_color);
+            }
+            if let Some(stem) = &xy.stem {
+                see(stem.color);
+            }
+        }
+        DataRenderType::Histogram(HistogramSeries { bar }) => see(bar.fill_color),
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(contour),
+            ..
+        })
+        | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            contour: Some(contour),
+            ..
+        }) => see(contour.line.line_color),
+        DataRenderType::Vector(VectorSeries { style, .. }) => see(style.color),
+        DataRenderType::CategoryBars(CategoryBarSeries { color, .. })
+        | DataRenderType::BoxPlot(BoxSeries { color, .. })
+        | DataRenderType::RangeBars(RangeBarSeries { color, .. })
+        | DataRenderType::Radar(RadarPolygonSeries { color, .. }) => see(*color),
+        DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
+            if let Some(scatter) = scatter {
+                see(scatter.point_color);
+            }
+            if let Some(line) = line {
+                see(line.line_color);
+            }
+        }
+        DataRenderType::Streamlines(StreamlineSeries { line, .. })
+        | DataRenderType::Parallel(ParallelSeries { line, .. }) => see(line.line_color),
+        DataRenderType::MonotonicLine(monotonic) => see(monotonic.line.line_color),
+        DataRenderType::Field(_)
+        | DataRenderType::TriMesh(_)
+        | DataRenderType::RgbImage(_)
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::Feynman(_) => {}
+    }
+    found.filter(|_| same)
 }
 
 /// Give `series` the colour `c` where a palette colours it: the line,
@@ -629,14 +886,45 @@ mod tests {
     }
 
     #[test]
+    fn presets_have_eight_distinct_colours_and_names() {
+        // #357: every categorical preset has eight or more colours, no two
+        // alike, and a name that reads back.
+        for cycle in ColorCycle::PRESETS {
+            let colors = cycle.colors();
+            assert!(colors.len() >= 8, "{cycle:?} has {}", colors.len());
+            for (i, a) in colors.iter().enumerate() {
+                assert!(
+                    colors[i + 1..].iter().all(|b| a != b),
+                    "{cycle:?} repeats a colour"
+                );
+                assert_eq!(a.a, 1.0);
+            }
+        }
+        for cycle in ColorCycle::ALL {
+            assert_eq!(ColorCycle::from_name(cycle.name()), Some(cycle));
+        }
+        assert_eq!(ColorCycle::from_name("nope"), None);
+        assert!(ColorCycle::PRESETS.contains(&ColorCycle::DEFAULT));
+    }
+
+    #[test]
+    fn preset_values_match_their_sources() {
+        // Spot checks against the published values: d3-scale-chromatic
+        // (category10, Tableau10, Set2, Dark2) and plotly.py (Plotly,
+        // Dark24).
+        assert_eq!(ColorCycle::Balanced.color(0), rgb8(0x1f, 0x77, 0xb4));
+        assert_eq!(ColorCycle::Tableau10.color(5), rgb8(0xed, 0xc9, 0x49));
+        assert_eq!(ColorCycle::Set2.color(7), rgb8(0xb3, 0xb3, 0xb3));
+        assert_eq!(ColorCycle::Dark2.color(0), rgb8(0x1b, 0x9e, 0x77));
+        assert_eq!(ColorCycle::Plotly.color(9), rgb8(0xfe, 0xcb, 0x52));
+        assert_eq!(ColorCycle::HighContrast.len(), 24);
+        assert_eq!(ColorCycle::HighContrast.color(23), rgb8(0xaf, 0x00, 0x38));
+        assert_eq!(ColorCycle::ColorblindSafe.color(0), rgb8(0xe6, 0x9f, 0x00));
+    }
+
+    #[test]
     fn cycle_color_wraps_around() {
-        for cycle in [
-            ColorCycle::Classic,
-            ColorCycle::Vivid,
-            ColorCycle::Balanced,
-            ColorCycle::ColorblindSafe,
-            ColorCycle::Monochrome,
-        ] {
+        for cycle in ColorCycle::ALL {
             let n = cycle.len();
             assert!(n >= 4, "{cycle:?} palette too small");
             assert_eq!(cycle.color(0), cycle.color(n));

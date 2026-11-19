@@ -12,7 +12,8 @@
 //! work under CLAUDE.md rule 1). The host also writes the notation (#357):
 //! NIST's `1P*` as the term symbol ¹P°, the configuration `1s2` as 1s²,
 //! and it derives the energy axis' break from its own levels. The chart
-//! takes the Grotrian frame (`AxisPreset::Grotrian`) without a theme.
+//! starts in the Grotrian frame (`default::config_for_series`) without a
+//! theme.
 //!
 //! Run from the workspace root, optionally with your own exports:
 //! cargo run --locked -p figgy-renderer --example nist_grotrian -- target/nist_grotrian [levels.csv lines.csv]
@@ -37,7 +38,7 @@ use renderer::energy_levels::{
     EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, Transition,
 };
 use renderer::text::RichText;
-use renderer::{Color, Renderer, SeriesConfig};
+use renderer::{Chart, Color, Renderer, SeriesConfig, default};
 use std::path::{Path, PathBuf};
 
 /// One CSV record: the fields of one line, NIST's `="…"` quoting removed.
@@ -369,7 +370,17 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         text: RichText::plain("", Color::from_rgb8(150, 90, 0), 18.0, ""),
     });
 
-    let mut c = chart("He I energy levels", "", "Energy (eV)", (1100, 780));
+    let spec = SeriesConfig::energy_levels("he", series);
+    let renderer::DataRenderType::EnergyLevels(series) = &spec.render_type else {
+        return Err("an energy-level series".into());
+    };
+    // The default config in the frame of an energy-level chart (#357): the
+    // Grotrian frame, the energy axis alone with the term columns named
+    // without a value frame, no grid and no mirrored ticks.
+    let mut c = Chart::new(default::config_for_series(std::slice::from_ref(&spec)))
+        .with_area(0, 0, 1100, 780)
+        .with_title("He I energy levels")
+        .with_y_title("Energy (eV)");
     // Singlets, a spacer, then triplets, each column named by its term
     // symbol (¹P°), the diagram's column headings, under two group headers.
     let mut categories = Vec::new();
@@ -408,10 +419,6 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         offset: [0.0; 2],
     });
     c.config_mut().bottom_x.categories = Some(categories);
-    // The Grotrian frame: the energy axis alone, the term columns named
-    // without a value frame, no grid, no mirrored ticks (#357).
-    c.config_mut()
-        .apply_axis_preset(renderer::AxisPreset::Grotrian);
     // Text read beside the levels: energy ticks at 20 px, the title at 22.
     let config = c.config_mut();
     config.left_y.label_style.font_size = 20.0;
@@ -422,7 +429,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
     // renderer computes no break (#357 item 13).
     c.set_y_range(-0.15, 25.2);
     c.config_mut().left_y.minor_count = 1;
-    c.config_mut().left_y.breaks = derived_break(&series, -0.15, 25.2);
+    c.config_mut().left_y.breaks = derived_break(series, -0.15, 25.2);
     // The continuum: annotations written from the limits.
     let top = 25.2;
     series.write_continuum(
@@ -445,7 +452,6 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
             *y -= 10.0 / plot.height.max(1) as f32;
         }
     }
-    let spec = SeriesConfig::energy_levels("he", series);
     save(r, &mut c, &[spec], &out.join("nist-grotrian-he-i.png"))
 }
 

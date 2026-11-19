@@ -2330,114 +2330,157 @@ fn histogram_orientation_round_trip_refreshes_first_frame_without_reupload() {
         "a full-state grid edit must reuse unchanged bar styles"
     );
 }
-/// Line fill and step interpolation are series declarations: each edit
-/// refreshes the first frame to exactly what a fresh renderer draws for the
-/// final state, moves only the data revision (never the view or selection),
-/// reuses the column allocations, and an identical re-declaration changes
-/// nothing.
-#[test]
-fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
-    use crate::data_config::{DataLineStyleConfig, LineFill, LineInterpolation};
-    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .unwrap();
-    let mut config = baseline();
-    config.legend.visible = false;
-    let mut series = declaration("s", "x", "a");
-    let (mut r, id) = fixture(&config, true, false);
-    let (plain, _) = frame(&mut r, id, true);
-    let generation = r.pool.generation();
-    let used_bytes = r.pool.used_bytes();
-    let mut previous = plain;
-    let edits: [(&str, fn(&mut DataLineStyleConfig)); 5] = [
-        ("fill to baseline", |line| {
-            line.fill = Some(LineFill::ToBaseline(0.0));
-        }),
-        ("fill colour", |line| {
-            line.fill_color = Some(Color::new(0.1, 0.6, 0.2, 0.5));
-        }),
-        ("step post with fill", |line| {
-            line.interpolation = LineInterpolation::StepPost;
-        }),
-        ("step mid without fill", |line| {
-            line.fill = None;
-            line.interpolation = LineInterpolation::StepMid;
-        }),
-        ("back to linear", |line| {
-            line.interpolation = LineInterpolation::Linear;
-        }),
-    ];
-    for (name, apply) in edits {
-        let DataRenderType::Xy(crate::data_config::XySeries {
-            scatter: None,
-            line: Some(line),
-            errors: None,
-            ..
-        }) = &mut series.render_type
-        else {
-            unreachable!()
-        };
-        apply(line);
-        let revisions = r.chart_states[&id].revisions;
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        let updated = r.chart_states[&id].revisions;
-        assert_ne!(
-            updated.data, revisions.data,
-            "{name}: a render_type edit is a data declaration change"
-        );
-        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
-        assert_eq!(updated.selection, revisions.selection, "{name}");
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture(&config, true, false);
-        fresh
-            .set_chart_series(fresh_id, vec![series.clone()])
-            .unwrap();
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
-        // An identical re-declaration leaves the data revision and the frame.
-        let revisions = r.chart_states[&id].revisions;
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        assert_eq!(r.chart_states[&id].revisions.data, revisions.data, "{name}");
-        assert_eq!(frame(&mut r, id, true).0, expected, "{name}: stable");
-    }
-    // Back to the original declaration: the plain line, pixel for pixel.
-    assert_eq!(previous, frame(&mut r, id, true).0);
-    let mut fresh_plain = declaration("s", "x", "a");
+/// One series family's SSOT edits (#341): the chart and series it starts
+/// from, the columns it draws, and the series and chart edits applied in
+/// order to one renderer.
+struct EditFamily {
+    family: &'static str,
+    config: Config,
+    series: SeriesConfig,
+    /// Adds the family's columns beside the fixture's `x` and `a`.
+    columns: fn(&mut Renderer),
+    series_edits: Vec<(&'static str, fn(&mut SeriesConfig))>,
+    config_edits: Vec<(&'static str, fn(&mut Config))>,
+    /// A series edit moves the data revision and never the view revision.
+    data_revision: bool,
+    /// A series edit never moves the selection revision.
+    selection_revision: bool,
+    /// An identical re-declaration keeps the data revision and the frame.
+    stable: bool,
+    /// Checks after the last edit, given the first and the last frame.
+    after: fn(&str, &mut Renderer, ChartId, &Config, &[u8], &[u8]),
+}
+
+fn no_columns(_: &mut Renderer) {}
+
+fn nothing_after(_: &str, _: &mut Renderer, _: ChartId, _: &Config, _: &[u8], _: &[u8]) {}
+
+/// The fixture with `family`'s columns, drawing `series` on `config`.
+fn edit_fixture(
+    family: &EditFamily,
+    config: &Config,
+    series: &SeriesConfig,
+) -> (Renderer, ChartId) {
+    let (mut r, id) = fixture(config, true, false);
+    (family.columns)(&mut r);
+    r.set_chart_series(id, vec![series.clone()]).unwrap();
+    (r, id)
+}
+
+/// The line of an XY line series.
+fn edited_line(s: &mut SeriesConfig) -> &mut crate::data_config::DataLineStyleConfig {
     let DataRenderType::Xy(crate::data_config::XySeries {
         scatter: None,
         line: Some(line),
         errors: None,
         ..
-    }) = &mut fresh_plain.render_type
+    }) = &mut s.render_type
     else {
         unreachable!()
     };
-    line.interpolation = LineInterpolation::Linear;
-    r.set_chart_series(id, vec![fresh_plain]).unwrap();
-    let (mut fresh, fresh_id) = fixture(&config, true, false);
-    assert_eq!(
-        frame(&mut r, id, true).0,
-        frame(&mut fresh, fresh_id, true).0
-    );
+    line
 }
 
-/// A stem edit (#206) is a series declaration change: the data revision
-/// moves, nothing is re-uploaded, and the first frame after each edit (add
-/// stems, baseline, width, dash, direction, colour, remove) equals a fresh
-/// renderer's.
-#[test]
-fn stem_edits_refresh_first_frame_without_reupload() {
-    use crate::data_config::{CategoryBarDirection, DataScatterStyleConfig, ScatterShape, Stem};
-    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .unwrap();
+fn edited_stem(s: &mut SeriesConfig) -> &mut Option<crate::data_config::Stem> {
+    let DataRenderType::Xy(xy) = &mut s.render_type else {
+        unreachable!()
+    };
+    &mut xy.stem
+}
+
+fn edited_mesh(s: &mut SeriesConfig) -> &mut crate::tri_mesh::TriMeshSeries {
+    match &mut s.render_type {
+        DataRenderType::TriMesh(mesh) => mesh,
+        _ => unreachable!(),
+    }
+}
+
+fn edited_streamlines(s: &mut SeriesConfig) -> &mut StreamlineSeries {
+    match &mut s.render_type {
+        DataRenderType::Streamlines(streamlines) => streamlines,
+        _ => unreachable!(),
+    }
+}
+
+fn edited_diagram(s: &mut SeriesConfig) -> &mut crate::feynman::FeynmanSeries {
+    s.render_type.feynman_mut().unwrap()
+}
+
+/// The colourbar edits every colour-mapped family takes.
+fn family_colormap_edits() -> [(&'static str, fn(&mut Config)); 2] {
+    [
+        ("colormap", |c| {
+            c.colorbar.as_mut().unwrap().colormap = crate::ColorMap::Custom {
+                stops: vec![
+                    Color::new(0.0, 0.0, 1.0, 1.0),
+                    Color::new(1.0, 1.0, 0.0, 1.0),
+                ],
+            };
+        }),
+        ("colorbar range", |c| {
+            c.colorbar.as_mut().unwrap().axis.max = 2.0
+        }),
+    ]
+}
+
+/// Line fill and step interpolation are series declarations: each edit
+/// moves only the data revision (never the view or selection), and an
+/// identical re-declaration changes nothing. Back to the original
+/// declaration, the line draws as the fixture's plain line.
+fn line_fill_and_step_family() -> EditFamily {
+    use crate::data_config::{LineFill, LineInterpolation};
+    let mut config = baseline();
+    config.legend.visible = false;
+    EditFamily {
+        family: "line fill and step",
+        config,
+        series: declaration("s", "x", "a"),
+        columns: no_columns,
+        series_edits: vec![
+            ("fill to baseline", |s| {
+                edited_line(s).fill = Some(LineFill::ToBaseline(0.0));
+            }),
+            ("fill colour", |s| {
+                edited_line(s).fill_color = Some(Color::new(0.1, 0.6, 0.2, 0.5));
+            }),
+            ("step post with fill", |s| {
+                edited_line(s).interpolation = LineInterpolation::StepPost;
+            }),
+            ("step mid without fill", |s| {
+                let line = edited_line(s);
+                line.fill = None;
+                line.interpolation = LineInterpolation::StepMid;
+            }),
+            ("back to linear", |s| {
+                edited_line(s).interpolation = LineInterpolation::Linear;
+            }),
+        ],
+        config_edits: Vec::new(),
+        data_revision: true,
+        selection_revision: true,
+        stable: true,
+        after: |family, r, id, config, _, last| {
+            // Back to the original declaration: the plain line, pixel for
+            // pixel.
+            assert_eq!(last, frame(r, id, true).0, "{family}");
+            let mut plain = declaration("s", "x", "a");
+            edited_line(&mut plain).interpolation = LineInterpolation::Linear;
+            r.set_chart_series(id, vec![plain]).unwrap();
+            let (mut fresh, fresh_id) = fixture(config, true, false);
+            assert_eq!(
+                frame(r, id, true).0,
+                frame(&mut fresh, fresh_id, true).0,
+                "{family}"
+            );
+        },
+    }
+}
+
+/// A stem edit (#206) is a series declaration change (add stems, baseline,
+/// width, dash, direction, colour, remove); removing the stems restores
+/// the plain markers, pixel for pixel.
+fn stem_family() -> EditFamily {
+    use crate::data_config::{CategoryBarDirection, ScatterShape, Stem};
     let mut config = baseline();
     config.legend.visible = false;
     let mut series = declaration("s", "x", "a");
@@ -2456,80 +2499,57 @@ fn stem_edits_refresh_first_frame_without_reupload() {
         errors: None,
         stem: None,
     });
-    let (mut r, id) = fixture(&config, true, false);
-    r.set_chart_series(id, vec![series.clone()]).unwrap();
-    let (plain, _) = frame(&mut r, id, true);
-    let generation = r.pool.generation();
-    let used_bytes = r.pool.used_bytes();
-    let mut previous = plain.clone();
-    let edits: [(&str, fn(&mut Option<Stem>)); 7] = [
-        ("add stems", |stem| {
-            *stem = Some(Stem {
-                baseline: 0.0,
-                direction: CategoryBarDirection::Vertical,
-                color: Color::new(0.8, 0.1, 0.1, 1.0),
-                width: 2.0,
-                line_style: crate::line::LineStylePreset::Solid,
-            });
-        }),
-        ("baseline", |stem| stem.as_mut().unwrap().baseline = 0.4),
-        ("width", |stem| stem.as_mut().unwrap().width = 4.0),
-        ("dash", |stem| {
-            stem.as_mut().unwrap().line_style = crate::line::LineStylePreset::Dash;
-        }),
-        ("horizontal", |stem| {
-            stem.as_mut().unwrap().direction = CategoryBarDirection::Horizontal;
-        }),
-        ("colour", |stem| {
-            stem.as_mut().unwrap().color = Color::new(0.1, 0.7, 0.2, 1.0);
-        }),
-        ("remove", |stem| *stem = None),
-    ];
-    for (name, apply) in edits {
-        let DataRenderType::Xy(xy) = &mut series.render_type else {
-            unreachable!()
-        };
-        apply(&mut xy.stem);
-        let revisions = r.chart_states[&id].revisions;
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        let updated = r.chart_states[&id].revisions;
-        assert_ne!(
-            updated.data, revisions.data,
-            "{name}: a stem edit is a data declaration change"
-        );
-        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture(&config, true, false);
-        fresh
-            .set_chart_series(fresh_id, vec![series.clone()])
-            .unwrap();
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    EditFamily {
+        family: "stem",
+        config,
+        series,
+        columns: no_columns,
+        series_edits: vec![
+            ("add stems", |s| {
+                *edited_stem(s) = Some(Stem {
+                    baseline: 0.0,
+                    direction: CategoryBarDirection::Vertical,
+                    color: Color::new(0.8, 0.1, 0.1, 1.0),
+                    width: 2.0,
+                    line_style: crate::line::LineStylePreset::Solid,
+                });
+            }),
+            ("baseline", |s| {
+                edited_stem(s).as_mut().unwrap().baseline = 0.4
+            }),
+            ("width", |s| edited_stem(s).as_mut().unwrap().width = 4.0),
+            ("dash", |s| {
+                edited_stem(s).as_mut().unwrap().line_style = crate::line::LineStylePreset::Dash;
+            }),
+            ("horizontal", |s| {
+                edited_stem(s).as_mut().unwrap().direction = CategoryBarDirection::Horizontal;
+            }),
+            ("colour", |s| {
+                edited_stem(s).as_mut().unwrap().color = Color::new(0.1, 0.7, 0.2, 1.0);
+            }),
+            ("remove", |s| *edited_stem(s) = None),
+        ],
+        config_edits: Vec::new(),
+        data_revision: true,
+        selection_revision: false,
+        stable: false,
+        after: |family, _, _, _, plain, last| {
+            assert_eq!(
+                last, plain,
+                "{family}: removing the stems restores the markers"
+            );
+        },
     }
-    // Removing the stems restores the plain markers, pixel for pixel.
-    assert_eq!(previous, plain);
 }
 
 /// A polar heatmap (#208) follows its chart's polar options and colourbar:
-/// each edit (zero angle, direction, unit, sector, hole, ray angle, the
-/// colour map and its range) gives a first frame equal to a fresh
-/// renderer's, is visible, and re-uploads nothing.
-#[test]
-fn polar_heatmap_edits_refresh_first_frame_without_reupload() {
+/// zero angle, direction, unit, sector, hole, ray angle, the colour map and
+/// its range.
+fn polar_heatmap_family() -> EditFamily {
     use crate::data_config::{
         ContourConfig, DataLineStyleConfig, FieldFillConfig, FieldSeries, FillMode, GridLayout,
         MatrixOrientation, MatrixRef, Shading,
     };
-    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .unwrap();
     let mut config = baseline_with_colorbar();
     config.legend.visible = false;
     config.left_y.min = 0.0;
@@ -2555,32 +2575,7 @@ fn polar_heatmap_edits_refresh_first_frame_without_reupload() {
         }),
         surface: None,
     });
-    let add_field = |r: &mut Renderer| {
-        let column = |v: Vec<f64>| crate::data::Column { data: v };
-        r.add_column("gx", &column(vec![0.0, 90.0, 180.0, 270.0, 360.0]))
-            .unwrap();
-        r.add_column("gy", &column(vec![0.0, 1.0, 2.0, 3.0]))
-            .unwrap();
-        for i in 0..4 {
-            let base = f64::from(i) * 0.2;
-            r.add_column(
-                &format!("z{i}"),
-                &column(vec![0.1 + base, 0.4 + base, 0.2 + base]),
-            )
-            .unwrap();
-        }
-    };
-    let fixture_with_field = |c: &Config| {
-        let (mut r, id) = fixture(c, true, false);
-        add_field(&mut r);
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        (r, id)
-    };
-    let (mut r, id) = fixture_with_field(&config);
-    let (mut previous, _) = frame(&mut r, id, true);
-    let generation = r.pool.generation();
-    let used_bytes = r.pool.used_bytes();
-    let edits: [(&str, fn(&mut Config)); 9] = [
+    let mut config_edits: Vec<(&'static str, fn(&mut Config))> = vec![
         ("zero_angle_degrees", |c| {
             c.polar_mut().unwrap().zero_angle_degrees = 90.0;
         }),
@@ -2600,48 +2595,44 @@ fn polar_heatmap_edits_refresh_first_frame_without_reupload() {
         ("radial_label_angle_degrees", |c| {
             c.polar_mut().unwrap().radial_label_angle_degrees = 45.0;
         }),
-        ("colormap", |c| {
-            c.colorbar.as_mut().unwrap().colormap = crate::ColorMap::Custom {
-                stops: vec![
-                    Color::new(0.0, 0.0, 1.0, 1.0),
-                    Color::new(1.0, 1.0, 0.0, 1.0),
-                ],
-            };
-        }),
-        ("colorbar range", |c| {
-            c.colorbar.as_mut().unwrap().axis.max = 2.0
-        }),
     ];
-    for (name, apply) in edits {
-        apply(&mut config);
-        r.set_chart_config(id, config.clone()).unwrap();
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture_with_field(&config);
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    config_edits.extend(family_colormap_edits());
+    EditFamily {
+        family: "polar heatmap",
+        config,
+        series,
+        columns: |r| {
+            let column = |v: Vec<f64>| crate::data::Column { data: v };
+            r.add_column("gx", &column(vec![0.0, 90.0, 180.0, 270.0, 360.0]))
+                .unwrap();
+            r.add_column("gy", &column(vec![0.0, 1.0, 2.0, 3.0]))
+                .unwrap();
+            for i in 0..4 {
+                let base = f64::from(i) * 0.2;
+                r.add_column(
+                    &format!("z{i}"),
+                    &column(vec![0.1 + base, 0.4 + base, 0.2 + base]),
+                )
+                .unwrap();
+            }
+        },
+        series_edits: Vec::new(),
+        config_edits,
+        data_revision: false,
+        selection_revision: false,
+        stable: false,
+        after: nothing_after,
     }
 }
 
-/// SSOT invalidation of a triangle mesh (#210): every fill, contour, value
-/// and colourbar edit is drawn on the first frame exactly as a fresh
-/// renderer draws it, is visible, and re-uploads nothing; the mesh's group 2
-/// is rebuilt from its signature, the pool untouched.
-#[test]
-fn tri_mesh_edits_refresh_first_frame_without_reupload() {
+/// A triangle mesh (#210): fill, contour and value edits of the series,
+/// then colourbar and range edits of the chart; the mesh's group 2 is
+/// rebuilt from its signature, the pool untouched.
+fn tri_mesh_family() -> EditFamily {
     use crate::data_config::{
         ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, Shading,
     };
     use crate::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
-    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .unwrap();
     let mut config = baseline_with_colorbar();
     config.legend.visible = false;
     let mut series = declaration("mesh", "mx", "my");
@@ -2659,129 +2650,80 @@ fn tri_mesh_edits_refresh_first_frame_without_reupload() {
         contour: None,
         surface: None,
     });
-    let add_mesh = |r: &mut Renderer| {
-        let column = |v: Vec<f64>| crate::data::Column { data: v };
-        r.add_column("mx", &column(vec![0.15, 0.95, 0.95, 0.15, 0.55]))
-            .unwrap();
-        r.add_column("my", &column(vec![0.15, 0.15, 0.95, 0.95, 0.55]))
-            .unwrap();
-        r.add_column("mv", &column(vec![0.1, 0.4, 0.9, 0.3, 0.6]))
-            .unwrap();
-        r.add_column("faces", &column(vec![0.2, 0.4, 0.6, 0.8]))
-            .unwrap();
-        r.upsert_triangles(
-            "tris",
-            &crate::TriangleSource {
-                indices: &crate::data::Column {
-                    data: vec![0u32, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4],
+    let mut config_edits: Vec<(&'static str, fn(&mut Config))> = family_colormap_edits().to_vec();
+    config_edits.push(("x range", |c| c.bottom_x.max = 2.0));
+    EditFamily {
+        family: "triangle mesh",
+        config,
+        series,
+        columns: |r| {
+            let column = |v: Vec<f64>| crate::data::Column { data: v };
+            r.add_column("mx", &column(vec![0.15, 0.95, 0.95, 0.15, 0.55]))
+                .unwrap();
+            r.add_column("my", &column(vec![0.15, 0.15, 0.95, 0.95, 0.55]))
+                .unwrap();
+            r.add_column("mv", &column(vec![0.1, 0.4, 0.9, 0.3, 0.6]))
+                .unwrap();
+            r.add_column("faces", &column(vec![0.2, 0.4, 0.6, 0.8]))
+                .unwrap();
+            r.upsert_triangles(
+                "tris",
+                &crate::TriangleSource {
+                    indices: &crate::data::Column {
+                        data: vec![0u32, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4],
+                    },
                 },
-            },
-        )
-        .unwrap();
-    };
-    let fixture_with_mesh = |c: &Config, s: &SeriesConfig| {
-        let (mut r, id) = fixture(c, true, false);
-        add_mesh(&mut r);
-        r.set_chart_series(id, vec![s.clone()]).unwrap();
-        (r, id)
-    };
-    let (mut r, id) = fixture_with_mesh(&config, &series);
-    let (mut previous, _) = frame(&mut r, id, true);
-    let generation = r.pool.generation();
-    let used_bytes = r.pool.used_bytes();
-    fn mesh(s: &mut SeriesConfig) -> &mut TriMeshSeries {
-        match &mut s.render_type {
-            DataRenderType::TriMesh(mesh) => mesh,
-            _ => unreachable!(),
-        }
-    }
-    let series_edits: [(&str, fn(&mut TriMeshSeries)); 6] = [
-        ("opacity", |m| m.fill.as_mut().unwrap().opacity = 0.5),
-        ("contours", |m| {
-            m.contour = Some(ContourConfig {
-                levels: vec![0.25, 0.5, 0.75],
-                line: DataLineStyleConfig {
-                    line_width: 2.0,
-                    ..DataLineStyleConfig::default()
-                },
-                per_level_color: None,
-                labels: None,
-            })
-        }),
-        ("contour width", |m| {
-            m.contour.as_mut().unwrap().line.line_width = 4.0
-        }),
-        ("bands", |m| m.fill.as_mut().unwrap().mode = FillMode::Bands),
-        ("contours only", |m| m.fill = None),
-        ("face values", |m| {
-            m.contour = None;
-            m.fill = Some(FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Flat,
-                opacity: 1.0,
-            });
-            m.values = MeshValues {
-                column: "faces".into(),
-                at: MeshValueLocation::Faces,
-            };
-        }),
-    ];
-    for (name, apply) in series_edits {
-        apply(mesh(&mut series));
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture_with_mesh(&config, &series);
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
-    }
-    let config_edits: [(&str, fn(&mut Config)); 3] = [
-        ("colormap", |c| {
-            c.colorbar.as_mut().unwrap().colormap = crate::ColorMap::Custom {
-                stops: vec![
-                    Color::new(0.0, 0.0, 1.0, 1.0),
-                    Color::new(1.0, 1.0, 0.0, 1.0),
-                ],
-            };
-        }),
-        ("colorbar range", |c| {
-            c.colorbar.as_mut().unwrap().axis.max = 2.0
-        }),
-        ("x range", |c| c.bottom_x.max = 2.0),
-    ];
-    for (name, apply) in config_edits {
-        apply(&mut config);
-        r.set_chart_config(id, config.clone()).unwrap();
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture_with_mesh(&config, &series);
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+            )
+            .unwrap();
+        },
+        series_edits: vec![
+            ("opacity", |s| {
+                edited_mesh(s).fill.as_mut().unwrap().opacity = 0.5
+            }),
+            ("contours", |s| {
+                edited_mesh(s).contour = Some(ContourConfig {
+                    levels: vec![0.25, 0.5, 0.75],
+                    line: DataLineStyleConfig {
+                        line_width: 2.0,
+                        ..DataLineStyleConfig::default()
+                    },
+                    per_level_color: None,
+                    labels: None,
+                })
+            }),
+            ("contour width", |s| {
+                edited_mesh(s).contour.as_mut().unwrap().line.line_width = 4.0
+            }),
+            ("bands", |s| {
+                edited_mesh(s).fill.as_mut().unwrap().mode = FillMode::Bands
+            }),
+            ("contours only", |s| edited_mesh(s).fill = None),
+            ("face values", |s| {
+                let m = edited_mesh(s);
+                m.contour = None;
+                m.fill = Some(FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: Shading::Flat,
+                    opacity: 1.0,
+                });
+                m.values = MeshValues {
+                    column: "faces".into(),
+                    at: MeshValueLocation::Faces,
+                };
+            }),
+        ],
+        config_edits,
+        data_revision: false,
+        selection_revision: false,
+        stable: false,
+        after: nothing_after,
     }
 }
 
-/// SSOT invalidation of a streamline series' `arrows` and `color_map`: each
-/// edit is a data declaration change whose first frame matches a fresh
-/// renderer's, is visible, re-uploads nothing, and an identical
-/// re-declaration keeps the frame.
-#[test]
-fn streamline_arrow_and_colour_map_edits_refresh_first_frame_without_reupload() {
+/// A streamline series' `arrows` and `color_map`: each edit is a data
+/// declaration change, and an identical re-declaration keeps the frame.
+fn streamline_family() -> EditFamily {
     use crate::data_config::{DataLineStyleConfig, PointColorMap, StreamlineArrows};
-    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .unwrap();
     let mut config = baseline_with_colorbar();
     config.legend.visible = false;
     let mut series = declaration("s", "x", "a");
@@ -2793,70 +2735,217 @@ fn streamline_arrow_and_colour_map_edits_refresh_first_frame_without_reupload() 
         arrows: None,
         color_map: None,
     });
-    let (mut r, id) = fixture(&config, true, false);
-    r.set_chart_series(id, vec![series.clone()]).unwrap();
-    let (mut previous, _) = frame(&mut r, id, true);
-    let generation = r.pool.generation();
-    let used_bytes = r.pool.used_bytes();
-    type Edit = fn(&mut Option<StreamlineArrows>, &mut Option<PointColorMap>);
-    let edits: [(&str, Edit); 6] = [
-        ("arrows", |arrows, _| {
-            *arrows = Some(StreamlineArrows {
-                spacing_px: 40.0,
-                head_length_px: 9.0,
-                head_width_px: 8.0,
-            });
-        }),
-        ("arrow spacing", |arrows, _| {
-            if let Some(arrows) = arrows {
-                arrows.spacing_px = 25.0;
+    EditFamily {
+        family: "streamlines",
+        config,
+        series,
+        columns: no_columns,
+        series_edits: vec![
+            ("arrows", |s| {
+                edited_streamlines(s).arrows = Some(StreamlineArrows {
+                    spacing_px: 40.0,
+                    head_length_px: 9.0,
+                    head_width_px: 8.0,
+                });
+            }),
+            ("arrow spacing", |s| {
+                if let Some(arrows) = &mut edited_streamlines(s).arrows {
+                    arrows.spacing_px = 25.0;
+                }
+            }),
+            ("head width", |s| {
+                if let Some(arrows) = &mut edited_streamlines(s).arrows {
+                    arrows.head_width_px = 12.0;
+                }
+            }),
+            ("colour map", |s| {
+                edited_streamlines(s).color_map = Some(PointColorMap { column: "a".into() });
+            }),
+            ("no arrows", |s| edited_streamlines(s).arrows = None),
+            ("no colour map", |s| edited_streamlines(s).color_map = None),
+        ],
+        config_edits: Vec::new(),
+        data_revision: true,
+        selection_revision: false,
+        stable: true,
+        after: nothing_after,
+    }
+}
+
+/// A Feynman diagram (#234): topology, position, label, bend and style
+/// edits of the series, and axis, area and selection edits of the chart;
+/// the canvas re-rasters through its signature.
+fn feynman_family() -> EditFamily {
+    use crate::feynman::{FeynmanSeries, FeynmanVertex, ParticleLine, Propagator, VertexRole};
+    let mut config = baseline();
+    config.legend.visible = false;
+    let vertex = |id: &str, role, at: [f64; 2]| {
+        let mut v = FeynmanVertex::new(id, role);
+        v.at = Some(at);
+        v
+    };
+    let mut series = declaration("d", "", "");
+    series.x_column = String::new();
+    series.y_column = String::new();
+    series.render_type = DataRenderType::Feynman(FeynmanSeries {
+        vertices: vec![
+            vertex("in", VertexRole::Incoming, [0.15, 0.6]),
+            vertex("a", VertexRole::Internal, [0.4, 0.55]),
+            vertex("b", VertexRole::Internal, [0.7, 0.55]),
+            vertex("out", VertexRole::Outgoing, [0.95, 0.6]),
+        ],
+        propagators: vec![
+            Propagator::new("p", "in", "a", ParticleLine::Fermion),
+            Propagator::new("g", "a", "b", ParticleLine::Photon),
+            Propagator::new("q", "b", "out", ParticleLine::Fermion),
+        ],
+        ..FeynmanSeries::default()
+    });
+    EditFamily {
+        family: "Feynman diagram",
+        config,
+        series,
+        columns: no_columns,
+        series_edits: vec![
+            ("a gluon joins", |s| {
+                edited_diagram(s).propagators.push(Propagator::new(
+                    "glue",
+                    "a",
+                    "b",
+                    ParticleLine::Gluon,
+                ))
+            }),
+            ("a vertex moves", |s| {
+                edited_diagram(s).vertices[1].at = Some([0.35, 0.3])
+            }),
+            ("a label", |s| {
+                edited_diagram(s).propagators[1].label =
+                    Some(RichText::plain("γ", Color::BLACK, 14.0, ""))
+            }),
+            ("a label moves", |s| {
+                edited_diagram(s).propagators[1].label_offset = [6.0, -4.0]
+            }),
+            ("a bend", |s| {
+                edited_diagram(s).propagators[0].bend = Some(60.0)
+            }),
+            ("the line colour", |s| {
+                edited_diagram(s).style.color = Color::from_rgb8(200, 30, 30)
+            }),
+            ("the line width", |s| edited_diagram(s).style.width = 3.0),
+        ],
+        config_edits: vec![
+            ("x range", |c| c.bottom_x.max = 1.4),
+            ("y range", |c| c.left_y.min = -0.2),
+            ("a picked vertex", |c| {
+                c.picked_data = Some(crate::config::DataSelectionsConfig {
+                    refs: vec![crate::config::PickedDataRef::FeynmanVertex {
+                        source_id: None,
+                        series_id: "d".into(),
+                        vertex_index: 1,
+                    }],
+                    ..Default::default()
+                })
+            }),
+            ("a picked label", |c| {
+                c.picked_data = Some(crate::config::DataSelectionsConfig {
+                    refs: vec![crate::config::PickedDataRef::FeynmanLabel {
+                        source_id: None,
+                        series_id: "d".into(),
+                        part: crate::feynman::FeynmanLabelPart::Propagator,
+                        index: 1,
+                    }],
+                    ..Default::default()
+                })
+            }),
+            ("a narrower plot", |c| c.left_y.out_margin = 60.0),
+        ],
+        data_revision: false,
+        selection_revision: false,
+        stable: false,
+        after: nothing_after,
+    }
+}
+
+/// Every family's series edits, then its chart edits, on one renderer
+/// (#341). Each first frame after an edit equals a fresh renderer's with
+/// the final state, differs from the frame before (the edit is visible),
+/// and re-uploads nothing: the pool keeps its generation and its bytes. A
+/// failure names the family and the edit.
+#[test]
+fn series_family_edits_refresh_first_frame_without_reupload() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    for family in [
+        line_fill_and_step_family(),
+        stem_family(),
+        polar_heatmap_family(),
+        tri_mesh_family(),
+        streamline_family(),
+        feynman_family(),
+    ] {
+        let f = family.family;
+        let mut config = family.config.clone();
+        let mut series = family.series.clone();
+        let (mut r, id) = edit_fixture(&family, &config, &series);
+        let (first, _) = frame(&mut r, id, true);
+        let mut previous = first.clone();
+        let generation = r.pool.generation();
+        let used_bytes = r.pool.used_bytes();
+        for (name, apply) in &family.series_edits {
+            apply(&mut series);
+            let revisions = r.chart_states[&id].revisions;
+            r.set_chart_series(id, vec![series.clone()]).unwrap();
+            let updated = r.chart_states[&id].revisions;
+            if family.data_revision {
+                assert_ne!(
+                    updated.data, revisions.data,
+                    "{f}: {name}: a render_type edit is a data declaration change"
+                );
+                assert_eq!(updated.view, revisions.view, "{f}: {name}: no view replay");
             }
-        }),
-        ("head width", |arrows, _| {
-            if let Some(arrows) = arrows {
-                arrows.head_width_px = 12.0;
+            if family.selection_revision {
+                assert_eq!(updated.selection, revisions.selection, "{f}: {name}");
             }
-        }),
-        ("colour map", |_, color_map| {
-            *color_map = Some(PointColorMap { column: "a".into() });
-        }),
-        ("no arrows", |arrows, _| *arrows = None),
-        ("no colour map", |_, color_map| *color_map = None),
-    ];
-    for (name, apply) in edits {
-        let DataRenderType::Streamlines(StreamlineSeries {
-            arrows, color_map, ..
-        }) = &mut series.render_type
-        else {
-            unreachable!()
-        };
-        apply(arrows, color_map);
-        let revisions = r.chart_states[&id].revisions;
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        let updated = r.chart_states[&id].revisions;
-        assert_ne!(
-            updated.data, revisions.data,
-            "{name}: a render_type edit is a data declaration change"
-        );
-        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture(&config, true, false);
-        fresh
-            .set_chart_series(fresh_id, vec![series.clone()])
-            .unwrap();
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
-        let revisions = r.chart_states[&id].revisions;
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        assert_eq!(r.chart_states[&id].revisions.data, revisions.data, "{name}");
-        assert_eq!(frame(&mut r, id, true).0, expected, "{name}: stable");
+            let (actual, _) = frame(&mut r, id, true);
+            let (mut fresh, fresh_id) = edit_fixture(&family, &config, &series);
+            let (expected, _) = frame(&mut fresh, fresh_id, true);
+            assert_eq!(
+                actual, expected,
+                "{f}: {name}: first frame must match a fresh renderer"
+            );
+            assert_ne!(actual, previous, "{f}: {name}: the edit must be visible");
+            previous = actual;
+            assert_eq!(r.pool.generation(), generation, "{f}: {name}: no re-upload");
+            assert_eq!(r.pool.used_bytes(), used_bytes, "{f}: {name}");
+            if family.stable {
+                // An identical re-declaration leaves the data revision and
+                // the frame.
+                let revisions = r.chart_states[&id].revisions;
+                r.set_chart_series(id, vec![series.clone()]).unwrap();
+                assert_eq!(
+                    r.chart_states[&id].revisions.data, revisions.data,
+                    "{f}: {name}"
+                );
+                assert_eq!(frame(&mut r, id, true).0, expected, "{f}: {name}: stable");
+            }
+        }
+        for (name, apply) in &family.config_edits {
+            apply(&mut config);
+            r.set_chart_config(id, config.clone()).unwrap();
+            let (actual, _) = frame(&mut r, id, true);
+            let (mut fresh, fresh_id) = edit_fixture(&family, &config, &series);
+            let (expected, _) = frame(&mut fresh, fresh_id, true);
+            assert_eq!(
+                actual, expected,
+                "{f}: {name}: first frame must match a fresh renderer"
+            );
+            assert_ne!(actual, previous, "{f}: {name}: the edit must be visible");
+            previous = actual;
+            assert_eq!(r.pool.generation(), generation, "{f}: {name}: no re-upload");
+            assert_eq!(r.pool.used_bytes(), used_bytes, "{f}: {name}");
+        }
+        (family.after)(f, &mut r, id, &config, &first, &previous);
     }
 }
 
@@ -2896,6 +2985,7 @@ fn vector_3d_edits_refresh_first_frame_without_reupload() {
             head_width_px: 7.0,
             min_length_px: 0.0,
             color_map: None,
+            auto_scale: false,
         },
     });
     let add_columns = |r: &mut Renderer| {
@@ -3236,129 +3326,6 @@ mod source_cache_invalidation;
 #[cfg(feature = "serde")]
 #[path = "ssot_mutation_tests.rs"]
 mod mutation;
-
-/// SSOT invalidation of a Feynman diagram (#234): topology, position,
-/// label, bend, style and picked-part edits of the series, and axis, area
-/// and selection edits of the chart, are drawn on the first frame exactly
-/// as a fresh renderer draws them and are visible; the canvas re-rasters
-/// through its signature and the column pool is untouched.
-#[test]
-fn feynman_edits_refresh_first_frame_without_reupload() {
-    use crate::feynman::{FeynmanSeries, FeynmanVertex, ParticleLine, Propagator, VertexRole};
-    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .unwrap();
-    let mut config = baseline();
-    config.legend.visible = false;
-    let vertex = |id: &str, role, at: [f64; 2]| {
-        let mut v = FeynmanVertex::new(id, role);
-        v.at = Some(at);
-        v
-    };
-    let mut series = declaration("d", "", "");
-    series.x_column = String::new();
-    series.y_column = String::new();
-    series.render_type = DataRenderType::Feynman(FeynmanSeries {
-        vertices: vec![
-            vertex("in", VertexRole::Incoming, [0.15, 0.6]),
-            vertex("a", VertexRole::Internal, [0.4, 0.55]),
-            vertex("b", VertexRole::Internal, [0.7, 0.55]),
-            vertex("out", VertexRole::Outgoing, [0.95, 0.6]),
-        ],
-        propagators: vec![
-            Propagator::new("p", "in", "a", ParticleLine::Fermion),
-            Propagator::new("g", "a", "b", ParticleLine::Photon),
-            Propagator::new("q", "b", "out", ParticleLine::Fermion),
-        ],
-        ..FeynmanSeries::default()
-    });
-    let fixture_with = |c: &Config, s: &SeriesConfig| {
-        let (mut r, id) = fixture(c, true, false);
-        r.set_chart_series(id, vec![s.clone()]).unwrap();
-        (r, id)
-    };
-    let (mut r, id) = fixture_with(&config, &series);
-    let (mut previous, _) = frame(&mut r, id, true);
-    let generation = r.pool.generation();
-    let used_bytes = r.pool.used_bytes();
-    fn diagram(s: &mut SeriesConfig) -> &mut FeynmanSeries {
-        s.render_type.feynman_mut().unwrap()
-    }
-    let series_edits: [(&str, fn(&mut FeynmanSeries)); 7] = [
-        ("a gluon joins", |d| {
-            d.propagators
-                .push(Propagator::new("glue", "a", "b", ParticleLine::Gluon))
-        }),
-        ("a vertex moves", |d| d.vertices[1].at = Some([0.35, 0.3])),
-        ("a label", |d| {
-            d.propagators[1].label = Some(RichText::plain("γ", Color::BLACK, 14.0, ""))
-        }),
-        ("a label moves", |d| {
-            d.propagators[1].label_offset = [6.0, -4.0]
-        }),
-        ("a bend", |d| d.propagators[0].bend = Some(60.0)),
-        ("the line colour", |d| {
-            d.style.color = Color::from_rgb8(200, 30, 30)
-        }),
-        ("the line width", |d| d.style.width = 3.0),
-    ];
-    for (name, apply) in series_edits {
-        apply(diagram(&mut series));
-        r.set_chart_series(id, vec![series.clone()]).unwrap();
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture_with(&config, &series);
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
-    }
-    let config_edits: [(&str, fn(&mut Config)); 5] = [
-        ("x range", |c| c.bottom_x.max = 1.4),
-        ("y range", |c| c.left_y.min = -0.2),
-        ("a picked vertex", |c| {
-            c.picked_data = Some(crate::config::DataSelectionsConfig {
-                refs: vec![crate::config::PickedDataRef::FeynmanVertex {
-                    source_id: None,
-                    series_id: "d".into(),
-                    vertex_index: 1,
-                }],
-                ..Default::default()
-            })
-        }),
-        ("a picked label", |c| {
-            c.picked_data = Some(crate::config::DataSelectionsConfig {
-                refs: vec![crate::config::PickedDataRef::FeynmanLabel {
-                    source_id: None,
-                    series_id: "d".into(),
-                    part: crate::feynman::FeynmanLabelPart::Propagator,
-                    index: 1,
-                }],
-                ..Default::default()
-            })
-        }),
-        ("a narrower plot", |c| c.left_y.out_margin = 60.0),
-    ];
-    for (name, apply) in config_edits {
-        apply(&mut config);
-        r.set_chart_config(id, config.clone()).unwrap();
-        let (actual, _) = frame(&mut r, id, true);
-        let (mut fresh, fresh_id) = fixture_with(&config, &series);
-        let (expected, _) = frame(&mut fresh, fresh_id, true);
-        assert_eq!(
-            actual, expected,
-            "{name}: first frame must match a fresh renderer"
-        );
-        assert_ne!(actual, previous, "{name}: the edit must be visible");
-        previous = actual;
-        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
-        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
-    }
-}
 
 /// A monotonic series (#271). Its line's colour, width (a thin one and a
 /// wide one: the columns kept beyond the plot's edges are fixed) and dash

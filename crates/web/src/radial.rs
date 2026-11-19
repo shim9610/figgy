@@ -582,6 +582,23 @@ impl FiggyRadialChart {
             .map_err(crate::web::convert::theme_error)?;
         self.adopt(next)
     }
+    /// [`Self::apply_theme`] with the palette preset `cycle` on the
+    /// top-level slices instead of the family's colours (#357). Refused,
+    /// changing nothing, as [`Self::apply_theme`] refuses the name.
+    pub fn apply_theme_with_palette(
+        &mut self,
+        name: &str,
+        cycle: crate::web::convert::ColorCycle,
+    ) -> Result<(), JsValue> {
+        let family =
+            renderer::theme::ThemeFamily::parse(name).map_err(crate::web::convert::theme_error)?;
+        let mut next = self.chart.clone();
+        family
+            .radial()
+            .with_palette(renderer::ColorCycle::from(cycle))
+            .apply(&mut next);
+        self.adopt(next)
+    }
     /// The theme names (#291, #295), as an array of strings: the four
     /// families.
     ///

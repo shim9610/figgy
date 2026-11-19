@@ -477,8 +477,16 @@ The families: `line`, `scatter`, `scatter_line`, `stem`, `histogram`,
 `vectors_3d`, `streamlines`, `category_bars`, `box_plot`, `range_bars`,
 `radar`, `ternary`, `parallel`, `tri_mesh`, `energy_levels`, `feynman` and
 `monotonic_line` (and `of_kind` for any `DataRenderType`). Each is named
-after its kind, and none takes a colour: a series is black until `.color(c)`
-or a theme's palette colours it. Matrices are
+after its kind, and none takes a colour: a series starts in the first
+colour of the default cycle (`ColorCycle::DEFAULT`, the `Balanced` preset)
+until `.color(c)` or a theme's palette colours it
+([#357](https://github.com/shim9610/figgy/issues/357); it started in black
+before). A constructor cannot know where its series will stand, so the
+series list gives the order: `ColorCycle::DEFAULT.color_unset(&mut series)`
+gives series `i` the cycle's colour `i` when the host left it in that
+starting colour, and keeps every colour the host set, black included. The
+colours are written into the series, so the document holds what is drawn
+(see [Palette presets](#palette-presets)). Matrices are
 named with `MatrixRef::columns_are_x` or `columns_are_y` (and
 `with_layout`). A family that needs its chart set up (a category axis,
 polar, ternary or parallel axes) still validates against that chart.
@@ -1072,6 +1080,15 @@ chart.apply_custom_theme(&theme, &mut series)?;
   (`SubplotIndexError { index, count }` past the subplots) and
   `chart.subplot_text_factor(i)` is the factor it draws with now. The names
   are the browser's.
+- **Palette presets.** `theme.with_palette(cycle)` (and
+  `RadialTheme::with_palette`) replaces a theme's palette with a preset;
+  see [Palette presets](#palette-presets). The families' palettes hold
+  eight or more colours: a member designed with fewer keeps its colours
+  first and is filled from public presets (gallery: `Balanced`, `Dark2`;
+  cool slate: `Tableau10`, `Dark2`; midnight: `Set2`, `Plotly`; warm paper:
+  `Dark2`, `Tableau10`), skipping colours close to one already in, so no
+  colour repeats in a chart of up to eight series, range-bar states or
+  ternary regions ([#357](https://github.com/shim9610/figgy/issues/357)).
 - **Radial charts.** The radial chart is a model of its own and has its own
   theme value, `RadialTheme`. `radial_chart.apply_theme(name)` applies a
   family's radial member (`ThemeFamily::radial()`), refusing any other name
@@ -1092,6 +1109,57 @@ chart.apply_custom_theme(&theme, &mut series)?;
   [gallery pages](https://github.com/shim9610/figgy/blob/master/crates/renderer/gallery/lines.md): a family, or a custom theme the example
   builds in [examples/support/looks.rs](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/support/looks.rs).
 - Applying the same theme twice changes nothing more.
+
+### Palette presets
+
+`ColorCycle` ([#357](https://github.com/shim9610/figgy/issues/357)) names
+the series colour cycles. `ColorCycle::PRESETS` are the categorical
+palettes taken from established public sources, each with eight or more
+distinct colours; `ColorCycle::ALL` adds figgy's own `Classic`, `Vivid` and
+`Monochrome` rotations. `cycle.colors()` is the palette, `cycle.color(i)`
+the colour of series `i` (wrapping), `cycle.name()` and
+`ColorCycle::from_name(name)` the kebab-case name.
+
+| Preset | Colours | Source | Licence |
+|---|---|---|---|
+| `Balanced` (default) | 10 | D3 `schemeCategory10` (also matplotlib `tab10`, Vega `category10`), [d3-scale-chromatic](https://github.com/d3/d3-scale-chromatic) | ISC |
+| `ColorblindSafe` | 8 | Okabe and Ito, [Color Universal Design](https://jfly.uni-koeln.de/color/) | published as a free recommendation, no licence terms |
+| `Tableau10` | 10 | Tableau 10 (2016), D3 `schemeTableau10`, [d3-scale-chromatic](https://github.com/d3/d3-scale-chromatic) | ISC |
+| `Set2` | 8 | ColorBrewer Set2, Cynthia Brewer, Mark Harrower and The Pennsylvania State University, [colorbrewer2.org](https://colorbrewer2.org) | Apache-2.0 |
+| `Dark2` | 8 | ColorBrewer Dark2, same authors, [colorbrewer2.org](https://colorbrewer2.org) | Apache-2.0 |
+| `Plotly` | 10 | plotly.py `qualitative.Plotly`, [plotly.py](https://github.com/plotly/plotly.py) | MIT |
+| `HighContrast` | 24 | plotly.py `qualitative.Dark24`, [plotly.py](https://github.com/plotly/plotly.py) | MIT |
+
+ColorBrewer attribution: this product includes color specifications and
+designs developed by Cynthia Brewer (http://colorbrewer.org/). The
+ColorBrewer colour schemes are licensed under the Apache License, Version
+2.0, the licence figgy itself offers in `LICENSE-APACHE`.
+
+```rust
+use renderer::{ColorCycle, SeriesConfig, theme::{ChartKind, ThemeFamily}};
+
+// Series the host leaves uncoloured take the default cycle in order.
+let mut series = [
+    SeriesConfig::line("a", "x", "ya"),
+    SeriesConfig::line("b", "x", "yb"),
+    SeriesConfig::line("ref", "x", "yr").color(renderer::Color::BLACK), // stays black
+];
+ColorCycle::DEFAULT.color_unset(&mut series);
+
+// A family's look with a preset's colours.
+let theme = ThemeFamily::Gallery.theme(ChartKind::Line).with_palette(ColorCycle::Set2);
+chart.apply_custom_theme(&theme, &mut series)?;
+```
+
+Where the colour is assigned matters for the document. A series' colour is
+a plain value in the SSOT and the renderer draws exactly that value; there
+is no "unset" colour in the model, and neither loading nor drawing a
+document recolours it. So a document saved by an earlier release, with its
+black series, reads back and draws the same. The default cycle is applied
+only where a series is created: the constructors' starting colour,
+`color_unset` on the list the host builds, and in the browser
+`add_line_series`, whose new series take the next colour of the chart's
+cycle (now `Balanced`; it was `Classic`, which starts in black).
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -1562,7 +1630,12 @@ let series = [
 `rgb_image`, `vectors`, `vectors_grid`, `vectors_3d`, `streamlines`, `category_bars`, `box_plot`,
 `range_bars`, `radar`, `ternary`, `parallel`, `tri_mesh`, `energy_levels`, `feynman`,
 `monotonic_line`. 그 밖의 `DataRenderType`은 `of_kind`로 만든다. 생성 함수 이름은 종류 이름과 같고
-색을 인자로 받지 않는다. 시리즈는 `.color(c)`나 테마 팔레트가 색을 정하기 전까지 검은색이다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
+색을 인자로 받지 않는다. 시리즈는 `.color(c)`나 테마 팔레트가 색을 정하기 전까지 기본 색 순환
+(`ColorCycle::DEFAULT`, `Balanced` 프리셋)의 첫 색이다(#357, 이전에는 검은색). 생성 함수는 시리즈의
+순서를 모르므로 순서는 시리즈 목록이 정한다. `ColorCycle::DEFAULT.color_unset(&mut series)`는 처음 색
+그대로인 시리즈 `i`에 순환의 `i`번째 색을 주고, 호스트가 정한 색(검은색 포함)은 그대로 둔다. 색은
+시리즈에 값으로 써 넣으므로 문서가 그려지는 색을 그대로 담는다. 프리셋과 출처는 영문 절의
+[Palette presets](#palette-presets)에 있다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
 지정한다(`with_layout`도 있다). 차트 설정이 필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그
 차트 설정에 맞춰 검증된다.
 
@@ -2051,6 +2124,12 @@ chart.apply_custom_theme(&theme, &mut series)?;
   `chart.set_subplot_text_scale(i, mode)`는 그 방식을 정하며(범위를 넘으면
   `SubplotIndexError { index, count }`), `chart.subplot_text_factor(i)`는 지금 그리는 배율을
   돌려준다. 이름은 브라우저 메서드와 같다.
+- **팔레트 프리셋.** `theme.with_palette(cycle)`(와 `RadialTheme::with_palette`)는 테마의 팔레트를
+  프리셋으로 바꾼다. 계열의 팔레트는 8색 이상이다. 더 적은 색으로 설계된 구성원은 그 색을 앞에 두고
+  공개 프리셋(gallery: `Balanced`, `Dark2`, cool slate: `Tableau10`, `Dark2`, midnight: `Set2`,
+  `Plotly`, warm paper: `Dark2`, `Tableau10`)에서 이미 있는 색과 가깝지 않은 색을 뒤에 채운다. 그래서
+  시리즈, 범위 막대 상태, 삼각 영역이 여덟 개까지인 차트에서는 색이 반복되지 않는다(#357). 프리셋 목록과
+  출처, 라이선스는 영문 절의 [Palette presets](#palette-presets)에 있다.
 - **원형 차트.** 원형 차트는 모델이 따로 있고 테마 값도 따로 있다(`RadialTheme`).
   `radial_chart.apply_theme(name)`은 계열의 원형 구성원(`ThemeFamily::radial()`)을 적용하고, 그
   밖의 이름은 `ThemeError::UnknownName`으로 거부한다. `theme.apply(&mut radial_chart)`는
