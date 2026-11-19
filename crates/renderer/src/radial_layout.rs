@@ -621,6 +621,7 @@ fn plain_line_turned(
                 descent: m.descent / scale,
             },
             rotation,
+            outline: None,
         },
     );
 }

@@ -2456,6 +2456,7 @@ impl Placed<'_> {
             ),
             extents,
             rotation: None,
+            outline: None,
         })
     }
 

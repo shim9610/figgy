@@ -363,6 +363,7 @@ impl VectorOut for SvgOut {
         hint: bool,
         pen: [f32; 2],
         color: Color,
+        outline: Option<(Color, f32)>,
     ) {
         if !(pen[0].is_finite() && pen[1].is_finite() && size.is_finite() && size > 0.0) {
             return;
@@ -377,6 +378,16 @@ impl VectorOut for SvgOut {
         push_color(svg, color);
         svg.push('"');
         push_opacity(svg, "fill-opacity", color);
+        // The outline (#357): a stroke painted under the fill.
+        if let Some((stroke, width)) = outline.filter(|(_, w)| w.is_finite() && *w > 0.0) {
+            svg.push_str(" stroke=\"");
+            push_color(svg, stroke);
+            svg.push('"');
+            push_opacity(svg, "stroke-opacity", stroke);
+            svg.push_str(" stroke-width=\"");
+            push_num(svg, width);
+            svg.push_str("\" stroke-linejoin=\"round\" paint-order=\"stroke\"");
+        }
         svg.push_str("/>\n");
     }
 

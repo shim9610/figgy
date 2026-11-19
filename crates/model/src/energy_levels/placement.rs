@@ -20,6 +20,12 @@ pub(super) const LABEL_GAP: f32 = 4.0;
 /// ([`TransitionArrowStyle::label_knockout`], #357) cuts from the shafts,
 /// logical pixels.
 pub(super) const KNOCKOUT_PAD: f32 = 2.0;
+/// The contrast a formatted transition label in its arrow's colour needs
+/// to stand without an outline (#357, WCAG AA for text).
+pub(super) const LABEL_CONTRAST: f32 = 4.5;
+/// How far a faint label's outline reaches past its glyphs, logical
+/// pixels (#357).
+pub(super) const LABEL_OUTLINE_PX: f32 = 1.0;
 /// The narrowest stroke share of a column slot the one-time fit
 /// ([`LevelPlacement::fitted_slot_fraction`], #357) narrows a style to.
 pub(super) const MIN_FITTED_SLOT_FRACTION: f32 = 0.35;
@@ -518,10 +524,11 @@ impl LevelPlacement<'_> {
                 .map(|t| match t.drawn_label(Some(labels)) {
                     Some(std::borrow::Cow::Owned(mut text)) => {
                         // A label formatted for an arrow coloured on its
-                        // own (by the host or by its wavelength) takes
-                        // that colour, adjusted for contrast (#357).
+                        // own (by the host or by its wavelength) takes that
+                        // colour as it is (#357); [`Self::label`] outlines
+                        // it where it reads too faintly.
                         if let Some(color) = self.own_transition_color(style, t) {
-                            text.color = readable_on_side_of(color, text.color);
+                            text.color = color;
                             for segment in &mut text.segments {
                                 segment.color = None;
                             }
@@ -1733,6 +1740,7 @@ impl LevelPlacement<'_> {
             origin,
             extents,
             rotation: None,
+            outline: None,
         })
     }
 
@@ -2017,6 +2025,7 @@ impl LevelPlacement<'_> {
             origin: (origin.0 + offset[0], origin.1 + offset[1]),
             extents,
             rotation: None,
+            outline: None,
         }
     }
 
@@ -2149,14 +2158,18 @@ impl LevelPlacement<'_> {
             LabelPart::Transition => {
                 let transition = records.transitions.get(index)?;
                 let (spot, side) = layout.transition_spot.get(index).copied().flatten()?;
-                Some(Self::label_block(
-                    layout.transition_text(records, index)?,
-                    measure,
-                    spot,
-                    spot[0],
-                    side,
-                    transition.label_offset,
-                ))
+                let text = layout.transition_text(records, index)?;
+                let mut block =
+                    Self::label_block(text, measure, spot, spot[0], side, transition.label_offset);
+                // A formatted label in its arrow's own colour that reads
+                // below 4.5:1 is outlined (#357); a host label is not.
+                if transition.label.is_none()
+                    && self.own_transition_color(style, transition).is_some()
+                    && let Some(labels) = &style.wavelength_labels
+                {
+                    block.outline = faint_label_outline(text.color, labels.text.color);
+                }
+                Some(block)
             }
             LabelPart::Limit => self.limit_label(records, index, measure),
         }
@@ -2477,12 +2490,13 @@ impl LevelPlacement<'_> {
     }
 }
 
-/// `color` moved toward the side of `ink` (darker when `ink` is dark, a
-/// relative luminance below 0.4, as on a light chart; lighter when it is
-/// light) until it stands at a WCAG contrast of 4.5:1
-/// against the opposite side's extreme (white or black), the background
-/// `ink` was chosen for (#357). A colour already that readable is kept.
-fn readable_on_side_of(color: Color, ink: Color) -> Color {
+/// The outline of a formatted transition label drawn in `color` on a
+/// chart whose label ink is `ink` (#357): `None` when `color` reaches a
+/// WCAG contrast of [`LABEL_CONTRAST`] against the side `ink` implies
+/// (white when `ink` is dark, a relative luminance below 0.4; black
+/// otherwise), else a 1 px near-black (or near-white) outline that carries
+/// the contrast while the glyphs keep their colour.
+fn faint_label_outline(color: Color, ink: Color) -> Option<crate::sink::TextOutline> {
     let linear = |c: f32| {
         if c <= 0.040_45 {
             c / 12.92
@@ -2492,24 +2506,16 @@ fn readable_on_side_of(color: Color, ink: Color) -> Color {
     };
     let luminance = |c: Color| 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
     let dark_ink = luminance(ink) < 0.4;
-    let background = if dark_ink { 1.0 } else { 0.0 };
-    let contrast = |c: Color| {
-        let (a, b) = (luminance(c), background);
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    };
-    let target = if dark_ink { 0.0 } else { 1.0 };
-    let mix = |t: f32| Color {
-        r: color.r + (target - color.r) * t,
-        g: color.g + (target - color.g) * t,
-        b: color.b + (target - color.b) * t,
-        a: 1.0,
-    };
-    // The least mix toward the ink's side that reaches the contrast, in
-    // steps of a twentieth.
-    (0..=20)
-        .map(|step| mix(step as f32 / 20.0))
-        .find(|c| contrast(*c) >= 4.5)
-        .unwrap_or(mix(1.0))
+    let (l, background) = (luminance(color), if dark_ink { 1.0 } else { 0.0 });
+    let contrast = (l.max(background) + 0.05) / (l.min(background) + 0.05);
+    (contrast < LABEL_CONTRAST).then(|| crate::sink::TextOutline {
+        color: if dark_ink {
+            Color::from_rgb8(26, 26, 31)
+        } else {
+            Color::from_rgb8(245, 245, 245)
+        },
+        width: LABEL_OUTLINE_PX,
+    })
 }
 
 /// The parts of the segment from `a` to `b` (as fractions `0..=1` along

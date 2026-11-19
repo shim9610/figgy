@@ -473,6 +473,7 @@ pub fn place_tick_text(
         origin: (origin.0 + offset.0, origin.1 + offset.1),
         extents,
         rotation: None,
+        outline: None,
     };
     sink.text(Slot::Above, &placed);
 }
@@ -700,6 +701,7 @@ pub fn emit_category_groups(
                 origin: ((x0 + x1) / 2.0 - extents.width / 2.0, baseline),
                 extents,
                 rotation: None,
+                outline: None,
             },
         );
     }

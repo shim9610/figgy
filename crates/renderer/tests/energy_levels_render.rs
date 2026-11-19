@@ -2351,46 +2351,130 @@ fn transition_colours_follow_their_precedence_and_labels_knock_out_shafts() {
             &format!("{scale}x own"),
         );
     }
-    // The formatted label takes its arrow's own colour, darkened until it
-    // reads on white: not magenta, and at least 4.5:1.
+    // The formatted label takes its arrow's own colour as it is. A colour
+    // below 4.5:1 on the chart (587.6 nm yellow on white) is outlined in
+    // near-black; one that reads (447 nm blue) stays plain, as does a host
+    // label.
+    let label_of = |levels: &EnergyLevelSeries| {
+        let (space, measure) = layout_of(&chart, levels);
+        let placement = renderer::energy_levels::LevelPlacement {
+            space: &space,
+            categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let layout = placement.layout(levels, &levels.style, &measure);
+        let text = placement
+            .label(
+                levels,
+                &levels.style,
+                &layout,
+                LabelPart::Transition,
+                0,
+                &measure,
+            )
+            .expect("the label");
+        let renderer::sink::TextRef::Rich(rich) = text.text else {
+            panic!("a rich label");
+        };
+        (rich.color, text.outline, text.rect())
+    };
     let mut by_wavelength = levels.clone();
     by_wavelength.style.transition.color_by_wavelength = Some(spectral);
-    let (space, measure) = layout_of(&chart, &by_wavelength);
-    let placement = renderer::energy_levels::LevelPlacement {
-        space: &space,
-        categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
-        view: LevelView::Main,
-        colorbar: None,
-        picked: None,
-    };
-    let layout = placement.layout(&by_wavelength, &by_wavelength.style, &measure);
-    let text = placement
-        .label(
-            &by_wavelength,
-            &by_wavelength.style,
-            &layout,
-            LabelPart::Transition,
-            0,
-            &measure,
-        )
-        .expect("the label");
-    let renderer::sink::TextRef::Rich(rich) = text.text else {
-        panic!("a rich label");
-    };
-    let ink = rich.color;
-    assert!(
-        ink != MAGENTA && ink.g > ink.b,
-        "the label follows its arrow: {ink:?}"
-    );
-    let linear = |c: f32| {
-        if c <= 0.040_45 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
+    let (ink, outline, outlined_rect) = label_of(&by_wavelength);
+    assert_eq!(ink, yellow, "the label keeps its arrow's hue");
+    let outline = outline.expect("a faint label is outlined");
+    assert!(outline.color.r < 0.2 && outline.width == 1.0, "{outline:?}");
+    let mut blue = by_wavelength.clone();
+    blue.transitions[0].wavelength = Some(447.15);
+    let (ink, outline, _) = label_of(&blue);
+    assert_eq!(Some(ink), spectral.color(447.15));
+    assert_eq!(outline, None, "a readable label stays plain");
+    let mut hosted = by_wavelength.clone();
+    hosted.transitions[0].label = Some(renderer::text::RichText::plain("x", BLUE, 14.0, ""));
+    assert_eq!(label_of(&hosted).1, None, "a host label is not outlined");
+    let (_, _, plain_rect) = label_of(&levels);
+    assert_eq!(outlined_rect, plain_rect, "the outline leaves the hit box");
+    // Drawn: dark outline pixels ring the yellow glyphs at 1x and 2x, with
+    // four times the count at 2x (2x is 1x scaled), and the label still
+    // picks as before.
+    let is_dark = |p: &[u8]| p[0] < 60 && p[1] < 60 && p[2] < 70;
+    let mut counts = Vec::new();
+    for scale in [1.0f32, 2.0] {
+        let lit = export(
+            &mut r,
+            &chart,
+            &[series("he", by_wavelength.clone())],
+            scale,
+        );
+        let plain = export(&mut r, &chart, &[series("he", blue.clone())], scale);
+        // The pixels the faint label darkens over the same chart with a
+        // readable label: its outline.
+        let (x0, y0) = (
+            (outlined_rect.x * scale) as u32,
+            (outlined_rect.y * scale) as u32,
+        );
+        let (x1, y1) = (
+            ((outlined_rect.x + outlined_rect.width) * scale).ceil() as u32,
+            ((outlined_rect.y + outlined_rect.height) * scale).ceil() as u32,
+        );
+        let added = (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_dark(pixel(&lit, x, y)) && !is_dark(pixel(&plain, x, y)))
+            .count();
+        assert!(added > 20, "{scale}x the outline is drawn: {added}");
+        counts.push(added as f32);
+        match pick(
+            &mut r,
+            &chart,
+            &[series("he", by_wavelength.clone())],
+            scale,
+            centre_px(outlined_rect, scale),
+        ) {
+            Some(renderer::PickedData::ValueLabel {
+                part: Some(LabelPart::Transition),
+                ..
+            }) => {}
+            other => panic!("{scale}x the outlined label picks: {other:?}"),
         }
-    };
-    let luminance = 0.2126 * linear(ink.r) + 0.7152 * linear(ink.g) + 0.0722 * linear(ink.b);
-    assert!(1.05 / (luminance + 0.05) >= 4.5, "{ink:?}");
+    }
+    let ratio = counts[1] / counts[0];
+    assert!((2.5..=5.5).contains(&ratio), "2x outline ink {ratio} x 1x");
+    // SVG and PDF carry the stroke under the fill.
+    let svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", by_wavelength.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("svg");
+    assert!(
+        svg.contains("paint-order=\"stroke\""),
+        "the SVG strokes the glyphs"
+    );
+    let plain_svg = r
+        .export_svg_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", blue.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("svg");
+    assert!(
+        !plain_svg.contains("paint-order"),
+        "no stroke without an outline"
+    );
+    let pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", by_wavelength.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("pdf");
+    let plain_pdf = r
+        .export_pdf_blocking(
+            renderer::ExportSource::chart(&chart, &[series("he", blue.clone())]),
+            renderer::ExportOptions::document(1.0),
+        )
+        .expect("pdf");
+    assert!(pdf.len() > plain_pdf.len(), "the PDF strokes the glyphs");
 
     // Knockout: the label dragged onto the middle of its arrow.
     let (_, rect) = transition_label(&chart, &levels).unwrap();

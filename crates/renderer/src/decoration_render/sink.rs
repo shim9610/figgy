@@ -15,7 +15,10 @@ use crate::raster::{Canvas, Paint};
 use crate::select::{SelectionBox, SelectionOutline, part_outline};
 use crate::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::sketch::DecoStroker;
-use crate::text_render::{FontPolicy, draw_plain_text_at, draw_rich_text_at};
+use crate::text_render::{
+    FontPolicy, draw_plain_text_at, draw_plain_text_outline_at, draw_rich_text_at,
+    draw_rich_text_outline_at,
+};
 
 /// Paints emitted parts onto up to two canvases: the one below the data and
 /// the one above. A slot without a canvas drops its parts, which is how a
@@ -145,31 +148,68 @@ impl Sink for CanvasSink<'_> {
             canvas.save();
             canvas.rotate_at(degrees, center.0, center.1);
         }
+        // The outline (#357), its reach scaled as the text is, under the
+        // fill.
+        let outline = text.outline.map(|o| crate::sink::TextOutline {
+            width: o.width * scale,
+            ..o
+        });
         let drawn = match text.text {
             TextRef::Plain {
                 text,
                 family,
                 size,
                 color,
-            } => draw_plain_text_at(
-                canvas,
-                text,
-                origin,
-                color,
-                family,
-                size * scale,
-                false,
-                false,
-                policy,
-                pixel_scale,
-            ),
+            } => outline
+                .map_or(Ok(()), |outline| {
+                    draw_plain_text_outline_at(
+                        canvas,
+                        text,
+                        origin,
+                        family,
+                        size * scale,
+                        false,
+                        false,
+                        policy,
+                        pixel_scale,
+                        outline,
+                    )
+                })
+                .and_then(|()| {
+                    draw_plain_text_at(
+                        canvas,
+                        text,
+                        origin,
+                        color,
+                        family,
+                        size * scale,
+                        false,
+                        false,
+                        policy,
+                        pixel_scale,
+                    )
+                }),
             TextRef::Rich(rich) | TextRef::ScaledRich { text: rich, .. } => {
                 let scale = scale * text.text.rich().map_or(1.0, |(_, own)| own);
+                let draw = |canvas: &mut crate::raster::Canvas, rich: &crate::text::RichText| {
+                    outline
+                        .map_or(Ok(()), |outline| {
+                            draw_rich_text_outline_at(
+                                canvas,
+                                rich,
+                                origin,
+                                policy,
+                                pixel_scale,
+                                outline,
+                            )
+                        })
+                        .and_then(|()| draw_rich_text_at(canvas, rich, origin, policy, pixel_scale))
+                };
                 if scale == 1.0 {
-                    draw_rich_text_at(canvas, rich, origin, policy, pixel_scale)
+                    draw(canvas, rich)
                 } else {
                     let scaled = crate::decoration::scaled_rich_text(rich, scale);
-                    draw_rich_text_at(canvas, &scaled, origin, policy, pixel_scale)
+                    draw(canvas, &scaled)
                 }
             }
         };

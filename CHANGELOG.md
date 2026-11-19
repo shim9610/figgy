@@ -57,8 +57,19 @@ and radar documents' `text_sizes`) are additive.
   - **Precedence:** `Transition.color`, then the wavelength, then
     `color_by_value`, then `TransitionArrowStyle.color`.
   - A label formatted from `wavelength_labels` takes its arrow's own colour
-    (from the host or the wavelength), adjusted to a 4.5:1 contrast toward
-    its ink's side; a host `label` keeps its colour.
+    (from the host or the wavelength) as it is. When that colour reads
+    below 4.5:1 against the chart side its ink implies, the label is drawn
+    with a 1 px glyph outline (near-black on a light chart, near-white on a
+    dark one), so the hue stays true and the edge carries the contrast. A
+    label that passes stays plain, and a host `label` keeps its colour.
+  - **Glyph outlines** (new text path, approved on #357). New
+    `PlacedText.outline: Option<TextOutline { color, width }>` (logical px,
+    draw-time only, never serialized). The raster strokes each glyph with
+    zeno under the fill, with the stroke width in the glyph-mask cache key;
+    SVG writes `stroke`, `stroke-width` and `paint-order="stroke"` on the
+    glyph; PDF strokes the glyph's path before filling it. Extents and hit
+    boxes do not include the outline. A Rust `PlacedText { .. }` literal
+    adds `outline: None`.
   - New `TransitionArrowStyle.label_knockout: bool`: every shaft is broken
     under each drawn transition label's box plus 2 px (a gap, not a halo).
     Arrowheads are not cut. The pick keeps the whole arrow, so both sides
@@ -72,7 +83,8 @@ and radar documents' `text_sizes`) are additive.
     adds `label_knockout: false, color_by_wavelength: None`.
   - Tests: `transition_colours_follow_their_precedence_and_labels_knock_out_shafts`
     (`energy_levels_render.rs`), `wavelengths_map_to_spectral_colours`,
-    `a_shaft_is_cut_where_it_crosses_each_box`.
+    `a_shaft_is_cut_where_it_crosses_each_box`,
+    `a_stroked_glyph_has_its_own_wider_mask` (`text_render.rs`).
 - **Contour ink, sunburst separators and readable labels, Grotrian limit
   labels** ([#357](https://github.com/shim9610/figgy/issues/357), round
   2). Appearance only; no value, position or pick target moves, and
