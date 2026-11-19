@@ -373,14 +373,15 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         text: RichText::plain("", Color::from_rgb8(150, 90, 0), 18.0, ""),
     });
 
-    let spec = SeriesConfig::energy_levels("he", series);
-    let renderer::DataRenderType::EnergyLevels(series) = &spec.render_type else {
-        return Err("an energy-level series".into());
-    };
+    let mut spec = SeriesConfig::energy_levels("he", series);
     // The default config in the frame of an energy-level chart (#357): the
     // Grotrian frame, the energy axis alone with the term columns named
     // without a value frame, no grid and no mirrored ticks.
-    let mut c = Chart::new(default::config_for_series(std::slice::from_ref(&spec)))
+    let config = default::config_for_series(std::slice::from_mut(&mut spec));
+    let renderer::DataRenderType::EnergyLevels(series) = &spec.render_type else {
+        return Err("an energy-level series".into());
+    };
+    let mut c = Chart::new(config)
         .with_area(0, 0, 1100, 780)
         .with_title("He I energy levels")
         .with_y_title("Energy (eV)");

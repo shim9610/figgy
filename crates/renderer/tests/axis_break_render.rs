@@ -1794,9 +1794,9 @@ fn a_fit_is_the_same_through_either_shader_set() {
         r
     };
     let fit = |r: &mut Renderer, config: &renderer::Config| {
-        let series = vec![markers("m", "x", "y", RED)];
+        let mut series = vec![markers("m", "x", "y", RED)];
         let mut chart = Chart::new(config.clone());
-        r.fit_ranges(&mut chart, &series).unwrap();
+        r.fit_ranges(&mut chart, &mut series).unwrap();
         r.ensure_errorbar_extent_engine_blocking().unwrap();
         let id = r.register_chart(config.clone(), series).unwrap();
         let ticket = r.begin_auto_fit_all(id, 0.0).unwrap();

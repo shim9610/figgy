@@ -33,8 +33,10 @@ fn chart_and_series(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
                 .width(3.0),
         );
     }
-    ColorCycle::DEFAULT.color_unset(&mut series);
-    let mut chart = Chart::sized(640, 480)
+    // The default flow colours series `i` with the default palette's
+    // colour `i` (`Config::apply_palette`).
+    let mut chart = Chart::new(renderer::default::config_for_series(&mut series))
+        .with_area(0, 0, 640, 480)
         .with_title("Six series")
         .with_legend_from(&series);
     chart.set_x_range(-0.5, 10.5);

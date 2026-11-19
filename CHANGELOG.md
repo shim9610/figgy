@@ -172,6 +172,100 @@ and radar documents' `text_sizes`) are additive.
     (`radial.rs`).
   - **Migration:** a host that relied on `RadialChart::default()` drawing
     no outline sets `style.outline = RadialOutline::default()`.
+- **One palette method on the SSOT, and one-time renderer fits**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). With no theme,
+  every series of a multi-series chart drew in the same colour (palette
+  blue; black before), because a constructor cannot know its index and
+  nothing in the default flow coloured the list. Quiver charts built
+  through the default flow drew 2 px specks, because only an explicit
+  `fit_vector_scales` or `commit_auto_fit_all` wrote the auto scale.
+  - **New:** `Config::apply_palette(&mut series, palette: &[Color])`.
+    Series `i` takes `palette[i % len]` in every part its kind draws in a
+    palette colour: the x-y line, markers, error bars and stems, the
+    histogram fill, the series colour of category bars, box plots, range
+    bars and radar series, vectors, ternary series, streamlines, parallel
+    rows and monotonic channels. A field or mesh, an RGB image, an
+    energy-level diagram and a Feynman diagram keep their colours and
+    still take their index. The legends derived from the series (the base
+    chart's, each overlay's and each subplot's) redraw their symbols. The
+    layout is not touched, and an empty palette changes nothing.
+  - `default::config_for_series` takes `&mut [SeriesConfig]` and applies
+    `ColorCycle::DEFAULT`. The browser `apply_color_cycle(cycle)` goes
+    through the same method, so its legend refresh now also covers
+    overlays and subplots, and it leaves the kinds above in their colours.
+  - **Removed:** `ColorCycle::color_unset` (added earlier in this beta,
+    never released). Its rule, "only series still in the starting
+    colour", could not tell an unset colour from a chosen one.
+  - **One-time fits.** `Renderer::register_chart` with a new chart's
+    config (`LayoutState::Fitted`: `Chart::sized`, `Chart::placed`,
+    `default::config_for_series`, the family presets) fits once:
+    1. the axis ranges, by the `fit_ranges` path;
+    2. the layout;
+    3. the scale of every auto-scaled vector series;
+    4. the stroke share of every energy-level series' column slots
+       (`LevelStrokeStyle::slot_fraction`).
+
+    The results are stored in the chart's config and series, and nothing
+    refits them on its own. A `Fixed` config, such as every stored
+    document, is registered exactly as given, as before. A new chart over
+    a streamed source cannot be fitted (rule 8): it is refused with
+    `ColumnNotResident`.
+  - **Opt-outs:** `Renderer::register_chart_as_given(config, series)`
+    registers any config without the fit, and `Chart::as_given(config)`
+    creates a chart object without the layout fit of `Chart::new`.
+  - `Renderer::fit_ranges(&mut chart, &mut series)` also fits the scale of
+    every auto-scaled vector series from the fitted data area, so the
+    default flow (`fit_ranges`, then export) draws visible arrows. The
+    browser `fit_ranges()` stores the rescaled series.
+  - **Grotrian slots.** The fit narrows an energy-level series'
+    `style.level.slot_fraction`, never below 0.35 and never wider than
+    stored, so its level labels fit their own column's lane instead of
+    moving into the neighbour's. It lays the labels out at the stored
+    share and at each twentieth below it, down to the share that leaves
+    the widest fitting label room before the next column's strokes. It
+    keeps the share with the fewest labels on (or within a label gap of)
+    another column's ink, on a limit line or on another label, then the
+    fewest labels moved to the other side or onto a leader, then the
+    widest. A second fit keeps the result. He I (0.65 at its own size, 0.5
+    at 800 × 600 with the Gallery sizes) and Cu I at its own size (0.5)
+    draw every level label beside its own stroke with room before the next
+    one; Cu I at 800 × 600 keeps 0.7, where its widest ²P° labels do not
+    fit the gap at any share and a narrower one draws more labels on
+    other ink. A `Fixed` document
+    and `register_chart_as_given` keep the stored share, and
+    `fit_ranges` applies the same fit.
+  - `VectorStyle::auto_scale` is consumed by the first fit.
+    `fit_vector_scales`, and through it `register_chart`, `fit_ranges` and
+    `commit_auto_fit_all`, turns it off after writing the scale, so the
+    stored scale stays through later fits. A field of zero vectors keeps
+    the flag. Before, the flag stayed on and every whole-chart fit
+    rewrote the scale.
+  - Documents written before this change parse, read back and draw the
+    same. No serialized field is added.
+  - **Migration:**
+    - `ColorCycle::DEFAULT.color_unset(&mut series)` becomes
+      `config.apply_palette(&mut series, ColorCycle::DEFAULT.colors())`.
+      Unlike `color_unset`, it colours every palette-coloured series. Set
+      a host colour after it.
+    - `default::config_for_series(&series)` becomes
+      `config_for_series(&mut series)`.
+    - `renderer.fit_ranges(&mut chart, &series)` becomes
+      `fit_ranges(&mut chart, &mut series)`.
+    - A host that sets ranges on a `Chart::sized` chart and then registers
+      it calls `register_chart_as_given`, or the registration fits the
+      ranges to the data. A streamed chart built from `Chart::sized` is
+      also registered with `register_chart_as_given`.
+    - A host that relied on `auto_scale` staying on calls
+      `style.auto_scale = true` before the next fit.
+  - Tests: `apply_palette_gives_series_i_colour_i_and_redraws_the_legend`
+    (`helpers/series.rs`), `the_series_take_the_default_palette_in_order`
+    (`helpers/default.rs`), `registration_fits_a_new_chart_once`,
+    `fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing`,
+    `the_installed_auto_fit_sizes_auto_scaled_arrows`
+    (`tests/candidate_fit.rs`), `fit_ranges_sizes_auto_scaled_arrows`
+    (`tests/helpers.rs`), `registration_fits_the_level_slots_once`
+    (`tests/energy_levels_render.rs`), and `palette_presets.rs` through the
+    default flow.
 - **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),
   items 8 and 9). Appearance only; no value, position or pick moves.
   - `ParallelOptions` gains `names_on_top` (the axis names above the plot)
@@ -336,7 +430,7 @@ and radar documents' `text_sizes`) are additive.
   `HighContrast` (plotly.py `Plotly` and `Dark24`, MIT), beside `Balanced`
   (D3 category10 / matplotlib tab10) and `ColorblindSafe` (Okabe–Ito). New:
   `ColorCycle::DEFAULT` (`Balanced`), `ColorCycle::ALL`, `PRESETS`,
-  `name()`, `from_name()`, `color_unset(&mut series)`, and
+  `name()`, `from_name()`, and
   `Theme::with_palette(cycle)` / `RadialTheme::with_palette(cycle)`;
   `colors()` and `color()` are `const`. The browser `ColorCycle` enum has
   the same variants, `FiggyChart.theme_with_palette(name, cycle)` and
@@ -347,8 +441,8 @@ and radar documents' `text_sizes`) are additive.
   - **Default cycle.** The series constructors (`SeriesConfig::line`,
     `scatter`, `histogram`, `category_bars`, `box_plot`, `vectors`, ...)
     start a series in `ColorCycle::DEFAULT.color(0)` instead of black, and
-    `ColorCycle::DEFAULT.color_unset(&mut series)` gives series `i` the
-    cycle's colour `i` when it is still in that starting colour. In the
+    `Config::apply_palette` (above) gives series `i` the cycle's colour
+    `i`. In the
     browser a new chart's cycle is `Balanced` instead of `Classic`, so
     `add_line_series` gives new series its colours in order. The colour is
     written into the series where it is created; the model has no unset
@@ -368,9 +462,7 @@ and radar documents' `text_sizes`) are additive.
     compared a themed palette with its designed list compares the first
     entries. Tests: `presets_have_eight_distinct_colours_and_names`,
     `preset_values_match_their_sources` (`preset.rs`),
-    `constructors_start_in_the_default_cycle`,
-    `color_unset_cycles_in_series_order_and_keeps_set_colours`
-    (`helpers/series.rs`), `every_member_palette_has_eight_distinct_colours`,
+    `constructors_start_in_the_default_cycle` (`helpers/series.rs`), `every_member_palette_has_eight_distinct_colours`,
     `filled_palettes_keep_the_designed_colours_first`,
     `with_palette_selects_a_preset` (`helpers/theme/tests.rs`).
 - **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
