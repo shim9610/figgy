@@ -11,10 +11,11 @@
 //! land.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{col as col_f64, pixel, probe_dir, try_renderer};
 
 use renderer::config::AxisScale;
 use renderer::data::Column;
@@ -26,8 +27,8 @@ use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
-    Chart, Color, ColorBarOptions, ColorMap, DataRenderType, RasterImage, Renderer, RendererDevice,
-    SeriesConfig, encode_png,
+    Chart, Color, ColorBarOptions, ColorMap, DataRenderType, RasterImage, Renderer, SeriesConfig,
+    encode_png,
 };
 
 const WIDTH: u32 = 400;
@@ -57,43 +58,6 @@ const RAMP_HIGH: Color = Color {
     b: 0.0,
     a: 1.0,
 };
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-/// The process-wide device, created once.
-///
-/// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
-/// creating one per test made this binary's tests contend for the driver and hold
-/// a device apiece. `column_upload_stats.rs` already pools this way — the pixel
-/// suites simply had not.
-///
-/// The `Renderer` is still per test: it owns the column pool, so sharing one
-/// would let test fixtures collide on column ids. Only the device is shared, and
-/// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
-fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
-    Some(
-        Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Bgra8Unorm,
-            4 * 1024 * 1024,
-        )
-        .expect("renderer init"),
-    )
-}
 
 fn colorbar(z_min: f64, z_max: f64) -> ColorBarOptions {
     let mut bar = renderer::default::default_colorbar_options();
@@ -187,11 +151,6 @@ fn heatmap_contour(columns: &[&str], levels: Vec<f64>) -> SeriesConfig {
             surface: None,
         }),
     }
-}
-
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
 }
 
 fn data_to_px(chart: &Chart, x: f64, y: f64) -> (u32, u32) {
@@ -2430,17 +2389,6 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
         label_pixels > 100,
         "the four levels' labels changed only {label_pixels} pixels"
     );
-}
-
-/// Where the saved images land: `$FIGGY_PROBE_DIR` when set (`ci/verify.py`
-/// points it at the CI image directory), otherwise Cargo's per-target scratch
-/// directory under `target/`, so a plain test run never writes into the
-/// source tree.
-fn probe_dir() -> String {
-    let dir = std::env::var("FIGGY_PROBE_DIR")
-        .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
-    std::fs::create_dir_all(&dir).expect("create probe directory");
-    dir
 }
 
 /// Save a rendered panel as a PNG. The pixel assertions are the gate; the

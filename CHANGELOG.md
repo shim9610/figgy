@@ -92,6 +92,51 @@ and radar documents' `text_sizes`) are additive.
   Migration: an exhaustive literal of `CategoricalChart`, `BoxPlotChart`
   or `RadarChart` names `text_sizes` (`None` keeps the former sizes).
 
+- **Palette presets and a default colour cycle** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  `ColorCycle` gains five categorical presets from public palettes:
+  `Tableau10` (d3-scale-chromatic, ISC), `Set2` and `Dark2` (ColorBrewer,
+  Apache-2.0; this product includes color specifications and designs
+  developed by Cynthia Brewer, http://colorbrewer.org/), `Plotly` and
+  `HighContrast` (plotly.py `Plotly` and `Dark24`, MIT), beside `Balanced`
+  (D3 category10 / matplotlib tab10) and `ColorblindSafe` (Okabe–Ito). New:
+  `ColorCycle::DEFAULT` (`Balanced`), `ColorCycle::ALL`, `PRESETS`,
+  `name()`, `from_name()`, `color_unset(&mut series)`, and
+  `Theme::with_palette(cycle)` / `RadialTheme::with_palette(cycle)`;
+  `colors()` and `color()` are `const`. The browser `ColorCycle` enum has
+  the same variants, `FiggyChart.theme_with_palette(name, cycle)` and
+  `FiggyBoundedChart.apply_theme_with_palette(name, cycle)` select a preset
+  through the themes, and `<figgy-chart>` forwards `theme_with_palette`.
+  [USAGE.md](crates/renderer/USAGE.md#palette-presets) lists every source
+  and licence.
+  - **Default cycle.** The series constructors (`SeriesConfig::line`,
+    `scatter`, `histogram`, `category_bars`, `box_plot`, `vectors`, ...)
+    start a series in `ColorCycle::DEFAULT.color(0)` instead of black, and
+    `ColorCycle::DEFAULT.color_unset(&mut series)` gives series `i` the
+    cycle's colour `i` when it is still in that starting colour. In the
+    browser a new chart's cycle is `Balanced` instead of `Classic`, so
+    `add_line_series` gives new series its colours in order. The colour is
+    written into the series where it is created; the model has no unset
+    colour, and loading or drawing a document never recolours it. Stored
+    documents therefore read back and draw the same, black series included.
+  - **Theme palettes.** Every family member's palette, range-bar state list
+    and ternary region list holds eight or more distinct colours: a member
+    designed with fewer (the Gallery line chart had 3, error bars 2,
+    histogram 1, distribution 3, vector field 1, parallel 1) keeps its
+    colours first and is filled from the presets, skipping colours close to
+    one already in. Charts with up to the designed number of series look as
+    before; further series no longer repeat colours.
+  - **Migration.** A host that relied on constructors drawing black sets it:
+    `.color(Color::BLACK)`. A browser host that relied on `Classic` calls
+    `apply_color_cycle(ColorCycle.Classic)` first. A host that matched on
+    `ColorCycle` exhaustively handles the five new variants. A test that
+    compared a themed palette with its designed list compares the first
+    entries. Tests: `presets_have_eight_distinct_colours_and_names`,
+    `preset_values_match_their_sources` (`preset.rs`),
+    `constructors_start_in_the_default_cycle`,
+    `color_unset_cycles_in_series_order_and_keeps_set_colours`
+    (`helpers/series.rs`), `every_member_palette_has_eight_distinct_colours`,
+    `filled_palettes_keep_the_designed_colours_first`,
+    `with_palette_selects_a_preset` (`helpers/theme/tests.rs`).
 - **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
   Public items with no caller, aliases and one-line twins of another entry,
   and builders only tests used are removed; serialized documents are
@@ -250,6 +295,18 @@ and radar documents' `text_sizes`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **A default config in the frame of its series** ([#357](https://github.com/shim9610/figgy/issues/357)). New: `default::config_for_series(&series) -> Config` returns `default_config()` with the frame the series' family draws by default: `AxisPreset::Hidden` (no axes, ticks, tick labels or grid) for a chart that draws a Feynman series, `AxisPreset::Grotrian` for one that draws an energy-level series, and `default_config()` unchanged otherwise. The first Feynman or energy-level series decides, as a theme's frame does; the theme code now shares that choice (`Theme::family_frame`). The frame is written into the returned document when the chart is made, never decided at draw time, so a host that applies another preset keeps it. Additive. Tests: `a_chart_takes_the_frame_of_its_family`, `the_axes_turn_back_on_explicitly`, `the_framed_config_round_trips` (`helpers/default.rs`).
+
+- **Feynman diagrams look right by default.** `FeynmanStyle`'s defaults are sized for a chart of a few hundred pixels: width 1.5 → 2.6, wave `{4, 12}` → `{7, 24}`, coil `{5, 9}` → `{8, 13}`, arrowheads 9 × 7 → 12 × 9, dots 3 → 4 and loops 18 → 24 logical pixels. New field `FeynmanStyle::label_scale` (`0.25..=4`, default `1.5`): every vertex, propagator and momentum label is measured, placed, drawn, picked, boxed when picked, dragged and exported at that many times its stored `RichText` size; the stored labels keep their sizes. It is serde-defaulted and written only when it differs from the default, and a value out of range is refused with `RuleKind::FeynmanSizes`. New variant `TextRef::ScaledRich { text, scale }` carries such a label to a sink without copying it, and `TextRef::rich()` returns a rich text with its factor. `FeynmanTheme` gains `label_scale`, and the four families' Feynman members scale up with the default (width 2.2 → 3.0, wave `{8, 26}`, coil `{9, 14}`, arrowheads 13 × 10, dots 4.5, labels stored at 15/14 px (gallery 13/12 px) and drawn at 1.5×, so they read about as large as before). Appearance only: a document without a style, or with the default style, draws in the new look; its data and JSON are unchanged. Migration: a `match` over `TextRef` needs an arm for `ScaledRich` (draw it as `Rich` with every size multiplied by `scale`), and a `FeynmanStyle` or `FeynmanTheme` struct literal needs `label_scale` (or `..Default::default()`). Tests: `the_label_scale_round_trips_and_defaults_when_omitted`, `the_label_scale_is_validated`, `labels_are_measured_drawn_and_picked_at_the_label_scale` (`feynman/tests.rs`).
+
+- **Readable field defaults** ([#357](https://github.com/shim9610/figgy/issues/357)). Appearance only; stored documents read back and draw unchanged.
+  - **Vector arrows fit their spacing.** New `VectorStyle::auto_scale: bool`: a whole-chart fit may rewrite `scale` so the longest vector the component columns' statistics allow draws about as long as the spacing between arrows, `VectorStyle::auto_scale_target_px(arrows, width, height)` (`sqrt(width × height / arrows) × VectorStyle::AUTO_SCALE_SPACING`, 0.9, and at least `head_length_px`). The arrows always draw at the stored `scale`; the flag only says a fit may write it. The series constructors (`VectorStyle::default()`) turn it on, so a 25 × 17 grid of unit vectors on an 800 × 600 chart draws about 23 px arrows after the fit instead of 1 px specks; an explicit scale (`fit_scale`, `fit_scale_3d`, the `vector_scale` builder) turns it off. Only a `Pixels` scale auto-fits. On the wire the field is omitted while `false`, so a document written before it reads `false` and re-serializes byte for byte.
+  - **Contour labels on a plate.** `ContourLabelConfig::default()` puts a translucent white plate behind its black text (`bg_color: Some(white at 0.75)`), so labels read on the dark end of a map. A document that omits `bg_color` still reads `None`.
+  - **Theme field inks.** `FieldTheme` gains `contour_label_background` (the label plate; the documented look's is the default plate, the designed field themes draw labels without one), `unfilled_contour_color` and `unfilled_contour_label_color` (the ink of contour lines and labels on a field or mesh without a fill, drawn on the plot background; `None` takes the filled ink). The Gallery field theme keeps white isolines and labels over a fill and draws a line-only contour in its navy ink, so it no longer vanishes into the white paper; the Gallery mesh theme does the same for its isolines.
+  - **Migration:** an exhaustive `VectorStyle { .. }` literal adds `auto_scale: false` (the earlier behaviour) and an exhaustive pattern names the field; an exhaustive `FieldTheme { .. }` literal adds the three fields. A host that builds labels with `ContourLabelConfig { .., ..Default::default() }` and wants the text alone sets `bg_color: None`.
+
+- **The Unicode script table is public** ([#353](https://github.com/shim9610/figgy/issues/353)). New, additive: `text::unicode_script_char(c) -> Option<(char, UnicodeScript)>` returns the base character and position (`UnicodeScript::Superscript` or `Subscript`) of a Unicode superscript or subscript character, `None` for any other. It is the one table `rich_segments_from_text` and `rich_segments_from_label` split strings with and the renderer draws segments with; their output is unchanged.
+
 - **Legacy conversions on a host chart area** ([#334](https://github.com/shim9610/figgy/issues/334)). `Config::from_categorical_with_report_in`, `from_boxplot_with_report_in` and `from_radar_with_report_in` take `Option<&ChartArea>`: the converted config takes that chart area once the rest of the conversion is done and an explicit `decorations.data_area` is fitted to it (noted as dropped when it cannot hold it). `None` is the existing `_with_report` conversion on the placeholder chart area. Additive.
 - **The legacy converters carry an explicit data area** ([#334](https://github.com/shim9610/figgy/issues/334)). `Config::from_categorical`, `from_boxplot` and `from_radar` (and their `_with_report` variants) used to drop a document's `decorations.data_area` and keep the automatic layout. They now carry it: the converted chart's data area is the rectangle, set through the margins with `Config::fit_to_data_area` and `FitStrategy::PreserveTitles` on the converted config's chart area, so the chart title and tick marks keep their room and each axis band takes the rest. The legacy rectangle is `f32` and a data area whole pixels: each edge is rounded to the nearest pixel (`round(x)`, `round(x + width)`, likewise vertically). A document without the field converts exactly as before. A rectangle the converted layout cannot hold (outside the chart area, empty after rounding, or tighter than the title and tick bands) keeps the automatic layout and is still reported as `dropped`, now with the reason, and its note comes after the other notes. New: `Config::fit_legacy_data_area(&RectF)` places a legacy rectangle on a config, unchanged on refusal; a host that sets another chart area on a converted config calls it on a config converted without the field.
 - **A subplot's series are validated against that subplot** ([#325](https://github.com/shim9610/figgy/issues/325)). Energy-level, ternary and parallel series drawn by a subplot (or one of its overlays) are now held to the subplot's own coordinates: its categorical `bottom_x`, `ternary` or `parallel` options, and for a parallel colour column its `colorbar`. Before, they were held to the root chart's, so a subplot with the right configuration was refused under an ordinary Cartesian root (`set_chart_state`, `register_chart`, the browser `set_config`). A series the root draws is still held to the root. New: `Config::series_chart(series_id)` returns the config a series is drawn on.
@@ -326,7 +383,7 @@ and radar documents' `text_sizes`) are additive.
     - `parallel` (`ParallelTheme`): `name_size`;
     - `surfaces` (`SurfaceTheme`): `material`, `gloss`, `wireframe`, `wireframe_color`, `wireframe_width`;
     - `energy_levels` (`EnergyLevelTheme`): `axis_preset`, `level_width`, `limit_color`, `limit_width`, `transition_color`, `transition_width`, `band_fill`, the label looks `level_labels`, `transition_labels`, `limit_labels`, `band_labels`, `group_headers` and `column_labels` (`Option<TextLook { color, size }>`), and `continuum_fill`;
-    - `feynman` (`FeynmanTheme`): `axis_preset`, `width`, `wave`, `coil`, `head_length`, `head_width`, `dot_radius`, the particle colours `photon`, `gluon`, `boson` and `scalar`, and the label looks `vertex_labels` and `line_labels`.
+    - `feynman` (`FeynmanTheme`): `axis_preset`, `width`, `wave`, `coil`, `head_length`, `head_width`, `dot_radius`, `label_scale`, the particle colours `photon`, `gluon`, `boson` and `scalar`, and the label looks `vertex_labels` and `line_labels` (the stored label size, drawn `label_scale` times as large).
   - **Per-category colours.** With `bars.color_by_category` or `boxes.color_by_category`, a chart that draws exactly one category-bar series, or exactly one box plot series, takes one palette colour per category in reading order, written as the series' per-category overrides by `Theme::apply`.
   - **Contour shading.** `fields.contour_shade: Some(factor)` colours every contour level in the colourbar's colour at that level multiplied by `factor`; only `Theme::apply` writes it, to a chart that has a colourbar.
   - **Energy-level continua.** `energy_levels.continuum_fill` fills the continuum spans of the energy-level series in scope, found by `EnergyLevelSeries::is_continuum_id(series_id, annotation_id)` (new).
@@ -1745,6 +1802,12 @@ and radar documents' `text_sizes`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Feynman labels drawn at the style's label scale.** The canvas, SVG and PDF sinks draw a `TextRef::ScaledRich` label at its scale times the export scale, so a Feynman series' `style.label_scale` (default `1.5`, see the model entry) applies on screen, in PNG export at any scale and in vector export. Diagrams without a style draw with the new, larger default look. Tests: `labels_draw_pick_drag_and_export_at_the_label_scale`, `a_document_with_a_label_scale_round_trips_and_draws_the_same` (`feynman_render.rs`).
+
+- **Vector scales fit with the chart** ([#357](https://github.com/shim9610/figgy/issues/357)). New `Renderer::fit_vector_scales(&config, &mut series)`: every vector series with `VectorStyle::auto_scale` on and a `Pixels` scale gets the scale `fit_vector_scale` writes for the target `auto_scale_target_px` chooses from its arrow count (the `u` columns' registered length) and the config's data area, and keeps `auto_scale` on. It reads column statistics only, refuses streamed (`ColumnNotResident`) and unknown (`UnknownColumn`) columns before any write, and skips a field of zero vectors. `commit_auto_fit_all` (the browser `auto_fit_all`) runs it on the installed series and writes the result into the chart's series, so the SSOT states the drawn length; a host that fits with `fit_ranges` calls it with the fitted config. Tests: `fit_vector_scales_sizes_auto_scaled_arrows_to_their_spacing`, `the_installed_auto_fit_sizes_auto_scaled_arrows` (`tests/candidate_fit.rs`).
+
+- **Unicode superscript and subscript characters always draw as styled base characters** ([#353](https://github.com/shim9610/figgy/issues/353)). A `RichSegment` whose `text` is a Unicode superscript or subscript character (`⁰`–`⁹`, `⁺`, `⁻`, `⁽`, `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`) now draws as its base character at the superscript or subscript position, the same pixels as a base-character segment with the `superscript` or `subscript` flag, whatever fonts are installed. Before, it drew the character from the font: the bundled faces have no U+207A or U+207B, so in the browser a Feynman label written `e⁻` or `μ⁺` as literal segments showed a .notdef box on the canvas and in PNG, and a native host drew whatever face it had installed. The mapping is the table the string conversions already used, now public as `text::unicode_script_char` (with `text::UnicodeScript`), applied where segments are measured, drawn and exported (canvas, label rasters, SVG, PDF and math formula leaves), so the pen after a mapped character sits where measurement ends it and selection boxes follow. A character in a segment that is already a script combines with its flags (a `⁻` in a superscript segment is raised once; superscript wins over subscript). In a TeX formula such a character is a script of an empty base, as `{}^-`. The stored segments and the serialized document are unchanged. Tests: `unicode_script_characters_draw_as_styled_base_characters`, `drawn_char_maps_every_unicode_script_character` (`text_render.rs`), `unicode_script_characters_in_a_formula_are_scripts` (`math_layout.rs`), `literal_unicode_charges_draw_as_superscript_signs` (`tests/feynman_render.rs`, PNG at 1x and 2x, SVG and PDF), `literal_unicode_charges_draw_without_the_notdef_box` (`crates/web/tests/feynman_browser.rs`, canvas and PNG).
 
 - **Faster radial shading** ([#349](https://github.com/shim9610/figgy/issues/349)). A 3D radial chart shaded every sector that became the nearest so far, in each of a pixel's four antialiasing samples, and took each sector's ray-march normal inside the march loop. It now shades only the nearest sector, takes the normal once after the march, and supersamples coverage only: each sample still finds the slice it hits (or the background) and that slice's outline at its own position, while the lit material is evaluated once per surface a pixel's samples hit (one slice, one normal), and the floor shadow once per pixel. Edges, slice geometry, labels, picks and the Flat fast path are unchanged, and Flat charts without a shadow draw the same bytes; a material chart's pixels move by a mean of at most about 0.2 and at most 14 levels of 255 inside a textured face. No API or wire change. Test: `shading_once_per_surface_stays_within_the_pinned_difference` (`radial.rs`).
 
@@ -3226,6 +3289,8 @@ and radar documents' `text_sizes`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **`default_config_for_series(seriesJson)`** ([#357](https://github.com/shim9610/figgy/issues/357)). A free function beside `default_config()`: the JSON of `default::config_for_series` for a series list, so an editor starts a Feynman chart without axes and an energy-level chart in the Grotrian frame. Throws for a series list that does not parse. Test: `default_config_for_series_json_frames_each_family`.
 
 - **One conversion for review and apply** ([#334](https://github.com/shim9610/figgy/issues/334)). `convert_categorical_document`, `convert_boxplot_document` and `convert_radar_document` take an optional options JSON `{ "chart_area"?: [x, y, w, h] }` (whole logical pixels, as the chart's `chart_area`): the conversion, including the explicit data-area fit, then uses that chart area, so it reports exactly what the setter installs on a chart of that area. `set_categorical_document`, `set_boxplot_document` and `set_radar_document` take an optional options JSON `{ "refuse"?: ["path", ...] | "any" }` and now return the report JSON `{ config, series, uploads, columns, notes }` (before: `undefined`), built by the same builder from the one conversion they install. When a note's path is a listed path or lies under one, or with `"any"` when there is any note, the setter throws an `Error` with `stage: "validate"`, `code: "conversion_loss"` and the refused notes as `notes`, before anything is installed. Options that are not such an object or name another field throw `code: "invalid_options"`. JS callers that pass one argument are unaffected; Rust callers of the wasm methods pass `None` for the new argument. Tests: `tests/edit_safety_browser.rs` (`a_previewed_loss_is_the_applied_loss_and_a_refused_one_changes_nothing`) and the native `lib.rs` tests `a_preview_on_the_chart_area_is_the_setters_report` and `document_options_are_parsed_strictly`.
 

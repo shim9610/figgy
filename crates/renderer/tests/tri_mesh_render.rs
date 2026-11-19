@@ -10,10 +10,12 @@
 use test_gpu::BlockOn as _;
 #[path = "support/edge_band.rs"]
 mod edge_band;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::to8;
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
 use renderer::data::Column;
@@ -25,7 +27,7 @@ use renderer::line::LineStylePreset;
 use renderer::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, FiggyError, RasterImage, Renderer,
-    RendererDevice, SeriesConfig, TriangleSource, encode_png,
+    RendererDevice, RuleKind, SeriesConfig, TriangleSource, encode_png,
 };
 
 const WIDTH: u32 = 480;
@@ -50,19 +52,8 @@ const NAN_PAINT: Color = Color {
     a: 1.0,
 };
 
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
@@ -229,10 +220,6 @@ fn data_to_px(chart: &Chart, x: f64, y: f64, scale: f64) -> (u32, u32) {
         ((da.x as f64 + tx * da.width as f64) * scale) as u32,
         (((da.y + da.height) as f64 - ty * da.height as f64) * scale) as u32,
     )
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 fn assert_colour(img: &RasterImage, px: (u32, u32), want: Color, tol: i32, what: &str) {
@@ -581,7 +568,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
         )],
     ));
     assert!(
-        why.to_string().contains("triangle index 3") && why.to_string().contains("\"mv\""),
+        matches!(&why, RuleKind::TriangleIndexPastVertices { index: 3, column, .. } if column == "mv"),
         "{why}"
     );
     // One face value for two triangles.
@@ -597,7 +584,14 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
         )],
     ));
     assert!(
-        why.to_string().contains("1 values for 2 triangles"),
+        matches!(
+            why,
+            RuleKind::FaceValueColumnShort {
+                len: 1,
+                triangles: 2,
+                ..
+            }
+        ),
         "{why}"
     );
     renderer
@@ -616,7 +610,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
             None,
         )],
     ));
-    assert!(why.to_string().contains("Config.colorbar"), "{why}");
+    assert!(matches!(why, RuleKind::TriMeshNeedsColorbar), "{why}");
     let mut plain = mesh_series(MeshValueLocation::Vertices, interpolated.clone(), None);
     if let DataRenderType::TriMesh(mesh) = &mut plain.render_type {
         mesh.triangles = "mx".into();
@@ -624,8 +618,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
     let why =
         reason(renderer.register_chart(chart(Some(bar.clone())).config().clone(), vec![plain]));
     assert!(
-        why.to_string()
-            .contains("not a resident triangle index column"),
+        matches!(&why, RuleKind::TrianglesNotResident { id } if id == "mx"),
         "{why}"
     );
     // On a 3D chart the mesh draws as a surface over its height column
@@ -648,7 +641,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
     lifted.z_column = Some("mh".into());
     let why = reason(renderer.register_chart(three_d, vec![lifted]));
     assert!(
-        why.to_string().contains("triangle index 3") && why.to_string().contains("\"mh\""),
+        matches!(&why, RuleKind::TriangleIndexPastVertices { index: 3, column, .. } if column == "mh"),
         "{why}"
     );
 }

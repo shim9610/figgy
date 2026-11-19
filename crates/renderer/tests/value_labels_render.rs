@@ -14,13 +14,17 @@
 //! from the one text stack (`measure_plain_text`).
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, MAGENTA, RED, SCALES, col, is_blue_rgba as is_blue, is_red_rgba as is_red,
+    pixel_rgba as pixel, value_px,
+};
+use test_gpu::shared_device;
 
 use renderer::config::{Category, TickVisibility};
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, BoxPlotLabels, BoxPlotSeriesLabels, BoxPlotStyle, CategoryBarDirection,
     CategoryBarLabels, CategoryBarMode, CategoryBarSeriesLabels, CategoryBarStyle,
@@ -39,27 +43,9 @@ use renderer::{
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
 /// The bar values over the categories a, b, c.
 const ONE: [f64; 3] = [10.0, 20.0, 5.0];
 const TWO: [f64; 3] = [20.0, 10.0, 15.0];
-const SCALES: [f32; 2] = [1.0, 2.0];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
 /// One box: whisker low, q1, median, q3, whisker high.
 type Stats = [f64; 5];
 const BOXES: [Stats; 3] = [
@@ -224,22 +210,6 @@ fn bars(
     }
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> [u8; 4] {
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn is_red(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
 /// Label ink over a transparent background: magenta at any coverage.
 fn is_label(p: [u8; 4]) -> bool {
     p[3] > 60 && p[1] < 40 && p[0] > p[3] / 2 && p[2] > p[3] / 2
@@ -295,22 +265,6 @@ fn slot(
             let h = da.height as f32 / 3.0;
             let y1 = (da.y + da.height) as f32 - h * k as f32;
             (0, s(y1 - h), s(WIDTH as f32), s(y1))
-        }
-    }
-}
-
-/// Value `v` as an export-pixel coordinate along the value axis.
-fn value_px(chart: &Chart, direction: CategoryBarDirection, v: f64, scale: f32) -> f32 {
-    let config = chart.config();
-    let da = config.data_area().expect("data area");
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let t = (v - config.left_y.min) / (config.left_y.max - config.left_y.min);
-            ((da.y + da.height) as f32 - t as f32 * da.height as f32) * scale
-        }
-        CategoryBarDirection::Horizontal => {
-            let t = (v - config.bottom_x.min) / (config.bottom_x.max - config.bottom_x.min);
-            (da.x as f32 + t as f32 * da.width as f32) * scale
         }
     }
 }

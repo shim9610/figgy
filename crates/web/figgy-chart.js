@@ -2651,6 +2651,9 @@ export class FiggyChartElement extends HTMLElement {
   theme_names() { return this.#kernelForCall().theme_names(); }
   theme(name) { return this.#kernelForCall().theme(name); }
   subplot_theme(index, name) { return this.#kernelForCall().subplot_theme(index, name); }
+  theme_with_palette(name, cycle) {
+    return this.#kernelForCall().theme_with_palette(name, cycle);
+  }
   apply_custom_theme(theme) { return this.#mutateChart("apply_custom_theme", theme); }
   apply_custom_theme_to(theme, scope = "all") {
     const list = typeof scope === "string" ? scope : JSON.stringify(scope);

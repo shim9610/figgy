@@ -318,6 +318,19 @@ pub struct FieldTheme {
     /// The space around a contour label, logical pixels: the gap it leaves
     /// in its line.
     pub contour_label_padding: f32,
+    /// The fill behind each contour label (`ContourLabelConfig::bg_color`,
+    /// #357); `None` draws the text alone. The documented look puts a
+    /// translucent white plate behind its black labels so they read on
+    /// either end of a map.
+    pub contour_label_background: Option<Color>,
+    /// The contour lines' colour on a field or mesh without a fill (#357):
+    /// its lines are drawn straight on the plot background, which an ink
+    /// chosen for a map's colours may vanish into. `None` takes
+    /// [`Self::contour_color`], as a filled field does.
+    pub unfilled_contour_color: Option<Color>,
+    /// The contour labels' colour on a field without a fill (#357);
+    /// `None` takes [`Self::contour_label_color`].
+    pub unfilled_contour_label_color: Option<Color>,
 }
 
 /// Vector arrows.
@@ -464,6 +477,10 @@ pub struct FeynmanTheme {
     pub head_length: f32,
     pub head_width: f32,
     pub dot_radius: f32,
+    /// The factor the labels are drawn at (`FeynmanStyle::label_scale`):
+    /// the label looks below give the stored size, and the series draws it
+    /// this much larger, as it draws a label the host adds later.
+    pub label_scale: f32,
     /// The colour of photon and graviton lines; `None`, here and below,
     /// keeps each line's own colour.
     pub photon: Option<Color>,
@@ -883,6 +900,13 @@ fn fill_continuum(config: &mut Config, series: &[SeriesConfig], charts: Charts, 
 }
 
 impl Theme {
+    /// The theme with its series palette replaced by `cycle`'s colours: a
+    /// palette preset ([`ColorCycle::PRESETS`]) on any theme (#357).
+    pub fn with_palette(mut self, cycle: ColorCycle) -> Self {
+        self.series.palette = cycle.colors().to_vec();
+        self
+    }
+
     /// The documented default look of `kind`.
     pub(crate) fn documented(kind: ChartKind) -> Self {
         let config = crate::defaults::config();
@@ -1017,6 +1041,9 @@ impl Theme {
                     contour_label_color: contour_labels.color,
                     contour_label_size: contour_labels.font_size,
                     contour_label_padding: contour_labels.bg_padding_px,
+                    contour_label_background: contour_labels.bg_color,
+                    unfilled_contour_color: None,
+                    unfilled_contour_label_color: None,
                 },
                 vectors: VectorTheme {
                     width_px: vector.width_px,
@@ -1077,6 +1104,7 @@ impl Theme {
                     head_length: feynman.head_length,
                     head_width: feynman.head_width,
                     dot_radius: feynman.dot_radius,
+                    label_scale: feynman.label_scale,
                     photon: None,
                     gluon: None,
                     boson: None,
@@ -1522,6 +1550,7 @@ impl Theme {
                 style.head_length = feynman.head_length;
                 style.head_width = feynman.head_width;
                 style.dot_radius = feynman.dot_radius;
+                style.label_scale = feynman.label_scale;
                 if let Some(look) = feynman.vertex_labels {
                     for label in (diagram.vertices.iter_mut()).filter_map(|v| v.label.as_mut()) {
                         self.style_text(label, look.color, look.size);
@@ -1628,17 +1657,28 @@ impl Theme {
                 }
             }
         }
+        // Lines without a fill under them sit on the plot background, so
+        // they take the theme's ink for that (#357).
+        let unfilled = fill.is_none();
         if let (Some(opacity), Some(fill)) = (fields.fill_opacity, fill) {
             fill.opacity = opacity;
         }
         if let Some(contour) = contour {
-            if let Some(color) = fields.contour_color {
+            let line_color = match fields.unfilled_contour_color {
+                Some(color) if unfilled => Some(color),
+                _ => fields.contour_color,
+            };
+            if let Some(color) = line_color {
                 contour.line.line_color = color;
             }
             contour.line.line_width = fields.contour_width;
             if let Some(labels) = &mut contour.labels {
-                labels.color = fields.contour_label_color;
+                labels.color = match fields.unfilled_contour_label_color {
+                    Some(color) if unfilled => color,
+                    _ => fields.contour_label_color,
+                };
                 labels.font_size = fields.contour_label_size;
+                labels.bg_color = fields.contour_label_background;
                 labels.bg_padding_px = fields.contour_label_padding;
             }
         }
@@ -1655,15 +1695,30 @@ impl Theme {
     /// The frame of the chart `layer` names: a family's own frame when the
     /// chart draws one, the chrome's otherwise.
     fn frame_for(&self, config: &Config, series: &[SeriesConfig], layer: LayerRef) -> AxisPreset {
+        self.family_frame(config, series, layer)
+            .unwrap_or(self.chrome.axis_preset)
+    }
+
+    /// The frame of a family that draws one of its own, when the chart
+    /// `layer` names draws it: the first Feynman or energy-level series
+    /// drawn there decides (`series.feynman.axis_preset`,
+    /// `series.energy_levels.axis_preset`). `None` for every other chart.
+    /// Shared by [`Self::apply`] and [`crate::default::config_for_series`].
+    pub(crate) fn family_frame(
+        &self,
+        config: &Config,
+        series: &[SeriesConfig],
+        layer: LayerRef,
+    ) -> Option<AxisPreset> {
         let on_layer = |item: &&SeriesConfig| drawn_on(config, layer, &item.series_id);
-        for item in series.iter().filter(on_layer) {
-            match item.render_type {
-                DataRenderType::Feynman(_) => return self.series.feynman.axis_preset,
-                DataRenderType::EnergyLevels(_) => return self.series.energy_levels.axis_preset,
-                _ => {}
-            }
-        }
-        self.chrome.axis_preset
+        series
+            .iter()
+            .filter(on_layer)
+            .find_map(|item| match item.render_type {
+                DataRenderType::Feynman(_) => Some(self.series.feynman.axis_preset),
+                DataRenderType::EnergyLevels(_) => Some(self.series.energy_levels.axis_preset),
+                _ => None,
+            })
     }
 
     /// The chrome of one chart: its own axes, titles, grid, legend,
@@ -1871,6 +1926,13 @@ impl Theme {
 }
 
 impl RadialTheme {
+    /// The theme with its palette replaced by `cycle`'s colours: a palette
+    /// preset ([`ColorCycle::PRESETS`]) on the top-level slices (#357).
+    pub fn with_palette(mut self, cycle: ColorCycle) -> Self {
+        self.palette = cycle.colors().to_vec();
+        self
+    }
+
     /// The documented default look.
     pub(crate) fn documented() -> Self {
         let radial = crate::defaults::radial_chart();

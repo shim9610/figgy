@@ -10,13 +10,17 @@
 //! from the same data area and axis ranges the renderer draws with.
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, DIRECTIONS, GREEN, MAGENTA, RED, col, flat_style, is_blue, is_green, is_magenta, is_red,
+    pixel, value_px,
+};
+use test_gpu::shared_device;
 
 use renderer::config::Category;
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, CategoryBarDirection, CategoryBarMode, CategoryBarOverride, CategoryBarStyle,
     CategoryBarTarget,
@@ -29,46 +33,9 @@ use renderer::{
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const MAGENTA: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 /// Values of the two series over the categories a, b, c.
 const ONE: [f64; 3] = [10.0, 20.0, 5.0];
 const TWO: [f64; 3] = [20.0, 10.0, 15.0];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// A renderer holding the position column and the two value columns, the
 /// values uploaded as one batch.
@@ -88,15 +55,6 @@ fn renderer(one: &[f64], two: &[f64]) -> Renderer {
     ])
     .unwrap();
     r
-}
-
-fn flat_style() -> CategoryBarStyle {
-    CategoryBarStyle {
-        material: Material::Flat,
-        corner_radius: 0.0,
-        outline: false,
-        ..CategoryBarStyle::default()
-    }
 }
 
 fn bars(id: &str, color: Color, direction: CategoryBarDirection) -> SeriesConfig {
@@ -160,24 +118,6 @@ fn chart(mode: CategoryBarMode, direction: CategoryBarDirection, value: (f64, f6
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[0] < 60 && p[2] < 60
-}
-fn is_magenta(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
-
 /// Bounding box `(x0, y0, x1, y1)` (inclusive) of the pixels `pred` accepts
 /// within `region` (export pixels, end exclusive).
 fn bbox(
@@ -227,22 +167,6 @@ fn slot(
                 s((da.x + da.width) as f32),
                 s(y1),
             )
-        }
-    }
-}
-
-/// Value `v` as an export-pixel coordinate along the value axis.
-fn value_px(chart: &Chart, direction: CategoryBarDirection, v: f64, scale: f32) -> f32 {
-    let config = chart.config();
-    let da = config.data_area().expect("data area");
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let t = (v - config.left_y.min) / (config.left_y.max - config.left_y.min);
-            ((da.y + da.height) as f32 - t as f32 * da.height as f32) * scale
-        }
-        CategoryBarDirection::Horizontal => {
-            let t = (v - config.bottom_x.min) / (config.bottom_x.max - config.bottom_x.min);
-            (da.x as f32 + t as f32 * da.width as f32) * scale
         }
     }
 }
@@ -708,11 +632,6 @@ fn value_fit(r: &Renderer, mode: CategoryBarMode, direction: CategoryBarDirectio
     }
 }
 
-const DIRECTIONS: [CategoryBarDirection; 2] = [
-    CategoryBarDirection::Vertical,
-    CategoryBarDirection::Horizontal,
-];
-
 /// A stacked group fits `[Σ min(0, min_i), Σ max(0, max_i)]` over its value
 /// columns' statistics: positive columns from zero up, negative ones from
 /// zero down, and a column with both signs its positive part up and its
@@ -832,12 +751,13 @@ fn a_percent_stack_with_a_negative_value_is_refused() {
         {
             Err(renderer::FiggyError::InvalidSeriesConfig {
                 series_id,
-                kind: reason,
+                kind:
+                    renderer::RuleKind::PercentStackedNegative {
+                        series_id: named, ..
+                    },
             }) => {
                 assert_eq!(series_id, "two", "{scale}x");
-                assert!(reason.to_string().contains("PercentStacked"), "{reason}");
-                assert!(reason.to_string().contains("\"two\""), "{reason}");
-                assert!(reason.to_string().contains("negative"), "{reason}");
+                assert_eq!(named, "two", "{scale}x");
             }
             Err(other) => panic!("{scale}x: expected InvalidSeriesConfig, got {other:?}"),
             Ok(_) => panic!("{scale}x: a negative value in a percent stack drew"),

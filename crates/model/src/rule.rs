@@ -430,7 +430,7 @@ rule_kinds! {
         AnnotationCount => "too many annotations: a chart holds at most 1024 (MAX_ANNOTATIONS); remove some or merge them",
         FeynmanLineStyle => "invalid Feynman line style",
         FeynmanWave => "invalid Feynman wave or coil",
-        FeynmanSizes => "invalid Feynman marker, arrow, loop or fan size",
+        FeynmanSizes => "invalid Feynman marker, arrow, loop, fan or label size",
         FeynmanPickedStyle => "invalid Feynman picked style: a colour and an extra width in 0..=16",
         FeynmanVertexIds => "Feynman vertex ids must be unique",
         FeynmanPropagatorIds => "Feynman propagator ids must be unique",
@@ -2381,7 +2381,7 @@ mod tests {
             (RuleKind::FeynmanWave, "invalid Feynman wave or coil"),
             (
                 RuleKind::FeynmanSizes,
-                "invalid Feynman marker, arrow, loop or fan size",
+                "invalid Feynman marker, arrow, loop, fan or label size",
             ),
             (
                 RuleKind::FeynmanPickedStyle,

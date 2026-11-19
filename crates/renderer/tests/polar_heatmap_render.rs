@@ -12,11 +12,16 @@
 //! angle mapping the renderer draws with.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::{
+    MAGENTA, any_within, at, col, export, geometry, is_empty_rgba as is_empty,
+    is_magenta_rgba as is_magenta, pixel_at_polar as pixel, renderer_rgba as renderer, save, to8,
+};
 
 use std::f64::consts::{PI, TAU};
-use std::sync::OnceLock;
 
 use renderer::config::{AxisScale, Category, TickVisibility};
 use renderer::data::Column;
@@ -31,7 +36,7 @@ use renderer::polar::{GridShape, PolarOptions};
 use renderer::{
     Anchor, Annotation, AnnotationKind, AnnotationSkip, BoxStyle, Chart, Color, ColorBarOptions,
     ColorMap, ColumnSource, DataRenderType, DataSelectionsConfig, PickedData, PickedDataRef,
-    RasterImage, RenderWarning, Renderer, RendererDevice, SeriesConfig, Subplot,
+    RasterImage, RenderWarning, Renderer, SeriesConfig, Subplot,
 };
 
 const WIDTH: u32 = 480;
@@ -54,38 +59,12 @@ const LINE: Color = Color {
     b: 1.0,
     a: 1.0,
 };
-const MAGENTA: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 const LABEL_BG: Color = Color {
     r: 1.0,
     g: 0.0,
     b: 1.0,
     a: 1.0,
 };
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// Uploads the angle coordinates `ga`, the radius coordinates `gr` and
 /// `columns` constituent columns `z{i}` of `rows` values, `z(i, j)`.
@@ -209,20 +188,6 @@ fn contour(levels: Vec<f64>, width: f32, labels: Option<ContourLabelConfig>) -> 
     }
 }
 
-/// The ring's centre, radius and inner radius in export pixels.
-fn geometry(chart: &Chart, scale: f32) -> ((f64, f64), f64, f64) {
-    let g = chart
-        .config()
-        .scaled(scale)
-        .polar_geometry()
-        .expect("geometry");
-    (
-        (f64::from(g.center[0]), f64::from(g.center[1])),
-        f64::from(g.radius),
-        f64::from(g.inner_radius),
-    )
-}
-
 /// The radius in export pixels of value `v` on the radius axis, linear or
 /// logarithmic, either direction.
 fn radius_px(chart: &Chart, scale: f32, v: f64) -> f64 {
@@ -247,31 +212,10 @@ fn angle(chart: &Chart, x: f64) -> f64 {
         .screen_angle(x)
 }
 
-/// The export pixel at screen angle `a` and radius `r` from the centre.
-fn at(centre: (f64, f64), a: f64, r: f64) -> (f64, f64) {
-    (centre.0 + a.cos() * r, centre.1 - a.sin() * r)
-}
-
 /// The export pixel at angle value `x` and radius value `v`.
 fn at_value(chart: &Chart, scale: f32, x: f64, v: f64) -> (f64, f64) {
     let (centre, _, _) = geometry(chart, scale);
     at(centre, angle(chart, x), radius_px(chart, scale, v))
-}
-
-fn pixel(img: &RasterImage, (x, y): (f64, f64)) -> [u8; 4] {
-    let x = (x.floor() as i64).clamp(0, img.width as i64 - 1) as u32;
-    let y = (y.floor() as i64).clamp(0, img.height as i64 - 1) as u32;
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 fn assert_colour(img: &RasterImage, p: (f64, f64), want: Color, what: &str) {
@@ -285,16 +229,9 @@ fn assert_colour(img: &RasterImage, p: (f64, f64), want: Color, what: &str) {
     );
 }
 
-fn is_empty(p: [u8; 4]) -> bool {
-    p[3] < 16
-}
 fn is_line(p: [u8; 4]) -> bool {
     p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
 }
-fn is_magenta(p: [u8; 4]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
-
 /// Every pixel `pred` accepts, as pixel centres.
 fn pixels_where(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
@@ -309,18 +246,6 @@ fn pixels_where(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> Vec<(f64, f64)>
     out
 }
 
-/// Whether any pixel within `radius` of `centre` satisfies `pred`.
-fn any_within(
-    img: &RasterImage,
-    centre: (f64, f64),
-    radius: f64,
-    pred: fn([u8; 4]) -> bool,
-) -> bool {
-    let n = radius.ceil() as i64;
-    (-n..=n)
-        .any(|dy| (-n..=n).any(|dx| pred(pixel(img, (centre.0 + dx as f64, centre.1 + dy as f64)))))
-}
-
 fn polar_of(centre: (f64, f64), p: (f64, f64)) -> (f64, f64) {
     let (dx, dy) = (p.0 - centre.0, centre.1 - p.1);
     ((dx * dx + dy * dy).sqrt(), dy.atan2(dx))
@@ -329,27 +254,6 @@ fn polar_of(centre: (f64, f64), p: (f64, f64)) -> (f64, f64) {
 /// `a - b` wrapped to (-π, π].
 fn angle_diff(a: f64, b: f64) -> f64 {
     (a - b + PI).rem_euclid(TAU) - PI
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 fn pick_request(p: (f64, f64)) -> renderer::GpuPickRequest {

@@ -7,19 +7,20 @@
 //! radar document with a moved spoke label.
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/svg_parts.rs"]
 mod svg_parts;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::measure;
 
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{Category, TickVisibility};
 use renderer::layout::{ChartArea, DrawnPart, Element, NudgeResult, Rect, RectF};
 use renderer::polar::{PolarOptions, screen_to_spoke_offset, spoke_offset_to_screen};
 use renderer::sink::Parts;
-use renderer::{
-    Chart, Config, CpuTextMeasure, HitMap, Renderer, RendererDevice, SelectionGeometry,
-};
+use renderer::{Chart, Config, HitMap, Renderer, RendererDevice, SelectionGeometry};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 420;
@@ -58,10 +59,6 @@ fn config() -> Config {
         ..PolarOptions::default()
     }));
     cfg
-}
-
-fn measure(cfg: &Config) -> CpuTextMeasure {
-    CpuTextMeasure::for_style(&cfg.draw_style)
 }
 
 /// The drawn box of category `i`'s label.

@@ -21,13 +21,14 @@
 //! explicit_precise_mode_deserializes_to_precise).
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{BLUE, GREEN, RED, col as col_f64, is_blue_ink as is_blue, is_green_ink as is_green};
+use test_gpu::shared_device;
 
 use renderer::config::{DrawStyle, SketchOptions};
-use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
@@ -38,35 +39,10 @@ use renderer::{
 
 // ───────────────────────── plumbing / fixtures ─────────────────────────
 
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-/// The process-wide device, created once.
-///
-/// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
-/// creating one per test made this binary's tests contend for the driver and hold
-/// a device apiece. `column_upload_stats.rs` already pools this way — the pixel
-/// suites simply had not.
-///
-/// The `Renderer` is still per test: it owns the column pool, so sharing one
-/// would let test fixtures collide on column ids. Only the device is shared, and
-/// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 /// Headless renderer. Initialization failures panic; the optional return type
 /// is retained for the existing fixtures.
 fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
@@ -94,25 +70,6 @@ fn bare_chart(width: u32, height: u32) -> Chart {
     config.grid.show_minor_y = false;
     Chart::new(config)
 }
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 
 fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset) -> SeriesConfig {
     SeriesConfig {
@@ -251,13 +208,6 @@ fn build_combined(r: &mut Renderer) -> (Chart, Vec<SeriesConfig>) {
 fn is_red(p: &[u8]) -> bool {
     p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
 }
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 16 && p[1] > 120 && p[0] < 90 && p[2] < 90
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 16 && p[2] > 120 && p[0] < 90 && p[1] < 90
-}
-
 type PixelPredicate = fn(&[u8]) -> bool;
 
 struct PixelClass {

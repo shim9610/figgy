@@ -15,13 +15,18 @@
 //! data area and axis ranges the renderer draws with.
 use test_gpu::BlockOn as _;
 
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, CYAN, DIRECTIONS, GREEN, MAGENTA, ORANGE, RED, Region, YELLOW, across_span, bbox, col,
+    is_blue, is_cyan, is_green, is_magenta, is_orange, is_red, is_yellow, pixel, rule_of, slot,
+    value_px,
+};
+use test_gpu::shared_device;
 
 use renderer::config::Category;
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, BoxPlotOverride, BoxPlotSeriesLabels, BoxPlotStyle, BoxPlotTarget,
     CategoryBarDirection, CategoryBarMode,
@@ -29,19 +34,12 @@ use renderer::data_config::{
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
     BOX_PLOT_RECORD, BoxSeries, Chart, Color, ColumnSource, DataRenderType, DataSelectionsConfig,
-    LayerRef, Material, PickedDataRef, RaggedSource, RasterImage, RecordSource, Renderer,
-    RendererDevice, SeriesConfig,
+    LayerRef, Material, PickedDataRef, RaggedSource, RecordSource, Renderer, RendererDevice,
+    RuleKind, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
-const YELLOW: Color = Color::from_rgb8(255, 255, 0);
-const CYAN: Color = Color::from_rgb8(0, 255, 255);
-const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
 const NAN: f64 = f64::NAN;
 
 /// One box: whisker low, q1, median, q3, whisker high, mean, CI low, CI
@@ -59,19 +57,6 @@ const TWO: [Stats; 3] = [
     [25.0, 35.0, 50.0, 65.0, 75.0, NAN, NAN, NAN],
     [10.0, 20.0, 30.0, 40.0, 50.0, NAN, NAN, NAN],
 ];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// Upload `stats` as the box plot record `id`: the summary fields, the mean
 /// and the interval (no sample count).
@@ -249,99 +234,11 @@ fn chart(direction: CategoryBarDirection) -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[0] < 60 && p[2] < 60
-}
-fn is_yellow(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] > 200 && p[2] < 60
-}
-fn is_cyan(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[2] > 200 && p[0] < 60
-}
-fn is_orange(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
-}
-fn is_magenta(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
-
-type Region = (u32, u32, u32, u32);
-
-/// Bounding box `(x0, y0, x1, y1)` (inclusive) of the pixels `pred` accepts
-/// within `region` (export pixels, end exclusive).
-fn bbox(img: &RasterImage, region: Region, pred: fn(&[u8]) -> bool) -> Option<Region> {
-    let mut found: Option<Region> = None;
-    for y in region.1..region.3.min(img.height) {
-        for x in region.0..region.2.min(img.width) {
-            if pred(pixel(img, x, y)) {
-                let b = found.get_or_insert((x, y, x, y));
-                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
-            }
-        }
-    }
-    found
-}
-
-/// Export-pixel region of category `k`'s slot (the whole value extent).
-fn slot(chart: &Chart, direction: CategoryBarDirection, k: usize, scale: f32) -> Region {
-    let da = chart.config().data_area().expect("data area");
-    let s = |v: f32| (v * scale).round() as u32;
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let w = da.width as f32 / 3.0;
-            let x0 = da.x as f32 + w * k as f32;
-            (
-                s(x0),
-                s(da.y as f32),
-                s(x0 + w),
-                s((da.y + da.height) as f32),
-            )
-        }
-        CategoryBarDirection::Horizontal => {
-            let h = da.height as f32 / 3.0;
-            let y1 = (da.y + da.height) as f32 - h * k as f32;
-            (
-                s(da.x as f32),
-                s(y1 - h),
-                s((da.x + da.width) as f32),
-                s(y1),
-            )
-        }
-    }
-}
-
 /// `region` narrowed across the category axis to `lo..=hi`.
 fn across_of(region: Region, (lo, hi): (u32, u32), direction: CategoryBarDirection) -> Region {
     match direction {
         CategoryBarDirection::Vertical => (lo, region.1, hi + 1, region.3),
         CategoryBarDirection::Horizontal => (region.0, lo, region.2, hi + 1),
-    }
-}
-
-/// Value `v` as an export-pixel coordinate along the value axis.
-fn value_px(chart: &Chart, direction: CategoryBarDirection, v: f64, scale: f32) -> f32 {
-    let config = chart.config();
-    let da = config.data_area().expect("data area");
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let t = (v - config.left_y.min) / (config.left_y.max - config.left_y.min);
-            ((da.y + da.height) as f32 - t as f32 * da.height as f32) * scale
-        }
-        CategoryBarDirection::Horizontal => {
-            let t = (v - config.bottom_x.min) / (config.bottom_x.max - config.bottom_x.min);
-            (da.x as f32 + t as f32 * da.width as f32) * scale
-        }
     }
 }
 
@@ -358,18 +255,6 @@ fn value_centre(b: Region, direction: CategoryBarDirection) -> f32 {
     let (a, c) = value_span(b, direction);
     (a + c) * 0.5
 }
-
-fn across_span(b: Region, direction: CategoryBarDirection) -> (u32, u32) {
-    match direction {
-        CategoryBarDirection::Vertical => (b.0, b.2),
-        CategoryBarDirection::Horizontal => (b.1, b.3),
-    }
-}
-
-const DIRECTIONS: [CategoryBarDirection; 2] = [
-    CategoryBarDirection::Vertical,
-    CategoryBarDirection::Horizontal,
-];
 
 /// Every part of a box stands where its statistic is, in its own series'
 /// place of the category slot, in both directions at 1x and 2x: the body
@@ -892,7 +777,17 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("one per category"), "{error}");
+    assert!(
+        matches!(
+            rule_of(&error),
+            Some(RuleKind::BoxPlotRecordRows {
+                rows: 2,
+                categories: 3,
+                ..
+            })
+        ),
+        "{error}"
+    );
     // Two groups for three categories.
     upload_outliers(&mut r, "one.outliers", &ONE_OUTLIERS[..2]);
     let error = r
@@ -903,7 +798,17 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("groups"), "{error}");
+    assert!(
+        matches!(
+            rule_of(&error),
+            Some(RuleKind::BoxPlotOutlierGroups {
+                groups: 2,
+                categories: 3,
+                ..
+            })
+        ),
+        "{error}"
+    );
     upload_outliers(&mut r, "one.outliers", &ONE_OUTLIERS);
     // A record that is not uploaded.
     let missing = SeriesConfig {
@@ -918,7 +823,10 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
         .block_on()
         .err()
         .expect("an error");
-    assert!(error.to_string().contains("nowhere"), "{error}");
+    assert!(
+        matches!(rule_of(&error), Some(RuleKind::BoxPlotRecordNotResident { id }) if id == "nowhere"),
+        "{error}"
+    );
 }
 
 /// Box plot series sit on overlays and subplots with their own box groups,

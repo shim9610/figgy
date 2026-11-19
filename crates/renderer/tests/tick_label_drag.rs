@@ -464,7 +464,8 @@ impl renderer::sink::Sink for LabelLog {
     fn text(&mut self, _: renderer::sink::Slot, text: &renderer::sink::PlacedText<'_>) {
         let written = match text.text {
             renderer::sink::TextRef::Plain { text, .. } => text.to_owned(),
-            renderer::sink::TextRef::Rich(rich) => {
+            renderer::sink::TextRef::Rich(rich)
+            | renderer::sink::TextRef::ScaledRich { text: rich, .. } => {
                 let mut out = String::new();
                 let mut exponent = false;
                 for segment in rich.segments.iter().filter(|s| s.math_node.is_none()) {

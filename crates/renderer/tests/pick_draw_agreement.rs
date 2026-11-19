@@ -14,12 +14,14 @@
 use test_gpu::BlockOn as _;
 #[path = "support/edge_band.rs"]
 mod edge_band;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/random_curves.rs"]
 mod random_curves;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{BLUE, DARK_GREEN as GREEN, RED};
+use test_gpu::shared_device;
 
 use edge_band::edge_band;
 
@@ -92,30 +94,8 @@ pub fn sketch_haze(center: (f64, f64), scale: f32) -> Tolerance {
     }
 }
 
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
 pub fn col(data: Vec<f64>) -> Column<f64> {
     Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
 }
 
 pub fn renderer() -> Renderer {
@@ -1564,6 +1544,7 @@ fn arrows(
                 head_width_px: 8.0,
                 min_length_px: 6.0,
                 color_map: None,
+                auto_scale: false,
             },
         }),
     }
@@ -1734,6 +1715,7 @@ fn grid_vectors_pick_the_arrow_they_draw() {
                     head_width_px: 7.0,
                     min_length_px: 0.0,
                     color_map: None,
+                    auto_scale: false,
                 },
             }),
         }];
@@ -1842,6 +1824,7 @@ fn arrows_ringed() -> SeriesConfig {
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
         }),
     }
@@ -4010,13 +3993,6 @@ pub fn filled_line(
     line.fill_color = Some(fill_color);
     series
 }
-
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 0.6,
-    b: 0.0,
-    a: 1.0,
-};
 
 /// A fill has no anti-aliasing: its trapezoids are covered by the export's
 /// multisampling only, and the fragment at the pixel centre colours every

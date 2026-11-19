@@ -11,19 +11,21 @@
 //! a row drawn through the wrong column fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, DARK_GREEN as GREEN, RED, col, pixel_at as pixel, renderer_with, save_png as save, to8,
+};
 
 use renderer::config::{AxisScale, Category, DataSelectionsConfig, PickedDataRef, TickVisibility};
-use renderer::data::Column;
 use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::parallel::{ParallelAxis, ParallelOptions};
 use renderer::{
     Chart, Color, ColorMap, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
     FiggyError, GpuPickRequest, HitMap, ParallelSeries, PickedData, RasterImage, Renderer,
-    RendererDevice, SeriesConfig,
+    SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -40,24 +42,6 @@ const ROWS: [[f64; AXES]; 3] = [
     [8.0, 40.0, 500.0, 4.0],
 ];
 
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 0.6,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 const COLOURS: [Color; 3] = [RED, GREEN, BLUE];
 
 /// The highlight is orange, a colour no row has.
@@ -67,29 +51,6 @@ const HIGHLIGHT: Color = Color {
     b: 0.0,
     a: 1.0,
 };
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer_with(budget: u64) -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        budget,
-    )
-    .expect("renderer init")
-}
 
 fn renderer() -> Renderer {
     renderer_with(64 * 1024 * 1024)
@@ -210,31 +171,6 @@ fn midpoint_px(config: &Config, row: &[f64; AXES], i: usize, scale: f64) -> (f64
     let a = point_px(config, i, row[i], scale);
     let b = point_px(config, i + 1, row[i + 1], scale);
     ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5)
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        let png = renderer::encode_png(image).unwrap();
-        std::fs::write(format!("{path}/{name}.png"), png).unwrap();
-    }
-}
-
-fn pixel(img: &RasterImage, (x, y): (f64, f64)) -> [u8; 4] {
-    let x = (x.floor() as i64).clamp(0, i64::from(img.width) - 1) as u32;
-    let y = (y.floor() as i64).clamp(0, i64::from(img.height) - 1) as u32;
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 /// The pixel is `want`'s colour within the rounding steps, and the stroke

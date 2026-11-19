@@ -667,3 +667,95 @@ async fn an_annotation_preview_is_where_the_layer_draws_the_item() {
         chart.frame().unwrap();
     }
 }
+
+/// The palette presets in the browser (#357): a new line series takes the
+/// default cycle's next colour, written into the series; a theme takes a
+/// preset through `theme_with_palette`; and the radial chart applies a
+/// family's radial member with a preset's colours.
+#[wasm_bindgen_test(async)]
+async fn palette_presets_reach_the_browser() {
+    use figgy::ColorCycle;
+    let mut parent = FiggyChart::create(canvas(1)).await.unwrap();
+    parent.register_column_f64("px", &[0.0, 1.0, 2.0]).unwrap();
+    parent.register_column_f64("py", &[1.0, 2.0, 3.0]).unwrap();
+    for id in ["a", "b", "c"] {
+        parent.add_line_series(id, "px", "py", 2.0, id).unwrap();
+    }
+    let series: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&parent.get_series().unwrap()).unwrap();
+    for (k, item) in series.iter().enumerate() {
+        let renderer::DataRenderType::Xy(xy) = &item.render_type else {
+            panic!("a line series");
+        };
+        assert_eq!(
+            xy.line.as_ref().unwrap().line_color,
+            renderer::ColorCycle::DEFAULT.color(k),
+            "series {k}"
+        );
+    }
+    let object = parent
+        .theme_with_palette("gallery", ColorCycle::Set2)
+        .unwrap();
+    let theme = json(&String::from(js_sys::JSON::stringify(&object).unwrap()));
+    assert_eq!(
+        theme["series"]["palette"].as_array().unwrap().len(),
+        renderer::ColorCycle::Set2.len()
+    );
+    parent
+        .apply_custom_theme(
+            parent
+                .theme_with_palette("gallery", ColorCycle::Set2)
+                .unwrap(),
+        )
+        .unwrap();
+    let themed: Vec<renderer::SeriesConfig> =
+        serde_json::from_str(&parent.get_series().unwrap()).unwrap();
+    let renderer::DataRenderType::Xy(xy) = &themed[2].render_type else {
+        panic!("a line series");
+    };
+    assert_eq!(
+        xy.line.as_ref().unwrap().line_color,
+        renderer::ColorCycle::Set2.color(2)
+    );
+
+    let mut pie = radial(1).await;
+    pie.apply_theme_with_palette("gallery", ColorCycle::Dark2)
+        .unwrap();
+    let document = read(&pie);
+    assert_eq!(
+        document.slices[0].color,
+        renderer::ColorCycle::Dark2.color(0)
+    );
+    assert_eq!(
+        document.slices[1].color,
+        renderer::ColorCycle::Dark2.color(1)
+    );
+    assert!(
+        pie.apply_theme_with_palette("nope", ColorCycle::Dark2)
+            .is_err()
+    );
+    assert_eq!(read(&pie), document, "a refusal changes nothing");
+}
+
+/// The browser's `ColorCycle` mirrors every model cycle in order (#357).
+#[wasm_bindgen_test]
+fn color_cycle_mirrors_every_model_cycle() {
+    use figgy::ColorCycle as Web;
+    let web = [
+        Web::Classic,
+        Web::Vivid,
+        Web::Balanced,
+        Web::ColorblindSafe,
+        Web::Monochrome,
+        Web::Tableau10,
+        Web::Set2,
+        Web::Dark2,
+        Web::Plotly,
+        Web::HighContrast,
+    ];
+    assert_eq!(web.len(), renderer::ColorCycle::ALL.len());
+    for (web, model) in web.into_iter().zip(renderer::ColorCycle::ALL) {
+        assert_eq!(renderer::ColorCycle::from(web), model);
+        assert_eq!(figgy::color_cycle_css(web).len(), model.len());
+    }
+}

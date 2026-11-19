@@ -12,33 +12,30 @@
 //! come from the same data area and axis ranges the renderer draws with.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, CYAN, DIRECTIONS, GREEN, MAGENTA, ORANGE, RED, Region, YELLOW, across_span, bbox, col,
+    flat_style, is_blue, is_cyan, is_green, is_magenta, is_orange, is_red, is_yellow, pixel, slot,
+    value_px,
+};
+use test_gpu::shared_device;
 
 use renderer::config::Category;
-use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, CategoryBarDirection, CategoryBarLabels, CategoryBarMode, CategoryBarSeriesLabels,
-    CategoryBarStyle, RangeColor, RangeConnector, RangeProgress, RangeStateStyle, RangeTotal,
-    RangeWhiskers,
+    RangeColor, RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers,
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    Chart, Color, DataRenderType, DataSelectionsConfig, Material, PickedDataRef, RangeBarSeries,
-    RasterImage, Renderer, RendererDevice, SeriesConfig,
+    Chart, Color, DataRenderType, DataSelectionsConfig, PickedDataRef, RangeBarSeries, Renderer,
+    RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 255, 0);
-const YELLOW: Color = Color::from_rgb8(255, 255, 0);
-const CYAN: Color = Color::from_rgb8(0, 255, 255);
-const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
 const NAN: f64 = f64::NAN;
 
 /// Three rows over the categories a, b, c: a rising bar, a falling bar and
@@ -47,19 +44,6 @@ const START: [f64; 3] = [20.0, 70.0, 30.0];
 const END: [f64; 3] = [60.0, 40.0, 80.0];
 const LOW: [f64; 3] = [10.0, 30.0, 25.0];
 const HIGH: [f64; 3] = [70.0, 85.0, 90.0];
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// A renderer holding the positions and every column of the three rows.
 fn renderer() -> Renderer {
@@ -79,15 +63,6 @@ fn renderer() -> Renderer {
     r.add_column("state", &col(vec![1.0, 0.0, 7.0])).unwrap();
     r.add_column("progress", &col(vec![0.5, NAN, 1.0])).unwrap();
     r
-}
-
-fn flat_style() -> CategoryBarStyle {
-    CategoryBarStyle {
-        material: Material::Flat,
-        corner_radius: 0.0,
-        outline: false,
-        ..CategoryBarStyle::default()
-    }
 }
 
 fn ranges(id: &str, color: Color) -> SeriesConfig {
@@ -184,94 +159,6 @@ fn chart(direction: CategoryBarDirection) -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] < 60 && p[2] < 60
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 200 && p[2] > 200 && p[0] < 60 && p[1] < 60
-}
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[0] < 60 && p[2] < 60
-}
-fn is_yellow(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[1] > 200 && p[2] < 60
-}
-fn is_cyan(p: &[u8]) -> bool {
-    p[3] > 200 && p[1] > 200 && p[2] > 200 && p[0] < 60
-}
-fn is_orange(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
-}
-fn is_magenta(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 60
-}
-
-type Region = (u32, u32, u32, u32);
-
-/// Bounding box `(x0, y0, x1, y1)` (inclusive) of the pixels `pred` accepts
-/// within `region` (export pixels, end exclusive).
-fn bbox(img: &RasterImage, region: Region, pred: fn(&[u8]) -> bool) -> Option<Region> {
-    let mut found: Option<Region> = None;
-    for y in region.1..region.3.min(img.height) {
-        for x in region.0..region.2.min(img.width) {
-            if pred(pixel(img, x, y)) {
-                let b = found.get_or_insert((x, y, x, y));
-                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
-            }
-        }
-    }
-    found
-}
-
-/// Export-pixel region of category `k`'s slot (the whole value extent).
-fn slot(chart: &Chart, direction: CategoryBarDirection, k: usize, scale: f32) -> Region {
-    let da = chart.config().data_area().expect("data area");
-    let s = |v: f32| (v * scale).round() as u32;
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let w = da.width as f32 / 3.0;
-            let x0 = da.x as f32 + w * k as f32;
-            (
-                s(x0),
-                s(da.y as f32),
-                s(x0 + w),
-                s((da.y + da.height) as f32),
-            )
-        }
-        CategoryBarDirection::Horizontal => {
-            let h = da.height as f32 / 3.0;
-            let y1 = (da.y + da.height) as f32 - h * k as f32;
-            (
-                s(da.x as f32),
-                s(y1 - h),
-                s((da.x + da.width) as f32),
-                s(y1),
-            )
-        }
-    }
-}
-
-/// Value `v` as an export-pixel coordinate along the value axis.
-fn value_px(chart: &Chart, direction: CategoryBarDirection, v: f64, scale: f32) -> f32 {
-    let config = chart.config();
-    let da = config.data_area().expect("data area");
-    match direction {
-        CategoryBarDirection::Vertical => {
-            let t = (v - config.left_y.min) / (config.left_y.max - config.left_y.min);
-            ((da.y + da.height) as f32 - t as f32 * da.height as f32) * scale
-        }
-        CategoryBarDirection::Horizontal => {
-            let t = (v - config.bottom_x.min) / (config.bottom_x.max - config.bottom_x.min);
-            (da.x as f32 + t as f32 * da.width as f32) * scale
-        }
-    }
-}
-
 /// The value-axis span `(smaller value end, larger value end)` of a box in
 /// export pixels.
 fn value_span(b: Region, direction: CategoryBarDirection) -> (f32, f32) {
@@ -280,18 +167,6 @@ fn value_span(b: Region, direction: CategoryBarDirection) -> (f32, f32) {
         CategoryBarDirection::Horizontal => (b.0 as f32, b.2 as f32 + 1.0),
     }
 }
-
-fn across_span(b: Region, direction: CategoryBarDirection) -> (u32, u32) {
-    match direction {
-        CategoryBarDirection::Vertical => (b.0, b.2),
-        CategoryBarDirection::Horizontal => (b.1, b.3),
-    }
-}
-
-const DIRECTIONS: [CategoryBarDirection; 2] = [
-    CategoryBarDirection::Vertical,
-    CategoryBarDirection::Horizontal,
-];
 
 fn selection(series_id: &str, row: usize) -> DataSelectionsConfig {
     DataSelectionsConfig {

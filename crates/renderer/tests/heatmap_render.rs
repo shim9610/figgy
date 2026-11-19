@@ -13,13 +13,14 @@
 //! file exists to catch.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{col as col_f64, is_selection, pixel, probe_dir, to8, try_renderer};
 
 use renderer::config::AxisScale;
-use renderer::data::{Column, ColumnPairWriter, ColumnSource};
+use renderer::data::{ColumnPairWriter, ColumnSource};
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
     MatrixRef, Shading,
@@ -28,7 +29,7 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, PickedDataRef,
-    RasterImage, Renderer, RendererDevice, SeriesConfig, encode_png,
+    RasterImage, Renderer, SeriesConfig, encode_png,
 };
 
 const WIDTH: u32 = 480;
@@ -53,10 +54,6 @@ const NAN_PAINT: Color = Color {
     a: 1.0,
 };
 
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
 struct PairColumn {
     pairs: Vec<(f32, f32)>,
 }
@@ -71,39 +68,6 @@ impl ColumnSource for PairColumn {
             dst.write_pair(index, hi, lo);
         }
     }
-}
-
-/// The process-wide device, created once.
-///
-/// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
-/// creating one per test made this binary's tests contend for the driver and hold
-/// a device apiece. `column_upload_stats.rs` already pools this way — the pixel
-/// suites simply had not.
-///
-/// The `Renderer` is still per test: it owns the column pool, so sharing one
-/// would let test fixtures collide on column ids. Only the device is shared, and
-/// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
-fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
-    Some(
-        Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Bgra8Unorm,
-            4 * 1024 * 1024,
-        )
-        .expect("renderer init"),
-    )
 }
 
 fn colorbar(z_min: f64, z_max: f64, scale: AxisScale) -> ColorBarOptions {
@@ -195,15 +159,6 @@ fn heatmap(
     }
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
-fn is_selection(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[2] > 180 && p[1] < 80
-}
-
 /// Data (x, y) → panel pixel, through the same data area and axis range the
 /// renderer draws with.
 fn data_to_px(chart: &Chart, x: f64, y: f64) -> (u32, u32) {
@@ -215,10 +170,6 @@ fn data_to_px(chart: &Chart, x: f64, y: f64) -> (u32, u32) {
         (da.x as f64 + tx * da.width as f64).round() as u32,
         ((da.y + da.height) as f64 - ty * da.height as f64).round() as u32,
     )
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 /// Assert the pixel at a data-space point is the colour the CPU says that z has.
@@ -1095,17 +1046,6 @@ fn three_hundred_heatmaps_in_one_frame_all_draw() {
         let px = data_to_px(&chart, 2.5, 1.5);
         assert_colour_at(&img, px, bar.color_for_z(Z[2][1]), "cell (2,1)");
     }
-}
-
-/// Where the saved images land: `$FIGGY_PROBE_DIR` when set (`ci/verify.py`
-/// points it at the CI image directory), otherwise Cargo's per-target scratch
-/// directory under `target/`, so a plain test run never writes into the
-/// source tree.
-fn probe_dir() -> String {
-    let dir = std::env::var("FIGGY_PROBE_DIR")
-        .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
-    std::fs::create_dir_all(&dir).expect("create probe directory");
-    dir
 }
 
 /// Save a rendered field as a PNG. The pixel assertions are the gate; the

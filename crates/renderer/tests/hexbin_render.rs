@@ -9,10 +9,14 @@
 //! neighbour or a cell painted past its Voronoi edge fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    cell, col as col_f64, data_to_px, pixel_at as pixel, renderer_16mib as renderer, renderer_with,
+    save_png as save, to8,
+};
 
 use renderer::config::AxisScale;
 use renderer::data::{Column, ColumnSource};
@@ -25,7 +29,7 @@ use renderer::line::LineStylePreset;
 use renderer::view3d::View3d;
 use renderer::{
     Chart, Color, ColorBarOptions, ColorMap, DataRenderType, DataSelectionsConfig, GpuPickRequest,
-    PickedData, PickedDataRef, RasterImage, Renderer, RendererDevice, SeriesConfig,
+    PickedDataRef, RasterImage, Renderer, SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
@@ -88,33 +92,6 @@ fn neighbors(c: i64, r: i64) -> [(i64, i64); 6] {
         (c + 1, r - 1 + up),
         (c + 1, r + up),
     ]
-}
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer_with(budget: u64) -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        budget,
-    )
-    .expect("renderer init")
-}
-
-fn renderer() -> Renderer {
-    renderer_with(16 * 1024 * 1024)
 }
 
 /// The coordinate columns `hx`, `hy` and the grid `hz*`: one constituent
@@ -200,44 +177,6 @@ fn hexbin(ids: &[String], orientation: MatrixOrientation) -> SeriesConfig {
             surface: None,
         }),
     }
-}
-
-/// Data (x, y) → export pixel at `scale`, through the chart's data area and
-/// axis ranges.
-fn data_to_px(chart: &Chart, x: f64, y: f64, scale: f64) -> (f64, f64) {
-    let cfg = chart.config();
-    let da = cfg.data_area().expect("data area");
-    let tx = (x - cfg.bottom_x.min) / (cfg.bottom_x.max - cfg.bottom_x.min);
-    let ty = (y - cfg.left_y.min) / (cfg.left_y.max - cfg.left_y.min);
-    (
-        (f64::from(da.x) + tx * f64::from(da.width)) * scale,
-        (f64::from(da.y + da.height) - ty * f64::from(da.height)) * scale,
-    )
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        let png = renderer::encode_png(image).unwrap();
-        std::fs::write(format!("{path}/{name}.png"), png).unwrap();
-    }
-}
-
-fn pixel(img: &RasterImage, (x, y): (f64, f64)) -> [u8; 4] {
-    let x = (x.floor() as i64).clamp(0, i64::from(img.width) - 1) as u32;
-    let y = (y.floor() as i64).clamp(0, i64::from(img.height) - 1) as u32;
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 /// The pixel is the colour the CPU ramp gives `want`, within the two
@@ -544,16 +483,6 @@ fn request(at: (f64, f64)) -> GpuPickRequest {
         },
         display_scale: 1.0,
         max_distance_px: 0.0,
-    }
-}
-
-fn cell(picked: Option<PickedData>) -> Option<(usize, usize)> {
-    match picked {
-        Some(PickedData::MatrixCell {
-            x_index, y_index, ..
-        }) => Some((x_index, y_index)),
-        None => None,
-        other => panic!("picked {other:?}"),
     }
 }
 
