@@ -162,6 +162,12 @@ pub struct RichSegment {
     /// Optional dash pattern for a rule segment, in em units. Values are
     /// multiplied by the effective segment font size at draw time.
     pub rule_dash: Option<Vec<f32>>,
+    /// Bar thickness of a rule segment in em (× effective font size).
+    /// `None` draws [`RULE_THICKNESS_EM`], the thickness every rule had
+    /// before the field existed, so older documents draw unchanged. Legend
+    /// marks built from a series ([`crate::legend::series_symbol_segments`])
+    /// store the series' stroke width here. Ignored on glyph segments.
+    pub rule_thickness_em: Option<f32>,
     /// Optional band painted under a rule segment, from the rule down to the
     /// baseline: the legend mark of a filled line series. `None` draws the
     /// rule alone. Ignored on glyph segments.
@@ -213,6 +219,8 @@ mod segment_serde {
         #[serde(skip_serializing_if = "Option::is_none")]
         rule_dash: Option<&'a [f32]>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        rule_thickness_em: Option<f32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         rule_band: Option<&'a Color>,
         #[serde(skip_serializing_if = "Option::is_none")]
         math_node: Option<&'a MathNode>,
@@ -238,6 +246,7 @@ mod segment_serde {
                 field_em: seg.field_em,
                 rule: seg.rule,
                 rule_dash: seg.rule_dash.as_deref(),
+                rule_thickness_em: seg.rule_thickness_em,
                 rule_band: seg.rule_band.as_ref(),
                 math_node: seg.math_node.as_ref(),
                 math_parent: seg.math_parent.as_ref(),
@@ -269,6 +278,10 @@ mod segment_serde {
         rule: bool,
         #[serde(default)]
         rule_dash: Option<Vec<f32>>,
+        /// Additive: absent in every document written before legend rules
+        /// took their series' stroke width.
+        #[serde(default)]
+        rule_thickness_em: Option<f32>,
         #[serde(default)]
         rule_band: Option<Color>,
         /// Additive: absent in every document written before math nodes.
@@ -309,6 +322,7 @@ mod segment_serde {
                 field_em: wire.field_em,
                 rule: wire.rule,
                 rule_dash: wire.rule_dash,
+                rule_thickness_em: wire.rule_thickness_em,
                 rule_band: wire.rule_band,
                 math_node: wire.math_node,
                 math_parent: wire.math_parent,
@@ -362,6 +376,11 @@ impl serde::Serialize for RichSegment {
     }
 }
 
+/// The bar thickness, in em, of a rule segment that stores none
+/// ([`RichSegment::rule_thickness_em`]): every rule drawn before the field
+/// existed.
+pub const RULE_THICKNESS_EM: f32 = 0.09;
+
 impl RichSegment {
     /// One plain character: all style flags off, no per-segment overrides —
     /// color and font size inherit from the parent `RichText`.
@@ -379,6 +398,7 @@ impl RichSegment {
             field_em: None,
             rule: false,
             rule_dash: None,
+            rule_thickness_em: None,
             rule_band: None,
             math_node: None,
             math_parent: None,
@@ -407,6 +427,15 @@ impl RichSegment {
         }
     }
 
+    /// The same rule drawn `thickness_em` thick (× effective font size);
+    /// `None` draws [`RULE_THICKNESS_EM`].
+    pub fn with_rule_thickness(self, thickness_em: Option<f32>) -> Self {
+        Self {
+            rule_thickness_em: thickness_em,
+            ..self
+        }
+    }
+
     /// The same rule with a band under it in `band`: the mark of a line series
     /// that fills the area under or beside its line.
     pub fn with_rule_band(self, band: Option<Color>) -> Self {
@@ -432,7 +461,8 @@ impl RichText {
     /// at most 160 characters without control characters, at most 512
     /// segments and eight lines, no control characters but line breaks and
     /// tabs, and finite per-segment styles (size 6..160, colour, `field_em`
-    /// 0..32, at most 32 dash entries of 0.01..32; a space inside a math
+    /// 0..32, at most 32 dash entries of 0.01..32, a rule thickness of
+    /// 0.01..4 em; a space inside a math
     /// node may take a negative `field_em` down to −32, the negative thin
     /// space `\!`). Chart titles and annotation texts are validated with it,
     /// after [`RichText::validate_math`].
@@ -457,6 +487,7 @@ impl RichText {
                     || s.rule_dash
                         .as_ref()
                         .is_some_and(|d| d.len() > 32 || d.iter().any(|v| !range(*v, 0.01, 32.)))
+                    || s.rule_thickness_em.is_some_and(|v| !range(v, 0.01, 4.))
             })
             && self.negative_fields_are_math_spaces()
     }
@@ -953,6 +984,7 @@ mod tests {
             field_em: Some(2.0),
             rule: true,
             rule_dash: Some(vec![0.5, 0.25]),
+            rule_thickness_em: Some(0.25),
             rule_band: Some(Color::BLACK),
             ..RichSegment::plain('q')
         };
@@ -960,6 +992,33 @@ mod tests {
         let back: RichSegment = serde_json::from_str(&json).unwrap();
         assert_eq!(back, seg);
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // `rule_thickness_em` is additive: a segment written before it parses
+    // as `None` and re-serializes without the key; a stored thickness
+    // round-trips and is held to 0.01..4 em.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn rule_thickness_is_additive_and_bounded() {
+        let old = serde_json::to_string(&RichSegment::rule(2.0, None)).unwrap();
+        assert!(!old.contains("rule_thickness_em"));
+        let parsed: RichSegment = serde_json::from_str(&old).unwrap();
+        assert_eq!(parsed.rule_thickness_em, None);
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), old);
+
+        let thick = RichSegment::rule(2.0, None).with_rule_thickness(Some(0.25));
+        let json = serde_json::to_string(&thick).unwrap();
+        assert!(json.contains("\"rule_thickness_em\":0.25"));
+        assert_eq!(serde_json::from_str::<RichSegment>(&json).unwrap(), thick);
+
+        let text = |thickness| RichText {
+            segments: vec![RichSegment::rule(2.0, None).with_rule_thickness(Some(thickness))],
+            ..RichText::plain("", Color::BLACK, 14.0, "")
+        };
+        assert!(text(0.25).within_limits());
+        assert!(!text(4.5).within_limits());
+        assert!(!text(0.0).within_limits());
+        assert!(!text(f32::NAN).within_limits());
     }
 
     // `align` is additive schema too: a document written before it existed

@@ -1052,9 +1052,16 @@ fn legacy_legend<'a>(
     config.legend.content.font_size = font_size;
     config.legend.content.color = color;
     for item in series {
+        let mut symbol = crate::legend::series_symbol_segments(item, None);
+        // A converted document draws its legend as the release that wrote
+        // it did: rules keep the default thickness, not the series stroke
+        // width that new legends take (#357).
+        for segment in &mut symbol {
+            segment.rule_thickness_em = None;
+        }
         crate::legend::append_legend_entry(
             &mut config.legend.content,
-            crate::legend::series_symbol_segments(item, None),
+            symbol,
             label(&item.series_id).unwrap_or(""),
         );
     }
@@ -2626,6 +2633,22 @@ mod radar_tests {
         assert_eq!(config.validate_radar(&series), Ok(()));
         assert_eq!(series[0].x_column, RADAR_POSITIONS_COLUMN);
         assert_eq!(series[0].y_column, radar_values_column("a"));
+    }
+
+    // A converted radar document's legend rules keep the default
+    // thickness, so it draws as the release that wrote it did (#357).
+    #[test]
+    fn converted_legend_rules_keep_the_default_thickness() {
+        let (config, _, _) = Config::from_radar(&chart());
+        let rules: Vec<_> = config
+            .legend
+            .content
+            .segments
+            .iter()
+            .filter(|s| s.rule)
+            .collect();
+        assert!(!rules.is_empty());
+        assert!(rules.iter().all(|s| s.rule_thickness_em.is_none()));
     }
 
     #[test]

@@ -1004,7 +1004,6 @@ const UNDERLINE_Y_OFFSET_RATIO: f32 = 0.1; // below baseline
 // Rule segments (legend line marks): bar center sits where dash glyphs put
 // their ink (~0.3 em above the baseline) so rules and shape glyphs align.
 const RULE_Y_RATIO: f32 = 0.3; // above baseline
-const RULE_THICKNESS_RATIO: f32 = 0.09;
 // Fill band under a rule (legend mark of a filled line series): from the
 // rule's center down to this many em above the baseline, so it stays inside
 // the glyph ascent and never changes the line's measured extents.
@@ -1295,7 +1294,10 @@ fn place_cell(
             // Drawn rule: a bar centered on the symbol axis. Width is the
             // fixed field; vertical extent is the bar thickness only.
             let field = seg.field_em.unwrap_or(1.0) * base;
-            let t = (base * RULE_THICKNESS_RATIO).max(1.0);
+            let thickness = seg
+                .rule_thickness_em
+                .unwrap_or(crate::text::RULE_THICKNESS_EM);
+            let t = (base * thickness).max(1.0);
             let center = y_offset - base * RULE_Y_RATIO;
             if sink.paints() {
                 place_rule(sink, seg, (pen_x, y), field, t, base, &color);
@@ -1590,6 +1592,45 @@ mod dashed_rule_tests {
             plain_canvas.into_rgba()[((22 * 48 + 20) * 4 + 3) as usize],
             0
         );
+    }
+
+    // A rule draws as thick as its stored `rule_thickness_em`; a rule that
+    // stores none keeps the thickness every rule had before the field.
+    #[test]
+    fn rule_thickness_follows_the_stored_em_and_defaults_to_the_legacy_bar() {
+        let make = |thickness: Option<f32>| RichText {
+            segments: vec![
+                RichSegment::rule(2.0, Some(Color::BLACK)).with_rule_thickness(thickness),
+            ],
+            color: Color::BLACK,
+            font_size: 20.0,
+            font: String::new(),
+            align: TextAlign::Left,
+        };
+        let inked_rows = |rt: &RichText| {
+            let mut canvas = Canvas::new(48, 40).unwrap();
+            draw_rich_text(&mut canvas, rt, (4.0, 30.0), FontPolicy::Standard).unwrap();
+            let rgba = canvas.into_rgba();
+            // Rows whose middle column is mostly covered.
+            (0..40u32)
+                .filter(|&y| rgba[((y * 48 + 24) * 4 + 3) as usize] > 127)
+                .count()
+        };
+        let legacy = inked_rows(&make(None));
+        // 0.09 em × 20 px = 1.8 px.
+        assert!((1..=2).contains(&legacy), "legacy bar rows: {legacy}");
+        assert_eq!(
+            legacy,
+            inked_rows(&make(Some(crate::text::RULE_THICKNESS_EM)))
+        );
+        // 0.3 em × 20 px = 6 px.
+        let thick = inked_rows(&make(Some(0.3)));
+        assert!((5..=7).contains(&thick), "0.3 em bar rows: {thick}");
+        // The measured height grows with the bar.
+        let thin_m = measure_rich_text(&make(None), FontPolicy::Standard);
+        let thick_m = measure_rich_text(&make(Some(0.3)), FontPolicy::Standard);
+        assert!(thick_m.ascent + thick_m.descent > thin_m.ascent + thin_m.descent);
+        assert_eq!(thin_m.width, thick_m.width);
     }
 
     #[test]
