@@ -1063,28 +1063,66 @@ impl DataPickPipelineBundle {
         )
         .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
 
-        enum PreparedKind {
-            Histogram(wgpu::BindGroup),
-            /// The field and label gap groups, and the contour kernel
-            /// dispatched before the cell kernel.
-            Field(wgpu::BindGroup, wgpu::BindGroup, wgpu::ComputePipeline),
-            VectorGrid(wgpu::BindGroup),
-            CategoryBars(crate::data_render::CategoryBarData),
-            BoxPlot(crate::data_render::CategoryBarData),
-            RangeBars(crate::data_render::CategoryBarData),
-            Violin(crate::data_render::CategoryBarData),
-            ValueLabels(crate::data_render::CategoryBarData),
-            Parallel(crate::data_render::ParallelData),
-            TriMesh(wgpu::BindGroup),
-        }
-        struct PreparedSeries {
-            query_bg: wgpu::BindGroup,
-            kind: PreparedKind,
-            /// The kernel the series dispatches; a field's cell kernel,
-            /// after its contour kernel.
-            pipeline: wgpu::ComputePipeline,
-        }
+        let (prepared, identities, field_charges) = self.prepare_data_pick_series(
+            kernels,
+            pool,
+            &query,
+            series,
+            cursor,
+            candidate_stride,
+            &candidates,
+            &scratch_tally,
+        )?;
 
+        self.encode_data_pick(
+            transform_bg,
+            prepared,
+            &candidates,
+            &readback,
+            candidate_count,
+            candidate_stride,
+        );
+
+        Ok(DataPickTicket {
+            state: DataPickTicketState::Pending {
+                readback: GpuReadback::map(
+                    &self.device,
+                    &self.health,
+                    &readback,
+                    Some(candidate_bytes),
+                ),
+                identities: identities.into(),
+                gpu_reduced: false,
+                _field_charges: field_charges,
+                _scratch_charge: scratch_tally
+                    .into_charge(&self.ledger, GpuResourceKind::PickScratch),
+                _readback_charge: readback_tally
+                    .into_charge(&self.ledger, GpuResourceKind::Readback),
+            },
+        })
+    }
+
+    /// [`Self::submit`]'s per-series preparation: each series' query, bind
+    /// groups, identity and kernel, in series order.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_data_pick_series(
+        &self,
+        kernels: &mut DataPickKernels,
+        pool: &ColumnPool,
+        query: &GpuDataPickQuery,
+        series: Vec<GpuDataPickSeries>,
+        cursor: [f32; 4],
+        candidate_stride: u64,
+        candidates: &wgpu::Buffer,
+        scratch_tally: &ChargeTally,
+    ) -> Result<
+        (
+            Vec<PreparedSeries>,
+            Vec<DataPickIdentity>,
+            Vec<FieldPickHold>,
+        ),
+        crate::gpu_pick::GpuPickError,
+    > {
         let mut prepared = Vec::new();
         prepared.try_reserve_exact(series.len()).map_err(|_| {
             crate::gpu_pick::GpuPickError::AllocationFailed {
@@ -1363,7 +1401,19 @@ impl DataPickPipelineBundle {
                 pipeline,
             });
         }
+        Ok((prepared, identities, field_charges))
+    }
 
+    /// [`Self::submit`]'s dispatches and the copies into the readback.
+    fn encode_data_pick(
+        &self,
+        transform_bg: wgpu::BindGroup,
+        prepared: Vec<PreparedSeries>,
+        candidates: &wgpu::Buffer,
+        readback: &wgpu::Buffer,
+        candidate_count: u64,
+        candidate_stride: u64,
+    ) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1422,25 +1472,29 @@ impl DataPickPipelineBundle {
             );
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-
-        Ok(DataPickTicket {
-            state: DataPickTicketState::Pending {
-                readback: GpuReadback::map(
-                    &self.device,
-                    &self.health,
-                    &readback,
-                    Some(candidate_bytes),
-                ),
-                identities: identities.into(),
-                gpu_reduced: false,
-                _field_charges: field_charges,
-                _scratch_charge: scratch_tally
-                    .into_charge(&self.ledger, GpuResourceKind::PickScratch),
-                _readback_charge: readback_tally
-                    .into_charge(&self.ledger, GpuResourceKind::Readback),
-            },
-        })
     }
+}
+
+enum PreparedKind {
+    Histogram(wgpu::BindGroup),
+    /// The field and label gap groups, and the contour kernel
+    /// dispatched before the cell kernel.
+    Field(wgpu::BindGroup, wgpu::BindGroup, wgpu::ComputePipeline),
+    VectorGrid(wgpu::BindGroup),
+    CategoryBars(crate::data_render::CategoryBarData),
+    BoxPlot(crate::data_render::CategoryBarData),
+    RangeBars(crate::data_render::CategoryBarData),
+    Violin(crate::data_render::CategoryBarData),
+    ValueLabels(crate::data_render::CategoryBarData),
+    Parallel(crate::data_render::ParallelData),
+    TriMesh(wgpu::BindGroup),
+}
+struct PreparedSeries {
+    query_bg: wgpu::BindGroup,
+    kind: PreparedKind,
+    /// The kernel the series dispatches; a field's cell kernel,
+    /// after its contour kernel.
+    pipeline: wgpu::ComputePipeline,
 }
 
 fn lane_base(handle: ColumnHandle) -> Result<u32, crate::gpu_pick::GpuPickError> {

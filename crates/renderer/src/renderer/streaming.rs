@@ -4,6 +4,11 @@
 
 use super::*;
 
+#[path = "streaming_demote.rs"]
+mod demote;
+#[path = "streaming_handoff.rs"]
+mod handoff;
+
 pub(super) struct RegisteredStreamColumn {
     pub(super) column: crate::StreamColumn,
     pub(super) fit_epoch: u64,
@@ -971,193 +976,9 @@ impl Renderer {
             return Ok(());
         }
 
-        let mut changed = std::collections::HashSet::new();
-        changed.try_reserve(changed_ids.len()).map_err(|error| {
-            FiggyError::StateAllocationFailed {
-                resource: "resident demotion changed id set",
-                reason: error.to_string(),
-            }
-        })?;
-        for id in changed_ids {
-            if !changed.insert(*id) {
-                return Err(data_render::AllocError::DuplicateId((*id).to_owned()).into());
-            }
-        }
-        let closure = self.transition_column_closure(changed.iter().copied())?;
-        for id in &closure {
-            let resident = self.pool.slot(id).is_some();
-            let streamed = self.streaming_sources.contains_key(id);
-            if resident && streamed {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: id.clone(),
-                    reason: "column is simultaneously resident and streamed",
-                });
-            }
-            if !resident && !streamed {
-                return Err(FiggyError::UnknownColumn { id: id.clone() });
-            }
-        }
+        let (changed, closure) = self.demotion_closure(changed_ids)?;
 
-        let mut seen = std::collections::HashSet::new();
-        seen.try_reserve(columns.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "resident demotion metadata id set",
-                reason: error.to_string(),
-            })?;
-        for source in &columns {
-            source.validate()?;
-            if !seen.insert(source.id.as_str()) {
-                return Err(data_render::AllocError::DuplicateId(source.id.clone()).into());
-            }
-            if !closure.contains(&source.id) {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "demotion metadata is outside the changed chart closure",
-                });
-            }
-        }
-        if let Some(missing) = closure.iter().find(|id| !seen.contains(id.as_str())) {
-            return Err(FiggyError::InvalidStreamSource {
-                id: missing.clone(),
-                reason: "demotion metadata must cover the complete referenced-column chart closure",
-            });
-        }
-
-        let mut seen_bindings = std::collections::HashSet::new();
-        seen_bindings.try_reserve(sources.len()).map_err(|error| {
-            FiggyError::StateAllocationFailed {
-                resource: "resident demotion source id set",
-                reason: error.to_string(),
-            }
-        })?;
-        for binding in sources {
-            if !seen_bindings.insert(binding.id) {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: binding.id.to_owned(),
-                    reason: "demotion source id appears more than once",
-                });
-            }
-            if !closure.contains(binding.id) {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: binding.id.to_owned(),
-                    reason: "demotion source is outside the changed chart closure",
-                });
-            }
-        }
-        if let Some(missing) = closure
-            .iter()
-            .find(|id| !seen_bindings.contains(id.as_str()))
-        {
-            return Err(FiggyError::InvalidStreamSource {
-                id: missing.clone(),
-                reason: "demotion sources must cover the complete referenced-column chart closure",
-            });
-        }
-
-        for source in &columns {
-            let binding = sources
-                .iter()
-                .find(|binding| binding.id == source.id)
-                .ok_or(FiggyError::internal(
-                    "exact closure source coverage was validated",
-                ))?;
-            if binding.revision != source.revision {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "demotion source revision does not match its metadata",
-                });
-            }
-            let binding_len = u64::try_from(binding.source.len()).map_err(|_| {
-                FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "demotion source length exceeds the host index representation",
-                }
-            })?;
-            if binding_len != source.len {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "demotion source length does not match its metadata",
-                });
-            }
-            if binding.source.encoding() != source.encoding {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "demotion source encoding does not match its metadata",
-                });
-            }
-            if let Some(slot) = self.pool.slot(&source.id) {
-                if !changed.contains(source.id.as_str())
-                    && u64::try_from(slot.len_values).ok() != Some(source.len)
-                {
-                    return Err(FiggyError::InvalidStreamSource {
-                        id: source.id.clone(),
-                        reason: "unchanged closure source length does not match the resident column",
-                    });
-                }
-                match self.stream_revision_lineage.get(&source.id) {
-                    Some(last) if source.revision <= *last => {
-                        return Err(FiggyError::InvalidStreamSource {
-                            id: source.id.clone(),
-                            reason: "demotion revision must exceed the logical stream lineage",
-                        });
-                    }
-                    None if source.revision == 0 => {
-                        return Err(FiggyError::InvalidStreamSource {
-                            id: source.id.clone(),
-                            reason: "initial demotion revision must be nonzero",
-                        });
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            let registered = self
-                .streaming_sources
-                .get(&source.id)
-                .ok_or(FiggyError::internal(
-                    "closure column was validated streamed",
-                ))?;
-            if source.revision < registered.revision {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "streamed normalization revision is stale",
-                });
-            }
-            if source.revision == registered.revision {
-                if source.len != registered.len
-                    || source.encoding != registered.encoding
-                    || source.replay != registered.replay
-                {
-                    return Err(FiggyError::InvalidStreamSource {
-                        id: source.id.clone(),
-                        reason: "same-revision streamed metadata does not match registered content metadata",
-                    });
-                }
-                if self.stream_revision_lineage.get(&source.id) != Some(&source.revision) {
-                    return Err(FiggyError::internal(
-                        "registered stream revision remains the logical lineage",
-                    ));
-                }
-                continue;
-            }
-            if !changed.contains(source.id.as_str()) {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "unchanged streamed closure companion must keep its revision",
-                });
-            }
-            if self
-                .stream_revision_lineage
-                .get(&source.id)
-                .is_some_and(|last| source.revision <= *last)
-            {
-                return Err(FiggyError::InvalidStreamSource {
-                    id: source.id.clone(),
-                    reason: "streamed replacement revision must exceed the logical lineage",
-                });
-            }
-        }
+        let columns = self.check_demotion_sources(&closure, &changed, columns, sources)?;
 
         let mutation_count = columns
             .iter()
@@ -1195,57 +1016,7 @@ impl Renderer {
                 resource: "stream revision lineage",
                 reason: error.to_string(),
             })?;
-        let mut entries = Vec::new();
-        entries.try_reserve_exact(mutation_count).map_err(|error| {
-            FiggyError::StateAllocationFailed {
-                resource: "resident demotion entries",
-                reason: error.to_string(),
-            }
-        })?;
-        let mut fit_epoch = self.next_stream_source_fit_epoch;
-        for source in columns {
-            let was_resident = self.pool.slot(&source.id).is_some();
-            let replaces_stream = self
-                .streaming_sources
-                .get(&source.id)
-                .is_some_and(|registered| source.revision > registered.revision);
-            if !was_resident && !replaces_stream {
-                continue;
-            }
-            fit_epoch = fit_epoch
-                .checked_add(1)
-                .ok_or(FiggyError::CounterExhausted {
-                    counter: "stream source fit epoch",
-                })?;
-            let mut key = String::new();
-            key.try_reserve_exact(source.id.len()).map_err(|error| {
-                FiggyError::StateAllocationFailed {
-                    resource: "streaming source id",
-                    reason: error.to_string(),
-                }
-            })?;
-            key.push_str(&source.id);
-            let mut lineage_key = String::new();
-            lineage_key
-                .try_reserve_exact(source.id.len())
-                .map_err(|error| FiggyError::StateAllocationFailed {
-                    resource: "stream revision lineage id",
-                    reason: error.to_string(),
-                })?;
-            lineage_key.push_str(&source.id);
-            let revision = source.revision;
-            entries.push((
-                key,
-                lineage_key,
-                revision,
-                was_resident,
-                RegisteredStreamColumn {
-                    column: source,
-                    fit_epoch,
-                    statistics_cache: StreamStatisticsCache::default(),
-                },
-            ));
-        }
+        let entries = self.demotion_entries(columns, mutation_count)?;
         let mut ids = Vec::new();
         ids.try_reserve_exact(entries.len()).map_err(|error| {
             FiggyError::StateAllocationFailed {
@@ -1327,38 +1098,7 @@ impl Renderer {
         rendered_config: &Config,
         auto_fit_padding: Option<f64>,
     ) -> Result<RenderRevision> {
-        for (id, data, series) in &handoff.expected_chart_revisions {
-            let state = self
-                .chart_states
-                .get(id)
-                .ok_or(FiggyError::UnknownChart { id: *id })?;
-            if state.revisions.data != *data || state.revisions.series != *series {
-                return Err(FiggyError::StaleStateToken {
-                    reason: "chart data or series changed during resident stream handoff".into(),
-                });
-            }
-        }
-        for (id, epoch) in &handoff.allocation_epochs {
-            if self.pool.allocation_epoch(id) != Some(*epoch)
-                || self.streaming_sources.contains_key(id)
-            {
-                return Err(FiggyError::StaleStateToken {
-                    reason: "resident column changed during stream handoff".into(),
-                });
-            }
-        }
-        for (id, revision) in &handoff.expected_stream_revisions {
-            if self.pool.slot(id).is_some()
-                || self
-                    .streaming_sources
-                    .get(id)
-                    .is_none_or(|source| source.revision != *revision)
-            {
-                return Err(FiggyError::StaleStateToken {
-                    reason: "streamed column changed during mixed stream handoff".into(),
-                });
-            }
-        }
+        self.check_stream_handoff_current(handoff)?;
 
         let count =
             u64::try_from(handoff.columns.len()).map_err(|_| FiggyError::CounterExhausted {
@@ -1399,91 +1139,7 @@ impl Renderer {
             None
         };
 
-        self.streaming_sources
-            .try_reserve(handoff.columns.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "streaming source registry",
-                reason: error.to_string(),
-            })?;
-        self.stream_revision_lineage
-            .try_reserve(handoff.columns.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "stream revision lineage",
-                reason: error.to_string(),
-            })?;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(handoff.columns.len())
-            .map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "resident stream handoff entries",
-                reason: error.to_string(),
-            })?;
-        let mut fit_epoch = self.next_stream_source_fit_epoch;
-        for source in &handoff.columns {
-            let cache = statistics
-                .iter()
-                .find_map(|(id, cache)| (id == &source.id).then_some(cache))
-                .ok_or_else(|| FiggyError::StaleStateToken {
-                    reason: format!(
-                        "stream handoff has no statistics for column {:?}",
-                        source.id
-                    ),
-                })?;
-            if !cache.covers(0..source.len) {
-                return Err(FiggyError::StaleStateToken {
-                    reason: format!(
-                        "stream handoff did not consume the complete column {:?}",
-                        source.id
-                    ),
-                });
-            }
-            let cache =
-                cache
-                    .try_coverage_copy()
-                    .map_err(|error| FiggyError::StateAllocationFailed {
-                        resource: "resident stream handoff statistics",
-                        reason: error.to_string(),
-                    })?;
-            fit_epoch = fit_epoch
-                .checked_add(1)
-                .ok_or(FiggyError::CounterExhausted {
-                    counter: "stream source fit epoch",
-                })?;
-            let mut id = String::new();
-            id.try_reserve_exact(source.id.len()).map_err(|error| {
-                FiggyError::StateAllocationFailed {
-                    resource: "resident stream handoff id",
-                    reason: error.to_string(),
-                }
-            })?;
-            id.push_str(&source.id);
-            let mut lineage_id = String::new();
-            lineage_id
-                .try_reserve_exact(source.id.len())
-                .map_err(|error| FiggyError::StateAllocationFailed {
-                    resource: "resident stream handoff lineage id",
-                    reason: error.to_string(),
-                })?;
-            lineage_id.push_str(&source.id);
-            let mut column = source.clone();
-            column.statistics = crate::StreamStatistics::Known(cache.bounds);
-            entries.push((
-                id,
-                lineage_id,
-                source.revision,
-                self.pool.slot(&source.id).is_some(),
-                RegisteredStreamColumn {
-                    column,
-                    fit_epoch,
-                    statistics_cache: cache,
-                },
-            ));
-        }
-        if fit_epoch != final_fit_epoch {
-            return Err(FiggyError::internal(
-                "the handoff assigns every planned fit epoch",
-            ));
-        }
+        let entries = self.stream_handoff_entries(handoff, statistics, final_fit_epoch)?;
 
         let mut resident_ids = Vec::new();
         resident_ids

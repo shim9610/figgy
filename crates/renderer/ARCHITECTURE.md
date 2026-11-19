@@ -255,6 +255,21 @@ Nonresident registration instead retains logical source metadata and bounded
 GPU work; its host must keep the original range provider available for exact
 replay. The renderer does not retain a full CPU copy of that source.
 
+### Synchronization and locks
+
+Product code takes no lock (rule 4 of the repository's `CLAUDE.md`):
+mutation runs behind `&mut self`, retired GPU handles go through an atomic
+queue, the poll thread holds counters and a park token, and the registered
+fonts are read from an `ArcSwap` snapshot. The one approved exception is the
+font registration `Mutex` in `src/text_render.rs` (`FontRegistry::registered`),
+decided by the maintainer in #160 on 2026-11-15. It maps each registered byte
+string to the families its first registration reported and is held only
+inside `register_font_bytes`, which it also serializes, so the same bytes are
+parsed and published once. Lookups never take it: they read the
+`ArcSwap<RegisteredFonts>` snapshot. The `FONT_REGISTRATION_TEST_LOCK` beside
+it is compiled only for tests. Any other lock still needs the maintainer's
+approval in its issue.
+
 ### Memory accounting and release
 
 ![Shared GPU resource ownership, final-reference retirement and reclamation after queue completion](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/gpu-resource-lifetime-en.png)
@@ -846,6 +861,18 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 끝나며, 아무도 join하지 않는다. 스레드는 장치 유실 여부만 읽고 처리되지 않은 오류
 개수는 읽지 않는다. 그 오류는 호스트 호출이 보고한다. `tools/loom-poller`가 loom으로
 프로토콜을 검증한다. `RendererDevice::blocking`은 스레드 없는 묶음을 만든다.
+
+### 동기화와 잠금
+
+제품 코드는 잠금을 쓰지 않는다(저장소 `CLAUDE.md`의 규칙 4). 변경은 `&mut self` 뒤에서
+일어나고, 회수할 GPU 핸들은 원자적 대기열로 넘기며, poll 스레드는 카운터와 park 토큰만 쓰고,
+등록된 글꼴은 `ArcSwap` 스냅숏으로 읽는다. 승인된 예외는 `src/text_render.rs`의 글꼴 등록
+`Mutex`(`FontRegistry::registered`) 하나뿐이며, 관리자가 2026-11-15에 #160에서 결정했다. 이
+맵은 등록된 바이트열마다 첫 등록 때 나온 패밀리 이름을 기억한다. 잠금은 `register_font_bytes`
+안에서만 잡고, 등록을 하나씩 처리하게 해서 같은 바이트열을 한 번만 파싱하고 게시한다. 조회는
+이 잠금을 잡지 않고 `ArcSwap<RegisteredFonts>` 스냅숏을 읽는다. 옆에 있는
+`FONT_REGISTRATION_TEST_LOCK`은 테스트에서만 컴파일된다. 이 밖의 잠금은 지금도 해당 이슈에서
+관리자 승인을 받아야 한다.
 
 ### 메모리 계상과 회수
 
