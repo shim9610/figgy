@@ -1308,9 +1308,28 @@ fn a_parallel_chart_frames_its_axes_and_sizes_their_names() {
     let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series[0].render_type else {
         panic!("a parallel series");
     };
-    assert_eq!(line.line_color, palette_color(&theme, 0));
+    // The rows at half opacity, each tick label on a box of the paper
+    // colour, a colourbar long enough to read (#357).
+    assert_eq!(
+        line.line_color,
+        Color {
+            a: 0.5,
+            ..palette_color(&theme, 0)
+        }
+    );
     assert_eq!(line.line_width, 1.2);
+    let paper = theme.chrome.background.unwrap();
+    assert_eq!(
+        config.parallel().unwrap().label_backdrop,
+        Some(Color { a: 0.8, ..paper })
+    );
+    assert_eq!(theme.chrome.colorbar.length, 0.6);
     valid_on(&config, &series);
+    for family in ["gallery", "cool-slate", "warm-paper"] {
+        let part = named(ChartKind::Parallel, family).series.parallel;
+        assert_eq!(part.line_opacity, Some(0.5), "{family}");
+        assert!(part.label_backdrop.is_some(), "{family}");
+    }
 
     // The documented look changes nothing on a default parallel chart.
     let mut config = categorical();
@@ -1790,8 +1809,26 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
         children: vec![slice("child")],
         ..slice("root")
     }];
-    ThemeFamily::Gallery.radial().apply(&mut chart);
+    let midnight = ThemeFamily::Midnight.radial();
+    assert_eq!(midnight.child_tint, None);
+    midnight.apply(&mut chart);
     assert_eq!(chart.slices[0].children[0].color, Color::BLACK);
+    // The gallery's children follow their branch's colour, paler (#357):
+    // a recoloured branch no longer keeps children in the host's colours.
+    let mut chart = crate::defaults::radial_chart();
+    chart.slices = vec![RadialSlice {
+        children: vec![slice("child")],
+        ..slice("root")
+    }];
+    let gallery = ThemeFamily::Gallery.radial();
+    gallery.apply(&mut chart);
+    let (root, child) = (chart.slices[0].color, chart.slices[0].children[0].color);
+    assert_eq!(root, gallery.palette[0]);
+    assert!(light(child) > light(root));
+    assert!(
+        child.b > child.r,
+        "the child keeps the branch's hue: {child:?}"
+    );
     // A sunburst draws flat, so it keeps its top view under a tilted theme
     // and stays a valid document under every theme.
     for (name, theme) in radial_themes() {

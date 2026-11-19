@@ -3958,6 +3958,8 @@ mod web {
                 config.left_y.max = 1.0;
                 config.left_y.categories = None;
                 config.set_parallel(Some(ParallelOptions {
+                    names_on_top: false,
+                    label_backdrop: None,
                     axes: (0..AXES).map(|_| ParallelAxis::new(0.0, 10.0)).collect(),
                 }));
             }

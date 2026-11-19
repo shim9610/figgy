@@ -16,8 +16,10 @@
 //! `Chart::set_*_range` or `auto_fit_*`), and chart_area pixel size (set to
 //! match the host viewport).
 
-use crate::config::{AxisOptions, ColorBarOptions, Config, Legend};
+use crate::Color;
+use crate::config::{AxisOptions, ColorBarOptions, Config, LayoutState, Legend, TickVisibility};
 use crate::data_config::SeriesConfig;
+use crate::parallel::ParallelOptions;
 
 /// X axis options. Range is a 0..1 placeholder — replace with
 /// `Chart::set_x_range` or `auto_fit_x`.
@@ -147,4 +149,61 @@ mod tests {
             assert_eq!(serde_json::to_string(&back).unwrap(), json);
         }
     }
+}
+/// A parallel coordinates chart's chrome (#357), in the layout web
+/// parallel-coordinate charts share: the axis names above the axes, light
+/// axes with outward major ticks, and each tick label on a white box so it
+/// stays readable over the rows.
+///
+/// - `parallel`: no axes yet, `names_on_top`, a `label_backdrop` of white
+///   at 0.8. The host writes the axes (`parallel_mut().axes`) and the
+///   names (`bottom_x.categories`), one per axis, before the chart is
+///   registered.
+/// - `left_y`, which every parallel axis is drawn in the style of: the
+///   normalized band `0..1`, title hidden, grey line and outward major
+///   ticks without minor ticks, 14 px tick labels.
+/// - `bottom_x`, which names the axes: no line, no ticks.
+/// - No grid, and no frame: `top_x` and `right_y` draw no line and no
+///   ticks.
+/// - `layout_state` is [`LayoutState::NeedsFit`], as a new chart's is: the
+///   names above the plot need a top band, so the first default draw fits
+///   the layout to them and to the host's axes and names.
+///
+/// Every choice is a stored field, so a saved chart reads back with the
+/// same look.
+pub fn default_parallel_config() -> Config {
+    let mut config = default_config();
+    let axis_ink = Color::from_rgb8(110, 116, 128);
+    let y = &mut config.left_y;
+    y.min = 0.0;
+    y.max = 1.0;
+    y.title_option.visible = false;
+    y.minor_count = 0;
+    y.tick = TickVisibility::Outside;
+    y.line_color = axis_ink;
+    y.label_style.font_size = 14.0;
+    let names = &mut config.bottom_x;
+    names.line_visible = false;
+    names.tick = TickVisibility::None;
+    names.minor_count = 0;
+    for frame in [&mut config.top_x, &mut config.right_y] {
+        frame.line_visible = false;
+        frame.tick = TickVisibility::None;
+        frame.minor_count = 0;
+    }
+    let grid = &mut config.grid;
+    grid.show_major_x = false;
+    grid.show_major_y = false;
+    grid.show_minor_x = false;
+    grid.show_minor_y = false;
+    config.set_parallel(Some(ParallelOptions {
+        axes: Vec::new(),
+        names_on_top: true,
+        label_backdrop: Some(Color {
+            a: 0.8,
+            ..Color::WHITE
+        }),
+    }));
+    config.layout_state = LayoutState::NeedsFit;
+    config
 }

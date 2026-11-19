@@ -40,8 +40,8 @@ use crate::config::{
 use crate::data_config::{
     BoxPlotOverride, BoxPlotTarget, BoxPoints, BoxSeries, CategoryBarDirection,
     CategoryBarOverride, CategoryBarSeries, CategoryBarTarget, DataRenderType, FieldSeries,
-    HistogramSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, SeriesConfig, TernarySeries,
-    VectorSeries, Violin, ViolinBody, ViolinHalf,
+    HistogramSeries, ParallelSeries, RadarPolygonSeries, RangeBarSeries, RangeColor, SeriesConfig,
+    TernarySeries, VectorSeries, Violin, ViolinBody, ViolinHalf,
 };
 use crate::feynman::{ParticleLine, Wiggle};
 use crate::layer::LayerRef;
@@ -405,6 +405,14 @@ pub struct TernaryTheme {
 pub struct ParallelTheme {
     /// The size of the axis names, the labels of the category axis.
     pub name_size: f32,
+    /// The box behind every parallel axis's tick label
+    /// ([`crate::parallel::ParallelOptions::label_backdrop`]); `None` draws
+    /// none.
+    pub label_backdrop: Option<Color>,
+    /// The opacity of every row in its colour; `None` keeps each row's own
+    /// alpha. A row coloured through the colourbar takes its alpha from the
+    /// map.
+    pub line_opacity: Option<f32>,
 }
 
 /// 3D surfaces and their lighting response.
@@ -1078,6 +1086,8 @@ impl Theme {
                 },
                 parallel: ParallelTheme {
                     name_size: config.bottom_x.label_style.font_size,
+                    label_backdrop: crate::defaults::parallel_options().label_backdrop,
+                    line_opacity: None,
                 },
                 surfaces: SurfaceTheme {
                     material: surface.material,
@@ -1596,9 +1606,15 @@ impl Theme {
             }
             // The line width is set above; a streamline's arrowheads keep
             // their size, which follows its spacing.
+            // The rows' opacity in their colour (#357); a row coloured
+            // through the colour column takes the map's alpha.
+            DataRenderType::Parallel(ParallelSeries { line, .. }) => {
+                if let Some(opacity) = theme.parallel.line_opacity {
+                    line.line_color.a = opacity;
+                }
+            }
             DataRenderType::Streamlines(_)
             | DataRenderType::MonotonicLine(_)
-            | DataRenderType::Parallel(_)
             | DataRenderType::RgbImage(_) => {}
         }
         if let DataRenderType::RangeBars(RangeBarSeries {
@@ -1787,6 +1803,9 @@ impl Theme {
             names.line_visible = config.top_x.line_visible;
             names.tick = config.top_x.tick.clone();
             names.label_style.font_size = self.series.parallel.name_size;
+            if let Some(parallel) = config.parallel_mut() {
+                parallel.label_backdrop = self.series.parallel.label_backdrop;
+            }
         }
         // An energy-level chart names its term columns on `bottom_x`.
         if self.kind == ChartKind::EnergyLevels {

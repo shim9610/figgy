@@ -438,7 +438,13 @@ impl SeriesConfig {
 
     /// One polyline per row across the parallel axes, one column per axis
     /// in the axes' order. The first two also name the series' `x_column`
-    /// and `y_column`, as the variant requires.
+    /// and `y_column`, as the variant requires. The rows draw 1 px wide in
+    /// the series ink, opaque, so [`ColorCycle::color_unset`] still finds
+    /// them unset; a theme's `ParallelTheme::line_opacity` or the host's
+    /// alpha makes many rows read as a density (#357), and a colour column
+    /// ([`Self::color_by`]) colours them through the chart's colourbar.
+    ///
+    /// [`ColorCycle::color_unset`]: crate::preset::ColorCycle::color_unset
     pub fn parallel<I, C>(id: impl Into<String>, columns: I) -> Self
     where
         I: IntoIterator<Item = C>,
@@ -746,6 +752,44 @@ mod tests {
 
     fn grid(prefix: &str) -> MatrixRef {
         MatrixRef::columns_are_x((0..3).map(|i| format!("{prefix}{i}")))
+    }
+
+    /// The parallel rows draw 1 px in the opaque series ink, which the colour
+    /// cycle recognises as unset (#357), and the parallel
+    /// preset is a valid chart once the host writes its axes and names, and
+    /// reads back unchanged.
+    #[test]
+    fn the_parallel_helpers_are_a_light_valid_chart() {
+        let series = SeriesConfig::parallel("rows", ["a", "b", "c"]);
+        let DataRenderType::Parallel(ParallelSeries { line, .. }) = &series.render_type else {
+            panic!("a parallel series");
+        };
+        assert_eq!((line.line_width, line.line_color), (1.0, SERIES_INK));
+        let mut config = crate::helpers::default::default_parallel_config();
+        let options = config.parallel().unwrap();
+        assert!(options.names_on_top);
+        assert_eq!(options.label_backdrop.unwrap().a, 0.8);
+        assert_eq!((config.left_y.min, config.left_y.max), (0.0, 1.0));
+        assert_eq!(config.left_y.minor_count, 0);
+        assert!(!config.top_x.line_visible && !config.right_y.line_visible);
+        assert!(!config.grid.show_major_x && !config.grid.show_major_y);
+        // A new chart's layout: the first default draw fits it.
+        assert_eq!(config.layout_state, crate::config::LayoutState::NeedsFit);
+        config.bottom_x.categories = Some(
+            ["a", "b", "c"]
+                .map(|id| Category::new(id, id.to_uppercase()))
+                .to_vec(),
+        );
+        config.parallel_mut().unwrap().axes =
+            vec![crate::parallel::ParallelAxis::new(0.0, 10.0); 3];
+        assert_eq!(config.validate_parallel(), Ok(()));
+        valid_on(&config, &[series]);
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_string(&config).unwrap();
+            let back: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, config);
+        }
     }
 
     fn valid_on(config: &Config, series: &[SeriesConfig]) {
