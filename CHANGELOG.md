@@ -149,6 +149,17 @@ and radar documents' `text_sizes`) are additive.
     (`fit_layout`, a `Fitted` chart's edit) may take a pixel more where a
     band holds unhinted ink (the default chart's x bands are 11 and 26 px
     instead of 10 and 25 px).
+- **One layout fit is a fixed point** ([#357](https://github.com/shim9610/figgy/issues/357)).
+  `layout::auto_layout` (and so `fit_layout`, a theme and every fit of a
+  `Fitted` chart) now repeats laying out each chart and lining up the
+  subplot grid until a round changes nothing, at most the 8 rounds its
+  chart passes take. Before, the grid alignment ran once after the charts
+  were laid out: a band it raised changed a plot's size and so the labels
+  that chart holds, and fitting the result again could move a band or an
+  axis title by a pixel (applying the `cool-slate` theme twice to a chart
+  with broken axes did). Fitting twice now gives what fitting once gives,
+  at every scale. A stored layout is drawn as stored; a layout fitted again
+  may differ from the old fit by a pixel where the old one had not settled.
 - **Grotrian (energy-level) default look** ([#357](https://github.com/shim9610/figgy/issues/357) item 10).
   Appearance only; values, positions and picks are unchanged, and a saved
   document draws as it did.

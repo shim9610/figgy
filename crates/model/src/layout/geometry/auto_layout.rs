@@ -392,10 +392,12 @@ const AUTO_LAYOUT_MAX_DIGITS: usize = 5;
 /// A tick label wider than this many ems of its font size is too long for
 /// [`auto_layout`], whatever it prints.
 const AUTO_LAYOUT_MAX_LABEL_EMS: f32 = 5.0;
-/// The passes [`auto_layout`] runs at most. A pass that changes nothing ends
-/// it, so the result is a fixed point (and a second call a no-op) unless
-/// every pass changed something; the idempotence tests cover every
-/// catalogue scene and released config.
+/// The passes [`auto_layout`] runs at most, on one chart and over the
+/// whole document (each chart laid out, then the cells lined up). A pass
+/// or round that changes nothing ends it, so the result is a fixed point
+/// (and a second call a no-op) unless every one changed something; the
+/// idempotence tests cover every catalogue scene, every theme scene and
+/// released config.
 const AUTO_LAYOUT_PASSES: usize = 8;
 
 /// `cfg` with axis bands, axis title offsets and tick-label formats chosen so
@@ -518,15 +520,26 @@ pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
             .scale_text_sizes(None, cfg.subplot_text_factor(index));
         subplot.text_scale = crate::layer::SubplotTextScale::Fixed;
     }
-    lay_out_chart(&mut out, measure);
-    for index in 0..out.subplots.len() {
-        let Some(mut chart) = out.subplot_config(index) else {
-            continue;
-        };
-        lay_out_chart(&mut chart, measure);
-        adopt_chart_layout(&mut out.subplots[index].config, &chart);
+    // Laying out each chart and lining up the cells run together until a
+    // round changes nothing, so the result is a fixed point of the whole
+    // fit (#357): a band raised to line up the plots changes the plot
+    // sizes, which can change the labels each chart holds and so the bands
+    // the next round measures.
+    for _ in 0..AUTO_LAYOUT_PASSES {
+        let before = out.clone();
+        lay_out_chart(&mut out, measure);
+        for index in 0..out.subplots.len() {
+            let Some(mut chart) = out.subplot_config(index) else {
+                continue;
+            };
+            lay_out_chart(&mut chart, measure);
+            adopt_chart_layout(&mut out.subplots[index].config, &chart);
+        }
+        align_cells(&mut out, measure);
+        if out == before {
+            break;
+        }
     }
-    align_cells(&mut out, measure);
     for (subplot, stored) in out.subplots.iter_mut().zip(&cfg.subplots) {
         subplot.config.scale_text_sizes(Some(&stored.config), 1.0);
         subplot.text_scale = stored.text_scale;
