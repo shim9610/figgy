@@ -146,7 +146,8 @@ impl Sink for CanvasSink<'_> {
                 false,
                 policy,
             ),
-            TextRef::Rich(rich) => {
+            TextRef::Rich(rich) | TextRef::ScaledRich { text: rich, .. } => {
+                let scale = scale * text.text.rich().map_or(1.0, |(_, own)| own);
                 if scale == 1.0 {
                     draw_rich_text(canvas, rich, origin, policy)
                 } else {

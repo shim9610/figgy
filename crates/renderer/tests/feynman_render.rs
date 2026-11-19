@@ -1463,6 +1463,219 @@ fn a_diagram_zoomed_a_million_times_draws_and_picks_at_1x_and_2x() {
     }
 }
 
+// The label scale: every label is measured, drawn, picked, boxed, dragged
+// and exported at `style.label_scale` times its stored size.
+
+/// The label blocks `diagram` emits on `chart`, in drawing order, logical
+/// pixels.
+fn label_rects(chart: &Chart, diagram: &FeynmanSeries) -> Vec<renderer::layout::RectF> {
+    let config = chart.config();
+    let space = renderer::annotation::pixel_space_for_config(config);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    let mut texts = Vec::new();
+    diagram
+        .emit(
+            &space,
+            None,
+            &measure,
+            &mut renderer::sink::Parts(&mut |part| {
+                if let renderer::DrawnPart::Text(rect) = part {
+                    texts.push(rect);
+                }
+            }),
+        )
+        .unwrap();
+    texts
+}
+
+/// Whether ink lies in `rect` (logical pixels) of an export at `scale`.
+fn ink_in(img: &RasterImage, rect: renderer::layout::RectF, scale: f32) -> bool {
+    let (x0, y0) = ((rect.x * scale) as u32, (rect.y * scale) as u32);
+    let x1 = (((rect.x + rect.width) * scale) as u32).min(img.width - 1);
+    let y1 = (((rect.y + rect.height) * scale) as u32).min(img.height - 1);
+    (y0..=y1).any(|y| {
+        (x0..=x1).any(|x| {
+            let i = ((y * img.width + x) * 4) as usize;
+            ink(&img.rgba[i..i + 4])
+        })
+    })
+}
+
+/// The SVG glyph uses' x positions: their span across a text block.
+fn glyph_span(svg: &str) -> f32 {
+    let xs: Vec<f32> = svg
+        .lines()
+        .filter(|line| line.starts_with("<use"))
+        .filter_map(|line| line.split("x=\"").nth(1)?.split('"').next()?.parse().ok())
+        .collect();
+    assert!(xs.len() >= 2, "{svg}");
+    let max = xs.iter().copied().fold(f32::MIN, f32::max);
+    let min = xs.iter().copied().fold(f32::MAX, f32::min);
+    max - min
+}
+
+#[test]
+fn labels_draw_pick_drag_and_export_at_the_label_scale() {
+    let mut r = renderer();
+    let mut chart = chart();
+    // No tick labels: the diagram's label is the only text.
+    chart
+        .config_mut()
+        .apply_axis_preset(renderer::AxisPreset::Hidden);
+    let mut small = labelled();
+    small.style.label_scale = 1.0;
+    let mut large = small.clone();
+    large.style.label_scale = 3.0;
+    let one = label_rects(&chart, &small)[0];
+    let three = label_rects(&chart, &large)[0];
+    assert!(
+        (three.width - 3.0 * one.width).abs() < 0.01,
+        "{one:?} {three:?}"
+    );
+    assert!(
+        (three.height - 3.0 * one.height).abs() < 0.01,
+        "{one:?} {three:?}"
+    );
+    // The part of the large block right of the small one: drawn, picked
+    // and boxed only at the larger scale.
+    let beyond = renderer::layout::RectF {
+        x: one.x + one.width + 2.0,
+        y: three.y,
+        width: three.x + three.width - (one.x + one.width + 2.0),
+        height: three.height,
+    };
+    assert!(beyond.width > 10.0, "{beyond:?}");
+    let centre = |scale: f32| {
+        (
+            ((beyond.x + beyond.width / 2.0) * scale).round() as u32,
+            ((beyond.y + beyond.height / 2.0) * scale).round() as u32,
+        )
+    };
+    let label = renderer::PickedDataRef::FeynmanLabel {
+        source_id: None,
+        series_id: "d".into(),
+        part: renderer::FeynmanLabelPart::Propagator,
+        index: 2,
+    };
+    let edge = |scale: f32| {
+        around(
+            (
+                ((three.x + three.width + 2.0) * scale).round() as u32,
+                ((three.y + three.height / 2.0) * scale).round() as u32,
+            ),
+            (3.0 * scale) as u32,
+        )
+    };
+    let id = r
+        .register_chart(chart.config().clone(), vec![series("d", small.clone())])
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let registered = |r: &mut Renderer| {
+            r.export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        // Drawn at its scale, and redrawn when the SSOT's scale changes.
+        r.set_chart_series(id, vec![series("d", small.clone())])
+            .unwrap();
+        assert!(ink_in(&registered(&mut r), one, scale), "{scale}x small");
+        assert!(
+            !ink_in(&registered(&mut r), beyond, scale),
+            "{scale}x small"
+        );
+        r.set_chart_series(id, vec![series("d", large.clone())])
+            .unwrap();
+        assert!(ink_in(&registered(&mut r), beyond, scale), "{scale}x large");
+        // Hover and click pick the scaled block.
+        let small_list = [series("d", small.clone())];
+        let large_list = [series("d", large.clone())];
+        let hit = pick(&mut r, &chart, &large_list, scale, centre(scale));
+        assert!(
+            matches!(
+                hit,
+                Some(renderer::PickedData::FeynmanLabel {
+                    part: renderer::FeynmanLabelPart::Propagator,
+                    index: 2,
+                    ..
+                })
+            ),
+            "{scale}x large: {hit:?}"
+        );
+        let hit = pick(&mut r, &chart, &small_list, scale, centre(scale));
+        assert!(
+            !matches!(hit, Some(renderer::PickedData::FeynmanLabel { .. })),
+            "{scale}x small: {hit:?}"
+        );
+        // The picked highlight boxes the scaled block.
+        let mut picked = Chart::new(chart.config().clone());
+        picked.config_mut().picked_data = Some(renderer::DataSelectionsConfig {
+            refs: vec![label.clone()],
+            ..Default::default()
+        });
+        assert!(gold_in(
+            &export(&mut r, &picked, &large_list, scale),
+            edge(scale)
+        ));
+        assert!(!gold_in(
+            &export(&mut r, &picked, &small_list, scale),
+            edge(scale)
+        ));
+    }
+    r.remove_chart(id).unwrap();
+    // A label drag moves the scaled block by the drag, logical pixels.
+    let mut dragged = large.clone();
+    dragged.drag_label(renderer::FeynmanLabelPart::Propagator, 2, 10.0, 5.0);
+    let moved = label_rects(&chart, &dragged)[0];
+    assert!((moved.x - (three.x + 10.0)).abs() < 1e-3, "{moved:?}");
+    assert!((moved.y - (three.y + 5.0)).abs() < 1e-3, "{moved:?}");
+    assert_eq!((moved.width, moved.height), (three.width, three.height));
+    // SVG writes the glyphs at the scaled size: the block spans three
+    // times as far; PDF writes a different page.
+    for scale in [1.0f32, 2.0] {
+        let svg = |diagram: &FeynmanSeries, r: &mut Renderer| {
+            r.export_svg(
+                renderer::ExportSource::chart(&chart, &[series("d", diagram.clone())]),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        let ratio = glyph_span(&svg(&large, &mut r)) / glyph_span(&svg(&small, &mut r));
+        assert!((ratio - 3.0).abs() < 0.05, "{scale}x: {ratio}");
+        let pdf = |diagram: &FeynmanSeries, r: &mut Renderer| {
+            r.export_pdf(
+                renderer::ExportSource::chart(&chart, &[series("d", diagram.clone())]),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        assert_ne!(pdf(&large, &mut r), pdf(&small, &mut r), "{scale}x PDF");
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn a_document_with_a_label_scale_round_trips_and_draws_the_same() {
+    let mut r = renderer();
+    let chart = chart();
+    let mut diagram = labelled();
+    diagram.style.label_scale = 2.5;
+    let list = vec![series("d", diagram)];
+    let json = serde_json::to_string(&list).unwrap();
+    assert!(json.contains("\"label_scale\":2.5"), "{json}");
+    let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, list);
+    for scale in [1.0f32, 2.0] {
+        assert!(
+            export(&mut r, &chart, &list, scale).rgba == export(&mut r, &chart, &back, scale).rgba
+        );
+    }
+}
+
 /// The s channel committed, its outer vertices labelled `e⁻`, `e⁺`, `μ⁻`
 /// and `μ⁺` in the default (empty) family, each charge built by `sign`.
 fn charged(sign: fn(char) -> Vec<renderer::text::RichSegment>) -> FeynmanSeries {

@@ -810,6 +810,8 @@ for picks, selection and export.
 
 An energy-level (Grotrian) diagram ([#203](https://github.com/shim9610/figgy/issues/203)) is a DataLess series: its records follow the NIST Atomic Spectra Database exports and live in the chart's configuration, serialized with the document. The host parses the exports (the `nist_grotrian` example shows a std-only parser) and supplies every value, such as a multiplet's g-weighted centroid.
 
+`default::config_for_series(&series)` ([#357](https://github.com/shim9610/figgy/issues/357)) returns the default config in the Grotrian frame (`AxisPreset::Grotrian`) for a chart that draws an energy-level series; the frame is chosen once, where the chart is made, and the host can apply another preset afterwards.
+
 | Field | Type | Description |
 |---|---|---|
 | `levels` | `Vec<EnergyLevel>` | One row per level: `id`, the term `column` (a category id of the categorical `bottom_x`), NIST `configuration`, `term`, `j` (as written: `2`, `0,1,2`, `---`), `g`, `prefix`, `energy`, `suffix`, `uncertainty`, `reference`, a `role` (`Level`, `Centroid`, or `Component { multiplet }` naming its centroid), a rich `label` and its drag `label_offset`. A level whose column the axis does not list is not drawn in that panel |
@@ -832,11 +834,13 @@ There is no count limit on any list. The chart needs a categorical `bottom_x` on
 
 A Feynman diagram ([#234](https://github.com/shim9610/figgy/issues/234)) is a DataLess series whose data is the topology: which particles meet at which vertex. Every value lives in the chart's configuration and is serialized with the document; `x_column` and `y_column` stay empty and nothing is registered. A vertex position is optional: an unplaced vertex is drawn where the automatic layout puts it, and `place_feynman_vertices` writes that place into `at`. See [Feynman diagrams](FEYNMAN.md).
 
+`default::config_for_series(&series)` ([#357](https://github.com/shim9610/figgy/issues/357)) returns the default config without axes, ticks, tick labels or grid (`AxisPreset::Hidden`) for a chart that draws a Feynman series; the frame is chosen once, where the chart is made, and the host can turn the axes back on with another preset.
+
 | Field | Type | Description |
 |---|---|---|
 | `vertices` | `Vec<FeynmanVertex>` | `id`, `role` (`Internal`, `Incoming`, `Outgoing`: an external leg ends at an incoming or outgoing vertex), `at: Option<[f64; 2]>` in data units of `bottom_x` and `left_y`, a `marker` override (`Hidden`, `Dot`, `Blob { radius_px, fill }`, `Cross`, `CircledCross`; by default a dot at an internal vertex, none at a leg's end), a rich `label` and its drag `label_offset` |
 | `propagators` | `Vec<Propagator>` | `id`, `from` and `to` vertex ids (`from == to` is a loop), a `particle` (`Plain`, `Fermion`, `AntiFermion`, `Photon`, `ChargedBoson`, `Gluon`, `Scalar`, `ChargedScalar`, `Ghost`, `Majorana`, `Graviton`, `DoubleLine`), a `bend` in degrees (`-170..=170`, `None` fans parallel lines automatically), a rich `label`, a `momentum` arrow (`label`, `side: Left/Right`, `reversed`), and `color` and `width_px` overrides |
-| `style` | `FeynmanStyle` | `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step` (degrees, `0..=120`; a fan of many lines narrows it so its outer lines stay within 170) and `picked { color, width_extra_px }` (`0..=16`, how the picked part is drawn), in logical pixels |
+| `style` | `FeynmanStyle` | `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step` (degrees, `0..=120`; a fan of many lines narrows it so its outer lines stay within 170), `picked { color, width_extra_px }` (`0..=16`, how the picked part is drawn), in logical pixels, and `label_scale` (`0.25..=4`, default `1.5`, omitted while default): the factor every vertex, propagator and momentum label is drawn, measured, picked and exported at, times its stored `RichText` size. The defaults are width `2.6`, wave `{ 7, 24 }`, coil `{ 8, 13 }`, arrowheads `12` × `9`, dots `4` and loops `24` |
 | `layout` | `FeynmanLayout` | `direction`: `LeftToRight` (default) or `BottomToTop`, where the layout puts the incoming and outgoing legs |
 
 There is no count limit. The chart is rectangular with a numeric `bottom_x`. The series is drawn over the chart's other data, and the SVG and PDF export write it as vector curves. A pick answers `FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel`; `step_selection` walks the vertices or propagators and the Feynman series; `Renderer::drag_feynman` moves a vertex, bends a line or moves a label. A streamed display refuses the series.
@@ -1955,6 +1959,8 @@ pub struct Config {
 
 에너지 준위(그로트리안) 도표([#203](https://github.com/shim9610/figgy/issues/203))는 DataLess 시리즈다. 레코드는 NIST 원자 스펙트럼 데이터베이스 내보내기 형식을 따르고 차트 설정에 들어 있어 문서와 함께 직렬화된다. 내보내기 파일은 호스트가 읽고(`nist_grotrian` 예제가 표준 라이브러리만 쓰는 파서를 보여 준다), 다중선의 g 가중 평균 같은 값도 모두 호스트가 정한다.
 
+`default::config_for_series(&series)`([#357](https://github.com/shim9610/figgy/issues/357))는 에너지 준위 시리즈를 그리는 차트에 그로트리안 틀(`AxisPreset::Grotrian`)을 적용한 기본 설정을 돌려준다. 틀은 차트를 만들 때 한 번 정해지고, 호스트는 그 뒤에 다른 프리셋을 적용할 수 있다.
+
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `levels` | `Vec<EnergyLevel>` | 준위마다 한 행. `id`, 항 열 `column`(범주형 `bottom_x`의 범주 id), NIST `configuration`·`term`·`j`(`2`, `0,1,2`, `---`처럼 적힌 그대로)·`g`·`prefix`·`energy`·`suffix`·`uncertainty`·`reference`, `role`(`Level`, `Centroid`, 중심값을 가리키는 `Component { multiplet }`), 서식 있는 `label`과 드래그 오프셋 `label_offset`을 가진다. 축에 없는 열의 준위는 그 패널에 그리지 않는다 |
@@ -1977,11 +1983,13 @@ pub struct Config {
 
 파인만 도표([#234](https://github.com/shim9610/figgy/issues/234))는 위상, 즉 어떤 입자가 어느 꼭짓점에서 만나는지가 데이터인 DataLess 시리즈다. 모든 값이 차트 설정에 있어 문서와 함께 직렬화되고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 꼭짓점 위치는 선택 사항이다. 위치가 없는 꼭짓점은 자동 배치가 정한 자리에 그리고, `place_feynman_vertices`가 그 자리를 `at`에 기록한다. 자세한 내용은 [파인만 도표](FEYNMAN.md)를 참고한다.
 
+`default::config_for_series(&series)`([#357](https://github.com/shim9610/figgy/issues/357))는 파인만 시리즈를 그리는 차트에 축·눈금·눈금 라벨·격자가 없는 기본 설정(`AxisPreset::Hidden`)을 돌려준다. 틀은 차트를 만들 때 한 번 정해지고, 호스트는 다른 프리셋으로 축을 다시 켤 수 있다.
+
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `vertices` | `Vec<FeynmanVertex>` | `id`, `role`(`Internal`, `Incoming`, `Outgoing`. 외부선은 들어오거나 나가는 꼭짓점에서 끝난다), `bottom_x`·`left_y`의 데이터 단위 위치 `at: Option<[f64; 2]>`, 표식 지정 `marker`(`Hidden`, `Dot`, `Blob { radius_px, fill }`, `Cross`, `CircledCross`. 기본값은 내부 꼭짓점에 점, 외부선 끝에는 없음), 서식 있는 `label`과 드래그 오프셋 `label_offset` |
 | `propagators` | `Vec<Propagator>` | `id`, 꼭짓점 id `from`·`to`(`from == to`이면 고리), 입자 `particle`(`Plain`, `Fermion`, `AntiFermion`, `Photon`, `ChargedBoson`, `Gluon`, `Scalar`, `ChargedScalar`, `Ghost`, `Majorana`, `Graviton`, `DoubleLine`), 도 단위 휘어짐 `bend`(`-170..=170`, `None`이면 나란한 선을 자동으로 부채꼴로 편다), 서식 있는 `label`, 운동량 화살표 `momentum`(`label`, `side: Left/Right`, `reversed`), 색과 두께 지정 `color`·`width_px` |
-| `style` | `FeynmanStyle` | 논리 픽셀 단위의 `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step`(도, `0..=120`, 평행선이 많으면 바깥 선이 170도 안에 들도록 좁아진다), `picked { color, width_extra_px }`(`0..=16`, 선택된 부분을 그리는 방식) |
+| `style` | `FeynmanStyle` | 논리 픽셀 단위의 `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step`(도, `0..=120`, 평행선이 많으면 바깥 선이 170도 안에 들도록 좁아진다), `picked { color, width_extra_px }`(`0..=16`, 선택된 부분을 그리는 방식), `label_scale`(`0.25..=4`, 기본값 `1.5`, 기본값이면 생략): 꼭짓점·전파자·운동량 라벨을 저장된 `RichText` 크기의 몇 배로 재고 그리고 피킹하고 내보낼지 정한다. 기본값은 선 굵기 `2.6`, 파동 `{ 7, 24 }`, 코일 `{ 8, 13 }`, 화살촉 `12` × `9`, 점 `4`, 고리 `24`이다 |
 | `layout` | `FeynmanLayout` | `direction`: 들어오고 나가는 외부선을 놓는 방향. `LeftToRight`(기본값) 또는 `BottomToTop` |
 
 개수 상한은 없다. 직교 차트이고 `bottom_x`가 수치 축이어야 한다. 이 시리즈는 차트의 다른 데이터 위에 그리고, SVG와 PDF 출력은 벡터 곡선으로 기록한다. 픽은 `FeynmanVertex`, `FeynmanPropagator`, `FeynmanLabel`을 돌려주고, `step_selection`은 꼭짓점이나 전파자와 파인만 시리즈를 따라 움직인다. `Renderer::drag_feynman`은 꼭짓점을 옮기고 선을 휘고 라벨을 옮긴다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
