@@ -66,25 +66,79 @@ pub(super) fn series_exact_key(
 
 /// The exact module and variant that pick `series` as the query draws it:
 /// the slot's stored key (its primitive class, the dash walk for a dashed
-/// line and its shape) plus the query's bits, the styled marker and line
-/// paths when the draw style uses them and the polar paths on polar axes.
+/// line and its shape) plus the query's bits ([`exact_variant_for`]).
 pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
-    let mut key = series.exact_key;
+    exact_variant_for(
+        series.exact_key,
+        series.flags,
+        &query.draw_style,
+        query.transform.polar_angle[0] > 0.5,
+    )
+}
+
+/// `key` (a slot's stored key) with a query's bits, for a slot of `flags`:
+/// the styled marker and line paths when `draw_style` uses them and the
+/// polar paths on polar axes.
+pub(crate) fn exact_variant_for(
+    mut key: PickExactKey,
+    flags: u32,
+    draw_style: &GpuPickDrawStyle,
+    polar: bool,
+) -> PickExactKey {
     // A box plot's raw points draw precise markers under every style.
-    if series.flags & FLAG_SCATTER != 0
+    if flags & FLAG_SCATTER != 0
         && key.shader != PickShader::Vector
         && key.bits & exact_variant::CATEGORY_JITTER == 0
-        && query.draw_style.marker != PICK_MARKER_PRECISE
+        && draw_style.marker != PICK_MARKER_PRECISE
     {
         key.bits |= exact_variant::STYLED_MARKER;
     }
-    if series.flags & FLAG_LINE != 0 && query.draw_style.line != PICK_LINE_PRECISE {
+    if flags & FLAG_LINE != 0 && draw_style.line != PICK_LINE_PRECISE {
         key.bits |= exact_variant::STYLED_LINE;
     }
-    if query.transform.polar_angle[0] > 0.5 {
+    if polar {
         key.bits |= exact_variant::POLAR;
     }
     key
+}
+
+/// The stored key and primitive flags a resident series' slot gets from
+/// `descriptor` (`prepare_series_buffer`), without building the slot: what
+/// the exact pass of a chart's pick will need, known as soon as the chart is
+/// registered, so its pipelines can compile before the first pick (#363).
+/// [`exact_variant_for`] adds a query's bits. The pick variant table's test
+/// checks it against the slots the picker builds for every chart it lists.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn resident_exact_key(descriptor: &GpuPickSeriesDescriptor<'_>) -> (PickExactKey, u32) {
+    let mut flags = 0u32;
+    let mut base_shape_id = 0u32;
+    if let Some(scatter) = descriptor.scatter.as_ref() {
+        flags |= FLAG_SCATTER;
+        base_shape_id = scatter.base_shape_id;
+        if scatter.style_map.is_some() {
+            flags |= FLAG_STYLE_MAP;
+        }
+    }
+    if descriptor.vector.is_some() {
+        flags |= FLAG_VECTOR;
+    }
+    if descriptor.line_width_px.is_some() {
+        flags |= FLAG_LINE;
+    }
+    let scatter = descriptor.scatter.is_some();
+    // `prepare_series_buffer` keeps at most eight dash lengths.
+    let line_dash_len = descriptor.line_style.pattern().len().min(8) as u32;
+    let key = series_exact_key(
+        flags,
+        line_dash_len,
+        base_shape_id,
+        descriptor.errorbar.is_some() || (descriptor.stem.is_some() && scatter),
+        descriptor.area.is_some(),
+        descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
+        descriptor.category_jitter.is_some() && scatter,
+        descriptor.ternary_c.is_some(),
+    );
+    (key, flags)
 }
 
 /// The exact variant a streamed chunk of `series` scans with: the resident

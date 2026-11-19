@@ -864,6 +864,26 @@ fn reachable_rows(renderer: &mut Renderer) -> (BTreeMap<RowKey, RowFacts>, usize
                             .map(|k| (k, true)),
                     );
                 }
+                // What a browser renderer compiles ahead of the first pick
+                // (`for_each_exact_pick_key`, #363) is exactly what the pick
+                // needs.
+                let needed: BTreeSet<(u8, u32, u32)> = keys
+                    .iter()
+                    .filter(|(_, streamed)| !streamed)
+                    .map(|(k, _)| (k.shader as u8, k.bits, k.shape))
+                    .collect();
+                let mut warmed = BTreeSet::new();
+                renderer
+                    .for_each_exact_pick_key(id, |k| {
+                        warmed.insert((k.shader as u8, k.bits, k.shape));
+                    })
+                    .unwrap();
+                if warmed != needed {
+                    failures.push(format!(
+                        "{} {}: warm-up keys {warmed:?} differ from the pick's {needed:?}",
+                        case.family, case.options
+                    ));
+                }
                 let needs_full = config_needs_full_shaders(&case.config);
                 for (key, streamed) in keys {
                     let (constants, count) = key.constants(renderer.device());
@@ -904,7 +924,7 @@ fn reachable_rows(renderer: &mut Renderer) -> (BTreeMap<RowKey, RowFacts>, usize
     }
     assert!(
         failures.is_empty(),
-        "{} registered charts did not prepare a pick, first {:?}",
+        "{} registered charts did not prepare a pick or warm up its keys, first {:?}",
         failures.len(),
         &failures[..failures.len().min(8)]
     );
@@ -1148,4 +1168,136 @@ fn pick_variant_table_matches_the_picker() {
         unmeasured.len(),
         unmeasured.first()
     );
+}
+
+/// #363: the keys a browser renderer compiles ahead of the first pick
+/// ([`Renderer::for_each_exact_pick_key`]) are all the pick needs. Once
+/// they are created, as a finished warm-up leaves them, the first pick
+/// creates no exact pipeline; an edit that changes a series' pick key names
+/// a key not created yet, and after that warm-up the next pick creates none
+/// either.
+#[test]
+fn a_warmed_chart_picks_without_compiling_and_an_edit_warms_again() {
+    use crate::gpu_compile::capture;
+    let session = capture::Session::begin();
+    let Some((device, queue)) = crate::data_render::shared_device() else {
+        return;
+    };
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        1024 * 1024,
+    )
+    .expect("required GPU test: renderer initialization failed");
+    renderer.enable_gpu_picking().unwrap();
+    add_columns(&mut renderer);
+    let exact_created = || {
+        capture::snapshot_pipelines()
+            .iter()
+            .filter(|p| p["descriptor"]["label"] == "figgy GPU pick exact candidate pipeline")
+            .count()
+    };
+    let warm_up = |renderer: &mut Renderer, id: ChartId| {
+        let mut keys = Vec::new();
+        renderer
+            .for_each_exact_pick_key(id, |key| keys.push(key))
+            .unwrap();
+        let bundle = renderer.picker.ready_bundle().unwrap();
+        let missing = keys
+            .iter()
+            .filter(|key| renderer.picker.exact.get(**key).is_none())
+            .count();
+        for key in keys {
+            renderer.picker.exact.ensure(&bundle, key).unwrap();
+        }
+        missing
+    };
+    let pick = |renderer: &mut Renderer, config: &Config, id: ChartId| {
+        let area = config.data_area().unwrap().0;
+        let request = GpuPickRequest {
+            canvas_position_px: [
+                area.x as f32 + area.width as f32 * 0.5,
+                area.y as f32 + area.height as f32 * 0.5,
+            ],
+            display_panel_px: config.chart_area.0,
+            display_scale: 1.0,
+            max_distance_px: 4.0,
+        };
+        crate::test_gpu::block_on(renderer.pick_chart(id, request).unwrap().resolve()).unwrap();
+    };
+    // A radar chart, and an xy chart of markers and a line.
+    let mut radar = Vec::new();
+    radar_cases(&mut radar);
+    let radar = radar
+        .into_iter()
+        .find(|case| case.options == "precise marker=circle fill=default width=2")
+        .unwrap();
+    let xy_config = chart_config(false, &DrawStyle::Precise);
+    let xy_series = |preset, fill| {
+        let mut line = line_style(preset, 2.0);
+        line.fill = fill;
+        vec![series(
+            "subject",
+            "x",
+            "y",
+            DataRenderType::Xy(XySeries {
+                scatter: Marker::Shape(ScatterShape::CircleFilled).scatter(),
+                line: Some(line),
+                errors: None,
+                stem: None,
+            }),
+        )]
+    };
+    for (config, series) in [
+        (radar.config, radar.series),
+        (xy_config.clone(), xy_series(LineStylePreset::Solid, None)),
+    ] {
+        let id = renderer.register_chart(config.clone(), series).unwrap();
+        assert!(warm_up(&mut renderer, id) > 0, "a new chart's keys are new");
+        let before = exact_created();
+        pick(&mut renderer, &config, id);
+        assert_eq!(
+            exact_created(),
+            before,
+            "the warmed first pick compiles nothing"
+        );
+        assert_eq!(
+            warm_up(&mut renderer, id),
+            0,
+            "an unchanged chart warms nothing new"
+        );
+        if config == xy_config {
+            // A dashed, filled line needs another variant: the edit warms it.
+            renderer
+                .set_chart_series(
+                    id,
+                    xy_series(LineStylePreset::Dash, Some(LineFill::ToBaseline(0.0))),
+                )
+                .unwrap();
+            assert!(warm_up(&mut renderer, id) > 0, "the edit names a new key");
+            let before = exact_created();
+            pick(&mut renderer, &config, id);
+            assert_eq!(
+                exact_created(),
+                before,
+                "the re-warmed pick compiles nothing"
+            );
+            // A draw style edit moves the query's bits: warmed again.
+            let mut sketch = config.clone();
+            sketch.draw_style = DrawStyle::Sketch(SketchOptions::default());
+            renderer.set_chart_config(id, sketch.clone()).unwrap();
+            assert!(
+                warm_up(&mut renderer, id) > 0,
+                "the style edit names a new key"
+            );
+            let before = exact_created();
+            pick(&mut renderer, &sketch, id);
+            assert_eq!(
+                exact_created(),
+                before,
+                "the re-warmed pick compiles nothing"
+            );
+        }
+    }
+    drop(session.finish());
 }

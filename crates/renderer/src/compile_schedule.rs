@@ -130,6 +130,11 @@ pub(crate) struct ScheduledCompile {
     pub(crate) state: CompileState,
     /// The last frame that needed this pipeline ([`CompileSchedule::begin_frame`]).
     wanted: u64,
+    /// An exact pick pipeline compiled ahead of a chart's first pick (#363,
+    /// [`CompileSchedule::push_pick`]): not a draw's, so the screen's
+    /// counts, waits and failures leave it out; its pick waits for it by
+    /// its label.
+    pub(crate) pick: bool,
 }
 
 /// Counts of compiles, by how they stand.
@@ -228,6 +233,7 @@ impl CompileSchedule {
     /// [`Scope::Screen`] needed by the last frame.
     fn in_scope(&self, compile: &ScheduledCompile, set: ShaderSet, scope: Scope) -> bool {
         compile.set == set
+            && !compile.pick
             && match scope {
                 Scope::All => true,
                 Scope::Screen => self.frame > 0 && compile.wanted == self.frame,
@@ -268,7 +274,11 @@ impl CompileSchedule {
         set: ShaderSet,
         mut each: impl FnMut(&ScheduledCompile, &CompileOutcome),
     ) {
-        for compile in self.compiles.iter().filter(|compile| compile.set == set) {
+        for compile in self
+            .compiles
+            .iter()
+            .filter(|compile| compile.set == set && !compile.pick)
+        {
             if let CompileState::Settled(outcome) = &compile.state
                 && !matches!(
                     outcome,
@@ -331,6 +341,36 @@ impl CompileSchedule {
     /// Schedule one compile after every waiting one; its index. After the
     /// device was lost it ends at once as [`CompileOutcome::DeviceLost`].
     pub(crate) fn push(&mut self, set: ShaderSet, label: String, stage: &'static str) -> usize {
+        self.push_compile(set, label, stage, false)
+    }
+
+    /// Schedule an exact pick pipeline (#363) ahead of every waiting
+    /// compile, the way [`Self::prioritize`] moves one; its index. Labelled
+    /// by its pick key, so [`Self::readiness`] and [`Self::wait_index`] find
+    /// it; the screen's counts, waits and failures leave it out.
+    pub(crate) fn push_pick(&mut self, set: ShaderSet, label: String) -> usize {
+        let index = self.push_compile(set, label, "picking", true);
+        if let Some(position) = self.waiting.iter().position(|&waiting| waiting == index) {
+            self.waiting.remove(position);
+            self.waiting.push_front(index);
+        }
+        index
+    }
+
+    /// The last compile of `set` labelled `label`, for a waiter.
+    pub(crate) fn wait_index(&self, set: ShaderSet, label: &str) -> Option<usize> {
+        self.compiles
+            .iter()
+            .rposition(|compile| compile.set == set && compile.label == label)
+    }
+
+    fn push_compile(
+        &mut self,
+        set: ShaderSet,
+        label: String,
+        stage: &'static str,
+        pick: bool,
+    ) -> usize {
         let index = self.compiles.len();
         let state = if self.lost {
             self.settled += 1;
@@ -345,6 +385,7 @@ impl CompileSchedule {
             stage,
             state,
             wanted: 0,
+            pick,
         });
         index
     }
@@ -535,6 +576,64 @@ mod tests {
             reason,
             message: "rejected".to_owned(),
         }
+    }
+
+    /// #363: an exact pick pipeline scheduled ahead of a chart's first pick
+    /// is issued before every waiting draw compile, is left out of the
+    /// screen's counts, waits and failures, and its pick finds it by label
+    /// and waits for it to end.
+    #[test]
+    fn a_pick_compile_goes_first_and_stays_out_of_the_screen_counts() {
+        const PICK: &str = "figgy GPU pick exact candidate pipeline MarkerLine 72 5";
+        let mut schedule = schedule(1, &[LINE, FIELD]);
+        let first = schedule.issue_next().unwrap();
+        assert_eq!(schedule.compile(first).label, LINE);
+        assert_eq!(
+            schedule.readiness(ShaderSet::Basic, PICK),
+            LabelReadiness::Untracked
+        );
+        assert_eq!(schedule.wait_index(ShaderSet::Basic, PICK), None);
+        let pick = schedule.push_pick(ShaderSet::Basic, PICK.to_owned());
+        assert_eq!(schedule.wait_index(ShaderSet::Basic, PICK), Some(pick));
+        assert_eq!(schedule.wait_index(ShaderSet::Full, PICK), None);
+        assert_eq!(
+            schedule.readiness(ShaderSet::Basic, PICK),
+            LabelReadiness::Pending
+        );
+        let all = schedule.counts(ShaderSet::Basic, Scope::All);
+        assert_eq!((all.total, all.compiling), (2, 2), "{all:?}");
+        // The issued draw compile keeps its slot; the pick is next.
+        assert_eq!(schedule.issue_next(), None);
+        schedule.settle(first, CompileOutcome::Ready);
+        assert_eq!(schedule.issue_next(), Some(pick));
+        assert_eq!(schedule.wait_step(pick), WaitStep::Pending(pick));
+        schedule.settle(pick, rejected(RejectReason::Internal));
+        assert_eq!(
+            schedule.wait_step(pick),
+            WaitStep::Ended(rejected(RejectReason::Internal))
+        );
+        assert_eq!(
+            schedule.readiness(ShaderSet::Basic, PICK),
+            LabelReadiness::Ended
+        );
+        // Its failure is not the screen's: the frame's waits and failures
+        // see the draw compiles only.
+        assert_eq!(schedule.scope_state(ShaderSet::Basic, Scope::All), Ok(true));
+        let mut failures = 0;
+        schedule.for_each_failure(ShaderSet::Basic, |_, _| failures += 1);
+        assert_eq!(failures, 0);
+        let field = schedule.issue_next().unwrap();
+        assert_eq!(schedule.compile(field).label, FIELD);
+        schedule.settle(field, CompileOutcome::Ready);
+        assert_eq!(
+            schedule.scope_state(ShaderSet::Basic, Scope::All),
+            Ok(false)
+        );
+        let all = schedule.counts(ShaderSet::Basic, Scope::All);
+        assert_eq!((all.total, all.ready, all.failed), (2, 2, 0), "{all:?}");
+        // A second compile of the label is the one a waiter follows.
+        let again = schedule.push_pick(ShaderSet::Basic, PICK.to_owned());
+        assert_eq!(schedule.wait_index(ShaderSet::Basic, PICK), Some(again));
     }
 
     /// The core count when it is reported, the fallback when it is not.
