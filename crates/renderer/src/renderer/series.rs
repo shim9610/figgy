@@ -1509,9 +1509,10 @@ pub(super) fn range_bar_params<'c>(
 )> {
     use crate::data_config::{CategoryBarDirection, RangeColor};
     use data_render::{
-        BOX_LANE_ABSENT, RANGE_BAR_LANES, RANGE_COLOR_DIRECTION, RANGE_COLOR_SINGLE,
-        RANGE_COLOR_STATE, RANGE_LANE_COLOR, RANGE_LANE_COLOR_MODE, RANGE_LANE_END,
-        RANGE_LANE_HIGH, RANGE_LANE_LOW, RANGE_LANE_PROGRESS, RANGE_LANE_START, RANGE_LANE_STATES,
+        BOX_LANE_ABSENT, RANGE_BAR_LANES, RANGE_COLOR_DIRECTION, RANGE_COLOR_ROW,
+        RANGE_COLOR_SINGLE, RANGE_COLOR_STATE, RANGE_LANE_COLOR, RANGE_LANE_COLOR_MODE,
+        RANGE_LANE_END, RANGE_LANE_HIGH, RANGE_LANE_LOW, RANGE_LANE_PROGRESS, RANGE_LANE_START,
+        RANGE_LANE_STATES,
     };
     let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
@@ -1560,6 +1561,7 @@ pub(super) fn range_bar_params<'c>(
         RangeColor::State { column, styles } => {
             (RANGE_COLOR_STATE, Some(column.as_str()), styles.len())
         }
+        RangeColor::ByRow { colors } => (RANGE_COLOR_ROW, None, colors.len()),
     };
     if let Some(id) = colour {
         lanes[RANGE_LANE_COLOR as usize] = lane(id)?;
@@ -1570,7 +1572,7 @@ pub(super) fn range_bar_params<'c>(
     lanes[RANGE_LANE_COLOR_MODE as usize] = mode;
     lanes[RANGE_LANE_STATES as usize] =
         u32::try_from(states).map_err(|_| FiggyError::GpuResourceLimit {
-            resource: "range bar state styles",
+            resource: "range bar state styles or row colours",
             requested: states as u64,
             limit: u64::from(u32::MAX),
         })?;

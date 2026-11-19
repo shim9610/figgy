@@ -18,8 +18,12 @@
 //! `Chart::set_*_range` or `auto_fit_*`), and chart_area pixel size (set to
 //! match the host viewport).
 
-use crate::config::{AxisOptions, ColorBarOptions, Config, Legend};
+use crate::Color;
+use crate::config::{AxisOptions, ColorBarOptions, Config, LayoutState, Legend, TickVisibility};
+use crate::data_config::{BarGroups, CategoryBarDirection, SeriesConfig};
 use crate::format::{AutoNumberFormat, LabelFormat};
+use crate::parallel::ParallelOptions;
+use crate::preset::AxisPreset;
 
 /// The tick label format the helpers give a new chart's axes and colourbar
 /// (#357): clean numbers with the decimals the tick step needs (`0.8`,
@@ -92,4 +96,214 @@ pub fn default_legend() -> Legend {
 /// - `chart_title`: title band reserved; text empty until `Chart::with_title`.
 pub fn default_config() -> Config {
     config_with_default_label_format(crate::defaults::config())
+}
+
+/// The default config for a chart of `series`: [`default_config`] in the
+/// frame its family draws by default (#357). A chart that draws a Feynman
+/// series is drawn without axes ([`crate::preset::AxisPreset::Hidden`]),
+/// one that draws an energy-level series in the Grotrian frame
+/// ([`crate::preset::AxisPreset::Grotrian`]); every other chart, and a
+/// chart without series, gets [`default_config`] unchanged. The first
+/// Feynman or energy-level series decides, as a theme's frame does
+/// (`FeynmanTheme::axis_preset`, `EnergyLevelTheme::axis_preset` of the
+/// documented look).
+///
+/// The frame is written into the returned config, a plain document: it is
+/// chosen once, where the chart is made, never at draw time, so a host
+/// that turns the axes back on (`Config::apply_axis_preset`) keeps them.
+/// Its layout is a new chart's ([`LayoutState::Fitted`]): the chart object
+/// made from it fits the layout to the frame and content it holds.
+pub fn config_for_series(series: &[SeriesConfig]) -> Config {
+    let mut config = default_config();
+    config.layout_state = LayoutState::Fitted;
+    let frame = crate::helpers::theme::Theme::default().family_frame(
+        &config,
+        series,
+        crate::layer::LayerRef::Base,
+    );
+    if let Some(preset) = frame {
+        config.apply_axis_preset(preset);
+    }
+    config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preset::AxisPreset;
+
+    fn framed(preset: AxisPreset) -> Config {
+        let mut config = unframed();
+        config.apply_axis_preset(preset);
+        config
+    }
+
+    /// [`default_config`] as a new chart's: its layout kept fitted (#357).
+    fn unframed() -> Config {
+        Config {
+            layout_state: LayoutState::Fitted,
+            ..default_config()
+        }
+    }
+
+    fn feynman() -> SeriesConfig {
+        SeriesConfig::feynman("d", crate::defaults::feynman_series())
+    }
+
+    fn levels() -> SeriesConfig {
+        SeriesConfig::energy_levels("e", crate::defaults::energy_level_series())
+    }
+
+    #[test]
+    fn a_chart_takes_the_frame_of_its_family() {
+        assert_eq!(config_for_series(&[feynman()]), framed(AxisPreset::Hidden));
+        assert_eq!(config_for_series(&[levels()]), framed(AxisPreset::Grotrian));
+        assert_eq!(config_for_series(&[]), unframed());
+        let line = SeriesConfig::line("l", "x", "y");
+        assert_eq!(config_for_series(&[line.clone()]), unframed());
+        // The first framed family decides, as a theme's frame does.
+        assert_eq!(
+            config_for_series(&[line, feynman(), levels()]),
+            framed(AxisPreset::Hidden)
+        );
+        let hidden = config_for_series(&[feynman()]);
+        assert!(!hidden.bottom_x.line_visible && !hidden.left_y.line_visible);
+        assert!(!hidden.grid.show_major_x && !hidden.grid.show_major_y);
+    }
+
+    #[test]
+    fn the_axes_turn_back_on_explicitly() {
+        // The frame is plain document data: nothing re-applies it.
+        let mut config = config_for_series(&[feynman()]);
+        config.apply_axis_preset(AxisPreset::BoxedInward);
+        assert!(config.bottom_x.line_visible && config.left_y.line_visible);
+        assert!(
+            config.bottom_x.label_style.label_visible && config.left_y.label_style.label_visible
+        );
+        // A preset only switches the grid off; the host turns it back on.
+        config.grid.show_major_x = true;
+        config.grid.show_major_y = true;
+        assert_eq!(config, unframed());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_framed_config_round_trips() {
+        for series in [vec![feynman()], vec![levels()], vec![]] {
+            let config = config_for_series(&series);
+            let json = serde_json::to_string(&config).unwrap();
+            let back: Config = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, config);
+            assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        }
+    }
+}
+/// A parallel coordinates chart's chrome (#357), in the layout web
+/// parallel-coordinate charts share: the axis names above the axes, light
+/// axes with outward major ticks, and each tick label on a white box so it
+/// stays readable over the rows.
+///
+/// - `parallel`: no axes yet, `names_on_top`, a `label_backdrop` of white
+///   at 0.8. The host writes the axes (`parallel_mut().axes`) and the
+///   names (`bottom_x.categories`), one per axis, before the chart is
+///   registered.
+/// - `left_y`, which every parallel axis is drawn in the style of: the
+///   normalized band `0..1`, title hidden, grey line and outward major
+///   ticks without minor ticks, 14 px tick labels.
+/// - `bottom_x`, which names the axes: no line, no ticks.
+/// - No grid, and no frame: `top_x` and `right_y` draw no line and no
+///   ticks.
+/// - `layout_state` is [`LayoutState::Fitted`], as a new chart's is: the
+///   names above the plot need a top band, so the chart object made from
+///   the config fits the layout to them and to the host's axes and names,
+///   and its edits keep it fitted.
+///
+/// Every choice is a stored field, so a saved chart reads back with the
+/// same look.
+pub fn default_parallel_config() -> Config {
+    let mut config = default_config();
+    let axis_ink = Color::from_rgb8(110, 116, 128);
+    let y = &mut config.left_y;
+    y.min = 0.0;
+    y.max = 1.0;
+    y.title_option.visible = false;
+    y.minor_count = 0;
+    y.tick = TickVisibility::Outside;
+    y.line_color = axis_ink;
+    y.label_style.font_size = 14.0;
+    let names = &mut config.bottom_x;
+    names.line_visible = false;
+    names.tick = TickVisibility::None;
+    names.minor_count = 0;
+    for frame in [&mut config.top_x, &mut config.right_y] {
+        frame.line_visible = false;
+        frame.tick = TickVisibility::None;
+        frame.minor_count = 0;
+    }
+    let grid = &mut config.grid;
+    grid.show_major_x = false;
+    grid.show_major_y = false;
+    grid.show_minor_x = false;
+    grid.show_minor_y = false;
+    config.set_parallel(Some(ParallelOptions {
+        axes: Vec::new(),
+        names_on_top: true,
+        label_backdrop: Some(Color {
+            a: 0.8,
+            ..Color::WHITE
+        }),
+    }));
+    config.layout_state = LayoutState::Fitted;
+    config
+}
+
+/// The share of a row's band a timeline's bars cover: between Plotly's
+/// (0.8, `bargap` 0.2) and Vega-Lite's (0.9, band padding 0.1).
+const TIMELINE_GROUP_WIDTH: f32 = 0.8;
+
+/// The light grey of a timeline's axis lines.
+const TIMELINE_FRAME: Color = Color::from_rgb8(160, 166, 176);
+
+/// The pale grey of a timeline's value gridlines.
+const TIMELINE_GRID: Color = Color::from_rgb8(225, 228, 233);
+
+/// A timeline (Gantt) chart in the look of the common web timelines
+/// (#357), for [`crate::data_config::SeriesConfig::timeline_bars`]:
+/// [`default_config`] with
+///
+/// - horizontal bars covering 0.8 of each row's band
+///   ([`Config::bar_groups`]);
+/// - the first row at the top: `left_y` is inverted, so its first category
+///   (or the smallest position on a numeric axis) sits at the top;
+/// - gridlines along the value axis only, in a pale grey, and no minor
+///   gridlines;
+/// - the open frame ([`AxisPreset::OpenOutward`]) with its axis lines in a
+///   light grey and no tick marks: the gridlines carry the values;
+/// - `layout_state` is [`LayoutState::Fitted`], as a new chart's is: the
+///   row labels on the left are as wide as the host's task names, so the
+///   chart made from the config is created with its layout fitted to them,
+///   and its edits keep it fitted.
+///
+/// Every choice is a stored field, so a saved timeline reads back with the
+/// same look; the documented default ([`default_config`]) is unchanged.
+pub fn default_timeline_config() -> Config {
+    let mut config = default_config();
+    config.apply_axis_preset(AxisPreset::OpenOutward);
+    config.bar_groups = Some(BarGroups {
+        direction: CategoryBarDirection::Horizontal,
+        group_width: TIMELINE_GROUP_WIDTH,
+        ..crate::defaults::bar_groups()
+    });
+    config.left_y.inverted = true;
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.tick = TickVisibility::None;
+        axis.line_color = TIMELINE_FRAME;
+    }
+    let grid = &mut config.grid;
+    grid.show_major_y = false;
+    grid.show_minor_x = false;
+    grid.show_minor_y = false;
+    grid.major_x_color = TIMELINE_GRID;
+    config.layout_state = LayoutState::Fitted;
+    config
 }

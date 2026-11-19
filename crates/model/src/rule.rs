@@ -351,7 +351,7 @@ rule_kinds! {
         RangeBarColumnsDistinct => "the columns of a range bar series are distinct",
         RangeBarWhiskers => "range bar whiskers are 0..=24 px wide, in an opaque colour",
         RangeBarConnector => "a range bar connector is 0..=24 px wide, its colour channels in 0..=1",
-        RangeBarStateColors => "range bar direction and state colours must be opaque",
+        RangeBarStateColors => "range bar direction, state and row colours must be opaque",
         RangeBarRemainingOpacity => "a range bar's remaining opacity is in 0..=1",
         RangeBarSlotWidth => "a range bar slot width is finite and greater than 0",
         RangeBarLabelFormat => "range bar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
@@ -430,7 +430,7 @@ rule_kinds! {
         AnnotationCount => "too many annotations: a chart holds at most 1024 (MAX_ANNOTATIONS); remove some or merge them",
         FeynmanLineStyle => "invalid Feynman line style",
         FeynmanWave => "invalid Feynman wave or coil",
-        FeynmanSizes => "invalid Feynman marker, arrow, loop or fan size",
+        FeynmanSizes => "invalid Feynman marker, arrow, loop, fan or label size",
         FeynmanPickedStyle => "invalid Feynman picked style: a colour and an extra width in 0..=16",
         FeynmanVertexIds => "Feynman vertex ids must be unique",
         FeynmanPropagatorIds => "Feynman propagator ids must be unique",
@@ -2080,7 +2080,7 @@ mod tests {
             ),
             (
                 RuleKind::RangeBarStateColors,
-                "range bar direction and state colours must be opaque",
+                "range bar direction, state and row colours must be opaque",
             ),
             (
                 RuleKind::RangeBarRemainingOpacity,
@@ -2381,7 +2381,7 @@ mod tests {
             (RuleKind::FeynmanWave, "invalid Feynman wave or coil"),
             (
                 RuleKind::FeynmanSizes,
-                "invalid Feynman marker, arrow, loop or fan size",
+                "invalid Feynman marker, arrow, loop, fan or label size",
             ),
             (
                 RuleKind::FeynmanPickedStyle,

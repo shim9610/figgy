@@ -394,6 +394,68 @@ impl RadialStyle {
             texture_angle_degrees,
         }
     }
+
+    /// The flat sunburst look of web sunburst charts (#357): a top view
+    /// without depth, gap or rounded corners, every node outlined along its
+    /// rim and its two radial edges in a 1 px white line, so the segments
+    /// of one branch colour and its rings stay apart. Hosts on another
+    /// background set `outline.color` to it. An explicit preset: the
+    /// documented default keeps its look.
+    pub fn sunburst() -> Self {
+        // Every field is named (#46): the preset sets the flat outlined
+        // look and keeps the documented default for the rest.
+        let Self {
+            material: _,
+            tilt_degrees: _,
+            depth: _,
+            bevel,
+            gap_degrees: _,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: _,
+            inner_corner: _,
+            outer_corner: _,
+            outline,
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        } = crate::defaults::radial_style();
+        let RadialOutline {
+            rim: _,
+            separators: _,
+            emphasis,
+            width: _,
+            color: _,
+        } = outline;
+        Self {
+            material: Material::Flat,
+            tilt_degrees: 0.0,
+            depth: 0.0,
+            bevel,
+            gap_degrees: 0.0,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: false,
+            inner_corner: 0.0,
+            outer_corner: 0.0,
+            outline: RadialOutline {
+                rim: true,
+                separators: true,
+                emphasis,
+                width: 1.0,
+                color: Color::WHITE,
+            },
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        }
+    }
 }
 
 impl RadialStyle {
@@ -1166,6 +1228,28 @@ mod tests {
             ..crate::defaults::radial_chart()
         }
     }
+    /// The sunburst preset (#357) is flat, so a sunburst takes it, and
+    /// outlines every node's rim and edges in white.
+    #[test]
+    fn the_sunburst_style_is_flat_and_outlined() {
+        let style = RadialStyle::sunburst();
+        assert_eq!((style.tilt_degrees, style.depth), (0.0, 0.0));
+        assert_eq!(style.material, Material::Flat);
+        assert!(style.outline.rim && style.outline.separators);
+        assert!(!style.outline.emphasis);
+        assert_eq!(
+            (style.outline.width, style.outline.color),
+            (1.0, Color::WHITE)
+        );
+        let mut c = chart();
+        c.slices[0].children = vec![RadialSlice::new("a", 50.0, Color::BLACK)];
+        c.style = style;
+        c.format_labels();
+        assert_eq!(c.validate(), Ok(()));
+        // The documented default keeps its look.
+        assert!(!crate::defaults::radial_style().outline.rim);
+    }
+
     #[test]
     fn radial_step_selection_walks_every_slice_with_a_value_and_wraps() {
         let mut c = RadialChart {

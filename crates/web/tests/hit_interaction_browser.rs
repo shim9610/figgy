@@ -273,7 +273,10 @@ impl renderer::sink::Sink for FindLabel {
     fn text(&mut self, _: renderer::sink::Slot, text: &renderer::sink::PlacedText<'_>) {
         // A plain label or a rich one (a power of ten): its first character.
         let lead = match text.text {
-            renderer::sink::TextRef::Rich(rich) => rich.segments.first().map(|s| s.text),
+            renderer::sink::TextRef::Rich(rich)
+            | renderer::sink::TextRef::ScaledRich { text: rich, .. } => {
+                rich.segments.first().map(|s| s.text)
+            }
             renderer::sink::TextRef::Plain { text, .. } => text.chars().next(),
         };
         if self.found.is_none() && lead == Some(self.lead) {

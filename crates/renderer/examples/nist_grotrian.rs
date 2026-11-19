@@ -9,7 +9,12 @@
 //! `="…"` quoting, the `[ ]` marks around derived energies, J lists such as
 //! `0,1,2`, intensity flags such as `1*` and the `Limit` row, and it computes
 //! the g-weighted centroid of every resolved fine-structure multiplet (host
-//! work under CLAUDE.md rule 1).
+//! work under CLAUDE.md rule 1). The host also writes the notation (#357):
+//! NIST's `1P*` as the term symbol `$^{1}$P°` and the configuration `1s2`
+//! as `1s$^{2}$`, TeX script spans drawn as script segments, and it
+//! derives the energy axis' break from its own levels. The chart
+//! starts in the Grotrian frame (`default::config_for_series`) without a
+//! theme.
 //!
 //! Run from the workspace root, optionally with your own exports:
 //! cargo run --locked -p figgy-renderer --example nist_grotrian -- target/nist_grotrian [levels.csv lines.csv]
@@ -21,13 +26,20 @@
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
 mod gallery;
+#[allow(dead_code)]
+#[path = "support/grotrian_sets.rs"]
+mod grotrian_sets;
+#[allow(dead_code)]
+#[path = "support/nist_csv.rs"]
+mod nist_csv;
 use gallery::*;
-use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, Category};
+use grotrian_sets::{configuration, derived_break, subscript, term_symbol};
+use renderer::config::Category;
 use renderer::energy_levels::{
     EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, Transition,
 };
 use renderer::text::RichText;
-use renderer::{Color, Renderer, SeriesConfig};
+use renderer::{Chart, Color, Renderer, SeriesConfig, default};
 use std::path::{Path, PathBuf};
 
 /// One CSV record: the fields of one line, NIST's `="…"` quoting removed.
@@ -94,6 +106,30 @@ fn term_column(term: &str) -> Option<&str> {
         .then_some(term)
 }
 
+/// A limit row's name in physics notation: NIST's `He II (1s 2S<1/2>)`
+/// as `He II 1s $^{2}$S$_{1/2}$`, the ion's core configuration and term,
+/// scripts as TeX spans. A name of
+/// another form is kept as written.
+fn limit_name(name: &str) -> String {
+    let Some((ion, core)) = name.split_once(" (") else {
+        return name.to_string();
+    };
+    let core = core.trim_end_matches(')');
+    let Some((config, term)) = core.rsplit_once(' ') else {
+        return name.to_string();
+    };
+    let (term, j) = term
+        .strip_suffix('>')
+        .and_then(|t| t.split_once('<'))
+        .unwrap_or((term, ""));
+    format!(
+        "{ion} {} {}{}",
+        configuration(config),
+        term_symbol(term),
+        subscript(j)
+    )
+}
+
 /// The energy-level series of a levels export and a lines export.
 fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
     let rows = records(levels_csv);
@@ -123,10 +159,10 @@ fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
             out.limits.push(IonizationLimit {
                 id: field(row, conf),
                 energy: e,
-                label: Some(RichText::plain(
-                    &format!("{}  {e:.3} eV", field(row, conf)),
+                label: Some(RichText::from_label(
+                    &format!("{}  {e:.3} eV", limit_name(&field(row, conf))),
                     Color::from_rgb8(40, 50, 120),
-                    13.0,
+                    19.0,
                     "",
                 )),
                 label_offset: [0.0; 2],
@@ -198,7 +234,8 @@ fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
         }
     }
     out.levels.extend(centroids);
-    // Labels: the outer electron of the levels up to n = 4.
+    // Labels: the outer subshell of the levels up to n = 4, its occupancy
+    // raised (1s²).
     for level in &mut out.levels {
         if level.role == LevelRole::Level || level.role == LevelRole::Centroid {
             let outer = level
@@ -213,10 +250,10 @@ fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
                 .parse()
                 .unwrap_or(1);
             if n <= 4 {
-                level.label = Some(RichText::plain(
-                    outer,
+                level.label = Some(RichText::from_label(
+                    &configuration(outer),
                     Color::from_rgb8(70, 76, 90),
-                    12.0,
+                    20.0,
                     "",
                 ));
             }
@@ -320,10 +357,10 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         &std::fs::read_to_string(levels)?,
         &std::fs::read_to_string(lines)?,
     )?;
+    // The strokes keep the series' default widths (3 px levels, 2.25 px
+    // arrows with 13 × 10 px heads, #357); the host picks the colours.
     series.style.level.color = Color::from_rgb8(34, 52, 88);
-    series.style.level.width = 2.5;
     series.style.transition.color = Color::from_rgb8(214, 120, 20);
-    series.style.transition.width = 1.6;
     // Each line labelled with its wavelength to one decimal; the unit is
     // shown once, in a note in the plot's corner (#258).
     series.style.wavelength_labels = Some(renderer::energy_levels::WavelengthLabels {
@@ -332,33 +369,39 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
             trim_zeros: false,
         },
         unit: None,
-        text: RichText::plain("", Color::from_rgb8(150, 90, 0), 11.0, ""),
+        text: RichText::plain("", Color::from_rgb8(150, 90, 0), 18.0, ""),
     });
 
-    let mut c = chart("He I energy levels", "", "Energy (eV)", (1100, 780));
-    // Singlets, a spacer, then triplets, each term label drawn as a term
-    // symbol, under two group headers.
-    let tex = |term: &str| {
-        let (multiplicity, rest) = term.split_at(1);
-        let (l, odd) = rest.split_at(1);
-        let parity = if odd == "*" { "^o" } else { "" };
-        RichText::from_tex(
-            &format!("$^{multiplicity}\\mathrm{{{l}}}{parity}$"),
-            Color::from_rgb8(30, 30, 30),
-            16.0,
-            "",
-        )
+    let spec = SeriesConfig::energy_levels("he", series);
+    let renderer::DataRenderType::EnergyLevels(series) = &spec.render_type else {
+        return Err("an energy-level series".into());
     };
+    // The default config in the frame of an energy-level chart (#357): the
+    // Grotrian frame, the energy axis alone with the term columns named
+    // without a value frame, no grid and no mirrored ticks.
+    let mut c = Chart::new(default::config_for_series(std::slice::from_ref(&spec)))
+        .with_area(0, 0, 1100, 780)
+        .with_title("He I energy levels")
+        .with_y_title("Energy (eV)");
+    // Singlets, a spacer, then triplets, each column named by its term
+    // symbol (¹P°), the diagram's column headings, under two group headers.
     let mut categories = Vec::new();
     for term in ["1S", "1P*", "1D", "1F*", "gap", "3S", "3P*", "3D", "3F*"] {
-        let mut category = Category::new(term, if term == "gap" { "" } else { term });
-        if term != "gap" {
-            category.rich_label = Some(tex(term)?);
+        if term == "gap" {
+            categories.push(Category::new(term, ""));
+            continue;
         }
+        // The symbol's scripts are TeX spans drawn as script segments; the
+        // plain label is the segments' characters.
+        let symbol =
+            RichText::from_label(&term_symbol(term), Color::from_rgb8(30, 30, 30), 24.0, "");
+        let name: String = symbol.segments.iter().map(|s| s.text).collect();
+        let mut category = Category::new(term, name.as_str());
+        category.rich_label = Some(symbol);
         categories.push(category);
     }
     // The headers name the total spin S in TeX.
-    let header = |text: &str| RichText::from_tex(text, Color::from_rgb8(24, 39, 63), 16.0, "");
+    let header = |text: &str| RichText::from_tex(text, Color::from_rgb8(24, 39, 63), 21.0, "");
     c.config_mut().bottom_x.category_groups = Some(renderer::config::CategoryGroups {
         groups: vec![
             renderer::config::CategoryGroup {
@@ -377,23 +420,17 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         offset: [0.0; 2],
     });
     c.config_mut().bottom_x.categories = Some(categories);
-    // A Grotrian diagram reads by its levels: no grid, no mirrored ticks.
+    // Text read beside the levels: energy ticks at 20 px, the title at 22.
     let config = c.config_mut();
-    config.grid.show_major_x = false;
-    config.grid.show_major_y = false;
-    config.grid.show_minor_y = false;
-    config.top_x.tick = renderer::config::TickVisibility::None;
-    config.right_y.tick = renderer::config::TickVisibility::None;
-    // The ground state keeps a thin strip below the break.
+    config.left_y.label_style.font_size = 20.0;
+    config.left_y.title_option.text.font_size = 22.0;
+    // The host finds where its levels leave the axis empty, the range
+    // between the ground state and the first excited level, and writes it
+    // as the break; the ground state keeps a thin strip below it. The
+    // renderer computes no break (#357 item 13).
     c.set_y_range(-0.15, 25.2);
     c.config_mut().left_y.minor_count = 1;
-    c.config_mut().left_y.breaks = Some(AxisBreaks {
-        ranges: vec![AxisBreak::new(0.25, 19.6)],
-        style: AxisBreakStyle::Continuous,
-        gap_px: 12.0,
-        frame_each_panel: false,
-        ..Default::default()
-    });
+    c.config_mut().left_y.breaks = derived_break(series, -0.15, 25.2);
     // The continuum: annotations written from the limits.
     let top = 25.2;
     series.write_continuum(
@@ -403,7 +440,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         Color::from_rgba8(80, 100, 220, 36),
     )?;
     let note = c.config_mut().annotations.add_corner_note(
-        RichText::plain("Wavelengths in nm", Color::from_rgb8(150, 90, 0), 12.0, ""),
+        RichText::plain("Wavelengths in nm", Color::from_rgb8(150, 90, 0), 18.0, ""),
         renderer::NoteAlign::BottomRight,
     );
     let plot = c.config().data_area().map(|area| area.0);
@@ -416,7 +453,6 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
             *y -= 10.0 / plot.height.max(1) as f32;
         }
     }
-    let spec = SeriesConfig::energy_levels("he", series);
     save(r, &mut c, &[spec], &out.join("nist-grotrian-he-i.png"))
 }
 

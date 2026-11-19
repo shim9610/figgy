@@ -9,10 +9,12 @@
 //! fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{col, pixel_at_polar as pixel, renderer_bgra as renderer, save};
+use test_gpu::shared_device;
 
 use renderer::data::Column;
 use renderer::data_config::{
@@ -30,29 +32,6 @@ use renderer::{
 
 const WIDTH: u32 = 520;
 const HEIGHT: u32 = 440;
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        64 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 /// Upload an `nx × ny` grid of `f(x, y)` over `0..1 × 0..1` sample centres
 /// as columns `z0..` (one per x), with `gx` / `gy` the coordinates.
@@ -141,30 +120,6 @@ fn export(r: &mut Renderer, config: &Config, series: &[SeriesConfig], scale: f32
     )
     .block_on()
     .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
-}
-
-fn pixel(img: &RasterImage, (x, y): (f64, f64)) -> [u8; 4] {
-    let x = (x.floor() as i64).clamp(0, img.width as i64 - 1) as u32;
-    let y = (y.floor() as i64).clamp(0, img.height as i64 - 1) as u32;
-    let i = ((y * img.width + x) * 4) as usize;
-    [
-        img.rgba[i],
-        img.rgba[i + 1],
-        img.rgba[i + 2],
-        img.rgba[i + 3],
-    ]
 }
 
 #[test]
@@ -1556,6 +1511,7 @@ fn arrows_3d(
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
         }),
     )

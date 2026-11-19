@@ -875,6 +875,7 @@ mod tests {
             ("RANGE_COLOR_SINGLE", dr::RANGE_COLOR_SINGLE),
             ("RANGE_COLOR_DIRECTION", dr::RANGE_COLOR_DIRECTION),
             ("RANGE_COLOR_STATE", dr::RANGE_COLOR_STATE),
+            ("RANGE_COLOR_ROW", dr::RANGE_COLOR_ROW),
             ("RANGE_SLOT_WHISKER", dr::RANGE_SLOT_WHISKER),
             ("RANGE_SLOT_CONNECTOR", dr::RANGE_SLOT_CONNECTOR),
             ("RANGE_SLOT_UP", dr::RANGE_SLOT_UP),

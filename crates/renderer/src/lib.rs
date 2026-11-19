@@ -124,7 +124,9 @@ pub use annotation::{
 pub use chart::{Chart, FitAxes, FitAxis, FitAxisRef, FitExtent, FitScope, LinkedFitData};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
-pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
+pub use config::{
+    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, LayoutState, PickedDataRef,
+};
 pub use data::{
     Column, ColumnLanes, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource,
     StreamColumnSource,

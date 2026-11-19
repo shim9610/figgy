@@ -443,6 +443,7 @@ async fn a_vector_series_waits_for_its_module() {
                 head_width_px: 8.0,
                 min_length_px: 0.0,
                 color_map: None,
+                auto_scale: false,
             },
         }),
     );

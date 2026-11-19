@@ -2,12 +2,15 @@
 //! CPU and composited in the data slot. Every test exports at 1x and 2x.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, MID_GREEN as GREEN, ORANGE, RED, export, is_orange, pixel, renderer_rgba as renderer,
+};
 
 use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Category};
 use renderer::energy_levels::{
@@ -16,31 +19,11 @@ use renderer::energy_levels::{
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
     Chart, Color, DataRenderType, DataSelectionsConfig, PickedDataRef, RasterImage, Renderer,
-    RendererDevice, SeriesConfig,
+    SeriesConfig,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 320;
-const RED: Color = Color::from_rgb8(255, 0, 0);
-const BLUE: Color = Color::from_rgb8(0, 0, 255);
-const GREEN: Color = Color::from_rgb8(0, 200, 0);
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
-
 fn level(id: &str, column: &str, energy: f64) -> EnergyLevel {
     EnergyLevel {
         id: id.into(),
@@ -163,11 +146,6 @@ fn chart() -> Chart {
     chart
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
 fn is_red(p: &[u8]) -> bool {
     p[3] > 200 && p[0] > 200 && p[1] < 80 && p[2] < 80
 }
@@ -195,15 +173,6 @@ fn near(img: &RasterImage, (x, y): (u32, u32), r: u32, pred: fn(&[u8]) -> bool) 
     (y.saturating_sub(r)..=(y + r).min(img.height - 1)).any(|py| {
         (x.saturating_sub(r)..=(x + r).min(img.width - 1)).any(|px| pred(pixel(img, px, py)))
     })
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
 }
 
 #[test]
@@ -1099,7 +1068,7 @@ fn a_crowd_collapses_instead_of_fanning_out() {
     for k in 0..12 {
         levels
             .levels
-            .push(labelled(&format!("c{k}"), "b", 20.0 + 4.0 * k as f64));
+            .push(labelled(&format!("c{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     levels.levels.push(labelled("alone", "b", 92.0));
     let (space, measure) = layout_of(&chart, &levels);
@@ -1161,7 +1130,7 @@ fn crowded_labels_stack_apart_and_dense_runs_collapse() {
     for k in 0..5 {
         levels
             .levels
-            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.0 * k as f64));
+            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.5 * k as f64));
     }
     for k in 0..20 {
         levels
@@ -1907,12 +1876,6 @@ fn scene_level_labels_stay_off_other_columns() {
 // Wavelength labels and the corner note (#258) -------------------------
 
 const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
-const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-
-fn is_orange(p: &[u8]) -> bool {
-    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
-}
-
 /// The pixels of `img` inside the logical `rect` drawn at `scale` for which
 /// `pred` holds.
 fn ink_in(

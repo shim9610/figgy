@@ -133,6 +133,11 @@ impl Renderer {
         config.set_active_layer(config.active_layer);
         // Linked subplot axes are stored equal to their targets.
         config.sync_subplot_links(None);
+        // The chart is created with its layout: one it keeps fitted is
+        // fitted here (#357). A monotonic chart is registered `Fixed`.
+        if !monotonic {
+            config = kept_layout(config);
+        }
         let id_value = self
             .next_chart_id
             .checked_add(1)
@@ -278,6 +283,15 @@ impl Renderer {
         // group here, inside this one `&mut self` call: no frame can show one
         // member moved and another not.
         config.sync_subplot_links(Some(&state.config));
+        // A layout the chart keeps fitted is fitted to the edit as part of
+        // it (#357); an identical config changes nothing, and an edit that
+        // sets `Fixed` keeps its margins. A monotonic chart's layout moves
+        // only through its own calls (M4): it stays `Fixed`.
+        if self.monotonic_order.contains(&id) {
+            config.layout_state = crate::LayoutState::Fixed;
+        } else if config != state.config {
+            config = kept_layout(config);
+        }
         Ok(config)
     }
 
@@ -702,4 +716,18 @@ pub(in crate::renderer) fn refuse_monotonic_series(series: &[SeriesConfig]) -> R
         }),
         None => Ok(()),
     }
+}
+
+/// `config` with its layout fitted when the chart keeps it fitted
+/// ([`crate::LayoutState::Fitted`], #357): the fit
+/// [`crate::layout::auto_layout`] makes, measured with the font the draw
+/// style renders. A `Fixed` config is returned as given. A registered
+/// chart's layout is fitted here when the chart is registered and when a
+/// config edit commits, never by a draw or an export.
+pub(in crate::renderer) fn kept_layout(config: Config) -> Config {
+    if !config.layout_state.is_fitted() {
+        return config;
+    }
+    let measure = crate::CpuTextMeasure::for_style(&config.draw_style);
+    crate::layout::auto_layout(&config, &measure)
 }

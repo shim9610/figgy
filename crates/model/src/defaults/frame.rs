@@ -250,6 +250,8 @@ pub(crate) fn config() -> Config {
         line_offsets: None,
         plot_background: None,
         background: None,
+        // Drawn as stored: a chart made by `Chart::sized` asks for its fit.
+        layout_state: LayoutState::Fixed,
     }
 }
 

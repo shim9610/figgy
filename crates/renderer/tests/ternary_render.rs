@@ -8,61 +8,27 @@
 //! component order fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    MAGENTA, RED, col, count, is_red_soft as is_red, pixel, renderer_bgra as renderer, rule_of,
+    save,
+};
 
 use renderer::config::{DataSelectionsConfig, PickedDataRef, TickVisibility};
-use renderer::data::Column;
 use renderer::data_config::LineInterpolation;
 use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, FitExtent, HitMap, LayerRef, RasterImage, Renderer, RendererDevice,
-    ScatterShape, SeriesConfig, Subplot, TernaryOptions, TernarySeries,
+    DataScatterStyleConfig, FiggyError, FitExtent, HitMap, LayerRef, RasterImage, Renderer,
+    RuleKind, ScatterShape, SeriesConfig, Subplot, TernaryOptions, TernarySeries,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 420;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-
-const MAGENTA: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        64 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 /// A ternary chart over 0..100 with no grid, legend, axes or labels, so the
 /// only red ink is the series.
@@ -195,11 +161,6 @@ fn ternary_px(config: &Config, row: [f64; 3], scale: f32) -> (f64, f64) {
     (f64::from(p[0]), f64::from(p[1]))
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
 fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
     pixel(
         img,
@@ -208,16 +169,8 @@ fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
     )
 }
 
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 fn is_magenta(p: &[u8]) -> bool {
     p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] > 180
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 fn export(
@@ -233,18 +186,6 @@ fn export(
         )
         .block_on()
         .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 /// The GPU pick at `at` (canvas pixels at `scale`) of a chart registered
@@ -640,10 +581,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
     let err = |config: Config, series: Vec<SeriesConfig>| {
         let mut r = renderer();
         upload(&mut r, &[[1.0, 1.0, 1.0]]);
-        match r.register_chart(config, series) {
-            Ok(_) => String::from("registered"),
-            Err(e) => e.to_string(),
-        }
+        r.register_chart(config, series).err()
     };
     let plain = SeriesConfig {
         render_type: DataRenderType::Xy(renderer::data_config::XySeries {
@@ -654,10 +592,24 @@ fn registration_rejects_what_ternary_does_not_draw() {
         }),
         ..ok.clone()
     };
-    assert!(err(bare_config(), vec![plain]).contains("only ternary series"));
+    let refused = err(bare_config(), vec![plain]);
+    assert!(
+        matches!(
+            refused.as_ref().and_then(rule_of),
+            Some(RuleKind::TernaryChartSeriesKind)
+        ),
+        "{refused:?}"
+    );
     let mut rectangular = bare_config();
     rectangular.set_ternary(None);
-    assert!(err(rectangular, vec![ok.clone()]).contains("ternary chart"));
+    let refused = err(rectangular, vec![ok.clone()]);
+    assert!(
+        matches!(
+            refused.as_ref().and_then(rule_of),
+            Some(RuleKind::TernarySeriesNotTernary)
+        ),
+        "{refused:?}"
+    );
     // The axis rules are the chart's, checked where it is drawn, as a
     // polar chart's are.
     let mut unequal = bare_config();
@@ -671,7 +623,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
     assert!(
         drawn
             .as_ref()
-            .is_err_and(|e| e.to_string().contains("same")),
+            .is_err_and(|e| matches!(rule_of(e), Some(RuleKind::TernaryAxisSpan))),
         "{:?}",
         drawn.map(|_| ())
     );
@@ -684,7 +636,11 @@ fn registration_rejects_what_ternary_does_not_draw() {
         }),
         ..ok
     };
-    assert!(err(bare_config(), vec![missing]).contains("missing"));
+    let refused = err(bare_config(), vec![missing]);
+    assert!(
+        matches!(&refused, Some(FiggyError::UnknownColumn { id }) if id == "missing"),
+        "{refused:?}"
+    );
 }
 
 /// A ternary subplot draws its triangle in its own cell, beside a
@@ -1332,12 +1288,14 @@ fn a_region_alone_registers_and_a_bad_opacity_is_rejected() {
     let alone = region_series("field", region(RED, 0.5));
     assert!(r.register_chart(bare_config(), vec![alone]).is_ok());
     let bad = region_series("field", region(RED, 1.5));
-    let err = r
-        .register_chart(bare_config(), vec![bad])
-        .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
-    assert!(err.contains("0..=1"), "{err}");
+    let err = r.register_chart(bare_config(), vec![bad]).err();
+    assert!(
+        matches!(
+            err.as_ref().and_then(rule_of),
+            Some(RuleKind::TernaryRegionStyle)
+        ),
+        "{err:?}"
+    );
 }
 
 /// A region with its outline and markers in one series, beside a marker

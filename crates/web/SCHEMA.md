@@ -46,12 +46,12 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - **`RichText.align`은 여러 줄 텍스트의 줄 정렬**이다. `"Left"`(기본), `"Center"`, `"Right"` 중 하나이며 기본값이면 키를 내보내지 않는다. 블록 너비는 가장 넓은 줄이 정하므로 정렬해도 측정 크기와 선택 영역은 바뀌지 않는다.
 - **`rule_band`는 채움이 있는 선의 범례 띠**다. `rule: true`인 구간에 `rule_band: Color`가 있으면 수평선 아래에 그 색의 띠를 같은 고정 너비 안에 그린다. 생략하면 선만 그린다. 자동 범례(`set_series`, `apply_color_cycle`)는 `fill`이 있는 선 시리즈의 기호에 채움색을 띠 색으로 넣는다.
 - **`series_id`는 범례 기호가 나타내는 시리즈**다. 자동 범례의 기호 구간(`series_symbol_segments`)에 들어가며, 기호 갱신·라벨 변경·행 제거는 이 id로 범례 항목과 시리즈를 짝짓는다. 그래서 시리즈 순서를 바꾸거나 라벨이 없는 시리즈가 앞에 있어도 각 항목은 자기 시리즈의 기호를 유지한다. 값이 있을 때만 내보낸다. 이 키가 없는 이전 문서의 기호는 위치로 짝짓고, 기호를 한 번 갱신하면 id가 붙는다.
-- **`field_em`은 기호 영역의 너비를 고정한다.** 다음 글자까지의 간격을 `field_em × 폰트 크기`로 잡고 글리프를 가운데 놓는다. `rule: true`이면 글리프 대신 그 영역을 채우는 수평선을 그린다. `rule_dash`는 선·공백 길이를 em 단위로 지정하므로 폰트 크기에 비례한다. 범례 기호는 모양에 관계없이 전체 너비가 2.0em이다. 선은 `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점은 `{"text":"●","field_em":2.0,...}`, 점선은 `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`로 표현한다. 선과 점의 조합은 선 0.65em + 글리프 0.7em + 선 0.65em으로 구성한다.
+- **`field_em`은 기호 영역의 너비를 고정한다.** 다음 글자까지의 간격을 `field_em × 폰트 크기`로 잡고 글리프를 가운데 놓는다. `rule: true`이면 글리프 대신 그 영역을 채우는 수평선을 그린다. `rule_dash`는 선·공백 길이를 em 단위로 지정하므로 폰트 크기에 비례한다. `rule_thickness_em`은 선 두께를 em 단위로 지정하며, 생략하면 0.09em으로 그린다. 자동 범례는 시리즈 선 두께를 14px 기준으로 나눈 값(최소 0.09em)을 넣는다. 범례 기호는 모양에 관계없이 전체 너비가 2.0em이다. 선은 `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점은 `{"text":"●","field_em":2.0,...}`, 점선은 `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`로 표현한다. 선과 점의 조합은 선 0.65em + 글리프 0.7em + 선 0.65em으로 구성한다.
 - **색은 0~1 범위의 RGBA 실수 값**이다. 예: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
 - **데이터 출처 키**인 `SeriesConfig.source_id`와 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
 - **연속 값 매핑 키 2개**인 `DataScatterStyleConfig.point_color_map` / `point_size_map`도 `None`이면 생략한다. `point_color_map`은 `{ "column": "<id>" }`이며 색은 `Config.colorbar`가 정하므로 `colorbar`가 있어야 한다. `point_size_map`은 `{ "column": "<id>", "domain_min": 0.0, "domain_max": 10.0, "min_px": 2.0, "max_px": 12.0, "scale": "Area" }`이다. `scale`은 `"Area"`(기본값) 또는 `"Radius"`이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. 두 컬럼 모두 등록돼 있어야 하고 시리즈의 x/y 컬럼과 인덱스가 맞아야 한다. 자세한 내용은 [점 색·크기 매핑](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#점-색과-크기-매핑)을 참고한다.
-- **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>", "w": "<id>" } }`(`w`는 3D 차트의 z 성분이며 없으면 생략) 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면 생략한다. `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
+- **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>", "w": "<id>" } }`(`w`는 3D 차트의 z 성분이며 없으면 생략) 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면, `auto_scale`은 `false`이면 생략한다(#357: `true`이면 `auto_fit_all`이 `Pixels` 배율을 화살표 간격에 맞춰 다시 쓴다). `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
 - **유선 시리즈**의 `render_type`은 `{ "Streamlines": { "line": DataLineStyleConfig } }`이다. `arrows`(`{ "spacing_px": 70.0, "head_length_px": 9.0, "head_width_px": 8.0 }`)와 `color_map`(`{ "column": "<id>" }`)은 `None`이면 생략한다. `line.interpolation`은 `"Linear"`, `line.fill`은 없어야 하고, `color_map`이 있으면 `Config.colorbar`가 있어야 한다. 전체 예는 [`Streamlines` render_type](#streamlines-render_type), 필드 의미는 [유선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#유선)을 참고한다.
 - **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
@@ -260,6 +260,29 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 - 전체 범례를 `SeriesConfig.label`에서 다시 만들 때는 `reset_legend_from_series_labels()`를 호출한다. `add_line_series(..., label)`로 저장한 라벨은 리치 텍스트 라벨이 없는 시리즈에서만 대체값으로 사용한다.
 
 <a id="picked_data--typed-data-selection-overlay-config-선택-키"></a>
+
+## Layout state (`layout_state`)
+
+`layout_state` (#357) says who owns the layout: the axis bands
+(`out_margin`), the axis title offsets across them, the chart title band and
+the legend clearance that `layout::auto_layout` writes.
+
+The layout is fitted when the chart is created and when an edit call
+changes what it holds; `frame()` and the exports draw the stored config as
+it is and never fit it.
+
+| Value | Meaning |
+|---|---|
+| `"fixed"` (default, key absent) | Drawn exactly as stored; never fitted on its own. Every document written before the key reads as `"fixed"`. A drag or resize of a decoration or of the plot area sets it. |
+| `"fitted"` | The chart keeps the layout fitted to what it holds: a new `FiggyChart` starts with it, and `set_config` (or another edit call) that keeps `"fitted"` fits the layout as part of the edit. To keep margins set by hand, send `"fixed"` with them. |
+
+The categorical, box plot and radar documents (`set_categorical_document`,
+`set_boxplot_document`, `set_radar_document`) take an optional
+`"text_sizes": { "title": 28, "axis_title": 22, "tick_label": 18, "legend": 14 }`
+(each 8 to 64 px). Without it every text is drawn at the document's
+`font_size` and the title at 1.5 × it, as before; with it the converted chart
+draws those sizes in a `"fitted"` layout, fitted when the document is set,
+unless the document has an explicit `decorations.data_area`.
 
 ## 데이터 종류별 선택 표시(`picked_data`)
 
@@ -1253,7 +1276,10 @@ side by side under `bar_groups` (`mode` `"Grouped"`).
 
 A Gantt chart names `"color_by": { "State": { "column": "state", "styles":
 [{ "color": … }] } }` and `"progress": { "column": "done", "remaining_opacity":
-0.4 }`; a waterfall `"Direction"` with `"total": { "column": "is_total",
+0.4 }`; a timeline coloured by row names `"color_by": { "ByRow": { "colors":
+[{ "r": 0.12, "g": 0.47, "b": 0.71, "a": 1.0 }, …] } }` (row `i` takes
+`colors[i % colors.len()]`; it names no column and its `selection_details()`
+carries no colour role); a waterfall `"Direction"` with `"total": { "column": "is_total",
 "color": … }` and `"connector": { "color": …, "width": 1.5 }`. The picked
 bar's `selection_details()` carries `index`, `direction`, `position`, `end`,
 `start` and, when the series has them, `low`, `high`, `total` or `state` and
@@ -1447,6 +1473,7 @@ of a polygon edge the cursor's rightward ray crosses.
 - `role`을 생략하면 `"Internal"`이다. `at`을 생략한 꼭짓점은 자동 배치가 놓는다. 래퍼는 시리즈를 등록할 때 배치를 확정하므로 `get_series`는 모든 꼭짓점의 `at`을 돌려준다. 시리즈를 직접 고친 뒤에는 `place_feynman_vertices(series_id)`로 다시 확정한다.
 - `particle`은 `"Plain"`, `"Fermion"`, `"AntiFermion"`, `"Photon"`, `"ChargedBoson"`, `"Gluon"`, `"Scalar"`, `"ChargedScalar"`, `"Ghost"`, `"Majorana"`, `"Graviton"`, `"DoubleLine"` 중 하나다. `from`과 `to`가 같으면 고리를 그린다.
 - 생략한 `style`과 `layout`은 기본값을 쓰고, 기본값과 같으면 `get_series`가 쓰지 않는다.
+- `style.label_scale`(`0.25..=4`, 기본값 `1.5`)은 라벨을 저장된 `RichText` 크기의 몇 배로 그릴지 정한다. 측정, 배치, 그리기, 피킹, 선택 상자, 라벨 드래그, SVG·PDF 내보내기가 모두 이 크기를 쓰고, 저장된 라벨 크기는 바뀌지 않는다. 기본값이면 `get_series`가 쓰지 않는다.
 - 어떤 목록에도 개수 상한이 없다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
 - `pick_point`는 꼭짓점을 `"feynman_vertex"`, 전파자를 `"feynman_propagator"`, 라벨을 `"part"`(`"vertex"`·`"propagator"`·`"momentum"`)가 붙은 `"feynman_label"`로 돌려준다. 행은 `index`다. `press_feynman(series_id, kind, index, part)`로 고르고 드래그하면 꼭짓점이 움직이고(첫 드래그가 배치를 확정한다), 전파자가 휜다. 라벨은 값 라벨처럼 끌어 옮긴다. 플롯 밖의 커서는 아무것도 고르지 않는다.
 - `picked_data`의 선택 종류는 `{"kind": "feynman_vertex", "series_id", "vertex_index"}`, `{"kind": "feynman_propagator", "series_id", "propagator_index"}`, `{"kind": "feynman_label", "series_id", "part", "index"}`다.

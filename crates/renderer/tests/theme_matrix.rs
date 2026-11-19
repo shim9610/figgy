@@ -40,6 +40,11 @@
 //! against the theme's background in a test of their own, without a GPU.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/gpu.rs"]
+mod test_gpu;
+use harness::headless_renderer as renderer;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 
@@ -160,10 +165,6 @@ struct Tally {
     base_only: usize,
     /// Themes refused for their draw style.
     refused: usize,
-}
-
-fn renderer() -> Renderer {
-    Renderer::headless_blocking().expect("headless renderer")
 }
 
 fn export(

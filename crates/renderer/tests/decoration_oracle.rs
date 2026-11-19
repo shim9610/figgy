@@ -408,8 +408,11 @@ const EXCLUSIONS: &[Exclusion] = &[
         layer: "annotations",
         element: "annotation_3",
         inv: Inv::I2,
-        detail: "4 points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
+        detail: "* points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the arrow shaft's grab band runs the selection padding past the head's tip; \
+                 how many outline points fall past it depends on the arrow's pixel phase \
+                 (4 before #357's unhinted measurement moved the data area a fraction of a \
+                 pixel, 1 at 1x and 3 at 2x after)",
         issue: "#47",
     },
     Exclusion {
@@ -417,7 +420,7 @@ const EXCLUSIONS: &[Exclusion] = &[
         layer: "annotations",
         element: "annotation_3",
         inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_3: 4 points of stroke outlines*",
+        detail: "after the drag, I2 of annotation_3: * points of stroke outlines*",
         reason: "the arrow shaft past the tip, as in I2",
         issue: "#47",
     },
@@ -727,18 +730,6 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
         issue: "#44",
     },
     Exclusion {
-        scene: "EnergyLevelsCu",
-        layer: "document",
-        element: "category_groups_bottom",
-        inv: Inv::I5,
-        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
-        reason: "the headers are centred on their runs at fractional pixels; measured on \
-                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
-                 and the difference is glyph snapping at the two scales, as for the Power \
-                 labels with a mantissa",
-        issue: "#205",
-    },
-    Exclusion {
         scene: "EnergyLevelsU",
         layer: "annotations",
         element: "annotation_0",
@@ -752,72 +743,17 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
 ];
 
 /// Rows only the `auto_layout` sweep has, which it must still find.
-const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
-    Exclusion {
-        scene: "EnergyLevelsCu",
-        layer: "document",
-        element: "category_groups_bottom",
-        inv: Inv::I5,
-        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
-        reason: "the headers are centred on their runs at fractional pixels; measured on \
-                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
-                 and the difference is glyph snapping at the two scales, as for the Power \
-                 labels with a mantissa",
-        issue: "#205",
-    },
-    Exclusion {
-        scene: "EnergyLevelsU",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I6,
-        detail: "bounds * after the drag, * expected",
-        reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
+const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[Exclusion {
+    scene: "EnergyLevelsU",
+    layer: "annotations",
+    element: "annotation_0",
+    inv: Inv::I6,
+    detail: "bounds * after the drag, * expected",
+    reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
                  plot's edge, so a drag down moves only its lower edge: its bounds grow \
                  instead of moving",
-        issue: "#205",
-    },
-    // The BoxPlot scene's rotated "Response" title, placed the edge
-    // padding from the chart edge (#270): its box spans x 8.5..21.5 at
-    // 1x and 17.5..42.5 at 2x (the 2x measure is 25 px, not 26). Looked at
-    // side by side, both draw the same glyphs at the same place; 68 % of
-    // the 1x ink pixels differ from the 2x ink box-filtered against the
-    // 65 % text limit, the glyph snapping at the two sizes, as for the
-    // category headers above.
-    Exclusion {
-        scene: "BoxPlot",
-        layer: "document",
-        element: "axis_title_left",
-        inv: Inv::I5,
-        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
-        reason: "the rotated title's glyphs snap differently at 1x and 2x; the ink is in the \
-                 same place at both scales",
-        issue: "#270",
-    },
-    // The `Annotations` scene's arrow past its tip (the shared exclusions'
-    // rows) at the data area the exact bands give it, with the chart title
-    // band holding the font's line (#270): 2 points and 2 pixels at 1x and
-    // at 2x where the shared rows have 4, 2 points after the drag. The
-    // points are the shaft's grab band left of the head's tip, over the
-    // span.
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_3",
-        inv: Inv::I2,
-        detail: "2 points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_3",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_3: 2 points of stroke outlines*",
-        reason: "the arrow shaft past the tip, as in I2",
-        issue: "#47",
-    },
-];
+    issue: "#205",
+}];
 
 /// Which documents a sweep checks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

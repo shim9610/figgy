@@ -1186,9 +1186,18 @@ fn chart_part_builders_write_the_document() {
 
     // The title builder shows the title in the axis title's style, on the
     // chart's colour bar or, without one, on the default bar it adds (#297).
-    let mut barred = Chart::sized(200, 120);
+    // On `Fixed` charts, so the bar is compared field for field: a chart
+    // that keeps its layout fitted fits the bar's band to the title too
+    // (#357), as `fit_layout` would.
+    let fixed = || {
+        Chart::new(renderer::Config {
+            layout_state: renderer::LayoutState::Fixed,
+            ..Chart::sized(200, 120).config().clone()
+        })
+    };
+    let mut barred = fixed();
     barred.config_mut().colorbar = Some(renderer::default::default_colorbar_options());
-    for chart in [barred, Chart::sized(200, 120)] {
+    for chart in [barred, fixed()] {
         let titled = chart.with_colorbar_title("Speed");
         let mut expected = renderer::default::default_colorbar_options();
         expected.axis.title_option = titled
@@ -1211,9 +1220,15 @@ fn chart_part_builders_write_the_document() {
 
     let cell = Chart::placed(480, 0, 480, 320).config().clone();
     let overlay = renderer::config::AxisOptions::overlay_y("Current (A)", red);
-    let document = Chart::sized(960, 320)
-        .with_overlay(overlay, &["current"])
-        .with_subplot(Subplot::new(cell.clone(), &["b"]).with_link_x(CellRef::Parent));
+    // A `Fixed` document, so the subplot is compared as given: a document
+    // that keeps its layout fitted fits the cell's bands with its own
+    // (#357).
+    let document = Chart::new(renderer::Config {
+        layout_state: renderer::LayoutState::Fixed,
+        ..Chart::sized(960, 320).config().clone()
+    })
+    .with_overlay(overlay, &["current"])
+    .with_subplot(Subplot::new(cell.clone(), &["b"]).with_link_x(CellRef::Parent));
     let config = document.config();
     assert_eq!(config.subplots.len(), 1);
     assert_eq!(config.subplots[0].config, cell);

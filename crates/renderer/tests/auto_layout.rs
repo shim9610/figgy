@@ -8,14 +8,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::measure;
 
 use renderer::layout::{Element, RectF, Side, auto_layout};
 use renderer::sink::Parts;
-use renderer::{Config, CpuTextMeasure, HitMap, Renderer, RendererDevice};
+use renderer::{Config, HitMap, Renderer, RendererDevice};
 
 use scenes::SceneKind;
 
@@ -28,10 +31,6 @@ fn renderer() -> Renderer {
     let (device, queue) = test_gpu::device();
     let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, POOL_BYTES).expect("renderer")
-}
-
-fn measure(cfg: &Config) -> CpuTextMeasure {
-    CpuTextMeasure::for_style(&cfg.draw_style)
 }
 
 fn laid_out(cfg: &Config) -> Config {
@@ -224,11 +223,13 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
     let default = renderer::default::default_config();
     let out = laid_out(&default);
     assert_eq!(laid_out(&out), out, "default: not idempotent");
+    // The x bands hold the labels' unhinted ink (#357): a pixel more than
+    // the hinted ink took (10 and 25 px), the bands being whole pixels.
     assert_eq!(
         layout_changes(&default, &out),
         [
-            "top_x.out_margin 8 -> 10",
-            "bottom_x.out_margin 80 -> 25",
+            "top_x.out_margin 8 -> 11",
+            "bottom_x.out_margin 80 -> 26",
             // The helpers' `Auto` labels (#357): `0.0` … `1.0`.
             "left_y.out_margin 110 -> 39",
             "right_y.out_margin 32 -> 17",
@@ -250,8 +251,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "default",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 26",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "chart_title.top_margin 32 -> 0",
@@ -273,8 +274,8 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
             (
                 "series",
                 &[
-                    "top_x.out_margin 8 -> 10",
-                    "bottom_x.out_margin 80 -> 25",
+                    "top_x.out_margin 8 -> 11",
+                    "bottom_x.out_margin 80 -> 26",
                     "left_y.out_margin 110 -> 49",
                     "right_y.out_margin 8 -> 22",
                     "colorbar.axis.out_margin 60 -> 55",
@@ -511,12 +512,14 @@ fn the_long_labels_scene_overlaps_as_laid_out_and_clears_after_auto_layout() {
     );
     // The band is set to exactly the labels, the gap (half the 18 px label
     // font), the title beside them and the edge padding (half the 22 px
-    // title font, 11 px): the 110 px band grows to 114 px, the title moves
+    // title font, 11 px): the 110 px band grows to 115 px, the title moves
     // outward by its offset and ends the padding (within the pixel the
-    // offset is rounded to) from the chart edge.
+    // offset is rounded to) from the chart edge. (114 px while the labels'
+    // exponents were hinted: unhinted scripts, #357, measure their ink a
+    // fraction of a pixel wider, and the band is whole pixels.)
     assert_eq!(
         (scene.config.left_y.out_margin, out.left_y.out_margin),
-        (110.0, 114.0)
+        (110.0, 115.0)
     );
     assert!(out.left_y.title_option.offset_y < 0.0);
     let title = rects(&out, Element::AxisTitle(Side::Left))[0];

@@ -1,6 +1,6 @@
 //! Field, vector, 3D, mesh, polar, radar, parallel and ternary themes.
 
-use super::super::{ChartKind, Theme, ThemeFamily};
+use super::super::{ChartKind, ParallelTheme, Theme, ThemeFamily};
 use super::{
     GALLERY_INK, alpha, colormap, covered, document, family_chrome, gallery, gridded, inked_scene,
     mark_colormap, palette, ramp, rgb,
@@ -10,8 +10,17 @@ use crate::colormap::ColorMap;
 use crate::material::Material;
 use crate::preset::AxisPreset;
 
-/// `family`'s member for `kind`.
+/// `family`'s member for `kind`. The designed field themes choose a
+/// label ink for their maps and draw the labels without the documented
+/// plate behind them (#357).
 pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
+    let mut theme = designed(family, kind);
+    theme.series.fields.contour_label_background = None;
+    theme
+}
+
+/// `family`'s member for `kind` as designed.
+fn designed(family: ThemeFamily, kind: ChartKind) -> Theme {
     match (kind, family) {
         (ChartKind::Field, ThemeFamily::Gallery) => field_gallery(),
         (ChartKind::Field, ThemeFamily::WarmPaper) => field_warm_paper(),
@@ -37,13 +46,16 @@ pub(super) fn member(family: ThemeFamily, kind: ChartKind) -> Theme {
 }
 
 /// The gallery's contour field: Viridis under white isolines with white
-/// labels, no grid, and a colourbar titled like an axis.
+/// labels, no grid, and a colourbar titled like an axis. Isolines without
+/// a fill are drawn on the white paper, in the gallery's ink (#357).
 fn field_gallery() -> Theme {
     let mut theme = covered(gallery(ChartKind::Field));
     theme.chrome.colorbar.title_size = theme.chrome.axis_title_size;
     let fields = &mut theme.series.fields;
     fields.colormap = ColorMap::Viridis;
     fields.contour_color = Some(alpha(Color::WHITE, 0.9));
+    fields.unfilled_contour_color = Some(alpha(GALLERY_INK, 0.85));
+    fields.unfilled_contour_label_color = Some(GALLERY_INK);
     fields.contour_width = 1.3;
     fields.contour_label_color = Color::WHITE;
     fields.contour_label_size = 13.0;
@@ -277,15 +289,17 @@ fn parallel_midnight() -> Theme {
     let bg = rgb(15, 18, 30);
     let ink = rgb(186, 194, 216);
     let mut theme = covered(inked_scene(ChartKind::Parallel, bg, ink, bg));
+    let paper = bg;
     let chrome = &mut theme.chrome;
     chrome.axis_preset = AxisPreset::OpenOutward;
     chrome.frame_ink = rgb(96, 104, 130);
     chrome.tick_label_size = 16.0;
-    chrome.colorbar.thickness = 12.0;
-    chrome.colorbar.length = 0.3;
+    chrome.colorbar.thickness = 14.0;
+    chrome.colorbar.length = 0.6;
     chrome.colorbar.gap = 16.0;
     chrome.colorbar.title_size = 19.0;
     theme.series.parallel.name_size = 20.0;
+    theme.series.parallel = parallel_rows(theme.series.parallel, paper);
     theme.series.palette = vec![ink];
     theme.series.lines.line_width = 1.2;
     theme.series.fields.colormap = ramp([
@@ -425,6 +439,11 @@ fn tri_mesh(family: ThemeFamily) -> Theme {
     fields.colormap = colormap(family);
     fields.contour_width = 1.2;
     fields.contour_label_color = ink;
+    // The gallery's white isolines vanish into its paper without a fill
+    // under them (#357).
+    if family == ThemeFamily::Gallery {
+        fields.unfilled_contour_color = Some(alpha(GALLERY_INK, 0.6));
+    }
     theme
 }
 
@@ -480,6 +499,7 @@ fn radar(family: ThemeFamily) -> Theme {
 fn parallel(family: ThemeFamily) -> Theme {
     let mut theme = covered(family_chrome(family, ChartKind::Parallel));
     let ink = theme.chrome.ink;
+    let paper = theme.chrome.background.unwrap_or(Color::WHITE);
     let chrome = &mut theme.chrome;
     chrome.axis_preset = AxisPreset::OpenOutward;
     chrome.frame_ink = match family {
@@ -488,15 +508,26 @@ fn parallel(family: ThemeFamily) -> Theme {
         _ => rgb(150, 156, 174),
     };
     chrome.tick_label_size = 16.0;
-    chrome.colorbar.thickness = 12.0;
-    chrome.colorbar.length = 0.3;
+    chrome.colorbar.thickness = 14.0;
+    chrome.colorbar.length = 0.6;
     chrome.colorbar.gap = 16.0;
     chrome.colorbar.title_size = 19.0;
     theme.series.parallel.name_size = 20.0;
+    theme.series.parallel = parallel_rows(theme.series.parallel, paper);
     theme.series.palette = vec![ink];
     theme.series.lines.line_width = 1.2;
     theme.series.fields.colormap = mark_colormap(family);
     theme
+}
+
+/// The rows and tick labels of a family's parallel chart (#357): rows at
+/// half opacity, so many rows read as a density instead of a solid block,
+/// and each tick label on a box of the paper colour at 0.8, so it stays
+/// readable over the rows it sits on.
+fn parallel_rows(mut part: ParallelTheme, paper: Color) -> ParallelTheme {
+    part.line_opacity = Some(0.5);
+    part.label_backdrop = Some(Color { a: 0.8, ..paper });
+    part
 }
 
 /// A family's ternary chart (gallery, cool slate, midnight): twelve

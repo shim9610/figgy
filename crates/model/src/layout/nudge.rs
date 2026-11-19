@@ -267,7 +267,27 @@ impl Config {
     /// the angle labels move along the spoke under the pointer. Without it
     /// the ray turns as if grabbed on the outer ring and the angle labels
     /// use the spoke at the zero angle.
+    ///
+    /// A move fixes the layout ([`crate::config::LayoutState::Fixed`], #357): the user
+    /// placed part of it, so no later draw fits it again. A rejected move
+    /// changes nothing, the state included.
     pub fn nudge_from(
+        &mut self,
+        element: Element,
+        measure: &dyn MeasureText,
+        at: Option<[f32; 2]>,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let result = self.nudge_unfixed(element, measure, at, dx, dy);
+        if result == NudgeResult::Moved {
+            self.layout_state = crate::config::LayoutState::Fixed;
+        }
+        result
+    }
+
+    /// The move of [`Self::nudge_from`], without the layout state.
+    fn nudge_unfixed(
         &mut self,
         element: Element,
         measure: &dyn MeasureText,

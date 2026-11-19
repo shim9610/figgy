@@ -207,7 +207,7 @@ impl Renderer {
                 .get(hit)
                 .map(|element| element.element_id())
         });
-        let chart = Chart::new(config.into_owned());
+        let chart = Chart::stored(config.into_owned());
         self.refresh_axis_with_selection_unreported(
             view,
             &chart,
