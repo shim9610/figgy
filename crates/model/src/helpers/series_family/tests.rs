@@ -467,7 +467,12 @@ fn the_timeline_config_puts_the_first_row_on_top_with_a_light_frame() {
         assert_ne!(axis.label_style.color, plain.bottom_x.label_style.color);
     }
     assert_ne!(config.top_x.line_color, plain.top_x.line_color);
-    assert_eq!(plain, crate::defaults::config());
+    // The helpers' default differs from the documented one by its tick
+    // label format alone (#357).
+    assert_eq!(
+        plain,
+        crate::default::config_with_default_label_format(crate::defaults::config())
+    );
     #[cfg(feature = "serde")]
     {
         let json = serde_json::to_string(&config).unwrap();

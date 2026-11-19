@@ -49,6 +49,12 @@ pub(crate) fn plain_number_format() -> PlainNumberFormat {
     }
 }
 
+/// The documented default of [`AutoNumberFormat`]: the value a document
+/// that omits its fields takes (#357).
+pub(crate) fn auto_number_format() -> AutoNumberFormat {
+    AutoNumberFormat::DEFAULT
+}
+
 /// The documented default of [`TextAlign`]: the value a document that
 /// omits it takes.
 pub(crate) const fn text_align() -> TextAlign {

@@ -114,6 +114,14 @@ fn edits() -> Vec<Edit> {
     edit!(bottom_x.label_style.significant_digits, 5, Prefix);
     edit!(
         bottom_x.label_style.format,
+        crate::format::LabelFormat::Auto(crate::format::AutoNumberFormat {
+            uniform_decimals: false,
+            ..crate::format::AutoNumberFormat::DEFAULT
+        }),
+        Prefix
+    );
+    edit!(
+        bottom_x.label_style.format,
         crate::format::LabelFormat::Plain(crate::format::PlainNumberFormat {
             decimals: Some(1),
             trim_zeros: true,
@@ -1489,6 +1497,10 @@ fn baseline() -> Config {
         a.title_option.text = RichText::plain("Axis", Color::BLACK, 10.0, "");
         a.label_style.label_visible = true;
         a.label_style.font_size = 10.0;
+        // The digits and format edits below read against `Decimal`, whose
+        // labels follow the significant digits; the helpers' default is
+        // `Auto` (#357), which an edit case of its own covers.
+        a.label_style.format = crate::format::LabelFormat::Decimal;
     }
     c.grid.show_major_x = true;
     c.grid.show_major_y = true;
@@ -1723,6 +1735,9 @@ fn baseline_with_colorbar() -> Config {
     bar.axis.max = 1.0;
     bar.axis.major_spacing = 0.2;
     bar.axis.title_option.text = RichText::plain("Z", Color::BLACK, 10.0, "");
+    // As the axes' (see `baseline`): the digits edit reads against
+    // `Decimal`.
+    bar.axis.label_style.format = crate::format::LabelFormat::Decimal;
     c.colorbar = Some(bar);
     c
 }
