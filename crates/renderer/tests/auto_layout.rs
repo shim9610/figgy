@@ -230,8 +230,9 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
         [
             "top_x.out_margin 8 -> 11",
             "bottom_x.out_margin 80 -> 26",
-            "left_y.out_margin 110 -> 49",
-            "right_y.out_margin 32 -> 22",
+            // The helpers' `Auto` labels (#357): `0.0` … `1.0`.
+            "left_y.out_margin 110 -> 39",
+            "right_y.out_margin 32 -> 17",
             "chart_title.top_margin 32 -> 0",
         ]
     );
