@@ -256,6 +256,55 @@ and is not part of the three-OS matrix: no CI job runs it. Run it whenever the
 table or a module hash changes; the static check forces that whenever an exact
 module's WGSL changes.
 
+## Exact pick warm-up (#363)
+
+A browser renderer that compiles its render pipelines in the background (the
+`FiggyChart` path, `for_window_with_shader_set_async_observed`) also compiles the
+exact pick pipelines of each chart it draws, before the chart's first pick:
+
+- **When.** On each screen frame, for each chart it draws, when the chart's config
+  revision, series revision or shader set has moved since the chart was last warmed
+  (a generation stamp on the chart's state). So registration and every edit that can
+  change a series' pick key warm the chart again; an unchanged chart costs one
+  comparison.
+- **What.** Only the chart's own keys, never the variant table:
+  `Renderer::for_each_exact_pick_key` reads them from the stored config and series
+  (the pick plan of every layer a pick can reach, each series' key from its pick
+  descriptor with the layer's query bits), without a picker, slot or GPU object. The
+  variant-table test checks, for every chart it lists, that these are exactly the
+  keys the pick needs.
+- **How.** On the renderer's existing `CompileQueue` (`createComputePipelineAsync`
+  with the checked layout and the key's override constants), ahead of the waiting
+  render compiles; each later frame still moves what it draws ahead of them. The
+  queue tracks one compile per
+  key label and leaves them out of `pipeline_status`, `series_ready`,
+  `pipelines_ready` and `pipeline_failures`, which stay about drawing. No cache,
+  pipeline or lock is added. A native renderer compiles nothing early.
+- **The pick is unchanged.** `compile_pick_pipelines_at` waits for a scheduled
+  compile of a key it needs (issuing it first if it still waits), then compiles the
+  key as before: a cache hit when the warm-up's result is still in the browser's
+  cache, a compile of its own when the browser no longer holds it. A failed warm-up
+  compile changes nothing: the pick compiles and reports as before.
+
+First pick of a radar chart (markers and a fill) in headless Chromium 157 with
+SwiftShader, 4-core Linux container, on a renderer whose background render compiles
+are running, from `crates/renderer/tests/pick_warmup_browser.rs` (`PICK_WARMUP`
+lines; two runs each unless noted; the first pick includes enabling the picker,
+whose gate and reduce compiles the warm-up does not cover):
+
+| Pick after the first frame | Exact compile, before | Exact compile, after | First pick, before | First pick, after |
+| --- | ---: | ---: | ---: | ---: |
+| at once | 6.1–7.8 s (4 runs) | 2.5–2.7 s | 10.2–12.6 s | 7.4 s |
+| after 8 s | 8.4–10.6 s | 10–13 ms | 14.8–15.3 s | 2.4 s |
+| after 20 s | 9.4 s | 8.6–9.1 s | 25.8 s | 24.5–24.9 s |
+
+After 20 s the warm-up had compiled the pipeline, but the browser no longer held the
+result when the pick asked for it (hundreds of render pipelines had compiled since),
+so the pick compiled it again: no faster than before, and no slower. In that run the
+first pick is dominated by the picker's gate and reduce compiles (about 16 s). Both
+are follow-ups proposed on #363; neither is changed here.
+
+
 ## 한국어 요약
 
 등고선 위치 계산은 기존과 똑같이 네 번 보정한다. 다만 복잡한 필드 검색을 감싼 반복문을
@@ -277,3 +326,8 @@ GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀�
 파이프라인 키와 SwiftShader 컴파일 시간·예산이 있다(#363). 행은 실제 픽 경로에서 자동 생성되고,
 exact pick 모듈의 WGSL이 바뀌면 `verify.py static`이 바뀐 모듈과 행 수를 알려 주며 실패하므로,
 표를 다시 만들고 그 모듈의 행만 다시 측정한다(`--missing`). 다른 WGSL 변경은 표와 관계없다.
+
+브라우저 렌더러는 화면에 그리는 차트의 exact pick 파이프라인을 첫 픽 전에 기존 컴파일 큐로
+미리 컴파일한다(#363). 차트 자신의 키만 컴파일하고, 픽 경로는 그 컴파일을 기다린 뒤 예전처럼
+컴파일을 요청한다. 첫 프레임 직후 레이더 차트의 첫 픽은 약 10~13초에서 약 7.4초로, 8초 뒤의
+첫 픽은 약 15초에서 약 2.4초로 줄었다.

@@ -230,6 +230,12 @@ pub(in crate::renderer) struct ChartRenderState {
     /// [`Renderer::prepare_registered`], when it set one with
     /// [`Renderer::set_chart_display`]; `None` draws the document as stored.
     pub(in crate::renderer) display: Option<ChartDisplay>,
+    /// The config and series revisions and the shader set whose exact pick
+    /// pipelines a browser renderer last scheduled ahead of the first pick
+    /// (#363, [`Renderer::warm_exact_picks`]); a generation stamp, so an edit
+    /// that moves either revision schedules them again.
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) pick_warmup: Option<(RenderRevision, RenderRevision, ShaderSet)>,
 }
 
 /// A registered chart drawn scaled onto a surface (#160). The placed config

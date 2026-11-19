@@ -673,6 +673,73 @@ impl CompileQueue {
         Ok(())
     }
 
+    /// Schedule the exact pick pipeline `label` names (#363): the
+    /// `pick_exact_candidates` entry of `source` with the override
+    /// `constants` its wgpu twin is created with, compiled through
+    /// `createComputePipelineAsync` with the checked layout, ahead of every
+    /// waiting compile. Nothing is scheduled when `label` already is for
+    /// `shader_set`. Its pick waits for it ([`Self::wait_pick`]); the screen's
+    /// counts, waits and failures leave it out.
+    pub(crate) fn schedule_exact_pick(
+        &self,
+        shader_set: crate::shader_assembly::ShaderSet,
+        label: String,
+        source: &str,
+        constants: &[(&'static str, f64)],
+    ) -> Result<(), String> {
+        use crate::compile_schedule::LabelReadiness;
+        if self.readiness(shader_set, &label) != LabelReadiness::Untracked {
+            return Ok(());
+        }
+        {
+            let mut state = self.0.borrow_mut();
+            let mut found = None;
+            for desc in descriptors(source, "compute")? {
+                let entry_point = get(&get(&desc, "compute")?, "entryPoint")?;
+                if entry_point.as_string().as_deref() == Some("pick_exact_candidates") {
+                    if found.is_some() {
+                        return Err("Expected one checked layout for the exact pick entry".into());
+                    }
+                    found = Some(desc);
+                }
+            }
+            let desc = found.ok_or("No checked layout for the exact pick entry")?;
+            let module = shader(&state.device, source, "figgy GPU pick exact prewarm")?;
+            populate(&state.device, &desc, &module)?;
+            let values = js_sys::Object::new();
+            for (name, value) in constants {
+                set(&values, name, &JsValue::from_f64(*value))?;
+            }
+            set(&get(&desc, "compute")?, "constants", &values)?;
+            state.schedule.push_pick(shader_set, label);
+            state.descriptors.push((desc, "createComputePipelineAsync"));
+        }
+        self.pump();
+        Ok(())
+    }
+
+    /// Wait for the exact pick pipeline `label` names (#363), issuing it
+    /// first if it still waits: `true` once it compiled; `false` when none is
+    /// scheduled for `set` or it ended any other way. It wakes on each
+    /// change, never by polling, and ends: every compile does.
+    pub(crate) async fn wait_pick(
+        &self,
+        set: crate::shader_assembly::ShaderSet,
+        label: &str,
+    ) -> bool {
+        let Some(index) = self.0.borrow().schedule.wait_index(set, label) else {
+            return false;
+        };
+        self.prioritize(set, label);
+        loop {
+            let step = self.0.borrow().schedule.wait_step(index);
+            match step {
+                WaitStep::Pending(_) => self.changed().await,
+                WaitStep::Ended(outcome) => return outcome == CompileOutcome::Ready,
+            }
+        }
+    }
+
     /// Issue compiles while fewer than the limit are in flight.
     fn pump(&self) {
         loop {

@@ -172,6 +172,14 @@ impl Renderer {
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         while let Some(key) = self.missing_exact_pick_key(id, request)? {
             let bundle = self.picker.ready_bundle()?;
+            // A compile the chart's warm-up scheduled (#363) is waited for,
+            // issued first if it still waits. The pick then compiles as it
+            // always did: a cache hit when the warm-up compiled it, and a
+            // compile of its own when the browser no longer holds that
+            // result, so a pick is never slower than without the warm-up.
+            if let Some(queue) = self.compile_queue.clone() {
+                let _ = queue.wait_pick(bundle.set, &key.compile_label()).await;
+            }
             let (constants, count) = key.constants(self.device());
             let compiled = crate::browser_compile::compute_with_constants(
                 self.device(),
@@ -195,6 +203,49 @@ impl Renderer {
             picker.exact.ensure(active.engine.bundle(), key)?;
         }
         Ok(())
+    }
+
+    /// Schedule, on the browser's compile queue, the exact pick pipelines
+    /// chart `id`'s picks can need ([`Self::for_each_exact_pick_key`]) and
+    /// it does not track yet, ahead of the waiting compiles (#363), so the
+    /// first pick finds them compiled. Called for each chart a screen frame
+    /// draws; it does nothing until the chart's config or series revision or
+    /// the shader set moves. Never the whole variant table: only the
+    /// chart's own keys. A failure leaves the pick to compile as it always
+    /// did, so nothing is reported here.
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) fn warm_exact_picks(&mut self, id: ChartId) {
+        let Some(queue) = self.compile_queue.clone() else {
+            return;
+        };
+        let set = self.pipelines.shaders.set;
+        let Some(state) = self.chart_states.get(&id) else {
+            return;
+        };
+        let stamp = (state.revisions.config, state.revisions.series, set);
+        if state.pick_warmup == Some(stamp) {
+            return;
+        }
+        let device = self.device.clone();
+        let scheduled = self.for_each_exact_pick_key(id, |key| {
+            let (constants, count) = key.constants(&device);
+            if queue
+                .schedule_exact_pick(
+                    set,
+                    key.compile_label(),
+                    key.source(set),
+                    &constants[..count],
+                )
+                .is_err()
+            {
+                // The first pick compiles this one as it always did.
+            }
+        });
+        if scheduled.is_ok()
+            && let Some(state) = self.chart_states.get_mut(&id)
+        {
+            state.pick_warmup = Some(stamp);
+        }
     }
 
     /// Compile, through the browser's async API, the typed data pick
@@ -343,6 +394,65 @@ impl Renderer {
             max_distance_px: request.max_distance_px,
             draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
         }))
+    }
+
+    /// Each exact pick pipeline a pick of chart `id` can need, given to
+    /// `each`, possibly more than once: for every layer a pick can reach (the
+    /// active one and, from the base layer, each subplot the pointer can
+    /// route to, as [`subplot_route`] does), each resident series' stored key
+    /// from its pick descriptor ([`crate::gpu_pick::resident_exact_key`]) with
+    /// the layer's query bits. Read from the stored config and series alone:
+    /// no picker, slot or GPU object is needed, so a chart's pipelines can
+    /// compile before its first pick (#363). A monotonic chart picks through
+    /// its own query and a chart with a streamed series through the stream's
+    /// variants (rule 8): neither gives any.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(in crate::renderer) fn for_each_exact_pick_key(
+        &self,
+        id: ChartId,
+        mut each: impl FnMut(crate::gpu_pick::PickExactKey),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
+        if self.monotonic_order.contains(&id)
+            || state
+                .series
+                .iter()
+                .any(|series| self.require_resident_series(series).is_err())
+        {
+            return Ok(());
+        }
+        let series = pickable_series(&self.pool, &state.series);
+        let mut layer =
+            |config: &Config| -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+                let inputs = active_layer_pick_inputs(config, &series)?;
+                let plan = PickChartPlan::new(&inputs.panel, &inputs.series)?;
+                let transform = data_render::scatter_transform_from_config(&inputs.panel);
+                let draw_style = crate::gpu_pick::GpuPickDrawStyle::of(&inputs.panel.draw_style);
+                let polar = transform.polar_angle[0] > 0.5;
+                for descriptor in &plan.descriptors {
+                    let (key, flags) =
+                        crate::gpu_pick::resident_exact_key(&descriptor.descriptor());
+                    each(crate::gpu_pick::exact_variant_for(
+                        key,
+                        flags,
+                        &draw_style,
+                        polar,
+                    ));
+                }
+                Ok(())
+            };
+        layer(&state.config)?;
+        if state.config.active_layer() == crate::LayerRef::Base {
+            for index in 0..state.config.subplots.len() {
+                let mut routed = state.config.clone();
+                routed.active_layer = crate::LayerRef::Subplot(index);
+                layer(&routed)?;
+            }
+        }
+        Ok(())
     }
 
     /// Submit one exact pick against renderer-owned chart state.

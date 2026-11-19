@@ -254,6 +254,16 @@ impl PickExactKey {
         self.shader.assembled_for(set).source
     }
 
+    /// The label a browser renderer's compile queue tracks its pipeline by
+    /// when it compiles ahead of the first pick (#363): one per key.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn compile_label(self) -> String {
+        format!(
+            "figgy GPU pick exact candidate pipeline {:?} {} {}",
+            self.shader, self.bits, self.shape
+        )
+    }
+
     /// The marker-and-line module with every path and any shape.
     #[cfg(test)]
     pub(crate) const ALL_PATHS: Self = Self {
