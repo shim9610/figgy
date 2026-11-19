@@ -49,11 +49,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Fit the margins to the labels, titles and legend before export.
     chart.fit_layout();
     let img = r.export_rgba_blocking(
-        ExportSource::chart(&mut chart, &series),
+        ExportSource::chart(&chart, &series),
         ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let empty = r.export_rgba_blocking(
-        ExportSource::chart(&mut chart, &[]),
+        ExportSource::chart(&chart, &[]),
         ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let changed = img

@@ -292,7 +292,7 @@ fn resident_screen(
     series: &[SeriesConfig],
     scale: f32,
 ) -> Vec<u8> {
-    let mut display = Chart::new(chart.config().scaled(scale));
+    let display = Chart::new(chart.config().scaled(scale));
     let area = display.config().chart_area.0;
     let mut view = r.create_chart_view(&display, area).unwrap();
     let styles: Vec<_> = series
@@ -307,7 +307,7 @@ fn resident_screen(
     let mut frame = r
         .prepare(&mut [ChartDrawItem {
             view: &mut view,
-            chart: &mut display,
+            chart: &display,
             series: &series,
         }])
         .unwrap();
@@ -516,7 +516,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
     for scale in [1.0, 2.0] {
         let expected = resident
             .export_rgba(
-                crate::ExportSource::chart(&mut chart, &series),
+                crate::ExportSource::chart(&chart, &series),
                 crate::ExportOptions::panel(scale),
             )
             .block_on()
@@ -654,7 +654,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
         actual.rgba,
         resident
             .export_rgba(
-                crate::ExportSource::chart(&mut chart, &series),
+                crate::ExportSource::chart(&chart, &series),
                 crate::ExportOptions::panel(1.0)
             )
             .block_on()

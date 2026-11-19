@@ -21,7 +21,7 @@ fn upload(renderer: &mut Renderer, n: usize) {
 fn drew_something(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> bool {
     let image = renderer
         .export_rgba_blocking(
-            ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
+            ExportSource::chart(chart, series),
             ExportOptions::panel(1.0).with_clear(Color::WHITE),
         )
         .expect("export");

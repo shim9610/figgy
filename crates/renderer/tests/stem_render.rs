@@ -88,7 +88,7 @@ fn stem_series(id: &str, x: &str, y: &str, stem: Stem) -> SeriesConfig {
 /// drawn too.
 fn export_document(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
     r.export_rgba(
-        renderer::ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
+        renderer::ExportSource::chart(chart, series),
         renderer::ExportOptions::document(1.0),
     )
     .block_on()
@@ -449,7 +449,7 @@ fn a_streamed_stem_series_is_refused() {
     )];
     let refused = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()

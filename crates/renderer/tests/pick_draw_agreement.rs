@@ -374,10 +374,7 @@ pub fn assert_pick_matches_paint_with(
 ) -> usize {
     let with = renderer
         .export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                series,
-            ),
+            renderer::ExportSource::chart(chart, series),
             renderer::ExportOptions::panel(scale),
         )
         .block_on()
@@ -389,10 +386,7 @@ pub fn assert_pick_matches_paint_with(
         .collect();
     let without = renderer
         .export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                &without_series,
-            ),
+            renderer::ExportSource::chart(chart, &without_series),
             renderer::ExportOptions::panel(scale),
         )
         .block_on()
@@ -623,7 +617,7 @@ fn overlap_tie_follows_the_painted_colour() {
     renderer
         .add_columns(&[("style", &col(vec![0.0, 1.0]) as &dyn renderer::ColumnSource)])
         .unwrap();
-    let mut chart = bare_chart();
+    let chart = bare_chart();
     let mut series = scatter("pair", ScatterShape::CircleFilled, 8.0, RED);
     let DataRenderType::Xy(renderer::data_config::XySeries {
         scatter: Some(scatter),
@@ -648,7 +642,7 @@ fn overlap_tie_follows_the_painted_colour() {
     let series = [series];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -843,10 +837,7 @@ pub fn assert_painted_pixels_pick(
 ) -> usize {
     let with = renderer
         .export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                series,
-            ),
+            renderer::ExportSource::chart(chart, series),
             renderer::ExportOptions::panel(scale),
         )
         .block_on()
@@ -858,10 +849,7 @@ pub fn assert_painted_pixels_pick(
         .collect();
     let without = renderer
         .export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                &without_series,
-            ),
+            renderer::ExportSource::chart(chart, &without_series),
             renderer::ExportOptions::panel(scale),
         )
         .block_on()
@@ -1689,7 +1677,7 @@ fn grid_vectors_pick_the_arrow_they_draw() {
         orientation: MatrixOrientation::ColumnsAreX,
         grid_layout: GridLayout::Edges,
     };
-    let mut chart = bare_chart();
+    let chart = bare_chart();
     for scale_mode in [
         VectorScale::Pixels { px_per_unit: 1.0 },
         VectorScale::Data { factor: 0.06 },
@@ -1723,14 +1711,14 @@ fn grid_vectors_pick_the_arrow_they_draw() {
             let what = format!("{scale_mode:?} at {scale}x");
             let with = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
                 .unwrap();
             let without = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[]),
+                    renderer::ExportSource::chart(&chart, &[]),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -1883,27 +1871,21 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
         ring(&mut ringed);
         let marker = renderer
             .export_rgba(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    series,
-                ),
+                renderer::ExportSource::chart(chart, series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let empty = renderer
             .export_rgba(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
+                renderer::ExportSource::chart(chart, &[]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let with_ring = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut ringed, series),
+                renderer::ExportSource::chart(&ringed, series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -1933,7 +1915,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
         }
     };
     for scale in [1.0, 2.0] {
-        let mut chart = bare_chart();
+        let chart = bare_chart();
         for shape in ALL_SHAPES {
             let series = [scatter("marker", shape.clone(), 6.0, RED)];
             check(
@@ -1991,14 +1973,14 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
         let vector = [arrows_ringed()];
         let plain = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &vector),
+                renderer::ExportSource::chart(&chart, &vector),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let with_ring = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut ringed, &vector),
+                renderer::ExportSource::chart(&ringed, &vector),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -2096,7 +2078,7 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             ("counts", &col(values) as &dyn renderer::ColumnSource),
         ])
         .expect("upload");
-    let mut chart = bare_chart();
+    let chart = bare_chart();
     for orientation in [BarOrientation::Vertical, BarOrientation::Horizontal] {
         let (x, y) = match orientation {
             BarOrientation::Vertical => ("edges", "counts"),
@@ -2126,14 +2108,14 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             let what = format!("{orientation:?} at {scale}x");
             let with = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
                 .unwrap();
             let without = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[]),
+                    renderer::ExportSource::chart(&chart, &[]),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -2280,14 +2262,14 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
             let what = format!("{shading:?} at {scale}x");
             let with = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
                 .unwrap();
             let without = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[]),
+                    renderer::ExportSource::chart(&chart, &[]),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -2439,7 +2421,7 @@ fn polar_heatmaps_and_contours_pick_where_they_paint() {
     let export = |renderer: &mut Renderer, series: &[SeriesConfig], scale: f32| {
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut Chart::new(chart.config().clone()), series),
+                renderer::ExportSource::chart(&chart, series),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -2628,14 +2610,14 @@ fn contour_label_gaps_pick_and_highlight_nothing() {
         let labelled = [contour(true)];
         let with = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &labelled),
+                renderer::ExportSource::chart(&chart, &labelled),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
             .unwrap();
         let plain = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &[contour(false)]),
+                renderer::ExportSource::chart(&chart, &[contour(false)]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -2705,7 +2687,7 @@ fn contour_label_gaps_pick_and_highlight_nothing() {
         });
         let highlighted = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut selected, &labelled),
+                renderer::ExportSource::chart(&selected, &labelled),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -2821,14 +2803,14 @@ fn contour_strokes_pick_where_they_paint() {
         for scale in [1.0, 2.0] {
             let with = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
                 .unwrap();
             let without = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[]),
+                    renderer::ExportSource::chart(&chart, &[]),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -2943,7 +2925,7 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
             let series = [scatter("points", ScatterShape::SquareFilled, 7.0, RED)];
             let image = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()
@@ -3084,7 +3066,7 @@ fn probability_axis_places_points_at_every_tail() {
             let series = [scatter("points", ScatterShape::SquareFilled, 4.0, RED)];
             let image = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(2.0),
                 )
                 .block_on()
@@ -3184,7 +3166,7 @@ fn probability_axis_omits_values_outside_the_unit_interval() {
     let series = [scatter("points", ScatterShape::SquareFilled, 7.0, RED)];
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -3390,7 +3372,7 @@ fn inverted_and_broken_probability_axes_place_points_as_their_chrome() {
         let series = [scatter("points", ScatterShape::SquareFilled, 4.0, RED)];
         let image = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -3475,7 +3457,7 @@ fn a_million_points_draw_and_the_last_picks_on_a_probability_axis() {
         chart.set_y_range(0.001, 0.999);
         renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -3500,7 +3482,7 @@ fn a_million_points_draw_and_the_last_picks_on_a_probability_axis() {
         let start = std::time::Instant::now();
         let image = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -4295,14 +4277,14 @@ fn category_bars_pick_the_bar_they_paint() {
                 let what = format!("{mode:?} {direction:?} at {scale}x");
                 let with = renderer
                     .export_rgba(
-                        renderer::ExportSource::chart(&mut chart, &series),
+                        renderer::ExportSource::chart(&chart, &series),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
                     .unwrap();
                 let without = renderer
                     .export_rgba(
-                        renderer::ExportSource::chart(&mut chart, &[]),
+                        renderer::ExportSource::chart(&chart, &[]),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
@@ -4489,14 +4471,14 @@ fn box_plots_pick_the_box_they_paint() {
                 let what = format!("notched {notched} {direction:?} at {scale}x");
                 let with = renderer
                     .export_rgba(
-                        renderer::ExportSource::chart(&mut chart, &series),
+                        renderer::ExportSource::chart(&chart, &series),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
                     .unwrap();
                 let without = renderer
                     .export_rgba(
-                        renderer::ExportSource::chart(&mut chart, &[]),
+                        renderer::ExportSource::chart(&chart, &[]),
                         renderer::ExportOptions::panel(scale),
                     )
                     .block_on()
@@ -4682,14 +4664,14 @@ fn range_bars_pick_the_bar_they_paint() {
             let what = format!("{direction:?} at {scale}x");
             let with = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
                 .unwrap();
             let without = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[]),
+                    renderer::ExportSource::chart(&chart, &[]),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -4892,14 +4874,14 @@ fn violins_and_raincloud_points_pick_what_they_paint() {
             let what = format!("{direction:?} at {scale}x");
             let with = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
                 .unwrap();
             let without = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[]),
+                    renderer::ExportSource::chart(&chart, &[]),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -5045,7 +5027,7 @@ fn radar_polygons_pick_their_outline_closing_segment_markers_and_fill() {
             "sector with a hole",
         ),
     ] {
-        let mut chart = bare_radar_chart(5, polar);
+        let chart = bare_radar_chart(5, polar);
         for scale in [1.0, 2.0] {
             for (style, tolerance, case) in [
                 (outline.clone(), STRICT, "outline"),
@@ -5085,7 +5067,7 @@ fn radar_polygons_pick_their_outline_closing_segment_markers_and_fill() {
             let series = [radar("radar", outline.clone())];
             let image = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &series),
+                    renderer::ExportSource::chart(&chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -5267,20 +5249,14 @@ fn value_labels_pick_where_they_paint() {
             let what = format!("{name} at {scale}x");
             let with = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(
-                        &mut renderer::Chart::new(chart.config().clone()),
-                        series,
-                    ),
+                    renderer::ExportSource::chart(chart, series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
                 .unwrap();
             let without = renderer
                 .export_rgba(
-                    renderer::ExportSource::chart(
-                        &mut renderer::Chart::new(chart.config().clone()),
-                        &hidden(series),
-                    ),
+                    renderer::ExportSource::chart(chart, &hidden(series)),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -5477,10 +5453,7 @@ fn assert_member_pick_matches_paint(
 ) -> usize {
     let with = renderer
         .export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                series,
-            ),
+            renderer::ExportSource::chart(chart, series),
             renderer::ExportOptions::document(scale),
         )
         .block_on()
@@ -5498,10 +5471,7 @@ fn assert_member_pick_matches_paint(
         .collect();
     let without = renderer
         .export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                &blank,
-            ),
+            renderer::ExportSource::chart(chart, &blank),
             renderer::ExportOptions::document(scale),
         )
         .block_on()

@@ -66,7 +66,7 @@ let series = vec![SeriesConfig {
 // Fit the radius axis to the values; the angle axis keeps its categories.
 let mut chart = Chart::new(config);
 chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
-let png = r.export_png_blocking(renderer::ExportSource::chart(&mut chart, &series), renderer::ExportOptions::panel(2.0))?;
+let png = r.export_png_blocking(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(2.0))?;
 # let _ = png;
 # Ok(())
 # }

@@ -373,7 +373,7 @@ fn the_cells_follow_a_resized_plot_area() {
     assert!(outer < outer_before - 20.0, "the resize shrinks the circle");
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut after, &series),
+            renderer::ExportSource::chart(&after, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1138,12 +1138,12 @@ fn a_polar_heatmap_subplot_draws_its_cells() {
         marker: None,
         text_scale: Default::default(),
     });
-    let mut doc = Chart::new(parent);
+    let doc = Chart::new(parent);
     let series = [field(&ids, GridLayout::Edges, Shading::Flat, None, true)];
     for scale in [1.0f32, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut doc, &series),
+                renderer::ExportSource::chart(&doc, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1193,7 +1193,7 @@ fn annotations_on_a_polar_heatmap() {
     // annotation layer.
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()

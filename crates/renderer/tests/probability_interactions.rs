@@ -84,9 +84,9 @@ fn export(
     series: &[SeriesConfig],
     scale: f32,
 ) -> RasterImage {
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&mut chart, series),
+        renderer::ExportSource::chart(&chart, series),
         // The whole document: overlay layers and subplots draw too.
         renderer::ExportOptions::document(scale),
     )

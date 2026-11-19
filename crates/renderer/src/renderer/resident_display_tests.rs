@@ -995,7 +995,7 @@ fn a_registered_display_paints_the_placed_document_at_its_scale() {
         let direct = r
             .prepare(&mut [ChartDrawItem {
                 view: &mut direct_view,
-                chart: &mut Chart::new(placed.clone()),
+                chart: &Chart::new(placed.clone()),
                 series: &direct_series,
             }])
             .unwrap();

@@ -332,7 +332,7 @@ fn the_sketch_and_milkyway_styles_read_back() {
     }
     let mut milkyway = scene.config.clone();
     milkyway.draw_style = DrawStyle::Milkyway(Default::default());
-    let mut chart = Chart::new(milkyway);
+    let chart = Chart::new(milkyway);
     check_document(
         &mut r,
         "Milkyway Lines",
@@ -344,7 +344,7 @@ fn the_sketch_and_milkyway_styles_read_back() {
     );
     let svg = svg_parts::read(
         &r.export_svg(
-            renderer::ExportSource::chart(&mut chart, &scene.series),
+            renderer::ExportSource::chart(&chart, &scene.series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -575,10 +575,7 @@ fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
     }
     let export = |r: &mut Renderer, series: &[SeriesConfig], scale: f32| {
         r.export_rgba(
-            renderer::ExportSource::chart(
-                &mut renderer::Chart::new(chart.config().clone()),
-                series,
-            ),
+            renderer::ExportSource::chart(&chart, series),
             renderer::ExportOptions::document(scale),
         )
         .block_on()
@@ -588,10 +585,7 @@ fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
         let context = format!("box plots with a level at {scale}x");
         let text = r
             .export_svg(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &with_level,
-                ),
+                renderer::ExportSource::chart(&chart, &with_level),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -651,10 +645,7 @@ fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
         unlabelled_level.push(mid_level());
         let svg = svg_parts::read(
             &r.export_svg(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &unlabelled_level,
-                ),
+                renderer::ExportSource::chart(&chart, &unlabelled_level),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -858,11 +849,11 @@ fn the_same_document_writes_the_same_bytes() {
         SceneKind::Field,
     ] {
         let scene = scenes::build(&mut r, kind, BIG_DATA_POINTS).unwrap();
-        let mut chart = Chart::new(scene.config.clone());
+        let chart = Chart::new(scene.config.clone());
         for scale in SCALES {
             let svg = r
                 .export_svg(
-                    renderer::ExportSource::chart(&mut chart, &scene.series),
+                    renderer::ExportSource::chart(&chart, &scene.series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
@@ -870,7 +861,7 @@ fn the_same_document_writes_the_same_bytes() {
             assert_eq!(
                 svg,
                 r.export_svg(
-                    renderer::ExportSource::chart(&mut chart, &scene.series),
+                    renderer::ExportSource::chart(&chart, &scene.series),
                     renderer::ExportOptions::document(scale)
                 )
                 .block_on()
@@ -879,7 +870,7 @@ fn the_same_document_writes_the_same_bytes() {
             );
             let pdf = r
                 .export_pdf(
-                    renderer::ExportSource::chart(&mut chart, &scene.series),
+                    renderer::ExportSource::chart(&chart, &scene.series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
@@ -887,7 +878,7 @@ fn the_same_document_writes_the_same_bytes() {
             assert!(
                 pdf == r
                     .export_pdf(
-                        renderer::ExportSource::chart(&mut chart, &scene.series),
+                        renderer::ExportSource::chart(&chart, &scene.series),
                         renderer::ExportOptions::document(scale)
                     )
                     .block_on()
@@ -905,18 +896,18 @@ fn the_clear_colour_is_a_background_rectangle() {
     let gpu = gpu();
     let mut r = renderer(&gpu);
     let scene = scenes::build(&mut r, SceneKind::Annotations, BIG_DATA_POINTS).unwrap();
-    let mut chart = Chart::new(scene.config.clone());
+    let chart = Chart::new(scene.config.clone());
     let clear = Color::new(0.1, 0.2, 0.3, 1.0);
     let plain = svg_parts::read(
         &r.export_svg(
-            renderer::ExportSource::chart(&mut chart, &scene.series),
+            renderer::ExportSource::chart(&chart, &scene.series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap(),
     );
     let svg = r.export_svg(
-        renderer::ExportSource::chart(&mut chart, &scene.series),
+        renderer::ExportSource::chart(&chart, &scene.series),
         renderer::ExportOptions::document(1.0).with_clear(clear),
     );
     let svg = test_gpu::block_on(svg).unwrap();
@@ -937,7 +928,7 @@ fn the_clear_colour_is_a_background_rectangle() {
     );
     assert_eq!(&cleared.parts[1..], &plain.parts[..]);
     let pdf = test_gpu::block_on(r.export_pdf(
-        renderer::ExportSource::chart(&mut chart, &scene.series),
+        renderer::ExportSource::chart(&chart, &scene.series),
         renderer::ExportOptions::document(1.0).with_clear(clear),
     ))
     .unwrap();
@@ -977,7 +968,7 @@ fn a_streamed_source_is_rejected() {
             stem: None,
         }),
     ));
-    let mut chart = Chart::new(scene.config.clone());
+    let chart = Chart::new(scene.config.clone());
     let rejected = |result: Result<(), FiggyError>| {
         assert!(
             matches!(&result, Err(FiggyError::ColumnNotResident { id }) if id == "st_x"),
@@ -987,7 +978,7 @@ fn a_streamed_source_is_rejected() {
     };
     rejected(
         r.export_svg(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -995,7 +986,7 @@ fn a_streamed_source_is_rejected() {
     );
     rejected(
         r.export_pdf(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1003,7 +994,7 @@ fn a_streamed_source_is_rejected() {
     );
     rejected(
         r.export_png(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1182,7 +1173,7 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
     let mut exported = 0;
     for (name, config, series) in &documents {
         let area = config.document_area();
-        let mut chart = Chart::new(config.clone());
+        let chart = Chart::new(config.clone());
         for scale in SCALES {
             let fits = |n: u32| (n as f32 * scale).round() as u32 <= max;
             if !(fits(area.width) && fits(area.height)) {
@@ -1191,7 +1182,7 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
             let context = format!("{name} at {scale}x");
             let svg = r
                 .export_svg(
-                    renderer::ExportSource::chart(&mut chart, series),
+                    renderer::ExportSource::chart(&chart, series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
@@ -1208,7 +1199,7 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
             }
             pdf_structure::read(
                 &r.export_pdf(
-                    renderer::ExportSource::chart(&mut chart, series),
+                    renderer::ExportSource::chart(&chart, series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
@@ -1289,38 +1280,20 @@ fn an_axis_unit_exports_its_converted_labels() {
     for scale in SCALES {
         let options = renderer::ExportOptions::document(scale);
         let svg = |r: &mut Renderer, chart: &Chart| {
-            r.export_svg(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
-                options,
-            )
-            .block_on()
-            .unwrap()
+            r.export_svg(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
         };
         let pdf = |r: &mut Renderer, chart: &Chart| {
-            r.export_pdf(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
-                options,
-            )
-            .block_on()
-            .unwrap()
+            r.export_pdf(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
         };
         let png = |r: &mut Renderer, chart: &Chart| {
-            r.export_rgba(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
-                options,
-            )
-            .block_on()
-            .unwrap()
-            .rgba
+            r.export_rgba(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+                .rgba
         };
         let text = svg(&mut r, &converted);
         assert_eq!(text, svg(&mut r, &written_in_volts), "SVG at {scale}x");
@@ -1409,38 +1382,20 @@ fn a_scaled_subplot_exports_the_text_sizes_it_draws() {
     for export in SCALES {
         let options = renderer::ExportOptions::document(export);
         let svg = |r: &mut Renderer, chart: &Chart| {
-            r.export_svg(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
-                options,
-            )
-            .block_on()
-            .unwrap()
+            r.export_svg(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
         };
         let pdf = |r: &mut Renderer, chart: &Chart| {
-            r.export_pdf(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
-                options,
-            )
-            .block_on()
-            .unwrap()
+            r.export_pdf(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
         };
         let png = |r: &mut Renderer, chart: &Chart| {
-            r.export_rgba(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
-                options,
-            )
-            .block_on()
-            .unwrap()
-            .rgba
+            r.export_rgba(renderer::ExportSource::chart(chart, &[]), options)
+                .block_on()
+                .unwrap()
+                .rgba
         };
         let text = svg(&mut r, &auto);
         assert_eq!(text, svg(&mut r, &written_scaled), "SVG at {export}x");

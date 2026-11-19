@@ -146,7 +146,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             .is_some()
     );
     let image = r.export_rgba_blocking(
-        ExportSource::chart(&mut chart, &specs),
+        ExportSource::chart(&chart, &specs),
         ExportOptions::document(1.).with_clear(bg),
     )?;
     save(&image, bg, &out.join("gallery-subplots.png"))
@@ -263,7 +263,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
     chart.fit_layout();
     let path = out.join("mixed-axes.png");
     r.save_blocking(
-        ExportSource::chart(&mut chart, &specs),
+        ExportSource::chart(&chart, &specs),
         ExportOptions::document(1.0).with_clear(Color::WHITE),
         &path,
     )?;
