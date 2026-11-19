@@ -187,3 +187,114 @@ async fn a_diagram_is_laid_out_on_registration_picked_dragged_and_reported() {
             .unwrap()
     );
 }
+
+/// The s channel with its outer vertices labelled `e⁻`, `e⁺`, `μ⁻` and
+/// `μ⁺` in the default (empty) family, each charge built by `sign`.
+fn charged(sign: fn(char) -> Vec<renderer::text::RichSegment>) -> SeriesConfig {
+    use renderer::text::{RichSegment, RichText};
+    let mut series = s_channel();
+    let DataRenderType::Feynman(diagram) = &mut series.render_type else {
+        unreachable!()
+    };
+    for (k, (letter, charge)) in [
+        (0, ('e', '⁻')),
+        (1, ('e', '⁺')),
+        (4, ('μ', '⁻')),
+        (5, ('μ', '⁺')),
+    ] {
+        let mut segments = vec![RichSegment::plain(letter)];
+        segments.extend(sign(charge));
+        diagram.vertices[k].label = Some(RichText {
+            segments,
+            ..RichText::plain("", renderer::Color::BLACK, 16.0, "")
+        });
+    }
+    series
+}
+
+/// The RGBA pixels of a PNG, decoded by the browser.
+async fn rgba(source: &wasm_bindgen::JsValue) -> Vec<u8> {
+    let read: js_sys::Function = js_sys::eval(
+        r#"(async (source) => {
+  const bitmap = await createImageBitmap(new Blob([source], { type: 'image/png' }),
+    { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const g = canvas.getContext('2d');
+  g.drawImage(bitmap, 0, 0);
+  return new Uint8Array(g.getImageData(0, 0, bitmap.width, bitmap.height).data.buffer);
+})"#,
+    )
+    .unwrap()
+    .dyn_into()
+    .unwrap();
+    let promise: js_sys::Promise = read
+        .call1(&wasm_bindgen::JsValue::NULL, source)
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let bytes = wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+    js_sys::Uint8Array::new(&bytes).to_vec()
+}
+
+/// #353: with only the bundled faces (no font registered), vertex labels
+/// whose charges are literal Unicode segments draw in PNG at 1x and 2x
+/// exactly as a superscript `-` or `+` segment, not as the .notdef box the
+/// bundled faces would draw for U+207A and U+207B. The canvas draws them
+/// through the same text raster; its frame completes without an error, but
+/// a WebGPU canvas cannot be read back here once wgpu has presented it.
+#[wasm_bindgen_test(async)]
+async fn literal_unicode_charges_draw_without_the_notdef_box() {
+    use renderer::text::RichSegment;
+    let mut config = config();
+    // Room for the labels outside the outer vertices.
+    let mut chart = Chart::new(config.clone());
+    chart.set_x_range(-0.5, 1.5);
+    chart.set_y_range(-0.5, 1.5);
+    config = chart.config().clone();
+    let variants = [
+        charged(|c| vec![RichSegment::plain(c)]),
+        charged(|c| renderer::text::rich_segments_from_text(&c.to_string())),
+        charged(|_| vec![RichSegment::plain('\u{10FFFF}')]),
+        charged(|_| Vec::new()),
+    ];
+    let mut pngs = Vec::new();
+    for series in &variants {
+        let mut chart = FiggyChart::create(canvas()).await.unwrap();
+        chart
+            .set_config(&serde_json::to_string(&config).unwrap())
+            .unwrap();
+        chart
+            .set_series(&serde_json::to_string(&vec![series.clone()]).unwrap())
+            .unwrap();
+        // The canvas draws every series without an error.
+        chart.first_frame_ready().await.unwrap();
+        let mut at_scales = Vec::new();
+        for scale in [1.0f32, 2.0] {
+            let png = chart.export_png(scale).await.unwrap();
+            at_scales.push(rgba(&png.into()).await);
+        }
+        pngs.push(at_scales);
+        // The series keeps the characters it was given.
+        let kept: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
+        let label = |s: &SeriesConfig| s.render_type.feynman().unwrap().vertices[0].label.clone();
+        assert_eq!(label(&kept[0]), label(series));
+    }
+    let [literal, styled, boxed, bare] = [0, 1, 2, 3];
+    let what = ["PNG 1x", "PNG 2x"];
+    let images = |k: usize| [&pngs[k][0], &pngs[k][1]];
+    for (i, name) in what.iter().enumerate() {
+        let (l, s, b, n) = (
+            images(literal)[i],
+            images(styled)[i],
+            images(boxed)[i],
+            images(bare)[i],
+        );
+        assert!(l.iter().any(|&v| v != 0), "{name}: drawn");
+        assert!(l != n, "{name}: the charges draw");
+        assert!(
+            l == s,
+            "{name}: the literal charges draw as superscript signs"
+        );
+        assert!(l != b, "{name}: a charge draws the .notdef box");
+    }
+}

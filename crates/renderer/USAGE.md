@@ -665,6 +665,13 @@ setters ([WASM.md](WASM.md#math-in-labels)).
 - `\$` is a dollar sign: `r"Price (\$)"`.
 - Text whose TeX does not parse is shown as written, with each `\$` as
   `$`; the wrapper never fails.
+- Unicode superscript and subscript characters (`⁰`–`⁹`, `⁺`, `⁻`, `⁽`,
+  `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`) become their base character
+  with the `superscript` or `subscript` flag. A segment that holds one of
+  these characters itself, as a document or a host that builds segments
+  may write, keeps it and draws the same way: the renderer maps it with
+  `text::unicode_script_char` when it measures, draws and exports, whatever
+  fonts are installed (#353).
 
 The same reading is public as `text::rich_segments_from_label`
 (`RichText::from_label` for a whole `RichText`). The document types stay
@@ -1710,6 +1717,10 @@ chart.set_y_range(0.0, 32768.0);                       // 0, 1, 2, 3, 4, 5 V에 
   일반 텍스트다.
 - `\$`는 달러 기호다. 예: `r"Price (\$)"`.
 - TeX를 해석할 수 없는 텍스트는 쓴 그대로 보이고, `\$`만 `$`로 바뀐다. 편의 함수는 실패하지 않는다.
+- 유니코드 위첨자·아래첨자 문자(`⁰`–`⁹`, `⁺`, `⁻`, `⁽`, `⁾`, `ⁿ`, `ᵗ`, `₀`–`₉`, `₊`, `₋`, `₍`, `₎`)는
+  기본 문자에 `superscript` 또는 `subscript` 플래그를 붙인 구간이 된다. 문서나 호스트가 이 문자를 그대로
+  담은 구간을 만들어도 문자는 그대로 남고 같은 모양으로 그려진다. 렌더러가 측정·그리기·내보내기 때
+  `text::unicode_script_char`로 변환하므로 설치된 글꼴과 관계없다(#353).
 
 같은 읽기 방식을 `text::rich_segments_from_label`로 직접 쓸 수 있다(`RichText` 전체가 필요하면
 `RichText::from_label`). 문서 타입은 명시적으로 남는다. `RichText::plain`은 일반 텍스트이고,
