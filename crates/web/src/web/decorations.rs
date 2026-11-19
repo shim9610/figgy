@@ -259,17 +259,21 @@ impl FiggyChart {
     /// and the z axis of a 3D chart, from the columns' cached statistics
     /// with 5% padding. A chart starts at a `0..1` placeholder range; this
     /// is the call for a first plot. Synchronous, and independent of the
-    /// active layer. A layer without series keeps its ranges. A streamed
-    /// source and a monotonic chart are refused, and a refusal changes
-    /// nothing. `auto_fit_all(padding)` instead measures the active
-    /// layer's drawn extents (error bar ends included) on the GPU.
+    /// active layer. A layer without series keeps its ranges. Then the
+    /// scale of every auto-scaled vector series is fitted to the spacing
+    /// of its arrows and its `auto_scale` flag consumed (#357), so the
+    /// stored series say how long the arrows draw. A streamed source and a
+    /// monotonic chart are refused, and a refusal changes nothing.
+    /// `auto_fit_all(padding)` instead measures the active layer's drawn
+    /// extents (error bar ends included) on the GPU.
     /// JS: `chart.fit_ranges()`
     pub fn fit_ranges(&mut self) -> Result<(), JsValue> {
         let mut chart = Chart::new(self.chart_config()?.clone());
+        let mut series = self.chart_series()?.to_vec();
         self.renderer
-            .fit_ranges(&mut chart, self.chart_series()?)
+            .fit_ranges(&mut chart, &mut series)
             .map_err(js_err)?;
-        self.replace_chart_config(chart.config().clone())?;
+        self.replace_chart_state(chart.config().clone(), series)?;
         Ok(())
     }
 
@@ -637,23 +641,23 @@ impl FiggyChart {
         self.replace_chart_config(config)
     }
 
-    /// Switch the series color rotation: recolors every series in order,
-    /// rebuilds their GPU styles, and keeps legend swatches in sync.
+    /// Switch the series color rotation: applies the palette to the chart
+    /// (`Config::apply_palette`, #357), so series `i` takes the cycle's
+    /// colour `i` in every palette-coloured part (a field, an image, an
+    /// energy-level or a Feynman diagram keeps its colours), rebuilds the
+    /// GPU styles, and redraws the legend symbols of the base chart, its
+    /// overlays and its subplots. Later `add_*_series` calls continue the
+    /// cycle.
     pub fn apply_color_cycle(&mut self, cycle: ColorCycle) -> Result<(), JsValue> {
         let cycle = renderer::ColorCycle::from(cycle);
         let mut series = self.chart_series()?.to_vec();
-        for (i, cfg) in series.iter_mut().enumerate() {
-            cycle.apply_to_series(cfg, i);
-        }
+        let mut config = self.chart_config()?.clone();
+        // The SSOT palette method (#357): series `i` takes colour `i`, and
+        // the legends derived from the series follow.
+        config.apply_palette(&mut series, cycle.colors());
         self.renderer
             .preflight_chart_styles(&series)
             .map_err(js_err)?;
-        let mut config = self.chart_config()?.clone();
-        renderer::config::update_legend_symbols_preserving_text(
-            &mut config.legend.content,
-            &series,
-            config.colorbar.as_ref().map(|bar| &bar.colormap),
-        );
         let count = series.len();
         self.replace_chart_state(config, series)?;
         self.cycle = cycle;

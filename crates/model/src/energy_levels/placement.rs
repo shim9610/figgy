@@ -16,6 +16,11 @@ pub struct LevelPlacement<'a> {
 
 /// The gap between a stroke's end and its label, logical pixels.
 pub(super) const LABEL_GAP: f32 = 4.0;
+/// The narrowest stroke share of a column slot the one-time fit
+/// ([`LevelPlacement::fitted_slot_fraction`], #357) narrows a style to.
+pub(super) const MIN_FITTED_SLOT_FRACTION: f32 = 0.35;
+/// The fit tries the shares that are multiples of one over this.
+pub(super) const SLOT_FIT_STEPS: usize = 20;
 /// The space kept between two stacked level labels, logical pixels.
 pub(super) const LABEL_STACK_GAP: f32 = 1.0;
 /// How far a moved label stands off its stroke's end so its leader line
@@ -1714,6 +1719,226 @@ impl LevelPlacement<'_> {
             extents,
             rotation: None,
         })
+    }
+
+    /// The stroke share of the column slots ([`LevelStrokeStyle::slot_fraction`])
+    /// whose layout keeps the level and band labels best: the fewest labels
+    /// on another column's strokes, fills, a limit line or another label,
+    /// then the fewest labels moved off their own place (to the other side
+    /// or onto a leader), then the widest share. The shares tried run from
+    /// `style`'s own down to the one that leaves the widest label that can
+    /// fit room before the next column's strokes, never below 0.35 (or
+    /// `style`'s own when that is smaller). A display parameter of the
+    /// renderer's one-time fit (#357), which writes it to the SSOT; the
+    /// placement never calls it.
+    pub fn fitted_slot_fraction(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
+    ) -> f32 {
+        let current = style.level.slot_fraction;
+        if style.label_side == LevelLabelSide::Above {
+            return current;
+        }
+        let narrowest = self.room_slot_fraction(records, style, measure);
+        if narrowest >= current {
+            return current;
+        }
+        // The shares tried are fixed steps, so a second fit over its own
+        // result tries only shares the first found no better: it keeps it.
+        let mut best = (self.label_cost(records, style, measure), current);
+        let mut tried = style.clone();
+        for step in (0..=SLOT_FIT_STEPS).rev() {
+            let fraction = step as f32 / SLOT_FIT_STEPS as f32;
+            if fraction >= current || fraction < narrowest - 1e-4 {
+                continue;
+            }
+            tried.level.slot_fraction = fraction;
+            let cost = self.label_cost(records, &tried, measure);
+            if cost < best.0 {
+                best = (cost, fraction);
+            }
+        }
+        best.1
+    }
+
+    /// The share that leaves each level and band label room before the
+    /// next column's strokes on its side (where that column has a stroke
+    /// or fill within reach of the label's height), for the labels that fit
+    /// at the narrowest share; see [`Self::fitted_slot_fraction`].
+    fn room_slot_fraction(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
+    ) -> f32 {
+        let current = style.level.slot_fraction;
+        let floor = MIN_FITTED_SLOT_FRACTION.min(current);
+        let flip = match style.label_side {
+            LevelLabelSide::Right => Some(LevelLabelSide::Left),
+            LevelLabelSide::Left => Some(LevelLabelSide::Right),
+            LevelLabelSide::Above => return current,
+        };
+        let plot = self.space.plot_rect();
+        let inner = self.inner_levels(records, style);
+        let sides = self.label_sides(records, style, &inner, measure, plot, flip);
+        let items = records.levels.len() + records.bands.len();
+        let mut fraction = current;
+        for item in 0..items {
+            let Some(column) = Self::item_column(records, item).and_then(|c| self.column_x(c))
+            else {
+                continue;
+            };
+            let neighbour = match sides[item] {
+                LevelLabelSide::Right => column + 1.0,
+                LevelLabelSide::Left => column - 1.0,
+                LevelLabelSide::Above => continue,
+            };
+            let Some(label) = self
+                .label_on(records, style, &inner, item, measure, [0.0; 2], sides[item])
+                .map(|t| t.rect())
+            else {
+                continue;
+            };
+            let reach = label.height * MAX_LABEL_SHIFT;
+            let (top, bottom) = (label.y - reach, label.y + label.height + reach);
+            let crowded = (0..items).any(|other| {
+                Self::item_column(records, other).and_then(|c| self.column_x(c)) == Some(neighbour)
+                    && self
+                        .item_span(records, style, other)
+                        .is_some_and(|(a, b)| b >= top && a <= bottom)
+            });
+            if !crowded {
+                continue;
+            }
+            let (Some(a), Some(b)) = (
+                self.px(AnnotationAxis::X, column - 0.5),
+                self.px(AnnotationAxis::X, column + 0.5),
+            ) else {
+                continue;
+            };
+            let slot = (b - a).abs();
+            if slot <= 0.0 {
+                continue;
+            }
+            // A label too wide for the narrowest strokes is left to the
+            // stack and the other side: it does not narrow the rest.
+            let needed = 1.0 - (label.width + 3.0 * LABEL_GAP) / slot;
+            if needed >= floor {
+                fraction = fraction.min(needed);
+            }
+        }
+        fraction.clamp(floor, current)
+    }
+
+    /// The vertical span label item `item` covers in its column, pixels:
+    /// a level's stroke or a band's fill.
+    fn item_span(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        item: usize,
+    ) -> Option<(f32, f32)> {
+        let levels = records.levels.len();
+        if item < levels {
+            let level = &records.levels[item];
+            if !level.role.drawn_in(self.view) {
+                return None;
+            }
+            let y = self.px(AnnotationAxis::Y, level.energy)?;
+            Some((y, y))
+        } else {
+            let rect = self.band_rect(records, style, item - levels)?;
+            Some((rect.y, rect.y + rect.height))
+        }
+    }
+
+    /// How well `style`'s layout keeps the level and band labels, lower is
+    /// better: the labels on (or within a label gap of) another column's
+    /// stroke or fill, on a limit line or on another label, then the labels
+    /// moved off their own place.
+    fn label_cost(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
+    ) -> (usize, usize) {
+        use crate::layout::RectF;
+        let overlap = |a: RectF, b: RectF| {
+            a.x < b.x + b.width - 0.5
+                && b.x < a.x + a.width - 0.5
+                && a.y < b.y + b.height - 0.5
+                && b.y < a.y + a.height - 0.5
+        };
+        let layout = self.layout(records, style, measure);
+        let items = records.levels.len() + records.bands.len();
+        let half = style.level.width / 2.0;
+        // The ink of item `item` in its column.
+        let ink = |item: usize| -> Option<RectF> {
+            let levels = records.levels.len();
+            if item < levels {
+                let (a, b) = self.level_stroke(records, style, item)?;
+                Some(RectF {
+                    x: a[0].min(b[0]),
+                    y: a[1] - half,
+                    width: (b[0] - a[0]).abs(),
+                    height: half * 2.0,
+                })
+            } else {
+                self.band_rect(records, style, item - levels)
+            }
+        };
+        // Each item's drawn label and ink, measured once.
+        let levels = records.levels.len();
+        let labels: Vec<Option<RectF>> = (0..items)
+            .map(|item| {
+                let (part, index) = if item < levels {
+                    (LabelPart::Level, item)
+                } else {
+                    (LabelPart::Band, item - levels)
+                };
+                self.label(records, style, &layout, part, index, measure)
+                    .map(|t| t.rect())
+            })
+            .collect();
+        let inks: Vec<Option<RectF>> = (0..items).map(ink).collect();
+        let limits: Vec<RectF> = (0..records.limits.len())
+            .filter_map(|index| self.limit_line(records, index))
+            .map(|(a, b)| RectF {
+                x: a[0],
+                y: a[1] - 0.5,
+                width: b[0] - a[0],
+                height: 1.0,
+            })
+            .collect();
+        let mut conflicts = 0;
+        let mut moved = 0;
+        for item in 0..items {
+            let Some(label) = labels[item] else {
+                continue;
+            };
+            if layout.level_side[item] != style.label_side || layout.level_shift[item] != [0.0; 2] {
+                moved += 1;
+            }
+            let column = Self::item_column(records, item);
+            // Another column's ink counts within a label gap of the label,
+            // so a label never ends flush against the next stroke.
+            let clear = RectF {
+                x: label.x - LABEL_GAP,
+                width: label.width + 2.0 * LABEL_GAP,
+                ..label
+            };
+            let on_ink = (0..items).any(|other| {
+                Self::item_column(records, other) != column
+                    && inks[other].is_some_and(|r| overlap(clear, r))
+            });
+            let on_label =
+                (item + 1..items).any(|other| labels[other].is_some_and(|r| overlap(label, r)));
+            let on_limit = limits.iter().any(|r| overlap(label, *r));
+            conflicts += usize::from(on_ink) + usize::from(on_label) + usize::from(on_limit);
+        }
+        (conflicts, moved)
     }
 
     fn transition_color(&self, style: &EnergyLevelStyle, transition: &Transition) -> Color {

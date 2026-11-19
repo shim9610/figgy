@@ -39,7 +39,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         ],
         ..FeynmanSeries::default()
     };
-    let series = SeriesConfig {
+    let mut series = SeriesConfig {
         series_id: "s-channel".into(),
         source_id: None,
         label: None,
@@ -49,10 +49,12 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         render_type: DataRenderType::Feynman(diagram),
     };
     // The default config without axes, the frame of a Feynman chart.
-    let mut chart = Chart::new(default::config_for_series(std::slice::from_ref(&series)));
+    let mut chart = Chart::new(default::config_for_series(std::slice::from_mut(&mut series)));
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
-    let id = renderer.register_chart(chart.config().clone(), vec![series])?;
+    // Registered as given: the ranges set above stay. `register_chart`
+    // would fit the new chart's ranges to the diagram once (#357).
+    let id = renderer.register_chart_as_given(chart.config().clone(), vec![series])?;
     // Fix the diagram where it is drawn, and read the positions back.
     renderer.place_feynman_vertices(id, "s-channel")?;
     let placed = renderer.chart_series(id)?[0].render_type.feynman().unwrap().clone();
@@ -101,7 +103,7 @@ such a diagram.
 A diagram is usually drawn without axes: `Config::apply_axis_preset(AxisPreset::Hidden)`
 switches off the axis lines, ticks, tick labels and grid and keeps the
 layout, so the diagram's data units stay where they were.
-`default::config_for_series(&series)` starts a chart in that frame: it is
+`default::config_for_series(&mut series)` starts a chart in that frame: it is
 `default::default_config()` with `AxisPreset::Hidden` applied when the
 series draw a Feynman diagram ([#357](https://github.com/shim9610/figgy/issues/357)).
 The frame is chosen there, once, never at draw time, so axes the host turns

@@ -108,12 +108,20 @@ pub fn default_config() -> Config {
 /// (`FeynmanTheme::axis_preset`, `EnergyLevelTheme::axis_preset` of the
 /// documented look).
 ///
-/// The frame is written into the returned config, a plain document: it is
-/// chosen once, where the chart is made, never at draw time, so a host
-/// that turns the axes back on (`Config::apply_axis_preset`) keeps them.
-/// Its layout is a new chart's ([`LayoutState::Fitted`]): the chart object
-/// made from it fits the layout to the frame and content it holds.
-pub fn config_for_series(series: &[SeriesConfig]) -> Config {
+/// The series take the default palette ([`Config::apply_palette`] with
+/// [`crate::preset::ColorCycle::DEFAULT`]): series `i` draws in its colour
+/// `i`, so a chart of several series built from the constructors does not
+/// draw them all in one colour.
+///
+/// The frame and the colours are written into the returned config and
+/// the series, a plain document: they are chosen once, where the chart is
+/// made, never at draw time, so a host that turns the axes back on
+/// (`Config::apply_axis_preset`) or recolours a series keeps it. Its
+/// layout is a new chart's ([`LayoutState::Fitted`]): the chart object
+/// made from it fits the layout to the frame and content it holds, and a
+/// renderer registering it fits the axis ranges once
+/// (`Renderer::register_chart`). Nothing is fitted here.
+pub fn config_for_series(series: &mut [SeriesConfig]) -> Config {
     let mut config = default_config();
     config.layout_state = LayoutState::Fitted;
     let frame = crate::helpers::theme::Theme::default().family_frame(
@@ -124,6 +132,7 @@ pub fn config_for_series(series: &[SeriesConfig]) -> Config {
     if let Some(preset) = frame {
         config.apply_axis_preset(preset);
     }
+    config.apply_palette(series, crate::preset::ColorCycle::DEFAULT.colors());
     config
 }
 
@@ -156,25 +165,52 @@ mod tests {
 
     #[test]
     fn a_chart_takes_the_frame_of_its_family() {
-        assert_eq!(config_for_series(&[feynman()]), framed(AxisPreset::Hidden));
-        assert_eq!(config_for_series(&[levels()]), framed(AxisPreset::Grotrian));
-        assert_eq!(config_for_series(&[]), unframed());
-        let line = SeriesConfig::line("l", "x", "y");
-        assert_eq!(config_for_series(&[line.clone()]), unframed());
-        // The first framed family decides, as a theme's frame does.
         assert_eq!(
-            config_for_series(&[line, feynman(), levels()]),
+            config_for_series(&mut [feynman()]),
             framed(AxisPreset::Hidden)
         );
-        let hidden = config_for_series(&[feynman()]);
+        assert_eq!(
+            config_for_series(&mut [levels()]),
+            framed(AxisPreset::Grotrian)
+        );
+        assert_eq!(config_for_series(&mut []), unframed());
+        let line = SeriesConfig::line("l", "x", "y");
+        assert_eq!(config_for_series(&mut [line.clone()]), unframed());
+        // The first framed family decides, as a theme's frame does.
+        assert_eq!(
+            config_for_series(&mut [line, feynman(), levels()]),
+            framed(AxisPreset::Hidden)
+        );
+        let hidden = config_for_series(&mut [feynman()]);
         assert!(!hidden.bottom_x.line_visible && !hidden.left_y.line_visible);
         assert!(!hidden.grid.show_major_x && !hidden.grid.show_major_y);
     }
 
     #[test]
+    fn the_series_take_the_default_palette_in_order() {
+        use crate::preset::ColorCycle;
+        let mut series: Vec<SeriesConfig> = (0..12)
+            .map(|i| SeriesConfig::line(format!("s{i}"), "x", "y"))
+            .collect();
+        let mut expected = series.clone();
+        for (i, item) in expected.iter_mut().enumerate() {
+            ColorCycle::DEFAULT.apply_to_series(item, i);
+        }
+        let config = config_for_series(&mut series);
+        assert_eq!(series, expected);
+        // Colouring writes no layout: the config is the unframed default.
+        assert_eq!(config, unframed());
+        assert_ne!(
+            ColorCycle::DEFAULT.color(0),
+            ColorCycle::DEFAULT.color(1),
+            "no chart of two series draws them in one colour"
+        );
+    }
+
+    #[test]
     fn the_axes_turn_back_on_explicitly() {
         // The frame is plain document data: nothing re-applies it.
-        let mut config = config_for_series(&[feynman()]);
+        let mut config = config_for_series(&mut [feynman()]);
         config.apply_axis_preset(AxisPreset::BoxedInward);
         assert!(config.bottom_x.line_visible && config.left_y.line_visible);
         assert!(
@@ -189,8 +225,8 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn the_framed_config_round_trips() {
-        for series in [vec![feynman()], vec![levels()], vec![]] {
-            let config = config_for_series(&series);
+        for mut series in [vec![feynman()], vec![levels()], vec![]] {
+            let config = config_for_series(&mut series);
             let json = serde_json::to_string(&config).unwrap();
             let back: Config = serde_json::from_str(&json).unwrap();
             assert_eq!(back, config);

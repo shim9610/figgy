@@ -73,12 +73,16 @@ fn default_config_json() -> Result<String, String> {
 
 /// The JSON of [`renderer::default::config_for_series`] for the series
 /// list JSON `series_json`, what the `default_config_for_series` binding
-/// returns. The error is the JSON parse error.
+/// returns: the config alone, in the frame of the series' family. The
+/// series' palette colours are not returned; a browser chart colours its
+/// series as it adds them (`add_*_series`) or with `apply_color_cycle`.
+/// The error is the JSON parse error.
 #[cfg(any(target_arch = "wasm32", test))]
 fn default_config_for_series_json(series_json: &str) -> Result<String, String> {
-    let series: Vec<renderer::SeriesConfig> =
+    let mut series: Vec<renderer::SeriesConfig> =
         serde_json::from_str(series_json).map_err(|e| e.to_string())?;
-    serde_json::to_string(&renderer::default::config_for_series(&series)).map_err(|e| e.to_string())
+    serde_json::to_string(&renderer::default::config_for_series(&mut series))
+        .map_err(|e| e.to_string())
 }
 
 /// The normalized form of the config JSON `json`, what the

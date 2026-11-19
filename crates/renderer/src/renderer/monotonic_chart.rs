@@ -52,7 +52,7 @@ impl Renderer {
         let mut config = config;
         config.layout_state = crate::LayoutState::Fixed;
         let result = self
-            .register_chart_unreported(config, series, true)
+            .register_chart_unreported(config, series, true, false)
             .map(MonotonicChartId);
         self.reported(result)
     }

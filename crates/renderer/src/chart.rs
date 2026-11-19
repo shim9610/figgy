@@ -740,11 +740,17 @@ impl Chart {
     }
 
     /// A chart holding `config` exactly as given, whatever its
-    /// [`crate::LayoutState`]: the renderer's own charts over a config it
+    /// [`crate::LayoutState`] (#357): the opt-out of the layout fit
+    /// [`Self::new`] makes for a `Fitted` config, so the chart draws the
+    /// SSOT it was handed. The renderer's own charts over a config it
     /// already stores or derives (a registered chart's config, an export's
-    /// scaled copy, a streamed snapshot), which were laid out when they
-    /// were made (#357). Edits through the chart's methods still keep a
-    /// `Fitted` layout fitted.
+    /// scaled copy, a streamed snapshot) are made this way. Edits through
+    /// the chart's methods still keep a `Fitted` layout fitted.
+    pub fn as_given(config: Config) -> Self {
+        Self::stored(config)
+    }
+
+    /// [`Self::as_given`], the name the renderer's own code uses.
     pub(crate) fn stored(config: Config) -> Self {
         Self {
             config,

@@ -303,8 +303,8 @@ fn fit_ranges_fits_the_vertices() {
     let mut chart = chart();
     chart.set_x_range(-10.0, 10.0);
     chart.set_y_range(-10.0, 10.0);
-    let specs = [series("d", s_channel())];
-    r.fit_ranges(&mut chart, &specs).unwrap();
+    let mut specs = [series("d", s_channel())];
+    r.fit_ranges(&mut chart, &mut specs).unwrap();
     let (x, y) = (&chart.config().bottom_x, &chart.config().left_y);
     assert!(
         x.min <= 0.0 && x.min > -1.0 && x.max >= 1.0 && x.max < 2.0,
