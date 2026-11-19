@@ -111,8 +111,13 @@ fn range_bar(row: u32, resolved: ResolvedBarStyle) -> RangeBar {
     if (!place.valid) {
         return out;
     }
-    let a = box_along(out.position, out.start);
-    let b = box_along(out.position, out.end);
+    // Both ends through one inlined projection (#363).
+    var ends = vec2<f32>(0.0);
+    for (var k = 0u; k < 2u; k = k + 1u) {
+        ends[k] = box_along(out.position, select(out.start, out.end, k == 1u));
+    }
+    let a = ends.x;
+    let b = ends.y;
     if (!bar_finite(a) || !bar_finite(b) || a == b) {
         return out;
     }

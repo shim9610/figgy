@@ -40,7 +40,7 @@ const assert = require('node:assert/strict');
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(url);
-      await page.waitForFunction(() => /test result: (ok|FAILED)/.test(document.querySelector('#output')?.textContent || ''), {}, {timeout: 240000});
+      await page.waitForFunction(() => /test result: (ok|FAILED)/.test(document.querySelector('#output')?.textContent || ''), {}, {timeout: Number(process.env.FIGGY_BROWSER_TEST_TIMEOUT_MS || 240000)});
       const text = await page.locator('#output').innerText();
       console.log(text);
       assert.deepEqual(errors, []);

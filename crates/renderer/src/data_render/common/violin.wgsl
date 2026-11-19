@@ -471,9 +471,19 @@ fn violin_pick_half(h: u32, g: u32, cursor: vec2<f32>) -> f32 {
     } else {
         u = abs(u);
     }
-    let p_first = violin_point(h, first, position, place.thickness);
-    let p_last = violin_point(h, end - 1u, position, place.thickness);
-    if (!p_first.ok || !p_last.ok) {
+    // The curve's two ends, read in one loop so `violin_point` is inlined
+    // once for both (#363).
+    var p_first = ViolinPoint(false, 0.0, 0.0);
+    var p_last = ViolinPoint(false, 0.0, 0.0);
+    for (var k = 0u; k < 2u; k = k + 1u) {
+        let p = violin_point(h, select(first, end - 1u, k == 1u), position, place.thickness);
+        if (k == 0u) {
+            p_first = p;
+        } else {
+            p_last = p;
+        }
+    }
+    if (!p_first.ok | !p_last.ok) {
         return 1e30;
     }
     let rising = p_last.along > p_first.along;

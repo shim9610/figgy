@@ -270,6 +270,55 @@ parsed and published once. Lookups never take it: they read the
 it is compiled only for tests. Any other lock still needs the maintainer's
 approval in its issue.
 
+**Shared pick caches on a browser renderer** (#363, approved there as the
+pattern for this job). A browser renderer compiles a chart's pick pipelines
+ahead of its first pick on its compile queue (`browser_compile::CompileQueue`,
+already a single-threaded `Rc<RefCell>`). Each compile's completion puts its
+pipeline straight into the picker's own cache when the browser resolves it,
+without a frame in between and with no store of its own: the resolved
+`GPUComputePipeline` lives only in the completion until it has committed, so
+the renderer's synchronous creation is served from that compile. To let a
+completion reach the cache, exactly three picker fields are `PickCell`s
+(`renderer/picking/picker.rs`): the pipeline state (the slot the last gate or
+reduce compile writes when it enables the picker), the exact pipelines and
+the typed data pick kernels. A `PickCell` is an `Rc<RefCell<T>>` on wasm and
+the plain `T` on native, so a native renderer is unchanged. Rules:
+
+- Only these cells are shared, never the whole picker.
+- The renderer borrows a cell for one statement and never across an
+  `.await`; a completion runs only between the renderer's statements
+  (single-threaded), so borrows never overlap. No lock is involved.
+- A completion that needs another compile first (an exact key before the
+  picker is enabled, or one gate compile before the other two) keeps its
+  resolved pipeline and tries again at each change of the queue. It ends
+  when the prerequisite ends, however it ends.
+- Replacing the picker (a shader-set switch, `RendererPicker::disabled()`)
+  makes new cells; a late completion writes into the old ones, which drop
+  with it.
+
+**Pick pipeline cache lifecycle** (#363). The exact pipelines
+(`PickExactPipelines`) and typed data pick kernels (`DataPickKernels`) follow
+three steps:
+
+- **Insert.** On the first pick that needs a pipeline, or, on a browser
+  renderer, when a warm-up compile resolves.
+- **Dedupe.** Every insert goes through `ensure`, which checks the cache
+  first. A key has exactly one entry however often it is warmed, picked or
+  warmed again, and no entry is overwritten. The warm-up does not schedule a
+  key the cache holds or one that is already compiling.
+- **Release.** Only on request. `release_unused_pool_memory` (and its
+  blocking form, which the web wrapper's `release_unused_gpu_memory`
+  calls) drops each exact key and data kernel that no registered chart's pick
+  plan uses, over every layer a pick can reach. Removing a chart frees
+  nothing by itself: the same or a similar chart registered again reuses its
+  pipelines without compiling. A live chart's pipelines are never dropped.
+  While a chart draws from a stream, everything is kept. The gate and reduce
+  pipelines are a fixed three inside the enabled picker and stay. A warm-up
+  compile for a removed chart that resolves after a release may put its
+  pipeline back; it is reusable, is not treated as live, and the next
+  release drops it again. So churn (register, edit, remove) never grows the
+  cache beyond what live charts need once a release runs.
+
 ### Memory accounting and release
 
 ![Shared GPU resource ownership, final-reference retirement and reclamation after queue completion](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/gpu-resource-lifetime-en.png)
@@ -873,6 +922,42 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 이 잠금을 잡지 않고 `ArcSwap<RegisteredFonts>` 스냅숏을 읽는다. 옆에 있는
 `FONT_REGISTRATION_TEST_LOCK`은 테스트에서만 컴파일된다. 이 밖의 잠금은 지금도 해당 이슈에서
 관리자 승인을 받아야 한다.
+
+**브라우저 렌더러의 피킹 캐시 공유**(#363에서 이 용도의 패턴으로 승인). 브라우저 렌더러는
+차트의 첫 픽 전에 피킹 파이프라인을 컴파일 큐(`browser_compile::CompileQueue`, 원래 단일 스레드
+`Rc<RefCell>`)에서 미리 컴파일한다. 브라우저가 컴파일을 끝내면 완료 처리 코드가 파이프라인을
+피커의 캐시에 바로 넣는다. 프레임을 기다리지 않고 따로 보관하지도 않는다. 결과
+`GPUComputePipeline`은 넣을 때까지 완료 처리 코드 안에만 있어서, 렌더러의 동기 생성이 그 컴파일
+결과를 그대로 쓴다. 이를 위해 피커 필드 세 개만 `PickCell`이다(`renderer/picking/picker.rs`).
+파이프라인 상태(마지막 gate·reduce 컴파일이 피커를 켤 때 쓰는 칸), exact 파이프라인, 데이터 픽
+커널이다. `PickCell`은 wasm에서 `Rc<RefCell<T>>`, 네이티브에서는 `T` 그대로이므로 네이티브
+렌더러는 바뀌지 않는다. 규칙은 다음과 같다.
+
+- 공유하는 것은 이 셀들뿐이고 피커 전체는 공유하지 않는다.
+- 렌더러는 셀을 한 문장 동안만 빌리고 `.await`를 넘겨 빌리지 않는다. 완료 처리는 렌더러의
+  문장 사이에만 실행되므로(단일 스레드) 빌림이 겹치지 않는다. 잠금은 쓰지 않는다.
+- 다른 컴파일이 먼저 필요한 완료 처리(피커가 켜지기 전의 exact 키, 나머지 둘을 기다리는 gate
+  컴파일)는 결과를 쥔 채 큐가 바뀔 때마다 다시 시도한다. 기다리던 컴파일이 어떻게 끝나든 함께
+  끝난다.
+- 피커를 바꾸면(셰이더 세트 전환, `RendererPicker::disabled()`) 셀도 새로 만든다. 늦게 끝난 완료
+  처리는 옛 셀에 쓰고, 옛 셀은 그와 함께 사라진다.
+
+**피킹 파이프라인 캐시의 생명주기**(#363). exact 파이프라인(`PickExactPipelines`)과 데이터 픽
+커널(`DataPickKernels`)은 세 단계를 따른다.
+
+- **넣기.** 그 파이프라인이 필요한 첫 픽에서 넣는다. 브라우저 렌더러에서는 미리 컴파일이 끝날
+  때 넣는다.
+- **중복 없음.** 모든 넣기는 캐시를 먼저 확인하는 `ensure`를 거친다. 미리 컴파일, 픽, 다시 미리
+  컴파일을 몇 번 하든 키마다 항목은 하나이고 덮어쓰지 않는다. 캐시에 있거나 컴파일 중인 키는
+  다시 올리지 않는다.
+- **해제.** 요청할 때만 한다. `release_unused_pool_memory`(와 웹 래퍼의
+  `release_unused_gpu_memory`가 부르는 동기 버전)는 등록된 어떤 차트의 픽 계획(픽이 닿는 모든
+  레이어)도 쓰지 않는 exact 키와 데이터 커널을 버린다. 차트를 지운다고 바로 해제하지는 않으므로,
+  같거나 비슷한 차트를 다시 등록하면 컴파일 없이 재사용한다. 살아 있는 차트의 파이프라인은
+  버리지 않는다. 스트리밍 원본을 그리는 차트가 있으면 모두 남긴다. gate와 reduce 파이프라인은
+  켜진 피커 안의 고정된 세 개라서 남긴다. 해제 뒤에 지운 차트의 미리 컴파일이 끝나면 캐시에
+  다시 들어갈 수 있다. 재사용할 수는 있지만 살아 있는 것으로 치지 않고 다음 해제 때 다시
+  버린다. 그래서 등록·편집·삭제를 반복해도 해제 후에는 살아 있는 차트에 필요한 만큼만 남는다.
 
 ### 메모리 계상과 회수
 

@@ -374,7 +374,7 @@ impl Renderer {
                     };
                     let mut encoder = self.device.create_command_encoder(&Default::default());
                     let charge = pick.encode_indexed_chunk(
-                        self.picker.exact_pipelines(),
+                        &mut self.picker.exact_pipelines().get_mut(),
                         &mut encoder,
                         &packed.chunk.work,
                         descriptor,
@@ -567,7 +567,7 @@ impl Renderer {
             )
             .await?;
             Some(self.picker.ready_data_bundle()?.begin_stream(
-                &mut self.picker.data_kernels,
+                &mut self.picker.data_kernels.get_mut(),
                 crate::gpu_data_pick::GpuDataPickQuery {
                     transform,
                     chart_rect_px,
@@ -847,7 +847,7 @@ impl Renderer {
                     .map(handles)
                     .transpose()?;
                 return Ok(pick.point.encode_chunk(
-                    self.picker.exact_pipelines(),
+                    &mut self.picker.exact_pipelines().get_mut(),
                     &mut encoder,
                     &chunk.work,
                     descriptor,

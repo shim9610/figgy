@@ -947,7 +947,7 @@ fn renderer_gpu_picker_activation_is_idempotent_and_defers_pick_kernels() {
     assert!(
         crate::gpu_data_pick::DataPickKernel::ALL
             .into_iter()
-            .all(|kernel| renderer.picker.data_kernels.get(kernel).is_none())
+            .all(|kernel| renderer.picker.data_kernels.get().get(kernel).is_none())
     );
     assert!(
         second
@@ -1069,36 +1069,35 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
         DataPickKernel::ALL.into_iter().all(|kernel| renderer
             .picker
             .data_kernels
+            .get()
             .get(kernel)
             .is_none())
     );
 
     // A histogram compiles its own kernel on its first pick, once.
     let hist_config = typed_pick_config((0.0, 2.0), (0.0, 10.0));
+    let hist_series = vec![SeriesConfig {
+        series_id: "hist".into(),
+        source_id: None,
+        label: None,
+        x_column: "edges".into(),
+        y_column: "counts".into(),
+        z_column: None,
+        render_type: DataRenderType::Histogram(HistogramSeries {
+            bar: crate::data_config::DataBarStyleConfig {
+                fill_color: Color::BLACK,
+                border_color: Color::BLACK,
+                border_width: 1.0,
+                baseline: 0.0,
+                gap_px: 2.0,
+                width_ratio: 1.0,
+                orientation: crate::data_config::BarOrientation::Vertical,
+                bar_style_overrides: None,
+            },
+        }),
+    }];
     let hist = renderer
-        .register_chart(
-            hist_config.clone(),
-            vec![SeriesConfig {
-                series_id: "hist".into(),
-                source_id: None,
-                label: None,
-                x_column: "edges".into(),
-                y_column: "counts".into(),
-                z_column: None,
-                render_type: DataRenderType::Histogram(HistogramSeries {
-                    bar: crate::data_config::DataBarStyleConfig {
-                        fill_color: Color::BLACK,
-                        border_color: Color::BLACK,
-                        border_width: 1.0,
-                        baseline: 0.0,
-                        gap_px: 2.0,
-                        width_ratio: 1.0,
-                        orientation: crate::data_config::BarOrientation::Vertical,
-                        bar_style_overrides: None,
-                    },
-                }),
-            }],
-        )
+        .register_chart(hist_config.clone(), hist_series.clone())
         .unwrap();
     let request = typed_pick_request(&hist_config, typed_pick_position(&hist_config, 1.5, 4.0));
     assert_eq!(
@@ -1117,6 +1116,51 @@ fn a_data_pick_compiles_only_the_kernels_its_chart_dispatches() {
     assert_eq!(
         created_data_kernels(&capture::snapshot_pipelines()),
         [DataPickKernel::Histogram]
+    );
+    // The browser warm-up (#363) compiles what any pick of each chart can
+    // dispatch: the histogram's kernel, and none for the radar or XY chart.
+    assert_eq!(
+        renderer.data_pick_warm_kernels(hist).unwrap(),
+        DataPickKernelSet::EMPTY.with(DataPickKernel::Histogram)
+    );
+    for chart in [radar, xy] {
+        assert_eq!(
+            renderer.data_pick_warm_kernels(chart).unwrap(),
+            DataPickKernelSet::EMPTY
+        );
+    }
+    // The kernel stays for reuse after its chart is removed, and the host's
+    // release of unused GPU memory drops it once no chart uses it (#363);
+    // the next histogram creates it again on its first pick.
+    renderer.remove_chart(hist).unwrap();
+    assert!(
+        renderer
+            .picker
+            .data_kernels
+            .get()
+            .get(DataPickKernel::Histogram)
+            .is_some()
+    );
+    renderer
+        .release_unused_pool_memory_blocking(1024 * 1024)
+        .unwrap();
+    assert!(
+        DataPickKernel::ALL.into_iter().all(|kernel| renderer
+            .picker
+            .data_kernels
+            .get()
+            .get(kernel)
+            .is_none()),
+        "no registered chart dispatches a data pick kernel"
+    );
+    let hist = renderer
+        .register_chart(hist_config.clone(), hist_series)
+        .unwrap();
+    crate::test_gpu::block_on(renderer.pick_chart_data(hist, request).unwrap().resolve()).unwrap();
+    assert_eq!(
+        created_data_kernels(&capture::snapshot_pipelines()),
+        [DataPickKernel::Histogram, DataPickKernel::Histogram],
+        "created again after the release, once"
     );
     drop(session);
 }
@@ -1458,7 +1502,7 @@ fn renderer_gpu_picker_activation_failure_is_sticky_without_retrying_creation() 
     }
     assert!(events.is_empty());
     assert!(matches!(
-        &renderer.picker.pipeline_state,
+        &*renderer.picker.pipeline_state.get(),
         PickerPipelineState::Failed(crate::gpu_pick::GpuPickError::DeviceLimit {
             resource: "injected picker limit",
             requested: 17,

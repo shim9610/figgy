@@ -425,9 +425,10 @@ struct QueueState {
     samples: u32,
     schedule: crate::compile_schedule::CompileSchedule,
     /// The populated descriptor of each scheduled compile, by its index,
-    /// and the device method that compiles it (`createRenderPipelineAsync`
-    /// or `createComputePipelineAsync`).
-    descriptors: Vec<(JsValue, &'static str)>,
+    /// the device method that compiles it (`createRenderPipelineAsync` or
+    /// `createComputePipelineAsync`) and, for a pick compile (#363), what
+    /// its completion does with the pipeline ([`PickCommit`]).
+    descriptors: Vec<(JsValue, &'static str, Option<Box<dyn PickCommit>>)>,
     /// Resolves at the next change of any compile's state; replaced each
     /// time it resolves.
     changed: ChangeSignal,
@@ -478,6 +479,56 @@ impl Drop for QueueState {
 }
 
 /// How the browser settled one issued compile.
+/// What a pick compile's completion does once the browser resolved it
+/// (#363): put the pipeline it compiled into the renderer's own pipeline
+/// cache, which the completion shares (`PickCell`), so a later pick finds
+/// it there without a frame in between. The renderer's creation is served
+/// from the compile because the resolved `GPUComputePipeline` is still
+/// alive: the completion holds it until it has committed, and drops it
+/// then.
+pub(crate) trait PickCommit {
+    /// Commit now: `true` once the pipeline is in its cache or can no
+    /// longer go there (its prerequisite failed, or it is there already);
+    /// `false` while it waits for another compile that is still pending.
+    fn commit(&mut self, queue: &CompileQueue) -> bool;
+}
+
+/// A pick compile's commit that waits for another compile (#363): it
+/// keeps the resolved pipeline alive and tries again at each change of a
+/// compile's state, until it is done or the renderer is gone. It ends:
+/// a commit waits only while its prerequisite is pending, and every compile
+/// ends.
+async fn commit_when_ready(
+    queue: std::rc::Weak<std::cell::RefCell<QueueState>>,
+    mut commit: Box<dyn PickCommit>,
+    pipeline: JsValue,
+) {
+    loop {
+        // Only the promise is held across the wait, never the queue.
+        let promise = {
+            let Some(state) = queue.upgrade() else {
+                break;
+            };
+            let state = state.borrow();
+            state.schedule.busy().then(|| state.changed.promise.clone())
+        };
+        let Some(promise) = promise else {
+            // Nothing is pending, so nothing it waits for can still come.
+            break;
+        };
+        if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+            break;
+        }
+        let Some(state) = queue.upgrade() else {
+            break;
+        };
+        if commit.commit(&CompileQueue(state)) {
+            break;
+        }
+    }
+    drop(pipeline);
+}
+
 fn outcome_of(settled: Result<JsValue, JsValue>) -> crate::compile_schedule::CompileOutcome {
     use crate::compile_schedule::{CompileOutcome, RejectReason};
     match settled {
@@ -633,7 +684,9 @@ impl CompileQueue {
                     }
                     let label = label_of(&desc)?;
                     state.schedule.push(shader_set, label, stage);
-                    state.descriptors.push((desc, "createRenderPipelineAsync"));
+                    state
+                        .descriptors
+                        .push((desc, "createRenderPipelineAsync", None));
                 }
             }
         }
@@ -665,7 +718,9 @@ impl CompileQueue {
                     };
                     populate(&state.device, &desc, &module)?;
                     state.schedule.push(shader_set, label, stage);
-                    state.descriptors.push((desc, "createComputePipelineAsync"));
+                    state
+                        .descriptors
+                        .push((desc, "createComputePipelineAsync", None));
                 }
             }
         }
@@ -677,18 +732,20 @@ impl CompileQueue {
     /// `pick_exact_candidates` entry of `source` with the override
     /// `constants` its wgpu twin is created with, compiled through
     /// `createComputePipelineAsync` with the checked layout, ahead of every
-    /// waiting compile. Nothing is scheduled when `label` already is for
-    /// `shader_set`. Its pick waits for it ([`Self::wait_pick`]); the screen's
-    /// counts, waits and failures leave it out.
+    /// waiting compile, with `commit` for its completion. Nothing is
+    /// scheduled while `label` is pending for `shader_set`. Its pick waits
+    /// for it ([`Self::wait_pick`]); the screen's counts, waits and failures
+    /// leave it out.
     pub(crate) fn schedule_exact_pick(
         &self,
         shader_set: crate::shader_assembly::ShaderSet,
         label: String,
         source: &str,
         constants: &[(&'static str, f64)],
+        commit: Box<dyn PickCommit>,
     ) -> Result<(), String> {
         use crate::compile_schedule::LabelReadiness;
-        if self.readiness(shader_set, &label) != LabelReadiness::Untracked {
+        if self.readiness(shader_set, &label) == LabelReadiness::Pending {
             return Ok(());
         }
         {
@@ -712,7 +769,9 @@ impl CompileQueue {
             }
             set(&get(&desc, "compute")?, "constants", &values)?;
             state.schedule.push_pick(shader_set, label);
-            state.descriptors.push((desc, "createComputePipelineAsync"));
+            state
+                .descriptors
+                .push((desc, "createComputePipelineAsync", Some(commit)));
         }
         self.pump();
         Ok(())
@@ -720,16 +779,19 @@ impl CompileQueue {
 
     /// Schedule the compute pipelines of `source` whose labels are in
     /// `labels` as pick compiles (#363): the picker's gate and reduce
-    /// pipelines, compiled ahead of a chart's first pick through
+    /// pipelines and the typed data pick kernels, compiled ahead of a
+    /// chart's first pick through
     /// `createComputePipelineAsync` with the checked layout, ahead of every
-    /// waiting compile. A label already scheduled for `shader_set` is left
-    /// as it is. Like [`Self::schedule_exact_pick`]'s, the screen's counts,
-    /// waits and failures leave them out.
+    /// waiting compile, each with the commit `commit` makes for its label.
+    /// A label already pending for `shader_set` is left as it is. Like
+    /// [`Self::schedule_exact_pick`]'s, the screen's counts, waits and
+    /// failures leave them out.
     pub(crate) fn schedule_pick_compute(
         &self,
         shader_set: crate::shader_assembly::ShaderSet,
         source: &str,
-        labels: &[&str],
+        labels: &[&'static str],
+        mut commit: impl FnMut(&'static str) -> Box<dyn PickCommit>,
     ) -> Result<(), String> {
         use crate::compile_schedule::LabelReadiness;
         {
@@ -737,23 +799,22 @@ impl CompileQueue {
             let mut module = None;
             for desc in descriptors(source, "compute")? {
                 let label = get(&desc, "label")?.as_string().unwrap_or_default();
-                if !labels.contains(&label.as_str())
-                    || state.schedule.readiness(shader_set, &label) != LabelReadiness::Untracked
-                {
+                let Some(&label) = labels.iter().find(|wanted| **wanted == label) else {
+                    continue;
+                };
+                if state.schedule.readiness(shader_set, label) == LabelReadiness::Pending {
                     continue;
                 }
                 if module.is_none() {
-                    module = Some(shader(
-                        &state.device,
-                        source,
-                        "figgy GPU pick gate prewarm",
-                    )?);
+                    module = Some(shader(&state.device, source, "figgy GPU pick prewarm")?);
                 }
                 if let Some(module) = &module {
                     populate(&state.device, &desc, module)?;
                 }
-                state.schedule.push_pick(shader_set, label);
-                state.descriptors.push((desc, "createComputePipelineAsync"));
+                state.schedule.push_pick(shader_set, label.to_owned());
+                state
+                    .descriptors
+                    .push((desc, "createComputePipelineAsync", Some(commit(label))));
             }
         }
         self.pump();
@@ -791,7 +852,7 @@ impl CompileQueue {
                     return;
                 };
                 let compiled = match state.descriptors.get(index) {
-                    Some((desc, method)) => call(&state.device, method, desc),
+                    Some((desc, method, _)) => call(&state.device, method, desc),
                     None => Err("no descriptor for a scheduled compile".to_owned()),
                 };
                 (index, compiled)
@@ -805,10 +866,31 @@ impl CompileQueue {
                     let settled =
                         wasm_bindgen_futures::JsFuture::from(Promise::from(promise)).await;
                     if let Some(state) = queue.upgrade() {
+                        // A resolved pick compile commits its pipeline to the
+                        // renderer's cache before it counts as settled, so a
+                        // pick waiting for it finds it there (#363).
+                        let commit = state
+                            .borrow_mut()
+                            .descriptors
+                            .get_mut(index)
+                            .and_then(|slot| slot.2.take());
+                        let waiting = match (commit, &settled) {
+                            (Some(mut commit), Ok(pipeline)) => (!commit
+                                .commit(&CompileQueue(std::rc::Rc::clone(&state))))
+                            .then(|| (commit, pipeline.clone())),
+                            _ => None,
+                        };
                         {
                             let mut state = state.borrow_mut();
                             state.schedule.settle(index, outcome_of(settled));
                             state.notify();
+                        }
+                        if let Some((commit, pipeline)) = waiting {
+                            wasm_bindgen_futures::spawn_local(commit_when_ready(
+                                std::rc::Rc::downgrade(&state),
+                                commit,
+                                pipeline,
+                            ));
                         }
                         CompileQueue(state).pump();
                     }

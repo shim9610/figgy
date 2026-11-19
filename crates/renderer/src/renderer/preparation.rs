@@ -430,10 +430,7 @@ impl Renderer {
                         _ => self.contour_label_pipelines.is_some(),
                     }
             }
-            PreparationFeature::Picking => matches!(
-                self.picker.pipeline_state,
-                PickerPipelineState::Ready { .. }
-            ),
+            PreparationFeature::Picking => self.picker.is_ready(),
             PreparationFeature::Sketch => p.styled.contains_key(&StyleKey::Sketch),
             PreparationFeature::Milkyway => p.styled.contains_key(&StyleKey::Milkyway),
             PreparationFeature::Constellation => p.styled.contains_key(&StyleKey::Constellation),
@@ -478,7 +475,7 @@ impl Renderer {
             contour,
             arc,
             extent,
-            picker,
+            mut picker,
         } = prepared;
         if self.renderer_identity != job.identity
             || self.target_pipeline_generation != job.generation
@@ -503,12 +500,12 @@ impl Renderer {
         if self.errorbar_extent_engine.is_none() {
             self.errorbar_extent_engine = extent;
         }
-        if !matches!(
-            self.picker.pipeline_state,
-            PickerPipelineState::Ready { .. }
-        ) && matches!(picker.pipeline_state, PickerPipelineState::Ready { .. })
-        {
-            self.picker.pipeline_state = picker.pipeline_state;
+        if !self.picker.is_ready() && picker.is_ready() {
+            let state = std::mem::replace(
+                &mut *picker.pipeline_state.get_mut(),
+                PickerPipelineState::Disabled,
+            );
+            *self.picker.pipeline_state.get_mut() = state;
         }
         Ok(())
     }

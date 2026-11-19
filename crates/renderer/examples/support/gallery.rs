@@ -1,10 +1,14 @@
 //! Shared native device setup, presentation defaults and PNG checks for gallery examples.
 //! Chart data and series definitions live in each example, not in this module.
 use renderer::{
-    Chart, Color, Renderer, SeriesConfig, encode_png,
+    Chart, Color, SeriesConfig,
     theme::{ChartKind, Theme, ThemeScope},
 };
-use std::{error::Error, path::Path};
+#[cfg(not(target_arch = "wasm32"))]
+use renderer::{Renderer, encode_png};
+use std::error::Error;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 
 /// The gallery's scene-specific looks, built as theme values.
 #[path = "looks.rs"]
@@ -59,6 +63,9 @@ pub fn themed(chart: &mut Chart, theme: &Theme, series: &mut [SeriesConfig]) -> 
 
 /// Fit the chart's margins to its labels, render it on white and write it
 /// as a PNG after checking that it drew.
+// Native only: the browser tests that read the scene catalogue (#363)
+// have neither blocking exports nor a headless renderer.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: &Path) -> Result {
     chart.fit_layout();
     let img = r.export_rgba_blocking(
@@ -94,6 +101,7 @@ pub fn save(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: 
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn with_renderer(render: impl FnOnce(&mut Renderer) -> Result) -> Result {
     // Software GPU selection belongs to the environment, not the example.
     let mut renderer = Renderer::headless_blocking()?;

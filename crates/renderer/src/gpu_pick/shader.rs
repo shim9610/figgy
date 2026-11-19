@@ -283,11 +283,14 @@ impl PickExactKey {
     };
 }
 
-/// The exact pipelines created so far. Each is created on first use (the
-/// first pick of a series that needs it) and kept for the renderer's
-/// lifetime; owned by the renderer's picker and passed to each pick, so no
-/// lock guards it. `pipelines` grows by one entry per distinct key a chart
-/// has needed (a handful: module x draw-style paths x marker shape).
+/// The exact pipelines created so far, one entry per key. Each is created
+/// on first use (the first pick of a series that needs it, or a browser
+/// renderer's warm-up, #363) and kept for reuse until the host releases
+/// unused GPU memory, which drops the keys no registered chart can pick
+/// with ([`Self::retain`]); owned by the renderer's picker and passed to
+/// each pick, so no lock guards it. `pipelines` grows by one entry per
+/// distinct key a chart has needed (a handful: module x draw-style paths x
+/// marker shape).
 #[derive(Default)]
 pub(crate) struct PickExactPipelines {
     pub(super) modules: [Option<wgpu::ShaderModule>; PICK_MODULES.len() - 1],
@@ -350,6 +353,24 @@ impl PickExactPipelines {
             .iter()
             .find(|(k, _)| *k == key)
             .map(|(_, pipeline)| pipeline)
+    }
+
+    /// Drop each pipeline whose key `keep` refuses (#363). The compiled
+    /// modules stay: one per exact module, a fixed few.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(PickExactKey) -> bool) {
+        self.pipelines.retain(|(key, _)| keep(*key));
+    }
+
+    /// How many pipelines it holds, one per key.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.pipelines.len()
+    }
+
+    /// The keys it holds.
+    #[cfg(test)]
+    pub(crate) fn keys(&self) -> impl Iterator<Item = PickExactKey> + '_ {
+        self.pipelines.iter().map(|(key, _)| *key)
     }
 }
 

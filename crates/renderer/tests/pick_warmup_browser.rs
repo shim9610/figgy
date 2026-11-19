@@ -1,8 +1,8 @@
 //! #363: a browser renderer compiles a registered chart's exact pick
 //! pipelines, and the picker's gate and reduce pipelines, ahead of its
-//! first pick, on its compile queue; a frame creates each one once it has
-//! compiled, and the first pick finds them created (or waits for the
-//! compile) instead of starting its own. Also reports the first pick's latency (`PICK_WARMUP` lines), right
+//! first pick, on its compile queue; each compile's completion puts its
+//! pipeline in the picker's cache, and the first pick finds them there (or
+//! waits for the compile) instead of starting its own. Also reports the first pick's latency (`PICK_WARMUP` lines), right
 //! after the first frame and after idle waits, while the window's render
 //! compiles still run in the background.
 #![cfg(target_arch = "wasm32")]
@@ -247,11 +247,12 @@ async fn first_pick(idle_ms: f64) -> FirstPick {
 }
 
 /// The first frame schedules the chart's gate, reduce and exact pipelines;
-/// after a 20 s idle wait they have compiled and a later frame has created
-/// them, so the pick compiles nothing of its own. After 8 s it depends on
-/// the machine's load: either the same, or the warm-up compile had not been
-/// created yet and the pick waits for it and makes the one cache lookup of
-/// its own. Never a second
+/// after a 20 s idle wait they have compiled and their completions have
+/// put them in the picker's caches, so the pick compiles nothing of its
+/// own. After 8 s it depends on
+/// the machine's load: either the same, or the warm-up compile has not
+/// resolved yet and the pick waits for it, or compiles the key itself once
+/// when the browser rejected the warm-up's. Never a second
 /// compile of the key.
 #[wasm_bindgen_test(async)]
 async fn a_radar_chart_compiles_its_exact_pipeline_before_the_first_pick() {
@@ -270,9 +271,9 @@ async fn a_radar_chart_compiles_its_exact_pipeline_before_the_first_pick() {
 }
 
 /// Picked right after the first frame, the pick waits for the compile the
-/// frame scheduled: the warm-up's compile and the pick's cache lookup are
-/// the only two.
+/// frame scheduled, whose completion puts the pipeline in the cache: the
+/// warm-up's compile is the only one.
 #[wasm_bindgen_test(async)]
 async fn a_pick_right_after_the_first_frame_waits_for_the_warm_up() {
-    assert_eq!(first_pick(0.0).await.issued, 2);
+    assert_eq!(first_pick(0.0).await.issued, 1);
 }

@@ -1205,10 +1205,15 @@ fn a_warmed_chart_picks_without_compiling_and_an_edit_warms_again() {
         let bundle = renderer.picker.ready_bundle().unwrap();
         let missing = keys
             .iter()
-            .filter(|key| renderer.picker.exact.get(**key).is_none())
+            .filter(|key| renderer.picker.exact.get().get(**key).is_none())
             .count();
         for key in keys {
-            renderer.picker.exact.ensure(&bundle, key).unwrap();
+            renderer
+                .picker
+                .exact
+                .get_mut()
+                .ensure(&bundle, key)
+                .unwrap();
         }
         missing
     };
@@ -1299,5 +1304,193 @@ fn a_warmed_chart_picks_without_compiling_and_an_edit_warms_again() {
             );
         }
     }
+    drop(session.finish());
+}
+
+/// #363: the exact pipeline cache stays tidy. A key has one entry however
+/// often it is warmed and picked; a removed chart's pipelines stay for
+/// reuse, so the same chart registered again picks without compiling; the
+/// host's release of unused GPU memory drops the keys no registered chart
+/// uses, never a live chart's, and a chart registered after it is warmed
+/// again; and a thousand register, edit and remove cycles leave only the
+/// live charts' keys after a release.
+#[test]
+fn the_exact_pick_cache_keeps_one_entry_per_key_and_releases_only_unused_keys() {
+    use crate::gpu_compile::capture;
+    let session = capture::Session::begin();
+    let Some((device, queue)) = crate::data_render::shared_device() else {
+        return;
+    };
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        1024 * 1024,
+    )
+    .expect("required GPU test: renderer initialization failed");
+    renderer.enable_gpu_picking().unwrap();
+    add_columns(&mut renderer);
+    let exact_created = || {
+        capture::snapshot_pipelines()
+            .iter()
+            .filter(|p| p["descriptor"]["label"] == "figgy GPU pick exact candidate pipeline")
+            .count()
+    };
+    // What a browser warm-up's commits do: create each of the chart's keys
+    // the cache does not hold (`warm_commit::Exact`).
+    let warm_up = |renderer: &mut Renderer, id: ChartId| {
+        let mut keys = Vec::new();
+        renderer
+            .for_each_exact_pick_key(id, |key| keys.push(key))
+            .unwrap();
+        let bundle = renderer.picker.ready_bundle().unwrap();
+        for key in &keys {
+            renderer
+                .picker
+                .exact
+                .get_mut()
+                .ensure(&bundle, *key)
+                .unwrap();
+        }
+        keys
+    };
+    let pick = |renderer: &mut Renderer, config: &Config, id: ChartId| {
+        let area = config.data_area().unwrap().0;
+        let request = GpuPickRequest {
+            canvas_position_px: [
+                area.x as f32 + area.width as f32 * 0.5,
+                area.y as f32 + area.height as f32 * 0.5,
+            ],
+            display_panel_px: config.chart_area.0,
+            display_scale: 1.0,
+            max_distance_px: 4.0,
+        };
+        crate::test_gpu::block_on(renderer.pick_chart(id, request).unwrap().resolve()).unwrap();
+    };
+    let release = |renderer: &mut Renderer| {
+        renderer
+            .release_unused_pool_memory_blocking(1024 * 1024)
+            .unwrap();
+    };
+    let config = chart_config(false, &DrawStyle::Precise);
+    let xy = |preset, shape| {
+        vec![series(
+            "subject",
+            "x",
+            "y",
+            DataRenderType::Xy(XySeries {
+                scatter: Marker::Shape(shape).scatter(),
+                line: Some(line_style(preset, 2.0)),
+                errors: None,
+                stem: None,
+            }),
+        )]
+    };
+
+    // One entry per key: warmed, picked and warmed again.
+    let id = renderer
+        .register_chart(
+            config.clone(),
+            xy(LineStylePreset::Solid, ScatterShape::CircleFilled),
+        )
+        .unwrap();
+    let before = exact_created();
+    let keys = warm_up(&mut renderer, id);
+    pick(&mut renderer, &config, id);
+    warm_up(&mut renderer, id);
+    let mut distinct = keys.clone();
+    distinct.sort_by_key(|key| format!("{key:?}"));
+    distinct.dedup();
+    assert!(!distinct.is_empty());
+    assert_eq!(
+        exact_created() - before,
+        distinct.len(),
+        "each key is created once"
+    );
+    assert_eq!(renderer.picker.exact.get().len(), distinct.len());
+
+    // A removed chart's pipelines stay for reuse until a release.
+    renderer.remove_chart(id).unwrap();
+    let id = renderer
+        .register_chart(
+            config.clone(),
+            xy(LineStylePreset::Solid, ScatterShape::CircleFilled),
+        )
+        .unwrap();
+    let before = exact_created();
+    pick(&mut renderer, &config, id);
+    assert_eq!(
+        exact_created(),
+        before,
+        "the same chart again reuses its keys"
+    );
+
+    // A release keeps a live chart's keys and drops a removed chart's.
+    release(&mut renderer);
+    assert_eq!(renderer.picker.exact.get().len(), distinct.len());
+    renderer.remove_chart(id).unwrap();
+    release(&mut renderer);
+    assert_eq!(
+        renderer.picker.exact.get().len(),
+        0,
+        "no registered chart uses any key"
+    );
+    // Registered again after the release: warmed, and picked, again.
+    let id = renderer
+        .register_chart(
+            config.clone(),
+            xy(LineStylePreset::Solid, ScatterShape::CircleFilled),
+        )
+        .unwrap();
+    let before = exact_created();
+    warm_up(&mut renderer, id);
+    assert_eq!(exact_created() - before, distinct.len());
+    let before = exact_created();
+    pick(&mut renderer, &config, id);
+    assert_eq!(exact_created(), before);
+
+    // Churn: a thousand register, edit and remove cycles of the dash and
+    // the marker, next to the live chart. The cache holds at most one
+    // entry per distinct key, and a release leaves the live chart's.
+    let presets = [
+        LineStylePreset::Solid,
+        LineStylePreset::Dash,
+        LineStylePreset::Dot,
+        LineStylePreset::DashDot,
+    ];
+    let shapes = [
+        ScatterShape::CircleFilled,
+        ScatterShape::Square,
+        ScatterShape::Triangle,
+    ];
+    let mut seen = distinct.clone();
+    for cycle in 0..1000 {
+        let preset = presets[cycle % presets.len()];
+        let shape = shapes[(cycle / presets.len()) % shapes.len()].clone();
+        let churn = renderer
+            .register_chart(config.clone(), xy(preset, shape.clone()))
+            .unwrap();
+        for key in warm_up(&mut renderer, churn) {
+            if !seen.contains(&key) {
+                seen.push(key);
+            }
+        }
+        renderer
+            .set_chart_series(churn, xy(presets[(cycle + 1) % presets.len()], shape))
+            .unwrap();
+        for key in warm_up(&mut renderer, churn) {
+            if !seen.contains(&key) {
+                seen.push(key);
+            }
+        }
+        renderer.remove_chart(churn).unwrap();
+        assert!(renderer.picker.exact.get().len() <= seen.len());
+    }
+    release(&mut renderer);
+    let mut held: Vec<_> = renderer.picker.exact.get().keys().collect();
+    held.sort_by_key(|key| format!("{key:?}"));
+    assert_eq!(
+        held, distinct,
+        "a release leaves only the live chart's keys"
+    );
     drop(session.finish());
 }

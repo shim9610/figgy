@@ -371,10 +371,7 @@ impl Renderer {
         // next frame's pick warm-up schedules them on its queue and enables
         // the picker once they have compiled, and an enable before that
         // waits for them (#363).
-        let was_ready = matches!(
-            self.picker.pipeline_state,
-            PickerPipelineState::Ready { .. }
-        );
+        let was_ready = self.picker.is_ready();
         if was_ready {
             self.picker = RendererPicker::disabled();
             #[cfg(target_arch = "wasm32")]

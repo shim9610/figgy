@@ -207,7 +207,10 @@ impl Renderer {
     /// Release the defrag backup and shrink the resident pool to the live
     /// columns (never below `minimum_capacity`). This never reads columns
     /// back to the CPU. It waits for submitted GPU work before releasing an
-    /// old slab and again before reporting retired bytes as reusable.
+    /// old slab and again before reporting retired bytes as reusable. It
+    /// also drops the exact pick pipelines and typed data pick kernels no
+    /// registered chart can pick with any more (#363); until then a removed
+    /// chart's stay for reuse.
     ///
     /// Call only at a host quiescence point: no unsubmitted command buffer may
     /// still reference the old pool. A failed candidate leaves live columns
@@ -231,6 +234,7 @@ impl Renderer {
             result?;
             waited?;
         }
+        self.release_unused_pick_pipelines();
         Ok(())
     }
 
@@ -247,6 +251,7 @@ impl Renderer {
                 result?;
                 waited?;
             }
+            self.release_unused_pick_pipelines();
             Ok(())
         })();
         self.reported(result)

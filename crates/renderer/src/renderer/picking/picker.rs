@@ -57,15 +57,68 @@ impl PreparedActivePickerMutation<'_> {
     }
 }
 
+/// One of the picker's pipeline caches (its pipeline state, its exact
+/// pipelines, its typed data pick kernels). On a browser renderer it is a
+/// single-threaded shared cell (`Rc<RefCell>`, no lock): a warm-up
+/// compile's completion holds a clone and puts the pipeline it compiled
+/// straight into the cache when it resolves (#363). The renderer borrows it
+/// for one statement at a time, never across an `.await`, and a completion
+/// only runs between them, so no borrow ever overlaps. A native renderer
+/// keeps the value itself.
+pub(in crate::renderer) struct PickCell<T> {
+    #[cfg(target_arch = "wasm32")]
+    inner: std::rc::Rc<std::cell::RefCell<T>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: T,
+}
+
+impl<T> PickCell<T> {
+    pub(in crate::renderer) fn new(value: T) -> Self {
+        Self {
+            #[cfg(target_arch = "wasm32")]
+            inner: std::rc::Rc::new(std::cell::RefCell::new(value)),
+            #[cfg(not(target_arch = "wasm32"))]
+            inner: value,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) fn get(&self) -> std::cell::Ref<'_, T> {
+        self.inner.borrow()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::renderer) fn get(&self) -> &T {
+        &self.inner
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) fn get_mut(&mut self) -> std::cell::RefMut<'_, T> {
+        self.inner.borrow_mut()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::renderer) fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+
+    /// The cell a warm-up completion writes into (#363).
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::renderer) fn share(&self) -> std::rc::Rc<std::cell::RefCell<T>> {
+        std::rc::Rc::clone(&self.inner)
+    }
+}
+
 pub(in crate::renderer) struct RendererPicker {
-    pub(in crate::renderer) pipeline_state: PickerPipelineState,
+    pub(in crate::renderer) pipeline_state: PickCell<PickerPipelineState>,
     pub(in crate::renderer) active: Option<ActivePickRegistry>,
     /// The exact pipelines created so far, by module and variant: compiled on
-    /// the first pick that needs each (`PickExactPipelines`).
-    pub(in crate::renderer) exact: crate::gpu_pick::PickExactPipelines,
+    /// the first pick that needs each, or ahead of it on a browser renderer
+    /// (`PickExactPipelines`, #363). One entry per key.
+    pub(in crate::renderer) exact: PickCell<crate::gpu_pick::PickExactPipelines>,
     /// The typed data pick kernels created so far: compiled on the first
-    /// pick that dispatches each (`DataPickKernels`, #327).
-    pub(in crate::renderer) data_kernels: crate::gpu_data_pick::DataPickKernels,
+    /// pick that dispatches each (`DataPickKernels`, #327), or ahead of it.
+    pub(in crate::renderer) data_kernels: PickCell<crate::gpu_data_pick::DataPickKernels>,
     #[cfg(test)]
     pub(in crate::renderer) injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -73,10 +126,10 @@ pub(in crate::renderer) struct RendererPicker {
 impl RendererPicker {
     pub(in crate::renderer) fn disabled() -> Self {
         Self {
-            pipeline_state: PickerPipelineState::Disabled,
+            pipeline_state: PickCell::new(PickerPipelineState::Disabled),
             active: None,
-            exact: crate::gpu_pick::PickExactPipelines::default(),
-            data_kernels: crate::gpu_data_pick::DataPickKernels::default(),
+            exact: PickCell::new(crate::gpu_pick::PickExactPipelines::default()),
+            data_kernels: PickCell::new(crate::gpu_data_pick::DataPickKernels::default()),
             #[cfg(test)]
             injected_activation_failure: None,
         }
@@ -98,7 +151,7 @@ impl RendererPicker {
         parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        match &self.pipeline_state {
+        match &*self.pipeline_state.get() {
             PickerPipelineState::Ready { .. } => return Ok(()),
             PickerPipelineState::Failed(error) => return Err(error.clone()),
             PickerPipelineState::Disabled => {}
@@ -106,7 +159,7 @@ impl RendererPicker {
 
         #[cfg(test)]
         if let Some(error) = self.injected_activation_failure.take() {
-            self.pipeline_state = PickerPipelineState::Failed(error.clone());
+            *self.pipeline_state.get_mut() = PickerPipelineState::Failed(error.clone());
             return Err(error);
         }
 
@@ -133,16 +186,16 @@ impl RendererPicker {
                 observer,
             ) {
                 Ok(data) => {
-                    self.pipeline_state = PickerPipelineState::Ready { point, data };
+                    *self.pipeline_state.get_mut() = PickerPipelineState::Ready { point, data };
                     Ok(())
                 }
                 Err(error) => {
-                    self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                    *self.pipeline_state.get_mut() = PickerPipelineState::Failed(error.clone());
                     Err(error)
                 }
             },
             Err(error) => {
-                self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                *self.pipeline_state.get_mut() = PickerPipelineState::Failed(error.clone());
                 Err(error)
             }
         }
@@ -164,7 +217,7 @@ impl RendererPicker {
         parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        match &self.pipeline_state {
+        match &*self.pipeline_state.get() {
             PickerPipelineState::Ready { .. } => return Ok(()),
             PickerPipelineState::Failed(error) => return Err(error.clone()),
             PickerPipelineState::Disabled => {}
@@ -172,7 +225,7 @@ impl RendererPicker {
 
         #[cfg(test)]
         if let Some(error) = self.injected_activation_failure.take() {
-            self.pipeline_state = PickerPipelineState::Failed(error.clone());
+            *self.pipeline_state.get_mut() = PickerPipelineState::Failed(error.clone());
             return Err(error);
         }
 
@@ -203,17 +256,17 @@ impl RendererPicker {
                     observer,
                 ) {
                     Ok(data) => {
-                        self.pipeline_state = PickerPipelineState::Ready { point, data };
+                        *self.pipeline_state.get_mut() = PickerPipelineState::Ready { point, data };
                         Ok(())
                     }
                     Err(error) => {
-                        self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                        *self.pipeline_state.get_mut() = PickerPipelineState::Failed(error.clone());
                         Err(error)
                     }
                 }
             }
             Err(error) => {
-                self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                *self.pipeline_state.get_mut() = PickerPipelineState::Failed(error.clone());
                 Err(error)
             }
         }
@@ -223,7 +276,7 @@ impl RendererPicker {
         &self,
     ) -> std::result::Result<Arc<crate::gpu_pick::PickPipelineBundle>, crate::gpu_pick::GpuPickError>
     {
-        match &self.pipeline_state {
+        match &*self.pipeline_state.get() {
             PickerPipelineState::Disabled => Err(crate::gpu_pick::GpuPickError::PickerDisabled),
             PickerPipelineState::Ready { point, .. } => Ok(Arc::clone(point)),
             PickerPipelineState::Failed(error) => Err(error.clone()),
@@ -234,8 +287,16 @@ impl RendererPicker {
     /// streamed chunk scans with its resident series' variant.
     pub(in crate::renderer) fn exact_pipelines(
         &mut self,
-    ) -> &mut crate::gpu_pick::PickExactPipelines {
+    ) -> &mut PickCell<crate::gpu_pick::PickExactPipelines> {
         &mut self.exact
+    }
+
+    /// Whether the picker is enabled: its bundles are created.
+    pub(in crate::renderer) fn is_ready(&self) -> bool {
+        matches!(
+            &*self.pipeline_state.get(),
+            PickerPipelineState::Ready { .. }
+        )
     }
 
     pub(in crate::renderer) fn ready_data_bundle(
@@ -244,7 +305,7 @@ impl RendererPicker {
         Arc<crate::gpu_data_pick::DataPickPipelineBundle>,
         crate::gpu_pick::GpuPickError,
     > {
-        match &self.pipeline_state {
+        match &*self.pipeline_state.get() {
             PickerPipelineState::Disabled => Err(crate::gpu_pick::GpuPickError::PickerDisabled),
             PickerPipelineState::Ready { data, .. } => Ok(Arc::clone(data)),
             PickerPipelineState::Failed(error) => Err(error.clone()),

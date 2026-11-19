@@ -45,7 +45,6 @@ use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_
 use registry::GpuPickSeriesId;
 pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};
 use registry::{GpuPickSeriesIdentities, PickIdentity, PickRegistry, PickSeriesSlot};
-#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) use registry::{exact_variant_for, resident_exact_key};
 use registry::{
     series_arc, series_exact_key, series_exact_variant, series_ring, stream_exact_variant,

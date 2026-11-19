@@ -68,12 +68,22 @@ fn all_shader_compilation_times_and_entry_coverage() {
                     shader,
                     ..crate::gpu_pick::PickExactKey::ALL_PATHS
                 };
-                renderer.picker.exact.ensure(&bundle, key).unwrap();
+                renderer
+                    .picker
+                    .exact
+                    .get_mut()
+                    .ensure(&bundle, key)
+                    .unwrap();
             }
             // So do the typed data pick kernels (#327).
             let data = renderer.picker.ready_data_bundle().unwrap();
             for kernel in crate::gpu_data_pick::DataPickKernel::ALL {
-                renderer.picker.data_kernels.ensure(&data, kernel).unwrap();
+                renderer
+                    .picker
+                    .data_kernels
+                    .get_mut()
+                    .ensure(&data, kernel)
+                    .unwrap();
             }
         }
         data_render::stream_field::Pipelines::new(
