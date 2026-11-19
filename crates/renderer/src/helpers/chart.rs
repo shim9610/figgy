@@ -450,3 +450,36 @@ pub fn check_theme_draw_style(
         None => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::format::{AutoNumberFormat, LabelFormat};
+    use crate::text_render::CpuTextMeasure;
+
+    // #357: a new chart is fitted at creation, and refitted by its setters,
+    // to the `Auto` label text it draws: the kept layout is the fit of the
+    // config as it stands, and the fit leaves the format as it is.
+    #[test]
+    fn the_kept_layout_is_fitted_to_the_automatic_labels() {
+        let auto = LabelFormat::Auto(AutoNumberFormat::DEFAULT);
+        let fitted_to_itself = |chart: &crate::Chart| {
+            let measure = CpuTextMeasure::for_style(&chart.config().draw_style);
+            crate::layout::auto_layout(chart.config(), &measure) == *chart.config()
+        };
+        let mut chart = crate::Chart::sized(800, 600);
+        assert_eq!(chart.config().left_y.label_style.format, auto);
+        assert!(fitted_to_itself(&chart), "at creation");
+        let narrow = chart.config().left_y.out_margin;
+        // Wider labels: `-1000.0` … `1000.0` in steps of 0.5.
+        chart.set_y_range(-1000.0, 1000.0);
+        chart.config_mut().left_y.major_spacing = 0.5;
+        chart.fit_layout();
+        assert_eq!(chart.config().left_y.label_style.format, auto);
+        assert!(fitted_to_itself(&chart), "after a refit");
+        assert!(chart.config().left_y.out_margin > narrow);
+        // A setter refits too; `1e9` labels stay `Auto` (powers of ten).
+        chart.set_y_range(0.0, 3e9);
+        assert_eq!(chart.config().left_y.label_style.format, auto);
+        assert!(fitted_to_itself(&chart), "after set_y_range");
+    }
+}

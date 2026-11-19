@@ -120,7 +120,7 @@ impl AxisOptions {
     /// of the series it scales. `$…$` spans in `title` are TeX
     /// ([`crate::text::rich_segments_from_label`]).
     pub fn overlay_y(title: &str, color: Color) -> AxisOptions {
-        let mut axis = crate::defaults::axis_options_y();
+        let mut axis = crate::default::default_axis_options_y();
         axis.title_option.text.segments = crate::text::rich_segments_from_label(title);
         axis.title_option.text.color = color;
         axis.title_option.visible = true;
@@ -134,7 +134,7 @@ impl AxisOptions {
     /// scales. `$…$` spans in `title` are TeX
     /// ([`crate::text::rich_segments_from_label`]).
     pub fn overlay_x(title: &str, color: Color) -> AxisOptions {
-        let mut axis = crate::defaults::axis_options_x();
+        let mut axis = crate::default::default_axis_options_x();
         axis.title_option.text.segments = crate::text::rich_segments_from_label(title);
         axis.title_option.text.color = color;
         axis.title_option.visible = true;

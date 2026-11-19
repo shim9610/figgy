@@ -161,11 +161,12 @@ fn modifiers_reach_arrows_and_shapes() {
 }
 
 // The overlay axis is the default y axis with a shown title and labels in
-// the series colour; everything else stays the default.
+// the series colour; everything else stays the helpers' default (with its
+// automatic tick label format, #357).
 #[test]
 fn overlay_y_axis_is_titled_in_its_colour() {
     let axis = AxisOptions::overlay_y("Current (A)", RED);
-    let base = crate::defaults::axis_options_y();
+    let base = crate::default::default_axis_options_y();
     assert!(axis.title_option.visible);
     let text: String = axis
         .title_option
