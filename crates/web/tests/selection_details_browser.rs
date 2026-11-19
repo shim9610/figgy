@@ -8,25 +8,12 @@ use renderer::{
         BarOrientation, DataBarStyleConfig, VectorComponents, VectorPivot, VectorScale, VectorStyle,
     },
 };
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::{canvas_480x320 as canvas, details};
 
 wasm_bindgen_test_configure!(run_in_browser);
-
-fn canvas() -> HtmlCanvasElement {
-    let canvas: HtmlCanvasElement = web_sys::window()
-        .unwrap()
-        .document()
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    canvas.set_width(480);
-    canvas.set_height(320);
-    canvas
-}
 
 fn histogram(id: &str, edges: &str, values: &str, orientation: BarOrientation) -> SeriesConfig {
     let (x, y) = if orientation == BarOrientation::Horizontal {
@@ -65,10 +52,6 @@ fn select(chart: &mut FiggyChart, reference: PickedDataRef) {
     chart
         .set_config(&serde_json::to_string(&config).unwrap())
         .unwrap();
-}
-
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
 }
 
 #[wasm_bindgen_test(async)]

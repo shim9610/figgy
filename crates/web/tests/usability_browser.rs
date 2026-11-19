@@ -8,19 +8,10 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 
-wasm_bindgen_test_configure!(run_in_browser);
+mod support;
+use support::{canvas_320x240 as canvas, turn};
 
-fn canvas() -> web_sys::HtmlCanvasElement {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .unwrap();
-    canvas.set_width(320);
-    canvas.set_height(240);
-    canvas
-}
+wasm_bindgen_test_configure!(run_in_browser);
 
 /// Make every `createRenderPipelineAsync` from now on a compile that never
 /// settles, so a wait on the chart's compiles stays pending for as long as
@@ -44,17 +35,6 @@ fn release_compiles() {
 })()"#,
     )
     .unwrap();
-}
-
-/// One timer turn of 20 ms.
-async fn turn() {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 20)
-            .unwrap();
-    });
-    JsFuture::from(promise).await.unwrap();
 }
 
 /// The handle's status object, through JSON (it is an object, not JSON

@@ -1614,29 +1614,23 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
 mod tests {
     use super::*;
 
-    // plan.min <= data_min, plan.max >= data_max.
+    // plan.min <= data_min, plan.max >= data_max, plan.max > plan.min and
+    // plan.major_spacing > 0.
     #[test]
-    fn linear_plan_contains_range() {
-        let p = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.3, 9.7, 6).unwrap();
-        assert!(p.min <= 0.3);
-        assert!(p.max >= 9.7);
-    }
-
-    // plan.max > plan.min, plan.major_spacing > 0.
-    #[test]
-    fn linear_plan_non_degenerate() {
-        let p = AxisOptions::compute_nice_ticks(AxisScale::Linear, -50.0, 50.0, 5).unwrap();
-        assert!(p.max > p.min);
-        assert!(p.major_spacing > 0.0);
-    }
-
-    #[test]
-    fn log_plan_contains_range() {
-        let p = AxisOptions::compute_nice_ticks(AxisScale::Logarithmic, 0.003, 250.0, 5).unwrap();
-        assert!(p.min <= 0.003);
-        assert!(p.max >= 250.0);
-        assert!(p.max > p.min);
-        assert!(p.major_spacing > 0.0);
+    fn plans_contain_their_range_and_are_not_degenerate() {
+        for (scale, data_min, data_max, target) in [
+            (AxisScale::Linear, 0.3, 9.7, 6),
+            (AxisScale::Linear, -50.0, 50.0, 5),
+            (AxisScale::Logarithmic, 0.003, 250.0, 5),
+        ] {
+            let p =
+                AxisOptions::compute_nice_ticks(scale.clone(), data_min, data_max, target).unwrap();
+            let case = format!("{scale:?} {data_min}..{data_max}");
+            assert!(p.min <= data_min, "{case}");
+            assert!(p.max >= data_max, "{case}");
+            assert!(p.max > p.min, "{case}");
+            assert!(p.major_spacing > 0.0, "{case}");
+        }
     }
 
     #[test]
@@ -2517,14 +2511,6 @@ mod tests {
         // Every ladder is a subset of the one before it.
         let ladders = log_label_ladders(&adaptive(1e4, 8e4));
         assert!(ladders.windows(2).all(|w| w[1] & !w[0] == 0));
-    }
-
-    // compute_nice_ticks is pure.
-    #[test]
-    fn compute_nice_ticks_pure() {
-        let a = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 100.0, 6).unwrap();
-        let b = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 100.0, 6).unwrap();
-        assert_eq!(a, b);
     }
 }
 

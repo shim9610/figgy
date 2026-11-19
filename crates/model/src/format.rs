@@ -230,22 +230,8 @@ impl Config {
 mod tests {
     use super::*;
 
-    // Result must be in 1..=15.
-    #[test]
-    fn sig_digits_bounds() {
-        for (min, max, step) in [
-            (0.0, 1.0, 0.2),
-            (0.0, 1000.0, 200.0),
-            (0.0, 0.01, 0.002),
-            (-5.0, 5.0, 1.0),
-            (100.0, 110.0, 2.0),
-            (0.0, 0.0, 0.0),
-        ] {
-            let s = LabelStyle::compute_auto_significant_digits(AxisScale::Linear, min, max, step);
-            assert!((1..=15).contains(&s), "sig out of bounds: {}", s);
-        }
-    }
-
+    // The spec's examples, and an all-zero range, which falls back to one
+    // digit. Every result is in 1..=15.
     #[test]
     fn sig_digits_spec_examples() {
         let cases: &[(f64, f64, f64, u8)] = &[
@@ -254,10 +240,12 @@ mod tests {
             (0.0, 0.01, 0.002, 2),
             (-5.0, 5.0, 1.0, 1),
             (100.0, 110.0, 2.0, 3),
+            (0.0, 0.0, 0.0, 1),
         ];
         for &(min, max, step, expected) in cases {
             let got =
                 LabelStyle::compute_auto_significant_digits(AxisScale::Linear, min, max, step);
+            assert!((1..=15).contains(&got), "sig out of bounds: {}", got);
             assert_eq!(got, expected, "min={}, max={}, step={}", min, max, step);
         }
     }
@@ -367,9 +355,10 @@ mod tests {
         );
     }
 
-    // auto_significant_digits should mutate only the sig field.
+    // auto_significant_digits mutates only the sig field, and
+    // auto_significant_digits_all only the sig fields.
     #[test]
-    fn auto_sig_changes_only_sig_field() {
+    fn auto_sig_changes_only_sig_fields() {
         let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         cfg.top_x.auto_significant_digits();
@@ -381,13 +370,8 @@ mod tests {
             expected.top_x.major_spacing,
         );
         assert_eq!(cfg, expected);
-    }
 
-    // auto_significant_digits_all should also mutate only sig fields.
-    #[test]
-    fn auto_sig_all_changes_only_sig_fields() {
-        let mut cfg = crate::defaults::config();
-        let before = cfg.clone();
+        let mut cfg = before.clone();
         cfg.auto_significant_digits_all();
         assert!(cfg.top_x.label_style.significant_digits >= 1);
         assert!(cfg.bottom_x.label_style.significant_digits >= 1);

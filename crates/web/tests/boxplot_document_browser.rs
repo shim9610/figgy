@@ -9,11 +9,13 @@
 //! exports.
 
 use figgy::FiggyChart;
-use renderer::config::{DataSelectionsConfig, PickedDataRef};
 use renderer::{Config, DataRenderType, SeriesConfig};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
+
+mod support;
+use support::{details, select};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -53,26 +55,6 @@ fn canvas() -> HtmlCanvasElement {
     canvas.set_width(480);
     canvas.set_height(320);
     canvas
-}
-
-fn select(chart: &mut FiggyChart, series_id: &str, bin_index: usize) {
-    let mut config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
-    config.picked_data = Some(DataSelectionsConfig {
-        refs: vec![PickedDataRef::HistogramBin {
-            source_id: None,
-            series_id: series_id.into(),
-            bin_index,
-            half: None,
-        }],
-        ..Default::default()
-    });
-    chart
-        .set_config(&serde_json::to_string(&config).unwrap())
-        .unwrap();
-}
-
-async fn details(chart: &FiggyChart) -> serde_json::Value {
-    serde_json::from_str(&chart.selection_details().await.unwrap()).unwrap()
 }
 
 #[wasm_bindgen_test(async)]

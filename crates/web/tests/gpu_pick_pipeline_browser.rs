@@ -14,14 +14,10 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
-wasm_bindgen_test_configure!(run_in_browser);
+mod support;
+use support::raw_device_method;
 
-fn raw_device_method(device: &wgpu::webgpu::GpuDevice, name: &str) -> js_sys::Function {
-    js_sys::Reflect::get(device.as_ref(), &JsValue::from_str(name))
-        .expect("GPUDevice method lookup failed")
-        .dyn_into()
-        .expect("GPUDevice property was not a function")
-}
+wasm_bindgen_test_configure!(run_in_browser);
 
 fn push_validation_scope(device: &wgpu::Device) {
     let raw = device

@@ -15,6 +15,9 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::HtmlCanvasElement;
 
+mod support;
+use support::{code, json, rect, turn};
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 /// The document's logical size.
@@ -95,17 +98,6 @@ fn devices_requested() -> u32 {
 fn total_bytes(parent: &FiggyChart) -> u64 {
     let status: serde_json::Value = serde_json::from_str(&parent.gpu_memory_status()).unwrap();
     status["total_bytes"].as_u64().unwrap()
-}
-
-/// One timer turn of 20 ms.
-async fn turn() {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 20)
-            .unwrap();
-    });
-    JsFuture::from(promise).await.unwrap();
 }
 
 /// Poll `future` once, so the work it starts is submitted before the test
@@ -521,23 +513,8 @@ async fn a_decoration_position_resets_to_the_layout() {
 
 // --- 5. Annotation preview (#334) ---
 
-fn json(text: &str) -> serde_json::Value {
-    serde_json::from_str(text).unwrap()
-}
-
-fn rect(value: &serde_json::Value) -> [f64; 4] {
-    let n = |i: usize| value[i].as_f64().unwrap();
-    [n(0), n(1), n(2), n(3)]
-}
-
 fn close(a: [f64; 4], b: [f64; 4]) -> bool {
     a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 1e-3)
-}
-
-fn code(error: &JsValue) -> Option<String> {
-    js_sys::Reflect::get(error, &JsValue::from_str("code"))
-        .ok()
-        .and_then(|code| code.as_string())
 }
 
 fn note(anchor: renderer::Anchor, text: &str) -> renderer::Annotation {
