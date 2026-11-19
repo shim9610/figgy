@@ -2455,3 +2455,125 @@ fn a_document_with_formatted_labels_and_a_note_round_trips() {
         assert_eq!(a.rgba, b.rgba, "{scale}x");
     }
 }
+
+/// The transition labels of `records` in `placement` that leave the plot
+/// or the panel, or overlap any other drawn label (level, band, limit or
+/// transition), described.
+fn transition_label_faults(
+    placement: &renderer::energy_levels::LevelPlacement<'_>,
+    records: &EnergyLevelSeries,
+    style: &renderer::energy_levels::EnergyLevelStyle,
+    measure: &renderer::CpuTextMeasure,
+) -> Vec<String> {
+    use renderer::energy_levels::LabelPart;
+    let layout = placement.layout(records, style, measure);
+    let plot = placement.space.plot_rect();
+    let inside = |r: renderer::layout::RectF| {
+        r.x >= plot.x - 0.5
+            && r.y >= plot.y - 0.5
+            && r.x + r.width <= plot.x + plot.width + 0.5
+            && r.y + r.height <= plot.y + plot.height + 0.5
+    };
+    let mut drawn: Vec<(String, renderer::layout::RectF)> = Vec::new();
+    for (part, len) in [
+        (LabelPart::Level, records.levels.len()),
+        (LabelPart::Band, records.bands.len()),
+        (LabelPart::Limit, records.limits.len()),
+        (LabelPart::Transition, records.transitions.len()),
+    ] {
+        for index in 0..len {
+            if let Some(text) = placement.label(records, style, &layout, part, index, measure) {
+                drawn.push((format!("{part:?} {index}"), text.rect()));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for (i, (name, rect)) in drawn.iter().enumerate() {
+        if !name.starts_with("Transition") {
+            continue;
+        }
+        let id = &records.transitions[name[11..].parse::<usize>().unwrap()].id;
+        if !inside(*rect) {
+            found.push(format!(
+                "transition {id} clipped: {rect:?} outside {plot:?}"
+            ));
+        }
+        for (j, (other, rect2)) in drawn.iter().enumerate() {
+            if i != j && rects_overlap(*rect, *rect2) && (j > i || !other.starts_with("Transition"))
+            {
+                found.push(format!("transition {id} on {other}"));
+            }
+        }
+    }
+    found
+}
+
+// #357: in the He, Ar and Cu diagrams, at their own size and at 800 × 600
+// in the Gallery theme, at 1x and 2x, no transition (wavelength) label is
+// clipped by the plot and no label box overlaps another. The renderer lays
+// a 2x drawing out in logical pixels (`logical_space`), as here.
+#[test]
+fn transition_labels_stay_inside_the_plot_and_off_other_labels() {
+    let mut r = renderer();
+    let mut all = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+        let mut gallery_series = scene.series.clone();
+        let mut gallery = Chart::new(scene.config.clone());
+        gallery.set_area(0, 0, 800, 600);
+        gallery
+            .apply_theme("gallery", &mut gallery_series)
+            .expect("the gallery theme");
+        gallery.fit_layout();
+        for (look, config, series) in [
+            ("scene", scene.config.clone(), scene.series.clone()),
+            ("gallery 800x600", gallery.config().clone(), gallery_series),
+        ] {
+            for scale in [1.0f32, 2.0] {
+                let scaled = config.scaled(scale);
+                let expansion = scaled.expand().expect("the scene expands");
+                for panel in &expansion.panels {
+                    let panel = &panel.config;
+                    let Some(categories) = panel.bottom_x.categories.as_deref() else {
+                        continue;
+                    };
+                    let mut space = renderer::annotation::pixel_space_for_config(panel);
+                    let logical = |r: renderer::layout::RectF| renderer::layout::RectF {
+                        x: r.x / scale,
+                        y: r.y / scale,
+                        width: r.width / scale,
+                        height: r.height / scale,
+                    };
+                    space.panel = logical(space.panel);
+                    space.plot = logical(space.plot);
+                    let measure = renderer::CpuTextMeasure::for_style(&panel.draw_style);
+                    for cfg in &series {
+                        let Some(levels) = cfg.render_type.energy_levels() else {
+                            continue;
+                        };
+                        if levels.source.is_some() {
+                            continue;
+                        }
+                        let placement = renderer::energy_levels::LevelPlacement {
+                            space: &space,
+                            categories,
+                            view: levels.show,
+                            colorbar: panel.colorbar.as_ref(),
+                            picked: None,
+                        };
+                        all.extend(
+                            transition_label_faults(&placement, levels, &levels.style, &measure)
+                                .into_iter()
+                                .map(|f| format!("{kind:?} {look} {scale}x: {f}")),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(all.is_empty(), "{all:#?}");
+}

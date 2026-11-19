@@ -78,10 +78,18 @@ and radar documents' `text_sizes`) are additive.
     top of the energy range), it is placed just below the line, so it is
     not clipped. The level and transition labels keep clear of it as they
     do of a stroke. The host's `label_offset` still moves it from there.
+  - **Grotrian transition labels stay inside the plot.** A wavelength
+    label takes a spot the plot's edge would clip only when every spot
+    along both sides of its arrow would be clipped; before, "728.1" in the
+    He I diagram at 800 × 600 was cut at the left edge. Labels stay
+    horizontal, as they always were.
   - Tests: `contours_draw_in_dark_ink` (`helpers/series.rs`),
     `the_host_default_separates_segments_and_rings`,
     `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
-    `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`) and
+    `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`),
+    `transition_labels_stay_inside_the_plot_and_off_other_labels` (He, Ar
+    and Cu at their own size and at 800 × 600 in the Gallery theme, 1x and
+    2x; `tests/energy_levels_render.rs`) and
     `crowded_radial_labels_prepare_and_remain_in_the_hit_map` (crowded
     inside labels move outside and stay hit and draggable at 1x and 2x)
     and `inner_sunburst_labels_read_upright_or_hide`

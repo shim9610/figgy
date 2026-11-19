@@ -1095,9 +1095,10 @@ impl LevelPlacement<'_> {
     }
 
     /// The spot of each transition label: the first spot along its arrow,
-    /// right of it then left, clear of the level labels, the strokes, the
-    /// other arrows and the labels placed before it; when none is clear, the
-    /// middle. `obstacles` are the level strokes and band fills.
+    /// right of it then left, inside the plot (#357) and clear of the level
+    /// labels, the strokes, the other arrows and the labels placed before
+    /// it; when none is clear, the spot of least overlap, and the middle
+    /// only when every spot would leave the plot. `obstacles` are the level strokes and band fills.
     #[allow(clippy::too_many_arguments)]
     fn place_transition_labels(
         &self,
@@ -1150,8 +1151,19 @@ impl LevelPlacement<'_> {
             // still keeps its labels apart. The first spot of least cost
             // wins; a label the host moved stays at the middle.
             let host_placed = transition.label_offset != [0.0; 2];
+            let plot = self.space.plot_rect();
             let cost = |t: f32, side: LevelLabelSide| -> usize {
                 let rect = block(t, side);
+                // A spot that the plot's edge would clip is taken only when
+                // every spot is clipped (#357): the other side of the arrow
+                // or another stop along it comes first.
+                let clipped = rect.x < plot.x - 0.5
+                    || rect.y < plot.y - 0.5
+                    || rect.x + rect.width > plot.x + plot.width + 0.5
+                    || rect.y + rect.height > plot.y + plot.height + 0.5;
+                if clipped {
+                    return usize::MAX - 1;
+                }
                 let hits = near(rect).iter().filter(|o| overlaps(**o, rect)).count()
                     + placed_labels.iter().filter(|o| overlaps(**o, rect)).count();
                 let reach = |a: [f32; 2], b: [f32; 2]| {
