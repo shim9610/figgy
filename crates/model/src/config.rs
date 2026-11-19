@@ -932,14 +932,17 @@ impl Config {
 /// Scale the pixel sizes of an axis' category text (#203): each rich tick
 /// label's font size, and the group headers' font sizes and drag offset.
 fn scale_category_text(axis: &mut AxisOptions, s: f32) {
+    // Whole rich texts, segment size overrides included, as every other
+    // rich text scales (`scale_rich_text`): a label whose segments state
+    // their size is drawn at 2x as its 1x scaled.
     for category in axis.categories.iter_mut().flatten() {
         if let Some(rich) = &mut category.rich_label {
-            rich.font_size *= s;
+            scale_rich_text(rich, s);
         }
     }
     if let Some(groups) = &mut axis.category_groups {
         for group in &mut groups.groups {
-            group.label.font_size *= s;
+            scale_rich_text(&mut group.label, s);
         }
         groups.offset = [groups.offset[0] * s, groups.offset[1] * s];
     }
@@ -1363,6 +1366,46 @@ mod colorbar_scale_tests {
         );
         // At 1x nothing moves.
         assert_eq!(cfg.scaled(1.0), cfg);
+    }
+}
+
+#[cfg(test)]
+mod category_text_scale_tests {
+    use crate::color::Color;
+    use crate::config::{Category, CategoryGroup, CategoryGroups};
+    use crate::text::RichText;
+
+    // A category label or group header whose segments state their size
+    // (#357) scales with the rest of the text: 2x is 1x scaled.
+    #[test]
+    fn segment_sizes_of_category_text_scale() {
+        let mut cfg = crate::defaults::config();
+        let mut label = RichText::plain("4p", Color::BLACK, 24.0, "");
+        for segment in &mut label.segments {
+            segment.font_size = Some(20.0);
+        }
+        let mut category = Category::new("a", "4p");
+        category.rich_label = Some(label.clone());
+        cfg.bottom_x.categories = Some(vec![category, Category::new("b", "b")]);
+        cfg.bottom_x.category_groups = Some(CategoryGroups {
+            groups: vec![CategoryGroup {
+                label,
+                first: "a".into(),
+                last: "b".into(),
+                bracket: true,
+            }],
+            offset: [0.0; 2],
+        });
+        let scaled = cfg.scaled(2.0);
+        let rich = scaled.bottom_x.categories.as_ref().unwrap()[0]
+            .rich_label
+            .as_ref()
+            .unwrap();
+        let group = &scaled.bottom_x.category_groups.as_ref().unwrap().groups[0].label;
+        for text in [rich, group] {
+            assert_eq!(text.font_size, 48.0);
+            assert!(text.segments.iter().all(|s| s.font_size == Some(40.0)));
+        }
     }
 }
 
