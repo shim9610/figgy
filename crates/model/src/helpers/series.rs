@@ -806,8 +806,8 @@ mod tests {
         assert_eq!(config.left_y.minor_count, 0);
         assert!(!config.top_x.line_visible && !config.right_y.line_visible);
         assert!(!config.grid.show_major_x && !config.grid.show_major_y);
-        // A new chart's layout: the first default draw fits it.
-        assert_eq!(config.layout_state, crate::config::LayoutState::NeedsFit);
+        // A new chart's layout: its chart object fits it.
+        assert_eq!(config.layout_state, crate::config::LayoutState::Fitted);
         config.bottom_x.categories = Some(
             ["a", "b", "c"]
                 .map(|id| Category::new(id, id.to_uppercase()))

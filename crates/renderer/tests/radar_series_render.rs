@@ -598,7 +598,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     rectangular.config_mut().set_polar(None);
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&mut rectangular, &series),
+            renderer::ExportSource::chart(&rectangular, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -613,7 +613,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     numeric.config_mut().bottom_x.categories = None;
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&mut numeric, &series),
+            renderer::ExportSource::chart(&numeric, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -624,13 +624,13 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "{reason}"
     );
     // Arc interpolation.
-    let mut arcs = chart(PolarOptions {
+    let arcs = chart(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 4 },
         ..up_clockwise()
     });
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&mut arcs, &series),
+            renderer::ExportSource::chart(&arcs, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -645,7 +645,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     let short = [radar("short", "short", RED, outline_and_fill())];
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&mut chart(up_clockwise()), &short),
+            renderer::ExportSource::chart(&chart(up_clockwise()), &short),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -663,7 +663,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     }
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&mut chart(up_clockwise()), &[labelled]),
+            renderer::ExportSource::chart(&chart(up_clockwise()), &[labelled]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -681,7 +681,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     polygon.config_mut().bottom_x.categories = None;
     assert!(
         r.export_rgba(
-            renderer::ExportSource::chart(&mut polygon, &[]),
+            renderer::ExportSource::chart(&polygon, &[]),
             renderer::ExportOptions::panel(1.0)
         )
         .block_on()
@@ -763,12 +763,12 @@ fn a_polar_subplot_draws_its_own_radar_series() {
         marker: None,
         text_scale: Default::default(),
     });
-    let mut chart = Chart::new(parent);
+    let chart = Chart::new(parent);
     let series = [radar("one", "one", RED, outline_and_fill())];
     for scale in [1.0, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &series),
+                renderer::ExportSource::chart(&chart, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1070,11 +1070,10 @@ fn radar_value_labels_meet_no_other_label() {
         for upload in &uploads {
             r.add_column(upload.column.clone(), &upload.values).unwrap();
         }
-        // A document built in Rust carries `text_sizes` and fits its
-        // layout on its first draw (#357): fit it here, so the vertices are
-        // read from the layout the exports draw.
-        let mut chart = Chart::new(config);
-        chart.fit_pending_layout();
+        // A document built in Rust carries `text_sizes`: its chart is
+        // created with its layout fitted (#357), and the vertices are read
+        // from that layout, the one the exports draw.
+        let chart = Chart::new(config);
         // `only` keeps the labels of that series on the chart; the others
         // are dragged far off it, which leaves every label where it is
         // placed (the drag applies after the placement); `None` drags them

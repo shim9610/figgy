@@ -819,10 +819,9 @@ impl Renderer {
         crate::chart::apply_auto_fit_all(&mut state.config, x_extent, y_extent, padding);
         // Subplots linked to the parent's axes follow the fitted range.
         state.config.sync_subplot_links(None);
-        // New ranges are new tick labels: a fitted layout asks for its fit
-        // again (#357).
-        let layout = state.config.layout_state;
-        state.config.layout_state = layout.after_edit(layout);
+        // New ranges are new tick labels: a layout the chart keeps fitted is
+        // fitted to them as part of the fit (#357).
+        state.config = super::registry::kept_layout(state.config.clone());
         state.revisions.desired = desired;
         state.revisions.config = config;
         state.revisions.view = view;
@@ -1257,7 +1256,7 @@ impl Renderer {
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         let padding = resolved.padding;
-        let mut chart = crate::chart::Chart::new(state.config.clone());
+        let mut chart = crate::chart::Chart::stored(state.config.clone());
         match resolved.kind {
             AutoFitAllKind::Skip => return Ok(()),
             AutoFitAllKind::Parallel => {

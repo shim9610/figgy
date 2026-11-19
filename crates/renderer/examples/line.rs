@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "line.png".into());
     let options = ExportOptions::panel(1.0).with_clear(Color::WHITE);
-    renderer.save_blocking(ExportSource::chart(&mut chart, &series), options, &output)?;
+    renderer.save_blocking(ExportSource::chart(&chart, &series), options, &output)?;
     println!("{}", std::path::Path::new(&output).display());
     Ok(())
 }

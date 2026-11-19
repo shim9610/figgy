@@ -80,7 +80,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     };
     contour.set_nice_levels(&bar.axis, 4)?;
     config.colorbar = Some(bar);
-    let mut chart = Chart::new(config).with_title("Pressure");
+    let chart = Chart::new(config).with_title("Pressure");
 
     let series = [SeriesConfig {
         series_id: "pressure".into(),
@@ -104,7 +104,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
             surface: None, // the look on a 3D chart; None draws SurfaceStyle::default()
         }),
     }];
-    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&mut chart, &series), renderer::ExportOptions::panel(1.0))?;
+    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0))?;
     std::fs::write("mesh.png", renderer::encode_png(&image)?)?;
     Ok(())
 }

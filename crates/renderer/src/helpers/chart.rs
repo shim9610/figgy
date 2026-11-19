@@ -6,11 +6,11 @@ use crate::{Chart, SeriesConfig};
 
 impl Chart {
     /// A chart of the documented default look whose chart area is `width` ×
-    /// `height` logical pixels at the origin. Its layout is
-    /// [`crate::LayoutState::NeedsFit`]: the first default draw or export
-    /// fits the margins to the titles, labels and legend it holds then and
-    /// writes them into the config (#357); [`Self::fit_layout`] fits it
-    /// earlier.
+    /// `height` logical pixels at the origin. Its layout is kept fitted
+    /// ([`crate::LayoutState::Fitted`], #357): the chart is created with
+    /// its margins fitted, and every chart method that edits it (titles,
+    /// ranges, legend, themes, ...) fits them again to what it then holds.
+    /// A drag fixes the layout; [`Self::fit_layout`] fits it on request.
     pub fn sized(width: u32, height: u32) -> Self {
         let mut config = crate::config::Config::default();
         config.chart_area = crate::layout::ChartArea(crate::layout::Rect {
@@ -19,9 +19,7 @@ impl Chart {
             width,
             height,
         });
-        // A new chart's layout is fitted by its first default draw or
-        // export, to the text it holds by then (#357).
-        config.layout_state = crate::LayoutState::NeedsFit;
+        config.layout_state = crate::LayoutState::Fitted;
         Self::new(config)
     }
 
@@ -50,6 +48,7 @@ impl Chart {
             width,
             height,
         });
+        self.refit_kept_layout();
     }
 
     /// The chart with an overlay layer: a secondary y axis on the right
@@ -63,6 +62,7 @@ impl Chart {
             series: series.iter().map(|id| (*id).to_owned()).collect(),
             legend: None,
         });
+        self.refit_kept_layout();
         self
     }
 
@@ -83,6 +83,7 @@ impl Chart {
             series: series.iter().map(|id| (*id).to_owned()).collect(),
             legend: None,
         });
+        self.refit_kept_layout();
         self
     }
 
@@ -103,12 +104,14 @@ impl Chart {
             crate::text::rich_segments_from_label(label),
         );
         legend.visible = true;
+        self.refit_kept_layout();
         self
     }
 
     /// The chart with `annotation` appended to its annotation layer.
     pub fn with_annotation(mut self, annotation: crate::Annotation) -> Self {
         self.config_mut().annotations.items.push(annotation);
+        self.refit_kept_layout();
         self
     }
 
@@ -118,6 +121,7 @@ impl Chart {
         let config = self.config_mut();
         config.bottom_x.label_style.format = format.clone();
         config.left_y.label_style.format = format;
+        self.refit_kept_layout();
         self
     }
 
@@ -138,6 +142,7 @@ impl Chart {
     pub fn with_x_unit(mut self, scale: f64, offset: f64) -> Self {
         let axis = &mut self.config_mut().bottom_x;
         *axis = axis.clone().unit(scale, offset);
+        self.refit_kept_layout();
         self
     }
 
@@ -150,6 +155,7 @@ impl Chart {
     pub fn with_y_unit(mut self, scale: f64, offset: f64) -> Self {
         let axis = &mut self.config_mut().left_y;
         *axis = axis.clone().unit(scale, offset);
+        self.refit_kept_layout();
         self
     }
 
@@ -172,6 +178,7 @@ impl Chart {
         ] {
             axis.label_style.clearance = mode;
         }
+        self.refit_kept_layout();
         self
     }
 
@@ -182,6 +189,7 @@ impl Chart {
         grid.show_major_y = false;
         grid.show_minor_x = false;
         grid.show_minor_y = false;
+        self.refit_kept_layout();
         self
     }
 
@@ -199,18 +207,21 @@ impl Chart {
         let title = &mut bar.axis.title_option;
         title.text.segments = crate::text::rich_segments_from_label(text);
         title.visible = true;
+        self.refit_kept_layout();
         self
     }
 
     /// The chart in the polar coordinates `polar` (`Config::set_polar`).
     pub fn with_polar(mut self, polar: crate::PolarOptions) -> Self {
         self.config_mut().set_polar(Some(polar));
+        self.refit_kept_layout();
         self
     }
 
     /// The chart with `subplot` appended to its subplots.
     pub fn with_subplot(mut self, subplot: crate::Subplot) -> Self {
         self.config_mut().subplots.push(subplot);
+        self.refit_kept_layout();
         self
     }
 
@@ -234,6 +245,7 @@ impl Chart {
             );
         }
         config.legend.visible = true;
+        self.refit_kept_layout();
         self
     }
 
@@ -270,7 +282,11 @@ impl Chart {
         series: &mut [SeriesConfig],
         scope: ThemeScope,
     ) -> Result<(), ThemeError> {
-        Theme::apply_named(name, self.config_mut(), series, scope)?;
+        // Written into the chart only once the theme is taken: a refused
+        // theme changes nothing, the layout's state included (#357).
+        let mut themed = self.config().clone();
+        Theme::apply_named(name, &mut themed, series, scope)?;
+        *self.config_mut() = themed;
         self.fit_layout();
         Ok(())
     }
@@ -332,7 +348,10 @@ impl Chart {
         theme: &Theme,
         series: &mut [SeriesConfig],
     ) -> Result<(), ThemeError> {
-        theme.apply_to_its_kind(self.config_mut(), series, crate::draw_style_supports)?;
+        // As in `apply_theme_to`: a refused theme changes nothing.
+        let mut themed = self.config().clone();
+        theme.apply_to_its_kind(&mut themed, series, crate::draw_style_supports)?;
+        *self.config_mut() = themed;
         self.fit_layout();
         Ok(())
     }
@@ -352,7 +371,10 @@ impl Chart {
         scope: ThemeScope,
     ) -> Result<(), ThemeError> {
         check_theme_draw_style(theme, self.config(), series, scope)?;
-        theme.apply(self.config_mut(), series, scope)?;
+        // As in `apply_theme_to`: a refused theme changes nothing.
+        let mut themed = self.config().clone();
+        theme.apply(&mut themed, series, scope)?;
+        *self.config_mut() = themed;
         self.fit_layout();
         Ok(())
     }
@@ -380,6 +402,7 @@ impl Chart {
         if let Some(subplot) = self.config_mut().subplots.get_mut(index) {
             subplot.text_scale = mode;
         }
+        self.refit_kept_layout();
         Ok(())
     }
 
@@ -395,8 +418,9 @@ impl Chart {
     /// ([`crate::layout::auto_layout`]), measured with the font the chart's
     /// draw style renders.
     ///
-    /// A layout waiting for its fit ([`crate::LayoutState::NeedsFit`]) is
-    /// `Fitted` afterwards; a `Fixed` or `Fitted` one keeps its state.
+    /// The layout keeps its [`crate::LayoutState`]: a `Fixed` layout fitted
+    /// here is still drawn as stored afterwards and not fitted again by
+    /// later edits.
     pub fn fit_layout(&mut self) {
         let measure = crate::CpuTextMeasure::for_style(&self.config().draw_style);
         let fitted = crate::layout::auto_layout(self.config(), &measure);

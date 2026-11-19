@@ -119,9 +119,9 @@ fn export(
     series: &[SeriesConfig],
     scale: f32,
 ) -> RasterImage {
-    let mut chart = Chart::new(config.clone());
+    let chart = Chart::new(config.clone());
     r.export_rgba(
-        renderer::ExportSource::chart(&mut chart, series),
+        renderer::ExportSource::chart(&chart, series),
         renderer::ExportOptions::document(scale),
     )
     .block_on()
@@ -370,9 +370,9 @@ fn vector_export_and_a_json_round_trip_keep_the_own_x_axis() {
     config.overlays[0].x_axis.label_style.color = teal;
     config.overlays[0].x_axis.title_option.text.color = teal;
     let svg = |r: &mut Renderer, config: &renderer::Config| {
-        let mut chart = Chart::new(config.clone());
+        let chart = Chart::new(config.clone());
         r.export_svg_blocking(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .unwrap()
@@ -386,9 +386,9 @@ fn vector_export_and_a_json_round_trip_keep_the_own_x_axis() {
     assert!(!svg(&mut r, &linked).contains("#009988"));
     // The PDF draws the same axis: the own X axis adds its content.
     let pdf = |r: &mut Renderer, config: &renderer::Config| {
-        let mut chart = Chart::new(config.clone());
+        let chart = Chart::new(config.clone());
         r.export_pdf_blocking(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .unwrap()

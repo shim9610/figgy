@@ -492,10 +492,7 @@ fn the_exports_draw_the_moved_label() {
     for scale in [1.0f32, 2.0] {
         let export = |r: &mut Renderer, chart: &Chart| {
             r.export_rgba(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
+                renderer::ExportSource::chart(chart, &[]),
                 renderer::ExportOptions::panel(scale),
             )
             .block_on()
@@ -521,10 +518,7 @@ fn the_exports_draw_the_moved_label() {
     let svg = |r: &mut Renderer, chart: &Chart| {
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(
-                    &mut renderer::Chart::new(chart.config().clone()),
-                    &[],
-                ),
+                renderer::ExportSource::chart(chart, &[]),
                 renderer::ExportOptions::document(1.0),
             )
             .block_on()

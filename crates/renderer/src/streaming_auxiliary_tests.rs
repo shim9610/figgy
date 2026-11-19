@@ -185,7 +185,7 @@ fn pump(
 
 #[test]
 fn streamed_export_replays_document_resolution_and_preserves_display() {
-    let (mut renderer, id, mut view, mut chart, series, x, y) = setup();
+    let (mut renderer, id, mut view, chart, series, x, y) = setup();
     let job = renderer.active_stream_job(id).unwrap();
     let status = renderer.stream_status(id).unwrap();
     let (device, queue) = data_render::shared_device().unwrap();
@@ -210,7 +210,7 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
         let actual = crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
         let expected = resident
             .export_rgba(
-                crate::ExportSource::chart(&mut chart, &series),
+                crate::ExportSource::chart(&chart, &series),
                 crate::ExportOptions::panel(scale),
             )
             .block_on()
@@ -236,7 +236,7 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
 
 #[test]
 fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
-    let (mut renderer, id, _, mut chart, series, x, y) = setup();
+    let (mut renderer, id, _, chart, series, x, y) = setup();
     let original_job = renderer.active_stream_job(id);
     let original_count = renderer.stream_status(id).unwrap().submitted_primitives;
     let first = renderer
@@ -259,7 +259,7 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     resident.add_column("y", &y).unwrap();
     let old_expected = resident
         .export_rgba(
-            crate::ExportSource::chart(&mut chart, &series),
+            crate::ExportSource::chart(&chart, &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -275,7 +275,7 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     let new_export = crate::test_gpu::block_on(renderer.finish_stream_export(second)).unwrap();
     let new_expected = resident
         .export_rgba(
-            crate::ExportSource::chart(&mut Chart::new(latest), &series),
+            crate::ExportSource::chart(&Chart::new(latest), &series),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -409,7 +409,7 @@ fn streamed_pick_matches_resident_and_preserves_display() {
 
 #[test]
 fn stream_export_budget_rejection_is_preallocation_and_replay_survives_screen_retarget() {
-    let (mut renderer, id, _, mut chart, series, x, y) = setup();
+    let (mut renderer, id, _, chart, series, x, y) = setup();
     renderer.end_gpu_frame();
     renderer.wait_idle().unwrap();
     renderer.service_stream_requests();
@@ -457,7 +457,7 @@ fn stream_export_budget_rejection_is_preallocation_and_replay_survives_screen_re
     resident.add_column("x", &x).unwrap();
     resident.add_column("y", &y).unwrap();
     let expected = crate::test_gpu::block_on(resident.export_rgba(
-        crate::ExportSource::chart(&mut chart, &series),
+        crate::ExportSource::chart(&chart, &series),
         crate::ExportOptions::panel(2.0).with_clear(Color::WHITE),
     ))
     .unwrap();

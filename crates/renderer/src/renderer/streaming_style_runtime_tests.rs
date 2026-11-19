@@ -979,7 +979,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         return;
     }
     let expected = crate::test_gpu::block_on(resident.export_rgba(
-        crate::ExportSource::chart(&mut Chart::new(config.clone()), &series),
+        crate::ExportSource::chart(&Chart::new(config.clone()), &series),
         crate::ExportOptions::panel(1.0).with_clear(Color::WHITE),
     ))
     .unwrap();

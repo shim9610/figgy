@@ -719,7 +719,27 @@ fn issue_raster_stamp() -> Option<u64> {
 
 impl Chart {
     /// New chart. Both dirty flags start true so the first frame draws.
+    ///
+    /// A config whose layout the chart keeps fitted
+    /// ([`crate::LayoutState::Fitted`], #357: `Chart::sized`, the helpers'
+    /// `config_for_series` and default parallel config, a document
+    /// converted with its `text_sizes`) is fitted here, once, with the
+    /// font its draw style renders ([`crate::layout::auto_layout`]): the
+    /// chart is created with the layout it draws. A `Fixed` config is kept
+    /// exactly as given. No draw or export fits the layout.
     pub fn new(config: Config) -> Self {
+        let mut chart = Self::stored(config);
+        chart.refit_kept_layout();
+        chart
+    }
+
+    /// A chart holding `config` exactly as given, whatever its
+    /// [`crate::LayoutState`]: the renderer's own charts over a config it
+    /// already stores or derives (a registered chart's config, an export's
+    /// scaled copy, a streamed snapshot), which were laid out when they
+    /// were made (#357). Edits through the chart's methods still keep a
+    /// `Fitted` layout fitted.
+    pub(crate) fn stored(config: Config) -> Self {
         Self {
             config,
             data_dirty: true,
@@ -736,30 +756,25 @@ impl Chart {
         self.raster_stamp = issue_raster_stamp();
     }
 
-    /// The document was edited from a layout in state `before`:
-    /// [`Self::mark_raster`], and a fitted layout the edit kept `Fitted`
-    /// needs a fit again (#357, [`crate::LayoutState::after_edit`]). An edit
-    /// that set `layout_state` itself keeps its value.
-    fn mark_edited_from(&mut self, before: crate::LayoutState) {
-        self.mark_raster();
-        self.config.layout_state = before.after_edit(self.config.layout_state);
-    }
-
-    /// [`Self::mark_edited_from`] the current state: an edit that leaves
-    /// the state as it found it.
+    /// The document was edited by a chart method: [`Self::mark_raster`],
+    /// and a layout the chart keeps fitted is fitted to what it holds now
+    /// ([`Self::refit_kept_layout`], #357).
     fn mark_edited(&mut self) {
-        self.mark_edited_from(self.config.layout_state);
+        self.mark_raster();
+        self.refit_kept_layout();
     }
 
-    /// Fit the layout when it waits for its fit
-    /// ([`crate::LayoutState::NeedsFit`], #357): the fit
-    /// [`Self::fit_layout`] makes, written into the config, which is then
-    /// `Fitted`. Returns whether it fitted. A default draw or export calls
-    /// it before drawing ([`crate::Renderer::prepare`],
-    /// [`crate::Renderer::export_rgba`]); the `as_stored` calls do not.
-    pub fn fit_pending_layout(&mut self) -> bool {
-        if !self.config.layout_state.needs_fit() {
-            return false;
+    /// Fit the layout when the chart keeps it fitted
+    /// ([`crate::LayoutState::Fitted`], #357): the fit
+    /// [`Self::fit_layout`] makes, written into the config. A `Fixed`
+    /// layout (a document drawn as saved, a layout the user moved or
+    /// placed) is left as it is, so a refit never undoes a drag. The chart
+    /// methods that edit the document call it as part of the edit; a host
+    /// that edits through [`Self::config_mut`] calls [`Self::fit_layout`]
+    /// itself.
+    pub(crate) fn refit_kept_layout(&mut self) {
+        if !self.config.layout_state.is_fitted() {
+            return;
         }
         let measure = CpuTextMeasure::for_style(&self.config.draw_style);
         let fitted = crate::layout::auto_layout(&self.config, &measure);
@@ -768,7 +783,6 @@ impl Chart {
             self.data_dirty = true;
             self.mark_raster();
         }
-        true
     }
 
     /// The stamp of the chart's current raster content; `None` when the
@@ -801,7 +815,7 @@ impl Chart {
     /// New chart with every pixel-based dimension multiplied by `scale`.
     /// Used for high-DPI export.
     pub fn scaled(&self, scale: f32) -> Self {
-        Self::new(self.config.scaled(scale))
+        Self::stored(self.config.scaled(scale))
     }
 
     /// General mutable access. Sets both dirty flags because the caller may
@@ -810,13 +824,13 @@ impl Chart {
     /// Only the caller's assignments change the config: this accessor does
     /// not fit ranges, choose ticks or fit the title band.
     ///
-    /// A [`crate::LayoutState::Fitted`] layout is marked `NeedsFit` before
-    /// the caller's assignments (#357): the next default draw fits the
-    /// edited content. Assign `layout_state = LayoutState::Fixed` to keep
-    /// margins set here.
+    /// The layout is not fitted again here (#357): a host that edits what
+    /// a [`crate::LayoutState::Fitted`] layout holds calls
+    /// [`Self::fit_layout`] after its assignments, and assigns
+    /// `layout_state = LayoutState::Fixed` to keep margins it sets itself.
     pub fn config_mut(&mut self) -> &mut Config {
         self.data_dirty = true;
-        self.mark_edited();
+        self.mark_raster();
         &mut self.config
     }
 
@@ -825,22 +839,26 @@ impl Chart {
     /// Change only `min` / `max` here to preserve tick spacing, minor count
     /// and label formatting. Unlike [`Self::set_x_range`] / [`Self::set_y_range`],
     /// this accessor performs no coupled config adjustments. Change both axes
-    /// of a pair explicitly when they should share the new range.
+    /// of a pair explicitly when they should share the new range. A layout
+    /// the chart keeps fitted ([`crate::LayoutState::Fitted`]) is fitted to
+    /// the new tick labels as part of the edit (#357).
     pub fn with_axis_range_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
-        let before = self.config.layout_state;
         f(&mut self.config);
         self.data_dirty = true;
-        self.mark_edited_from(before);
+        self.mark_edited();
     }
 
     /// Decoration-only change (titles, colors, margins, …): raster only.
-    /// Only the fields written by the closure change. In particular, assigning
-    /// title segments here keeps `top_margin`; [`Self::with_title`] also fits
-    /// that band. The caller still refreshes the view before preparing.
+    /// Only the fields written by the closure change, and the layout of a
+    /// chart that keeps it fitted ([`crate::LayoutState::Fitted`], #357),
+    /// which is fitted to the edit. In particular, assigning title segments
+    /// here keeps a `Fixed` chart's `top_margin`; [`Self::with_title`] also
+    /// fits that band. Assign `layout_state = LayoutState::Fixed` in the
+    /// closure to keep margins set there. The caller still refreshes the
+    /// view before preparing.
     pub fn with_decoration_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
-        let before = self.config.layout_state;
         f(&mut self.config);
-        self.mark_edited_from(before);
+        self.mark_edited();
     }
 
     // Dirty-flag interface.
@@ -1414,7 +1432,7 @@ impl Chart {
                 let Some(subplot) = self.config.subplots.get(index) else {
                     return;
                 };
-                let mut inner = Chart::new(subplot.config.clone());
+                let mut inner = Chart::stored(subplot.config.clone());
                 if own_x {
                     inner.auto_fit_overlay_x_extent(overlay, x, padding_ratio);
                 }
@@ -1640,7 +1658,7 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<Config> {
-        let mut fitted = Chart::new(config.clone());
+        let mut fitted = Chart::stored(config.clone());
         fitted.auto_fit_layer_union(pool, LayerRef::Base, series, padding_ratio)?;
         for overlay in 0..config.overlays.len() {
             fitted.auto_fit_layer_union(pool, LayerRef::Overlay(overlay), series, padding_ratio)?;
@@ -1674,7 +1692,7 @@ impl Chart {
         axes: FitAxes,
         padding_ratio: f64,
     ) -> Result<Config> {
-        let mut fitted = Chart::new(config.clone());
+        let mut fitted = Chart::stored(config.clone());
         fitted.fit_layer_union_where(pool, layer, series, include, axes, padding_ratio)?;
         Ok(fitted.config)
     }

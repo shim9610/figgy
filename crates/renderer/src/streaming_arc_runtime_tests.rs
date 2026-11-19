@@ -316,7 +316,7 @@ fn parity_with_samples(
         let actual = crate::test_gpu::block_on(streamed.finish_stream_export(operation)).unwrap();
         let expected = resident
             .export_rgba(
-                crate::ExportSource::chart(&mut chart, &series),
+                crate::ExportSource::chart(&chart, &series),
                 crate::ExportOptions::panel(scale),
             )
             .block_on()

@@ -133,6 +133,11 @@ impl Renderer {
         config.set_active_layer(config.active_layer);
         // Linked subplot axes are stored equal to their targets.
         config.sync_subplot_links(None);
+        // The chart is created with its layout: one it keeps fitted is
+        // fitted here (#357). A monotonic chart is registered `Fixed`.
+        if !monotonic {
+            config = kept_layout(config);
+        }
         let id_value = self
             .next_chart_id
             .checked_add(1)
@@ -278,99 +283,16 @@ impl Renderer {
         // group here, inside this one `&mut self` call: no frame can show one
         // member moved and another not.
         config.sync_subplot_links(Some(&state.config));
-        // An edit of a fitted layout asks for its fit again (#357); an
-        // identical config changes nothing, and an edit that sets the state
-        // itself keeps it. A monotonic chart's layout moves only through its
-        // own calls (M4): it stays `Fixed`.
+        // A layout the chart keeps fitted is fitted to the edit as part of
+        // it (#357); an identical config changes nothing, and an edit that
+        // sets `Fixed` keeps its margins. A monotonic chart's layout moves
+        // only through its own calls (M4): it stays `Fixed`.
         if self.monotonic_order.contains(&id) {
             config.layout_state = crate::LayoutState::Fixed;
         } else if config != state.config {
-            config.layout_state = state.config.layout_state.after_edit(config.layout_state);
+            config = kept_layout(config);
         }
         Ok(config)
-    }
-
-    /// Fit chart `id`'s layout when it waits for its fit
-    /// ([`crate::LayoutState::NeedsFit`], #357): the fit
-    /// [`crate::layout::auto_layout`] makes, measured with the font its draw
-    /// style renders, stored as [`Self::set_chart_config`] stores a config,
-    /// so the chart is then `Fitted` and its revisions move. Returns whether
-    /// it fitted. A default draw or export of the chart
-    /// ([`Self::prepare_registered`], [`Self::export_rgba`]) calls it first.
-    ///
-    /// Streaming is not extended (rule 8): a chart that draws a streamed
-    /// source is refused with the error the series' source gives
-    /// ([`FiggyError::ColumnNotResident`] or
-    /// [`FiggyError::InvalidStreamSource`]), and a default draw draws it as
-    /// stored.
-    pub fn fit_pending_layout(&mut self, id: ChartId) -> Result<bool> {
-        let result = self.fit_pending_layout_unreported(id, true);
-        self.reported(result)
-    }
-
-    /// [`Self::fit_pending_layout`]; a chart with a streamed source is
-    /// refused when `refuse_streamed`, and left as stored otherwise. A
-    /// monotonic chart's layout moves only through its own calls (M4) and
-    /// is never fitted here.
-    fn fit_pending_layout_unreported(
-        &mut self,
-        id: ChartId,
-        refuse_streamed: bool,
-    ) -> Result<bool> {
-        let state = self
-            .chart_states
-            .get(&id)
-            .ok_or(FiggyError::UnknownChart { id })?;
-        if !state.config.layout_state.needs_fit() || self.monotonic_order.contains(&id) {
-            return Ok(false);
-        }
-        for series in &state.series {
-            if let Err(error) = self.require_resident_series(series) {
-                return if refuse_streamed {
-                    Err(error)
-                } else {
-                    Ok(false)
-                };
-            }
-        }
-        let measure = crate::CpuTextMeasure::for_style(&state.config.draw_style);
-        let fitted = crate::layout::auto_layout(&state.config, &measure);
-        self.set_chart_config_unreported(id, fitted)?;
-        Ok(true)
-    }
-
-    /// The fit a default draw or export makes before drawing chart `id`
-    /// (#357): [`Self::fit_pending_layout`], leaving a chart with a
-    /// streamed source as stored instead of refusing it. Returns whether it
-    /// fitted. A host that reads the chart's stamps before it draws (the
-    /// WASM wrapper's `frame`) calls it first, so the stamps it records are
-    /// the fitted chart's.
-    pub fn fit_pending_layout_for_draw(&mut self, id: ChartId) -> Result<bool> {
-        let result = self.fit_pending_layout_unreported(id, false);
-        self.reported(result)
-    }
-
-    /// [`Self::fit_pending_layout_for_draw`] inside a call that reports its
-    /// own result.
-    pub(in crate::renderer) fn fit_pending_layout_on_draw(&mut self, id: ChartId) -> Result<()> {
-        self.fit_pending_layout_unreported(id, false).map(|_| ())
-    }
-
-    /// [`Self::fit_pending_layout_on_draw`] for every chart of a draw, once
-    /// every id resolves: an unknown id fits none.
-    pub(in crate::renderer) fn fit_pending_registered(
-        &mut self,
-        ids: impl Iterator<Item = ChartId> + Clone,
-    ) -> Result<()> {
-        for id in ids.clone() {
-            if !self.chart_states.contains_key(&id) {
-                return Err(FiggyError::UnknownChart { id });
-            }
-        }
-        for id in ids {
-            self.fit_pending_layout_on_draw(id)?;
-        }
-        Ok(())
     }
 
     /// The revisions and the write of a validated config.
@@ -794,4 +716,18 @@ pub(in crate::renderer) fn refuse_monotonic_series(series: &[SeriesConfig]) -> R
         }),
         None => Ok(()),
     }
+}
+
+/// `config` with its layout fitted when the chart keeps it fitted
+/// ([`crate::LayoutState::Fitted`], #357): the fit
+/// [`crate::layout::auto_layout`] makes, measured with the font the draw
+/// style renders. A `Fixed` config is returned as given. A registered
+/// chart's layout is fitted here when the chart is registered and when a
+/// config edit commits, never by a draw or an export.
+pub(in crate::renderer) fn kept_layout(config: Config) -> Config {
+    if !config.layout_state.is_fitted() {
+        return config;
+    }
+    let measure = crate::CpuTextMeasure::for_style(&config.draw_style);
+    crate::layout::auto_layout(&config, &measure)
 }

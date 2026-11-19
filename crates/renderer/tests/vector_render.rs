@@ -248,7 +248,7 @@ fn pixel_scaled_arrows_have_their_length_in_pixels_at_every_export_scale() {
         return;
     };
     point_fixture(&mut renderer, &[(2.0, 2.0)], &[(40.0, 0.0)]);
-    let mut chart = bare_chart();
+    let chart = bare_chart();
     let series = [points("arrows", pixels(1.0))];
 
     let img = export(&mut renderer, &chart, &series);
@@ -268,7 +268,7 @@ fn pixel_scaled_arrows_have_their_length_in_pixels_at_every_export_scale() {
 
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1193,7 +1193,7 @@ fn vector_series_scale_by_their_overlay_axis() {
     let series = [points("arrows", data(1.0))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1258,7 +1258,7 @@ fn vector_series_draw_inside_their_subplot() {
     let series = [points("arrows", pixels(1.0))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1748,7 +1748,7 @@ fn streamline_arrowheads_keep_pixel_spacing_at_1x_and_2x() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
-    let mut chart = bare_chart();
+    let chart = bare_chart();
     streamline_fixture(&mut renderer, &[(0.5, 2.0), (3.5, 2.0)]);
     let series = [thin_streamlines(Some(ARROWS))];
     let img = export(&mut renderer, &chart, &series);
@@ -1757,7 +1757,7 @@ fn streamline_arrowheads_keep_pixel_spacing_at_1x_and_2x() {
     assert!(no_head_at(&img, a, (1.0, 0.0), 80.0));
     let img2 = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1878,7 +1878,7 @@ fn streamlines_scale_by_their_overlay_axis() {
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -1928,7 +1928,7 @@ fn streamlines_draw_inside_their_subplot() {
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()

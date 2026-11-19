@@ -503,10 +503,7 @@ pub fn export_scene<T>(
     export: impl FnOnce(&mut Renderer, ExportSource<'_>) -> Result<T, FiggyError>,
 ) -> Result<T, FiggyError> {
     if monotonic.is_empty() {
-        return export(
-            r,
-            ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
-        );
+        return export(r, ExportSource::chart(chart, series));
     }
     let views: Vec<Vec<&[f64]>> = monotonic
         .iter()
@@ -680,7 +677,27 @@ pub fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
 
 /// The starting model of Cartesian scene `kind`, its columns uploaded to
 /// `r`. The large-data scene generates `big_data_points` samples.
+///
+/// The scene is the document as its chart object holds it: a layout the
+/// chart keeps fitted (`LayoutState::Fitted`, which a document reader gives
+/// a document with text sizes and the default parallel config sets, #357)
+/// is fitted when the chart is created (`Chart::new`), and every check
+/// reads that layout: the rasters, the hit map and the parts a vector
+/// export writes are measured on the config the export draws.
 pub fn build(
+    r: &mut Renderer,
+    kind: SceneKind,
+    big_data_points: usize,
+) -> Result<CartesianScene, FiggyError> {
+    let mut scene = build_scene(r, kind, big_data_points)?;
+    if scene.config.layout_state.is_fitted() {
+        scene.config = renderer::Chart::new(scene.config).config().clone();
+    }
+    Ok(scene)
+}
+
+/// [`build`] before its chart object fits a layout it keeps fitted.
+fn build_scene(
     r: &mut Renderer,
     kind: SceneKind,
     big_data_points: usize,
@@ -2603,7 +2620,7 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     }
     let mut config = base_config(
         "Offset spectra: band drift with temperature",
-        "Raman shift (cm⁻¹)",
+        "Raman shift (cm$^{-1}$)",
         "Intensity (offset)",
     );
     config.line_offsets = Some(renderer::data_config::LineOffsets {
@@ -5089,7 +5106,9 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, LevelView, Transition,
     };
     let ink = Color::from_rgb8(70, 76, 90);
-    let label = |text: &str| Some(RichText::plain(text, ink, 11.0, ""));
+    // `$…$` spans are TeX: scripts are written as script segments, not as
+    // Unicode script characters (#357).
+    let label = |text: &str| Some(RichText::from_label(text, ink, 11.0, ""));
     let level = |id: &str, column: &str, energy: f64, text: Option<&str>| EnergyLevel {
         id: id.into(),
         column: column.into(),
@@ -5119,7 +5138,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ..level(id, "3P*", energy, None)
     };
     let levels = vec![
-        level("1s2", "1S", 0.0, Some("1s²")),
+        level("1s2", "1S", 0.0, Some("1s$^{2}$")),
         level("2s1S", "1S", 20.615_774_823, Some("2s")),
         level("3s1S", "1S", 22.920_317_359, Some("3s")),
         level("4s1S", "1S", 23.673_570_590, Some("4s")),
@@ -5169,8 +5188,8 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         limits: vec![IonizationLimit {
             id: "He II".into(),
             energy: 24.587_389_011,
-            label: Some(RichText::plain(
-                "He II 1s ²S  24.587 eV",
+            label: Some(RichText::from_label(
+                "He II 1s $^{2}$S  24.587 eV",
                 Color::from_rgb8(40, 50, 120),
                 11.0,
                 "",

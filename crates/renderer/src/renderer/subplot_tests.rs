@@ -456,24 +456,24 @@ fn a_subplot_document_exports_every_chart() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut r = renderer();
-    let mut chart = Chart::new(document());
+    let chart = Chart::new(document());
     let document_image = r
         .export_rgba(
-            crate::ExportSource::chart(&mut chart, &series()),
+            crate::ExportSource::chart(&chart, &series()),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let panel = r
         .export_rgba(
-            crate::ExportSource::chart(&mut chart, &series()),
+            crate::ExportSource::chart(&chart, &series()),
             crate::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let large = r
         .export_rgba(
-            crate::ExportSource::chart(&mut chart, &series()),
+            crate::ExportSource::chart(&chart, &series()),
             crate::ExportOptions::document(2.0),
         )
         .block_on()
@@ -487,7 +487,7 @@ fn a_subplot_document_exports_every_chart() {
     };
     let wide = r
         .export_rgba(
-            crate::ExportSource::chart(&mut Chart::new(side), &series()),
+            crate::ExportSource::chart(&Chart::new(side), &series()),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
@@ -783,7 +783,7 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
     ] {
         let base = r
             .export_rgba(
-                crate::ExportSource::chart(&mut Chart::new(plain.clone()), &series()),
+                crate::ExportSource::chart(&Chart::new(plain.clone()), &series()),
                 crate::ExportOptions::document(1.0),
             )
             .block_on()
@@ -799,7 +799,7 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
         });
         let image = r
             .export_rgba(
-                crate::ExportSource::chart(&mut Chart::new(picked), &series()),
+                crate::ExportSource::chart(&Chart::new(picked), &series()),
                 crate::ExportOptions::document(1.0),
             )
             .block_on()
@@ -856,14 +856,14 @@ fn subplot_members_draw_shifted_in_their_own_area() {
     offset.subplots[0].config.line_offsets = Some(group(&["s1", "t1"], 20.0));
     let drawn = r
         .export_rgba(
-            crate::ExportSource::chart(&mut Chart::new(offset.clone()), &host(false)),
+            crate::ExportSource::chart(&Chart::new(offset.clone()), &host(false)),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let expected = r
         .export_rgba(
-            crate::ExportSource::chart(&mut Chart::new(plain.clone()), &host(true)),
+            crate::ExportSource::chart(&Chart::new(plain.clone()), &host(true)),
             crate::ExportOptions::document(1.0),
         )
         .block_on()
@@ -888,7 +888,7 @@ fn subplot_members_draw_shifted_in_their_own_area() {
     assert_ne!(
         drawn.rgba,
         r.export_rgba(
-            crate::ExportSource::chart(&mut Chart::new(plain), &host(false)),
+            crate::ExportSource::chart(&Chart::new(plain), &host(false)),
             crate::ExportOptions::document(1.0)
         )
         .block_on()
@@ -1059,7 +1059,7 @@ fn rendered_panels_match_the_panel_layers_through_every_edit() {
     for (overlays, members) in [(0, 0), (3, 0), (1, 0), (1, 200), (3, 200), (1, 0), (0, 0)] {
         let config = shaped(overlays, members);
         r.set_chart_config(id, config.clone()).unwrap();
-        let mut chart = Chart::new(r.chart_config(id).unwrap().clone());
+        let chart = Chart::new(r.chart_config(id).unwrap().clone());
         r.refresh_axis_with_selection(&mut view, &chart, config.chart_area.0, Some("legend"))
             .unwrap();
         let panels = expand_for_render(chart.config()).unwrap();
@@ -1069,7 +1069,7 @@ fn rendered_panels_match_the_panel_layers_through_every_edit() {
         assert!(pixels.chunks_exact(4).any(|p| p[3] != 0));
         let png = r
             .export_png(
-                crate::ExportSource::chart(&mut chart, &declarations),
+                crate::ExportSource::chart(&chart, &declarations),
                 crate::ExportOptions::document(1.0),
             )
             .block_on()

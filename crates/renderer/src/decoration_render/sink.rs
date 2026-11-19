@@ -15,7 +15,7 @@ use crate::raster::{Canvas, Paint};
 use crate::select::{SelectionBox, SelectionOutline, part_outline};
 use crate::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::sketch::DecoStroker;
-use crate::text_render::{FontPolicy, draw_plain_text, draw_rich_text};
+use crate::text_render::{FontPolicy, draw_plain_text_at, draw_rich_text_at};
 
 /// Paints emitted parts onto up to two canvases: the one below the data and
 /// the one above. A slot without a canvas drops its parts, which is how a
@@ -32,6 +32,10 @@ pub(crate) struct CanvasSink<'a> {
     policy: FontPolicy,
     origin: [f32; 2],
     scale: f32,
+    /// The scale the emitted config's pixel values already carry (1 for a
+    /// logical config): with `scale` it gives the drawing's pixel scale,
+    /// from which its glyphs' hinting is decided (#357).
+    carried: f32,
     /// The first text that could not be drawn (a glyph above
     /// `MAX_GLYPH_PX`); [`Self::finish`] returns it. Later parts still
     /// paint, later text does not.
@@ -66,7 +70,18 @@ impl<'a> CanvasSink<'a> {
             policy,
             origin,
             scale,
+            carried: 1.0,
             text_error: None,
+        }
+    }
+
+    /// The sink for a config whose pixel values already carry `scale` (a
+    /// display's or export's scaled config): its glyphs are hinted only when
+    /// the drawing is at 1x (#357).
+    pub(crate) fn carrying(self, scale: f32) -> Self {
+        Self {
+            carried: scale,
+            ..self
         }
     }
 
@@ -119,6 +134,7 @@ impl Sink for CanvasSink<'_> {
             .rotation
             .map(|(degrees, center)| (degrees, self.point([center.0, center.1])));
         let (scale, policy) = (self.scale, self.policy);
+        let pixel_scale = self.scale * self.carried;
         if self.text_error.is_some() {
             return;
         }
@@ -135,7 +151,7 @@ impl Sink for CanvasSink<'_> {
                 family,
                 size,
                 color,
-            } => draw_plain_text(
+            } => draw_plain_text_at(
                 canvas,
                 text,
                 origin,
@@ -145,14 +161,15 @@ impl Sink for CanvasSink<'_> {
                 false,
                 false,
                 policy,
+                pixel_scale,
             ),
             TextRef::Rich(rich) | TextRef::ScaledRich { text: rich, .. } => {
                 let scale = scale * text.text.rich().map_or(1.0, |(_, own)| own);
                 if scale == 1.0 {
-                    draw_rich_text(canvas, rich, origin, policy)
+                    draw_rich_text_at(canvas, rich, origin, policy, pixel_scale)
                 } else {
                     let scaled = crate::decoration::scaled_rich_text(rich, scale);
-                    draw_rich_text(canvas, &scaled, origin, policy)
+                    draw_rich_text_at(canvas, &scaled, origin, policy, pixel_scale)
                 }
             }
         };

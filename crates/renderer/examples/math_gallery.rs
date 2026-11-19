@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         for (suffix, scale) in [("", 1.0), ("@2x", 2.0)] {
             let path = output.join(format!("{name}{suffix}.png"));
             let options = ExportOptions::document(scale).with_clear(Color::WHITE);
-            renderer.save_blocking(ExportSource::chart(&mut chart, &[]), options, &path)?;
+            renderer.save_blocking(ExportSource::chart(&chart, &[]), options, &path)?;
             eprintln!("wrote {}", path.display());
         }
     }

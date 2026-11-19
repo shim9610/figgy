@@ -266,19 +266,22 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 (`out_margin`), the axis title offsets across them, the chart title band and
 the legend clearance that `layout::auto_layout` writes.
 
+The layout is fitted when the chart is created and when an edit call
+changes what it holds; `frame()` and the exports draw the stored config as
+it is and never fit it.
+
 | Value | Meaning |
 |---|---|
 | `"fixed"` (default, key absent) | Drawn exactly as stored; never fitted on its own. Every document written before the key reads as `"fixed"`. A drag or resize of a decoration or of the plot area sets it. |
-| `"needs_fit"` | The next `frame()` or export fits the layout, writes it here and sets `"fitted"`. `frame_as_stored()` and the `*_as_stored` exports leave it. A new `FiggyChart` starts with it. |
-| `"fitted"` | The layout is the fit of what the chart held. Any edit through `set_config` (or another edit call) that keeps `"fitted"` marks it `"needs_fit"` again; to keep margins set by hand, send `"fixed"` with them. |
+| `"fitted"` | The chart keeps the layout fitted to what it holds: a new `FiggyChart` starts with it, and `set_config` (or another edit call) that keeps `"fitted"` fits the layout as part of the edit. To keep margins set by hand, send `"fixed"` with them. |
 
 The categorical, box plot and radar documents (`set_categorical_document`,
 `set_boxplot_document`, `set_radar_document`) take an optional
 `"text_sizes": { "title": 28, "axis_title": 22, "tick_label": 18, "legend": 14 }`
 (each 8 to 64 px). Without it every text is drawn at the document's
 `font_size` and the title at 1.5 × it, as before; with it the converted chart
-draws those sizes and fits its layout on its first frame unless the document
-has an explicit `decorations.data_area`.
+draws those sizes in a `"fitted"` layout, fitted when the document is set,
+unless the document has an explicit `decorations.data_area`.
 
 ## 데이터 종류별 선택 표시(`picked_data`)
 

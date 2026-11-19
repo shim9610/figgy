@@ -247,7 +247,7 @@ impl CallbackTrait for LabCallback {
             let series = one_series(&panel.series, &panel.style);
             let mut items = [ChartDrawItem {
                 view: &mut panel.view,
-                chart: &mut panel.chart,
+                chart: &panel.chart,
                 series: &series,
             }];
             state.renderer.prepare(&mut items)

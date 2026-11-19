@@ -47,9 +47,10 @@ pub(in crate::web) async fn create_chart_kernel(
         width: w,
         height: h,
     });
-    // A new chart's layout follows what it holds: each default frame or
-    // export after an edit fits it (#357), until the user moves part of it.
-    config.layout_state = renderer::LayoutState::NeedsFit;
+    // A new chart keeps its layout fitted to what it holds (#357): the
+    // registration fits it, and every edit call fits it again, until the
+    // user moves part of it. `frame()` and the exports never fit.
+    config.layout_state = renderer::LayoutState::Fitted;
     let chart_id = renderer
         .register_chart(config.clone(), Vec::new())
         .map_err(js_err)?;

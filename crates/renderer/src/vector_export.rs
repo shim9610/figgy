@@ -101,9 +101,18 @@ pub(crate) trait VectorOut {
     /// clockwise about a centre) when given: glyphs and rules until
     /// [`Self::end_text`] are relative to `origin`.
     fn begin_text(&mut self, origin: [f32; 2], rotation: Option<(f32, [f32; 2])>);
-    /// The outline of glyph `glyph` of `font` at `size`, its pen at `pen`
-    /// relative to the text origin.
-    fn glyph(&mut self, font: FontRef<'static>, glyph: u16, size: f32, pen: [f32; 2], color: Color);
+    /// The outline of glyph `glyph` of `font` at `size`, hinted when `hint`
+    /// says so (the raster's [`crate::text_render::glyph_hinting`]), its pen
+    /// at `pen` relative to the text origin.
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        hint: bool,
+        pen: [f32; 2],
+        color: Color,
+    );
     fn end_text(&mut self);
     /// Clip what follows, until [`Self::pop_clip`], to `rect`.
     fn push_clip(&mut self, rect: Rect);
@@ -312,6 +321,10 @@ pub(crate) struct VectorSink<'a> {
     policy: FontPolicy,
     origin: [f32; 2],
     scale: f32,
+    /// The scale the emitted document's pixel values already carry (1 for
+    /// a logical document): with `scale` it gives the drawing's pixel
+    /// scale, from which its glyphs' hinting is decided (#357).
+    carried: f32,
     /// The rectangle the raster's texture covers: a ramp image is cut to it.
     clip: Rect,
     /// The origin of the text being written, in output pixels.
@@ -335,9 +348,20 @@ impl<'a> VectorSink<'a> {
             policy,
             origin,
             scale,
+            carried: 1.0,
             clip,
             text_origin: [0.0, 0.0],
             error: None,
+        }
+    }
+
+    /// The sink for a document whose pixel values already carry `scale`
+    /// (an export's scaled document): its glyphs are hinted only when the
+    /// export is at 1x (#357).
+    pub(crate) fn carrying(self, scale: f32) -> Self {
+        Self {
+            carried: scale,
+            ..self
         }
     }
 
@@ -624,11 +648,14 @@ impl GlyphSink for VectorSink<'_> {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
+        script: bool,
         pen: (f32, f32),
         color: &Color,
     ) {
         let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
-        self.out.glyph(font, glyph, size, pen, *color);
+        let pixel_scale = self.scale * self.carried;
+        let hint = crate::text_render::glyph_hinting(font, size, pixel_scale, script);
+        self.out.glyph(font, glyph, size, hint, pen, *color);
     }
 
     fn rect(&mut self, r: RectF, color: &Color) {
@@ -1010,7 +1037,8 @@ fn write_pass(
             [0.0, 0.0],
             1.0,
             clip,
-        );
+        )
+        .carrying(scale);
         emit_pass(document, panels, pass, &mut sink, scale);
         sink.error.map_or(Ok(()), Err)
     })();
@@ -1662,7 +1690,15 @@ impl GlyphSink for PartsTwin<'_> {
         true
     }
 
-    fn glyph(&mut self, _: FontRef<'static>, _: u16, size: f32, pen: (f32, f32), _: &Color) {
+    fn glyph(
+        &mut self,
+        _: FontRef<'static>,
+        _: u16,
+        size: f32,
+        _: bool,
+        pen: (f32, f32),
+        _: &Color,
+    ) {
         let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
         if pen[0].is_finite() && pen[1].is_finite() && size.is_finite() && size > 0.0 {
             (self.out)(WrittenPart::Glyph(pen));
@@ -2148,7 +2184,7 @@ mod tests {
                 }
                 #[cfg(feature = "cpu-twin")]
                 {
-                    let chart = crate::chart::Chart::new(document.clone());
+                    let chart = crate::chart::Chart::stored(document.clone());
                     let mut parts = 0usize;
                     written_document_parts(&chart, &[], scale, &mut |_| parts += 1).unwrap();
                     assert!(parts > 0);
@@ -2176,7 +2212,7 @@ mod tests {
         .unwrap();
         let clear = Color::new(0.0, 0.0, 0.0, 0.0);
         for document in pass_documents() {
-            let chart = crate::chart::Chart::new(document);
+            let chart = crate::chart::Chart::stored(document);
             for scale in [1.0f32, 2.0] {
                 let mut frame = renderer
                     .prepare_export(&chart, &[], scale, crate::renderer::ExportScope::Document)

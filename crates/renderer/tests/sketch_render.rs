@@ -288,7 +288,7 @@ fn sketch_diverges_from_precise() {
 
     let img_p = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -296,7 +296,7 @@ fn sketch_diverges_from_precise() {
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let img_s = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -367,7 +367,7 @@ fn sketch_diverges_from_precise() {
         let one = [cfg];
         let p = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &one),
+                renderer::ExportSource::chart(&chart, &one),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -375,7 +375,7 @@ fn sketch_diverges_from_precise() {
         chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
         let s = r
             .export_rgba(
-                renderer::ExportSource::chart(&mut chart, &one),
+                renderer::ExportSource::chart(&chart, &one),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -403,14 +403,14 @@ fn sketch_is_deterministic() {
 
     let a = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let b = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -422,7 +422,7 @@ fn sketch_is_deterministic() {
     chart2.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let c = r2
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart2, &series2),
+            renderer::ExportSource::chart(&chart2, &series2),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -444,7 +444,7 @@ fn sketch_seed_separates() {
     });
     let s0 = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -455,7 +455,7 @@ fn sketch_seed_separates() {
     });
     let s1 = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -501,7 +501,7 @@ fn sketch_amplitude_is_bounded() {
 
     let img_p = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -534,7 +534,7 @@ fn sketch_amplitude_is_bounded() {
     });
     let img_s = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -586,7 +586,7 @@ fn sketch_preserves_nan_gaps() {
     let series = [line_series("gap", "gx", "gy", RED, LineStylePreset::Solid)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &series),
+            renderer::ExportSource::chart(&chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -643,7 +643,7 @@ fn sketch_composes_with_dash() {
     let solid = [line_series("ds", "dx", "dy", RED, LineStylePreset::Solid)];
     let img_solid = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &solid),
+            renderer::ExportSource::chart(&chart, &solid),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -651,7 +651,7 @@ fn sketch_composes_with_dash() {
     let dashed = [line_series("dd", "dx", "dy", RED, LineStylePreset::Dash)];
     let img_dash = r
         .export_rgba(
-            renderer::ExportSource::chart(&mut chart, &dashed),
+            renderer::ExportSource::chart(&chart, &dashed),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -742,14 +742,14 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                 };
                 let actual = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&mut chart, &[series("noisy")]),
+                        renderer::ExportSource::chart(&chart, &[series("noisy")]),
                         renderer::ExportOptions::panel(1.0),
                     )
                     .block_on()
                     .unwrap();
                 let expected = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&mut chart, &[series("masked")]),
+                        renderer::ExportSource::chart(&chart, &[series("masked")]),
                         renderer::ExportOptions::panel(1.0),
                     )
                     .block_on()
@@ -761,7 +761,7 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                 );
                 let blank = r
                     .export_rgba(
-                        renderer::ExportSource::chart(&mut chart, &[]),
+                        renderer::ExportSource::chart(&chart, &[]),
                         renderer::ExportOptions::panel(1.0),
                     )
                     .block_on()
@@ -842,14 +842,14 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
             };
             let actual = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[series("noisy")]),
+                    renderer::ExportSource::chart(&chart, &[series("noisy")]),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()
                 .unwrap();
             let expected = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[series("masked")]),
+                    renderer::ExportSource::chart(&chart, &[series("masked")]),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()
@@ -857,7 +857,7 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
             assert_bytes_eq(&actual, &expected, "nonpositive log markers must be masked");
             let blank = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&mut chart, &[]),
+                    renderer::ExportSource::chart(&chart, &[]),
                     renderer::ExportOptions::panel(1.0),
                 )
                 .block_on()

@@ -246,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "line.png".into());
     let options = ExportOptions::panel(1.0).with_clear(Color::WHITE);
-    renderer.save_blocking(ExportSource::chart(&mut chart, &series), options, &output)?;
+    renderer.save_blocking(ExportSource::chart(&chart, &series), options, &output)?;
     println!("{}", std::path::Path::new(&output).display());
     Ok(())
 }
@@ -314,9 +314,9 @@ config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y
 for upload in &uploads {
     renderer.add_column(upload.column.clone(), &upload.values)?;
 }
-let mut chart = Chart::new(config);
+let chart = Chart::new(config);
 let image = renderer.export_rgba_blocking(
-    renderer::ExportSource::chart(&mut chart, &series),
+    renderer::ExportSource::chart(&chart, &series),
     renderer::ExportOptions::panel(1.0),
 )?;
 std::fs::write("radar.png", encode_png(&image)?)?;

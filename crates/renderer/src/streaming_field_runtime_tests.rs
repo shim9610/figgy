@@ -288,7 +288,7 @@ fn heatmap_runtime_exports_match_resident_lattice_and_duplicate_columns() {
                 crate::test_gpu::block_on(f.renderer.finish_stream_export(operation)).unwrap();
             let expected = resident
                 .export_rgba(
-                    crate::ExportSource::chart(&mut f.chart, &f.series),
+                    crate::ExportSource::chart(&f.chart, &f.series),
                     crate::ExportOptions::panel(scale),
                 )
                 .block_on()
