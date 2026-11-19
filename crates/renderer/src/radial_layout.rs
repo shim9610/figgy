@@ -493,6 +493,49 @@ fn inside_label_ink(slice: [f32; 4], label_color: crate::Color) -> crate::Color 
     }
 }
 
+/// The scale (at most 1) that fits an inside label's horizontal box,
+/// `width` by `height` physical pixels, on the face of sector `s` with its
+/// centre at radius `at` (a fraction of the sector's outer radius), along
+/// the sector's bisector (#357).
+///
+/// The box is measured in the sector's own frame: on the face (the top
+/// view, the screen height divided by the tilt's cosine) its extent along
+/// the bisector is `width |cos θ| + height |sin θ|` and across it
+/// `width |sin θ| + height |cos θ|`, for the bisector's angle θ. The
+/// extent along the bisector stays within the band's thickness and above
+/// the inner radius, the extent across it within the arc through its
+/// centre, all with a 5 % allowance, and the box's outer corners within
+/// the outer radius. A label at the top or bottom of a thin ring
+/// runs along the ring and keeps its size; one at its side runs across the
+/// band and is held to its thickness.
+fn inside_fit(s: &Sector, at: f32, width: f32, height: f32) -> f32 {
+    let outer = s.geometry[2];
+    let inner = outer * s.geometry[3];
+    let centre = outer * at;
+    let mid = s.arc[0] + s.arc[1] * 0.5;
+    let height = height / s.arc[2].cos().max(0.05);
+    let (c, n) = (mid.cos().abs(), mid.sin().abs());
+    // Half extents along and across the bisector, at full size.
+    let along = (width * c + height * n).max(1.0) * 0.5;
+    let across = (width * n + height * c).max(1.0) * 0.5;
+    let slack = 1.05;
+    let mut fit = ((outer - inner) * slack / (2.0 * along)).min(1.0);
+    // The inner edge stays outside the hole or the ring inside.
+    fit = fit.min((centre - inner).max(0.0) * slack / along);
+    // The arc through the box's centre holds its width across the
+    // bisector.
+    fit = fit.min(s.arc[1] * centre * slack / (2.0 * across));
+    // The outer corners stay inside the rim:
+    // `(centre + k along)² + (k across)² <= outer²`.
+    let a = along * along + across * across;
+    let b = 2.0 * centre * along;
+    let c0 = centre * centre - outer * outer * slack * slack;
+    if c0 < 0.0 {
+        fit = fit.min((-b + (b * b - 4.0 * a * c0).sqrt()) / (2.0 * a));
+    }
+    fit.max(0.0)
+}
+
 /// The inside label of slice `index` of circle `g`: its lines on the
 /// slice's face, at the face's lifted place, or at its unlifted place when
 /// `at_rest` (the raster while the shader lifts the inside glyphs).
@@ -526,11 +569,7 @@ fn emit_inside(
     // Keep inside glyphs anchored to their slice, so the cached hover
     // translation and the hit region still agree. Fit the text to the
     // available face instead of rejecting the chart.
-    let available =
-        (s.arc[1] * r * s.geometry[2] * s.arc[2].cos()).min(s.geometry[2] * (1.0 - s.geometry[3]));
-    let fit = (available * 1.05 / text_width.max(1.))
-        .min(available / (fs * line_count as f32 * 1.2))
-        .min(1.);
+    let fit = inside_fit(&s, r.max(0.6), text_width, fs * line_count as f32 * 1.2);
     let fs = (fs * fit).max(scale);
     let color = slice
         .label_color
@@ -1151,6 +1190,48 @@ mod title_tests {
             })
             .collect()
     }
+    /// A flat sector of a 200 px ring between `inner` and 1 of it, over
+    /// `span` radians centred on `mid` (screen angle, y down).
+    fn ring_sector(inner: f32, mid: f32, span: f32) -> Sector {
+        let mut s: Sector = bytemuck::Zeroable::zeroed();
+        s.geometry = [0.0, 0.0, 200.0, inner];
+        s.arc = [mid - span * 0.5, span, 0.0, 0.0];
+        s
+    }
+
+    // The inside fit measures a label in its sector's frame (#357): a
+    // horizontal label at the bottom of a thin ring runs along the ring and
+    // keeps its size, the same label at the ring's side runs across the
+    // band and is held to its thickness, and a fitted label's corners stay
+    // inside the rim. The fit no longer bounds both of a label's sides by
+    // the smaller of the arc and the thickness.
+    #[test]
+    fn an_inside_label_fits_along_its_ring() {
+        use std::f32::consts::FRAC_PI_2;
+        // The outer ring of a three-ring sunburst: 0.75..1 of 200 px, a
+        // 50 px band, over 160 degrees.
+        let span = 160f32.to_radians();
+        let (width, height) = (120.0, 2.0 * 16.0 * 1.2);
+        let bottom = ring_sector(0.75, FRAC_PI_2, span);
+        assert_eq!(inside_fit(&bottom, 0.875, width, height), 1.0);
+        let side = ring_sector(0.75, 0.0, span);
+        let fit = inside_fit(&side, 0.875, width, height);
+        assert!(fit * width <= 50.0 * 1.05 + 1e-3, "{fit}");
+        assert!(fit < 0.5, "{fit}");
+        // A label too large for any ring shrinks until its outer corners
+        // are inside the rim.
+        let fit = inside_fit(&bottom, 0.875, 400.0, height);
+        let (along, across) = (fit * height * 0.5, fit * 400.0 * 0.5);
+        assert!(
+            (175.0 + along).hypot(across) <= 200.0 * 1.05 + 1e-2,
+            "{fit}"
+        );
+        // A narrow sector holds a label to its arc.
+        let narrow = ring_sector(0.75, FRAC_PI_2, 0.1);
+        let fit = inside_fit(&narrow, 0.875, width, height);
+        assert!(fit * width <= 0.1 * 175.0 * 1.05 + 1e-3, "{fit}");
+    }
+
     // An inside label without a colour of its own stands off its slice:
     // white on a dark slice, the chart's label colour on a light one, and
     // black on a light slice when the label colour is itself light (a chart

@@ -17,7 +17,8 @@ pub(super) fn member(family: ThemeFamily) -> RadialTheme {
 
 /// The gallery's raised chart: glazed ceramic slices in blue, lime, slate,
 /// orange and cyan, seen from an oblique camera with rounded corners, a
-/// narrow gap and a soft shadow on white.
+/// narrow gap and a soft shadow on white; the nodes below the top level
+/// take their branch's colour, paler at each ring.
 fn ceramic() -> RadialTheme {
     let mut theme = RadialTheme::documented();
     theme.palette = vec![
@@ -37,6 +38,9 @@ fn ceramic() -> RadialTheme {
     theme.roughness = 0.3;
     theme.texture_strength = 0.12;
     theme.shadow = true;
+    // A sunburst's rings and a split's detail follow their branch's colour,
+    // each ring paler (#357).
+    theme.child_tint = Some(0.22);
     theme
 }
 

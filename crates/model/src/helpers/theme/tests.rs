@@ -1753,8 +1753,26 @@ fn the_radial_themes_write_the_view_shape_and_ring_tints() {
         children: vec![slice("child")],
         ..slice("root")
     }];
-    ThemeFamily::Gallery.radial().apply(&mut chart);
+    let midnight = ThemeFamily::Midnight.radial();
+    assert_eq!(midnight.child_tint, None);
+    midnight.apply(&mut chart);
     assert_eq!(chart.slices[0].children[0].color, Color::BLACK);
+    // The gallery's children follow their branch's colour, paler (#357):
+    // a recoloured branch no longer keeps children in the host's colours.
+    let mut chart = crate::defaults::radial_chart();
+    chart.slices = vec![RadialSlice {
+        children: vec![slice("child")],
+        ..slice("root")
+    }];
+    let gallery = ThemeFamily::Gallery.radial();
+    gallery.apply(&mut chart);
+    let (root, child) = (chart.slices[0].color, chart.slices[0].children[0].color);
+    assert_eq!(root, gallery.palette[0]);
+    assert!(light(child) > light(root));
+    assert!(
+        child.b > child.r,
+        "the child keeps the branch's hue: {child:?}"
+    );
     // A sunburst draws flat, so it keeps its top view under a tilted theme
     // and stays a valid document under every theme.
     for (name, theme) in radial_themes() {

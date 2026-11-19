@@ -41,6 +41,31 @@ annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
 `MonotonicLine` series kind, a subplot's `text_scale` and a radial slice's
 `text_generated`) are additive.
 
+- **Parallel coordinates and sunburst defaults** ([#357](https://github.com/shim9610/figgy/issues/357),
+  items 8 and 9). Appearance only; no value, position or pick moves.
+  - `ParallelOptions` gains `names_on_top` (the axis names above the plot)
+    and `label_backdrop` (a box behind every parallel tick label). Both are
+    additive keys, omitted while `false`/`None`, so older documents read
+    back and draw unchanged. Migration: a Rust struct literal of
+    `ParallelOptions` adds `names_on_top: false, label_backdrop: None` (or
+    `..Default::default()`).
+  - New preset `default::default_parallel_config()`: names on top, white
+    label backdrops, light axes with outward major ticks and no minor
+    ticks, no grid and no frame. `SeriesConfig::parallel` rows draw at 0.4
+    opacity.
+  - `ParallelTheme` gains `label_backdrop` and `line_opacity` (serde
+    defaults `None`). The family members set the backdrop to their paper at
+    0.8 and the rows to 0.5 opacity, and their colourbar grows to 0.6 of
+    the plot at 14 px. Palette contents are unchanged.
+  - New preset `RadialStyle::sunburst()`: flat, with a 1 px white rim and
+    separators between every node and ring. The Gallery radial member
+    tints descendants from their branch (`child_tint` 0.22), as cool
+    slate does.
+  - Fix: an inside radial label is fitted in its sector's own frame (along
+    and across the bisector, corners inside the rim) instead of bounding
+    both sides by the smaller of the arc and the ring thickness. Labels at
+    the top and bottom of thin sunburst rings keep their size, and labels
+    that ran past the rim now fit inside it.
 - **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
   Public items with no caller, aliases and one-line twins of another entry,
   and builders only tests used are removed; serialized documents are
