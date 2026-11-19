@@ -408,8 +408,11 @@ const EXCLUSIONS: &[Exclusion] = &[
         layer: "annotations",
         element: "annotation_3",
         inv: Inv::I2,
-        detail: "4 points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
+        detail: "* points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the arrow shaft's grab band runs the selection padding past the head's tip; \
+                 how many outline points fall past it depends on the arrow's pixel phase \
+                 (4 before #357's unhinted measurement moved the data area a fraction of a \
+                 pixel, 1 at 1x and 3 at 2x after)",
         issue: "#47",
     },
     Exclusion {
@@ -417,7 +420,7 @@ const EXCLUSIONS: &[Exclusion] = &[
         layer: "annotations",
         element: "annotation_3",
         inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_3: 4 points of stroke outlines*",
+        detail: "after the drag, I2 of annotation_3: * points of stroke outlines*",
         reason: "the arrow shaft past the tip, as in I2",
         issue: "#47",
     },
@@ -727,18 +730,6 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
         issue: "#44",
     },
     Exclusion {
-        scene: "EnergyLevelsCu",
-        layer: "document",
-        element: "category_groups_bottom",
-        inv: Inv::I5,
-        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
-        reason: "the headers are centred on their runs at fractional pixels; measured on \
-                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
-                 and the difference is glyph snapping at the two scales, as for the Power \
-                 labels with a mantissa",
-        issue: "#205",
-    },
-    Exclusion {
         scene: "EnergyLevelsU",
         layer: "annotations",
         element: "annotation_0",
@@ -753,18 +744,6 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
 
 /// Rows only the `auto_layout` sweep has, which it must still find.
 const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
-    Exclusion {
-        scene: "EnergyLevelsCu",
-        layer: "document",
-        element: "category_groups_bottom",
-        inv: Inv::I5,
-        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
-        reason: "the headers are centred on their runs at fractional pixels; measured on \
-                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
-                 and the difference is glyph snapping at the two scales, as for the Power \
-                 labels with a mantissa",
-        issue: "#205",
-    },
     Exclusion {
         scene: "EnergyLevelsU",
         layer: "annotations",

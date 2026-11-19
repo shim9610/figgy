@@ -216,9 +216,9 @@ struct Shape {
     stretched: Stretched,
     horizontal: bool,
     size: f32,
-    /// Whether its glyphs are hinted ([`super::glyph_hinting`]): not in a
-    /// script style (#357).
-    hint: bool,
+    /// Whether it is drawn in a script style: a painting sink does not hint
+    /// its glyphs ([`super::glyph_hinting`], #357).
+    script: bool,
     ink: MBox,
 }
 
@@ -567,11 +567,9 @@ impl Formula<'_> {
             } else {
                 v(c.superscript_shift_up())
             };
-            -u.max(v(c.superscript_bottom_min()) + inner.descent).round()
+            -u.max(v(c.superscript_bottom_min()) + inner.descent)
         } else {
-            v(c.subscript_shift_down())
-                .max(inner.ascent - v(c.subscript_top_max()))
-                .round()
+            v(c.subscript_shift_down()).max(inner.ascent - v(c.subscript_top_max()))
         };
         if sink.paints() {
             self.leaf_char(
@@ -605,23 +603,22 @@ impl Formula<'_> {
                 Some(f) => f * size,
                 None => {
                     let face = self.face.font;
-                    let hint = super::glyph_hinting(face, size, style.small());
-                    glyph_extents_id(face, size, self.face.glyph(' '), hint).advance
+                    glyph_extents_id(face, size, self.face.glyph(' ')).advance
                 }
             };
             return MBox::empty(width);
         }
         let (font, glyph, math) = self.leaf_glyph(seg, ch, style);
-        // A leaf in a script style is a script: not hinted (#357).
-        let hint = super::glyph_hinting(font, size, style.small());
-        let g = glyph_extents_id(font, size, glyph, hint);
+        let g = glyph_extents_id(font, size, glyph);
         let (width, inset) = match seg.field_em {
             Some(f) => (f * size, (f * size - g.advance) * 0.5),
             None => (g.advance, 0.0),
         };
         if sink.paints() {
             let color = seg.color.unwrap_or(self.rt.color);
-            sink.glyph(font, glyph, size, hint, (pen.0 + inset, pen.1), &color);
+            // A leaf in a script style is a script (#357).
+            let script = style.small();
+            sink.glyph(font, glyph, size, script, (pen.0 + inset, pen.1), &color);
         }
         let mut b = MBox::empty(width);
         if g.ink_left != g.ink_right || g.ink_top != g.ink_bottom {
@@ -689,11 +686,11 @@ impl Formula<'_> {
     /// The shape of `stretched` at `size`, in `style`.
     fn shape(&self, stretched: Stretched, horizontal: bool, size: f32, style: Style) -> Shape {
         let font = self.face.font;
-        let hint = super::glyph_hinting(font, size, style.small());
+        let script = style.small();
         let mut ink = MBox::empty(0.0);
         match &stretched {
             &Stretched::Glyph(glyph) => {
-                let g = glyph_extents_id(font, size, glyph, hint);
+                let g = glyph_extents_id(font, size, glyph);
                 ink.width = g.advance;
                 if g.ink_left != g.ink_right || g.ink_top != g.ink_bottom {
                     ink.ink_rect(g.ink_left, g.ink_top, g.ink_right, g.ink_bottom);
@@ -704,7 +701,7 @@ impl Formula<'_> {
             }
             Stretched::Assembly(a) => {
                 a.for_each_part(|part, offset| {
-                    let g = glyph_extents_id(font, size, part.glyph_id().to_u16(), hint);
+                    let g = glyph_extents_id(font, size, part.glyph_id().to_u16());
                     let o = self.face.px(offset, size);
                     let (dx, dy) = if horizontal { (o, 0.0) } else { (0.0, -o) };
                     ink.width = ink.width.max(if horizontal { 0.0 } else { g.advance });
@@ -730,7 +727,7 @@ impl Formula<'_> {
             stretched,
             horizontal,
             size,
-            hint,
+            script,
             ink,
         }
     }
@@ -742,7 +739,9 @@ impl Formula<'_> {
         }
         let font = self.face.font;
         match &shape.stretched {
-            Stretched::Glyph(glyph) => sink.glyph(font, *glyph, shape.size, shape.hint, pen, color),
+            Stretched::Glyph(glyph) => {
+                sink.glyph(font, *glyph, shape.size, shape.script, pen, color)
+            }
             Stretched::Assembly(a) => a.for_each_part(|part, offset| {
                 let o = self.face.px(offset, shape.size);
                 let at = if shape.horizontal {
@@ -751,7 +750,7 @@ impl Formula<'_> {
                     (pen.0, pen.1 - o)
                 };
                 let glyph = part.glyph_id().to_u16();
-                sink.glyph(font, glyph, shape.size, shape.hint, at, color);
+                sink.glyph(font, glyph, shape.size, shape.script, at, color);
             }),
         }
     }
@@ -860,7 +859,7 @@ impl Formula<'_> {
                 d.max(den.ascent - axis + half + gap_den),
             )
         };
-        let (u, d) = (u.round(), d.round());
+
         let inner = num.width.max(den.width);
         let mut out = MBox::empty(0.0);
         // The binomial's parentheses cover the stack, centred on the axis.
@@ -919,7 +918,7 @@ impl Formula<'_> {
     fn axis_shift(&self, shape: &Shape, size: f32) -> f32 {
         let axis = self.face.value(self.face.constants().axis_height(), size);
         let (top, bottom) = self.vertical_extent(shape);
-        ((top - bottom) * 0.5 - axis).round()
+        (top - bottom) * 0.5 - axis
     }
 
     /// A shape's ink above and below its pen, a vertical assembly's from its
@@ -973,7 +972,7 @@ impl Formula<'_> {
         let gap = gap + (glyph_top + glyph_bottom - target).max(0.0) * 0.5;
         let rule_top = body_top + gap + thickness;
         // The glyph's ink top meets the rule's top.
-        let dy = (glyph_top - rule_top).round();
+        let dy = glyph_top - rule_top;
         let mut out = MBox::empty(0.0);
         let mut glyph_x = 0.0;
         if index_r.0 != index_r.1 {
@@ -993,7 +992,7 @@ impl Formula<'_> {
             let after = v(c.radical_kern_after_degree());
             let bottom = dy + glyph_bottom;
             let raise = c.radical_degree_bottom_raise_percent() as f32 / 100.0;
-            let index_y = (bottom - raise * (rule_top + bottom)).round();
+            let index_y = bottom - raise * (rule_top + bottom);
             glyph_x = (before + index.width + after).max(0.0);
             out.add(&index, before, index_y);
             if sink.paints() {
@@ -1096,7 +1095,7 @@ impl Formula<'_> {
                 d -= lift;
             }
         }
-        let (u, d) = (u.round(), d.round());
+
         let sup_x = base.width + base.italic;
         let sub_x = base.width - if large_op { base.italic } else { 0.0 };
         let mut width = base.width;
@@ -1161,7 +1160,7 @@ impl Formula<'_> {
         if let Some(b) = &upper {
             let rise =
                 (v(c.upper_limit_gap_min()) + b.descent).max(v(c.upper_limit_baseline_rise_min()));
-            let y = -(op.ascent + rise).round();
+            let y = -(op.ascent + rise);
             let x = (width - b.width) * 0.5 + op.italic * 0.5;
             out.add(b, x, y);
             if sink.paints() {
@@ -1178,7 +1177,7 @@ impl Formula<'_> {
         if let Some(b) = &lower {
             let drop =
                 (v(c.lower_limit_gap_min()) + b.ascent).max(v(c.lower_limit_baseline_drop_min()));
-            let y = (op.descent + drop).round();
+            let y = op.descent + drop;
             let x = (width - b.width) * 0.5 - op.italic * 0.5;
             out.add(b, x, y);
             if sink.paints() {
@@ -1403,7 +1402,7 @@ impl Formula<'_> {
             .face
             .value(self.face.constants().accent_base_height(), size);
         let raise = if body.ink {
-            (body.ascent - base_height).max(0.0).round()
+            (body.ascent - base_height).max(0.0)
         } else {
             0.0
         };
@@ -1524,9 +1523,9 @@ impl Formula<'_> {
                             v(c.overbar_vertical_gap())
                         };
                         if over {
-                            -(edge + gap + bottom).round()
+                            -(edge + gap + bottom)
                         } else {
-                            (edge + gap + top).round()
+                            edge + gap + top
                         }
                     };
                     out.add(&shape.ink, x, dy);
@@ -1544,9 +1543,9 @@ impl Formula<'_> {
             };
             let x = (width - label.width) * 0.5;
             let y = if over {
-                -(edge + gap + label.descent).round()
+                -(edge + gap + label.descent)
             } else {
-                (edge + gap + label.ascent).round()
+                edge + gap + label.ascent
             };
             out.add(&label, x, y);
             if sink.paints() {
@@ -1718,7 +1717,7 @@ mod tests {
                     assert!((y0 as f32 - (oy - m.ascent)).abs() <= 1.0, "{size}: {m:?}");
                     let mut canvas = Canvas::new(w, h).unwrap();
                     let drawn = place_cell(
-                        &mut CanvasSink::new(&mut canvas),
+                        &mut CanvasSink::at(&mut canvas, 1.0),
                         &rt.segments,
                         &rt,
                         (ox, oy),

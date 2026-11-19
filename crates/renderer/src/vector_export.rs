@@ -321,6 +321,10 @@ pub(crate) struct VectorSink<'a> {
     policy: FontPolicy,
     origin: [f32; 2],
     scale: f32,
+    /// The scale the emitted document's pixel values already carry (1 for
+    /// a logical document): with `scale` it gives a glyph's logical size,
+    /// from which its hinting is decided (#357).
+    carried: f32,
     /// The rectangle the raster's texture covers: a ramp image is cut to it.
     clip: Rect,
     /// The origin of the text being written, in output pixels.
@@ -344,9 +348,20 @@ impl<'a> VectorSink<'a> {
             policy,
             origin,
             scale,
+            carried: 1.0,
             clip,
             text_origin: [0.0, 0.0],
             error: None,
+        }
+    }
+
+    /// The sink for a document whose pixel values already carry `scale`
+    /// (an export's scaled document): its glyphs are hinted as at their
+    /// logical sizes (#357).
+    pub(crate) fn carrying(self, scale: f32) -> Self {
+        Self {
+            carried: scale,
+            ..self
         }
     }
 
@@ -633,11 +648,13 @@ impl GlyphSink for VectorSink<'_> {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
-        hint: bool,
+        script: bool,
         pen: (f32, f32),
         color: &Color,
     ) {
         let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
+        let logical = size / (self.scale * self.carried);
+        let hint = crate::text_render::glyph_hinting(font, logical, script);
         self.out.glyph(font, glyph, size, hint, pen, *color);
     }
 
@@ -1020,7 +1037,8 @@ fn write_pass(
             [0.0, 0.0],
             1.0,
             clip,
-        );
+        )
+        .carrying(scale);
         emit_pass(document, panels, pass, &mut sink, scale);
         sink.error.map_or(Ok(()), Err)
     })();

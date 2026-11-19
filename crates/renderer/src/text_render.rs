@@ -686,8 +686,7 @@ struct GlyphMask {
 /// id rather than character, so a glyph no character maps to (a size
 /// variant, a stretchy piece, a script alternate) shares the caches; the
 /// character entry points map through the face's charmap first.
-/// The last field is whether the glyph is hinted ([`glyph_hinting`]).
-type MetricsKey = (swash::CacheKey, u32, u16, bool);
+type MetricsKey = (swash::CacheKey, u32, u16);
 /// Mask key: face, size, glyph, horizontal subpixel bin (quarter-pixel
 /// phases) and hinting.
 type MaskKey = (swash::CacheKey, u32, u16, u8, bool);
@@ -757,15 +756,19 @@ fn font_hinting(font: FontRef<'static>, size: f32) -> bool {
     !is_handwritten(font) && size <= HINT_MAX_SIZE_PX
 }
 
-/// Whether a glyph of `font` drawn at `size` is hinted (#357): the one
-/// decision every measurement, raster and outline of a glyph reads.
+/// Whether a glyph of `font` whose logical size is `logical_size` is
+/// hinted when painted (#357): the one decision every raster and outline
+/// of a glyph reads. It is made from the logical size, the size the glyph
+/// has at 1x, so a glyph is hinted at every display and export scale or at
+/// none: the painting sink divides the drawn size by its pixel scale.
 /// Base text keeps its grid fit up to [`HINT_MAX_SIZE_PX`]
 /// ([`font_hinting`]); a glyph at a script position (`script`: a
 /// superscript or subscript segment, or a math leaf in script or
-/// scriptscript style) is never hinted. Script sizes are fractions of the
-/// base size, and grid fitting snaps them differently at each scale, so
-/// a hinted script would not be its 1x drawing scaled at 2x (I5).
-pub(crate) fn glyph_hinting(font: FontRef<'static>, size: f32, script: bool) -> bool {
+/// scriptscript style) is never hinted. Hinting changes pixels only:
+/// every measurement the layout reads (advances and ink extents) is
+/// unhinted ([`glyph_extents_id`]), so positions do not depend on scale.
+pub(crate) fn glyph_hinting(font: FontRef<'static>, logical_size: f32, script: bool) -> bool {
+    let size = logical_size;
     // The tolerance test draws the earlier, hinted scripts beside these.
     #[cfg(test)]
     if tests::SCRIPTS_HINTED.with(std::cell::Cell::get) {
@@ -785,20 +788,21 @@ fn font_embolden(font: FontRef<'static>, size: f32) -> f32 {
 }
 
 fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
-    let hint = glyph_hinting(font, size, false);
-    glyph_extents_id(font, size, font.charmap().map(ch), hint)
+    glyph_extents_id(font, size, font.charmap().map(ch))
 }
 
 /// [`glyph_extents`] of glyph id `glyph` of `font`.
-fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16, hint: bool) -> GlyphExtents {
-    let key = (font.key, size.to_bits(), glyph, hint);
+fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExtents {
+    let key = (font.key, size.to_bits(), glyph);
     if let Some(hit) = METRICS_CACHE.with(|c| c.borrow().get(&key).copied()) {
         return hit;
     }
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
     let (ink_top, ink_bottom, ink_left, ink_right) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
-        let mut scaler = cx.builder(font).size(size).hint(hint).build();
+        // Unhinted: the layout's measurement does not depend on the grid
+        // a scale fits glyphs to (#357); hinting changes pixels only.
+        let mut scaler = cx.builder(font).size(size).hint(false).build();
         match scaler.scale_outline(glyph) {
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
@@ -1146,15 +1150,16 @@ pub(crate) trait GlyphSink {
     /// skips work that only produces pixels (dash patterns, the second pass
     /// of a math node).
     fn paints(&self) -> bool;
-    /// Glyph `glyph` of `font` at `size`, its pen at `pen` (left, baseline),
-    /// hinted when `hint` says so ([`glyph_hinting`], decided where the
-    /// glyph is placed).
+    /// Glyph `glyph` of `font` at `size`, its pen at `pen` (left, baseline).
+    /// `script` says whether it sits at a script position; a painting sink
+    /// decides its hinting from it and the glyph's logical size
+    /// ([`glyph_hinting`]).
     fn glyph(
         &mut self,
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
-        hint: bool,
+        script: bool,
         pen: (f32, f32),
         color: &Color,
     );
@@ -1173,14 +1178,18 @@ impl GlyphSink for MeasureSink {
     fn rect(&mut self, _: RectF, _: &Color) {}
 }
 
-/// The sink of [`draw_rich_text`]: paints onto the canvas. The first glyph
-/// that cannot be rasterized stops the painting of glyphs, and its error is
-/// what the draw returns ([`Self::finish`]).
-struct CanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>);
+/// The sink of [`draw_rich_text`]: paints onto the canvas. Its third field
+/// is the pixel scale the text's sizes carry (pixels per logical pixel),
+/// from which each glyph's hinting is decided ([`glyph_hinting`]). The first glyph that cannot be rasterized
+/// stops the painting of glyphs, and its error is what the draw returns
+/// ([`Self::finish`]).
+struct CanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>, f32);
 
 impl<'a> CanvasSink<'a> {
-    fn new(canvas: &'a mut Canvas) -> Self {
-        Self(canvas, None)
+    /// A sink drawing text whose sizes carry `pixel_scale` pixels per
+    /// logical pixel.
+    fn at(canvas: &'a mut Canvas, pixel_scale: f32) -> Self {
+        Self(canvas, None, pixel_scale)
     }
 
     fn finish(self) -> crate::Result<()> {
@@ -1200,13 +1209,14 @@ impl GlyphSink for CanvasSink<'_> {
         font: FontRef<'static>,
         glyph: u16,
         size: f32,
-        hint: bool,
+        script: bool,
         pen: (f32, f32),
         color: &Color,
     ) {
         if self.1.is_some() {
             return;
         }
+        let hint = glyph_hinting(font, size / self.2, script);
         if let Err(error) = draw_glyph(self.0, font, size, glyph, hint, pen.0, pen.1, color) {
             self.1 = Some(error);
         }
@@ -1330,20 +1340,21 @@ fn place_cell(
                     let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
                     (font, font.charmap().map(ch))
                 });
-            // A glyph at a script position is not hinted (#357).
-            let hint = glyph_hinting(font, size, position != ScriptPosition::Base);
-            let g = glyph_extents_id(font, size, glyph, hint);
+            // A glyph at a script position is not hinted when painted
+            // (#357); the extents are unhinted either way.
+            let at_script = position != ScriptPosition::Base;
+            let g = glyph_extents_id(font, size, glyph);
             let pen_advance = match seg.field_em {
                 Some(f) => {
                     // Center the glyph ink inside the fixed field.
                     let field = f * base;
                     let inset = (field - g.advance) * 0.5;
-                    sink.glyph(font, glyph, size, hint, (pen_x + inset, y), &color);
+                    sink.glyph(font, glyph, size, at_script, (pen_x + inset, y), &color);
                     field
                 }
                 None => {
                     pen_x += script.kern_before;
-                    sink.glyph(font, glyph, size, hint, (pen_x, y), &color);
+                    sink.glyph(font, glyph, size, at_script, (pen_x, y), &color);
                     g.advance
                 }
             };
@@ -1506,7 +1517,7 @@ mod dashed_rule_tests {
         );
 
         for step in 0..(METRICS_CACHE_MAX_ENTRIES as u32 + 10) {
-            glyph_extents_id(font, 8.0 + step as f32 * 0.001, glyph, true);
+            glyph_extents_id(font, 8.0 + step as f32 * 0.001, glyph);
             let entries = METRICS_CACHE.with(|cache| cache.borrow().len());
             assert!(entries <= METRICS_CACHE_MAX_ENTRIES);
         }
@@ -1700,7 +1711,21 @@ pub fn draw_rich_text(
     origin: (f32, f32),
     policy: FontPolicy,
 ) -> crate::Result<()> {
-    let mut sink = CanvasSink::new(canvas);
+    draw_rich_text_at(canvas, rt, origin, policy, 1.0)
+}
+
+/// [`draw_rich_text`] for a text whose sizes carry `pixel_scale` pixels
+/// per logical pixel (a display or export scale): each glyph is hinted as
+/// at its logical size, so the text is hinted at every scale or at none
+/// (#357).
+pub(crate) fn draw_rich_text_at(
+    canvas: &mut Canvas,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+    pixel_scale: f32,
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::at(canvas, pixel_scale);
     place_rich_text(&mut sink, rt, origin, policy);
     sink.finish()
 }
@@ -2011,7 +2036,28 @@ pub fn draw_plain_text(
     italic: bool,
     policy: FontPolicy,
 ) -> crate::Result<()> {
-    let mut sink = CanvasSink::new(canvas);
+    draw_plain_text_at(
+        canvas, text, origin, color, family, size, bold, italic, policy, 1.0,
+    )
+}
+
+/// [`draw_plain_text`] for a text whose size carries `pixel_scale` pixels
+/// per logical pixel: hinted as at its logical size (#357,
+/// [`draw_rich_text_at`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_plain_text_at(
+    canvas: &mut Canvas,
+    text: &str,
+    origin: (f32, f32),
+    color: Color,
+    family: &str,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    policy: FontPolicy,
+    pixel_scale: f32,
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::at(canvas, pixel_scale);
     place_plain_text(
         &mut sink, text, origin, color, family, size, bold, italic, policy,
     );
@@ -2036,9 +2082,8 @@ pub(crate) fn place_plain_text(
     for ch in text.chars() {
         let font = glyph_font(policy, family, bold, italic, ch);
         let glyph = font.charmap().map(ch);
-        let hint = glyph_hinting(font, size, false);
-        sink.glyph(font, glyph, size, hint, (pen_x, baseline), &color);
-        pen_x += glyph_extents_id(font, size, glyph, hint).advance;
+        sink.glyph(font, glyph, size, false, (pen_x, baseline), &color);
+        pen_x += glyph_extents_id(font, size, glyph).advance;
     }
 }
 
@@ -2998,7 +3043,7 @@ mod tests {
                 for (k, cell) in cells.iter().enumerate() {
                     let cell_origin = (x + doc.col_starts[k], baseline);
                     place_cell(
-                        &mut CanvasSink::new(canvas),
+                        &mut CanvasSink::at(canvas, 1.0),
                         cell,
                         rt,
                         cell_origin,
@@ -3341,9 +3386,7 @@ mod tests {
             let m = measure_rich_text_std(&rt);
             let place = script_placement(position, base);
             let x = glyph_extents(font('x'), base, 'x');
-            // The script glyph is measured as it is drawn: not hinted (#357).
-            let face = font('2');
-            let two = glyph_extents_id(face, place.size, face.charmap().map('2'), false);
+            let two = glyph_extents(font('2'), place.size, '2');
             assert_eq!(m.width, x.advance + place.advance(two.advance), "{text}");
             assert_eq!(
                 m.ascent,
