@@ -365,13 +365,22 @@ impl Renderer {
         }
         // The picker's bundles are built from the set's modules and its own
         // of the same set. A picker that was ready is ready again; its
-        // registry is rebuilt by the next pick's preparation.
+        // registry is rebuilt by the next pick's preparation. A browser
+        // renderer that compiles in the background does not compile the new
+        // set's gate and reduce pipelines on the page's thread here: the
+        // next frame's pick warm-up schedules them on its queue and enables
+        // the picker once they have compiled, and an enable before that
+        // waits for them (#363).
         let was_ready = matches!(
             self.picker.pipeline_state,
             PickerPipelineState::Ready { .. }
         );
         if was_ready {
             self.picker = RendererPicker::disabled();
+            #[cfg(target_arch = "wasm32")]
+            if self.compile_queue.is_some() {
+                return;
+            }
             if self.enable_gpu_picking_unreported().is_err() {
                 // The failure is recorded in the picker's state, and every
                 // later pick reports it.
