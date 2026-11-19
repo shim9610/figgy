@@ -214,3 +214,73 @@ fn id_target_layouts_on_a_multisampled_panel_pass() {
 fn fmt_mib(bytes: u64) -> String {
     format!("{:.2}", bytes as f64 / (1024.0 * 1024.0))
 }
+
+/// The extra latency of the colour snap (#381): copying the resolved
+/// panel's pixels at the cursor (1×1 and 3×3) to a mappable buffer and
+/// reading them, on a 1600 × 1200 RGBA8 target, median of 21.
+#[test]
+fn resolved_pixel_copy_latency() {
+    let (device, queue) = test_gpu::device();
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("resolved panel"),
+        size: wgpu::Extent3d {
+            width: 1600,
+            height: 1200,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut out = String::from("| pixels | copy + map + read, median ms |\n|---|---:|\n");
+    for side in [1u32, 3] {
+        let mut times = Vec::new();
+        for _ in 0..21 {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("pixel readback"),
+                size: 256 * u64::from(side),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let started = Instant::now();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 800,
+                        y: 600,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(side),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: side,
+                    height: side,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            let slice = buffer.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let _ = slice.get_mapped_range().expect("mapped")[0];
+            times.push(started.elapsed().as_secs_f64() * 1e3);
+        }
+        times.sort_by(f64::total_cmp);
+        writeln!(out, "| {side}×{side} | {:.3} |", times[times.len() / 2]).unwrap();
+    }
+    println!("{out}");
+}

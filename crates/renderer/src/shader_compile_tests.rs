@@ -78,6 +78,9 @@ fn all_shader_compilation_times_and_entry_coverage() {
             // The pick ID pass (#381 prototype): every kind in both
             // geometries.
             crate::gpu_pick::IdPickPipelines::new(&device, set).ensure_all(&device);
+            // The nearest-datum kernel of the xy column kind (#381
+            // prototype).
+            crate::gpu_pick::NearestPickPipelines::new(set).ensure(&bundle);
         }
         data_render::stream_field::Pipelines::new(
             &device,

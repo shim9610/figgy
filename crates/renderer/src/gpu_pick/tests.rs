@@ -3520,7 +3520,11 @@ fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
         }
     }
     // The pick ID modules (#381 prototype) start with the core too.
-    for (label, by_set) in [super::ID_PICK_MODULE, super::ID_PICK_VECTOR_MODULE] {
+    for (label, by_set) in [
+        super::ID_PICK_MODULE,
+        super::ID_PICK_VECTOR_MODULE,
+        super::NEAREST_PICK_MODULE,
+    ] {
         let fragments = by_set.full.fragments;
         assert_eq!(fragments[0], "gpu_pick/core.wgsl", "{label}");
         used.extend(fragments.iter().copied());

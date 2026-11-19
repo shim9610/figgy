@@ -386,3 +386,143 @@ fn id_pass_single_pick_latency() {
         }
     }
 }
+
+fn nearest_pick(
+    r: &mut Renderer,
+    target: Target,
+    request: GpuPickRequest,
+) -> Result<renderer::NearestPick, renderer::GpuPickError> {
+    match target {
+        Target::Chart(id) => r
+            .pick_chart_nearest_prototype(id, request)?
+            .resolve_blocking(),
+        Target::Monotonic(id) => r
+            .monotonic_chart(id)
+            .expect("monotonic chart")
+            .pick_nearest_prototype(request)?
+            .resolve_blocking(),
+    }
+}
+
+/// The nearest-datum rule (#381, the maintainer's compute direction)
+/// against the exact picker on the gallery scenes: the series owning the
+/// datum nearest to the cursor within the reach, and that datum. Where they
+/// differ is reported by case, not failed:
+/// - `exact only`: the exact picker hits drawn ink with no datum within the
+///   reach (a line between its points, the rim of a big marker, an area, an
+///   error bar or a stem away from its anchor);
+/// - `nearest only`: a datum within the reach where nothing is drawn under
+///   the cursor within it (a dash gap, a hidden or clipped marker);
+/// - `series`: both answer, different series (a line under the cursor over
+///   another series' nearer point);
+/// - `index`: same series, another index.
+#[test]
+#[ignore = "measurement (#381): run in release with --ignored"]
+fn nearest_datum_vs_exact_picker_on_gallery_scenes() {
+    let step = env_f32("FIGGY_PICK_ID_STEP", 6.0);
+    let reach = env_f32("FIGGY_PICK_ID_REACH", 4.0);
+    let mut rows = Vec::new();
+    println!(
+        "| scene | positions | exact hits | agree | exact only | nearest only | series | index | exact ms | nearest ms |"
+    );
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for kind in SceneKind::ALL {
+        if skipped(kind).is_some() {
+            continue;
+        }
+        let mut r: Renderer = renderer();
+        let scene = scenes::build(&mut r, kind, BIG_DATA_POINTS)
+            .unwrap_or_else(|error| panic!("{}: {error}", kind.label()));
+        let target = register(&mut r, &scene);
+        r.enable_gpu_picking().expect("picking");
+        let document = scene.config.document_area();
+        let Ok(area) = scene.config.data_area() else {
+            continue;
+        };
+        let area: Rect = area.0;
+        let request = |x: f32, y: f32| GpuPickRequest {
+            canvas_position_px: [x, y],
+            display_panel_px: document,
+            display_scale: 1.0,
+            max_distance_px: reach,
+        };
+        // positions, exact hits, agree, exact only, nearest only, series, index
+        let mut t = [0usize; 7];
+        let (mut exact_time, mut nearest_time) = (Duration::ZERO, Duration::ZERO);
+        let mut y = area.y as f32 + 0.5;
+        while y < (area.y + area.height) as f32 {
+            let mut x = area.x as f32 + 0.5;
+            while x < (area.x + area.width) as f32 {
+                let started = Instant::now();
+                let exact = exact_pick(&mut r, target, request(x, y));
+                exact_time += started.elapsed();
+                let Ok(exact) = exact else {
+                    x += step;
+                    continue;
+                };
+                let started = Instant::now();
+                let nearest = nearest_pick(&mut r, target, request(x, y))
+                    .unwrap_or_else(|error| panic!("{}: {error}", kind.label()))
+                    .nearest;
+                nearest_time += started.elapsed();
+                t[0] += 1;
+                t[1] += usize::from(exact.is_some());
+                let case = match (&exact, &nearest) {
+                    (None, None) => 2,
+                    (Some(e), Some(n)) if e.series_id == n.series_id => {
+                        if e.point_index == n.point_index { 2 } else { 6 }
+                    }
+                    (Some(_), Some(_)) => 5,
+                    (Some(_), None) => 3,
+                    (None, Some(_)) => 4,
+                };
+                t[case] += 1;
+                x += step;
+            }
+            y += step;
+        }
+        let per = |time: Duration| time.as_secs_f64() * 1e3 / t[0].max(1) as f64;
+        if t[1] > 0 {
+            println!(
+                "| {} | {} | {} | {:.2}% | {} | {} | {} | {} | {:.3} | {:.3} |",
+                kind.label(),
+                t[0],
+                t[1],
+                t[2] as f64 * 100.0 / t[0].max(1) as f64,
+                t[3],
+                t[4],
+                t[5],
+                t[6],
+                per(exact_time),
+                per(nearest_time),
+            );
+        }
+        rows.push(format!(
+            "{},{},{},{},{},{},{},{},{:.4},{:.4}",
+            kind.label().replace(',', ";"),
+            t[0],
+            t[1],
+            t[2],
+            t[3],
+            t[4],
+            t[5],
+            t[6],
+            per(exact_time),
+            per(nearest_time)
+        ));
+        println!(
+            "  nearest-datum pipelines created: {}",
+            r.pick_nearest_pipelines_created()
+        );
+    }
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ci-results");
+    std::fs::create_dir_all(&out).ok();
+    std::fs::write(
+        out.join("pick_nearest_agreement.csv"),
+        format!(
+            "scene,positions,exact_hits,agree,exact_only,nearest_only,series,index,exact_ms,nearest_ms\n{}\n",
+            rows.join("\n")
+        ),
+    )
+    .ok();
+}

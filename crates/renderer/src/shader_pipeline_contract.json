@@ -3897,6 +3897,18 @@
       "descriptor": {
         "compute": {
           "constants": {},
+          "entryPoint": "pick_nearest_points"
+        },
+        "label": "figgy GPU pick nearest-datum pipeline",
+        "layout": 1
+      },
+      "kind": "compute",
+      "source": "82134cef6645205d"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
           "entryPoint": "pick_parallel"
         },
         "label": "figgy parallel data pick pipeline",

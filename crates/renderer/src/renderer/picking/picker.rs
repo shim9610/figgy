@@ -69,6 +69,9 @@ pub(in crate::renderer) struct RendererPicker {
     /// The pick ID pass's pipelines (#381 prototype), created on its first
     /// pick for the bundle's shader set.
     pub(in crate::renderer) id: Option<crate::gpu_pick::IdPickPipelines>,
+    /// The nearest-datum pipeline (#381 prototype), created on its first
+    /// pick for the bundle's shader set.
+    pub(in crate::renderer) nearest: Option<crate::gpu_pick::NearestPickPipelines>,
     #[cfg(test)]
     pub(in crate::renderer) injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -81,6 +84,7 @@ impl RendererPicker {
             exact: crate::gpu_pick::PickExactPipelines::default(),
             data_kernels: crate::gpu_data_pick::DataPickKernels::default(),
             id: None,
+            nearest: None,
             #[cfg(test)]
             injected_activation_failure: None,
         }

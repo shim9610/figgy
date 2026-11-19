@@ -299,6 +299,16 @@ impl MonotonicChart<'_> {
             .pick_chart_id_prototype(self.id, request, geometry)
     }
 
+    /// [`Self::pick`] through the nearest-datum kernel (#381 prototype).
+    #[doc(hidden)]
+    pub fn pick_nearest_prototype(
+        &mut self,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::NearestPickTicket, crate::gpu_pick::GpuPickError>
+    {
+        self.renderer.pick_chart_nearest_prototype(self.id, request)
+    }
+
     /// Builds the chart's GPU picker
     /// ([`Renderer::prepare_gpu_picking_for_chart`]).
     pub fn prepare_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {

@@ -1,7 +1,8 @@
-//! The pick ID pass entry (#381 prototype, option b): the chart pick of
+//! The prototype pick entries (#381): the chart pick of
 //! [`Renderer::pick_chart`] resolved by one on-demand render pass into a
-//! 1×1 ID target (`gpu_pick/id_pass.rs`) instead of the gate, exact and
-//! reduce compute passes. Measurement only: no host calls it yet.
+//! 1×1 ID target (`gpu_pick/id_pass.rs`), or by the nearest-datum kernel
+//! (`gpu_pick/nearest_pass.rs`), instead of the gate, exact and reduce
+//! passes. Measurement only: no host calls them yet.
 
 use super::*;
 
@@ -16,8 +17,47 @@ impl Renderer {
         request: GpuPickRequest,
         geometry: crate::gpu_pick::IdPickGeometry,
     ) -> std::result::Result<crate::gpu_pick::IdPickTicket, crate::gpu_pick::GpuPickError> {
-        let result = self.pick_chart_id_unreported(id, request, geometry);
+        let result = self
+            .pick_chart_prototype_unreported(id, request, PrototypePick::Id(geometry))
+            .and_then(|ticket| match ticket {
+                PrototypeTicket::Id(ticket) => Ok(ticket),
+                PrototypeTicket::Nearest(_) => Err(crate::gpu_pick::GpuPickError::Internal(
+                    "an ID pick returns an ID ticket",
+                )),
+            });
         self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    /// [`Self::pick_chart`] through the nearest-datum kernel (#381
+    /// prototype): the datum nearest to the cursor within
+    /// `request.max_distance_px`, by the draw's projection alone, and each
+    /// series' own nearest datum.
+    #[doc(hidden)]
+    pub fn pick_chart_nearest_prototype(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::NearestPickTicket, crate::gpu_pick::GpuPickError>
+    {
+        let result = self
+            .pick_chart_prototype_unreported(id, request, PrototypePick::Nearest)
+            .and_then(|ticket| match ticket {
+                PrototypeTicket::Nearest(ticket) => Ok(ticket),
+                PrototypeTicket::Id(_) => Err(crate::gpu_pick::GpuPickError::Internal(
+                    "a nearest-datum pick returns a nearest-datum ticket",
+                )),
+            });
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    /// How many nearest-datum pipelines this renderer has created (#381
+    /// prototype): one per column kind.
+    #[doc(hidden)]
+    pub fn pick_nearest_pipelines_created(&self) -> usize {
+        self.picker
+            .nearest
+            .as_ref()
+            .map_or(0, crate::gpu_pick::NearestPickPipelines::created)
     }
 
     /// How many pick ID pipelines this renderer has created (#381
@@ -30,12 +70,12 @@ impl Renderer {
             .map_or(0, crate::gpu_pick::IdPickPipelines::created)
     }
 
-    fn pick_chart_id_unreported(
+    fn pick_chart_prototype_unreported(
         &mut self,
         id: ChartId,
         request: GpuPickRequest,
-        geometry: crate::gpu_pick::IdPickGeometry,
-    ) -> std::result::Result<crate::gpu_pick::IdPickTicket, crate::gpu_pick::GpuPickError> {
+        mode: PrototypePick,
+    ) -> std::result::Result<PrototypeTicket, crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
         self.admit_chart_shaders(id);
         let state = self
@@ -103,7 +143,8 @@ impl Renderer {
                 resource: "renderer pick ring starts",
             }
         })?;
-        for series_id in slots.series_ids() {
+        let walks_arcs = matches!(mode, PrototypePick::Id(_));
+        for series_id in slots.series_ids().filter(|_| walks_arcs) {
             let position = layer_series
                 .iter()
                 .position(|series| series.series_id == series_id);
@@ -186,6 +227,25 @@ impl Renderer {
                 "the active picker registry is the prepared chart's",
             ));
         }
+        let geometry = match mode {
+            PrototypePick::Id(geometry) => geometry,
+            PrototypePick::Nearest => {
+                let pipelines = match &mut picker.nearest {
+                    Some(pipelines) if pipelines.set() == set => pipelines,
+                    slot => slot.insert(crate::gpu_pick::NearestPickPipelines::new(set)),
+                };
+                let mut ticket = active.engine.pick_nearest(
+                    pipelines,
+                    &self.pool,
+                    query,
+                    request.display_scale,
+                    inputs.member_count(),
+                    &|member| inputs.member_transform(member),
+                )?;
+                ticket.monotonic = monotonic_rows;
+                return Ok(PrototypeTicket::Nearest(ticket));
+            }
+        };
         let pipelines = match &mut picker.id {
             Some(pipelines) if pipelines.set() == set => pipelines,
             slot => slot.insert(crate::gpu_pick::IdPickPipelines::new(&device, set)),
@@ -202,6 +262,18 @@ impl Renderer {
             &|member| inputs.member_transform(member),
         )?;
         ticket.monotonic = monotonic_rows;
-        Ok(ticket)
+        Ok(PrototypeTicket::Id(ticket))
     }
+}
+
+/// Which prototype pick to run (#381).
+#[derive(Clone, Copy)]
+enum PrototypePick {
+    Id(crate::gpu_pick::IdPickGeometry),
+    Nearest,
+}
+
+enum PrototypeTicket {
+    Id(crate::gpu_pick::IdPickTicket),
+    Nearest(crate::gpu_pick::NearestPickTicket),
 }
