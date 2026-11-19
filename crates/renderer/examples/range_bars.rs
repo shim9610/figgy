@@ -368,7 +368,7 @@ fn timeline(r: &mut Renderer, out: &Path) -> Result {
     ];
     // Finish-to-start links, by row: the host's dependencies. Test pass to
     // Docs runs backward (Docs starts first) and takes the S route.
-    let links = [(0, 2), (2, 3), (3, 5), (4, 5), (7, 8)];
+    let links = [(0, 1), (0, 2), (2, 3), (3, 5), (4, 5), (7, 8)];
     let today = T0 + 37.5 * DAY;
     let column = |f: &dyn Fn(&(&str, &str, f64, f64, f64, &str)) -> f64| -> Vec<f64> {
         tasks.iter().map(f).collect()
@@ -428,7 +428,8 @@ fn timeline(r: &mut Renderer, out: &Path) -> Result {
     )?;
     // The links route between the bars on every draw (#357).
     let dependencies = SeriesConfig::range_links("links", "tasks", "tl-link-from", "tl-link-to");
-    let specs = [bars, dependencies, milestones];
+    // Listed before the bars, so the bars cover the link ends.
+    let specs = [dependencies, bars, milestones];
     for (scale, name) in [(1.0, "timeline.png"), (2.0, "timeline@2x.png")] {
         chart.fit_layout();
         let image = r.export_rgba_blocking(

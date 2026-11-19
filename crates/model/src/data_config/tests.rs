@@ -3904,7 +3904,7 @@ mod range_bar_tests {
 
     /// Dependency links (#357): they name a range bar series in their own
     /// layer, read two distinct row columns, keep their stroke, head and
-    /// lead-out in range, take any colour with channels in `0..=1` (a
+    /// exit inset in range, take any colour with channels in `0..=1` (a
     /// translucent one too, as a connector does), and refuse polar axes.
     #[test]
     fn range_links_name_bars_in_their_layer_and_validate_their_style() {
@@ -3936,7 +3936,7 @@ mod range_bar_tests {
             (|l: &mut SeriesConfig| style(l).width = -1.0) as fn(&mut SeriesConfig),
             |l| style(l).width = f32::NAN,
             |l| style(l).head = 33.0,
-            |l| style(l).elbow = 65.0,
+            |l| style(l).inset = 65.0,
             |l| style(l).color = Color::new(2.0, 0.0, 0.0, 1.0),
         ] {
             assert_eq!(refused(edit), Err(crate::RuleKind::RangeLinkStyle));
@@ -3999,7 +3999,7 @@ mod range_bar_tests {
         let original = links();
         let json = serde_json::to_value(&original).unwrap();
         let fields = json["render_type"]["RangeLinks"].as_object().unwrap();
-        for key in ["bars", "color", "width", "head", "elbow"] {
+        for key in ["bars", "color", "width", "head", "inset"] {
             assert!(fields.contains_key(key), "{key}");
         }
         let parsed: SeriesConfig = serde_json::from_value(json).unwrap();

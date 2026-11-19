@@ -1696,7 +1696,7 @@ pub(super) fn range_bar_data<'c>(
 /// group 3 of the range bar series it names (`range_bar_params` of that
 /// series in its `group`), so its routes join exactly the drawn bars; the
 /// lane table adds its row columns, its link count (the shorter column)
-/// and its stroke width, head and lead-out in render pixels.
+/// and its stroke width, head length and exit inset in render pixels.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn range_link_data<'c>(
     device: &wgpu::Device,
@@ -1711,7 +1711,7 @@ pub(super) fn range_link_data<'c>(
     mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
 ) -> Result<(data_render::CategoryBarData, u32)> {
     use data_render::{
-        RANGE_LANE_LINK_COUNT, RANGE_LANE_LINK_FROM, RANGE_LANE_LINK_HEAD, RANGE_LANE_LINK_LEAD,
+        RANGE_LANE_LINK_COUNT, RANGE_LANE_LINK_FROM, RANGE_LANE_LINK_HEAD, RANGE_LANE_LINK_INSET,
         RANGE_LANE_LINK_TO, RANGE_LANE_LINK_WIDTH, RANGE_LINK_LANES,
     };
     let invalid = |kind: crate::RuleKind| FiggyError::InvalidSeriesConfig {
@@ -1754,7 +1754,7 @@ pub(super) fn range_link_data<'c>(
     lanes[RANGE_LANE_LINK_COUNT as usize] = count;
     lanes[RANGE_LANE_LINK_WIDTH as usize] = (style.width * display_scale).to_bits();
     lanes[RANGE_LANE_LINK_HEAD as usize] = (style.head * display_scale).to_bits();
-    lanes[RANGE_LANE_LINK_LEAD as usize] = (style.elbow * display_scale).to_bits();
+    lanes[RANGE_LANE_LINK_INSET as usize] = (style.inset * display_scale).to_bits();
     let style_map =
         crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale)?;
     let data = data_render::create_category_bar_data_bind_group(

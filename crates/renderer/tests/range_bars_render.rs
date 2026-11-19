@@ -1689,7 +1689,8 @@ fn the_timeline_look_bands_every_other_row_under_the_bars() {
 
 /// Dependency links (#357, item 14 D) over the three test bars: link 0 from
 /// row 0 to row 2, link 1 from row 0 to row 1, link 2 a NaN row (no link),
-/// stroked in orange 2 px wide with an 8 px head.
+/// stroked in orange 2 px wide with an 8 px chevron, 10 px in from the
+/// predecessor's start.
 fn links_series(r: &mut Renderer) -> SeriesConfig {
     r.add_column("link-from", &col(vec![0.0, 0.0, NAN]))
         .unwrap();
@@ -1699,7 +1700,7 @@ fn links_series(r: &mut Renderer) -> SeriesConfig {
         l.color = ORANGE;
         l.width = 2.0;
         l.head = 8.0;
-        l.elbow = 10.0;
+        l.inset = 10.0;
     }
     links
 }
@@ -1728,14 +1729,18 @@ fn range_links_route_between_their_bars_and_keep_every_interaction() {
             .unwrap();
         let whole = (0, 0, img.width, img.height);
         let ink = bbox(&img, whole, is_orange).expect("the links draw");
-        // The links leave row 0's end (60) and reach row 1's start (70) and
-        // row 2's start (30): their ink spans from left of 30 past 70.
-        let (x30, x70) = (
-            value_px(&chart, direction, 30.0, scale),
+        // Both links leave row 0's edge near its start (20), the one to
+        // row 2 (start 30) moved back to leave room for its head, and reach
+        // row 1's start (70, a bar running back) and row 2's: the ink starts
+        // within a head and an inset of 20 and never runs to row 0's end.
+        let (x20, x70) = (
+            value_px(&chart, direction, 20.0, scale),
             value_px(&chart, direction, 70.0, scale),
         );
         assert!(
-            (ink.0 as f32) <= x30 && (ink.2 as f32) >= x70 - 1.0,
+            (ink.0 as f32) <= x20 + 10.0 * scale
+                && (ink.0 as f32) >= x20 - 20.0 * scale
+                && (ink.2 as f32) >= x70 - 1.0,
             "{scale}x {ink:?}"
         );
         // Ink in the successors' slots and in the predecessor's.

@@ -111,8 +111,10 @@ pub struct RangeConnector {
 
 /// The fields of a [`DataRenderType::RangeLinks`] series (#357): the
 /// dependency links between the bars of the range bar series `bars`, drawn
-/// as elbows in `color`, `width` logical pixels wide, with an arrowhead of
-/// `head` pixels at the successor and `elbow` pixels of lead-out.
+/// in `color`, `width` logical pixels wide: out of the predecessor's edge
+/// facing the successor, `inset` pixels from its start, down to the
+/// successor's centre line and into its start, ending in an open chevron
+/// `head` pixels long.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RangeLinkSeries {
@@ -123,11 +125,11 @@ pub struct RangeLinkSeries {
     pub color: Color,
     /// The stroke width in logical pixels, `0..=`[`MAX_RANGE_STROKE_WIDTH`].
     pub width: f32,
-    /// The arrowhead's length and width in logical pixels, `0..=32`.
+    /// The open chevron's length in logical pixels, `0..=32`.
     pub head: f32,
-    /// The lead-out past the predecessor's end and before the successor's
-    /// start, in logical pixels, `0..=64`.
-    pub elbow: f32,
+    /// How far from the predecessor's start the link leaves its edge, in
+    /// logical pixels, `0..=64`.
+    pub inset: f32,
 }
 
 /// The fields of a [`DataRenderType::RangeBars`] series.
@@ -210,12 +212,12 @@ impl DataRenderType {
 
 /// The most a range link's arrowhead is long and wide, in logical pixels.
 pub const MAX_RANGE_LINK_HEAD: f32 = 32.0;
-/// The most a range link's lead-out is long, in logical pixels.
-pub const MAX_RANGE_LINK_ELBOW: f32 = 64.0;
+/// The largest exit inset of a range link, in logical pixels.
+pub const MAX_RANGE_LINK_INSET: f32 = 64.0;
 
 /// The rules one range link series is held to among the chart's `series`
 /// (#357): its bars series is a range bar series of the same layer, its
-/// two columns are not empty and distinct, its width, head and elbow are
+/// two columns are not empty and distinct, its width, head and inset are
 /// in range and its colour's channels in `0..=1`.
 pub fn validate_range_link_series(
     config: &crate::config::Config,
@@ -239,7 +241,7 @@ pub fn validate_range_link_series(
     }
     if !finite_in(links.width, 0.0, MAX_RANGE_STROKE_WIDTH)
         || !finite_in(links.head, 0.0, MAX_RANGE_LINK_HEAD)
-        || !finite_in(links.elbow, 0.0, MAX_RANGE_LINK_ELBOW)
+        || !finite_in(links.inset, 0.0, MAX_RANGE_LINK_INSET)
         || !valid_bar_color(links.color, false)
     {
         return Err(crate::RuleKind::RangeLinkStyle);

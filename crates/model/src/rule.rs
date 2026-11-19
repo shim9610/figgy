@@ -361,7 +361,7 @@ rule_kinds! {
         CategoryBandsFill => "a category band fill has every channel in 0..=1",
         RangeLinkBars => "a range link series names a range bar series of its own layer",
         RangeLinkColumns => "a range link series needs two distinct, non-empty row columns",
-        RangeLinkStyle => "a range link's width is 0..=24, its head 0..=32 and its elbow 0..=64 pixels, its colour channels in 0..=1",
+        RangeLinkStyle => "a range link's width is 0..=24, its head 0..=32 and its inset 0..=64 pixels, its colour channels in 0..=1",
         PolarRangeLinks => "a polar chart draws no range links",
         StreamedRangeLinks => "range links need resident columns; a streamed source is rejected",
         TimestampStepRequired => "relative, custom and period timestamp labels need a calendar step",
@@ -2131,7 +2131,7 @@ mod tests {
             ),
             (
                 RuleKind::RangeLinkStyle,
-                "a range link's width is 0..=24, its head 0..=32 and its elbow 0..=64 pixels, its colour channels in 0..=1",
+                "a range link's width is 0..=24, its head 0..=32 and its inset 0..=64 pixels, its colour channels in 0..=1",
             ),
             (
                 RuleKind::PolarRangeLinks,

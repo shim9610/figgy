@@ -1264,7 +1264,7 @@ impl Renderer {
             }
             (None, None, None, None) => match render_type.range_links() {
                 // A range link series' colour (#357, SHADER_COMMON.md §5.18);
-                // its width, head and lead-out are lanes of its group 3.
+                // its width, head and inset are lanes of its group 3.
                 Some(links) => PrimitiveStyle::from_color(links.color),
                 None => PrimitiveStyle::from_color(Color::BLACK),
             },

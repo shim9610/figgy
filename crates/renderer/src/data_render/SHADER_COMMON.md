@@ -1922,27 +1922,40 @@ fixed schema; CPU writer `renderer/series.rs::range_link_data`), so
 | 0 to 7 | the bars' own, as above |
 | `RANGE_LANE_LINK_FROM` (8), `RANGE_LANE_LINK_TO` (9) | the f32 lane bases of the predecessor (`x_column`) and successor (`y_column`) row columns |
 | `RANGE_LANE_LINK_COUNT` (10) | the link count: the shorter of the two columns, any number |
-| `RANGE_LANE_LINK_WIDTH` (11), `_HEAD` (12), `_LEAD` (13) | the stroke width, the arrowhead's size and the lead-out in render pixels, as f32 bits |
+| `RANGE_LANE_LINK_WIDTH` (11), `_HEAD` (12), `_INSET` (13) | the stroke width, the chevron's length and the exit inset in render pixels, as f32 bits |
 
 The geometry sits in the lane table rather than `Style` because the pick
 compute binds no `Style`; the draw, the highlight and the pick read one
-route. One instance is one link and draws `RANGE_LINK_VERTICES` (36): five
-segment quads and the head's quad, each a box around its stroke that the
-fragment covers by distance (half the width from the segment, or inside
-the head's triangle, antialiased over one pixel). The route is built on
-every draw from the two bars: out of the predecessor's end by the
-lead-out, across to the successor's row and into its start (three
-segments); when the successor starts before the predecessor's end plus
-two lead-outs, the route is an S through the midline between the two rows
-(five segments). Each bar is left and entered the way it runs, so a bar
-whose end is before its start is handled too. A row that is NaN, negative,
-or past the bars' row count, or a bar that draws nothing, draws no link.
-The colour is the series' `Style` colour; nothing per link is stored.
+route. One instance is one link and draws `RANGE_LINK_VERTICES` (6): one
+quad over the route's bounding box, whose fragments rebuild the route from
+the link's index and cover by distance to its centre line (half the
+stroke, antialiased over one pixel), so overlapping parts never blend
+twice. The route follows the web Gantt convention and is built on every
+draw from the two bars, with the value axis signed so the successor runs
+forward:
+
+- The exit is on the predecessor's edge facing the successor's row, `inset`
+  pixels in from the predecessor's first end. When the successor starts too
+  soon for the last leg and its head, the exit moves back to
+  `successor start − head − 4 px`, so a route never turns back through a
+  bar.
+- The first leg runs across to the successor's centre line. It turns
+  through one quarter arc of 4 logical pixels, fitted to both legs.
+- The last leg runs along the centre line to 1.5 px before the successor's
+  start.
+- The head is an open chevron of two arms `head` pixels long.
+
+Links leaving one bar share their trunk. Bars on one centre line (a
+numeric position axis) get a straight link. A row that is NaN, negative or
+past the bars' row count, or a bar that draws nothing, draws no link. The
+colour is the series' `Style` colour; nothing per link is stored. A link
+draws in its series' place in the list, so a host lists the links before
+their bars to have the bars cover the link ends.
 
 `vs_range_link_selection` / `fs_range_link_selection` draw the picked
 link's route in the selection colour, its stroke widened by the
 selection's width on each side. The compute entry `pick_range_links`
-answers the nearest segment or head within half the stroke plus the pick
+answers the nearest point of the route (legs, corner or chevron) within half the stroke plus the pick
 distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
 link's row. The route is appearance: it reads the values the bars are
 drawn from, and the user reads no value computed from them.

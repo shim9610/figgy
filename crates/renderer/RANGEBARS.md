@@ -156,19 +156,24 @@ let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end").with_pro
 `from[i]` to the bar of row `to[i]` of the range bar series `bars`, finish
 to start. The host supplies the two row columns through `ColumnSource`;
 there is no cap on links. The renderer routes each link on every draw from
-the two bars as they are drawn: out of the predecessor's end, across to the
-successor's row and into its start with an arrowhead, or, when the
-successor starts before the predecessor ends, an S route through the
-midline between the rows. A row that is missing, negative or past the bars'
-rows draws no link.
+the two bars as they are drawn, in the web Gantt convention (Frappe Gantt):
+the link leaves the predecessor's edge facing the successor's row, a small
+inset from its start, runs across to the successor's centre line, turns
+through one rounded corner and ends in an open chevron just before the
+successor's start. When the successor starts before that exit, the exit
+moves back to leave room for the head, so a link never turns back through
+a bar. Links leaving one bar share their trunk. A row that is missing,
+negative or past the bars' rows draws no link. List the links before their
+bars: a series draws in its place in the list, so the bars then cover the
+link ends.
 
 | Field | Default (`range_links`) | Range |
 |---|---|---|
 | `bars` | the bars' `series_id` | a range bar series in the same layer (`RuleKind::RangeLinkBars`) |
-| `color` | slate grey `#949CAA` | channels in `0..=1`; a theme sets its connector colour |
-| `width` | 1.25 px | `0..=24` |
-| `head` | 7 px | `0..=32` |
-| `elbow` | 8 px of lead-out | `0..=64` |
+| `color` | amber `#D4A24C` | channels in `0..=1`; a theme sets its connector colour |
+| `width` | 1.5 px | `0..=24` |
+| `head` | 6 px open chevron | `0..=32` |
+| `inset` | 6 px from the predecessor's start | `0..=64` |
 
 The two columns must be set and distinct (`RuleKind::RangeLinkColumns`);
 the style ranges are `RuleKind::RangeLinkStyle`. Polar charts refuse links
@@ -180,6 +185,8 @@ use renderer::SeriesConfig;
 
 let tasks = SeriesConfig::timeline_bars("tasks", "row", "start", "end");
 let links = SeriesConfig::range_links("links", "tasks", "link.from", "link.to");
+// Links first, so the bars cover their ends.
+let series = [links, tasks];
 ```
 
 ## Interaction
