@@ -183,11 +183,9 @@ fn stem_quad(flags: u32) -> u32 {
 fn stem_end_ndc(t: Transform, g: ErrorBarSegment, at_a: bool, flags: u32) -> vec2<f32> {
     var ndc = data_to_ndc(t, g.b.x, g.b.y);
     if (at_a) {
-        if ((flags & ERRORBAR_HAS_X) != 0u) {
-            ndc.x = axis_baseline_ndc(t, g.a.x, 0u);
-        } else {
-            ndc.y = axis_baseline_ndc(t, g.a.y, 1u);
-        }
+        // One `axis_baseline_ndc` call for either axis (#363).
+        let axis = select(1u, 0u, (flags & ERRORBAR_HAS_X) != 0u);
+        ndc[axis] = axis_baseline_ndc(t, select(g.a.y, g.a.x, axis == 0u), axis);
     }
     return ndc;
 }
