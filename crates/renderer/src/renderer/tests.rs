@@ -7346,7 +7346,7 @@ fn streamed_series_are_rejected_per_family() {
             "range links",
             base.clone(),
             streamed_series(
-                SeriesConfig::range_links("stream", "bars", "x", "y").render_type,
+                SeriesConfig::range_links("stream", "bars", [(0, 1)]).render_type,
                 "y",
             ),
             RuleKind::StreamedRangeLinks,

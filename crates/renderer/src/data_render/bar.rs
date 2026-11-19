@@ -277,15 +277,18 @@ pub(crate) const RANGE_LANE_COLOR_MODE: u32 = 6;
 pub(crate) const RANGE_LANE_STATES: u32 = 7;
 pub(crate) const RANGE_BAR_LANES: usize = RANGE_LANE_STATES as usize + 1;
 /// A range link series' lanes past its bars' (#357, `range_links.wgsl`):
-/// the predecessor and successor row columns, the link count, and the
-/// stroke width, head length and exit inset in render pixels as f32 bits.
-pub(crate) const RANGE_LANE_LINK_FROM: u32 = 8;
-pub(crate) const RANGE_LANE_LINK_TO: u32 = 9;
-pub(crate) const RANGE_LANE_LINK_COUNT: u32 = 10;
-pub(crate) const RANGE_LANE_LINK_WIDTH: u32 = 11;
-pub(crate) const RANGE_LANE_LINK_HEAD: u32 = 12;
-pub(crate) const RANGE_LANE_LINK_INSET: u32 = 13;
+/// the link count and the stroke width, head length and exit inset in
+/// render pixels as f32 bits, then the links themselves.
+pub(crate) const RANGE_LANE_LINK_COUNT: u32 = 8;
+pub(crate) const RANGE_LANE_LINK_WIDTH: u32 = 9;
+pub(crate) const RANGE_LANE_LINK_HEAD: u32 = 10;
+pub(crate) const RANGE_LANE_LINK_INSET: u32 = 11;
+/// The fixed head of a link series' lane table; link `i` follows in
+/// `RANGE_LINK_STRIDE` entries from `RANGE_LINK_LANES + i * RANGE_LINK_STRIDE`:
+/// its `from` row, its `to` row and its exit offset in render pixels as f32
+/// bits (NaN for the default).
 pub(crate) const RANGE_LINK_LANES: usize = RANGE_LANE_LINK_INSET as usize + 1;
+pub(crate) const RANGE_LINK_STRIDE: usize = 3;
 /// Vertices per link: one quad over the whole route. Must match
 /// `range_links.wgsl`'s `RANGE_LINK_VERTICES`.
 pub const RANGE_LINK_VERTICES: u32 = 6;

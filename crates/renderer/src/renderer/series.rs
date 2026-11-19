@@ -568,17 +568,14 @@ pub(super) fn series_draw_info_from_pool(
         // One bar per row where every column of the series has a value:
         // the positions, the ends and the referenced columns are
         // index-aligned, so the shortest decides.
-        // A link per row of its two row columns (#357): the shorter bounds
-        // the links.
-        DataRenderType::RangeLinks(_) => {
-            let (count, truncated) = paired(&[x, y]);
-            SeriesDrawInfo {
-                drawn_count: count,
-                cols: None,
-                rows: None,
-                truncated,
-            }
-        }
+        // One instance per SSOT link (#357); whether a link names a row
+        // past its bars is decided against the bars series by the caller.
+        DataRenderType::RangeLinks(links) => SeriesDrawInfo {
+            drawn_count: links.links.len() as u64,
+            cols: None,
+            rows: None,
+            truncated: false,
+        },
         DataRenderType::RangeBars(_) => {
             let bars = series.render_type.range_bars();
             let lengths = || {
@@ -1695,8 +1692,10 @@ pub(super) fn range_bar_data<'c>(
 /// (#357), and its link count. A link series reads its bars through the
 /// group 3 of the range bar series it names (`range_bar_params` of that
 /// series in its `group`), so its routes join exactly the drawn bars; the
-/// lane table adds its row columns, its link count (the shorter column)
-/// and its stroke width, head length and exit inset in render pixels.
+/// lane table adds its link count, its stroke width, head length and exit
+/// inset in render pixels, and then its SSOT links (`from`, `to`, exit
+/// offset), written straight into the mapped buffer. The table is rebuilt
+/// only when the series is prepared, on an SSOT change.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn range_link_data<'c>(
     device: &wgpu::Device,
@@ -1711,8 +1710,8 @@ pub(super) fn range_link_data<'c>(
     mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
 ) -> Result<(data_render::CategoryBarData, u32)> {
     use data_render::{
-        RANGE_LANE_LINK_COUNT, RANGE_LANE_LINK_FROM, RANGE_LANE_LINK_HEAD, RANGE_LANE_LINK_INSET,
-        RANGE_LANE_LINK_TO, RANGE_LANE_LINK_WIDTH, RANGE_LINK_LANES,
+        RANGE_LANE_LINK_COUNT, RANGE_LANE_LINK_HEAD, RANGE_LANE_LINK_INSET, RANGE_LANE_LINK_WIDTH,
+        RANGE_LINK_LANES, RANGE_LINK_STRIDE,
     };
     let invalid = |kind: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: links.series_id.clone(),
@@ -1732,25 +1731,19 @@ pub(super) fn range_link_data<'c>(
         .range_bars()
         .ok_or_else(|| invalid(crate::RuleKind::RangeLinkBars))?;
     let (params, bar_lanes) = range_bar_params(config, group, bars, display_scale, &mut lookup)?;
-    let from = lookup(&links.x_column)?;
-    let to = lookup(&links.y_column)?;
-    let lane = |handle: &ColumnHandle| {
-        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
-            resource: "range link column lane",
-            requested: handle.offset / 4,
-            limit: u64::from(u32::MAX),
-        })
-    };
-    let count = from.len_values.min(to.len_values);
-    let count = u32::try_from(count).map_err(|_| FiggyError::GpuResourceLimit {
+    let count = style.links.len();
+    let too_many = || FiggyError::GpuResourceLimit {
         resource: "range links",
         requested: count as u64,
         limit: u64::from(u32::MAX),
-    })?;
+    };
+    let lane_count = count
+        .checked_mul(RANGE_LINK_STRIDE)
+        .and_then(|n| n.checked_add(RANGE_LINK_LANES))
+        .ok_or_else(too_many)?;
+    let count = u32::try_from(count).map_err(|_| too_many())?;
     let mut lanes = [0u32; RANGE_LINK_LANES];
     lanes[..bar_lanes.len()].copy_from_slice(&bar_lanes);
-    lanes[RANGE_LANE_LINK_FROM as usize] = lane(&from)?;
-    lanes[RANGE_LANE_LINK_TO as usize] = lane(&to)?;
     lanes[RANGE_LANE_LINK_COUNT as usize] = count;
     lanes[RANGE_LANE_LINK_WIDTH as usize] = (style.width * display_scale).to_bits();
     lanes[RANGE_LANE_LINK_HEAD as usize] = (style.head * display_scale).to_bits();
@@ -1763,9 +1756,15 @@ pub(super) fn range_link_data<'c>(
         data_bgl,
         pool_buffer,
         &params,
-        lanes.len(),
+        lane_count,
         |push| {
             lanes.iter().for_each(|&lane| push(lane));
+            for link in &style.links {
+                push(link.from);
+                push(link.to);
+                let offset = link.exit_offset.map_or(f32::NAN, |o| o * display_scale);
+                push(offset.to_bits());
+            }
             Ok(())
         },
         style_map,

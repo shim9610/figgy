@@ -3,8 +3,8 @@
 // after `range_bars.wgsl`, whose bars (`range_bar`) they join. A link series
 // binds the group 3 of the range bar series it names (its params, lane
 // table and slot layout), so `range_bar(row)` is exactly the bar that
-// series draws; six lanes past the bars' own hold the link columns and the
-// link's look.
+// series draws; the lanes past the bars' own hold the link count and look,
+// then the series' SSOT links (`from`, `to`, exit offset), three lanes each.
 //
 // One instance is one link, routed on every draw from its two bars in the
 // web Gantt convention: out of the predecessor's edge facing the successor's
@@ -19,15 +19,17 @@
 // reads the values the bars are drawn from and computes none the user reads
 // as data. Nothing per link is stored.
 
-/// Lane table entries past `range_bars.wgsl`'s: the f32 lane bases of the
-/// predecessor and successor row columns, the link count, and the stroke
-/// width, head length and exit inset in render pixels (f32 bits).
-const RANGE_LANE_LINK_FROM: u32 = 8u;
-const RANGE_LANE_LINK_TO: u32 = 9u;
-const RANGE_LANE_LINK_COUNT: u32 = 10u;
-const RANGE_LANE_LINK_WIDTH: u32 = 11u;
-const RANGE_LANE_LINK_HEAD: u32 = 12u;
-const RANGE_LANE_LINK_INSET: u32 = 13u;
+/// Lane table entries past `range_bars.wgsl`'s: the link count, and the
+/// stroke width, head length and default exit inset in render pixels (f32
+/// bits). Link `i` follows at `RANGE_LINK_LANES + i * RANGE_LINK_STRIDE`:
+/// its predecessor row, its successor row and its exit offset in render
+/// pixels (f32 bits, NaN for the default). Must match `bar.rs`.
+const RANGE_LANE_LINK_COUNT: u32 = 8u;
+const RANGE_LANE_LINK_WIDTH: u32 = 9u;
+const RANGE_LANE_LINK_HEAD: u32 = 10u;
+const RANGE_LANE_LINK_INSET: u32 = 11u;
+const RANGE_LINK_LANES: u32 = 12u;
+const RANGE_LINK_STRIDE: u32 = 3u;
 
 /// The corner radius of a route in logical pixels (`range_link_scale`
 /// turns it into render pixels).
@@ -69,18 +71,24 @@ fn range_link_count() -> u32 {
     return range_lane(RANGE_LANE_LINK_COUNT);
 }
 
-/// Row `i`'s bar row in column `k`, with `y == 0` for a NaN, negative or
-/// out-of-range row.
-fn range_link_row(k: u32, i: u32) -> vec2<u32> {
-    let v = box_value(k, i);
-    if (!v.ok) {
+/// Link `i`'s row at `k` (0 = predecessor, 1 = successor), with `y == 0`
+/// for a row at or past the bars' row count: such a link draws nothing.
+fn range_link_row(i: u32, k: u32) -> vec2<u32> {
+    let r = range_lane(RANGE_LINK_LANES + i * RANGE_LINK_STRIDE + k);
+    if (r >= category_params.count) {
         return vec2<u32>(0u, 0u);
     }
-    let r = round(box_sum(v.pair));
-    if (!(r >= 0.0) || r >= f32(category_params.count)) {
-        return vec2<u32>(0u, 0u);
+    return vec2<u32>(r, 1u);
+}
+
+/// Link `i`'s exit offset from the predecessor's start in render pixels,
+/// or the default inset.
+fn range_link_exit_px(i: u32) -> f32 {
+    let o = bitcast<f32>(range_lane(RANGE_LINK_LANES + i * RANGE_LINK_STRIDE + 2u));
+    if (o >= 0.0) {
+        return o;
     }
-    return vec2<u32>(u32(r), 1u);
+    return range_link_inset_px();
 }
 
 /// `(along, across)` to chart-area pixels: `along` runs on the value axis.
@@ -107,8 +115,8 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     if (i >= range_link_count()) {
         return out;
     }
-    let src = range_link_row(RANGE_LANE_LINK_FROM, i);
-    let dst = range_link_row(RANGE_LANE_LINK_TO, i);
+    let src = range_link_row(i, 0u);
+    let dst = range_link_row(i, 1u);
     if (src.y == 0u || dst.y == 0u) {
         return out;
     }
@@ -129,9 +137,12 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     let gap = 1.5;
     let tip_u = b.start_px * s - gap;
     let a_first = min(a.start_px * s, a.end_px * s);
-    // The exit: a small inset from the predecessor's first end, moved back
-    // when the successor starts too soon for the last leg and its head.
-    var exit_u = min(a_first + range_link_inset_px(), tip_u - head - 4.0);
+    let a_last = max(a.start_px * s, a.end_px * s);
+    // The exit: the link's offset (a user's drag) or the default inset from
+    // the predecessor's first end, kept on the bar, and moved back when the
+    // successor starts too soon for the last leg and its head.
+    let along = min(a_first + range_link_exit_px(i), a_last);
+    var exit_u = min(along, tip_u - head - 4.0);
     var down = 1.0;
     var exit_c = a_band.y;
     if (b_mid < a_mid) {
@@ -143,7 +154,6 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
         // link out of the predecessor's last end, so no stroke runs inside
         // a bar whose unfinished part is translucent.
         exit_c = b_mid;
-        let a_last = max(a.start_px * s, a.end_px * s);
         exit_u = min(a_last, tip_u - head - 4.0);
     }
     out.exit = range_link_px(exit_u * s, exit_c);

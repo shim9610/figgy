@@ -1302,35 +1302,44 @@ A timeline's `left_y` names `"category_bands": { "fill": { … }, "every":
 ## `RangeLinks` render_type
 
 Dependency links (#357) join the bars of the range bar series named in
-`bars`, which must be in the same layer: link `i` runs from the bar of row
-`x_column[i]` to the bar of row `y_column[i]`: out of the predecessor's
-edge `inset` pixels from its start, across to the successor's row with one
-rounded corner, and into its start with an open chevron. List the links
-before their bars to draw them under the bars. The two columns hold row indices and must be
-set and distinct; a NaN, negative or out-of-range row draws no link. Every
-field is written. `width` is `0..=24`, `head` `0..=32` and `inset` `0..=64`, in logical pixels (`RangeLinkStyle`); a polar chart and
+`bars`, which must be in the same layer. The series is DataLess: its
+`links` are SSOT and it names no column (`x_column` and `y_column` empty).
+Each link runs from the bar of row `from` to the bar of row `to`: out of
+the predecessor's edge `exit_offset` pixels from its start (`inset` when
+absent), across to the successor's row with one rounded corner, and into
+its start with an open chevron. A row past the bars draws no link. List
+the links before their bars to draw them under the bars. `links` is
+omitted when empty and `exit_offset` when unset; every other field is
+written. `width` is `0..=24`, `head` `0..=32`, `inset` `0..=64` and each `exit_offset` finite and not negative, in logical pixels (`RangeLinkStyle`); a polar chart and
 a streamed source refuse links (`PolarRangeLinks`, `StreamedRangeLinks`).
 
 ```json
 {
   "series_id": "links",
   "label": null,
-  "x_column": "link.from",
-  "y_column": "link.to",
+  "x_column": "",
+  "y_column": "",
   "render_type": {
     "RangeLinks": {
       "bars": "tasks",
       "color": { "r": 0.83, "g": 0.64, "b": 0.3, "a": 1.0 },
       "width": 1.5,
       "head": 6.0,
-      "inset": 6.0
+      "inset": 6.0,
+      "links": [
+        { "from": 0, "to": 2 },
+        { "from": 2, "to": 3, "exit_offset": 24.0 }
+      ]
     }
   }
 }
 ```
 
-The picked link's `selection_details()` carries `index`, `from` and `to`
-(`null` for a NaN).
+The picked link's `selection_details()` carries `index`, `from`, `to` and
+`exit_offset` (`null` when unset). `press_range_link(series_id, index)`
+starts a drag of the link's exit (`on_move` moves it, snapping to the
+default within 3 px, and `on_release` ends it), and
+`set_link_exit_offset(series_id, index, offset)` sets it directly.
 
 <a id="surface-render_type"></a>
 

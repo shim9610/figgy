@@ -194,12 +194,11 @@ impl crate::config::Config {
                 let selected = &series[position].render_type;
                 let boxes = selected.box_plot().is_some();
                 let ranges = selected.range_bars().is_some();
-                if selected.range_links().is_some() {
-                    // A dependency link (#357) steps along the link rows by
-                    // either pointer axis, bounded by the shorter of its
-                    // two row columns; it stays in its series.
+                if let Some(links) = selected.range_links() {
+                    // A dependency link (#357) steps along the series' links
+                    // by either pointer axis; it stays in its series.
                     let next = &series[position];
-                    let count = len(&next.x_column).min(len(&next.y_column));
+                    let count = links.links.len();
                     if count == 0 {
                         return Ok(None);
                     }

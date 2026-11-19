@@ -350,15 +350,7 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         (6, 8),
         (8, 9),
     ];
-    r.add_column(
-        "gt-link-from",
-        &links.iter().map(|l| l.0 as f64).collect::<Vec<_>>(),
-    )?;
-    r.add_column(
-        "gt-link-to",
-        &links.iter().map(|l| l.1 as f64).collect::<Vec<_>>(),
-    )?;
-    let dependencies = SeriesConfig::range_links("links", "tasks", "gt-link-from", "gt-link-to");
+    let dependencies = SeriesConfig::range_links("links", "tasks", links);
     let mut specs = [dependencies, bars];
     themed(&mut chart, &theme, &mut specs)?;
     for (label, color) in states.iter().zip(&theme.series.range_bars.states) {
@@ -442,16 +434,8 @@ fn timeline(r: &mut Renderer, out: &Path) -> Result {
     let milestones = SeriesConfig::scatter("milestones", "tl-mark", "tl-row")
         .marker(ScatterShape::DiamondFilled, 16.0)
         .color(ink);
-    r.add_column(
-        "tl-link-from",
-        &links.iter().map(|l| l.0 as f64).collect::<Vec<_>>(),
-    )?;
-    r.add_column(
-        "tl-link-to",
-        &links.iter().map(|l| l.1 as f64).collect::<Vec<_>>(),
-    )?;
     // The links route between the bars on every draw (#357).
-    let dependencies = SeriesConfig::range_links("links", "tasks", "tl-link-from", "tl-link-to");
+    let dependencies = SeriesConfig::range_links("links", "tasks", links);
     // Listed before the bars, so the bars cover the link ends.
     let specs = [dependencies, bars, milestones];
     for (scale, name) in [(1.0, "timeline.png"), (2.0, "timeline@2x.png")] {

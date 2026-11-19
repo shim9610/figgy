@@ -360,8 +360,8 @@ rule_kinds! {
         ContrastInkSeries => "only range bar labels take contrast ink",
         CategoryBandsFill => "a category band fill has every channel in 0..=1",
         RangeLinkBars => "a range link series names a range bar series of its own layer",
-        RangeLinkColumns => "a range link series needs two distinct, non-empty row columns",
-        RangeLinkStyle => "a range link's width is 0..=24, its head 0..=32 and its inset 0..=64 pixels, its colour channels in 0..=1",
+        RangeLinkColumns => "a range link series reads no column: its links are SSOT (x_column and y_column empty)",
+        RangeLinkStyle => "a range link's width is 0..=24, its head 0..=32 and its inset 0..=64 pixels, its colour channels in 0..=1 and its exit offsets finite and not negative",
         PolarRangeLinks => "a polar chart draws no range links",
         StreamedRangeLinks => "range links need resident columns; a streamed source is rejected",
         TimestampStepRequired => "relative, custom and period timestamp labels need a calendar step",
@@ -2127,11 +2127,11 @@ mod tests {
             ),
             (
                 RuleKind::RangeLinkColumns,
-                "a range link series needs two distinct, non-empty row columns",
+                "a range link series reads no column: its links are SSOT (x_column and y_column empty)",
             ),
             (
                 RuleKind::RangeLinkStyle,
-                "a range link's width is 0..=24, its head 0..=32 and its inset 0..=64 pixels, its colour channels in 0..=1",
+                "a range link's width is 0..=24, its head 0..=32 and its inset 0..=64 pixels, its colour channels in 0..=1 and its exit offsets finite and not negative",
             ),
             (
                 RuleKind::PolarRangeLinks,

@@ -433,27 +433,30 @@ impl SeriesConfig {
     }
 
     /// Dependency links (#357) between the bars of the range bar series
-    /// `bars`: link `i` runs from the bar of row `from[i]` to the bar of
-    /// row `to[i]`, in the web Gantt look: amber (`#D4A24C`), 1.5 px wide,
-    /// leaving the predecessor 6 px from its start and ending in a 6 px open
-    /// chevron ([`RangeLinkSeries`]). List the links before their bars so
-    /// the bars cover the link ends.
+    /// `bars`, one per `(from, to)` row pair, in the web Gantt look: amber
+    /// (`#D4A24C`), 1.5 px wide, leaving the predecessor 6 px from its start
+    /// and ending in a 6 px open chevron ([`RangeLinkSeries`]). The series
+    /// is DataLess: the links are its SSOT. List the links before their
+    /// bars so the bars cover the link ends.
     pub fn range_links(
         id: impl Into<String>,
         bars: impl Into<String>,
-        from: impl Into<ColumnId>,
-        to: impl Into<ColumnId>,
+        links: impl IntoIterator<Item = (u32, u32)>,
     ) -> Self {
         Self::of_kind(
             id,
-            from,
-            to,
+            "",
+            "",
             DataRenderType::RangeLinks(RangeLinkSeries {
                 bars: bars.into(),
                 color: Color::from_rgb8(212, 162, 76),
                 width: 1.5,
                 head: 6.0,
                 inset: 6.0,
+                links: links
+                    .into_iter()
+                    .map(|(from, to)| crate::data_config::RangeLink::new(from, to))
+                    .collect(),
             }),
         )
     }

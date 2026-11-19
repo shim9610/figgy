@@ -402,8 +402,9 @@ impl SeriesConfig {
     /// columns, and a vector field's components and colour. Records and
     /// ragged columns are visited by [`Self::visit_composite_columns`].
     pub fn visit_columns<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
-        // A DataLess series reads no column (#203, #234).
-        if self.is_dataless() {
+        // A DataLess series reads no column (#203, #234), nor do range
+        // links, whose links are SSOT (#357).
+        if self.is_dataless() || self.render_type.range_links().is_some() {
             return;
         }
         visit(&self.x_column);

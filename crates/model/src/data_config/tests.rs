@@ -3896,8 +3896,8 @@ mod range_bar_tests {
             series_id: "deps".into(),
             source_id: None,
             label: None,
-            x_column: "deps.from".into(),
-            y_column: "deps.to".into(),
+            x_column: String::new().into(),
+            y_column: String::new().into(),
             z_column: None,
             render_type: DataRenderType::RangeLinks(RangeLinkSeries {
                 bars: "one".into(),
@@ -3905,6 +3905,8 @@ mod range_bar_tests {
                 width: 1.5,
                 head: 6.0,
                 inset: 6.0,
+                // 3000 links: no cap (rule 10).
+                links: (0..3000u32).map(|i| RangeLink::new(i, i + 1)).collect(),
             }),
         }
     }
@@ -3938,12 +3940,13 @@ mod range_bar_tests {
             config.validate_range_links(&[links()]),
             Err(crate::RuleKind::RangeLinkBars)
         );
+        // DataLess: a link series names no column.
         assert_eq!(
-            refused(|l| l.y_column = l.x_column.clone()),
+            refused(|l| l.x_column = "from".into()),
             Err(crate::RuleKind::RangeLinkColumns)
         );
         assert_eq!(
-            refused(|l| l.x_column = String::new().into()),
+            refused(|l| l.y_column = "to".into()),
             Err(crate::RuleKind::RangeLinkColumns)
         );
         for edit in [
@@ -3951,6 +3954,8 @@ mod range_bar_tests {
             |l| style(l).width = f32::NAN,
             |l| style(l).head = 33.0,
             |l| style(l).inset = 65.0,
+            |l| style(l).links[3].exit_offset = Some(-1.0),
+            |l| style(l).links[3].exit_offset = Some(f32::INFINITY),
             |l| style(l).color = Color::new(2.0, 0.0, 0.0, 1.0),
         ] {
             assert_eq!(refused(edit), Err(crate::RuleKind::RangeLinkStyle));
@@ -3993,12 +3998,7 @@ mod range_bar_tests {
             refs: vec![pick(0)],
             ..crate::defaults::data_selections_config()
         });
-        let len = |c: &str| match c {
-            "deps.from" => Some(4000),
-            "deps.to" => Some(3000),
-            "pos" | "one.end" | "one.start" => Some(5),
-            _ => None,
-        };
+        let len = |c: &str| matches!(c, "pos" | "one.end" | "one.start").then_some(5);
         assert_eq!(config.step_selection(&series, 1, 0, len), Ok(true));
         assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(1));
         assert_eq!(config.step_selection(&series, 0, 1, len), Ok(true));
@@ -4007,15 +4007,65 @@ mod range_bar_tests {
         assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick(2999));
     }
 
+    /// The exit offset helpers (#357): `set_link_exit_offset` writes one
+    /// link's offset, clearing it for 0 or a non-finite value and refusing a
+    /// negative one or an index past the links; `drag_link_exit` moves the
+    /// exit of every link sharing the picked link's trunk, snaps to the
+    /// default within 3 px and stops half a pixel in from the bar's start.
+    #[test]
+    fn link_exit_offsets_set_drag_snap_and_share_their_trunk() {
+        let mut series = links();
+        let l = style(&mut series);
+        assert!(l.set_link_exit_offset(5, Some(20.0)));
+        assert_eq!(l.links[5].exit_offset, Some(20.0));
+        assert!(l.set_link_exit_offset(5, Some(0.0)));
+        assert_eq!(l.links[5].exit_offset, None);
+        assert!(l.set_link_exit_offset(5, Some(f32::NAN)));
+        assert_eq!(l.links[5].exit_offset, None);
+        assert!(!l.set_link_exit_offset(5, Some(-2.0)));
+        assert!(!l.set_link_exit_offset(3000, Some(2.0)));
+        // Two more links leave row 5's bar: one sharing its trunk, one moved.
+        l.links.push(RangeLink::new(5, 9));
+        l.links.push(RangeLink {
+            exit_offset: Some(40.0),
+            ..RangeLink::new(5, 8)
+        });
+        use crate::layout::NudgeResult;
+        assert_eq!(l.drag_link_exit(5, 14.0), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, Some(20.0));
+        assert_eq!(l.links[3000].exit_offset, Some(20.0), "the shared trunk");
+        assert_eq!(l.links[3001].exit_offset, Some(40.0), "its own exit");
+        assert_eq!(l.links[4].exit_offset, None, "another bar's link");
+        // Back within 3 px of the default (6): the entries clear.
+        assert_eq!(l.drag_link_exit(5, -12.0), NudgeResult::Moved);
+        assert_eq!(l.links[5].exit_offset, None);
+        assert_eq!(l.links[3000].exit_offset, None);
+        // Before the bar's start: stops half a pixel in (0 is the default).
+        assert_eq!(l.drag_link_exit(3001, -100.0), NudgeResult::Moved);
+        assert_eq!(l.links[3001].exit_offset, Some(0.5));
+        assert_ne!(l.drag_link_exit(9999, 1.0), NudgeResult::Moved);
+        assert_ne!(l.drag_link_exit(5, f32::NAN), NudgeResult::Moved);
+    }
+
     /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
     pub(super) fn range_links_round_trip() {
-        let original = links();
+        let mut original = links();
+        style(&mut original).links[1].exit_offset = Some(12.5);
         let json = serde_json::to_value(&original).unwrap();
         let fields = json["render_type"]["RangeLinks"].as_object().unwrap();
-        for key in ["bars", "color", "width", "head", "inset"] {
+        for key in ["bars", "color", "width", "head", "inset", "links"] {
             assert!(fields.contains_key(key), "{key}");
         }
+        // An unset offset is omitted; a set one is written.
+        assert!(fields["links"][0].get("exit_offset").is_none());
+        assert_eq!(fields["links"][1]["exit_offset"], 12.5);
+        // No links: the key is omitted and reads back empty.
+        let mut empty = links();
+        style(&mut empty).links.clear();
+        let bare = serde_json::to_value(&empty).unwrap();
+        assert!(bare["render_type"]["RangeLinks"].get("links").is_none());
+        assert_eq!(serde_json::from_value::<SeriesConfig>(bare).unwrap(), empty);
         let parsed: SeriesConfig = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, original);
         let again = serde_json::to_string(&parsed).unwrap();

@@ -1955,12 +1955,33 @@ mod tests {
             .unwrap()
         };
         let bars = renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end");
-        let links = renderer::SeriesConfig::range_links("deps", "t", "from", "to");
+        let links = renderer::SeriesConfig::range_links("deps", "t", [(0, 1)]);
         let ok = report(&[bars, links.clone()]);
         assert_eq!(ok["valid"], true, "{ok}");
-        let refused = report(&[links]);
+        let refused = report(std::slice::from_ref(&links));
         assert_eq!(refused["valid"], false);
         assert!(refused.to_string().contains("RangeLinkBars"), "{refused}");
+        // A dragged exit is SSOT: it validates and normalizes unchanged; a
+        // negative one names its rule.
+        let mut dragged = links;
+        dragged
+            .render_type
+            .range_links_mut()
+            .unwrap()
+            .set_link_exit_offset(0, Some(24.0));
+        let bars = renderer::SeriesConfig::timeline_bars("t", "pos", "start", "end");
+        let ok = report(&[bars.clone(), dragged.clone()]);
+        assert_eq!(ok["valid"], true, "{ok}");
+        let json = serde_json::to_string(&dragged).unwrap();
+        assert!(json.contains("\"exit_offset\":24.0"), "{json}");
+        if let Some(l) = dragged.render_type.range_links_mut() {
+            l.links[0].exit_offset = Some(-1.0);
+        }
+        let negative = report(&[bars, dragged]);
+        assert!(
+            negative.to_string().contains("RangeLinkStyle"),
+            "{negative}"
+        );
     }
 
     #[test]

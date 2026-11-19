@@ -236,7 +236,8 @@ pub(super) fn build_fit_token_from_state(
             })?;
         // A DataLess series reads no column (#203, #234): it fits from its
         // SSOT at commit, so it stamps none.
-        if !item.is_dataless() {
+        // Range links read no column either (#357).
+        if !item.is_dataless() && item.render_type.range_links().is_none() {
             push_fit_column_stamp(
                 pool,
                 streaming_sources,

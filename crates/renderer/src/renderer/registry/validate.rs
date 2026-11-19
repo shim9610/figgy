@@ -47,7 +47,11 @@ pub(in crate::renderer) fn validate_renderer_series(
         // are SSOT, held to the model's rules above. A monotonic series'
         // columns are its envelope, written by its own calls (#271): a
         // frame refuses it with `MonotonicSourceRequired` until they are.
-        if item.is_dataless() || item.monotonic().is_some() {
+        // Range links are SSOT too (#357): they read no column.
+        if item.is_dataless()
+            || item.monotonic().is_some()
+            || item.render_type.range_links().is_some()
+        {
             continue;
         }
         if let Some(mesh) = item.render_type.tri_mesh() {

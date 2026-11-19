@@ -1687,15 +1687,12 @@ fn the_timeline_look_bands_every_other_row_under_the_bars() {
     }
 }
 
-/// Dependency links (#357, item 14 D) over the three test bars: link 0 from
-/// row 0 to row 2, link 1 from row 0 to row 1, link 2 a NaN row (no link),
-/// stroked in orange 2 px wide with an 8 px chevron, 10 px in from the
-/// predecessor's start.
-fn links_series(r: &mut Renderer) -> SeriesConfig {
-    r.add_column("link-from", &col(vec![0.0, 0.0, NAN]))
-        .unwrap();
-    r.add_column("link-to", &col(vec![2.0, 1.0, 1.0])).unwrap();
-    let mut links = SeriesConfig::range_links("links", "bars", "link-from", "link-to");
+/// Dependency links (#357, item 14 D) over the three test bars, SSOT only:
+/// link 0 from row 0 to row 2, link 1 from row 0 to row 1, link 2 naming
+/// row 7, past the bars (it draws and picks nothing), stroked in orange
+/// 2 px wide with an 8 px chevron, 10 px in from the predecessor's start.
+fn links_series() -> SeriesConfig {
+    let mut links = SeriesConfig::range_links("links", "bars", [(0, 2), (0, 1), (7, 1)]);
     if let DataRenderType::RangeLinks(l) = &mut links.render_type {
         l.color = ORANGE;
         l.width = 2.0;
@@ -1706,8 +1703,8 @@ fn links_series(r: &mut Renderer) -> SeriesConfig {
 }
 
 /// Links route between the bars they join on every draw, at 1x and 2x: ink
-/// leaves the predecessor's end and reaches the successor's start; a NaN
-/// row draws nothing. A link picks as a histogram bin of its row, its
+/// leaves the predecessor's edge and reaches the successor's start; a link
+/// past the bars draws nothing and is reported as truncated. A link picks as a histogram bin of its row, its
 /// highlight traces it, `step_selection` walks the links, the vector
 /// exports embed it, a saved document draws the same, and 3000 links draw
 /// with no cap (rule 10).
@@ -1717,7 +1714,7 @@ fn range_links_route_between_their_bars_and_keep_every_interaction() {
     let direction = CategoryBarDirection::Horizontal;
     let mut chart = chart(direction);
     let bars = ranges("bars", GREEN);
-    let links = links_series(&mut r);
+    let links = links_series();
     let series = [bars, links];
     for scale in [1.0f32, 2.0] {
         let img = r
@@ -1818,13 +1815,10 @@ fn range_links_route_between_their_bars_and_keep_every_interaction() {
         );
     }
 
-    // step_selection walks the link rows, bounded by the shorter column.
+    // step_selection walks the SSOT links.
     let mut config = chart.config().clone();
     config.picked_data = Some(selection("links", 0));
-    let len = |c: &str| match c {
-        "link-from" | "link-to" => Some(3),
-        _ => Some(3),
-    };
+    let len = |_: &str| Some(3);
     assert_eq!(config.step_selection(&series, 1, 0, len), Ok(true));
     match &config.picked_data.as_ref().unwrap().refs[0] {
         PickedDataRef::HistogramBin {
@@ -1905,7 +1899,7 @@ fn range_links_draw_on_overlays_and_subplots() {
         marker: None,
         text_scale: Default::default(),
     });
-    let links = links_series(&mut r);
+    let links = links_series();
     let named = |id: &str, bars: &str| {
         let mut l = links.clone();
         l.series_id = id.into();
@@ -1982,8 +1976,106 @@ fn range_links_draw_on_overlays_and_subplots() {
     }
 }
 
-/// Rule 10: 3000 links over 3000 rows all route and draw; the last one,
-/// past any former cap, picks.
+/// Dragging a link's exit (#357): the SSOT `exit_offset` moves where the
+/// trunk leaves its predecessor, for every link on a shared trunk, on a
+/// registered chart edited in place (SSOT invalidation) and in exports at
+/// 1x and 2x; the moved link still picks; a drag back within 3 px snaps to
+/// the default and draws the default image again; the offset round-trips.
+#[test]
+fn dragged_link_exits_move_the_trunk_and_snap_back() {
+    let mut r = renderer();
+    let direction = CategoryBarDirection::Horizontal;
+    let chart = chart(direction);
+    let series = [links_series(), ranges("bars", GREEN)];
+    let draw = |r: &mut Renderer, id, scale: f32| {
+        r.export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::panel(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    assert!(
+        r.series_draw_info(id, "links").unwrap().truncated,
+        "link 2 names a row past the bars"
+    );
+    let before: Vec<_> = [1.0f32, 2.0].map(|s| draw(&mut r, id, s)).into();
+    // Drag link 1's exit 30 px toward row 0's end: link 0 shares its trunk.
+    let mut edited = series.to_vec();
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    assert_eq!(
+        links.drag_link_exit(1, 30.0),
+        renderer::layout::NudgeResult::Moved
+    );
+    assert_eq!(links.links[0].exit_offset, Some(40.0));
+    assert_eq!(links.links[1].exit_offset, Some(40.0));
+    r.set_chart_series(id, edited.clone()).unwrap();
+    // The reference: the same links with their default exit at 40 px.
+    let mut reference = series.to_vec();
+    reference[0].render_type.range_links_mut().unwrap().inset = 40.0;
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        let after = draw(&mut r, id, scale);
+        let expected = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &reference),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert_eq!(
+            after.rgba, expected.rgba,
+            "{scale}x: the exit moved to 40 px"
+        );
+        assert_ne!(after.rgba, before[k].rgba, "{scale}x: the trunk moved");
+        // The moved link picks where the new trunk has ink the old lacks.
+        let (w, h) = (after.width, after.height);
+        let new_ink = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .find(|&(x, y)| is_orange(pixel(&after, x, y)) && !is_orange(pixel(&before[k], x, y)))
+            .expect("ink of the moved trunk");
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [new_ink.0 as f32 + 0.5, new_ink.1 as f32 + 0.5],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            },
+            display_scale: scale,
+            max_distance_px: 1.0,
+        };
+        let picked = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        assert!(
+            matches!(&picked, Some(renderer::PickedData::HistogramBin { series_id, .. }) if series_id == "links"),
+            "{scale}x picked {picked:?}"
+        );
+    }
+    #[cfg(feature = "serde")]
+    {
+        let json = serde_json::to_string(&edited).unwrap();
+        assert!(json.contains("\"exit_offset\":40.0"), "{json}");
+        let again: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(again, edited);
+    }
+    // Back to 2 px from the default: it snaps, and the image is the default.
+    let links = edited[0].render_type.range_links_mut().unwrap();
+    links.drag_link_exit(0, -28.0);
+    assert_eq!(links.links[0].exit_offset, None);
+    assert_eq!(links.links[1].exit_offset, None);
+    r.set_chart_series(id, edited).unwrap();
+    for (k, scale) in [1.0f32, 2.0].into_iter().enumerate() {
+        assert_eq!(draw(&mut r, id, scale).rgba, before[k].rgba, "{scale}x");
+    }
+    r.remove_chart(id).unwrap();
+}
+
+/// Rule 10: 3749 links over 3000 rows all route and draw, with no cap and
+/// none truncated. The cost is one 6-vertex instance and one pick candidate
+/// per link, and 12 bytes of lane table rebuilt when the series is prepared.
 #[test]
 fn three_thousand_links_draw_and_pick() {
     let mut r = renderer();
@@ -2000,10 +2092,6 @@ fn three_thousand_links_draw_and_pick() {
         &col((0..n).map(|i| (i % 10) as f64 * 9.0 + 6.0).collect()),
     )
     .unwrap();
-    r.add_column("lk-from", &col((0..n - 1).map(|i| i as f64).collect()))
-        .unwrap();
-    r.add_column("lk-to", &col((1..n).map(|i| i as f64).collect()))
-        .unwrap();
     let mut bars = ranges("lk-bars", GREEN);
     bars.x_column = "lk-pos".into();
     bars.y_column = "lk-end".into();
@@ -2011,7 +2099,10 @@ fn three_thousand_links_draw_and_pick() {
         b.start = "lk-start".into();
         b.slot_width = Some(1.0);
     }
-    let mut links = SeriesConfig::range_links("lk", "lk-bars", "lk-from", "lk-to");
+    // Every bar links to the next, and every fourth to the one after.
+    let chain = (0..n as u32 - 1).map(|i| (i, i + 1));
+    let skips = (0..n as u32 - 2).step_by(4).map(|i| (i, i + 2));
+    let mut links = SeriesConfig::range_links("lk", "lk-bars", chain.chain(skips));
     if let DataRenderType::RangeLinks(l) = &mut links.render_type {
         l.color = ORANGE;
         l.width = 3.0;
@@ -2026,10 +2117,9 @@ fn three_thousand_links_draw_and_pick() {
     let id = r
         .register_chart(chart.config().clone(), series.to_vec())
         .unwrap();
-    assert_eq!(
-        r.series_draw_info(id, "lk").unwrap().drawn_count,
-        (n - 1) as u64
-    );
+    let info = r.series_draw_info(id, "lk").unwrap();
+    assert_eq!(info.drawn_count, (n - 1 + (n - 2).div_ceil(4)) as u64);
+    assert!(!info.truncated);
     r.remove_chart(id).unwrap();
     let img = r
         .export_rgba(

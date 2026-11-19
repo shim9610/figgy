@@ -1913,16 +1913,19 @@ The links of a `DataRenderType::RangeLinks` series (#357) are drawn by
 [`common/range_links.wgsl`](common/range_links.wgsl), spliced right after
 `range_bars.wgsl`. A link series binds the group 3 of the range bar series
 it names: that series' `CategoryBarParams` at binding 9 and its lane table
-at binding 10, extended by six entries (`RANGE_LINK_LANES`, 14 entries, a
-fixed schema; CPU writer `renderer/series.rs::range_link_data`), so
-`range_bar(row)` is exactly the bar that series draws.
+at binding 10, extended by a fixed head of four entries (`RANGE_LINK_LANES`,
+12) and then three entries per SSOT link (`RANGE_LINK_STRIDE`). The CPU
+writer `renderer/series.rs::range_link_data` writes the table straight into
+the mapped buffer when the series is prepared, on an SSOT change. The links
+take no pool column (the series is DataLess), and `range_bar(row)` is
+exactly the bar that series draws.
 
 | Entry of `category_lanes` | Meaning for a link series |
 |---|---|
 | 0 to 7 | the bars' own, as above |
-| `RANGE_LANE_LINK_FROM` (8), `RANGE_LANE_LINK_TO` (9) | the f32 lane bases of the predecessor (`x_column`) and successor (`y_column`) row columns |
-| `RANGE_LANE_LINK_COUNT` (10) | the link count: the shorter of the two columns, any number |
-| `RANGE_LANE_LINK_WIDTH` (11), `_HEAD` (12), `_INSET` (13) | the stroke width, the chevron's length and the exit inset in render pixels, as f32 bits |
+| `RANGE_LANE_LINK_COUNT` (8) | the link count, any number |
+| `RANGE_LANE_LINK_WIDTH` (9), `_HEAD` (10), `_INSET` (11) | the stroke width, the chevron's length and the default exit inset in render pixels, as f32 bits |
+| `RANGE_LINK_LANES + i · RANGE_LINK_STRIDE` (12 + 3i) .. +2 | link `i`: its `from` row, its `to` row, and its exit offset in render pixels as f32 bits (NaN for the default) |
 
 The geometry sits in the lane table rather than `Style` because the pick
 compute binds no `Style`; the draw, the highlight and the pick read one
@@ -1934,8 +1937,9 @@ twice. The route follows the web Gantt convention and is built on every
 draw from the two bars, with the value axis signed so the successor runs
 forward:
 
-- The exit is on the predecessor's edge facing the successor's row, `inset`
-  pixels in from the predecessor's first end. When the successor starts too
+- The exit is on the predecessor's edge facing the successor's row, the
+  link's exit offset (or `inset`) in from the predecessor's first end, kept
+  on the bar. When the successor starts too
   soon for the last leg and its head, the exit moves back to
   `successor start − head − 4 px`, so a route never turns back through a
   bar.
