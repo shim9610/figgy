@@ -69,24 +69,25 @@ fn feynman_warm_paper() -> Theme {
     chrome.grid.major_y.show = false;
     theme.series.palette = vec![ink];
     let feynman = &mut theme.series.feynman;
-    feynman.width = 2.2;
+    feynman.width = 3.0;
     feynman.wave = Wiggle {
-        amplitude: 5.0,
-        wavelength: 15.0,
+        amplitude: 8.0,
+        wavelength: 26.0,
     };
     feynman.coil = Wiggle {
-        amplitude: 6.0,
-        wavelength: 10.0,
+        amplitude: 9.0,
+        wavelength: 14.0,
     };
-    feynman.head_length = 11.0;
-    feynman.head_width = 8.0;
-    feynman.dot_radius = 3.5;
+    feynman.head_length = 13.0;
+    feynman.head_width = 10.0;
+    feynman.dot_radius = 4.5;
+    feynman.label_scale = LABEL_SCALE;
     feynman.photon = Some(rgb(36, 110, 200));
     feynman.gluon = Some(rgb(24, 140, 92));
     feynman.boson = Some(rgb(222, 118, 36));
     feynman.scalar = Some(rgb(150, 70, 178));
-    feynman.vertex_labels = text(ink, 22.0);
-    feynman.line_labels = text(ink, 21.0);
+    feynman.vertex_labels = text(ink, 15.0);
+    feynman.line_labels = text(ink, 14.0);
     theme
 }
 
@@ -166,6 +167,10 @@ fn energy_levels(family: ThemeFamily) -> Theme {
     theme
 }
 
+/// The factor a Feynman theme draws its labels at: the label looks give
+/// the stored size, about 22 px drawn for the larger families.
+const LABEL_SCALE: f32 = 1.5;
+
 /// A family's Feynman diagrams (gallery, cool slate, midnight), drawn as
 /// the parchment card's ([`feynman_warm_paper`]): fermions in the family's ink with
 /// bold arrowheads, photons, gluons, the W and scalars each in a colour of
@@ -214,26 +219,27 @@ fn feynman(family: ThemeFamily) -> Theme {
     chrome.legend_border = border;
     theme.series.palette = vec![lines];
     let feynman = &mut theme.series.feynman;
-    feynman.width = 2.2;
+    feynman.width = 3.0;
     feynman.wave = Wiggle {
-        amplitude: 5.0,
-        wavelength: 15.0,
+        amplitude: 8.0,
+        wavelength: 26.0,
     };
     feynman.coil = Wiggle {
-        amplitude: 6.0,
-        wavelength: 10.0,
+        amplitude: 9.0,
+        wavelength: 14.0,
     };
-    feynman.head_length = 11.0;
-    feynman.head_width = 8.0;
-    feynman.dot_radius = 3.5;
+    feynman.head_length = 13.0;
+    feynman.head_width = 10.0;
+    feynman.dot_radius = 4.5;
+    feynman.label_scale = LABEL_SCALE;
     feynman.photon = Some(photon);
     feynman.gluon = Some(gluon);
     feynman.boson = Some(boson);
     feynman.scalar = Some(scalar);
     let size = if family == ThemeFamily::Gallery {
-        20.0
+        13.0
     } else {
-        22.0
+        15.0
     };
     feynman.vertex_labels = text(lines, size);
     feynman.line_labels = text(lines, size - 1.0);

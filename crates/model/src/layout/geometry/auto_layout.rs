@@ -94,6 +94,22 @@ impl Probe {
     }
 }
 
+/// The digit count and the largest drawn size of a rich text drawn at
+/// `scale` times its stored sizes.
+fn rich_probe(rich: &crate::text::RichText, scale: f32) -> (usize, f32) {
+    (
+        rich.segments
+            .iter()
+            .filter(|s| s.text.is_ascii_digit())
+            .count(),
+        rich.segments
+            .iter()
+            .map(|s| s.font_size.unwrap_or(rich.font_size))
+            .fold(0.0, f32::max)
+            * scale,
+    )
+}
+
 impl Sink for Probe {
     fn text(&mut self, _slot: Slot, text: &PlacedText<'_>) {
         self.add(text.rect());
@@ -101,16 +117,8 @@ impl Sink for Probe {
             TextRef::Plain { text, size, .. } => {
                 (text.chars().filter(char::is_ascii_digit).count(), size)
             }
-            TextRef::Rich(rich) => (
-                rich.segments
-                    .iter()
-                    .filter(|s| s.text.is_ascii_digit())
-                    .count(),
-                rich.segments
-                    .iter()
-                    .map(|s| s.font_size.unwrap_or(rich.font_size))
-                    .fold(0.0, f32::max),
-            ),
+            TextRef::Rich(rich) => rich_probe(rich, 1.0),
+            TextRef::ScaledRich { text, scale } => rich_probe(text, scale),
         };
         self.digits = self.digits.max(digits);
         if size.is_finite() {

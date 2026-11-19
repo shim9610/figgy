@@ -464,6 +464,10 @@ pub struct FeynmanTheme {
     pub head_length: f32,
     pub head_width: f32,
     pub dot_radius: f32,
+    /// The factor the labels are drawn at (`FeynmanStyle::label_scale`):
+    /// the label looks below give the stored size, and the series draws it
+    /// this much larger, as it draws a label the host adds later.
+    pub label_scale: f32,
     /// The colour of photon and graviton lines; `None`, here and below,
     /// keeps each line's own colour.
     pub photon: Option<Color>,
@@ -1077,6 +1081,7 @@ impl Theme {
                     head_length: feynman.head_length,
                     head_width: feynman.head_width,
                     dot_radius: feynman.dot_radius,
+                    label_scale: feynman.label_scale,
                     photon: None,
                     gluon: None,
                     boson: None,
@@ -1522,6 +1527,7 @@ impl Theme {
                 style.head_length = feynman.head_length;
                 style.head_width = feynman.head_width;
                 style.dot_radius = feynman.dot_radius;
+                style.label_scale = feynman.label_scale;
                 if let Some(look) = feynman.vertex_labels {
                     for label in (diagram.vertices.iter_mut()).filter_map(|v| v.label.as_mut()) {
                         self.style_text(label, look.color, look.size);

@@ -73,22 +73,29 @@ pub(crate) fn feynman_series() -> FeynmanSeries {
 pub(crate) fn feynman_style() -> FeynmanStyle {
     FeynmanStyle {
         color: Color::from_rgb8(30, 30, 30),
-        width: 1.5,
+        width: 2.6,
         wave: Wiggle {
-            amplitude: 4.0,
-            wavelength: 12.0,
+            amplitude: 7.0,
+            wavelength: 24.0,
         },
         coil: Wiggle {
-            amplitude: 5.0,
-            wavelength: 9.0,
+            amplitude: 8.0,
+            wavelength: 13.0,
         },
-        head_length: 9.0,
-        head_width: 7.0,
-        dot_radius: 3.0,
-        loop_radius: 18.0,
+        head_length: 12.0,
+        head_width: 9.0,
+        dot_radius: 4.0,
+        loop_radius: 24.0,
         fan_step: 90.0,
         picked: feynman_picked(),
+        label_scale: feynman_label_scale(),
     }
+}
+
+/// The documented default of [`FeynmanStyle::label_scale`]: the factor a
+/// series that omits it draws its labels at.
+pub(crate) const fn feynman_label_scale() -> f32 {
+    1.5
 }
 
 /// The documented default of [`LevelBandStyle`]: the value a document that
