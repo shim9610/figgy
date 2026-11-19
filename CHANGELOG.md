@@ -107,7 +107,24 @@ and radar documents' `text_sizes`) are additive.
     A dragged label keeps its place in the column, moved by its offset.
     PNG, SVG and PDF draw the leader. No serialized field: a document
     draws its labels at the new places and reads back unchanged.
-  - Tests: `contours_draw_in_dark_ink` (`helpers/series.rs`),
+  - **Grotrian arrows spread along their levels and run parallel.** The
+    transitions between the same two columns (a bundle) are ordered by
+    where they lie across the bundle's mean direction, and each arrow
+    takes the same offset from its level's centre at both ends. A
+    bundle's arrows therefore keep one order at both ends, never cross,
+    and run near-parallel, as in a textbook Grotrian diagram. Before, the
+    ends meeting one level were spread only among themselves, so a bundle
+    fanned out from a few points (the Ar I 2p → 1s4/1s5 fan). The ends
+    stand `12` px apart, or an arrowhead plus one and a half shafts when
+    that is wider, and are spread evenly over a stroke too short for that.
+    Another bundle's ends on the same level are kept that far apart, and
+    every end stays on its stroke. With the arrows apart, most wavelength
+    labels find a free spot beside their own arrow, and the aligned column
+    becomes the fallback it was meant to be. Appearance only: levels,
+    labels and picks are unchanged, and each arrow is still picked as
+    drawn.
+  - Tests: `bundled_arrows_spread_along_their_levels_without_crossing`
+    (`energy_levels_render.rs`), `contours_draw_in_dark_ink` (`helpers/series.rs`),
     `the_host_default_separates_segments_and_rings`,
     `a_document_without_an_outline_reads_no_outline` (`radial.rs`),
     `a_limit_label_stays_inside_the_plot` (`energy_levels/mod.rs`),

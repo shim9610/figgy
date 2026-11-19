@@ -32,9 +32,8 @@ pub(super) const COLLAPSE_SPACING: f32 = 0.5;
 /// crowd, not a cluster: it collapses to its first and last labels joined
 /// by a bracket, as a dense run does, and the rest is stacked again.
 pub(super) const MAX_LABEL_SHIFT: f32 = 1.5;
-/// The widest share of a level's slot that the arrows meeting one of its
-/// ends spread over, and the most room between two of them, pixels.
-pub(super) const ARROW_SPREAD: f32 = 0.6;
+/// The room kept between two arrow ends on one level, pixels, when the
+/// stroke is long enough and the arrowhead is narrower.
 pub(super) const ARROW_STEP: f32 = 12.0;
 /// The weights a fan's label column is scored by (#357): a label or leader
 /// on a stroke or another label, and an arrow through a label.
@@ -207,11 +206,17 @@ impl LevelPlacement<'_> {
         Some((row(&transition.lower)?, row(&transition.upper)?))
     }
 
-    /// The arrows of every transition row, their ends spread across the
-    /// levels they meet: the arrows that meet one end of a level are
-    /// ordered by where their other ends lie, so they do not cross there,
-    /// and spaced over [`ARROW_SPREAD`] of the slot, at most [`ARROW_STEP`]
-    /// apart. A host's `x_offset` adds to the spread.
+    /// The arrows of every transition row, their ends spread along the
+    /// levels they meet (#357), as in a textbook Grotrian diagram. The
+    /// arrows of one bundle (the transitions between the same two columns)
+    /// are ordered across the bundle by where they lie across its mean
+    /// direction, and each takes the same offset from its level's centre
+    /// at both ends, so they keep one order, do not cross and run
+    /// near-parallel. The offsets are [`ARROW_STEP`] apart, or an
+    /// arrowhead plus a margin when that is wider, squeezed evenly when the
+    /// strokes are too short. Ends of other bundles on the same level are
+    /// then kept that far apart, and every end stays on its stroke. A
+    /// host's `x_offset` adds to the spread.
     fn arrows(
         &self,
         records: &EnergyLevelSeries,
@@ -224,25 +229,102 @@ impl LevelPlacement<'_> {
             let (a, b) = self.level_stroke(records, style, row)?;
             Some(([(a[0] + b[0]) / 2.0, a[1]], (b[0] - a[0]).abs()))
         };
-        // Each end's place among the arrows meeting that level: a sort key
-        // per (transition, end), then the rank within the level.
-        let mut ends: Vec<(usize, usize, bool, f32, f32)> = Vec::new();
+        let arrow = &style.transition;
+        let head = if arrow.head_length > 0.0 {
+            arrow.head_width
+        } else {
+            0.0
+        };
+        // The gap kept between neighbouring ends: an arrowhead and a
+        // margin of one and a half shafts (at least 2 px), or
+        // [`ARROW_STEP`] when that is wider.
+        let gap = (head + (1.5 * arrow.width).max(2.0)).max(ARROW_STEP);
+        // The span the ends may use on a stroke: the stroke, less half an
+        // arrowhead at each side so every head stays on it.
+        let usable = |width: f32| (width - head).max(0.0);
+        let column = |row: usize| self.column_x(&records.levels[row].column);
+        // Per transition: its bundle (lower and upper column), the key it
+        // is ordered by across the bundle, and its offset from the levels'
+        // centres.
+        let mut members: Vec<(i64, i64, f32, usize)> = Vec::new();
         for (index, pair) in rows.iter().enumerate() {
             let Some((lower, upper)) = *pair else {
                 continue;
             };
-            for (row, other, is_lower) in [(lower, upper, true), (upper, lower, false)] {
-                if let Some((c, _)) = centre(other) {
-                    ends.push((row, index, is_lower, c[0], c[1]));
+            let (Some(lc), Some(uc)) = (column(lower), column(upper)) else {
+                continue;
+            };
+            members.push((lc as i64, uc as i64, 0.0, index));
+        }
+        members.sort_by_key(|m| (m.0, m.1));
+        let mut offset = vec![0.0f32; records.transitions.len()];
+        let mut start = 0;
+        while start < members.len() {
+            let key = (members[start].0, members[start].1);
+            let end = members[start..]
+                .iter()
+                .position(|m| (m.0, m.1) != key)
+                .map_or(members.len(), |n| start + n);
+            let ends = |m: &(i64, i64, f32, usize)| {
+                let (lower, upper) = rows[m.3]?;
+                Some((centre(lower)?, centre(upper)?))
+            };
+            // The bundle's mean direction, upper end to lower end, and the
+            // span its narrowest stroke leaves.
+            let mut d = [0.0f32; 2];
+            let mut span = f32::INFINITY;
+            for m in &members[start..end] {
+                if let Some(((l, lw), (u, uw))) = ends(m) {
+                    d[0] += l[0] - u[0];
+                    d[1] += l[1] - u[1];
+                    span = span.min(usable(lw)).min(usable(uw));
+                }
+            }
+            // Where each arrow lies across the bundle's direction: its
+            // midpoint's signed distance, growing with x.
+            for m in &mut members[start..end] {
+                if let Some(((l, _), (u, _))) = ends(m) {
+                    let mid = [(l[0] + u[0]) / 2.0, (l[1] + u[1]) / 2.0];
+                    let side = if d[1] < 0.0 { -1.0 } else { 1.0 };
+                    m.2 = (mid[0] * d[1] - mid[1] * d[0]) * side;
+                }
+            }
+            members[start..end].sort_by(|a, b| {
+                (a.2, a.3)
+                    .partial_cmp(&(b.2, b.3))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let count = end - start;
+            let step = if count > 1 && span.is_finite() {
+                gap.min(span / (count - 1) as f32)
+            } else {
+                0.0
+            };
+            for (k, m) in members[start..end].iter().enumerate() {
+                offset[m.3] = (k as f32 - (count - 1) as f32 / 2.0) * step;
+            }
+            start = end;
+        }
+        // Per level, its ends in order of their offsets, pushed at least a
+        // gap apart (less on a stroke too short for that, and no more than
+        // their bundle spaced them) and kept on it.
+        let mut x_of = vec![[f32::NAN; 2]; records.transitions.len()];
+        let mut ends: Vec<(usize, f32, usize, usize)> = Vec::new();
+        for (index, pair) in rows.iter().enumerate() {
+            let Some((lower, upper)) = *pair else {
+                continue;
+            };
+            for (row, slot) in [(lower, 0), (upper, 1)] {
+                if let Some((c, _)) = centre(row) {
+                    ends.push((row, c[0] + offset[index], index, slot));
                 }
             }
         }
         ends.sort_by(|a, b| {
-            (a.0, a.3, a.4, a.1)
-                .partial_cmp(&(b.0, b.3, b.4, b.1))
+            (a.0, a.1, a.2)
+                .partial_cmp(&(b.0, b.1, b.2))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let mut x_of = vec![[f32::NAN; 2]; records.transitions.len()];
         let mut start = 0;
         while start < ends.len() {
             let row = ends[start].0;
@@ -250,16 +332,54 @@ impl LevelPlacement<'_> {
                 .iter()
                 .position(|e| e.0 != row)
                 .map_or(ends.len(), |n| start + n);
-            let count = end - start;
             if let Some((c, width)) = centre(row) {
-                let step = if count > 1 {
-                    (width * ARROW_SPREAD / (count - 1) as f32).min(ARROW_STEP)
+                let half = usable(width) / 2.0;
+                let count = end - start;
+                let room = if count > 1 {
+                    gap.min(2.0 * half / (count - 1) as f32)
                 } else {
                     0.0
                 };
-                for (k, e) in ends[start..end].iter().enumerate() {
-                    let x = c[0] + (k as f32 - (count - 1) as f32 / 2.0) * step;
-                    x_of[e.1][usize::from(!e.2)] = x;
+                // The ends keep their order and at least `room` apart, so
+                // another bundle's end never lands on one of these.
+                // Two ends of one bundle keep the spacing the bundle gave
+                // them when that is closer, so its arrows stay parallel.
+                let mut previous = (f32::NAN, 0usize);
+                for k in start..end {
+                    let (given, index) = (ends[k].1, ends[k].2);
+                    if k > start {
+                        let bundle = |i: usize| rows[i].map(|p| (column(p.0), column(p.1)));
+                        let least = if bundle(index) == bundle(previous.1) {
+                            room.min(given - previous.0)
+                        } else {
+                            room
+                        };
+                        ends[k].1 = ends[k].1.max(ends[k - 1].1 + least);
+                    }
+                    previous = (given, index);
+                }
+                // A run wider than the stroke is squeezed onto it in
+                // order; a narrower one past an end slides back.
+                let (first, last) = (ends[start].1, ends[end - 1].1);
+                if last - first > 2.0 * half {
+                    let scale = 2.0 * half / (last - first);
+                    for e in &mut ends[start..end] {
+                        e.1 = c[0] - half + (e.1 - first) * scale;
+                    }
+                } else {
+                    let shift = if last > c[0] + half {
+                        c[0] + half - last
+                    } else if first < c[0] - half {
+                        c[0] - half - first
+                    } else {
+                        0.0
+                    };
+                    for e in &mut ends[start..end] {
+                        e.1 += shift;
+                    }
+                }
+                for e in &ends[start..end] {
+                    x_of[e.2][e.3] = e.1;
                 }
             }
             start = end;

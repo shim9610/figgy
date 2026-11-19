@@ -1840,6 +1840,114 @@ fn a_label_on_the_next_column_moves_to_its_other_side() {
     assert!(labels_on_other_columns(&placement, &levels, &levels.style, &measure).is_empty());
 }
 
+/// Whether segments `a` and `b` cross away from their ends.
+fn segments_cross(a: ([f32; 2], [f32; 2]), b: ([f32; 2], [f32; 2])) -> bool {
+    let side = |p: [f32; 2], q: [f32; 2], r: [f32; 2]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    let (d1, d2) = (side(b.0, b.1, a.0), side(b.0, b.1, a.1));
+    let (d3, d4) = (side(a.0, a.1, b.0), side(a.0, a.1, b.1));
+    d1 * d2 < -1e-3 && d3 * d4 < -1e-3
+}
+
+// #357: in the He, Ar and Cu scenes, at their own size and at 800x600, the
+// arrows of a bundle (the transitions between the same two columns) never
+// cross, no two arrow ends on one level meet (they are at least a step
+// apart, or spread evenly over a stroke too short for that), and every end
+// stays on its level's stroke. The scenes export at 1x and 2x.
+#[test]
+fn bundled_arrows_spread_along_their_levels_without_crossing() {
+    let mut r = renderer();
+    let mut found = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+    ] {
+        for size in [None, Some((800, 600))] {
+            let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+            let mut chart = Chart::new(scene.config.clone());
+            if let Some((w, h)) = size {
+                chart.set_area(0, 0, w, h);
+                chart.fit_layout();
+            }
+            let name = format!("{kind:?} {size:?}");
+            each_level_panel(
+                chart.config(),
+                &scene.series,
+                |placement, levels, records, measure| {
+                    let style = &levels.style;
+                    let layout = placement.layout(records, style, measure);
+                    let row = |id: &str| records.levels.iter().position(|l| l.id == id);
+                    let column = |id: &str| row(id).map(|i| records.levels[i].column.clone());
+                    let mut drawn = Vec::new();
+                    for (index, t) in records.transitions.iter().enumerate() {
+                        let Some(arrow) = placement.transition_arrow(&layout, index) else {
+                            continue;
+                        };
+                        let (Some(lower), Some(upper)) = (row(&t.lower), row(&t.upper)) else {
+                            continue;
+                        };
+                        // Each end lies on its level's stroke.
+                        for (end, level) in [
+                            (arrow.0, upper),
+                            (arrow.1, lower),
+                            (arrow.0, lower),
+                            (arrow.1, upper),
+                        ] {
+                            if let Some((a, b)) = placement.level_stroke(records, style, level)
+                                && (end[1] - a[1]).abs() < 0.5
+                                && t.x_offset == 0.0
+                                && (end[0] < a[0].min(b[0]) - 0.5 || end[0] > a[0].max(b[0]) + 0.5)
+                            {
+                                found.push(format!(
+                                    "{name}: {} leaves level {}",
+                                    t.id, records.levels[level].id
+                                ));
+                            }
+                        }
+                        drawn.push((index, (column(&t.lower), column(&t.upper)), arrow));
+                    }
+                    for (i, (a, bundle_a, arrow_a)) in drawn.iter().enumerate() {
+                        for (b, bundle_b, arrow_b) in &drawn[i + 1..] {
+                            let (ta, tb) = (&records.transitions[*a], &records.transitions[*b]);
+                            if bundle_a == bundle_b && segments_cross(*arrow_a, *arrow_b) {
+                                found.push(format!("{name}: {} crosses {}", ta.id, tb.id));
+                            }
+                            // No two ends on one level meet.
+                            for p in [arrow_a.0, arrow_a.1] {
+                                for q in [arrow_b.0, arrow_b.1] {
+                                    if (p[0] - q[0]).abs() < 1.0 && (p[1] - q[1]).abs() < 0.5 {
+                                        found.push(format!(
+                                            "{name}: {} and {} meet at {p:?}",
+                                            ta.id, tb.id
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            );
+            for scale in [1.0, 2.0] {
+                let options = renderer::ExportOptions::panel(scale).with_clear(Color::WHITE);
+                let image = r
+                    .export_rgba_blocking(
+                        renderer::ExportSource::chart(&chart, &scene.series),
+                        options,
+                    )
+                    .expect("export");
+                assert_eq!(
+                    image.width,
+                    (chart.config().chart_area.0.width as f32 * scale) as u32,
+                    "{name} {scale}x"
+                );
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}
+
 // #248: in the He, Ar, Cu, U and every-level Ar scenes no drawn level or
 // band label lies on another column's level stroke or band fill, on a limit
 // line, or on another label, and no transition label on another label.
