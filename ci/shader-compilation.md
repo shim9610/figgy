@@ -211,12 +211,15 @@ number of producing cases, and the measured SwiftShader compile time with its bu
   line offsets) are held at one value. The test fails when the reachable keys differ
   from the file, when a row has no time or budget, or when the module hashes below
   are stale.
-- **Hashes.** The table's header records `wgsl_hash`, a 64-bit FNV-1a hash over every
-  WGSL file of the renderer (each crate-relative path, a NUL, the bytes, a NUL, in
-  path order), and `module_hash` lines, the hash of each exact module's assembled
-  source per shader set. `ci/test_pick_variants.py`, which `python3 ci/verify.py
-  static` runs, recomputes `wgsl_hash` and checks every row's budget, so any shader
-  change fails the static stage until the table is regenerated and re-measured.
+- **Hashes.** For each exact module and shader set (`marker-line/full`, …), the
+  table's header records `module_hash`, the 64-bit FNV-1a hash of the module's
+  assembled source, and `module_fragments`, the WGSL files it is assembled from.
+  `ci/test_pick_variants.py`, which `python3 ci/verify.py static` runs, rehashes
+  each module from its fragments (joined with one newline, as the assembly joins
+  them) and checks every row's budget. A change to a fragment of an exact module
+  fails the static stage, naming the modules and how many rows each has; a WGSL
+  change outside the exact modules does not touch the table. The table test checks
+  the recorded hashes and fragment lists against the renderer's assembly.
 - **Runner.** `node ci/shader_compile.cjs --pick-variants <capture> <table>` finds
   each row's assembled module in the native capture by its `module_hash`, and
   compiles `pick_exact_candidates` with `createComputePipelineAsync`, the capture's
@@ -228,25 +231,30 @@ number of producing cases, and the measured SwiftShader compile time with its bu
   100 ms. Three times the measured time absorbs run-to-run and machine variance on a
   software adapter; the floor keeps short compiles from failing on noise.
 
-After a shader change:
+When an exact module changed:
 
 ```sh
 # 1. The capture the runner reads (see ci/README.md).
 FIGGY_SHADER_COMPILE_REPORT="$PWD/target/ci-results/shader-compilation-native.json" \
   cargo test --locked -p figgy-renderer --lib \
   all_shader_compilation_times_and_entry_coverage -- --test-threads=1
-# 2. The rows and hashes; measured times are kept only for unchanged shaders.
+# 2. The rows and hashes. A row keeps its time while its module's hash is
+#    unchanged; the changed modules' rows lose theirs.
 FIGGY_UPDATE_PICK_VARIANTS=1 cargo test -p figgy-renderer --lib \
   pick_variant_table_matches_the_picker
-# 3. Measure every row (about 1.5 hours on a 4-core Linux container).
+# 3. Measure the rows without a time: only the changed modules'. All 2,001 rows take
+#    about 1.5 hours on a 4-core Linux container.
 node ci/shader_compile.cjs --pick-variants \
   target/ci-results/shader-compilation-native.json \
-  crates/renderer/tests/support/pick_variants.csv --update
+  crates/renderer/tests/support/pick_variants.csv --update --missing
 ```
 
-Without `--update` the runner checks every row against its committed budget. Like
-the rest of this script it needs a WebGPU-capable Chromium and is not part of the
-three-OS matrix.
+Steps 2 and 3 also apply when the table test reports new or removed variants: new
+rows have no time yet. Without `--update` the runner checks every row against its
+committed budget. Like the rest of this script it needs a WebGPU-capable Chromium
+and is not part of the three-OS matrix: no CI job runs it. Run it whenever the
+table or a module hash changes; the static check forces that whenever an exact
+module's WGSL changes.
 
 ## 한국어 요약
 
@@ -267,4 +275,5 @@ GPU 환경에서 얻은 결과다. 실제 GPU의 실행 속도나 macOS 정밀�
 
 `crates/renderer/tests/support/pick_variants.csv`에는 차트가 도달할 수 있는 모든 exact pick
 파이프라인 키와 SwiftShader 컴파일 시간·예산이 있다(#363). 행은 실제 픽 경로에서 자동 생성되고,
-셰이더가 바뀌면 `verify.py static`이 실패하므로 표를 다시 만들고 다시 측정해야 한다.
+exact pick 모듈의 WGSL이 바뀌면 `verify.py static`이 바뀐 모듈과 행 수를 알려 주며 실패하므로,
+표를 다시 만들고 그 모듈의 행만 다시 측정한다(`--missing`). 다른 WGSL 변경은 표와 관계없다.
