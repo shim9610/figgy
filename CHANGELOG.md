@@ -38,8 +38,59 @@ kind and the `mesh_triangle` selection, the axes' `category_window`, the
 breaks' `sizing`, the energy-level `bands` and `band` style, a
 subplot's `marker`, the energy-level `wavelength_labels`, a text
 annotation's `align`, the tick labels' `clearance`, the axes' `unit`, the
-`MonotonicLine` series kind, a subplot's `text_scale` and a radial slice's
-`text_generated`) are additive.
+`MonotonicLine` series kind, a subplot's `text_scale`, a radial slice's
+`text_generated`, the chart's `layout_state` and the categorical, box plot
+and radar documents' `text_sizes`) are additive.
+
+- **A new chart's layout is fitted by its first draw, and the as-stored
+  draw** ([#357](https://github.com/shim9610/figgy/issues/357)). A chart
+  drawn without `fit_layout()` kept the default margins, so an 800 × 600
+  line chart with axis titles drew its y title over `-0.600` tick labels.
+  `Config` has `layout_state` (`LayoutState`): `Fixed` (the default and
+  the value of every document without the key, drawn exactly as stored),
+  `NeedsFit` (the next default draw or export runs `layout::auto_layout`,
+  writes the fit into the config and marks it `Fitted`) and `Fitted` (an
+  edit marks it `NeedsFit` again). `Chart::sized`, `Chart::placed` and the
+  WASM kernel's new chart start `NeedsFit`; `Chart::new(config)` and
+  `Config::default()` keep `Fixed`. A successful `Config::nudge` (every
+  decoration drag and plot-area drag or resize) and
+  `Config::fit_to_data_area` set `Fixed`, so no later draw undoes the
+  user's layout. Monotonic charts are registered and kept `Fixed` (M4);
+  a chart that draws a streamed source is drawn as stored, and
+  `Renderer::fit_pending_layout` refuses it (rule 8). Drawing as stored:
+  `Renderer::prepare_as_stored`, `prepare_registered_as_stored`,
+  `WindowedRenderer::draw_as_stored`, `draw_registered_as_stored`,
+  `ExportOptions::as_stored()` (`DrawLayout`), and in the browser
+  `frame_as_stored`, `export_png_as_stored`, `export_svg_as_stored` and
+  `export_pdf_as_stored`. Documents written before the key draw and export
+  the same image. Migration:
+  - `ChartDrawItem::chart` and `ExportSource::Chart::chart` (and
+    `ExportSource::chart`) take `&mut Chart`, since a default draw writes
+    the fit into the chart: `&chart` → `&mut chart`. `ExportSource` is no
+    longer `Copy`: build it again for each export. Two draw items can no
+    longer lend one chart; draw a second `Chart::new(config.clone())`.
+  - `ExportOptions` has a `layout` field: a struct literal adds
+    `layout: DrawLayout::FitPending`, or uses `ExportOptions::panel` /
+    `document`.
+  - An exhaustive `Config { .. }` pattern or literal names `layout_state`.
+  - A host that sets margins on a `Fitted` chart through `config_mut` or
+    `set_chart_config` also sets `layout_state = LayoutState::Fixed`, or
+    the next draw fits them again.
+- **Documents built in Rust draw the Cartesian text sizes**
+  ([#357](https://github.com/shim9610/figgy/issues/357)). The categorical,
+  box plot and radar readers drew every text at their one `font_size` (14 px)
+  and the title at 1.5 × it (21/14/14/14 px against the Cartesian 28/22/18/14):
+  a preset difference of the converters, not of the rendering. The three
+  documents have `text_sizes: Option<DocumentTextSizes>` (title, axis
+  title, tick label, legend). Without it (the key absent, every document
+  written before) the converters draw as before; the Rust `Default` sets
+  `DocumentTextSizes::CARTESIAN`, and a converted document with
+  `text_sizes` and no explicit data area fits its layout on its first
+  draw. `font_size` keeps its serde default of 14. The Gallery theme's
+  document chrome (category bars, box plot, radar) takes the gallery sizes
+  26/18/16 and the documented 14 px legend instead of 27/18/18/18.
+  Migration: an exhaustive literal of `CategoricalChart`, `BoxPlotChart`
+  or `RadarChart` names `text_sizes` (`None` keeps the former sizes).
 
 - **Removed unused and duplicate API** ([#341](https://github.com/shim9610/figgy/issues/341)).
   Public items with no caller, aliases and one-line twins of another entry,

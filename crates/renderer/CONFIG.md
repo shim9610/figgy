@@ -36,6 +36,7 @@ pub struct Config {
     pub line_offsets: Option<LineOffsets>,   // offset spectra: line series drawn stacked by a step; None = every series where its values are
     pub plot_background: Option<Color>,      // a fill under the data area and grid (#203); None = transparent
     pub background: Option<Color>,           // a fill over the whole chart area, under everything else (#265); None = transparent
+    pub layout_state: LayoutState,           // Fixed (default) | NeedsFit (the next default draw fits and stores the layout) | Fitted (#357)
 }
 ```
 
@@ -1505,6 +1506,7 @@ pub struct Config {
     pub line_offsets: Option<LineOffsets>,   // 오프셋 스펙트럼: 선 시리즈를 일정 간격씩 밀어 쌓아 그린다. None이면 모든 시리즈를 값 그대로 그린다
     pub plot_background: Option<Color>,      // 데이터 영역과 격자 아래를 채우는 색(#203). None이면 투명하다
     pub background: Option<Color>,           // 차트 영역 전체를 다른 모든 요소 아래에서 채우는 색(#265). None이면 투명하다
+    pub layout_state: LayoutState,           // Fixed(기본값) | NeedsFit(다음 기본 그리기가 레이아웃을 맞춰 저장한다) | Fitted (#357)
 }
 ```
 

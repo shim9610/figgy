@@ -38,7 +38,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     }
     // The c axis is drawn like the other two.
     config.right_y.label_style.label_visible = true;
-    let chart = Chart::new(config).with_title("Alloys");
+    let mut chart = Chart::new(config).with_title("Alloys");
 
     let series = [SeriesConfig {
         series_id: "alloys".into(),
@@ -63,7 +63,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
             region: None, // Some(TernaryRegionStyle { .. }) fills the polygons the samples outline
         }),
     }];
-    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0))?;
+    let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&mut chart, &series), renderer::ExportOptions::panel(1.0))?;
     std::fs::write("ternary.png", renderer::encode_png(&image)?)?;
     Ok(())
 }

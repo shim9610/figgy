@@ -280,7 +280,7 @@ fn every_cell_carries_its_own_value_colour() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     let series = vec![heatmap(
         &["z0", "z1", "z2"],
         MatrixOrientation::ColumnsAreX,
@@ -291,7 +291,7 @@ fn every_cell_carries_its_own_value_colour() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -338,7 +338,7 @@ fn selected_matrix_cell_outlines_the_canonical_xy_cell() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -398,7 +398,7 @@ fn selected_contour_level_is_redrawn_from_the_same_field_snapshot() {
 
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -438,7 +438,7 @@ fn nothing_is_painted_outside_the_grid() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -499,7 +499,7 @@ fn a_nan_cell_takes_the_nan_colour() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -541,7 +541,7 @@ fn columns_are_y_reads_the_grid_transposed() {
     }];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -606,7 +606,7 @@ fn centers_layout_puts_the_cell_around_its_coordinate() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -674,7 +674,7 @@ fn interpolated_shading_blends_between_sample_points() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -735,7 +735,7 @@ fn bands_quantize_the_ramp_into_flat_steps() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     // One level at 2.5: z 0/1/2 fall below it, z 3/4/5 above.
     let series = vec![heatmap(
         &["z0", "z1", "z2"],
@@ -747,7 +747,7 @@ fn bands_quantize_the_ramp_into_flat_steps() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -805,7 +805,7 @@ fn interpolated_finite_pairs_that_overflow_reconstruction_take_nan_colour() {
     )];
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -846,7 +846,7 @@ fn nonfinite_coordinate_boundaries_leave_flat_field_unpainted() {
     let image = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &chart,
+                &mut chart,
                 &[heatmap(
                     &["z0"],
                     MatrixOrientation::ColumnsAreX,
@@ -862,7 +862,7 @@ fn nonfinite_coordinate_boundaries_leave_flat_field_unpainted() {
         .unwrap();
     let empty = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[]),
+            renderer::ExportSource::chart(&mut chart, &[]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -882,7 +882,7 @@ fn a_1024_level_banded_fill_counts_unsorted_duplicates_by_value() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     let mut levels: Vec<f64> = (0..renderer::MAX_CONTOUR_LEVELS)
         .map(|index| ((index * 37) % 11) as f64 - 2.0)
         .collect();
@@ -901,7 +901,7 @@ fn a_1024_level_banded_fill_counts_unsorted_duplicates_by_value() {
     )];
     let image = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -964,7 +964,7 @@ fn a_logarithmic_colourbar_maps_z_by_its_logarithm() {
     )];
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1069,7 +1069,7 @@ fn three_hundred_heatmaps_in_one_frame_all_draw() {
     };
     edges_fixture(&mut renderer);
     let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar.clone());
+    let mut chart = ranged_chart(bar.clone());
     let series: Vec<SeriesConfig> = (0..300)
         .map(|k| {
             let mut s = heatmap(
@@ -1087,7 +1087,7 @@ fn three_hundred_heatmaps_in_one_frame_all_draw() {
     for _ in 0..2 {
         let img = renderer
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()

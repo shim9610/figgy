@@ -387,6 +387,18 @@ function makeKernel(name, options = {}) {
       calls.push(["export_pdf", scale]);
       return Promise.resolve(new Uint8Array([37, 80, 68, 70]));
     },
+    export_png_as_stored(scale) {
+      calls.push(["export_png_as_stored", scale]);
+      return Promise.resolve(new Uint8Array([137, 80, 78, 71]));
+    },
+    export_svg_as_stored(scale) {
+      calls.push(["export_svg_as_stored", scale]);
+      return Promise.resolve("<svg/>");
+    },
+    export_pdf_as_stored(scale) {
+      calls.push(["export_pdf_as_stored", scale]);
+      return Promise.resolve(new Uint8Array([37, 80, 68, 70]));
+    },
     first_frame_ready() {
       calls.push(["first_frame_ready"]);
       return options.firstFrameImpl?.() ?? Promise.resolve();
@@ -607,6 +619,30 @@ test("SVG and PDF export run as the export operation on a resident chart", async
     kernel.calls.filter(([name]) => name.startsWith("export")),
     [["export_svg", 2], ["export_pdf", 1]],
   );
+});
+
+test("as-stored exports run as the export operation and reject a stream (#357)", async () => {
+  const kernel = makeKernel("stored");
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const png = element.export_png_as_stored(2);
+  assert.equal(element.busy, true, "the export holds the operation gate");
+  await assert.rejects(element.export_svg_as_stored(), /busy/);
+  assert.deepEqual(Array.from(await png), [137, 80, 78, 71]);
+  assert.equal(await element.export_svg_as_stored(), "<svg/>");
+  assert.deepEqual(Array.from(await element.export_pdf_as_stored(2)), [37, 80, 68, 70]);
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name.endsWith("_as_stored")),
+    [["export_png_as_stored", 2], ["export_svg_as_stored", 1], ["export_pdf_as_stored", 2]],
+  );
+  const { kernel: replay, element: streamed } = await completedReplayFixture({ typed: true });
+  for (const call of ["export_png_as_stored", "export_svg_as_stored", "export_pdf_as_stored"]) {
+    await assert.rejects(streamed[call](2), /as-stored export does not support streamed sources/);
+  }
+  assert.equal(replay.calls.filter(([name]) => name.endsWith("_as_stored")).length, 0);
 });
 
 test("SVG and PDF export reject a chart shown from a stream without calling the kernel", async () => {

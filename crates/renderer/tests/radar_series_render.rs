@@ -212,7 +212,7 @@ fn count(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> usize {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
     r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
+        renderer::ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
         renderer::ExportOptions::panel(scale),
     )
     .block_on()
@@ -642,7 +642,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     rectangular.config_mut().set_polar(None);
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&rectangular, &series),
+            renderer::ExportSource::chart(&mut rectangular, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -654,7 +654,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     numeric.config_mut().bottom_x.categories = None;
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&numeric, &series),
+            renderer::ExportSource::chart(&mut numeric, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -665,13 +665,13 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         "{reason}"
     );
     // Arc interpolation.
-    let arcs = chart(PolarOptions {
+    let mut arcs = chart(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 4 },
         ..up_clockwise()
     });
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&arcs, &series),
+            renderer::ExportSource::chart(&mut arcs, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -686,7 +686,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     let short = [radar("short", "short", RED, outline_and_fill())];
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&chart(up_clockwise()), &short),
+            renderer::ExportSource::chart(&mut chart(up_clockwise()), &short),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -704,7 +704,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     }
     let reason = invalid(
         r.export_rgba(
-            renderer::ExportSource::chart(&chart(up_clockwise()), &[labelled]),
+            renderer::ExportSource::chart(&mut chart(up_clockwise()), &[labelled]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on(),
@@ -722,7 +722,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     polygon.config_mut().bottom_x.categories = None;
     assert!(
         r.export_rgba(
-            renderer::ExportSource::chart(&polygon, &[]),
+            renderer::ExportSource::chart(&mut polygon, &[]),
             renderer::ExportOptions::panel(1.0)
         )
         .block_on()
@@ -804,12 +804,12 @@ fn a_polar_subplot_draws_its_own_radar_series() {
         marker: None,
         text_scale: Default::default(),
     });
-    let chart = Chart::new(parent);
+    let mut chart = Chart::new(parent);
     let series = [radar("one", "one", RED, outline_and_fill())];
     for scale in [1.0, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()

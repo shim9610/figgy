@@ -676,10 +676,10 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        for (i, panel) in self.panels.iter().enumerate() {
+        for (i, panel) in self.panels.iter_mut().enumerate() {
             let path = format!("/tmp/figgy_winit_panel_{i}.png");
             match renderer.save_blocking(
-                renderer::ExportSource::chart(&panel.chart, &panel.series),
+                renderer::ExportSource::chart(&mut panel.chart, &panel.series),
                 renderer::ExportOptions::panel(EXPORT_SCALE),
                 &path,
             ) {
@@ -735,9 +735,10 @@ impl App {
         }
 
         // ---- Series + ChartDrawItem slices ----
-        // Each panel lends its view mutably (prepare redraws a stale raster)
-        // and its chart and series immutably: disjoint fields of one panel.
-        let mut parts: Vec<(&mut ChartView, &Chart, Vec<Series<'_>>)> = self
+        // Each panel lends its view and its chart mutably (prepare redraws a
+        // stale raster and fits a pending layout) and its series immutably:
+        // disjoint fields of one panel.
+        let mut parts: Vec<(&mut ChartView, &mut Chart, Vec<Series<'_>>)> = self
             .panels
             .iter_mut()
             .map(|p| {
@@ -747,7 +748,7 @@ impl App {
                     .zip(p.styles.iter())
                     .map(|(cfg, style)| Series { config: cfg, style })
                     .collect();
-                (&mut p.view, &p.chart, series)
+                (&mut p.view, &mut p.chart, series)
             })
             .collect();
         let mut items: Vec<ChartDrawItem<'_>> = parts

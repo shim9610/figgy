@@ -567,10 +567,10 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
     let id = r
         .register_chart(scene.config.clone(), scene.series.clone())
         .expect("register");
-    let chart = renderer::Chart::new(scene.config.clone());
+    let mut chart = renderer::Chart::new(scene.config.clone());
     let before = r
         .export_png(
-            renderer::ExportSource::chart(&chart, &scene.series),
+            renderer::ExportSource::chart(&mut chart, &scene.series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -584,7 +584,7 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
     assert_ne!(applied, stamp, "the edit invalidates the chart");
     let after = r
         .export_png(
-            renderer::ExportSource::chart(&renderer::Chart::new(out.clone()), &scene.series),
+            renderer::ExportSource::chart(&mut renderer::Chart::new(out.clone()), &scene.series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -767,7 +767,7 @@ fn a_scaled_subplots_decorations_are_hit_and_dragged_where_they_are_drawn() {
     let scale = doc.subplot_text_factor(0);
     let export = |r: &mut Renderer, config: &Config, at: f32| {
         r.export_rgba(
-            renderer::ExportSource::chart(&renderer::Chart::new(config.clone()), &[]),
+            renderer::ExportSource::chart(&mut renderer::Chart::new(config.clone()), &[]),
             renderer::ExportOptions::document(at).with_clear(renderer::Color::WHITE),
         )
         .block_on()

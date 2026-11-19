@@ -270,12 +270,12 @@ fn towards(c: i64, r: i64, (nc, nr): (i64, i64), f: f64) -> (f64, f64) {
 fn every_cell_is_painted_to_its_voronoi_edge() {
     let mut r = renderer();
     let ids = upload(&mut r, &MatrixOrientation::ColumnsAreX);
-    let chart = chart();
+    let mut chart = chart();
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -360,7 +360,7 @@ fn cells_past_the_axis_ranges_are_clipped_to_the_data_area() {
     for scale in [1.0f64, 2.0] {
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(scale as f32),
             )
             .block_on()
@@ -437,7 +437,7 @@ fn a_stretched_lattice_draws_stretched_hexagons() {
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -473,12 +473,12 @@ fn a_stretched_lattice_draws_stretched_hexagons() {
 fn columns_are_y_reads_the_grid_transposed() {
     let mut r = renderer();
     let ids = upload(&mut r, &MatrixOrientation::ColumnsAreY);
-    let chart = chart();
+    let mut chart = chart();
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreY)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -501,12 +501,12 @@ fn columns_are_y_reads_the_grid_transposed() {
 fn the_2x_export_doubles_the_lattice() {
     let mut r = renderer();
     let ids = upload(&mut r, &MatrixOrientation::ColumnsAreX);
-    let chart = chart();
+    let mut chart = chart();
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -668,7 +668,7 @@ fn the_selected_hexagon_outlines_its_six_edges() {
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -876,7 +876,7 @@ fn a_four_million_cell_lattice_draws() {
     let started = std::time::Instant::now();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportSource::chart(&mut chart, &[series]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()

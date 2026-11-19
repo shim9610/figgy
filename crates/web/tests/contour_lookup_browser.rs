@@ -183,7 +183,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
         ])
         .expect("browser contour fixtures must upload");
 
-    let contour_chart = chart(2.0, 2.0);
+    let mut contour_chart = chart(2.0, 2.0);
     let marker = Color::new(0.0, 1.0, 1.0, 1.0);
     let mut levels = vec![99.0; renderer::MAX_CONTOUR_LEVELS];
     levels[1023] = 2.0;
@@ -191,7 +191,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     colors[1023] = marker;
     let indexed = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&contour_chart, &[contour_series(levels, colors)]),
+            renderer::ExportSource::chart(&mut contour_chart, &[contour_series(levels, colors)]),
             renderer::ExportOptions::panel(1.0),
         )
         .await
@@ -199,7 +199,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     let indexed_reference = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &contour_chart,
+                &mut contour_chart,
                 &[contour_series(vec![2.0], vec![marker])],
             ),
             renderer::ExportOptions::panel(1.0),
@@ -212,7 +212,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     let non_finite = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &contour_chart,
+                &mut contour_chart,
                 &[contour_series(
                     vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 2.0],
                     vec![Color::WHITE, Color::WHITE, Color::WHITE, finite],
@@ -225,7 +225,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     let finite_reference = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &contour_chart,
+                &mut contour_chart,
                 &[contour_series(vec![2.0], vec![finite])],
             ),
             renderer::ExportOptions::panel(1.0),
@@ -234,11 +234,11 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
         .expect("finite contour reference export");
     assert_eq!(non_finite.rgba, finite_reference.rgba);
 
-    let bands_chart = chart(1.0, 1.0);
+    let mut bands_chart = chart(1.0, 1.0);
     let mixed_bands = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &bands_chart,
+                &mut bands_chart,
                 &[band_series(vec![
                     f64::NAN,
                     f64::NEG_INFINITY,
@@ -252,7 +252,10 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
         .expect("mixed non-finite bands export");
     let finite_bands = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&bands_chart, &[band_series(vec![0.0, 0.5, 2.0, 3.0])]),
+            renderer::ExportSource::chart(
+                &mut bands_chart,
+                &[band_series(vec![0.0, 0.5, 2.0, 3.0])],
+            ),
             renderer::ExportOptions::panel(1.0),
         )
         .await
@@ -263,7 +266,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     let expanded = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &contour_chart,
+                &mut contour_chart,
                 &[contour_series(
                     vec![2.0; renderer::MAX_CONTOUR_LEVELS],
                     vec![layer; renderer::MAX_CONTOUR_LEVELS],
@@ -276,7 +279,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     let complete = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &contour_chart,
+                &mut contour_chart,
                 &[contour_series(
                     vec![2.0],
                     vec![equivalent_layer(layer, renderer::MAX_CONTOUR_LEVELS)],
@@ -289,7 +292,7 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     let truncated = renderer
         .export_rgba(
             renderer::ExportSource::chart(
-                &contour_chart,
+                &mut contour_chart,
                 &[contour_series(
                     vec![2.0],
                     vec![equivalent_layer(layer, 621)],

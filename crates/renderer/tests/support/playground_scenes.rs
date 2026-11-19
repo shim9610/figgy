@@ -503,7 +503,10 @@ pub fn export_scene<T>(
     export: impl FnOnce(&mut Renderer, ExportSource<'_>) -> Result<T, FiggyError>,
 ) -> Result<T, FiggyError> {
     if monotonic.is_empty() {
-        return export(r, ExportSource::chart(chart, series));
+        return export(
+            r,
+            ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
+        );
     }
     let views: Vec<Vec<&[f64]>> = monotonic
         .iter()

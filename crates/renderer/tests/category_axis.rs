@@ -227,14 +227,14 @@ fn a_categorical_chart_exports_like_its_numeric_twin() {
     for scale in [1.0f32, 2.0] {
         let a = r
             .export_rgba(
-                renderer::ExportSource::chart(&Chart::new(categorical.clone()), &series),
+                renderer::ExportSource::chart(&mut Chart::new(categorical.clone()), &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
             .unwrap();
         let b = r
             .export_rgba(
-                renderer::ExportSource::chart(&Chart::new(numeric.clone()), &series),
+                renderer::ExportSource::chart(&mut Chart::new(numeric.clone()), &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -249,7 +249,7 @@ fn a_categorical_chart_exports_like_its_numeric_twin() {
         assert_eq!(changed, 0, "{scale}x");
         let png = r
             .export_png(
-                renderer::ExportSource::chart(&Chart::new(categorical.clone()), &series),
+                renderer::ExportSource::chart(&mut Chart::new(categorical.clone()), &series),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -296,7 +296,7 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
     // The highlight of point 3 changes pixels around its marker only.
     let plain = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(cfg.clone()), &series),
+            renderer::ExportSource::chart(&mut Chart::new(cfg.clone()), &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -312,7 +312,7 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
     });
     let highlighted = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(selected), &series),
+            renderer::ExportSource::chart(&mut Chart::new(selected), &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -559,7 +559,7 @@ fn crowded_category_and_log_labels_draw_and_export() {
             }
             let png = r
                 .export_png(
-                    renderer::ExportSource::chart(&Chart::new(cfg.clone()), &series),
+                    renderer::ExportSource::chart(&mut Chart::new(cfg.clone()), &series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()

@@ -358,7 +358,7 @@ chartEl.addEventListener("figgy-init-progress", (e) => {
 
 ```rust
 pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
-    let export_chart = Chart::new(
+    let mut export_chart = Chart::new(
         self.renderer
             .chart_config(self.chart_id)
             .map_err(js_err)?
@@ -370,7 +370,7 @@ pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsV
         .map_err(js_err)?
         .to_vec();
     let bytes = self.renderer
-        .export_png(renderer::ExportSource::chart(&export_chart, &series), renderer::ExportOptions::document(scale).with_clear(self.clear_color))
+        .export_png(renderer::ExportSource::chart(&mut export_chart, &series), renderer::ExportOptions::document(scale).with_clear(self.clear_color))
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(js_sys::Uint8Array::from(bytes.as_slice()))
@@ -429,6 +429,23 @@ const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
 ```
 
 `<figgy-chart>` 래퍼의 `export_svg(scale)` / `export_pdf(scale)`도 `export_png`처럼 `"export"` 작업 게이트를 거친다. 스트리밍으로 표시 중인 차트에서는 커널을 호출하기 전에 거부한다.
+
+#### Layout fit on the first frame and drawing as stored (#357)
+
+A chart the kernel creates starts with `layout_state: "needs_fit"`. The
+next `frame()` or export fits the axis bands, the title band and the
+legend clearance to what the chart holds (`layout::auto_layout`), stores the
+fit and marks it `"fitted"`, so `get_config()` always says what is drawn.
+An edit of a `"fitted"` chart (`set_config`, a title, data, a range fit)
+marks it `"needs_fit"` again, so titles and ranges that arrive after the
+first frame are fitted on the next one. A drag or resize of a decoration or
+of the plot area sets `"fixed"`, and no later frame refits it. A document
+whose JSON has no `layout_state` reads as `"fixed"` and draws exactly as
+saved. `frame_as_stored()`, `export_png_as_stored(scale)`,
+`export_svg_as_stored(scale)` and `export_pdf_as_stored(scale)` draw the
+config exactly as stored and write nothing; `<figgy-chart>` has the same
+methods. A chart shown from a stream and a monotonic chart are drawn as
+stored, and the as-stored exports reject a streamed chart.
 
 <a id="37-프리셋--fieldless-enum-그대로-노출"></a>
 

@@ -399,7 +399,7 @@ fn a_symmetric_violin_mirrors_its_density_in_both_directions_and_scales() {
         CategoryBarDirection::Vertical,
         CategoryBarDirection::Horizontal,
     ] {
-        let chart = chart(direction);
+        let mut chart = chart(direction);
         let series = [violin_series(
             "v",
             ViolinBody::Symmetric(half("sym", RED)),
@@ -408,7 +408,7 @@ fn a_symmetric_violin_mirrors_its_density_in_both_directions_and_scales() {
         for scale in [1.0f32, 2.0] {
             let img = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportSource::chart(&mut chart, &series),
                     renderer::ExportOptions::panel(scale),
                 )
                 .block_on()
@@ -472,7 +472,7 @@ fn a_split_violin_draws_each_half_on_its_side() {
         CategoryBarDirection::Vertical,
         CategoryBarDirection::Horizontal,
     ] {
-        let chart = chart(direction);
+        let mut chart = chart(direction);
         let series = [violin_series(
             "v",
             ViolinBody::Split {
@@ -483,7 +483,7 @@ fn a_split_violin_draws_each_half_on_its_side() {
         )];
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -526,7 +526,7 @@ fn a_split_violin_draws_each_half_on_its_side() {
 fn raincloud_points_sit_jittered_beside_their_half() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let series = [with_points(
         violin_series(
             "v",
@@ -541,14 +541,14 @@ fn raincloud_points_sit_jittered_beside_their_half() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let again = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -598,7 +598,7 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -663,7 +663,7 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
     });
     let ringed = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -689,7 +689,7 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
     });
     let ringed = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -714,7 +714,7 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
 fn a_box_override_restyles_its_categorys_violin() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let mut series = violin_series("v", ViolinBody::Symmetric(half("sym", RED)), 0.0);
     let DataRenderType::BoxPlot(BoxSeries { overrides, .. }) = &mut series.render_type else {
         unreachable!()
@@ -724,7 +724,7 @@ fn a_box_override_restyles_its_categorys_violin() {
     *overrides = Some(vec![o]);
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportSource::chart(&mut chart, &[series]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -741,7 +741,7 @@ fn a_box_override_restyles_its_categorys_violin() {
 fn a_violin_alone_draws_without_a_record_and_outlines_its_body() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let mut h = half("sym", RED);
     h.style.outline = true;
     h.style.outline_width = 2.0;
@@ -750,7 +750,7 @@ fn a_violin_alone_draws_without_a_record_and_outlines_its_body() {
     series.y_column.clear();
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportSource::chart(&mut chart, &[series]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -799,13 +799,13 @@ fn the_fit_covers_curves_and_points_and_mismatched_columns_are_errors() {
         y.max
     );
     // A replaced curve, peaking at 20 instead, redraws.
-    let chart = self::chart(direction);
+    let mut chart = self::chart(direction);
     let low = triangle(20.0, 10.0);
     r.remove_column("sym.density").unwrap();
     upload_curve(&mut r, "sym", &[&low, &low, &low]);
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -818,7 +818,7 @@ fn the_fit_covers_curves_and_points_and_mismatched_columns_are_errors() {
         .unwrap();
     let err = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -831,7 +831,7 @@ fn the_fit_covers_curves_and_points_and_mismatched_columns_are_errors() {
     upload_curve(&mut r, "sym", &[&sym, &sym]);
     let err = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -846,7 +846,7 @@ fn the_fit_covers_curves_and_points_and_mismatched_columns_are_errors() {
 fn a_nan_breaks_the_body() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let sym = triangle(50.0, 40.0);
     let broken = |v: f64| {
         if (v - 50.0).abs() < 0.5 {
@@ -864,7 +864,7 @@ fn a_nan_breaks_the_body() {
     )];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -892,7 +892,7 @@ fn value_labels_clear_the_curve() {
     labels.text = vec!["A".into(), "B".into(), "C".into()];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportSource::chart(&mut chart, &[series]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -966,7 +966,7 @@ fn overlays_and_subplots_draw_their_violins_and_points() {
     );
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&parent, &[base, over, sub]),
+            renderer::ExportSource::chart(&mut parent, &[base, over, sub]),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -996,7 +996,7 @@ fn overlays_and_subplots_draw_their_violins_and_points() {
 fn a_2x_export_is_the_1x_layout_doubled() {
     let mut r = renderer();
     let direction = CategoryBarDirection::Vertical;
-    let chart = chart(direction);
+    let mut chart = chart(direction);
     let body = violin_series(
         "v",
         ViolinBody::Split {
@@ -1013,14 +1013,14 @@ fn a_2x_export_is_the_1x_layout_doubled() {
         [(is_red, "low"), (is_blue, "high"), (is_cyan, "box")];
     let one = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[body.clone()]),
+            renderer::ExportSource::chart(&mut chart, &[body.clone()]),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let two = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &[body.clone()]),
+            renderer::ExportSource::chart(&mut chart, &[body.clone()]),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1035,14 +1035,14 @@ fn a_2x_export_is_the_1x_layout_doubled() {
     let points = [with_points(body, 0.0, 0.6)];
     let one = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &points),
+            renderer::ExportSource::chart(&mut chart, &points),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let two = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &points),
+            renderer::ExportSource::chart(&mut chart, &points),
             renderer::ExportOptions::panel(2.0),
         )
         .block_on()
@@ -1120,7 +1120,7 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
     let series = [series];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1161,7 +1161,7 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
     r.remove_chart(id).unwrap();
 
     // A million and three million raw points over the three categories.
-    let chart = self::chart(CategoryBarDirection::Vertical);
+    let mut chart = self::chart(CategoryBarDirection::Vertical);
     for count in [1_000_000usize, 3_000_000] {
         for id in ["big.cat", "big.value"] {
             let _ = r.remove_column(id);
@@ -1194,7 +1194,7 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         let started = std::time::Instant::now();
         let img = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1315,7 +1315,7 @@ fn a_split_violin_picks_and_highlights_each_half() {
         chart.config_mut().picked_data = Some(select(Some(ViolinSide::Low)));
         let ringed = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()
@@ -1344,7 +1344,7 @@ fn a_split_violin_picks_and_highlights_each_half() {
         chart.config_mut().picked_data = Some(select(None));
         let ringed = r
             .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportSource::chart(&mut chart, &series),
                 renderer::ExportOptions::panel(1.0),
             )
             .block_on()

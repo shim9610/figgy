@@ -106,7 +106,7 @@ fn s_channel() -> FeynmanSeries {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
     r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
+        renderer::ExportSource::chart(&mut renderer::Chart::new(chart.config().clone()), series),
         renderer::ExportOptions::panel(scale),
     )
     .block_on()
@@ -346,12 +346,12 @@ fn fit_ranges_fits_the_vertices() {
 #[test]
 fn svg_and_pdf_carry_the_diagram_as_vector_curves() {
     let mut r = renderer();
-    let chart = chart();
+    let mut chart = chart();
     let list = [series("d", s_channel())];
     for scale in [1.0f32, 2.0] {
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -365,7 +365,7 @@ fn svg_and_pdf_carry_the_diagram_as_vector_curves() {
         assert!(photon.matches('C').count() > 10, "{scale}x: {photon}");
         let pdf = r
             .export_pdf(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1227,13 +1227,13 @@ fn bent_scalar() -> FeynmanSeries {
 #[test]
 fn a_bent_scalar_is_one_dashed_curve_in_every_output() {
     let mut r = renderer();
-    let chart = chart();
+    let mut chart = chart();
     let list = [series("d", bent_scalar())];
     for scale in [1.0f32, 2.0] {
         // SVG: one path, cubic segments, one dash pattern along it.
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1249,7 +1249,7 @@ fn a_bent_scalar_is_one_dashed_curve_in_every_output() {
         // PDF: the same curve, read back as one curved stroke.
         let pdf = r
             .export_pdf(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()
@@ -1338,7 +1338,7 @@ fn the_vector_parts_are_clipped_to_each_break_piece() {
     for scale in [1.0f32, 2.0] {
         let svg = r
             .export_svg(
-                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportSource::chart(&mut chart, &list),
                 renderer::ExportOptions::document(scale),
             )
             .block_on()

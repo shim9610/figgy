@@ -228,7 +228,7 @@ fn export(
 ) -> RasterImage {
     renderer
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(config.clone()), series),
+            renderer::ExportSource::chart(&mut Chart::new(config.clone()), series),
             renderer::ExportOptions::panel(scale),
         )
         .block_on()
@@ -664,7 +664,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
     unequal.right_y.max = 1.0;
     let drawn = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(unequal), std::slice::from_ref(&ok)),
+            renderer::ExportSource::chart(&mut Chart::new(unequal), std::slice::from_ref(&ok)),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on();
@@ -717,7 +717,7 @@ fn a_ternary_subplot_draws_in_its_own_cell() {
     let series = [ternary("p", Some(marker_style(8.0)), None)];
     let img = r
         .export_rgba(
-            renderer::ExportSource::chart(&Chart::new(parent), &series),
+            renderer::ExportSource::chart(&mut Chart::new(parent), &series),
             renderer::ExportOptions::document(1.0),
         )
         .block_on()
@@ -929,10 +929,10 @@ fn a_replaced_c_column_redraws() {
     )];
     upload(&mut r, &before);
     let id = r.register_chart(config.clone(), series.clone()).unwrap();
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let first = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -940,7 +940,7 @@ fn a_replaced_c_column_redraws() {
     upload(&mut r, &after);
     let second = r
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&mut chart, &series),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
@@ -1381,7 +1381,7 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
         );
     }
     // The screen path: prepare + paint through the resident composite.
-    let chart = Chart::new(config.clone());
+    let mut chart = Chart::new(config.clone());
     let rect = config.chart_area.0;
     let mut view = r.create_chart_view(&chart, rect).unwrap();
     let styles: Vec<_> = series
@@ -1395,7 +1395,7 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
         .collect();
     let mut items = [renderer::ChartDrawItem {
         view: &mut view,
-        chart: &chart,
+        chart: &mut chart,
         series: &drawn,
     }];
     let prepared = r.prepare(&mut items).unwrap();
