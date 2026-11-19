@@ -226,7 +226,10 @@ impl MonotonicState {
 
     /// The envelope and channel series `cfg` is drawn from, when it was
     /// built.
-    pub(super) fn envelope_of(&self, cfg: &SeriesConfig) -> Option<(&Arc<MonotonicEnvelope>, usize)> {
+    pub(super) fn envelope_of(
+        &self,
+        cfg: &SeriesConfig,
+    ) -> Option<(&Arc<MonotonicEnvelope>, usize)> {
         let record = self.columns.get(&cfg.x_column)?;
         let monotonic = cfg.monotonic()?;
         // The columns hold this series' channel of this group, written for
@@ -610,7 +613,11 @@ pub(super) fn panel_config_mut(config: &mut Config, layer: crate::LayerRef) -> O
 
 /// Fits the y axis layer `layer` is drawn against to `extent`: the
 /// panel's `left_y` (with its partner), or an overlay's own axis.
-pub(super) fn fit_y_axis(config: &mut Config, layer: crate::LayerRef, extent: &crate::chart::FitExtent) {
+pub(super) fn fit_y_axis(
+    config: &mut Config,
+    layer: crate::LayerRef,
+    extent: &crate::chart::FitExtent,
+) {
     let padding = MONOTONIC_AUTOSCALE_Y_PADDING;
     let empty = crate::chart::FitExtent::EMPTY;
     match layer {
@@ -741,7 +748,10 @@ fn logical_row(envelope: &MonotonicEnvelope, channel: usize, index: usize) -> Op
 
 /// The kept finite points of a channel in x order, as logical sample
 /// indices.
-pub(super) fn kept_indices(envelope: &MonotonicEnvelope, channel: usize) -> impl Iterator<Item = usize> + '_ {
+pub(super) fn kept_indices(
+    envelope: &MonotonicEnvelope,
+    channel: usize,
+) -> impl Iterator<Item = usize> + '_ {
     envelope.channel_cells(channel).flat_map(|cell| {
         (0..usize::from(cell.count)).filter_map(move |k| {
             let value = cell.value[k];

@@ -224,7 +224,10 @@ pub(super) struct RaggedShape {
 
 /// The ragged rules checked before the upload (#311, shared by
 /// [`ColumnPool::upsert_ragged`] and the batch transaction).
-pub(super) fn check_ragged_source(id: &str, source: &RaggedSource<'_>) -> crate::Result<RaggedShape> {
+pub(super) fn check_ragged_source(
+    id: &str,
+    source: &RaggedSource<'_>,
+) -> crate::Result<RaggedShape> {
     let total = source.values.len();
     if total == 0 {
         return Err(composite_error(&id, crate::RuleKind::RaggedEmpty));
@@ -331,7 +334,10 @@ impl OffsetTally {
 /// The [`RecordStats`] of a record of `rows` rows whose present fields
 /// measured `fields`, each with its schema slot (#311, shared by
 /// [`ColumnPool::upsert_record`] and the batch transaction).
-pub(super) fn record_stats(rows: u32, fields: impl Iterator<Item = (usize, ValueTally)>) -> RecordStats {
+pub(super) fn record_stats(
+    rows: u32,
+    fields: impl Iterator<Item = (usize, ValueTally)>,
+) -> RecordStats {
     let mut stats = RecordStats {
         len: rows,
         present: [false; MAX_RECORD_FIELDS],

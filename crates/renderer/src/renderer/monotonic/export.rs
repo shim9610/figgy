@@ -8,7 +8,11 @@ impl Renderer {
     /// (chart revisions, picker and resident display caches follow). An
     /// envelope of the same width replaces one of the same size: the hole
     /// it leaves is the next one's, so it asks for no defragmentation.
-    pub(super) fn upload_envelope_column(&mut self, id: &str, rows: &EnvelopeRows<'_>) -> Result<()> {
+    pub(super) fn upload_envelope_column(
+        &mut self,
+        id: &str,
+        rows: &EnvelopeRows<'_>,
+    ) -> Result<()> {
         let same_size = self
             .pool
             .slot(id)
