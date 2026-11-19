@@ -9,8 +9,9 @@
 //!   down colours read from the given ends, and the host's 20-day moving average
 //!   as a line.
 //! - `gantt` writes `gallery-gantt.png`: a release plan as horizontal bars on a
-//!   date axis, a state column choosing each task's colour and a progress
-//!   column shading the finished part.
+//!   date axis, a state column choosing each task's colour, a progress
+//!   column shading the finished part, and dependency links between the
+//!   tasks (`SeriesConfig::range_links`).
 //! - `timeline` writes `timeline.png` and `timeline@2x.png`: the default
 //!   timeline look (#357) without a theme, `SeriesConfig::timeline_bars` on
 //!   `default::default_calendar_timeline_config` (a month header over Monday
@@ -253,7 +254,8 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
 }
 
 // A Gantt chart: tasks on workstream rows over a date axis, coloured by a
-// state column, their finished part shaded by a progress column.
+// state column, their finished part shaded by a progress column, joined by
+// their dependency links.
 fn gantt(r: &mut Renderer, out: &Path) -> Result {
     let theme = ThemeFamily::CoolSlate.theme(ChartKind::RangeBars);
     let bg = background(&theme);
@@ -335,7 +337,29 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         ..TimestampLabelFormat::default()
     });
     chart.set_x_range(T0 - 2.0 * DAY, T0 + 66.0 * DAY);
-    let mut specs = [bars];
+    // Finish-to-start dependencies between the tasks above (rows of the
+    // task columns), routed between the bars on every draw (#357). Listed
+    // before the bars, so the bars cover the link ends.
+    let links = [
+        (0, 2),
+        (2, 3),
+        (2, 4),
+        (4, 5),
+        (4, 6),
+        (6, 7),
+        (6, 8),
+        (8, 9),
+    ];
+    r.add_column(
+        "gt-link-from",
+        &links.iter().map(|l| l.0 as f64).collect::<Vec<_>>(),
+    )?;
+    r.add_column(
+        "gt-link-to",
+        &links.iter().map(|l| l.1 as f64).collect::<Vec<_>>(),
+    )?;
+    let dependencies = SeriesConfig::range_links("links", "tasks", "gt-link-from", "gt-link-to");
+    let mut specs = [dependencies, bars];
     themed(&mut chart, &theme, &mut specs)?;
     for (label, color) in states.iter().zip(&theme.series.range_bars.states) {
         chart = chart.with_legend_swatch(label, *color);

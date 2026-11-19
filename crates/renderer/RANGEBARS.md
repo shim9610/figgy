@@ -162,7 +162,8 @@ inset from its start, runs across to the successor's centre line, turns
 through one rounded corner and ends in an open chevron just before the
 successor's start. When the successor starts before that exit, the exit
 moves back to leave room for the head, so a link never turns back through
-a bar. Links leaving one bar share their trunk. A row that is missing,
+a bar. Links leaving one bar share their trunk, and a link between two
+tasks on one row runs straight from the first's end. A row that is missing,
 negative or past the bars' rows draws no link. List the links before their
 bars: a series draws in its place in the list, so the bars then cover the
 link ends.
@@ -170,7 +171,7 @@ link ends.
 | Field | Default (`range_links`) | Range |
 |---|---|---|
 | `bars` | the bars' `series_id` | a range bar series in the same layer (`RuleKind::RangeLinkBars`) |
-| `color` | amber `#D4A24C` | channels in `0..=1`; a theme sets its connector colour |
+| `color` | amber `#D4A24C` | channels in `0..=1`; a theme keeps it, since the waterfall connector's thin dark line does not read as a dependency |
 | `width` | 1.5 px | `0..=24` |
 | `head` | 6 px open chevron | `0..=32` |
 | `inset` | 6 px from the predecessor's start | `0..=64` |

@@ -592,7 +592,6 @@ fn cycle_color(series: &SeriesConfig) -> Option<Color> {
         DataRenderType::CategoryBars(CategoryBarSeries { color, .. })
         | DataRenderType::BoxPlot(BoxSeries { color, .. })
         | DataRenderType::RangeBars(RangeBarSeries { color, .. })
-        | DataRenderType::RangeLinks(crate::data_config::RangeLinkSeries { color, .. })
         | DataRenderType::Radar(RadarPolygonSeries { color, .. }) => see(*color),
         DataRenderType::Ternary(TernarySeries { scatter, line, .. }) => {
             if let Some(scatter) = scatter {
@@ -609,7 +608,9 @@ fn cycle_color(series: &SeriesConfig) -> Option<Color> {
         | DataRenderType::TriMesh(_)
         | DataRenderType::RgbImage(_)
         | DataRenderType::EnergyLevels(_)
-        | DataRenderType::Feynman(_) => {}
+        | DataRenderType::Feynman(_)
+        // Dependency links keep their own accent (#357).
+        | DataRenderType::RangeLinks(_) => {}
     }
     found.filter(|_| same)
 }
@@ -686,10 +687,12 @@ pub(crate) fn recolor_series(series: &mut SeriesConfig, c: Color) {
         }
         // The series fill joins the cycle; direction and state colours
         // stay, since they carry the bars' meaning.
-        DataRenderType::RangeBars(RangeBarSeries { color, .. })
-        | DataRenderType::RangeLinks(crate::data_config::RangeLinkSeries { color, .. }) => {
+        DataRenderType::RangeBars(RangeBarSeries { color, .. }) => {
             *color = c;
         }
+        // Dependency links keep their own accent (#357): a cycle colour
+        // would read as one more task series.
+        DataRenderType::RangeLinks(_) => {}
         // The outline and markers join the cycle, and the fill follows
         // them unless the style names its own.
         DataRenderType::Radar(RadarPolygonSeries { color, .. }) => {

@@ -1619,11 +1619,6 @@ impl Theme {
             | DataRenderType::RgbImage(_)
             | DataRenderType::RangeLinks(_) => {}
         }
-        // Dependency links take the connector's colour and width (#357).
-        if let DataRenderType::RangeLinks(links) = &mut series.render_type {
-            links.color = theme.range_bars.connector_color;
-            links.width = theme.range_bars.connector_width;
-        }
         if let DataRenderType::RangeBars(RangeBarSeries {
             whiskers,
             color_by,

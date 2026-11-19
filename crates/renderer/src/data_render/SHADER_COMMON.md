@@ -1945,8 +1945,9 @@ forward:
   start.
 - The head is an open chevron of two arms `head` pixels long.
 
-Links leaving one bar share their trunk. Bars on one centre line (a
-numeric position axis) get a straight link. A row that is NaN, negative or
+Links leaving one bar share their trunk. Bars on one centre line (tasks on
+one row) get a straight link out of the predecessor's last end, so no
+stroke runs inside a bar whose unfinished part is translucent. A row that is NaN, negative or
 past the bars' row count, or a bar that draws nothing, draws no link. The
 colour is the series' `Style` colour; nothing per link is stored. A link
 draws in its series' place in the list, so a host lists the links before

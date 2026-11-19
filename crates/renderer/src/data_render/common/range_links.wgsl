@@ -131,7 +131,7 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
     let a_first = min(a.start_px * s, a.end_px * s);
     // The exit: a small inset from the predecessor's first end, moved back
     // when the successor starts too soon for the last leg and its head.
-    let exit_u = min(a_first + range_link_inset_px(), tip_u - head - 4.0);
+    var exit_u = min(a_first + range_link_inset_px(), tip_u - head - 4.0);
     var down = 1.0;
     var exit_c = a_band.y;
     if (b_mid < a_mid) {
@@ -139,9 +139,12 @@ fn range_link_route(i: u32) -> RangeLinkRoute {
         exit_c = a_band.x;
     }
     if (abs(b_mid - a_mid) < 0.5) {
-        // Both bars share a centre line (a numeric position axis): a
-        // straight link from the predecessor's end.
+        // Both bars share a centre line (tasks on one row): a straight
+        // link out of the predecessor's last end, so no stroke runs inside
+        // a bar whose unfinished part is translucent.
         exit_c = b_mid;
+        let a_last = max(a.start_px * s, a.end_px * s);
+        exit_u = min(a_last, tip_u - head - 4.0);
     }
     out.exit = range_link_px(exit_u * s, exit_c);
     out.corner = range_link_px(exit_u * s, b_mid);
