@@ -49,6 +49,11 @@ use registry::{
     series_arc, series_exact_key, series_exact_variant, series_ring, stream_exact_variant,
 };
 pub(crate) use shader::exact_variant;
+pub(crate) mod registry_probe {
+    #[cfg(test)]
+    pub(crate) use super::registry::MERGE_PROBE;
+    pub(crate) use super::registry::FORCE_DIRECT;
+}
 #[cfg(test)]
 use shader::{
     EXACT_LAYOUT, INIT_SCOPE, create_pipeline_bundle_observed, exact_layout_storage_buffers,

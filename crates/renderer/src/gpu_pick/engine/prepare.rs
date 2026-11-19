@@ -261,7 +261,8 @@ impl GpuPickEngine {
             || stem.is_some()
             || area.is_some()
             || ternary.is_some()
-            || descriptor.line_closed;
+            || descriptor.line_closed
+            || crate::gpu_pick::registry_probe::FORCE_DIRECT.with(std::cell::Cell::get);
         // A region series' exact pass writes a region entry (its crossing
         // parity) per workgroup after the best candidates.
         let candidate_slots = if region { 2 } else { 1 };

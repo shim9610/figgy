@@ -68,7 +68,36 @@ pub(super) fn series_exact_key(
 /// the slot's stored key (its primitive class, the dash walk for a dashed
 /// line and its shape) plus the query's bits, the styled marker and line
 /// paths when the draw style uses them and the polar paths on polar axes.
+#[cfg(test)]
+thread_local! {
+    /// MEASUREMENT ONLY (#363 variant-merge study, never merged): bits ORed
+    /// into every exact key, and whether the shape is merged to any.
+    pub(crate) static MERGE_PROBE: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((0, false)) };
+    /// MEASUREMENT ONLY: every series scans every point exactly.
+    pub(crate) static FORCE_DIRECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(not(test))]
+thread_local! {
+    pub(crate) static FORCE_DIRECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
+    #[cfg(test)]
+    {
+        let mut key = series_exact_variant_inner(series, query);
+        let (bits, any) = MERGE_PROBE.with(std::cell::Cell::get);
+        key.bits |= bits;
+        if any {
+            key.shape = PickExactKey::ANY_SHAPE;
+        }
+        return key;
+    }
+    #[cfg(not(test))]
+    series_exact_variant_inner(series, query)
+}
+
+fn series_exact_variant_inner(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
     let mut key = series.exact_key;
     // A box plot's raw points draw precise markers under every style.
     if series.flags & FLAG_SCATTER != 0

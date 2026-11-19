@@ -12,6 +12,8 @@ mod entry;
 mod picker;
 mod plan;
 #[cfg(test)]
+mod merge_bench_tests;
+#[cfg(test)]
 mod variant_table_tests;
 
 pub(super) use descriptors::*;
