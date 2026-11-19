@@ -10,10 +10,12 @@
 use test_gpu::BlockOn as _;
 #[path = "support/edge_band.rs"]
 mod edge_band;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::to8;
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
 use renderer::data::Column;
@@ -50,19 +52,8 @@ const NAN_PAINT: Color = Color {
     a: 1.0,
 };
 
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
@@ -226,10 +217,6 @@ fn data_to_px(chart: &Chart, x: f64, y: f64, scale: f64) -> (u32, u32) {
         ((da.x as f64 + tx * da.width as f64) * scale) as u32,
         (((da.y + da.height) as f64 - ty * da.height as f64) * scale) as u32,
     )
-}
-
-fn to8(v: f32) -> i32 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
 fn assert_colour(img: &RasterImage, px: (u32, u32), want: Color, tol: i32, what: &str) {

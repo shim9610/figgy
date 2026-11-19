@@ -8,61 +8,26 @@
 //! component order fails rather than passes.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    MAGENTA, RED, col, count, is_red_soft as is_red, pixel, renderer_bgra as renderer, save,
+};
 
 use renderer::config::{DataSelectionsConfig, PickedDataRef, TickVisibility};
-use renderer::data::Column;
 use renderer::data_config::LineInterpolation;
 use renderer::layout::{ChartArea, Element, NudgeResult, Rect, Side};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, Color, Config, CpuTextMeasure, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, FitExtent, HitMap, LayerRef, RasterImage, Renderer, RendererDevice,
-    ScatterShape, SeriesConfig, Subplot, TernaryOptions, TernarySeries,
+    DataScatterStyleConfig, FitExtent, HitMap, LayerRef, RasterImage, Renderer, ScatterShape,
+    SeriesConfig, Subplot, TernaryOptions, TernarySeries,
 };
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 420;
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-
-const MAGENTA: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
-
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        64 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 /// A ternary chart over 0..100 with no grid, legend, axes or labels, so the
 /// only red ink is the series.
@@ -195,11 +160,6 @@ fn ternary_px(config: &Config, row: [f64; 3], scale: f32) -> (f64, f64) {
     (f64::from(p[0]), f64::from(p[1]))
 }
 
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
-}
-
 fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
     pixel(
         img,
@@ -208,16 +168,8 @@ fn at(img: &RasterImage, (x, y): (f64, f64)) -> &[u8] {
     )
 }
 
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] < 80
-}
-
 fn is_magenta(p: &[u8]) -> bool {
     p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] > 180
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 fn export(
@@ -233,18 +185,6 @@ fn export(
         )
         .block_on()
         .unwrap()
-}
-
-/// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
-fn save(name: &str, image: &RasterImage) {
-    if let Ok(path) = std::env::var("FIGGY_INTERACTION_ARTIFACTS") {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(
-            std::path::Path::new(&path).join(format!("{name}.png")),
-            renderer::encode_png(image).unwrap(),
-        )
-        .unwrap();
-    }
 }
 
 /// The GPU pick at `at` (canvas pixels at `scale`) of a chart registered

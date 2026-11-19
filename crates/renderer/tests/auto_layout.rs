@@ -8,14 +8,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 #[path = "support/gpu.rs"]
 mod test_gpu;
+use harness::measure;
 
 use renderer::layout::{Element, RectF, Side, auto_layout};
 use renderer::sink::Parts;
-use renderer::{Config, CpuTextMeasure, HitMap, Renderer, RendererDevice};
+use renderer::{Config, HitMap, Renderer, RendererDevice};
 
 use scenes::SceneKind;
 
@@ -28,10 +31,6 @@ fn renderer() -> Renderer {
     let (device, queue) = test_gpu::device();
     let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, POOL_BYTES).expect("renderer")
-}
-
-fn measure(cfg: &Config) -> CpuTextMeasure {
-    CpuTextMeasure::for_style(&cfg.draw_style)
 }
 
 fn laid_out(cfg: &Config) -> Config {

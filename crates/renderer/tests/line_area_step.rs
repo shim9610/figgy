@@ -10,13 +10,18 @@
 //! own data area and axis range, the same mapping the GPU transform uses.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{
+    BLUE, GREEN, RED, col as col_f64, count, data_y_to_px, is_blue_ink as is_blue,
+    is_empty_ink as is_empty, is_green_ink as is_green, is_red_ink as is_red,
+    pixel_rounded as pixel,
+};
+use test_gpu::shared_device;
 
 use renderer::config::AxisScale;
-use renderer::data::Column;
 use renderer::data_config::{LineFill, LineInterpolation};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
@@ -26,19 +31,6 @@ use renderer::{
 };
 
 // ───────────────────────── plumbing / fixtures ─────────────────────────
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(|| {
-        let (device, queue) = test_gpu::device();
-        (device, queue)
-    });
-    (device.clone(), queue.clone())
-}
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
@@ -68,25 +60,6 @@ fn bare_chart(width: u32, height: u32) -> Chart {
     config.grid.show_minor_y = false;
     Chart::new(config)
 }
-
-const RED: Color = Color {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-    a: 1.0,
-};
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-    a: 1.0,
-};
-const BLUE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-    a: 1.0,
-};
 
 fn line(
     fill: Option<LineFill>,
@@ -136,48 +109,6 @@ fn data_x_to_px(chart: &Chart, value: f64) -> f32 {
     let da = cfg.data_area().expect("data area");
     let t = (value - cfg.bottom_x.min) / (cfg.bottom_x.max - cfg.bottom_x.min);
     da.x as f32 + t as f32 * da.width as f32
-}
-
-/// Data y → panel pixel y (screen y grows downward), linear or logarithmic.
-fn data_y_to_px(chart: &Chart, value: f64) -> f32 {
-    let cfg = chart.config();
-    let da = cfg.data_area().expect("data area");
-    let t = match cfg.left_y.scale {
-        AxisScale::Linear => (value - cfg.left_y.min) / (cfg.left_y.max - cfg.left_y.min),
-        AxisScale::Logarithmic => {
-            (value.log10() - cfg.left_y.min.log10())
-                / (cfg.left_y.max.log10() - cfg.left_y.min.log10())
-        }
-        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
-    };
-    (da.y + da.height) as f32 - t as f32 * da.height as f32
-}
-
-fn pixel(img: &RasterImage, x: f32, y: f32) -> [u8; 4] {
-    let (x, y) = (x.round() as u32, y.round() as u32);
-    assert!(
-        x < img.width && y < img.height,
-        "probe ({x}, {y}) outside the image"
-    );
-    let i = ((y * img.width + x) * 4) as usize;
-    img.rgba[i..i + 4].try_into().unwrap()
-}
-
-fn is_red(p: &[u8]) -> bool {
-    p[3] > 16 && p[0] > 120 && p[1] < 90 && p[2] < 90
-}
-fn is_green(p: &[u8]) -> bool {
-    p[3] > 16 && p[1] > 120 && p[0] < 90 && p[2] < 90
-}
-fn is_blue(p: &[u8]) -> bool {
-    p[3] > 16 && p[2] > 120 && p[0] < 90 && p[1] < 90
-}
-fn is_empty(p: &[u8]) -> bool {
-    p[3] <= 16
-}
-
-fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
-    img.rgba.chunks_exact(4).filter(|p| pred(p)).count()
 }
 
 /// A probe at data coordinates, asserting one colour class with a readable

@@ -1,30 +1,17 @@
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::col as col_f64;
+use test_gpu::shared_device;
 
 use renderer::{
-    Column, GpuExtentError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode,
-    Renderer, RendererDevice,
+    GpuExtentError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode, Renderer,
+    RendererDevice,
 };
 
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
 fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
+    let (device, queue) = shared_device();
     Some(
         Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),

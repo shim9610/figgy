@@ -3,35 +3,20 @@
 //! Every pixel test exports at 1x and 2x.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{export, renderer_rgba as renderer};
 
 use renderer::feynman::{
     FeynmanSeries, FeynmanVertex, ParticleLine, Propagator, VertexMarker, VertexRole,
 };
 use renderer::layout::{ChartArea, Rect};
-use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, RendererDevice, SeriesConfig};
+use renderer::{Chart, Color, DataRenderType, RasterImage, Renderer, SeriesConfig};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 360;
-
-fn shared_device() -> (wgpu::Device, wgpu::Queue) {
-    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
-    let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    (device.clone(), queue.clone())
-}
-
-fn renderer() -> Renderer {
-    let (device, queue) = shared_device();
-    Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        4 * 1024 * 1024,
-    )
-    .expect("renderer init")
-}
 
 fn series(id: &str, diagram: FeynmanSeries) -> SeriesConfig {
     SeriesConfig {
@@ -102,15 +87,6 @@ fn s_channel() -> FeynmanSeries {
         ],
         ..FeynmanSeries::default()
     }
-}
-
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_rgba(
-        renderer::ExportSource::chart(chart, series),
-        renderer::ExportOptions::panel(scale),
-    )
-    .block_on()
-    .unwrap()
 }
 
 /// The export pixel of data point `(x, y)`.

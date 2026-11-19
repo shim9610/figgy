@@ -11,20 +11,20 @@
 //! bar *should* be rather than where it happens to have landed.
 
 use test_gpu::BlockOn as _;
+#[path = "support/harness.rs"]
+mod harness;
 #[path = "support/gpu.rs"]
 mod test_gpu;
-
-use std::sync::OnceLock;
+use harness::{col as col_f64, is_selection, pixel, try_renderer};
 
 use renderer::config::AxisScale;
-use renderer::data::Column;
 use renderer::data_config::{
     BarOrientation, DataBarBinStyleConfig, DataBarStyleConfig, DataBarStyleOverride,
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
     Chart, Color, DataRenderType, DataSelectionsConfig, HistogramSeries, PickedDataRef,
-    RasterImage, Renderer, RendererDevice, SeriesConfig, encode_png,
+    RasterImage, Renderer, SeriesConfig, encode_png,
 };
 
 const WIDTH: u32 = 480;
@@ -43,10 +43,6 @@ const BORDER: Color = Color {
     a: 1.0,
 };
 
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
 /// Save a rendered panel as a PNG beside the layout and colourbar images, in
 /// `target/arch-after/` or `$FIGGY_LAYOUT_PROBE_DIR` (`ci/verify.py` points it
 /// at the CI image directory). The pixel assertions are the gate; the image is
@@ -64,39 +60,6 @@ fn save_probe(name: &str, img: &RasterImage) {
     std::fs::create_dir_all(&dir).expect("create image directory");
     let png = encode_png(img).expect("encode png");
     std::fs::write(dir.join(format!("histogram-{name}.png")), png).expect("write png");
-}
-
-/// The process-wide device, created once.
-///
-/// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
-/// creating one per test made this binary's tests contend for the driver and hold
-/// a device apiece. `column_upload_stats.rs` already pools this way — the pixel
-/// suites simply had not.
-///
-/// The `Renderer` is still per test: it owns the column pool, so sharing one
-/// would let test fixtures collide on column ids. Only the device is shared, and
-/// `wgpu::Device` is `Send + Sync`, so the default parallel harness is fine.
-fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
-    DEVICE
-        .get_or_init(|| {
-            let (device, queue) = test_gpu::device();
-            Some((device, queue))
-        })
-        .as_ref()
-        .map(|(device, queue)| (device.clone(), queue.clone()))
-}
-
-fn try_renderer() -> Option<Renderer> {
-    let (device, queue) = shared_device()?;
-    Some(
-        Renderer::try_new(
-            RendererDevice::new(device, queue).expect("figgy poll thread"),
-            wgpu::TextureFormat::Bgra8Unorm,
-            4 * 1024 * 1024,
-        )
-        .expect("renderer init"),
-    )
 }
 
 /// Grid and legend off: the only non-bar ink is the black deco frame.
@@ -158,15 +121,6 @@ fn is_override_fill(p: &[u8]) -> bool {
 
 fn is_override_border(p: &[u8]) -> bool {
     p[3] > 16 && p[0] > 140 && p[1] > 140 && p[2] < 90
-}
-
-fn is_selection(p: &[u8]) -> bool {
-    p[3] > 180 && p[0] > 180 && p[2] > 180 && p[1] < 80
-}
-
-fn pixel(img: &RasterImage, x: u32, y: u32) -> &[u8] {
-    let i = ((y * img.width + x) * 4) as usize;
-    &img.rgba[i..i + 4]
 }
 
 /// Fill pixels inside a pixel-space column range.
