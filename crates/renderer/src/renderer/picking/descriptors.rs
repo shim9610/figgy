@@ -26,6 +26,8 @@ pub(in crate::renderer) fn gpu_pick_vector(
         head_width_px,
         min_length_px,
         color_map,
+        // Only a fit reads it; the drawn arrow is `scale`'s.
+        auto_scale: _,
     } = style;
     let (scale_pixels, scale) = match scale {
         VectorScale::Data { factor } => (false, *factor as f32),
