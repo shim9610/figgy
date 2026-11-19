@@ -1561,6 +1561,30 @@ mod tests {
         }
     }
 
+    // The browser's `ColorCycle` mirrors every model cycle in order (#357),
+    // and a new chart starts on the default cycle.
+    #[test]
+    fn color_cycle_mirrors_every_model_cycle() {
+        use crate::web::convert::ColorCycle as Web;
+        let web = [
+            Web::Classic,
+            Web::Vivid,
+            Web::Balanced,
+            Web::ColorblindSafe,
+            Web::Monochrome,
+            Web::Tableau10,
+            Web::Set2,
+            Web::Dark2,
+            Web::Plotly,
+            Web::HighContrast,
+        ];
+        for (web, model) in web.into_iter().zip(renderer::ColorCycle::ALL) {
+            assert_eq!(renderer::ColorCycle::from(web), model);
+            assert_eq!(crate::web::convert::color_cycle_css(web).len(), model.len());
+        }
+        assert_eq!(web.len(), renderer::ColorCycle::ALL.len());
+    }
+
     #[test]
     fn frame_decision_covers_every_dirty_source_without_surface_work_when_clean() {
         for bits in 0u8..32 {

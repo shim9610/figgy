@@ -2716,3 +2716,85 @@ fn a_theme_missing_fields_parses() {
         RadialTheme::documented()
     );
 }
+
+/// Whether `palette` holds no colour twice.
+fn all_distinct(palette: &[Color]) -> bool {
+    palette
+        .iter()
+        .enumerate()
+        .all(|(i, a)| palette[i + 1..].iter().all(|b| a != b))
+}
+
+#[test]
+fn every_member_palette_has_eight_distinct_colours() {
+    // #357: no colour repeats within a chart of up to eight series, states
+    // or regions. An empty palette keeps the series' own colours.
+    for kind in ChartKind::ALL {
+        for (i, theme) in themes(kind).into_iter().enumerate() {
+            for (part, palette) in [
+                ("palette", &theme.series.palette),
+                ("states", &theme.series.range_bars.states),
+                ("regions", &theme.series.ternary.regions),
+            ] {
+                if palette.is_empty() && part != "palette" {
+                    continue;
+                }
+                assert!(
+                    palette.len() >= 8,
+                    "{kind:?} theme {i} {part} has {} colours",
+                    palette.len()
+                );
+                assert!(all_distinct(palette), "{kind:?} theme {i} {part} repeats");
+            }
+        }
+    }
+    for (name, theme) in radial_themes() {
+        if name == "default" {
+            // The documented radial look keeps every slice's own colour.
+            assert!(theme.palette.is_empty());
+            continue;
+        }
+        assert!(theme.palette.len() >= 8, "{name} radial palette is short");
+        assert!(
+            all_distinct(&theme.palette),
+            "{name} radial palette repeats"
+        );
+    }
+}
+
+#[test]
+fn filled_palettes_keep_the_designed_colours_first() {
+    // The Gallery line chart was designed with three colours: they keep
+    // their places, so one to three series look as they did.
+    let line = ThemeFamily::Gallery.theme(ChartKind::Line);
+    let designed = [
+        Color::from_rgb8(34, 104, 198),
+        Color::from_rgb8(225, 81, 79),
+        Color::from_rgb8(224, 123, 38),
+    ];
+    assert_eq!(&line.series.palette[..3], &designed);
+    let error_bars = ThemeFamily::Gallery.theme(ChartKind::ErrorBars);
+    assert_eq!(&error_bars.series.palette[..2], &[designed[0], designed[2]]);
+}
+
+#[test]
+fn with_palette_selects_a_preset() {
+    for cycle in crate::preset::ColorCycle::PRESETS {
+        let theme = ThemeFamily::Gallery
+            .theme(ChartKind::Line)
+            .with_palette(cycle);
+        assert_eq!(theme.series.palette, cycle.colors());
+        let mut series = [
+            SeriesConfig::line("a", "x", "y"),
+            SeriesConfig::line("b", "x", "y"),
+        ];
+        let mut config = crate::defaults::config();
+        theme
+            .apply(&mut config, &mut series, ThemeScope::All)
+            .unwrap();
+        let DataRenderType::Xy(xy) = &series[1].render_type else {
+            panic!("a line series");
+        };
+        assert_eq!(xy.line.as_ref().unwrap().line_color, cycle.color(1));
+    }
+}

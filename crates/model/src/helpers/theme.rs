@@ -883,6 +883,13 @@ fn fill_continuum(config: &mut Config, series: &[SeriesConfig], charts: Charts, 
 }
 
 impl Theme {
+    /// The theme with its series palette replaced by `cycle`'s colours: a
+    /// palette preset ([`ColorCycle::PRESETS`]) on any theme (#357).
+    pub fn with_palette(mut self, cycle: ColorCycle) -> Self {
+        self.series.palette = cycle.colors().to_vec();
+        self
+    }
+
     /// The documented default look of `kind`.
     pub(crate) fn documented(kind: ChartKind) -> Self {
         let config = crate::defaults::config();
@@ -1871,6 +1878,13 @@ impl Theme {
 }
 
 impl RadialTheme {
+    /// The theme with its palette replaced by `cycle`'s colours: a palette
+    /// preset ([`ColorCycle::PRESETS`]) on the top-level slices (#357).
+    pub fn with_palette(mut self, cycle: ColorCycle) -> Self {
+        self.palette = cycle.colors().to_vec();
+        self
+    }
+
     /// The documented default look.
     pub(crate) fn documented() -> Self {
         let radial = crate::defaults::radial_chart();
