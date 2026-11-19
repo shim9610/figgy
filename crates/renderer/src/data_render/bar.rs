@@ -259,7 +259,8 @@ pub(crate) const BOX_POINTS_FILLED: u32 = 100;
 pub const RANGE_BAR_VERTICES: u32 = 18;
 /// Lane table entries of a range bar series (`RANGE_LANE_*`): the end,
 /// start, low, high, colour and progress column lanes (`BOX_LANE_ABSENT`
-/// for an absent column), the colour mode and the state style count, a
+/// for an absent column), the colour mode and the state style (or row
+/// colour) count, a
 /// fixed schema rather than a count of data.
 pub(crate) const RANGE_LANE_END: u32 = 0;
 pub(crate) const RANGE_LANE_START: u32 = 1;
@@ -274,9 +275,10 @@ pub(crate) const RANGE_BAR_LANES: usize = RANGE_LANE_STATES as usize + 1;
 pub(crate) const RANGE_COLOR_SINGLE: u32 = 0;
 pub(crate) const RANGE_COLOR_DIRECTION: u32 = 1;
 pub(crate) const RANGE_COLOR_STATE: u32 = 2;
+pub(crate) const RANGE_COLOR_ROW: u32 = 3;
 /// A range bar series' style slots (`RANGE_SLOT_*`): the whisker, the
 /// connector, the up, down and total fills, the progress, then one per
-/// state from `RANGE_SLOT_STATES`.
+/// state, or one per row colour, from `RANGE_SLOT_STATES`.
 pub(crate) const RANGE_SLOT_WHISKER: u32 = 0;
 pub(crate) const RANGE_SLOT_CONNECTOR: u32 = 1;
 pub(crate) const RANGE_SLOT_UP: u32 = 2;

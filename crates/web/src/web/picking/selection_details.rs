@@ -491,6 +491,7 @@ impl FiggyChart {
                 total.as_ref().map(|t| ("total", t.column.as_str()))
             }
             RangeColor::State { column, .. } => Some(("state", column.as_str())),
+            RangeColor::ByRow { .. } => None,
         };
         let roles = [
             Some(("position", series.x_column.as_str())),

@@ -4227,6 +4227,40 @@ mod web {
                     ]),
                 },
                 SelectionScene {
+                    name: "row-coloured range bars",
+                    columns: vec![
+                        column("rpos", &[0.0, 1.0, 2.0]),
+                        column("rend", &[4.0, 5.0, 6.0]),
+                        column("rstart", &[1.0, 2.0, 3.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: three_categories,
+                    series: series(
+                        "rows",
+                        "rpos",
+                        "rend",
+                        DataRenderType::RangeBars(RangeBarSeries {
+                            color: Color::from_rgb8(40, 120, 200),
+                            style: bar_style(),
+                            start: "rstart".into(),
+                            whiskers: None,
+                            color_by: RangeColor::ByRow {
+                                colors: vec![
+                                    Color::from_rgb8(40, 120, 200),
+                                    Color::from_rgb8(200, 80, 40),
+                                ],
+                            },
+                            progress: None,
+                            connector: None,
+                            slot_width: None,
+                            labels: CategoryBarSeriesLabels::default(),
+                        }),
+                    ),
+                    pick: bin("rows", 2),
+                    keys: keys(&["position", "end", "start", "category_id"]),
+                },
+                SelectionScene {
                     name: "box record with every field",
                     columns: vec![column("bpos", &[0.0, 1.0, 2.0])],
                     record: Some(("box9", record_fields(&all_fields))),
@@ -4543,6 +4577,15 @@ mod web {
                         ("progress", 0.5),
                     ] {
                         assert_eq!(details[role], value, "{role}");
+                    }
+                }
+                // Colour by row (#357) reads no column: no colour role.
+                if scene.name.starts_with("row-coloured") {
+                    for (role, value) in [("position", 2.0), ("end", 6.0), ("start", 3.0)] {
+                        assert_eq!(details[role], value, "{role}");
+                    }
+                    for absent in ["state", "total"] {
+                        assert!(details.get(absent).is_none(), "{absent}");
                     }
                 }
                 if scene.name.starts_with("parallel") {
